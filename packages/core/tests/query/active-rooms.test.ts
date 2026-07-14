@@ -6,6 +6,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   abortAllRooms,
+  cancelDeferredInject,
   clearRoomQuery,
   decideNewQuery,
   deferInject,
@@ -126,6 +127,15 @@ describe("defer queue (FIFO)", () => {
 
   test("returns undefined for empty room", () => {
     expect(takeDeferredInject("nonexistent")).toBeUndefined();
+  });
+
+  test("cancels one bounded background inject without disturbing its neighbors", () => {
+    deferInject({ topicId: "r1", userId: "u", prompt: "first", origin: "a", requestId: RID(1) });
+    deferInject({ topicId: "r1", userId: "u", prompt: "second", origin: "b", requestId: RID(2) });
+
+    expect(cancelDeferredInject("r1", RID(1))).toBe(true);
+    expect(cancelDeferredInject("r1", "missing")).toBe(false);
+    expect(takeDeferredInject("r1")?.prompt).toBe("second");
   });
 });
 

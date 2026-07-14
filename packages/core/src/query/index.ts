@@ -8,6 +8,7 @@ export type {
 export {
   abortAllRooms,
   abortRoom,
+  cancelDeferredInject,
   clearRoomQuery,
   decideNewQuery,
   deferInject,

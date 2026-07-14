@@ -691,6 +691,8 @@ function redispatchInject(inject: DeferredInject): void {
     sessionName: inject.sessionName,
     sessionType: inject.sessionType,
     onSessionId: inject.onSessionId,
+    onSessionReset: inject.onSessionReset,
+    bridgeSessionFromHistory: inject.bridgeSessionFromHistory,
     onSettled: inject.onSettled,
     askReplySources: inject.askReplySources,
     _sessionRetried: inject._sessionRetried,
@@ -843,9 +845,10 @@ function tryReconstructTopicRollout(opts: {
   cwd: string;
   model: string;
   effort?: EffortLevel;
+  allowFreshSession?: boolean;
 }): string | null {
   const { topicId, topicTitle, userId, agent, sessionId, cwd, model, effort } = opts;
-  if (!sessionId) return null;
+  if (!sessionId && !opts.allowFreshSession) return null;
 
   try {
     const entries = readConversation(userId, topicTitle);
@@ -853,9 +856,9 @@ function tryReconstructTopicRollout(opts: {
     const result = getRegistry(agent).writeRollout({
       cwd,
       entries,
-      reuseSessionId: sessionId,
       model,
       ...(effort ? { effort } : {}),
+      ...(sessionId ? { reuseSessionId: sessionId } : {}),
     });
     logger.info(
       {
@@ -865,7 +868,9 @@ function tryReconstructTopicRollout(opts: {
         rolloutPath: result.rolloutPath,
         entries: entries.length,
       },
-      "ai: session expired — rollout reconstructed from unified log",
+      sessionId
+        ? "ai: session expired — rollout reconstructed from unified log"
+        : "ai: provider session bridged from shared conversation log",
     );
     return result.sessionId;
   } catch (err) {
@@ -884,10 +889,15 @@ function resolveSessionRetryId(opts: {
   silent: boolean;
   model: string;
   effort?: EffortLevel;
+  externalSessionOwner?: boolean;
+  onSessionReset?: () => void;
 }): string | null {
   const reconstructed = tryReconstructTopicRollout(opts);
   if (reconstructed) return reconstructed;
-  if (!opts.silent) clearTopicSessionId(opts.topicId, "session-expired");
+  if (opts.onSessionReset) opts.onSessionReset();
+  else if (!opts.silent && !opts.externalSessionOwner) {
+    clearTopicSessionId(opts.topicId, "session-expired");
+  }
   logger.info(
     { topicId: opts.topicId, agent: opts.agent, hadSessionId: Boolean(opts.sessionId) },
     "ai: session expired — retrying with fresh session",
@@ -955,6 +965,10 @@ export function startAiTurn(params: {
   sessionType?: "dm" | "forum" | "ephemeral" | "manager" | "cron";
   /** Own this turn's provider session without replacing the topic's main session. */
   onSessionId?: (sessionId: string) => void;
+  /** Clear the externally-owned provider session after recovery fails. */
+  onSessionReset?: () => void;
+  /** Bridge a fresh provider session from this namespace's shared conversation log. */
+  bridgeSessionFromHistory?: boolean;
   /** Observe the final non-retry outcome of this turn. */
   onSettled?: (result: AiTurnSettlement) => void;
   askReplySources?: DeferredInject["askReplySources"];
@@ -965,7 +979,7 @@ export function startAiTurn(params: {
   const { topic, userId, allowAutoContinue, onDispatched } = params;
   const prompt = params.prompt;
   const attachments = params.attachments;
-  const sessionId = params.sessionId;
+  let sessionId = params.sessionId;
   const origin = params.origin ?? "user";
   const topicId = topic.id;
   const requestId = params.requestId;
@@ -980,6 +994,8 @@ export function startAiTurn(params: {
   const sessionName = params.sessionName ?? topic.title;
   const sessionType = params.sessionType;
   const onSessionId = params.onSessionId;
+  const onSessionReset = params.onSessionReset;
+  const bridgeSessionFromHistory = params.bridgeSessionFromHistory === true;
   const onSettled = params.onSettled;
   const askReplySources = params.askReplySources;
   const sessionRetried = params._sessionRetried === true;
@@ -1007,6 +1023,8 @@ export function startAiTurn(params: {
       sessionName,
       sessionType,
       onSessionId,
+      onSessionReset,
+      bridgeSessionFromHistory,
       onSettled,
       askReplySources,
       _sessionRetried: sessionRetried,
@@ -1073,6 +1091,8 @@ export function startAiTurn(params: {
           sessionName,
           sessionType,
           onSessionId,
+          onSessionReset,
+          bridgeSessionFromHistory,
           onSettled,
           askReplySources,
           _sessionRetried: sessionRetried,
@@ -1113,6 +1133,32 @@ export function startAiTurn(params: {
 
   const workspaceCwd = cwd ?? workspaceCwdFor(topicId);
   mkdirSync(workspaceCwd, { recursive: true });
+  if (bridgeSessionFromHistory && !sessionId) {
+    const bridgedSessionId = tryReconstructTopicRollout({
+      topicId,
+      topicTitle: sessionName,
+      userId,
+      agent: agentKind,
+      sessionId: null,
+      cwd: workspaceCwd,
+      model: resolvedModel,
+      ...(resolvedEffort ? { effort: resolvedEffort } : {}),
+      allowFreshSession: true,
+    });
+    if (bridgedSessionId) {
+      sessionId = bridgedSessionId;
+      control.sessionId = bridgedSessionId;
+      if (control.injectParams) control.injectParams.sessionId = bridgedSessionId;
+      try {
+        onSessionId?.(bridgedSessionId);
+      } catch (err) {
+        logger.warn(
+          { err, topicId, queryId, agent: agentKind },
+          "ai: isolated session owner rejected bridged provider session id",
+        );
+      }
+    }
+  }
   const promptAttachments = materializePromptAttachments(topicId, queryId, attachments);
   const promptWithFiles = promptWithAttachments(prompt, promptAttachments);
   const agentPrompt =
@@ -1342,6 +1388,8 @@ export function startAiTurn(params: {
           silent: Boolean(silent),
           model: resolvedModel,
           ...(resolvedEffort ? { effort: resolvedEffort } : {}),
+          externalSessionOwner: Boolean(onSessionId),
+          onSessionReset,
         });
         logger.info(
           {
@@ -1373,6 +1421,8 @@ export function startAiTurn(params: {
           sessionName,
           sessionType,
           onSessionId,
+          onSessionReset,
+          bridgeSessionFromHistory,
           onSettled,
           askReplySources,
           _sessionRetried: true,
@@ -1482,6 +1532,10 @@ export function triggerTopicAiTurn(
     sessionType?: "dm" | "forum" | "ephemeral" | "manager" | "cron";
     /** Persist provider session ids outside the topic's main session slot. */
     onSessionId?: (sessionId: string) => void;
+    /** Clear an externally-owned session after expiry reconstruction fails. */
+    onSessionReset?: () => void;
+    /** Build a missing provider session from the shared conversation namespace. */
+    bridgeSessionFromHistory?: boolean;
     /** Observe the final non-retry outcome of this turn. */
     onSettled?: (result: AiTurnSettlement) => void;
     askReplySources?: DeferredInject["askReplySources"];
@@ -1558,6 +1612,8 @@ export function triggerTopicAiTurn(
     sessionName: opts?.sessionName,
     sessionType: opts?.sessionType,
     onSessionId: opts?.onSessionId,
+    onSessionReset: opts?.onSessionReset,
+    bridgeSessionFromHistory: opts?.bridgeSessionFromHistory,
     onSettled: opts?.onSettled,
     askReplySources: opts?.askReplySources,
     from: opts?.from,

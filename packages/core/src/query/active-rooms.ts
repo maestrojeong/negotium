@@ -52,6 +52,10 @@ export interface DeferredInject {
   sessionType?: "dm" | "forum" | "ephemeral" | "manager" | "cron";
   /** Optional session owner; when present the topic's main session is not replaced. */
   onSessionId?: (sessionId: string) => void;
+  /** Clear an externally-owned session after an unrecoverable expiry. */
+  onSessionReset?: () => void;
+  /** Rebuild a provider-native rollout from the shared conversation log when needed. */
+  bridgeSessionFromHistory?: boolean;
   /** Final result hook for optional modules that own an internal turn. */
   onSettled?: (result: {
     queryId: string;
@@ -250,6 +254,8 @@ export class InterSessionQueue {
       (e.sessionName ?? null) === (base.sessionName ?? null) &&
       (e.sessionType ?? null) === (base.sessionType ?? null) &&
       (e.onSessionId ?? null) === (base.onSessionId ?? null) &&
+      (e.onSessionReset ?? null) === (base.onSessionReset ?? null) &&
+      (e.bridgeSessionFromHistory ?? false) === (base.bridgeSessionFromHistory ?? false) &&
       (e.onSettled ?? null) === (base.onSettled ?? null);
     let take = 1;
     while (take < q.length && mergeable(q[take])) take++;
@@ -304,6 +310,17 @@ export class InterSessionQueue {
   size(topicId: string): number {
     return this.queue.get(topicId)?.length ?? 0;
   }
+
+  /** Remove one queued inject by request id. Used by bounded background queues. */
+  remove(topicId: string, requestId: string): DeferredInject | undefined {
+    const q = this.queue.get(topicId);
+    if (!q?.length) return undefined;
+    const index = q.findIndex((entry) => entry.requestId === requestId);
+    if (index < 0) return undefined;
+    const [removed] = q.splice(index, 1);
+    if (q.length === 0) this.queue.delete(topicId);
+    return removed;
+  }
 }
 
 export const interSessionQueue = new InterSessionQueue();
@@ -324,6 +341,11 @@ export function deferInject(inject: DeferredInject): boolean {
  */
 export function takeDeferredInject(topicId: string): DeferredInject | undefined {
   return interSessionQueue.dequeueAll(topicId);
+}
+
+/** Cancel one deferred inject before it claims the room. */
+export function cancelDeferredInject(topicId: string, requestId: string): boolean {
+  return interSessionQueue.remove(topicId, requestId) !== undefined;
 }
 
 // ── WS discriminator ───────────────────────────────────────────────────

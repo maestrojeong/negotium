@@ -25,6 +25,8 @@ export {
   resolveModelForAgent,
 } from "#agents/model-catalog";
 export { getRegistry } from "#agents/registry";
+export type { PurgeSessionRef, PurgeTopicLogsOptions } from "#agents/topic-cleanup";
+export { purgeTopicLogs } from "#agents/topic-cleanup";
 export type { RuntimeBus, RuntimeBusEvent, RuntimeBusListener } from "#bus";
 // ── Host boundary ───────────────────────────────────────────────────
 export { runtimeBus, setRuntimeBus, WsHub } from "#bus";
@@ -93,7 +95,13 @@ export {
 } from "#platform/node-plugins";
 export { killAllPlaywright } from "#platform/playwright/manager";
 // ── Query control ───────────────────────────────────────────────────
-export { abortAllRooms, abortRoom, getRoomQuery, interSessionQueue } from "#query/active-rooms";
+export {
+  abortAllRooms,
+  abortRoom,
+  cancelDeferredInject,
+  getRoomQuery,
+  interSessionQueue,
+} from "#query/active-rooms";
 export { sessionInboxPath } from "#query/session-inbox-path";
 export { AbortReason } from "#query/types";
 export type { AskPending } from "#runtime/ask-callbacks";
