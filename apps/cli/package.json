@@ -1,0 +1,32 @@
+{
+  "name": "negotium-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "negotium CLI \u2014 init a node, manage its MCPs, and chat with the multi-agent runtime from the terminal",
+  "license": "Apache-2.0",
+  "bin": {
+    "negotium": "./src/main.ts"
+  },
+  "scripts": {
+    "build": "bunx tsc --noEmit",
+    "lint": "biome check",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@negotium/core": "workspace:*",
+    "@negotium/mcp": "workspace:*",
+    "@negotium/mcp-host": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "bun-types": "^1.3.11",
+    "typescript": "^5"
+  },
+  "imports": {
+    "#*": "./src/*.ts"
+  },
+  "exports": {
+    ".": "./src/main.ts",
+    "./node": "./src/node.ts"
+  }
+}
