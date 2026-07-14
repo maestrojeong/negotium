@@ -5,12 +5,16 @@ import { CronScheduler } from "../src/scheduler";
 import {
   claimCronRuns,
   createCronJob,
+  finalizeOrphanedCronRuns,
   finishCronRun,
   getCronJob,
+  getCronTopicSession,
   listCronRuns,
+  listCronTopicSessions,
   markCronRunStarted,
+  recoverPendingCronRuns,
   requestCronRun,
-  setCronJobSessionId,
+  setCronTopicSession,
 } from "../src/store";
 
 const topicIds: string[] = [];
@@ -52,8 +56,19 @@ function createJob(topic: TopicDto, now = new Date("2026-07-14T12:00:00Z")) {
 afterEach(() => {
   for (const id of jobIds.splice(0))
     db.query("DELETE FROM negotium_cron_jobs WHERE id = ?").run(id);
-  for (const id of topicIds.splice(0)) db.query("DELETE FROM api_topics WHERE id = ?").run(id);
+  for (const id of topicIds.splice(0)) {
+    db.query("DELETE FROM negotium_cron_topic_sessions WHERE topic_id = ?").run(id);
+    db.query("DELETE FROM api_topics WHERE id = ?").run(id);
+  }
 });
+
+async function waitFor(check: () => boolean): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error("condition was not met");
+    await Bun.sleep(5);
+  }
+}
 
 describe("cron store", () => {
   test("uses the due-time index for idle scheduler polling", () => {
@@ -85,9 +100,14 @@ describe("cron store", () => {
       { status: "succeeded", outputPreview: "done" },
       new Date("2026-07-14T12:02:04Z"),
     );
-    setCronJobSessionId(job.id, "provider-session-1");
+    setCronTopicSession(
+      topic.id,
+      topic.agent!,
+      topic.participants[0]!.userId,
+      "provider-session-1",
+    );
 
-    expect(getCronJob(job.id)?.sessionId).toBe("provider-session-1");
+    expect(getCronTopicSession(topic.id, topic.agent!)?.sessionId).toBe("provider-session-1");
     expect(listCronRuns(job.id, 1)[0]).toMatchObject({
       status: "succeeded",
       queryId: "query-1",
@@ -115,17 +135,39 @@ describe("cron store", () => {
     expect(getCronJob(job.id)?.nextRunAt).toBe("2026-07-14T12:02:00.000Z");
     finishCronRun(claimed[0]!.run.id, { status: "succeeded" });
   });
+
+  test("recovers pre-dispatch runs but finalizes runs with an unknown dispatched outcome", () => {
+    const topic = createTopic();
+    const pendingJob = createJob(topic);
+    const runningJob = createJob(topic);
+    requestCronRun(pendingJob.id, new Date("2026-07-14T12:01:00Z"));
+    requestCronRun(runningJob.id, new Date("2026-07-14T12:01:01Z"));
+    const claimed = claimCronRuns(new Date("2026-07-14T12:02:00Z"));
+    const running = claimed.find((entry) => entry.job.id === runningJob.id)!;
+    markCronRunStarted(running.run.id, "unknown-query", new Date("2026-07-14T12:02:01Z"));
+
+    expect(finalizeOrphanedCronRuns(new Date("2026-07-14T12:03:00Z"))).toBe(1);
+    expect(recoverPendingCronRuns().map((entry) => entry.job.id)).toEqual([pendingJob.id]);
+    expect(listCronRuns(runningJob.id, 1)[0]).toMatchObject({
+      status: "failed",
+      error: "node restarted after dispatch; final outcome is unknown",
+    });
+    finishCronRun(claimed.find((entry) => entry.job.id === pendingJob.id)!.run.id, {
+      status: "succeeded",
+    });
+  });
 });
 
 describe("cron scheduler", () => {
-  test("dispatches through hooks and preserves an isolated provider session", async () => {
+  test("dispatches through hooks and preserves a topic-owned provider session", async () => {
     const topic = createTopic();
     const job = createJob(topic);
     requestCronRun(job.id, new Date("2026-07-14T12:01:00Z"));
     const scheduler = new CronScheduler({
       now: () => new Date("2026-07-14T12:02:00Z"),
-      dispatch(receivedJob, _run, hooks) {
+      dispatch(receivedJob, _run, hooks, context) {
         expect(receivedJob.id).toBe(job.id);
+        expect(context.sessionName).toBe(`cron-${topic.id}`);
         hooks.onDispatched("cron-query-1");
         hooks.onSessionId("cron-session-1");
         hooks.onSettled({ queryId: "cron-query-1", kind: "completed" });
@@ -134,13 +176,78 @@ describe("cron scheduler", () => {
     });
 
     await scheduler.tick();
+    await waitFor(() => listCronRuns(job.id, 1)[0]?.status === "succeeded");
 
-    expect(getCronJob(job.id)?.sessionId).toBe("cron-session-1");
+    expect(getCronTopicSession(topic.id, "claude")?.sessionId).toBe("cron-session-1");
     expect(listCronRuns(job.id, 1)[0]).toMatchObject({
       source: "manual",
       status: "succeeded",
       queryId: "cron-query-1",
     });
+  });
+
+  test("serializes jobs by topic and gives the next job the previous job context", async () => {
+    const topic = createTopic();
+    const first = createJob(topic);
+    const second = createJob(topic);
+    requestCronRun(first.id, new Date("2026-07-14T12:01:00Z"));
+    requestCronRun(second.id, new Date("2026-07-14T12:01:01Z"));
+    const seen: Array<{ jobId: string; sessionId?: string; sessionName: string }> = [];
+    const scheduler = new CronScheduler({
+      now: () => new Date("2026-07-14T12:02:00Z"),
+      dispatch(job, _run, hooks, context) {
+        seen.push({
+          jobId: job.id,
+          sessionId: context.sessionId,
+          sessionName: context.sessionName,
+        });
+        const n = seen.length;
+        hooks.onDispatched(`cron-query-${n}`);
+        hooks.onSessionId(`cron-session-${n}`);
+        hooks.onSettled({ queryId: `cron-query-${n}`, kind: "completed" });
+        return `cron-query-${n}`;
+      },
+    });
+
+    await scheduler.tick();
+    await waitFor(() => seen.length === 2);
+
+    expect(seen).toEqual([
+      { jobId: first.id, sessionId: undefined, sessionName: `cron-${topic.id}` },
+      { jobId: second.id, sessionId: "cron-session-1", sessionName: `cron-${topic.id}` },
+    ]);
+    expect(listCronTopicSessions(topic.id)).toHaveLength(1);
+    expect(getCronTopicSession(topic.id, "claude")?.sessionId).toBe("cron-session-2");
+  });
+
+  test("cancels a deferred request and rejects late session writes on shutdown", async () => {
+    const topic = createTopic();
+    const job = createJob(topic);
+    requestCronRun(job.id);
+    let cancelled = false;
+    let lateSession: ((sessionId: string) => void) | undefined;
+    const scheduler = new CronScheduler({
+      dispatch(_job, _run, hooks) {
+        lateSession = hooks.onSessionId;
+        return {
+          status: "deferred",
+          requestId: "cron-deferred",
+          cancel: () => {
+            cancelled = true;
+            return true;
+          },
+        };
+      },
+    });
+
+    await scheduler.tick();
+    await waitFor(() => lateSession !== undefined);
+    scheduler.stop();
+    lateSession?.("too-late");
+
+    expect(cancelled).toBe(true);
+    expect(getCronTopicSession(topic.id, "claude")).toBeNull();
+    expect(listCronRuns(job.id, 1)[0]).toMatchObject({ status: "aborted" });
   });
 
   test("disables a job whose owner lost topic membership", async () => {
@@ -165,6 +272,7 @@ describe("cron scheduler", () => {
     });
 
     await scheduler.tick();
+    await waitFor(() => listCronRuns(job.id, 1)[0]?.status === "failed");
 
     expect(dispatched).toBe(false);
     expect(getCronJob(job.id)?.enabled).toBe(false);

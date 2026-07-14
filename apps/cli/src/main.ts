@@ -55,7 +55,7 @@ switch (command) {
   }
   case "cron": {
     const { cronCommand } = await import("./commands/cron");
-    cronCommand(args);
+    await cronCommand(args);
     break;
   }
   default: {

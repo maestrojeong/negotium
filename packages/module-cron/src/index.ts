@@ -1,3 +1,4 @@
+export { resetCronTopicContext } from "#context";
 export { createCronModule } from "#module";
 export {
   computeNextCronRun,
@@ -6,22 +7,49 @@ export {
   parseCronExpression,
   validateCronExpression,
 } from "#schedule";
-export type { CronDispatch, CronSchedulerOptions } from "#scheduler";
+export type {
+  CronDispatch,
+  CronDispatchResult,
+  CronExecutionContext,
+  CronSchedulerOptions,
+} from "#scheduler";
 export { CronScheduler } from "#scheduler";
-export type { CronJobRecord, CronRunRecord, CronRunStatus } from "#store";
+export {
+  CRON_JOBS_DIR,
+  cronScriptExists,
+  listCronScripts,
+  resolveCronScriptPath,
+  runCronPromptScript,
+  validateCronScriptName,
+} from "#scripts";
+export type {
+  CronJobRecord,
+  CronRunRecord,
+  CronRunStatus,
+  CronTopicSessionRecord,
+} from "#store";
 export {
   claimCronRuns,
+  clearCronTopicSession,
   createCronJob,
+  cronTopicSessionName,
   deleteCronJob,
   ensureCronSchema,
   finalizeOrphanedCronRuns,
   finishCronRun,
   getCronJob,
   getCronJobByOwnerAndName,
+  getCronTopicSession,
   listCronJobs,
+  listCronJobsForTopic,
   listCronRuns,
+  listCronTopicSessions,
+  listOrphanedCronTopicSessions,
   markCronRunStarted,
+  recoverPendingCronRuns,
   requestCronRun,
+  resetCronTopicSessions,
   setCronJobEnabled,
   setCronJobSessionId,
+  setCronTopicSession,
 } from "#store";

@@ -10,6 +10,8 @@ import {
   isAgentKind,
 } from "@negotium/core";
 import { z } from "zod";
+import { resetCronTopicContext } from "#context";
+import { cronScriptExists, listCronScripts } from "#scripts";
 import {
   createCronJob,
   deleteCronJob,
@@ -17,9 +19,9 @@ import {
   getCronJobByOwnerAndName,
   listCronJobs,
   listCronRuns,
+  listCronTopicSessions,
   requestCronRun,
   setCronJobEnabled,
-  setCronJobSessionId,
 } from "#store";
 
 const args = process.argv.slice(2);
@@ -74,7 +76,15 @@ function resolveOwnedJob(input: { job_id?: string; name?: string }) {
 
 function jobDto(job: NonNullable<ReturnType<typeof getCronJob>>) {
   const runs = listCronRuns(job.id, 1);
-  return { ...job, lastRun: runs[0] ?? null };
+  return {
+    ...job,
+    context: {
+      scope: "topic",
+      sessionName: `cron-${job.topicId}`,
+      providers: listCronTopicSessions(job.topicId).map((session) => session.agent),
+    },
+    lastRun: runs[0] ?? null,
+  };
 }
 
 const jobRef = {
@@ -86,10 +96,14 @@ const server = new McpServer({ name: "negotium-cron", version: "0.1.0" });
 
 server.tool(
   "cron_create",
-  "Create a persistent prompt-based scheduled task for a topic.",
+  "Create a persistent prompt- or Python-script-based scheduled task for a topic. All jobs in the topic share one Cron conversation.",
   {
     name: z.string().describe("Unique name using letters, numbers, dash, or underscore"),
-    prompt: z.string().describe("Task instructions, up to 20,000 characters"),
+    prompt: z.string().optional().describe("Inline task instructions, up to 20,000 characters"),
+    script: z
+      .string()
+      .optional()
+      .describe("Plain .py filename from the node Cron jobs directory; stdout becomes the prompt"),
     schedule: z.string().describe("Five-field cron expression, e.g. '0 9 * * 1-5'"),
     timezone: z.string().optional().describe("IANA timezone, e.g. America/Los_Angeles"),
     topic_id: z.string().optional(),
@@ -98,16 +112,24 @@ server.tool(
     model: z.string().optional(),
     effort: z.string().optional().describe("low, medium, high, xhigh, or max"),
   },
-  async ({ name, prompt, schedule, timezone, topic_id, topic, agent, model, effort }) => {
+  async ({ name, prompt, script, schedule, timezone, topic_id, topic, agent, model, effort }) => {
     try {
       if (!userId) throw new Error("missing user context");
       const cleanName = name.trim();
       if (!/^[A-Za-z0-9_-]+$/.test(cleanName)) {
         throw new Error("name must use only letters, numbers, dashes, and underscores");
       }
-      const cleanPrompt = prompt.trim();
-      if (!cleanPrompt) throw new Error("prompt is required");
-      if (cleanPrompt.length > 20_000) throw new Error("prompt must be 20,000 characters or fewer");
+      const cleanPrompt = prompt?.trim() || undefined;
+      const cleanScript = script?.trim() || undefined;
+      if (Boolean(cleanPrompt) === Boolean(cleanScript)) {
+        throw new Error("provide exactly one of prompt or script");
+      }
+      if (cleanPrompt && cleanPrompt.length > 20_000) {
+        throw new Error("prompt must be 20,000 characters or fewer");
+      }
+      if (cleanScript && !cronScriptExists(cleanScript)) {
+        throw new Error(`cron script not found: ${cleanScript}`);
+      }
       if (getCronJobByOwnerAndName(userId, cleanName))
         throw new Error(`cron job already exists: ${cleanName}`);
       const target = resolveTopic({ topic_id, topic });
@@ -136,6 +158,7 @@ server.tool(
             ownerUserId: userId,
             topicId: target.id,
             prompt: cleanPrompt,
+            script: cleanScript,
             schedule: schedule.trim(),
             timezone,
             agent: isAgentKind(resolvedAgent) ? resolvedAgent : undefined,
@@ -148,6 +171,13 @@ server.tool(
       return fail(error);
     }
   },
+);
+
+server.tool(
+  "cron_list_scripts",
+  "List available Python prompt scripts on this node.",
+  {},
+  async () => ok({ scripts: listCronScripts() }),
 );
 
 server.tool("cron_list", "List scheduled tasks owned by the current user.", {}, async () => {
@@ -204,13 +234,13 @@ server.tool(
 
 server.tool(
   "cron_reset",
-  "Reset the saved agent session for a scheduled task.",
+  "Reset the shared Cron conversation for the task's entire topic.",
   jobRef,
   async (input) => {
     try {
       const job = resolveOwnedJob(input);
-      setCronJobSessionId(job.id, null);
-      return ok({ reset: true, jobId: job.id });
+      const sessions = await resetCronTopicContext(job.topicId);
+      return ok({ reset: true, topicId: job.topicId, clearedProviderSessions: sessions });
     } catch (error) {
       return fail(error);
     }
@@ -246,6 +276,7 @@ server.tool("cron_status", "Show a compact scheduled-task status summary.", {}, 
       enabled: job.enabled,
       nextRunAt: job.nextRunAt,
       lastRun: listCronRuns(job.id, 1)[0] ?? null,
+      contextProviders: listCronTopicSessions(job.topicId).map((session) => session.agent),
     })),
   });
 });

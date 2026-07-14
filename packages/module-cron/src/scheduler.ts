@@ -1,4 +1,5 @@
 import {
+  type AgentKind,
   type AiTurnSettlement,
   abortRoom,
   getRoomQuery,
@@ -12,74 +13,115 @@ import {
   type CronJobRecord,
   type CronRunRecord,
   claimCronRuns,
+  clearCronTopicSession,
+  cronTopicSessionName,
   finalizeOrphanedCronRuns,
   finishCronRun,
+  getCronJob,
+  getCronTopicSession,
   markCronRunStarted,
+  recoverPendingCronRuns,
   setCronJobEnabled,
-  setCronJobSessionId,
+  setCronTopicSession,
 } from "#store";
 
 export interface CronDispatchHooks {
   onDispatched(queryId: string): void;
   onSessionId(sessionId: string): void;
+  onSessionReset(): void;
   onSettled(result: AiTurnSettlement): void;
 }
+
+export interface CronExecutionContext {
+  agent: AgentKind;
+  sessionId?: string;
+  sessionName: string;
+  signal: AbortSignal;
+}
+
+export type CronDispatchResult =
+  | string
+  | null
+  | { status: "skipped"; reason: string }
+  | {
+      status: "deferred" | "dispatched";
+      requestId: string;
+      queryId?: string;
+      cancel(): boolean;
+    };
 
 export type CronDispatch = (
   job: CronJobRecord,
   run: CronRunRecord,
   hooks: CronDispatchHooks,
-) => string | null;
+  context: CronExecutionContext,
+) => CronDispatchResult | Promise<CronDispatchResult>;
 
 export interface CronSchedulerOptions {
   dispatch: CronDispatch;
   bus?: RuntimeBus;
   pollIntervalMs?: number;
   runTimeoutMs?: number;
+  queueTimeoutMs?: number;
   now?: () => Date;
 }
 
 interface ActiveRun {
-  jobId: string;
-  topicId: string;
-  runId: string;
+  job: CronJobRecord;
+  run: CronRunRecord;
+  agent: AgentKind;
   queryId?: string;
   outputPreview?: string;
   timeout?: ReturnType<typeof setTimeout>;
+  deferredTimeout?: ReturnType<typeof setTimeout>;
+  cancelDeferred?: () => boolean;
+  abortController: AbortController;
+}
+
+interface QueuedRun {
+  job: CronJobRecord;
+  run: CronRunRecord;
+  queuedAt: number;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_RUN_TIMEOUT_MS = 10 * 60_000;
+const DEFAULT_QUEUE_TIMEOUT_MS = 5 * 60_000;
 
 /**
- * One lightweight scheduler per long-lived node process.
+ * One durable scheduler per node process.
  *
- * The DB stores the next due instant, so idle work is one indexed query per
- * tick rather than re-parsing every schedule. Turns still enter core through
- * its normal inject queue and therefore never preempt a human turn.
+ * SQLite owns due/manual requests. The in-memory layer only serializes work
+ * per topic: every job attached to a topic observes the provider session and
+ * provider-agnostic conversation log written by the previous topic Cron run.
  */
 export class CronScheduler {
   readonly #dispatch: CronDispatch;
   readonly #bus: RuntimeBus;
   readonly #pollIntervalMs: number;
   readonly #runTimeoutMs: number;
+  readonly #queueTimeoutMs: number;
   readonly #now: () => Date;
-  readonly #activeByJob = new Map<string, ActiveRun>();
+  readonly #activeByTopic = new Map<string, ActiveRun>();
   readonly #activeByQuery = new Map<string, ActiveRun>();
+  readonly #queuedByTopic = new Map<string, QueuedRun[]>();
   #timer?: ReturnType<typeof setInterval>;
   #unsubscribe?: () => void;
   #ticking = false;
+  #stopped = false;
 
   constructor(options: CronSchedulerOptions) {
     this.#dispatch = options.dispatch;
     this.#bus = options.bus ?? runtimeBus();
     this.#pollIntervalMs = Math.max(250, options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS);
     this.#runTimeoutMs = Math.max(1_000, options.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
+    this.#queueTimeoutMs = Math.max(1_000, options.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS);
     this.#now = options.now ?? (() => new Date());
   }
 
   start(): () => void {
     if (this.#timer) return () => this.stop();
+    this.#stopped = false;
     const orphaned = finalizeOrphanedCronRuns(this.#now());
     if (orphaned > 0) logger.warn({ orphaned }, "cron: finalized interrupted runs on startup");
     this.#unsubscribe = this.#bus.subscribe((event) => {
@@ -91,6 +133,11 @@ export class CronScheduler {
     });
     this.#timer = setInterval(() => void this.tick(), this.#pollIntervalMs);
     this.#timer.unref?.();
+    const recovered = recoverPendingCronRuns();
+    for (const pending of recovered) this.#enqueueOrStart(pending.job, pending.run);
+    if (recovered.length > 0) {
+      logger.info({ recovered: recovered.length }, "cron: recovered pending pre-dispatch runs");
+    }
     void this.tick();
     return () => this.stop();
   }
@@ -98,21 +145,38 @@ export class CronScheduler {
   stop(): void {
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
+    this.#stopped = true;
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
-    for (const active of this.#activeByJob.values()) {
-      if (active.timeout) clearTimeout(active.timeout);
+
+    for (const active of [...this.#activeByTopic.values()]) {
+      active.abortController.abort();
+      active.cancelDeferred?.();
+      if (active.queryId && getRoomQuery(active.job.topicId)?.queryId === active.queryId) {
+        abortRoom(active.job.topicId);
+      }
+      this.#finish(active, "aborted", "scheduler stopped before run completed");
     }
-    this.#activeByJob.clear();
+    for (const queued of this.#queuedByTopic.values()) {
+      for (const entry of queued) {
+        finishCronRun(entry.run.id, {
+          status: "aborted",
+          error: "scheduler stopped before queued run dispatched",
+        });
+      }
+    }
+    this.#queuedByTopic.clear();
+    this.#activeByTopic.clear();
     this.#activeByQuery.clear();
   }
 
   async tick(): Promise<void> {
-    if (this.#ticking) return;
+    if (this.#ticking || this.#stopped) return;
     this.#ticking = true;
     try {
-      for (const claimed of claimCronRuns(this.#now()))
-        this.#startClaimed(claimed.job, claimed.run);
+      for (const claimed of claimCronRuns(this.#now())) {
+        this.#enqueueOrStart(claimed.job, claimed.run);
+      }
     } catch (error) {
       logger.warn({ err: error }, "cron: scheduler tick failed");
     } finally {
@@ -120,14 +184,7 @@ export class CronScheduler {
     }
   }
 
-  #startClaimed(job: CronJobRecord, run: CronRunRecord): void {
-    if (this.#activeByJob.has(job.id)) {
-      finishCronRun(run.id, {
-        status: "skipped",
-        error: "previous run is still active",
-      });
-      return;
-    }
+  #enqueueOrStart(job: CronJobRecord, run: CronRunRecord): void {
     const topic = getTopic(job.topicId);
     if (!topic?.agent) {
       setCronJobEnabled(job.id, false, this.#now());
@@ -146,55 +203,158 @@ export class CronScheduler {
       return;
     }
 
-    const active: ActiveRun = { jobId: job.id, topicId: job.topicId, runId: run.id };
-    this.#activeByJob.set(job.id, active);
+    if (this.#activeByTopic.has(job.topicId)) {
+      const queue = this.#queuedByTopic.get(job.topicId) ?? [];
+      queue.push({ job, run, queuedAt: this.#now().getTime() });
+      this.#queuedByTopic.set(job.topicId, queue);
+      return;
+    }
+    this.#start(job, run, job.agent ?? topic.agent);
+  }
+
+  #start(job: CronJobRecord, run: CronRunRecord, agent: AgentKind): void {
+    const storedSession = getCronTopicSession(job.topicId, agent);
+    if (storedSession && storedSession.ownerUserId !== job.ownerUserId) {
+      setCronJobEnabled(job.id, false, this.#now());
+      finishCronRun(run.id, {
+        status: "failed",
+        error: "topic Cron context belongs to another owner; job disabled",
+      });
+      this.#drainTopic(job.topicId);
+      return;
+    }
+    const active: ActiveRun = { job, run, agent, abortController: new AbortController() };
+    this.#activeByTopic.set(job.topicId, active);
     const hooks: CronDispatchHooks = {
       onDispatched: (queryId) => this.#markDispatched(active, queryId),
-      onSessionId: (sessionId) => setCronJobSessionId(job.id, sessionId),
+      onSessionId: (sessionId) => {
+        if (this.#isActive(active)) {
+          setCronTopicSession(job.topicId, agent, job.ownerUserId, sessionId, this.#now());
+        }
+      },
+      onSessionReset: () => {
+        if (this.#isActive(active)) clearCronTopicSession(job.topicId, agent);
+      },
       onSettled: (result) => this.#settle(active, result),
     };
-    try {
-      const queryId = this.#dispatch(job, run, hooks);
-      if (queryId && active.queryId !== queryId) this.#markDispatched(active, queryId);
-      // null means the core inject queue accepted the run behind a busy human
-      // turn. onDispatched will fire when it actually claims the room.
-    } catch (error) {
-      this.#finish(active, "failed", error instanceof Error ? error.message : String(error));
+    const context: CronExecutionContext = {
+      agent,
+      sessionId: storedSession?.sessionId,
+      sessionName: cronTopicSessionName(job.topicId),
+      signal: active.abortController.signal,
+    };
+
+    Promise.resolve()
+      .then(() => this.#dispatch(job, run, hooks, context))
+      .then((result) => this.#handleDispatchResult(active, result))
+      .catch((error) => {
+        this.#finish(active, "failed", error instanceof Error ? error.message : String(error));
+      });
+  }
+
+  #handleDispatchResult(active: ActiveRun, result: CronDispatchResult): void {
+    if (!this.#isActive(active)) return;
+    if (typeof result === "string") {
+      if (active.queryId !== result) this.#markDispatched(active, result);
+      return;
     }
+    if (result === null) {
+      this.#finish(active, "failed", "dispatch returned no query and no deferred handle");
+      return;
+    }
+    if (result.status === "skipped") {
+      this.#finish(active, "skipped", result.reason);
+      return;
+    }
+
+    active.cancelDeferred = result.cancel;
+    if (result.status === "dispatched") {
+      if (result.queryId && active.queryId !== result.queryId) {
+        this.#markDispatched(active, result.queryId);
+      }
+      return;
+    }
+    active.deferredTimeout = setTimeout(() => {
+      if (!this.#isActive(active) || active.queryId) return;
+      const cancelled = active.cancelDeferred?.() ?? false;
+      this.#finish(
+        active,
+        cancelled ? "skipped" : "failed",
+        cancelled
+          ? `topic remained busy for more than ${this.#queueTimeoutMs}ms`
+          : "deferred run disappeared before dispatch",
+      );
+    }, this.#queueTimeoutMs);
+    active.deferredTimeout.unref?.();
   }
 
   #markDispatched(active: ActiveRun, queryId: string): void {
-    if (!this.#activeByJob.has(active.jobId)) return;
+    if (!this.#isActive(active)) return;
     if (active.queryId) this.#activeByQuery.delete(active.queryId);
     if (active.timeout) clearTimeout(active.timeout);
+    if (active.deferredTimeout) clearTimeout(active.deferredTimeout);
+    active.deferredTimeout = undefined;
     active.queryId = queryId;
     this.#activeByQuery.set(queryId, active);
-    markCronRunStarted(active.runId, queryId, this.#now());
+    markCronRunStarted(active.run.id, queryId, this.#now());
     active.timeout = setTimeout(() => {
-      const room = getRoomQuery(active.topicId);
-      if (room?.queryId === active.queryId) abortRoom(active.topicId);
+      const room = getRoomQuery(active.job.topicId);
+      if (room?.queryId === active.queryId) abortRoom(active.job.topicId);
+      else active.cancelDeferred?.();
       this.#finish(active, "failed", `run exceeded ${this.#runTimeoutMs}ms`);
     }, this.#runTimeoutMs);
     active.timeout.unref?.();
   }
 
   #settle(active: ActiveRun, result: AiTurnSettlement): void {
-    if (!this.#activeByJob.has(active.jobId)) return;
+    if (!this.#isActive(active)) return;
     if (result.queryId && active.queryId && result.queryId !== active.queryId) return;
     if (result.kind === "completed") this.#finish(active, "succeeded");
     else if (result.kind === "aborted") this.#finish(active, "aborted", result.error);
     else this.#finish(active, "failed", result.error ?? "agent turn failed");
   }
 
-  #finish(active: ActiveRun, status: "succeeded" | "failed" | "aborted", error?: string): void {
-    if (!this.#activeByJob.has(active.jobId)) return;
+  #finish(
+    active: ActiveRun,
+    status: "succeeded" | "failed" | "aborted" | "skipped",
+    error?: string,
+  ): void {
+    if (!this.#isActive(active)) return;
+    active.abortController.abort();
     if (active.timeout) clearTimeout(active.timeout);
+    if (active.deferredTimeout) clearTimeout(active.deferredTimeout);
     if (active.queryId) this.#activeByQuery.delete(active.queryId);
-    this.#activeByJob.delete(active.jobId);
+    this.#activeByTopic.delete(active.job.topicId);
     finishCronRun(
-      active.runId,
+      active.run.id,
       { status, outputPreview: active.outputPreview, error },
       this.#now(),
     );
+    if (!this.#stopped) queueMicrotask(() => this.#drainTopic(active.job.topicId));
+  }
+
+  #drainTopic(topicId: string): void {
+    if (this.#stopped || this.#activeByTopic.has(topicId)) return;
+    const queue = this.#queuedByTopic.get(topicId);
+    while (queue?.length) {
+      const next = queue.shift()!;
+      if (this.#now().getTime() - next.queuedAt > this.#queueTimeoutMs) {
+        finishCronRun(next.run.id, {
+          status: "skipped",
+          error: `topic Cron queue wait exceeded ${this.#queueTimeoutMs}ms`,
+        });
+        continue;
+      }
+      const currentJob = getCronJob(next.job.id);
+      if (!currentJob) continue;
+      if (queue.length === 0) this.#queuedByTopic.delete(topicId);
+      this.#enqueueOrStart(currentJob, next.run);
+      return;
+    }
+    this.#queuedByTopic.delete(topicId);
+  }
+
+  #isActive(active: ActiveRun): boolean {
+    return this.#activeByTopic.get(active.job.topicId) === active;
   }
 }

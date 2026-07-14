@@ -8,15 +8,17 @@ import {
   isAgentKind,
 } from "@negotium/core";
 import {
+  CRON_JOBS_DIR,
   createCronJob,
+  cronScriptExists,
   deleteCronJob,
   getCronJob,
   getCronJobByOwnerAndName,
   listCronJobs,
   listCronRuns,
   requestCronRun,
+  resetCronTopicContext,
   setCronJobEnabled,
-  setCronJobSessionId,
 } from "@negotium/module-cron";
 
 const USER_ID = "local";
@@ -48,15 +50,17 @@ function usage(): void {
       "negotium cron commands:",
       "  list",
       "  create <topic> <name> '<schedule>' <prompt...> [--timezone=IANA] [--agent=...] [--model=...] [--effort=...]",
+      "  create <topic> <name> '<schedule>' --script=job.py [--timezone=IANA] [--agent=...]",
       "  inspect <name|id>",
       "  run|pause|resume|reset|delete <name|id>",
       "",
       "The node must stay alive (`negotium serve`, chat, or an adapter) for schedules to run.",
+      `Python prompt scripts live in ${CRON_JOBS_DIR}.`,
     ].join("\n"),
   );
 }
 
-export function cronCommand(args: string[]): void {
+export async function cronCommand(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
   try {
     switch (sub) {
@@ -77,11 +81,17 @@ export function cronCommand(args: string[]): void {
       case "create": {
         const values = positional(rest);
         const [topicName, name, schedule, ...promptParts] = values;
-        if (!topicName || !name || !schedule || promptParts.length === 0) {
+        const script = flag(rest, "script")?.trim() || undefined;
+        if (!topicName || !name || !schedule || (promptParts.length === 0 && !script)) {
           usage();
           process.exitCode = 1;
           return;
         }
+        if (script && promptParts.length > 0) {
+          throw new Error("provide a prompt or --script, not both");
+        }
+        if (script && !cronScriptExists(script))
+          throw new Error(`cron script not found: ${script}`);
         const topic = getTopicByNameForUser(topicName, USER_ID);
         if (!topic?.agent) throw new Error(`topic not found or has no agent: ${topicName}`);
         const agentRaw = flag(rest, "agent");
@@ -105,7 +115,8 @@ export function cronCommand(args: string[]): void {
           name,
           ownerUserId: USER_ID,
           topicId: topic.id,
-          prompt: promptParts.join(" "),
+          prompt: promptParts.length > 0 ? promptParts.join(" ") : undefined,
+          script,
           schedule,
           timezone: flag(rest, "timezone"),
           agent,
@@ -136,8 +147,8 @@ export function cronCommand(args: string[]): void {
         if (sub === "pause") printJob(setCronJobEnabled(job.id, false)!);
         if (sub === "resume") printJob(setCronJobEnabled(job.id, true)!);
         if (sub === "reset") {
-          setCronJobSessionId(job.id, null);
-          console.log(`reset ${job.name}`);
+          await resetCronTopicContext(job.topicId);
+          console.log(`reset shared Cron context for topic ${job.topicId}`);
         }
         if (sub === "delete") {
           deleteCronJob(job.id);
