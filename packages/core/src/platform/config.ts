@@ -221,6 +221,7 @@ export const hostname = process.env.HOSTNAME || "127.0.0.1";
 
 // Persistent state (survives restarts, long-lived)
 export const DATA_DIR = resolveLocalStateDir("NEGOTIUM_DATA_DIR", "data");
+export const LOG_DIR = resolveLocalStateDir("NEGOTIUM_LOG_DIR", "logs");
 // SESSIONS_DB_PATH env override lets tests point the DB singleton at a temp file.
 export const SESSIONS_DB = process.env.SESSIONS_DB_PATH
   ? resolve(process.env.SESSIONS_DB_PATH)
@@ -240,6 +241,7 @@ export const PLAYWRIGHT_MAX_PORT = parsePortEnv(process.env.PLAYWRIGHT_MAX_PORT,
 export const PLAYWRIGHT_PORTS_DIR = resolve(RUN_DIR, "playwright-ports");
 mkdirSync(STATE_DIR, { recursive: true });
 mkdirSync(DATA_DIR, { recursive: true });
+mkdirSync(LOG_DIR, { recursive: true });
 mkdirSync(PROGRESS_DIR, { recursive: true });
 mkdirSync(DM_CMD_DIR, { recursive: true });
 mkdirSync(DM_RESP_DIR, { recursive: true });
@@ -320,7 +322,7 @@ export const FFMPEG_BIN = envText("FFMPEG_BIN");
 export const FFPROBE_BIN = envText("FFPROBE_BIN");
 export const PYTHON_BIN = envText("PYTHON_BIN") ?? "python3";
 export const FASTER_WHISPER_WRAPPER =
-  envText("FASTER_WHISPER_WRAPPER") ?? resolve("scripts/faster-whisper-wrapper.py");
+  envText("FASTER_WHISPER_WRAPPER") ?? resolve(PROJECT_ROOT, "scripts/faster-whisper-wrapper.py");
 export const WHISPER_MODEL = envText("WHISPER_MODEL_FILE") ?? "turbo";
 export const TESSERACT_BIN = envText("TESSERACT_BIN") ?? "tesseract";
 export const PDFTOTEXT_BIN = envText("PDFTOTEXT_BIN") ?? "pdftotext";

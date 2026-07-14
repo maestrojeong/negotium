@@ -9,7 +9,7 @@
  * Scopes: forum, manager (general 방)
  */
 
-import "@/mcp/stdio-protect";
+import "./stdio-protect";
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";

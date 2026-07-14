@@ -8,14 +8,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { PROJECT_ROOT, USERS_LOG_DIR } from "#platform/config";
+import { LOG_DIR, USERS_LOG_DIR } from "#platform/config";
 import { appendJsonlEntry, readJsonlLines } from "#platform/jsonl";
 import { logger } from "#platform/logger";
 import { sanitizeTopicName } from "#security/sanitize";
 import type { TokenUsage } from "#types";
-
-const LOG_DIR = join(PROJECT_ROOT, "logs");
-mkdirSync(LOG_DIR, { recursive: true });
 
 // --- Log rotation config ---
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB per log file

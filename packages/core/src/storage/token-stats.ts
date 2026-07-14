@@ -1,10 +1,9 @@
 import { mkdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { LOG_DIR } from "#platform/config";
 import { appendJsonlEntry, readJsonlLines } from "#platform/jsonl";
 import { logger } from "#platform/logger";
 
-const LOG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../../logs");
 mkdirSync(LOG_DIR, { recursive: true });
 
 export interface QueryRecord {

@@ -15,6 +15,7 @@ delete process.env.GATEWAY_MODEL;
 process.env.SESSIONS_DB_PATH = join(testRoot, "test.db");
 process.env.NEGOTIUM_STATE_DIR = join(testRoot, "state");
 process.env.NEGOTIUM_DATA_DIR = join(testRoot, "data");
+process.env.NEGOTIUM_LOG_DIR = join(testRoot, "logs");
 // Isolate `run/` so tests don't read/write the host's IPC queues.
 process.env.NEGOTIUM_RUN_DIR = join(testRoot, "run");
 

@@ -50,7 +50,7 @@
  * entry-point file:
  *
  *   #!/usr/bin/env node
- *   import "@/mcp/stdio-protect";
+ *   import "./stdio-protect";
  *   // … rest of the imports
  *
  * Being first matters: ES modules evaluate dependencies in DFS post-order,

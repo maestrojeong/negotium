@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import "@/mcp/stdio-protect";
+import "./stdio-protect";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { connectStdio, mcpError, mcpOk, parseUserIdArg } from "#mcp/mcp-helpers";
