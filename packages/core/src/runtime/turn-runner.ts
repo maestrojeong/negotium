@@ -2,9 +2,9 @@
  * Turn runner — executes one AI turn for a topic and streams its events.
  *
  * Port of otium's `api/routes/ai.ts` with the REST route table removed and the
- * WsHub replaced by the channel-agnostic RuntimeBus (`#bus`). Peer/placement
- * execution (placed rooms, peer bridges) was removed: this node runs every
- * turn locally.
+ * WsHub replaced by the channel-agnostic RuntimeBus (`#bus`). Agent execution
+ * remains local, while an optional peerBridge routes canonical room mutations
+ * back through the placement adapter.
  */
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
@@ -94,7 +94,7 @@ import { appendConversationEvent, readConversation } from "#storage/conversation
 import type { PendingAskUserId } from "#storage/session-asks";
 import { getSharedWikiDir } from "#storage/wiki";
 import { getTopics } from "#topics/derive";
-import type { AgentKind, EffortLevel, UnifiedEvent } from "#types";
+import type { AgentKind, EffortLevel, PeerRuntimeBridgeContext, UnifiedEvent } from "#types";
 import type { MessageDto, TopicDto } from "#types/api";
 
 // 분해된 헬퍼 모듈 재노출 — 기존 @/api/routes/ai 소비자(테스트 포함) 경로 유지
@@ -248,6 +248,26 @@ async function streamAgentEvents(
     const providerId = normalizeToolUseId(providerToolUseId);
     return providerId ? handledVisualToolResultIds.has(providerId) : false;
   };
+  const broadcastStoredVisual = (
+    event: Extract<UnifiedEvent, { type: "tool_use" }>,
+    vizId: number,
+    title: string | undefined,
+    kind: "html" | "mermaid",
+  ): void => {
+    const toolUseId = bindToolUseId(event.toolUseId, `visual-${vizId}`);
+    hub.broadcastToolCall(
+      topicId,
+      queryId,
+      event.name,
+      summarizeToolInput(event.name, event.input),
+      formatToolUse(event.name, event.input),
+      toolUseId,
+    );
+    const url = topicVisualUrl(topicId, vizId);
+    hub.broadcastVisual(topicId, queryId, url, vizId, title ?? null, kind);
+    hub.broadcastToolOutput(topicId, queryId, toolUseId, `Displayed: ${url}`);
+    markVisualToolResultHandled(event.toolUseId);
+  };
   let outcome: StreamAgentOutcome = { kind: "completed" };
 
   try {
@@ -279,20 +299,7 @@ async function streamAgentEvents(
             if (!silent) {
               const title = normalizeVisualTitle(input.title);
               const vizId = storeTopicVisual(topicId, input.html, title, userId);
-              const toolUseId = bindToolUseId(event.toolUseId, `visual-${vizId}`);
-              const label = formatToolUse(event.name, event.input);
-              hub.broadcastToolCall(
-                topicId,
-                queryId,
-                event.name,
-                summarizeToolInput(event.name, event.input),
-                label,
-                toolUseId,
-              );
-              const url = topicVisualUrl(topicId, vizId);
-              hub.broadcastVisual(topicId, queryId, url, vizId, title ?? null, "html");
-              hub.broadcastToolOutput(topicId, queryId, toolUseId, `Displayed: ${url}`);
-              markVisualToolResultHandled(event.toolUseId);
+              broadcastStoredVisual(event, vizId, title, "html");
             }
           } else if (isVisualsShowMermaidTool(event.name)) {
             const input = event.input as { code?: unknown; title?: unknown; theme?: unknown };
@@ -309,20 +316,7 @@ async function streamAgentEvents(
               const theme = normalizeMermaidTheme(input.theme);
               const html = buildMermaidHtml(code, theme);
               const vizId = storeTopicMermaidVisual(topicId, code, html, title, userId);
-              const toolUseId = bindToolUseId(event.toolUseId, `visual-${vizId}`);
-              const label = formatToolUse(event.name, event.input);
-              hub.broadcastToolCall(
-                topicId,
-                queryId,
-                event.name,
-                summarizeToolInput(event.name, event.input),
-                label,
-                toolUseId,
-              );
-              const url = topicVisualUrl(topicId, vizId);
-              hub.broadcastVisual(topicId, queryId, url, vizId, title ?? null, "mermaid");
-              hub.broadcastToolOutput(topicId, queryId, toolUseId, `Displayed: ${url}`);
-              markVisualToolResultHandled(event.toolUseId);
+              broadcastStoredVisual(event, vizId, title, "mermaid");
             }
           } else if (isVisualsShowImageTool(event.name) || isVisualsShowVideoTool(event.name)) {
             const input = event.input as {
@@ -718,6 +712,7 @@ function redispatchInject(inject: DeferredInject): void {
     onSessionReset: inject.onSessionReset,
     bridgeSessionFromHistory: inject.bridgeSessionFromHistory,
     onSettled: inject.onSettled,
+    peerBridge: inject.peerBridge,
     askReplySources: inject.askReplySources,
     _sessionRetried: inject._sessionRetried,
     from: inject.from,
@@ -948,29 +943,12 @@ export interface AiTurnSettlement {
   error?: string;
 }
 
-/**
- * Start one AI turn for a topic: resolve agent/model/effort from
- * `config override > topic default`, run the agent, and stream events. Returns
- * the queryId.
- *
- * Caller guarantees the topic has an AI participant (agent set) —
- * people-only rooms are rejected upstream, so self-config / AI never
- * attach there.
- *
- * `allowAutoContinue`: when the AI changes this topic's config mid-turn via
- * runtime MCP, allow the runtime MCP context to enqueue ONE continue
- * turn. Follow-up turns pass false, so config changes cannot recurse.
- */
-export function startAiTurn(params: {
-  topic: AiTurnTopic;
-  userId: string;
-  prompt: string;
+/** Execution controls shared by direct and injected turns. */
+export interface AiTurnExecutionOptions {
   attachments?: string[];
-  allowAutoContinue: boolean;
   /** "user" (default) for a human message; otherwise the inject source topic. */
   origin?: string;
-  /** Fired with the queryId at the moment the turn is actually dispatched
-   *  (immediately, or later if deferred behind a running turn). */
+  /** Fired when the turn is actually dispatched, including after a defer. */
   onDispatched?: (queryId: string) => void;
   /** Inter-session requestId for queue dedup (session-inject only). */
   requestId?: string;
@@ -978,7 +956,6 @@ export function startAiTurn(params: {
   depth?: number;
   silent?: boolean;
   contextId?: string;
-  agentOverride?: AgentKind;
   modelOverride?: string;
   effortOverride?: EffortLevel;
   sessionId?: string | null;
@@ -998,11 +975,43 @@ export function startAiTurn(params: {
   bridgeSessionFromHistory?: boolean;
   /** Observe the final non-retry outcome of this turn. */
   onSettled?: (result: AiTurnSettlement) => void;
+  /** Route user-facing runtime mutations back to a placed room's hub. */
+  peerBridge?: PeerRuntimeBridgeContext;
   askReplySources?: DeferredInject["askReplySources"];
-  _sessionRetried?: boolean;
-  /** FROM_AUTO_CONTINUE: appends a system-reminder that blocks re-evaluation of model/effort. */
+  /** Internal source marker, e.g. FROM_AUTO_CONTINUE for config-change resumes. */
   from?: string;
-}): string | null {
+}
+
+export interface StartAiTurnParams extends AiTurnExecutionOptions {
+  topic: AiTurnTopic;
+  userId: string;
+  prompt: string;
+  allowAutoContinue: boolean;
+  agentOverride?: AgentKind;
+  _sessionRetried?: boolean;
+}
+
+export interface TriggerTopicAiTurnOptions extends AiTurnExecutionOptions {
+  /** Run the injected turn without writing the inject prompt as a visible message. */
+  hideInjectMessage?: boolean;
+  /** Visible injected-message author. Execution still runs as `userId`. */
+  injectAuthorId?: string;
+}
+
+/**
+ * Start one AI turn for a topic: resolve agent/model/effort from
+ * `config override > topic default`, run the agent, and stream events. Returns
+ * the queryId.
+ *
+ * Caller guarantees the topic has an AI participant (agent set) —
+ * people-only rooms are rejected upstream, so self-config / AI never
+ * attach there.
+ *
+ * `allowAutoContinue`: when the AI changes this topic's config mid-turn via
+ * runtime MCP, allow the runtime MCP context to enqueue ONE continue
+ * turn. Follow-up turns pass false, so config changes cannot recurse.
+ */
+export function startAiTurn(params: StartAiTurnParams): string | null {
   const { topic, userId, allowAutoContinue, onDispatched } = params;
   const prompt = params.prompt;
   const attachments = params.attachments;
@@ -1025,6 +1034,7 @@ export function startAiTurn(params: {
   const onSessionReset = params.onSessionReset;
   const bridgeSessionFromHistory = params.bridgeSessionFromHistory === true;
   const onSettled = params.onSettled;
+  const peerBridge = params.peerBridge;
   const askReplySources = params.askReplySources;
   const sessionRetried = params._sessionRetried === true;
 
@@ -1055,6 +1065,7 @@ export function startAiTurn(params: {
       onSessionReset,
       bridgeSessionFromHistory,
       onSettled,
+      peerBridge,
       askReplySources,
       _sessionRetried: sessionRetried,
       onDispatched,
@@ -1137,6 +1148,7 @@ export function startAiTurn(params: {
           onSessionReset,
           bridgeSessionFromHistory,
           onSettled,
+          peerBridge,
           askReplySources,
           _sessionRetried: sessionRetried,
           onDispatched,
@@ -1246,7 +1258,8 @@ export function startAiTurn(params: {
     workspaceCwd,
     agentKind,
     description: topic.description,
-    canSpawnSubagents: topicRecord?.kind === "agent" && !topicRecord.isSubagent,
+    canSpawnSubagents:
+      peerBridge?.canSpawnSubagents ?? (topicRecord?.kind === "agent" && !topicRecord.isSubagent),
   };
   const isManager = topicRecord?.kind === "manager";
   const isMentionOnlyChannel = topic.aiMode === "mention" && !isManager;
@@ -1410,6 +1423,7 @@ export function startAiTurn(params: {
       queryId,
       wikiTopicId: memoryTopic.id,
       autoContinue: allowAutoContinue && !silent,
+      peerBridge,
     });
   }
   const events = runWithPlaywright();
@@ -1493,6 +1507,7 @@ export function startAiTurn(params: {
           onSessionReset,
           bridgeSessionFromHistory,
           onSettled,
+          peerBridge,
           askReplySources,
           _sessionRetried: true,
         });
@@ -1574,50 +1589,7 @@ export function triggerTopicAiTurn(
   userId: string,
   prompt: string,
   agentType?: AgentKind,
-  opts?: {
-    /** Inject source label (e.g. the from-topic name). Anything != "user"
-     *  marks the turn as a session-inject so it defers behind a running user
-     *  turn instead of preempting it. */
-    origin?: string;
-    /** Called with the AI turn's queryId at the moment it is actually
-     *  dispatched — immediately, or later if it was deferred behind a running
-     *  turn. Used by ask_session to register its reply callback against the
-     *  real queryId even when the inject is queued. */
-    onDispatched?: (queryId: string) => void;
-    /** Inter-session requestId for queue dedup (ask/tell). */
-    requestId?: string;
-    /** Queue metadata preserved when an inject defers or is preempted. */
-    depth?: number;
-    silent?: boolean;
-    contextId?: string;
-    modelOverride?: string;
-    effortOverride?: EffortLevel;
-    sessionId?: string | null;
-    forkHandle?: ForkHandle;
-    /** Lazily create an isolated provider session immediately before execution. */
-    prepareSession?: DeferredInject["prepareSession"];
-    cwd?: string;
-    /** Provider conversation namespace override for isolated internal sessions. */
-    sessionName?: string;
-    /** MCP/tool scope override for isolated internal sessions. */
-    sessionType?: "dm" | "forum" | "ephemeral" | "manager" | "cron";
-    /** Persist provider session ids outside the topic's main session slot. */
-    onSessionId?: (sessionId: string) => void;
-    /** Clear an externally-owned session after expiry reconstruction fails. */
-    onSessionReset?: () => void;
-    /** Build a missing provider session from the shared conversation namespace. */
-    bridgeSessionFromHistory?: boolean;
-    /** Observe the final non-retry outcome of this turn. */
-    onSettled?: (result: AiTurnSettlement) => void;
-    askReplySources?: DeferredInject["askReplySources"];
-    /** Internal source marker, e.g. FROM_AUTO_CONTINUE for config-change resumes. */
-    from?: string;
-    /** Run the injected turn without writing the inject prompt as a visible message. */
-    hideInjectMessage?: boolean;
-    /** Visible injected-message author. Execution still runs as `userId`. */
-    injectAuthorId?: string;
-    attachments?: string[];
-  },
+  opts?: TriggerTopicAiTurnOptions,
 ): string | null {
   const topics = getTopics();
   const topic = topics.find((t) => t.id === topicId) as TopicDto | undefined;
@@ -1687,6 +1659,7 @@ export function triggerTopicAiTurn(
     onSessionReset: opts?.onSessionReset,
     bridgeSessionFromHistory: opts?.bridgeSessionFromHistory,
     onSettled: opts?.onSettled,
+    peerBridge: opts?.peerBridge,
     askReplySources: opts?.askReplySources,
     from: opts?.from,
   });

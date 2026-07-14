@@ -10,7 +10,7 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { NEGOTIUM_PORT, RUNTIME_MCP_SECRET } from "#platform/config";
-import { type AgentKind, isAgentKind } from "#types";
+import { type AgentKind, isAgentKind, type PeerRuntimeBridgeContext } from "#types";
 
 export const RUNTIME_MCP_KEY = "runtime";
 
@@ -28,6 +28,7 @@ export interface RuntimeMcpContext {
   model?: string;
   currentUserPrompt?: string;
   autoContinue?: boolean;
+  peerBridge?: PeerRuntimeBridgeContext;
 }
 
 type RuntimeTokenPayload = {
@@ -78,7 +79,12 @@ function isRuntimeMcpContext(value: unknown): value is RuntimeMcpContext {
     (ctx.queryId === undefined || typeof ctx.queryId === "string") &&
     (ctx.model === undefined || typeof ctx.model === "string") &&
     (ctx.currentUserPrompt === undefined || typeof ctx.currentUserPrompt === "string") &&
-    (ctx.autoContinue === undefined || typeof ctx.autoContinue === "boolean")
+    (ctx.autoContinue === undefined || typeof ctx.autoContinue === "boolean") &&
+    (ctx.peerBridge === undefined ||
+      (typeof ctx.peerBridge.hubCellId === "string" &&
+        typeof ctx.peerBridge.hostTopicId === "string" &&
+        typeof ctx.peerBridge.hostQueryId === "string" &&
+        typeof ctx.peerBridge.canSpawnSubagents === "boolean"))
   );
 }
 

@@ -21,7 +21,10 @@ export type { McpToolResult, SharedMcpTool } from "#agents/mcp-tools/common";
 export { errorResult, textResult } from "#agents/mcp-tools/common";
 export type { SelfConfigContext } from "#agents/mcp-tools/self-config";
 export { createSelfConfigToolDefinitions } from "#agents/mcp-tools/self-config";
-export { createSpawnSubagentToolDefinition } from "#agents/mcp-tools/spawn-subagent";
+export {
+  createSpawnSubagentToolDefinition,
+  sweepStaleSubagentCards,
+} from "#agents/mcp-tools/spawn-subagent";
 export { visualToolDefinitions } from "#agents/mcp-tools/visuals";
 export {
   AGENT_DISPLAY_NAME,
@@ -39,6 +42,14 @@ export { purgeTopicLogs, rotateTopicLogs } from "#agents/topic-cleanup";
 export type { RuntimeBus, RuntimeBusEvent, RuntimeBusListener } from "#bus";
 // ── Host boundary ───────────────────────────────────────────────────
 export { runtimeBus, setRuntimeBus, WsHub } from "#bus";
+export type {
+  PeerRuntimeBridge,
+  PeerRuntimeSpawnRequest,
+} from "#mcp/peer-bridge";
+export {
+  dispatchPeerRuntimeSpawn,
+  registerPeerRuntimeBridge,
+} from "#mcp/peer-bridge";
 export type { RuntimeMcpContext } from "#mcp/runtime-spec";
 export {
   buildRuntimeMcpSpec,
@@ -146,6 +157,8 @@ export {
   getTopic,
   getTopicByNameForUser,
   getTopicSessionId,
+  isTopicShared,
+  isTopicVisible,
   listTopics,
   setTopicSessionId,
   upsertTopic,
@@ -166,6 +179,7 @@ export { registerTopic, TopicValidationError } from "#topics/create";
 export {
   createDerivedTopic,
   getTopics,
+  getVisibleTopics,
   isParticipant,
   TopicTitleConflictError,
   updateTopic,
@@ -181,7 +195,9 @@ export type {
   MessageDto,
   ResponsePolicy,
   SubagentCardDto,
+  TopicAccessMode,
   TopicDto,
   TopicKind,
+  TopicVisibility,
 } from "#types/api";
 export { syncMetaSkills } from "#workspace/sync";

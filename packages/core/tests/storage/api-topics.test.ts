@@ -11,6 +11,7 @@ import {
   upsertTopic,
 } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
+import { getVisibleTopics } from "#topics/derive";
 import type { TopicDto } from "#types/api";
 
 const createdTopicIds: string[] = [];
@@ -46,6 +47,8 @@ describe("api topic storage", () => {
     expect(topicColumns).toContain("agent");
     expect(topicColumns).toContain("response_policy");
     expect(topicColumns).toContain("base_model");
+    expect(topicColumns).toContain("visibility");
+    expect(topicColumns).toContain("access_mode");
     expect(topicColumns).not.toContain("runtime_agent");
     expect(topicColumns).not.toContain("participants");
     expect(topicColumns).not.toContain("ai_mention");
@@ -83,6 +86,30 @@ describe("api topic storage", () => {
 
     expect(listed.get(first.id)?.participants).toEqual(first.participants);
     expect(listed.get(second.id)?.participants).toEqual(second.participants);
+  });
+
+  test("persists explicit topic visibility while defaulting ordinary topics to visible", () => {
+    const visible = makeTopic();
+    const hidden = { ...makeTopic(), visibility: "hidden" as const };
+    createdTopicIds.push(visible.id, hidden.id);
+    upsertTopic(visible);
+    upsertTopic(hidden);
+
+    expect(getTopic(visible.id)?.visibility).toBe("visible");
+    expect(getTopic(hidden.id)?.visibility).toBe("hidden");
+    expect(getVisibleTopics().some((topic) => topic.id === visible.id)).toBe(true);
+    expect(getVisibleTopics().some((topic) => topic.id === hidden.id)).toBe(false);
+  });
+
+  test("defaults local topics to private and persists explicit shared access", () => {
+    const privateTopic = makeTopic();
+    const sharedTopic = { ...makeTopic(), accessMode: "shared" as const };
+    createdTopicIds.push(privateTopic.id, sharedTopic.id);
+    upsertTopic(privateTopic);
+    upsertTopic(sharedTopic);
+
+    expect(getTopic(privateTopic.id)?.accessMode).toBe("private");
+    expect(getTopic(sharedTopic.id)?.accessMode).toBe("shared");
   });
 
   test("manager rooms stay manager/always while preserving their chosen agent", () => {

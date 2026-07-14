@@ -8,9 +8,9 @@
  * `@negotium/core`'s `buildRuntimeMcpSpec`, so the MCP layer never trusts the
  * agent to say who it is.
  *
- * Ported from otium runtime-api `mcp/runtime-server.ts` with the peer-bridge
- * branches stripped (negotium nodes always run their tools locally) and the
- * token/spec logic delegated to `@negotium/core`.
+ * Ported from otium runtime-api `mcp/runtime-server.ts`; placement adapters
+ * may install peer-bridge handlers for canonical hub mutations (currently
+ * spawn_subagent), while token/spec logic lives in `@negotium/core`.
  */
 
 import { randomUUID } from "node:crypto";
@@ -24,6 +24,7 @@ import {
   createAskUserToolDefinition,
   createSelfConfigToolDefinitions,
   createSpawnSubagentToolDefinition,
+  dispatchPeerRuntimeSpawn,
   errorResult,
   FROM_AUTO_CONTINUE,
   getApiTopicConfig,
@@ -171,6 +172,10 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
     onConfigChanged: (field) => appendAutoContinue(ctx, field),
   };
   for (const def of createSelfConfigToolDefinitions(selfConfigCtx)) {
+    // A placed room is canonical on the hub. Until these mutations have a
+    // peer bridge, creating worker-local topics would leak mirror state into
+    // local pickers and diverge from the hub transcript.
+    if (ctx.peerBridge && (def.name === "spawn_topic" || def.name === "fork_topic")) continue;
     server.tool(def.name, def.description, def.schema as any, def.handler as any);
   }
 
@@ -191,7 +196,11 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
   // Delegation is for top-level agent rooms only: subagent rooms never get the
   // tool (recursion guard by construction), nor do channels/manager rooms.
   const topic = getTopic(ctx.topicId);
-  if (topic?.kind === "agent" && !topic.isSubagent) {
+  const peerBridge = ctx.peerBridge;
+  const canSpawnSubagents = peerBridge
+    ? peerBridge.canSpawnSubagents
+    : topic?.kind === "agent" && !topic.isSubagent;
+  if (canSpawnSubagents) {
     const spawnTool = createSpawnSubagentToolDefinition({
       userId: ctx.userId,
       topicId: ctx.topicId,
@@ -199,11 +208,26 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
       agent: ctx.agent,
       model: ctx.model,
     });
+    const spawnHandler = peerBridge
+      ? async (input: Record<string, unknown>) => {
+          const dispatched = dispatchPeerRuntimeSpawn({
+            bridge: peerBridge,
+            userId: ctx.userId,
+            agent: ctx.agent,
+            model: ctx.model,
+            input,
+          });
+          if (!dispatched) {
+            return errorResult("Error: the peer runtime bridge is not available on this node.");
+          }
+          return dispatched;
+        }
+      : spawnTool.handler;
     server.tool(
       spawnTool.name,
       spawnTool.description,
       spawnTool.schema as any,
-      spawnTool.handler as any,
+      spawnHandler as any,
     );
   }
 

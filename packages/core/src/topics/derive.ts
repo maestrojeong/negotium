@@ -15,6 +15,7 @@ import { getRegistry } from "#agents/registry";
 import { WsHub } from "#bus";
 import { resolveTopicWorkspaceDir } from "#platform/config";
 import { logger } from "#platform/logger";
+import { cloneProfileForChild } from "#platform/playwright/manager";
 import { copyMessagesForTopic } from "#storage/api-messages";
 import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
 import {
@@ -22,6 +23,7 @@ import {
   getTopic,
   getTopicSessionId,
   inferTopicKind,
+  isTopicVisible,
   listTopics,
   setTopicSessionId,
   upsertTopic,
@@ -38,6 +40,11 @@ import type { TopicDto } from "#types/api";
 
 export function getTopics(): TopicDto[] {
   return listTopics().filter((topic) => !isLegacySharedGeneral(topic.id));
+}
+
+/** Topics adapters may show in lists and selection UIs. */
+export function getVisibleTopics(): TopicDto[] {
+  return getTopics().filter(isTopicVisible);
 }
 
 export function updateTopic(topicId: string, patch: Partial<TopicDto>): boolean {
@@ -164,6 +171,8 @@ export async function createDerivedTopic(
     parentTopicId: sourceTopicId,
     isFork: copyHistory,
     ...(subagent ? { isSubagent: true } : {}),
+    visibility: topic.visibility,
+    accessMode: topic.accessMode,
   };
 
   let sessionId: string | undefined;
@@ -274,6 +283,34 @@ export async function createDerivedTopic(
         return derived;
       })
       .immediate();
+
+    // Every derived room inherits the parent's browser login state. Await the
+    // best-effort copy before announcing the child so an immediate first turn
+    // cannot race profile cloning (the same ordering clawgram uses for
+    // fork/spawn/subagent topic creation).
+    try {
+      const profileClone = await cloneProfileForChild({
+        userId,
+        srcTopic: sourceTopicId,
+        dstTopic: derived.id,
+      });
+      logger.info(
+        {
+          sourceTopicId,
+          derivedTopicId: derived.id,
+          copyHistory,
+          subagent: Boolean(subagent),
+          profileClone,
+        },
+        "createDerivedTopic: playwright profile clone",
+      );
+    } catch (profileErr) {
+      logger.warn(
+        { err: profileErr, sourceTopicId, derivedTopicId: derived.id },
+        "createDerivedTopic: playwright profile clone threw (continuing)",
+      );
+    }
+
     // Every derived room (fork/spawn/subagent) is user-visible: tell all
     // inherited participants, not just the client that issued the request.
     WsHub.get().broadcastTopicCreated(created);

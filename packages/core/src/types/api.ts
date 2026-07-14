@@ -13,6 +13,10 @@
 /** Agent identifier — one of the supported AI provider backends. */
 export type AgentKind = "maestro" | "claude" | "codex";
 export type TopicKind = "channel" | "agent" | "manager";
+/** Adapter access boundary for a user-facing topic. */
+export type TopicAccessMode = "private" | "shared";
+/** Whether adapters may expose a topic in user-facing discovery surfaces. */
+export type TopicVisibility = "visible" | "hidden";
 export type ResponsePolicy = "off" | "mention" | "always";
 /** @deprecated use ResponsePolicy. */
 export type AiMode = ResponsePolicy;
@@ -99,6 +103,10 @@ export interface TopicDto {
   isFork?: boolean;
   /** True when this topic was spawned by an agent as a subagent worker room. */
   isSubagent?: boolean;
+  /** Hidden topics remain executable/addressable by id but stay out of adapter pickers. */
+  visibility?: TopicVisibility;
+  /** Private stays on local adapters; shared may be exposed through Otium too. */
+  accessMode?: TopicAccessMode;
   /** Stable execution placement. Absent means the hub runs this topic locally. */
   executionNode?: {
     nodeId: string;

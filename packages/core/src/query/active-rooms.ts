@@ -16,7 +16,7 @@
 import type { ForkHandle } from "#agents/fork";
 import { logger } from "#platform/logger";
 import type { AskReplySource } from "#storage/session-asks";
-import type { AgentKind } from "#types";
+import type { AgentKind, PeerRuntimeBridgeContext } from "#types";
 import { AbortReason } from "./types";
 
 /** Lazily create an isolated provider session immediately before execution. */
@@ -67,6 +67,8 @@ export interface DeferredInject {
     kind: "completed" | "aborted" | "error";
     error?: string;
   }) => void;
+  /** Canonical hub identity for a placed-room runtime turn. */
+  peerBridge?: PeerRuntimeBridgeContext;
   /** True after a session-expired recovery retry has already been attempted. */
   _sessionRetried?: boolean;
   /** Original ask_session replies represented by this inject, preserved across dequeueAll merges. */

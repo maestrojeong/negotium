@@ -20,7 +20,7 @@ import {
   upsertTopic,
 } from "#storage/api-topics";
 import { type AgentKind, type EffortLevel, isAgentKind } from "#types";
-import type { TopicDto } from "#types/api";
+import type { TopicAccessMode, TopicDto } from "#types/api";
 
 // Agent rooms default to the node-level FALLBACK_AGENT (env), not a hardcoded
 // backend — a node without DeepSeek auth can still default to claude/codex.
@@ -43,6 +43,8 @@ export interface RegisterTopicOptions {
   model?: string;
   effort?: EffortLevel;
   description?: string;
+  /** Local topics default to private; Otium publication must be explicit. */
+  accessMode?: TopicAccessMode;
 }
 
 /**
@@ -104,6 +106,7 @@ export function registerTopic(opts: RegisterTopicOptions): TopicDto {
     defaultEffort: defaultEffort ?? "medium",
     aiMode,
     participants: [{ userId: opts.userId, role: "owner" }],
+    accessMode: opts.accessMode ?? "private",
     createdAt: now,
     lastMessageAt: now,
   };

@@ -14,7 +14,7 @@ import {
   WIKI_SERVER,
 } from "#platform/config";
 import { logger } from "#platform/logger";
-import type { AgentKind, AgentQueryOptions } from "#types";
+import type { AgentKind, AgentQueryOptions, PeerRuntimeBridgeContext } from "#types";
 
 /**
  * Build the stdio transport spec for a Otium MCP server entry.
@@ -176,6 +176,7 @@ export interface RuntimeMcpBuildContext {
   bgBashPort?: number;
   autoContinue?: boolean;
   silent?: boolean;
+  peerBridge?: PeerRuntimeBridgeContext;
 }
 
 export interface RuntimeMcpCatalogEntry {
@@ -273,6 +274,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
       model,
       currentUserPrompt,
       autoContinue,
+      peerBridge,
     }) {
       if (!topicId || !agent) return null;
       return buildRuntimeMcpSpec(agent, {
@@ -285,6 +287,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
         model,
         currentUserPrompt,
         autoContinue,
+        peerBridge,
       });
     },
   },
@@ -632,6 +635,7 @@ export function getForumMcpServers(opts: {
   enabled?: string[] | null;
   extra?: Record<string, unknown>;
   silent?: boolean;
+  peerBridge?: PeerRuntimeBridgeContext;
 }) {
   const {
     userId,
@@ -650,6 +654,7 @@ export function getForumMcpServers(opts: {
     silent = false,
     bgBashPort,
     autoContinue,
+    peerBridge,
   } = opts;
 
   const filter = (name: string) => {
@@ -677,6 +682,7 @@ export function getForumMcpServers(opts: {
       bgBashPort,
       autoContinue,
       silent,
+      peerBridge,
     },
     filter,
   );
@@ -777,5 +783,6 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
     enabled: opts.mcpEnabled,
     extra: opts.mcpExtra,
     silent: opts.silent,
+    peerBridge: opts.peerBridge,
   });
 }

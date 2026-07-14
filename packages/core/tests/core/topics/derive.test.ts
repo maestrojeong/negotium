@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { maestroSessionsDir } from "maestro-agent-sdk";
 import { getRegistry } from "#agents/registry";
 import { resolveTopicWorkspaceDir } from "#platform/config";
+import { deleteTopicProfileDir, resolveTopicProfileDir } from "#platform/playwright/manager";
 import { deleteTopic, getTopicSessionId, upsertTopic } from "#storage/api-topics";
 import {
   appendConversationEventStrict,
@@ -14,6 +15,108 @@ import {
 import { createDerivedTopic } from "#topics/derive";
 
 describe("createDerivedTopic", () => {
+  test("inherits hidden visibility so internal topics cannot derive visible children", async () => {
+    const sourceTopicId = randomUUID();
+    const sourceTitle = `hidden-source-${randomUUID()}`;
+    const childTitle = `hidden-child-${randomUUID()}`;
+    const userId = `hidden-user-${randomUUID()}`;
+    const now = new Date().toISOString();
+    let childId: string | undefined;
+
+    upsertTopic({
+      id: sourceTopicId,
+      title: sourceTitle,
+      kind: "agent",
+      agent: "claude",
+      defaultModel: "sonnet",
+      defaultEffort: "medium",
+      aiMode: "always",
+      participants: [{ userId, role: "owner" }],
+      visibility: "hidden",
+      accessMode: "shared",
+      createdAt: now,
+      lastMessageAt: now,
+    });
+
+    try {
+      const child = await createDerivedTopic(sourceTopicId, userId, false, { name: childTitle });
+      expect(child).not.toBeNull();
+      childId = child?.id;
+      expect(child?.visibility).toBe("hidden");
+      expect(child?.accessMode).toBe("shared");
+    } finally {
+      if (childId) {
+        deleteTopic(childId);
+        rmSync(resolveTopicWorkspaceDir(childId), { recursive: true, force: true });
+      }
+      deleteTopic(sourceTopicId);
+    }
+  });
+
+  test("fork, spawn, and subagent children clone the parent Playwright profile", async () => {
+    const sourceTopicId = randomUUID();
+    const sourceTitle = `profile-source-${randomUUID()}`;
+    const userId = `profile-user-${randomUUID()}`;
+    const now = new Date().toISOString();
+    const sourceProfileDir = resolveTopicProfileDir(userId, sourceTopicId);
+    const children: string[] = [];
+
+    upsertTopic({
+      id: sourceTopicId,
+      title: sourceTitle,
+      kind: "channel",
+      defaultModel: "",
+      defaultEffort: "medium",
+      aiMode: "mention",
+      participants: [{ userId, role: "owner" }],
+      createdAt: now,
+      lastMessageAt: now,
+    });
+    mkdirSync(join(sourceProfileDir, "Default"), { recursive: true });
+    writeFileSync(join(sourceProfileDir, "Default", "Cookies"), "signed-in-cookie");
+    writeFileSync(join(sourceProfileDir, "SingletonLock"), "stale-parent-lock");
+
+    try {
+      const variants: Array<{
+        copyHistory: boolean;
+        name: string;
+        subagent?: Record<string, never>;
+      }> = [
+        { copyHistory: true, name: `profile-fork-${randomUUID()}` },
+        { copyHistory: false, name: `profile-spawn-${randomUUID()}` },
+        {
+          copyHistory: false,
+          name: `profile-subagent-${randomUUID()}`,
+          subagent: {},
+        },
+      ];
+
+      for (const variant of variants) {
+        const child = await createDerivedTopic(sourceTopicId, userId, variant.copyHistory, {
+          name: variant.name,
+          ...(variant.subagent ? { subagent: variant.subagent } : {}),
+        });
+        expect(child).not.toBeNull();
+        if (!child) continue;
+        children.push(child.id);
+        const childProfileDir = resolveTopicProfileDir(userId, child.id);
+        expect(readFileSync(join(childProfileDir, "Default", "Cookies"), "utf8")).toBe(
+          "signed-in-cookie",
+        );
+        expect(existsSync(join(childProfileDir, "SingletonLock"))).toBe(false);
+      }
+    } finally {
+      for (const childId of children) {
+        deleteTopic(childId);
+        deleteTopicProfileDir(userId, childId);
+        rmSync(resolveTopicWorkspaceDir(childId), { recursive: true, force: true });
+      }
+      deleteTopic(sourceTopicId);
+      deleteTopicProfileDir(userId, sourceTopicId);
+      rmSync(getConversationPath(userId, sourceTitle), { force: true });
+    }
+  });
+
   test("fork synthesizes a provider rollout when the source has no native session id", async () => {
     const sourceTopicId = randomUUID();
     const sourceTitle = `derive-source-${randomUUID()}`;

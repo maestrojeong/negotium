@@ -4,7 +4,14 @@ import { GENERAL_TOPIC_ID } from "#platform/constants";
 import { logger } from "#platform/logger";
 import { db } from "#storage/forum-db";
 import type { AgentKind, EffortLevel } from "#types";
-import type { AiMode, ParticipantDto, TopicDto, TopicKind } from "#types/api";
+import type {
+  AiMode,
+  ParticipantDto,
+  TopicAccessMode,
+  TopicDto,
+  TopicKind,
+  TopicVisibility,
+} from "#types/api";
 
 const DEFAULT_AGENT_ROOM_AGENT: AgentKind = "maestro";
 
@@ -193,6 +200,8 @@ function createCanonicalTopicsTable(name: string): void {
       parent_topic_id TEXT,
       is_fork INTEGER NOT NULL DEFAULT 0 CHECK (is_fork IN (0,1)),
       is_subagent INTEGER NOT NULL DEFAULT 0 CHECK (is_subagent IN (0,1)),
+      visibility TEXT NOT NULL DEFAULT 'visible' CHECK (visibility IN ('visible','hidden')),
+      access_mode TEXT NOT NULL DEFAULT 'private' CHECK (access_mode IN ('private','shared')),
       session_id TEXT,
       CHECK (
         (kind = 'channel' AND response_policy = 'off' AND agent IS NULL) OR
@@ -259,8 +268,8 @@ if (needsCanonicalTopicRebuild) {
         db.query(
           `INSERT INTO api_topics_next
              (id,title,kind,description,agent,base_model,base_effort,response_policy,
-              created_at,last_message_at,parent_topic_id,is_fork,is_subagent,session_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+              created_at,last_message_at,parent_topic_id,is_fork,is_subagent,visibility,access_mode,session_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         ).run(
           String(row.id),
           String(row.title),
@@ -275,6 +284,8 @@ if (needsCanonicalTopicRebuild) {
           typeof row.parent_topic_id === "string" ? row.parent_topic_id : null,
           Number(row.is_fork ?? 0) !== 0 ? 1 : 0,
           Number(row.is_subagent ?? 0) !== 0 ? 1 : 0,
+          row.visibility === "hidden" ? "hidden" : "visible",
+          row.access_mode === "shared" ? "shared" : "private",
           typeof row.session_id === "string" ? row.session_id : null,
         );
       }
@@ -318,6 +329,15 @@ if (needsCanonicalTopicRebuild) {
   createTopicMembersTable();
 }
 
+// Canonical databases created before explicit adapter visibility need a
+// lightweight additive migration; fresh/rebuilt databases already have it.
+if (!tableColumns("api_topics").has("visibility")) {
+  db.exec("ALTER TABLE api_topics ADD COLUMN visibility TEXT NOT NULL DEFAULT 'visible'");
+}
+if (!tableColumns("api_topics").has("access_mode")) {
+  db.exec("ALTER TABLE api_topics ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'private'");
+}
+
 interface TopicRow {
   id: string;
   title: string;
@@ -332,6 +352,8 @@ interface TopicRow {
   parent_topic_id: string | null;
   is_fork: number;
   is_subagent: number;
+  visibility: string | null;
+  access_mode: string | null;
   session_id: string | null;
 }
 
@@ -392,7 +414,27 @@ function rowToDto(r: TopicRow, participants = getTopicParticipants(r.id)): Topic
     parentTopicId: r.parent_topic_id ?? undefined,
     isFork: r.is_fork !== 0,
     ...(r.is_subagent !== 0 ? { isSubagent: true } : {}),
+    visibility: normalizeTopicVisibility(r.visibility),
+    accessMode: normalizeTopicAccessMode(r.access_mode),
   };
+}
+
+export function normalizeTopicAccessMode(value: unknown): TopicAccessMode {
+  return value === "shared" ? "shared" : "private";
+}
+
+/** Otium and other non-local adapters may only address shared topics. */
+export function isTopicShared(topic: Pick<TopicDto, "accessMode">): boolean {
+  return topic.accessMode === "shared";
+}
+
+export function normalizeTopicVisibility(value: unknown): TopicVisibility {
+  return value === "hidden" ? "hidden" : "visible";
+}
+
+/** Discovery boundary shared by user-facing adapters. */
+export function isTopicVisible(topic: Pick<TopicDto, "visibility">): boolean {
+  return topic.visibility !== "hidden";
 }
 
 export function normalizeTopicKind(value: unknown): TopicKind | null {
@@ -491,8 +533,8 @@ export function upsertTopic(t: TopicDto): void {
     db.query(
       `INSERT INTO api_topics
        (id,title,kind,description,agent,base_model,base_effort,response_policy,
-        created_at,last_message_at,parent_topic_id,is_fork,is_subagent)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        created_at,last_message_at,parent_topic_id,is_fork,is_subagent,visibility,access_mode)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(id) DO UPDATE SET
        title = excluded.title,
        kind = excluded.kind,
@@ -505,7 +547,9 @@ export function upsertTopic(t: TopicDto): void {
        last_message_at = excluded.last_message_at,
        parent_topic_id = excluded.parent_topic_id,
        is_fork = excluded.is_fork,
-       is_subagent = excluded.is_subagent`,
+       is_subagent = excluded.is_subagent,
+       visibility = excluded.visibility,
+       access_mode = excluded.access_mode`,
     ).run(
       t.id,
       t.title,
@@ -520,6 +564,8 @@ export function upsertTopic(t: TopicDto): void {
       t.parentTopicId ?? null,
       t.isFork ? 1 : 0,
       t.isSubagent ? 1 : 0,
+      normalizeTopicVisibility(t.visibility),
+      normalizeTopicAccessMode(t.accessMode),
     );
     db.query("DELETE FROM topic_members WHERE topic_id = ?").run(t.id);
     for (const participant of t.participants) {
@@ -639,6 +685,7 @@ export function getTopicByNameForUser(title: string, userId: string): TopicDto |
       `SELECT t.* FROM api_topics t
        WHERE LOWER(t.title) = LOWER(?)
          AND t.id != ?
+         AND t.visibility != 'hidden'
          AND EXISTS (
            SELECT 1 FROM topic_members m WHERE m.topic_id = t.id AND m.user_id = ?
          )`,
@@ -712,6 +759,26 @@ export function deleteTopic(id: string, options: { allowManager?: boolean } = {}
   if (id === GENERAL_TOPIC_ID || (r.kind === "manager" && !options.allowManager)) return false;
   db.query("DELETE FROM api_topics WHERE id = ?").run(id);
   return true;
+}
+
+/**
+ * Preserve a derived-topic chain when an intermediate parent is deleted.
+ * Direct children move to the deleted topic's parent (or become roots) rather
+ * than retaining a dangling parent id that would break memory-origin lookup.
+ */
+export function reparentTopicChildren(
+  deletedTopicId: string,
+  replacementParentTopicId: string | null,
+): string[] {
+  const rows = db
+    .query<{ id: string }, string>("SELECT id FROM api_topics WHERE parent_topic_id = ?")
+    .all(deletedTopicId);
+  if (rows.length === 0) return [];
+  db.query("UPDATE api_topics SET parent_topic_id = ? WHERE parent_topic_id = ?").run(
+    replacementParentTopicId,
+    deletedTopicId,
+  );
+  return rows.map((row) => row.id);
 }
 
 export function addParticipantToDB(
