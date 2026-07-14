@@ -22,6 +22,15 @@ type IdleArchiveStatus =
 
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
+/** Cancel a pending idle snapshot before a topic is hard-deleted. */
+export function cancelIdleArchiveForTopic(topicId: string): boolean {
+  const timer = timers.get(topicId);
+  if (!timer) return false;
+  clearTimeout(timer);
+  timers.delete(topicId);
+  return true;
+}
+
 function envFlagEnabled(name: string, fallback: boolean): boolean {
   const raw = process.env[name]?.trim().toLowerCase();
   if (!raw) return fallback;

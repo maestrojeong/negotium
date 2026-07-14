@@ -60,3 +60,14 @@ export function purgeStaleAsks(now: number = Date.now()): void {
     if (now - entry.createdAt > MAX_ASK_AGE_MS) pendingAsks.delete(id);
   }
 }
+
+/** Drop callbacks whose caller topic was hard-deleted. */
+export function cancelAskCallbacksForTopic(topicId: string): number {
+  let cancelled = 0;
+  for (const [queryId, entry] of pendingAsks) {
+    if (entry.callerTopicId !== topicId) continue;
+    pendingAsks.delete(queryId);
+    cancelled++;
+  }
+  return cancelled;
+}

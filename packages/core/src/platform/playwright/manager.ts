@@ -883,9 +883,9 @@ export async function cloneProfileForChild(opts: {
 
 /**
  * Kill the topic's Playwright instance and remove its user-data-dir from disk.
- * Use for fork-topic deletion where the profile is a copy of the parent and
- * shouldn't linger after the fork is gone. Regular topic deletion should call
- * `killPlaywrightForTopic` instead so login state survives a topic recreation.
+ * Negotium profiles are keyed by canonical topic id, so every hard delete must
+ * remove the directory: a recreated topic receives a new id and could never
+ * reuse the old profile.
  */
 export function deleteTopicProfileDir(
   userId: string,
@@ -897,7 +897,7 @@ export function deleteTopicProfileDir(
   if (!existsSync(dir)) return { deleted: false, dir };
   try {
     rmSync(dir, { recursive: true, force: true });
-    logger.info({ dir, userId, topic }, "Deleted topic Playwright profile dir (fork cleanup)");
+    logger.info({ dir, userId, topic }, "Deleted topic Playwright profile dir");
     return { deleted: true, dir };
   } catch (e) {
     logger.warn({ err: e, dir, userId, topic }, "Failed to delete topic Playwright profile dir");

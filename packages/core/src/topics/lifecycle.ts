@@ -5,16 +5,92 @@
  * minus peer/cron cascades (deferred subsystems on a standalone node).
  */
 
+import { rmSync } from "node:fs";
 import { runArchiverTurn } from "#agents/archiver";
+import { cancelIdleArchiveForTopic } from "#agents/idle-archiver";
+import { type PurgeSessionRef, purgeTopicLogs } from "#agents/topic-cleanup";
 import { WsHub } from "#bus";
+import { killBgBash } from "#platform/background-bash/manager";
+import { resolveTopicWorkspaceDir } from "#platform/config";
+import { GENERAL_TOPIC_ID } from "#platform/constants";
+import { delay } from "#platform/delay";
 import { logger } from "#platform/logger";
-import { abortRoom, interSessionQueue } from "#query/active-rooms";
+import { deleteTopicProfileDir } from "#platform/playwright/manager";
+import { abortRoom, getRoomQuery, interSessionQueue } from "#query/active-rooms";
+import { cleanupSessionInboxFiles } from "#query/session-inbox-cleanup";
+import { clearQueryState } from "#query/state";
+import { cancelAskCallbacksForTopic } from "#runtime/ask-callbacks";
+import { deleteFilesForTopic } from "#runtime/file-hooks";
+import { clearQueryUsageAlert } from "#runtime/usage-alert";
+import { deleteTopicVisuals } from "#runtime/visual-store";
 import { deleteMessagesForTopic } from "#storage/api-messages";
 import { deleteTopicBrief } from "#storage/api-topic-brief";
 import { deleteApiTopicConfig } from "#storage/api-topic-config";
-import { deleteTopic as deleteTopicDB, getTopicMemoryOrigin } from "#storage/api-topics";
+import {
+  deleteTopic as deleteTopicDB,
+  getTopicMemoryOrigin,
+  getTopicSessionId,
+  reparentTopicChildren,
+} from "#storage/api-topics";
+import { deletePendingAsksForTopic } from "#storage/session-asks";
 import { archiveTopicMessages } from "#storage/topic-archive";
+import { deleteTopicArchiveState } from "#storage/topic-archive-state";
 import type { TopicDto } from "#types/api";
+
+const DELETE_TURN_WAIT_MS = 5_000;
+
+async function abortAndWaitForTopic(topicId: string): Promise<void> {
+  // Drop first: the dying turn's finally block must not dispatch queued work.
+  interSessionQueue.drop(topicId);
+  cancelIdleArchiveForTopic(topicId);
+  const aborted = abortRoom(topicId);
+  if (!aborted) return;
+
+  logger.info({ topicId }, "deleteTopicCascade: aborted in-flight turn");
+  const deadline = Date.now() + DELETE_TURN_WAIT_MS;
+  while (getRoomQuery(topicId) && Date.now() < deadline) await delay(50);
+  if (getRoomQuery(topicId)) {
+    logger.warn(
+      { topicId, timeoutMs: DELETE_TURN_WAIT_MS },
+      "deleteTopicCascade: timed out waiting for in-flight turn cleanup",
+    );
+  }
+}
+
+function currentSessionRef(topic: TopicDto, sessionId: string | null): PurgeSessionRef[] {
+  return topic.agent && sessionId ? [{ agent: topic.agent, sessionId }] : [];
+}
+
+async function cleanupParticipantResources(
+  topic: TopicDto,
+  userIds: string[],
+  sessionId: string | null,
+  cwd: string,
+): Promise<void> {
+  for (const [index, participantUserId] of userIds.entries()) {
+    try {
+      await purgeTopicLogs({
+        userId: participantUserId,
+        topicName: topic.title,
+        cwd,
+        // The DB only has one current native session. Its unified-log owner is
+        // not knowable after multi-user turns, so include it once as a fallback;
+        // every participant manifest is still scanned for older sessions.
+        extraSessions: index === 0 ? currentSessionRef(topic, sessionId) : [],
+      });
+    } catch (err) {
+      logger.warn(
+        { err, topicId: topic.id, userId: participantUserId },
+        "deleteTopicCascade: participant rollout cleanup failed",
+      );
+    }
+
+    cleanupSessionInboxFiles(participantUserId, topic.id, topic.title);
+    clearQueryState(participantUserId, topic.title);
+    clearQueryUsageAlert(participantUserId, topic.id);
+    deletePendingAsksForTopic({ userId: participantUserId, topicName: topic.title });
+  }
+}
 
 export class TopicArchiveRequiredError extends Error {
   readonly code = "TOPIC_ARCHIVE_FAILED";
@@ -41,7 +117,8 @@ export interface DeleteTopicCascadeOptions {
  *   1. archiveTopicMessages → dump SQLite conversation to the shared wiki
  *      `archive/` as forensic JSONL.
  *   2. runArchiverTurn → background wiki-archiver (summaries/articles/brief).
- *   3. delete messages + config + brief + the topic row.
+ *   3. purge topic-owned runtime/filesystem/adapter state.
+ *   4. delete messages + config + brief + the topic row.
  *
  * Step 1 is required by default: if the raw archive cannot be written, deletion
  * is blocked to avoid losing conversation history. Pass `force: true` only for
@@ -55,16 +132,14 @@ export async function deleteTopicCascade(
   options: DeleteTopicCascadeOptions = {},
 ): Promise<void> {
   const topicId = topic.id;
-  if (topic.kind === "manager" && !options.allowManager) {
+  if (topicId === GENERAL_TOPIC_ID || (topic.kind === "manager" && !options.allowManager)) {
     logger.warn({ topicId }, "deleteTopicCascade: refused to delete essential topic");
     return;
   }
-  // Stop the room before wiping it: a turn still streaming after deletion
-  // would resurrect ghost messages/threads through the bus, and a deferred
-  // inject draining later would re-run against the missing topic.
-  const aborted = abortRoom(topicId);
-  interSessionQueue.drop(topicId);
-  if (aborted) logger.info({ topicId }, "deleteTopicCascade: aborted in-flight turn");
+  // Wait for the aborted turn's final session/log writes before taking the
+  // forensic snapshot. A timeout remains best-effort so a wedged provider
+  // cannot make the topic undeletable forever.
+  await abortAndWaitForTopic(topicId);
   const force = options.force === true;
   let archived: ReturnType<typeof archiveTopicMessages> = null;
 
@@ -91,7 +166,10 @@ export async function deleteTopicCascade(
       const memoryTopic = getTopicMemoryOrigin(topicId) ?? topic;
       runArchiverTurn({
         userId,
-        topicId: memoryTopic.id,
+        // A root topic is about to disappear, so its durable summary is file
+        // + General memory only. Passing the deleted id to wiki MCP would let
+        // the detached archiver recreate an orphan api_topic_brief row later.
+        ...(memoryTopic.id !== topicId ? { topicId: memoryTopic.id } : {}),
         topicTitle: memoryTopic.title,
         archivePath: archived.path,
         messageCount: archived.messageCount,
@@ -104,11 +182,44 @@ export async function deleteTopicCascade(
     }
   }
 
+  const sessionId = getTopicSessionId(topicId);
+  const cwd = resolveTopicWorkspaceDir(topicId);
+  const participantUserIds = Array.from(
+    new Set([userId, ...topic.participants.map((participant) => participant.userId)]),
+  );
+
+  // Topic ids are the ownership keys for these processes/directories. Unlike
+  // Clawgram's title-keyed regular profiles, none can be reused after a hard
+  // delete because a recreated topic receives a fresh id.
+  killBgBash(userId, topicId);
+  deleteTopicProfileDir(userId, topicId);
+  cancelAskCallbacksForTopic(topicId);
+
+  await cleanupParticipantResources(topic, participantUserIds, sessionId, cwd);
+  try {
+    await deleteFilesForTopic(topicId);
+  } catch (err) {
+    logger.warn({ err, topicId }, "deleteTopicCascade: host file cleanup failed");
+  }
+  try {
+    rmSync(cwd, { recursive: true, force: true });
+  } catch (err) {
+    logger.warn({ err, topicId, cwd }, "deleteTopicCascade: workspace cleanup failed");
+  }
+
+  deleteTopicVisuals(topicId);
+  deleteTopicArchiveState(topicId);
   deleteMessagesForTopic(topicId);
   deleteApiTopicConfig(topicId);
   deleteTopicBrief(topicId);
-  deleteTopicDB(topicId, { allowManager: options.allowManager });
+  const reparentedChildIds = reparentTopicChildren(topicId, topic.parentTopicId ?? null);
+  const deleted = deleteTopicDB(topicId, { allowManager: options.allowManager });
+  if (!deleted) {
+    logger.warn({ topicId }, "deleteTopicCascade: topic row was not deleted");
+    return;
+  }
   // Mirror the deletion onto the bus so channel adapters (Telegram forum
   // threads, web clients, …) can drop their bindings for the topic.
   WsHub.get().broadcastTopicDeleted(topicId);
+  for (const childId of reparentedChildIds) WsHub.get().broadcastTopicUpdated(childId);
 }

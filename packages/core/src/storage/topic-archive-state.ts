@@ -50,3 +50,10 @@ export function setTopicArchiveState(
        updated_at = excluded.updated_at`,
   ).run(topicId, lastArchivedRowid, lastArchivePath ?? null, new Date().toISOString());
 }
+
+/** Remove the idle-archive cursor for a topic that no longer exists. */
+export function deleteTopicArchiveState(topicId: string): boolean {
+  return (
+    db.query("DELETE FROM api_topic_archive_state WHERE topic_id = ?").run(topicId).changes > 0
+  );
+}

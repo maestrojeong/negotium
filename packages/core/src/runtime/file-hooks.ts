@@ -25,6 +25,8 @@ export interface FileHooks {
   resolveUploadedFilePathByFileId(fileId: string): string | null;
   /** Register a local file as an upload (used by media visuals). Null on failure. */
   storeLocalFileAsUpload(absPath: string, access?: UploadAccess): AttachmentDto | null;
+  /** Delete host-owned uploads scoped exclusively to a hard-deleted topic. */
+  deleteFilesForTopic?(topicId: string): void | Promise<void>;
 }
 
 /** No-uploads default: every lookup misses. */
@@ -71,4 +73,9 @@ export function storeLocalFileAsUpload(
   access: UploadAccess = {},
 ): AttachmentDto | null {
   return current.storeLocalFileAsUpload(absPath, access);
+}
+
+/** Notify the embedding host that topic-scoped uploads may now be removed. */
+export async function deleteFilesForTopic(topicId: string): Promise<void> {
+  await current.deleteFilesForTopic?.(topicId);
 }

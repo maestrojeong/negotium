@@ -261,6 +261,33 @@ export function listPendingAsksForCaller(args: {
   return records;
 }
 
+/** Remove durable ask edges to or from a topic that no longer exists. */
+export function deletePendingAsksForTopic(args: {
+  userId: PendingAskUserId;
+  topicName: string;
+}): number {
+  const dir = pendingAskDir(args.userId);
+  let files: string[];
+  try {
+    files = readdirSync(dir);
+  } catch {
+    return 0;
+  }
+
+  let deleted = 0;
+  for (const fileName of files) {
+    const parsed = parsePendingAskFilename(fileName);
+    if (!parsed || (parsed.from !== args.topicName && parsed.to !== args.topicName)) continue;
+    try {
+      unlinkSync(join(dir, fileName));
+      deleted++;
+    } catch {
+      // Best-effort teardown; stale cleanup will retry any file that survives.
+    }
+  }
+  return deleted;
+}
+
 export function describePendingAskState(state: PendingAskState): string {
   switch (state) {
     case "requested":

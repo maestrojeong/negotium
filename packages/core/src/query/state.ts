@@ -31,7 +31,9 @@ export function clearQueryState(userId: QueryStateUserId, topicName: string) {
   try {
     unlinkSync(queryStateFile(userId, topicName));
   } catch (e) {
-    logger.warn({ err: e, userId, topicName }, "Failed to clear query state file");
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      logger.warn({ err: e, userId, topicName }, "Failed to clear query state file");
+    }
   }
 }
 

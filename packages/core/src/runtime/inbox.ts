@@ -508,15 +508,15 @@ async function handleTellEntry(
 ) {
   const { triggerTopicAiTurn } = await import("#runtime/turn-runner");
   const fromLabel = entryFromLabel(entry);
+  const requestId =
+    entry.requestId ??
+    stableLegacyRequestId("legacy-tell", [topicName, entry.from, entry.message, entry.timestamp]);
 
   if (!isAiEnabled) {
     // AI-enabled targets are persisted by triggerTopicAiTurn below. Human-only
-    // targets still need a visible DB message even though no AI turn runs.
-    // TODO(C2-A idempotency): derive a stable id from requestId/entry fields so
-    // inbox crash-replay cannot duplicate visible tell messages.
-    const msgId =
-      (globalThis.crypto?.randomUUID?.() as string | undefined) ??
-      `tell-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    // targets still need a visible DB message even though no AI turn runs. A
+    // request-derived id makes crash replay converge on the same row.
+    const msgId = `tell-${requestId}`;
     const now = new Date().toISOString();
     const text = `[from ${fromLabel}]\n${entry.message}`;
 
@@ -535,9 +535,6 @@ async function handleTellEntry(
 
   // Trigger AI turn (defers behind a running user turn via B's abort-on-new-message).
   if (isAiEnabled) {
-    const requestId =
-      entry.requestId ??
-      stableLegacyRequestId("legacy-tell", [topicName, entry.from, entry.message, entry.timestamp]);
     const isAutoContinue = entry.from === FROM_AUTO_CONTINUE;
     const isSelfSchedule = entry.from === FROM_SELF_SCHEDULE;
     const isHiddenContinue = isAutoContinue || isSelfSchedule;

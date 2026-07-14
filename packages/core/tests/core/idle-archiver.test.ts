@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { idleArchiveDelayMs, scheduleIdleArchiveForTopic } from "#agents/idle-archiver";
+import {
+  cancelIdleArchiveForTopic,
+  idleArchiveDelayMs,
+  scheduleIdleArchiveForTopic,
+} from "#agents/idle-archiver";
 import { deleteTopic, upsertTopic } from "#storage/api-topics";
 import type { TopicDto } from "#types/api";
 
@@ -57,5 +61,7 @@ describe("idle archiver defaults", () => {
     const topic = makeTopic(false);
 
     expect(scheduleIdleArchiveForTopic(topic.id, "idle-owner")).toBe("scheduled");
+    expect(cancelIdleArchiveForTopic(topic.id)).toBe(true);
+    expect(cancelIdleArchiveForTopic(topic.id)).toBe(false);
   });
 });

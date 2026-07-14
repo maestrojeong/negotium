@@ -407,6 +407,19 @@ export function getActiveVisualForPrompt(
   };
 }
 
+/** Delete visual history and per-user selections for a hard-deleted topic. */
+export function deleteTopicVisuals(topicId: string): { visuals: number; views: number } {
+  return db.transaction(() => {
+    const views = db
+      .query("DELETE FROM api_topic_visual_views WHERE topic_id = ?")
+      .run(topicId).changes;
+    const visuals = db
+      .query("DELETE FROM api_topic_visuals WHERE topic_id = ?")
+      .run(topicId).changes;
+    return { visuals, views };
+  })();
+}
+
 /** URL that serves the HTML content for a specific visual id (used by iframe). */
 export function topicVisualUrl(topicId: string, vizId: number): string {
   return `/api/v1/topics/${encodeURIComponent(topicId)}/visual/${vizId}/html`;
