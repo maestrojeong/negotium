@@ -7,7 +7,7 @@
  * ask-reply vs ordinary-inject separation, size.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { type DeferredInject, InterSessionQueue } from "#query/active-rooms";
+import { type DeferredInject, DeferredInjectBatcher, InterSessionQueue } from "#query/active-rooms";
 
 const TOPIC = "t-queue";
 
@@ -211,5 +211,87 @@ describe("size", () => {
     expect(queue.size(TOPIC)).toBe(2);
     queue.dequeueAll(TOPIC);
     expect(queue.size(TOPIC)).toBe(0);
+  });
+});
+
+describe("DeferredInjectBatcher", () => {
+  test("holds the first idle-room ask reply and dispatches one merged caller turn", () => {
+    const q = new InterSessionQueue();
+    const scheduled: Array<() => void> = [];
+    const dispatched: DeferredInject[] = [];
+    const batcher = new DeferredInjectBatcher({
+      queue: q,
+      delayMs: 500,
+      isBusy: () => false,
+      dispatch: (entry) => dispatched.push(entry),
+      schedule: (callback) => {
+        scheduled.push(callback);
+        return callback;
+      },
+    });
+
+    const reply = (from: string, requestId: string): DeferredInject => ({
+      topicId: TOPIC,
+      userId: "caller",
+      prompt: `[Reply from ${from}]`,
+      origin: from,
+      requestId,
+      askReplySources: [{ from, requestId }],
+      onDispatched: () => {},
+    });
+
+    expect(batcher.enqueue(reply("design", "ask-1"))).toBe(true);
+    expect(batcher.enqueue(reply("research", "ask-2"))).toBe(true);
+    expect(scheduled).toHaveLength(1);
+    expect(dispatched).toHaveLength(0);
+
+    scheduled[0]();
+
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0].prompt).toContain("Reply from design");
+    expect(dispatched[0].prompt).toContain("Reply from research");
+    expect(dispatched[0].askReplySources?.map((source) => source.requestId)).toEqual([
+      "ask-1",
+      "ask-2",
+    ]);
+    expect(q.size(TOPIC)).toBe(0);
+  });
+
+  test("leaves the batch queued when the caller room is busy", () => {
+    const q = new InterSessionQueue();
+    let scheduled: (() => void) | undefined;
+    const dispatched: DeferredInject[] = [];
+    const batcher = new DeferredInjectBatcher({
+      queue: q,
+      delayMs: 500,
+      isBusy: () => true,
+      dispatch: (entry) => dispatched.push(entry),
+      schedule: (callback) => {
+        scheduled = callback;
+        return callback;
+      },
+    });
+
+    batcher.enqueue(inject({ requestId: "busy-1" }));
+    scheduled?.();
+
+    expect(dispatched).toHaveLength(0);
+    expect(q.size(TOPIC)).toBe(1);
+    expect(q.dequeueAll(TOPIC)?.requestId).toBe("busy-1");
+  });
+
+  test("uses the request-id index after head dequeues and removals", () => {
+    const q = new InterSessionQueue();
+    for (let i = 0; i < 130; i++) {
+      q.enqueue(TOPIC, inject({ requestId: `indexed-${i}`, prompt: String(i) }));
+    }
+    for (let i = 0; i < 70; i++) {
+      expect(q.dequeueNext(TOPIC)?.requestId).toBe(`indexed-${i}`);
+    }
+
+    expect(q.hasRequest(TOPIC, "indexed-100")).toBe(true);
+    expect(q.remove(TOPIC, "indexed-100")?.prompt).toBe("100");
+    expect(q.hasRequest(TOPIC, "indexed-100")).toBe(false);
+    expect(q.size(TOPIC)).toBe(59);
   });
 });

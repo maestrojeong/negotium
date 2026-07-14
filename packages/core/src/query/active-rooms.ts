@@ -180,7 +180,26 @@ export function decideNewQuery(topicId: string, incomingOrigin: string): NewQuer
 // manages in-memory defer/replay.
 
 export class InterSessionQueue {
-  private queue = new Map<string, DeferredInject[]>();
+  private queue = new Map<
+    string,
+    { items: DeferredInject[]; head: number; requestIds: Set<string> }
+  >();
+
+  private compactOrDelete(
+    topicId: string,
+    bucket: { items: DeferredInject[]; head: number; requestIds: Set<string> },
+  ): void {
+    if (bucket.head >= bucket.items.length) {
+      this.queue.delete(topicId);
+      return;
+    }
+    // Keep dequeue O(1) on the hot path; compact only when the reclaimed
+    // prefix is large enough to justify copying the remaining references.
+    if (bucket.head >= 64 && bucket.head * 2 >= bucket.items.length) {
+      bucket.items = bucket.items.slice(bucket.head);
+      bucket.head = 0;
+    }
+  }
 
   /** Enqueue inject if requestId is set and not a duplicate. Returns true if enqueued. */
   enqueue(topicId: string, inject: DeferredInject): boolean {
@@ -191,16 +210,20 @@ export class InterSessionQueue {
       );
       return false;
     }
-    const q = this.queue.get(topicId) ?? [];
-    if (q.some((e) => e.requestId === inject.requestId)) {
+    let bucket = this.queue.get(topicId);
+    if (!bucket) {
+      bucket = { items: [], head: 0, requestIds: new Set<string>() };
+      this.queue.set(topicId, bucket);
+    }
+    if (bucket.requestIds.has(inject.requestId)) {
       logger.info(
         { topicId, requestId: inject.requestId, origin: inject.origin },
         "session inject deduped (existing entry with same requestId)",
       );
       return false;
     }
-    q.push(inject);
-    this.queue.set(topicId, q);
+    bucket.items.push(inject);
+    bucket.requestIds.add(inject.requestId);
     logger.info(
       { topicId, origin: inject.origin, requestId: inject.requestId, depth: inject.depth },
       "session inject enqueued",
@@ -210,15 +233,16 @@ export class InterSessionQueue {
 
   /** True when an entry with this requestId is still queued for this topic. */
   hasRequest(topicId: string, requestId: string): boolean {
-    return this.queue.get(topicId)?.some((e) => e.requestId === requestId) ?? false;
+    return this.queue.get(topicId)?.requestIds.has(requestId) ?? false;
   }
 
   /** Remove and return the next queued inject for this topic, or undefined if empty. */
   dequeueNext(topicId: string): DeferredInject | undefined {
-    const q = this.queue.get(topicId);
-    if (!q?.length) return undefined;
-    const next = q.shift()!;
-    if (q.length === 0) this.queue.delete(topicId);
+    const bucket = this.queue.get(topicId);
+    if (!bucket || bucket.head >= bucket.items.length) return undefined;
+    const next = bucket.items[bucket.head++];
+    if (next.requestId) bucket.requestIds.delete(next.requestId);
+    this.compactOrDelete(topicId, bucket);
     return next;
   }
 
@@ -233,9 +257,9 @@ export class InterSessionQueue {
    * shape. `onDispatched` callbacks from each merged entry are composed.
    */
   dequeueAll(topicId: string): DeferredInject | undefined {
-    const q = this.queue.get(topicId);
-    if (!q?.length) return undefined;
-    const base = q[0];
+    const bucket = this.queue.get(topicId);
+    if (!bucket || bucket.head >= bucket.items.length) return undefined;
+    const base = bucket.items[bucket.head];
     const isAskReplyInject = (e: DeferredInject) => !e.silent && Boolean(e.askReplySources?.length);
     const baseIsAskReplyInject = isAskReplyInject(base);
     const mergeable = (e: DeferredInject) =>
@@ -257,10 +281,14 @@ export class InterSessionQueue {
       (e.onSessionReset ?? null) === (base.onSessionReset ?? null) &&
       (e.bridgeSessionFromHistory ?? false) === (base.bridgeSessionFromHistory ?? false) &&
       (e.onSettled ?? null) === (base.onSettled ?? null);
-    let take = 1;
-    while (take < q.length && mergeable(q[take])) take++;
-    const batch = q.splice(0, take);
-    if (q.length === 0) this.queue.delete(topicId);
+    let end = bucket.head + 1;
+    while (end < bucket.items.length && mergeable(bucket.items[end])) end++;
+    const batch = bucket.items.slice(bucket.head, end);
+    bucket.head = end;
+    for (const entry of batch) {
+      if (entry.requestId) bucket.requestIds.delete(entry.requestId);
+    }
+    this.compactOrDelete(topicId, bucket);
     if (batch.length === 1) return batch[0];
 
     const callbacks = batch
@@ -308,18 +336,65 @@ export class InterSessionQueue {
 
   /** Number of queued injects for a topic. */
   size(topicId: string): number {
-    return this.queue.get(topicId)?.length ?? 0;
+    const bucket = this.queue.get(topicId);
+    return bucket ? bucket.items.length - bucket.head : 0;
   }
 
   /** Remove one queued inject by request id. Used by bounded background queues. */
   remove(topicId: string, requestId: string): DeferredInject | undefined {
-    const q = this.queue.get(topicId);
-    if (!q?.length) return undefined;
-    const index = q.findIndex((entry) => entry.requestId === requestId);
+    const bucket = this.queue.get(topicId);
+    if (!bucket?.requestIds.has(requestId)) return undefined;
+    const index = bucket.items.findIndex(
+      (entry, entryIndex) => entryIndex >= bucket.head && entry.requestId === requestId,
+    );
     if (index < 0) return undefined;
-    const [removed] = q.splice(index, 1);
-    if (q.length === 0) this.queue.delete(topicId);
+    const [removed] = bucket.items.splice(index, 1);
+    bucket.requestIds.delete(requestId);
+    this.compactOrDelete(topicId, bucket);
     return removed;
+  }
+}
+
+export interface DeferredInjectBatcherOptions {
+  queue: InterSessionQueue;
+  delayMs: number;
+  isBusy: (topicId: string) => boolean;
+  dispatch: (inject: DeferredInject) => void;
+  schedule?: (callback: () => void, delayMs: number) => unknown;
+}
+
+/**
+ * Gives caller-bound ask replies a short window to collect before dispatch.
+ * `dequeueAll()` only merges entries that are already queued, so the first
+ * reply must pass through this gate too when its caller room is idle.
+ */
+export class DeferredInjectBatcher {
+  private readonly timers = new Map<string, unknown>();
+  private readonly scheduleTimer: (callback: () => void, delayMs: number) => unknown;
+
+  constructor(private readonly options: DeferredInjectBatcherOptions) {
+    this.scheduleTimer = options.schedule ?? ((callback, delayMs) => setTimeout(callback, delayMs));
+  }
+
+  enqueue(inject: DeferredInject): boolean {
+    const queued = this.options.queue.enqueue(inject.topicId, inject);
+    if (!queued) return false;
+    if (this.timers.has(inject.topicId)) return true;
+
+    const timer = this.scheduleTimer(() => {
+      this.timers.delete(inject.topicId);
+      // A busy room owns the drain in its turn-finally path. Leaving the
+      // entries queued avoids a second dispatcher racing that owner.
+      if (this.options.isBusy(inject.topicId)) return;
+      const batch = this.options.queue.dequeueAll(inject.topicId);
+      if (batch) this.options.dispatch(batch);
+    }, this.options.delayMs);
+    this.timers.set(inject.topicId, timer);
+    return true;
+  }
+
+  isScheduled(topicId: string): boolean {
+    return this.timers.has(topicId);
   }
 }
 

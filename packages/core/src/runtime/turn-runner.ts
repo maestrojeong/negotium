@@ -35,6 +35,7 @@ import {
 import {
   clearRoomQuery,
   type DeferredInject,
+  DeferredInjectBatcher,
   decideNewQuery,
   deferInject,
   getRoomQuery,
@@ -108,7 +109,17 @@ export * from "#runtime/visuals";
 // #query/active-rooms so a new user message on a room can supersede the
 // running turn (Otium abort-on-new-message). See startAiTurn / abortRoom.
 const PLAYWRIGHT_UNAVAILABLE_NOTICE_COOLDOWN_MS = 5 * 60_000;
+const ASK_REPLY_INJECT_BATCH_MS = 500;
 const playwrightUnavailableNoticeAt = new Map<string, number>();
+
+// dequeueAll() is the merge primitive; this short gate makes the first reply
+// to an idle caller wait long enough for sibling ask replies to join it.
+const askReplyInjectBatcher = new DeferredInjectBatcher({
+  queue: interSessionQueue,
+  delayMs: ASK_REPLY_INJECT_BATCH_MS,
+  isBusy: (topicId) => Boolean(getRoomQuery(topicId)),
+  dispatch: (inject) => redispatchInject(inject),
+});
 
 function appendSystemMessage(topicId: string, text: string): MessageDto {
   const message: MessageDto = {
@@ -685,7 +696,13 @@ function redispatchInject(inject: DeferredInject): void {
     agentOverride: inject.agentOverride,
     modelOverride: inject.modelOverride,
     effortOverride: inject.effortOverride,
-    sessionId: inject.sessionId,
+    // A visible inject may have waited behind a user turn which advanced the
+    // topic session after enqueue. Resume that newest main session. Silent
+    // ask forks and externally-owned sessions retain their isolated id.
+    sessionId:
+      !inject.silent && !inject.forkHandle && !inject.onSessionId
+        ? getTopicSessionId(topic.id)
+        : inject.sessionId,
     forkHandle: inject.forkHandle,
     cwd: inject.cwd,
     sessionName: inject.sessionName,
@@ -775,51 +792,52 @@ export async function deliverAskCallbackToCaller(
     return;
   }
 
-  let dispatched = false;
-  const callerQueryId = triggerTopicAiTurn(
-    pending.callerTopicId,
-    pending.callerUserId,
+  const queued = askReplyInjectBatcher.enqueue({
+    topicId: pending.callerTopicId,
+    userId: pending.callerUserId,
     prompt,
-    undefined,
-    {
-      origin: sourceLabel,
-      requestId: pending.requestId,
-      contextId: pending.contextId,
-      askReplySources: [
-        { from: sourceLabel, requestId: pending.requestId, contextId: pending.contextId },
-      ],
-      injectAuthorId: "ai",
-      onDispatched: (queryId: string) => {
-        dispatched = true;
-        void clearPendingAskFile(pending, "injecting_to_caller");
-        logger.info(
-          {
-            requestId: pending.requestId,
-            callerTopicId: pending.callerTopicId,
-            callerQueryId: queryId,
-            source: sourceLabel,
-          },
-          "sessions: ask callback dispatched to caller",
-        );
-      },
+    origin: sourceLabel,
+    requestId: pending.requestId,
+    contextId: pending.contextId,
+    sessionId: getTopicSessionId(pending.callerTopicId),
+    askReplySources: [
+      { from: sourceLabel, requestId: pending.requestId, contextId: pending.contextId },
+    ],
+    onDispatched: (queryId: string) => {
+      void clearPendingAskFile(pending, "injecting_to_caller");
+      logger.info(
+        {
+          requestId: pending.requestId,
+          callerTopicId: pending.callerTopicId,
+          callerQueryId: queryId,
+          source: sourceLabel,
+        },
+        "sessions: batched ask callback dispatched to caller",
+      );
     },
-  );
+  });
 
-  if (callerQueryId) return;
-
-  if (getRoomQuery(pending.callerTopicId)) {
+  if (queued) {
+    // Keep individual replies visible in topic history; only the model-facing
+    // caller turn is coalesced into one prompt.
+    appendAskReplyMessage(pending.callerTopicId, prompt, callerTopic.agent);
     await markPendingAskFile(pending, "queued_for_caller");
     return;
   }
 
-  if (!dispatched) {
-    logger.warn(
-      { requestId: pending.requestId, callerTopicId: pending.callerTopicId, source: sourceLabel },
-      "sessions: ask callback could not start caller AI turn; appending direct fallback",
-    );
-    appendAskReplyMessage(pending.callerTopicId, prompt, callerTopic?.agent);
-    await clearPendingAskFile(pending);
+  // A replay can encounter the same request while its original callback is
+  // still queued. That request is already owned; do not append it twice.
+  if (interSessionQueue.hasRequest(pending.callerTopicId, pending.requestId)) {
+    await markPendingAskFile(pending, "queued_for_caller");
+    return;
   }
+
+  logger.warn(
+    { requestId: pending.requestId, callerTopicId: pending.callerTopicId, source: sourceLabel },
+    "sessions: ask callback could not enter caller batch; appending direct fallback",
+  );
+  appendAskReplyMessage(pending.callerTopicId, prompt, callerTopic.agent);
+  await clearPendingAskFile(pending);
 }
 
 /** Deliver an ask callback error to the caller topic (in-process, no-op if no pending ask). */

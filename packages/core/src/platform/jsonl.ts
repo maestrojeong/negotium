@@ -64,6 +64,12 @@ const LOCK_SUFFIX = ".lock";
 const LOCK_RETRY_MS = 5;
 const LOCK_TIMEOUT_MS = 1500;
 const LOCK_STALE_MS = 5000;
+const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+
+/** Synchronous, non-spinning sleep supported by both Bun and Node MCP workers. */
+function sleepForAppendLock(ms: number): void {
+  Atomics.wait(LOCK_SLEEP, 0, 0, ms);
+}
 
 function tryAcquireAppendLock(lockPath: string): boolean {
   try {
@@ -118,10 +124,10 @@ export function appendJsonlLine(filePath: string, line: string): void {
   if (!acquired) {
     const start = Date.now();
     while (!acquired && Date.now() - start < LOCK_TIMEOUT_MS) {
-      // Bun.sleepSync is the canonical sync sleep on Bun runtimes — Otium
-      // targets Bun exclusively, so this branch is safe. Fallback to a busy
-      // loop is intentionally avoided since it would pin a CPU core.
-      Bun.sleepSync(LOCK_RETRY_MS);
+      // Codex launches built-in stdio MCPs under Node+tsx while the runtime
+      // itself uses Bun. Atomics.wait gives both processes a blocking sleep
+      // without a CPU-spinning fallback or a Bun-only global.
+      sleepForAppendLock(LOCK_RETRY_MS);
       acquired = tryAcquireAppendLock(lockPath);
       // Recheck staleness inside the loop so a writer that crashes mid-wait
       // doesn't leave us spinning the whole timeout.

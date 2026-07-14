@@ -7,7 +7,7 @@
  * macOS 512 B) to the same file.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendJsonlEntry } from "#platform/jsonl";
@@ -93,5 +93,37 @@ describe("appendJsonlEntry — cross-process lock", () => {
     const seen = new Set(parsed.map((p) => p.i));
     expect(seen.size).toBe(N);
     expect(existsSync(`${filePath}.lock`)).toBe(false);
+  });
+
+  test("Node+tsx MCP writer waits on contention without requiring the Bun global", async () => {
+    const filePath = join(workDir, "node-contention.jsonl");
+    const lockPath = `${filePath}.lock`;
+    writeFileSync(lockPath, "");
+
+    const coreDir = join(import.meta.dir, "../../..");
+    const child = Bun.spawn(
+      [
+        "node",
+        "--import",
+        "tsx",
+        "--input-type=module",
+        "--eval",
+        'import { appendJsonlEntry } from "./src/platform/jsonl.ts"; appendJsonlEntry(process.env.JSONL_TEST_FILE, { runtime: "node" });',
+      ],
+      {
+        cwd: coreDir,
+        env: { ...process.env, JSONL_TEST_FILE: filePath },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+
+    await Bun.sleep(75);
+    unlinkSync(lockPath);
+    const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+
+    expect(stderr).toBe("");
+    expect(exitCode).toBe(0);
+    expect(readLines(filePath).map((line) => JSON.parse(line))).toEqual([{ runtime: "node" }]);
   });
 });
