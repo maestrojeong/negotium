@@ -35,6 +35,7 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain("--viz-series-1");
     expect(prompt).toContain("mcp__runtime__send_file");
     expect(prompt).toContain("mcp__runtime__ask_user_question");
+    expect(prompt).toContain("mcp__runtime__schedule_self");
     expect(prompt).toContain('Do not use provider built-in "AskUserQuestion"');
     expect(prompt).toContain("mcp__task__task_create");
     expect(prompt).toContain("TodoWrite");
@@ -67,6 +68,7 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain("mcp__runtime");
     expect(prompt).toContain("send_file");
     expect(prompt).toContain("ask_user_question");
+    expect(prompt).toContain("schedule_self");
     expect(prompt).toContain("mcp__task");
     expect(prompt).toContain("mcp__runtime__set_model");
     expect(prompt).toContain("show_html");
@@ -87,7 +89,9 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain("mcp__task__task_update");
     expect(prompt).toContain("mcp__runtime__set_model");
     expect(prompt).toContain('Do not use provider built-in "AskUserQuestion"');
-    expect(prompt).toContain('The Maestro "Agent" sub-agent tool is still available');
+    expect(prompt).toContain(
+      'Do not use the Maestro "Agent" sub-agent tool either; it is disabled',
+    );
     expect(prompt).not.toContain('"Task", "Agent"');
   });
 

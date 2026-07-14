@@ -12,9 +12,11 @@ import { createInterface } from "node:readline";
 import {
   type AgentKind,
   abortRoom,
+  answerPendingAskUserQuestion,
   appendApiMessage,
   getTopicByNameForUser,
   isAgentKind,
+  type MessageDto,
   registerTopic,
   runtimeBus,
   startAiTurn,
@@ -47,11 +49,33 @@ export async function chatCommand(args: string[]): Promise<void> {
   console.log(`negotium node on :${node.port} — topic "${topic.title}" (agent: ${topic.agent})`);
   console.log("commands: /switch <topic>, /abort, /quit\n");
 
-  const unsubscribe = runtimeBus().subscribe((event) =>
-    renderBusEvent(event, { topicId: topic.id, selfUserId: DEFAULT_USER }),
-  );
-
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "> " });
+  let pendingAsk: {
+    messageId: string;
+    choices: NonNullable<MessageDto["askUserQuestion"]>["choices"];
+  } | null = null;
+  const unsubscribe = runtimeBus().subscribe((event) => {
+    renderBusEvent(event, { topicId: topic.id, selfUserId: DEFAULT_USER });
+    if (event.topicId !== topic.id) return;
+    if (event.type === "message") {
+      const msg = event.payload as MessageDto;
+      if (msg.kind === "ask_user_question" && msg.askUserQuestion) {
+        pendingAsk = { messageId: msg.id, choices: msg.askUserQuestion.choices };
+        rl.prompt();
+      }
+      return;
+    }
+    if (event.type === "message-updated" && pendingAsk) {
+      const payload = event.payload as { messageId?: string; patch?: Partial<MessageDto> };
+      if (
+        payload.messageId === pendingAsk.messageId &&
+        (payload.patch?.askUserQuestion?.expired || payload.patch?.askUserQuestion?.selectedLabel)
+      ) {
+        pendingAsk = null;
+      }
+    }
+  });
+
   rl.prompt();
 
   rl.on("line", (line) => {
@@ -72,7 +96,33 @@ export async function chatCommand(args: string[]): Promise<void> {
     }
     if (text.startsWith("/switch ")) {
       topic = ensureTopic(text.slice("/switch ".length).trim(), agentArg);
+      pendingAsk = null;
       console.log(`→ topic "${topic.title}" (agent: ${topic.agent})`);
+      rl.prompt();
+      return;
+    }
+
+    if (pendingAsk) {
+      const choiceIndex = /^\d+$/.test(text) ? Number(text) - 1 : -1;
+      const choice =
+        (choiceIndex >= 0 ? pendingAsk.choices[choiceIndex] : undefined) ??
+        pendingAsk.choices.find((item) => item.label === text);
+      if (!choice) {
+        console.log("invalid choice — enter one of the displayed numbers or labels.");
+        rl.prompt();
+        return;
+      }
+      const answered = answerPendingAskUserQuestion(
+        topic.id,
+        pendingAsk.messageId,
+        choice.label,
+        DEFAULT_USER,
+      );
+      if (!answered.ok) {
+        console.log(`could not answer: ${answered.error}`);
+      } else {
+        pendingAsk = null;
+      }
       rl.prompt();
       return;
     }

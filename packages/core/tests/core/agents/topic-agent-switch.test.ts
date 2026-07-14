@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { getRegistry } from "#agents/registry";
 import { switchTopicAgent } from "#agents/topic-agent-switch";
 import { SESSION_WORKSPACE_DIR, WORKSPACE_DIR } from "#platform/config";
 import {
@@ -42,7 +43,7 @@ import type { AgentKind } from "#types";
 // writers' `ensureCwdExists` check happy.
 mkdirSync(WORKSPACE_DIR, { recursive: true });
 const TMP_PARENT = mkdtempSync(join(WORKSPACE_DIR, "test-switch-"));
-const writtenRolloutPaths: string[] = [];
+const writtenRollouts: Array<{ agent: AgentKind; sessionId: string }> = [];
 let nextUserId = 9_900_000;
 
 // CI runners have no real agent credentials, so checkAgentAuth (the v0.2.12
@@ -64,14 +65,21 @@ beforeAll(() => {
   process.env.NEGOTIUM_CODEX_AUTH_FILE = CODEX_AUTH_FILE;
 });
 
-afterAll(() => {
+afterAll(async () => {
   for (const [k, v] of Object.entries(PREV_AUTH_ENV)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
-  for (const p of writtenRolloutPaths) {
+  for (const agent of ["claude", "codex", "maestro"] as const) {
+    const sessionIds = [
+      ...new Set(
+        writtenRollouts
+          .filter((rollout) => rollout.agent === agent)
+          .map((rollout) => rollout.sessionId),
+      ),
+    ];
     try {
-      rmSync(p, { force: true });
+      await getRegistry(agent).cleanupRollouts({ cwd: SESSION_WORKSPACE_DIR, sessionIds });
     } catch {}
   }
   try {
@@ -195,6 +203,7 @@ describe("switchTopicAgent — bridged (with history)", () => {
 
       const { bridgedSessionId } = result.outcome;
       expect(bridgedSessionId).toBeTruthy();
+      writtenRollouts.push({ agent: to, sessionId: bridgedSessionId });
 
       // DB session_id flipped to the synthetic id.
       const row = repo.getTopicByName(userId, topic);
@@ -240,6 +249,7 @@ describe("switchTopicAgent — round-trip reuses prior sessionId", () => {
       const first = switchTopicAgent(userId, topic, b);
       expect(first.ok).toBe(true);
       if (!first.ok || first.outcome.kind !== "bridged") return;
+      writtenRollouts.push({ agent: b, sessionId: first.outcome.bridgedSessionId });
 
       // B → A (must re-pick the SEEDED sessionId for A, not mint a new one).
       const second = switchTopicAgent(userId, topic, a);
@@ -247,6 +257,7 @@ describe("switchTopicAgent — round-trip reuses prior sessionId", () => {
       if (!second.ok) return;
       expect(second.outcome.kind).toBe("bridged");
       if (second.outcome.kind !== "bridged") return;
+      writtenRollouts.push({ agent: a, sessionId: second.outcome.bridgedSessionId });
 
       // findLastSessionIdForAgent walks the unified log backwards for the
       // most recent `session` event whose `agent === a`. The seeded sid is

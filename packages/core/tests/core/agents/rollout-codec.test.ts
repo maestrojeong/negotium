@@ -327,6 +327,28 @@ describe("writeCodexRollout", () => {
       ].join("-"),
     );
     expect(turn?.payload?.timezone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    expect(turn?.payload?.sandbox_policy).toEqual({ type: "danger-full-access" });
+    expect(turn?.payload?.approval_policy).toBe("never");
+    expect(turn?.payload?.permission_profile).toBeUndefined();
+
+    const developer = entries.find(
+      (item) => item.type === "response_item" && item.payload?.role === "developer",
+    );
+    const developerText = JSON.stringify(developer?.payload?.content ?? []);
+    expect(developerText).toContain("danger-full-access");
+    expect(developerText).not.toContain("read-only");
+    expect(developerText).not.toContain("/Users/maestrobot");
+
+    const environment = entries.find(
+      (item) =>
+        item.type === "response_item" &&
+        item.payload?.role === "user" &&
+        JSON.stringify(item.payload?.content).includes("<environment_context>"),
+    );
+    const environmentText = JSON.stringify(environment?.payload?.content ?? []);
+    expect(environmentText).toContain(TMP_CWD);
+    expect(environmentText).toContain(turn?.payload?.current_date);
+    expect(environmentText).toContain(turn?.payload?.timezone);
   });
 
   // Codex side of the same round-trip guarantee: codex → claude → codex must

@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { errorResult, type SharedMcpTool, textResult } from "#agents/mcp-tools/common";
 import { WsHub } from "#bus";
-import { appendApiMessage, updateApiMessageAskUserQuestion } from "#storage/api-messages";
+import {
+  appendApiMessage,
+  getApiMessage,
+  updateApiMessageAskUserQuestion,
+} from "#storage/api-messages";
 import { getApiTopicConfig } from "#storage/api-topic-config";
 import { getTopic } from "#storage/api-topics";
 import type { AgentKind } from "#types";
@@ -28,6 +32,10 @@ export type ClaimedAskUserAnswer = {
   queryId?: string;
   resolve: (userId: string) => void;
 };
+
+export type AnswerAskUserQuestionResult =
+  | { ok: true; queryId?: string; answerMessage: MessageDto }
+  | { ok: false; error: string };
 
 type PendingAsk = {
   topicId: string;
@@ -98,6 +106,68 @@ export function claimPendingAskUserQuestion(
     queryId: pending.queryId,
     resolve: (userId: string) => pending.resolve({ ...choice, userId }),
   };
+}
+
+/**
+ * Host-neutral answer path for runtime ask cards. Web, terminal, Telegram, and
+ * future adapters should call this rather than reimplementing pending-map and
+ * persistence ordering. A successful call resumes the blocked MCP tool in the
+ * same provider turn.
+ */
+export function answerPendingAskUserQuestion(
+  topicId: string,
+  messageId: string,
+  label: string,
+  userId: string,
+): AnswerAskUserQuestionResult {
+  const topic = getTopic(topicId);
+  if (!topic?.participants.some((participant) => participant.userId === userId)) {
+    return { ok: false, error: "User is not a member of this topic." };
+  }
+  const existing = getApiMessage(topicId, messageId);
+  const ask = existing?.kind === "ask_user_question" ? existing.askUserQuestion : undefined;
+  if (!existing || existing.deleted || !ask) {
+    return { ok: false, error: "Ask card not found." };
+  }
+  if (ask.expired || ask.selectedLabel) {
+    return { ok: false, error: "This question is no longer awaiting an answer." };
+  }
+  if (!ask.choices.some((choice) => choice.label === label)) {
+    return { ok: false, error: "Invalid choice." };
+  }
+
+  const claimed = claimPendingAskUserQuestion(topicId, messageId, label);
+  if (!claimed) return { ok: false, error: "This question is no longer awaiting an answer." };
+
+  try {
+    const editedAt = new Date().toISOString();
+    const nextAsk = { ...ask, selectedLabel: label };
+    const updated = updateApiMessageAskUserQuestion(topicId, messageId, nextAsk, editedAt);
+    if (!updated) {
+      claimed.resolve("");
+      return { ok: false, error: "Ask card not found." };
+    }
+    WsHub.get().broadcastMessageUpdated(topicId, messageId, {
+      askUserQuestion: nextAsk,
+      editedAt,
+    });
+
+    const answerMessage: MessageDto = {
+      id: randomUUID(),
+      topicId,
+      authorId: userId,
+      text: label,
+      parentId: messageId,
+      createdAt: new Date().toISOString(),
+    };
+    appendApiMessage(answerMessage);
+    WsHub.get().broadcastMessage(topicId, answerMessage);
+    claimed.resolve(userId);
+    return { ok: true, queryId: claimed.queryId, answerMessage };
+  } catch (error) {
+    claimed.resolve("");
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 export function cancelPendingAskUserQuestions(topicId: string, queryId: string): void {

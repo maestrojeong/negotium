@@ -601,6 +601,11 @@ async function streamAgentEvents(
       if (control.abortReason !== AbortReason.Internal) {
         deliverAskError(queryId, topicTitle, "Aborted");
         void settleSubagentFailure(queryId, "중지됨 (사용자가 실행을 멈췄습니다)");
+      } else {
+        // The replay receives a new queryId and registers a fresh callback.
+        // Drop the superseded mapping now so it cannot leak until TTL expiry.
+        const { resolveAskCallback } = await import("#runtime/ask-callbacks");
+        resolveAskCallback(queryId);
       }
     }
   } catch (err) {
@@ -670,6 +675,7 @@ function redispatchInject(inject: DeferredInject): void {
     } catch (err) {
       logger.warn({ err, topicId: inject.topicId }, "ai: deferred settlement hook failed");
     }
+    if (inject.forkHandle) cleanupAgentFork(inject.forkHandle);
     return;
   }
   startAiTurn({
@@ -704,6 +710,7 @@ function redispatchInject(inject: DeferredInject): void {
         ? getTopicSessionId(topic.id)
         : inject.sessionId,
     forkHandle: inject.forkHandle,
+    prepareSession: inject.prepareSession,
     cwd: inject.cwd,
     sessionName: inject.sessionName,
     sessionType: inject.sessionType,
@@ -976,6 +983,8 @@ export function startAiTurn(params: {
   effortOverride?: EffortLevel;
   sessionId?: string | null;
   forkHandle?: ForkHandle;
+  /** Lazily create an isolated provider session immediately before execution. */
+  prepareSession?: DeferredInject["prepareSession"];
   cwd?: string;
   /** Provider conversation namespace. Defaults to the visible topic title. */
   sessionName?: string;
@@ -1007,7 +1016,8 @@ export function startAiTurn(params: {
   const agentOverride = params.agentOverride;
   const modelOverride = params.modelOverride;
   const effortOverride = params.effortOverride;
-  const forkHandle = params.forkHandle;
+  let forkHandle = params.forkHandle;
+  const prepareSession = params.prepareSession;
   const cwd = params.cwd;
   const sessionName = params.sessionName ?? topic.title;
   const sessionType = params.sessionType;
@@ -1037,6 +1047,7 @@ export function startAiTurn(params: {
       effortOverride,
       sessionId,
       forkHandle,
+      prepareSession,
       cwd,
       sessionName,
       sessionType,
@@ -1058,11 +1069,24 @@ export function startAiTurn(params: {
     // The preempted turn was itself a session-inject → re-queue it so the
     // inter-session work isn't lost; it resumes after the user's turn.
     if (running.injectParams) {
-      const queued = deferInject(running.injectParams);
-      if (!queued && running.injectParams.forkHandle) {
-        cleanupAgentFork(running.injectParams.forkHandle);
+      const runningInject = running.injectParams;
+      // A silent ask fork may already contain a partially-consumed provider
+      // rollout. Requeue only its recipe, never that mutable rollout; the old
+      // turn's finally block owns cleanup and the replay prepares a fresh fork.
+      const requeuedInject = runningInject.prepareSession
+        ? { ...runningInject, sessionId: undefined, forkHandle: undefined }
+        : runningInject;
+      const queued = deferInject(requeuedInject);
+      if (queued && runningInject.prepareSession) {
+        // The queued copy retained requestId, so detach it from the dying
+        // control. The async preparation may still publish an old fork after
+        // this abort; finally must clean that fork instead of mistaking it for
+        // the queued replay's resource.
+        running.injectParams = { ...runningInject, requestId: undefined };
+      } else if (!queued && runningInject.forkHandle) {
+        cleanupAgentFork(runningInject.forkHandle);
         running.injectParams = {
-          ...running.injectParams,
+          ...runningInject,
           forkHandle: undefined,
           sessionId: undefined,
         };
@@ -1105,6 +1129,7 @@ export function startAiTurn(params: {
           effortOverride,
           sessionId,
           forkHandle,
+          prepareSession,
           cwd,
           sessionName,
           sessionType,
@@ -1308,6 +1333,22 @@ export function startAiTurn(params: {
   const wantsPlaywright = !isManager && enabledMcp.includes("playwright");
   const wantsBgBash = !isManager && enabledMcp.includes("background-bash");
   async function* runWithPlaywright(): AsyncGenerator<UnifiedEvent> {
+    if (prepareSession && !sessionId) {
+      if (abortController.signal.aborted) return;
+      try {
+        const prepared = await prepareSession();
+        sessionId = prepared.forkId;
+        forkHandle = prepared;
+        control.sessionId = prepared.forkId;
+        if (control.injectParams) {
+          control.injectParams.sessionId = prepared.forkId;
+          control.injectParams.forkHandle = prepared;
+        }
+      } catch (err) {
+        throw new Error(`failed to prepare isolated session: ${stringifyError(err)}`);
+      }
+      if (abortController.signal.aborted) return;
+    }
     let playwrightPort: number | undefined;
     let bgBashPort: number | undefined;
     if (wantsPlaywright) {
@@ -1418,6 +1459,12 @@ export function startAiTurn(params: {
           },
           "ai: retrying query after session expiry",
         );
+        if (!retrySessionId && prepareSession && forkHandle) {
+          // The retry will invoke the recipe and mint a different rollout.
+          // The expired fork is no longer in use after stream cleanup.
+          cleanupAgentFork(forkHandle);
+          forkHandle = undefined;
+        }
         startAiTurn({
           topic,
           userId,
@@ -1435,6 +1482,10 @@ export function startAiTurn(params: {
           effortOverride,
           sessionId: retrySessionId,
           forkHandle,
+          // Keep the recipe so a later user preemption can replay from a
+          // clean snapshot. A non-empty retrySessionId suppresses immediate
+          // preparation in runWithPlaywright.
+          prepareSession,
           cwd,
           sessionName,
           sessionType,
@@ -1543,6 +1594,8 @@ export function triggerTopicAiTurn(
     effortOverride?: EffortLevel;
     sessionId?: string | null;
     forkHandle?: ForkHandle;
+    /** Lazily create an isolated provider session immediately before execution. */
+    prepareSession?: DeferredInject["prepareSession"];
     cwd?: string;
     /** Provider conversation namespace override for isolated internal sessions. */
     sessionName?: string;
@@ -1626,6 +1679,7 @@ export function triggerTopicAiTurn(
     effortOverride: opts?.effortOverride,
     sessionId,
     forkHandle: opts?.forkHandle,
+    prepareSession: opts?.prepareSession,
     cwd: opts?.cwd,
     sessionName: opts?.sessionName,
     sessionType: opts?.sessionType,

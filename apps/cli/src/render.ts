@@ -31,6 +31,13 @@ export function renderBusEvent(event: RuntimeBusEvent, opts: RenderOptions = {})
       }
       const author = msg.authorId === "ai" ? cyan(bold("ai")) : bold(msg.authorId);
       console.log(`${author}${msg.agentType ? dim(` (${msg.agentType})`) : ""}: ${msg.text}`);
+      if (msg.kind === "ask_user_question" && msg.askUserQuestion) {
+        msg.askUserQuestion.choices.forEach((choice, index) => {
+          const description = choice.description ? dim(` — ${choice.description}`) : "";
+          console.log(`  ${index + 1}) ${choice.label}${description}`);
+        });
+        console.log(dim("  choose by number or exact label"));
+      }
       return;
     }
     case "message-updated":

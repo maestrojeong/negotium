@@ -12,8 +12,17 @@
  * clear if the upstream default ever changes; users can still switch to
  * `deepseek-flash` per-topic via `/model deepseek-flash`.
  */
-import { maestroRegistry as upstreamMaestroRegistry } from "maestro-agent-sdk";
+import {
+  setConversationReader,
+  maestroRegistry as upstreamMaestroRegistry,
+} from "maestro-agent-sdk";
 import type { AgentRegistry } from "#agents/contracts";
+import { readConversation } from "#storage/conversations";
+
+// The SDK intentionally defaults its conversation reader to `() => []` so it
+// can stay storage-agnostic. Wire Negotium's unified log into it once at module
+// load; otherwise Maestro forkSession() creates a valid but empty rollout.
+setConversationReader(readConversation as Parameters<typeof setConversationReader>[0]);
 
 export const maestroRegistry: AgentRegistry = {
   ...(upstreamMaestroRegistry as AgentRegistry),

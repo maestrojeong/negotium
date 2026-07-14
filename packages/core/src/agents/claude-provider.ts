@@ -37,26 +37,22 @@ import type { AgentInputAttachment, AgentQueryOptions, EffortLevel, UnifiedEvent
 
 const CLAUDE_DEFAULT_DISALLOWED_TOOLS = [
   "AskUserQuestion",
+  "Workflow",
   "TodoWrite",
   "TaskCreate",
   "TaskUpdate",
   "TaskList",
   "TaskGet",
+  "Task",
+  "Agent",
+  "TaskOutput",
+  "TaskStop",
 ] as const;
-
-const CLAUDE_NATIVE_AGENT_TOOLS = ["Task", "Agent", "TaskOutput", "TaskStop"] as const;
 
 export function buildClaudeDisallowedTools(
   extra: readonly string[] | undefined = undefined,
-  opts: { allowNativeAgents?: boolean } = {},
 ): string[] {
-  return [
-    ...new Set([
-      ...CLAUDE_DEFAULT_DISALLOWED_TOOLS,
-      ...(opts.allowNativeAgents ? [] : CLAUDE_NATIVE_AGENT_TOOLS),
-      ...(extra ?? []),
-    ]),
-  ];
+  return [...new Set([...CLAUDE_DEFAULT_DISALLOWED_TOOLS, ...(extra ?? [])])];
 }
 
 /**
@@ -374,13 +370,11 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
     // through the normal next-user-message path and the user just answers
     // in the topic.
     //
-    // Claude Code's private task store and native subagent tools are not Otium
-    // task state. Use the shared `task` MCP server so the same task list
-    // survives switching between claude, codex, and maestro. When callers pass
-    // explicit custom agents, preserve that existing SDK path.
-    disallowedTools: buildClaudeDisallowedTools(opts.disallowedTools, {
-      allowNativeAgents: Boolean(opts.agents),
-    }),
+    // Claude Code's private task store, Workflow, and native subagent tools are
+    // not Negotium state. They stay disabled even when a caller supplies custom
+    // agent definitions: delegation must go through runtime.spawn_subagent and
+    // task state must go through the required shared task MCP.
+    disallowedTools: buildClaudeDisallowedTools(opts.disallowedTools),
     ...(opts.model ? { model: opts.model } : {}),
     ...(opts.agents
       ? {

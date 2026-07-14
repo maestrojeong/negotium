@@ -12,7 +12,11 @@ export { killOwnedCodexTreesForShutdown } from "#agents/codex-tree-kill";
 export type { ForkHandle } from "#agents/fork";
 export { cleanupAgentFork, forkAgentSession } from "#agents/fork";
 export { runAgent, SUPPORTED_AGENTS } from "#agents/index";
-export { createAskUserToolDefinition } from "#agents/mcp-tools/ask-user";
+export type { AnswerAskUserQuestionResult } from "#agents/mcp-tools/ask-user";
+export {
+  answerPendingAskUserQuestion,
+  createAskUserToolDefinition,
+} from "#agents/mcp-tools/ask-user";
 export type { McpToolResult, SharedMcpTool } from "#agents/mcp-tools/common";
 export { errorResult, textResult } from "#agents/mcp-tools/common";
 export type { SelfConfigContext } from "#agents/mcp-tools/self-config";

@@ -208,6 +208,33 @@ describe("InterSessionQueue (D)", () => {
     expect(q.dequeueAll("r1")?.prompt).toBe("B");
   });
 
+  test("merge: lazy ask forks with different snapshot recipes remain separate", () => {
+    const q = new InterSessionQueue();
+    const prepareA = async () => ({ agent: "maestro" as const, forkId: "a", rolloutPath: "/a" });
+    const prepareB = async () => ({ agent: "maestro" as const, forkId: "b", rolloutPath: "/b" });
+    q.enqueue("r1", {
+      topicId: "r1",
+      userId: "u",
+      prompt: "A",
+      origin: "src",
+      requestId: RID(1),
+      silent: true,
+      prepareSession: prepareA,
+    });
+    q.enqueue("r1", {
+      topicId: "r1",
+      userId: "u",
+      prompt: "B",
+      origin: "src",
+      requestId: RID(2),
+      silent: true,
+      prepareSession: prepareB,
+    });
+
+    expect(q.dequeueAll("r1")?.prepareSession).toBe(prepareA);
+    expect(q.dequeueAll("r1")?.prepareSession).toBe(prepareB);
+  });
+
   test("dequeueAll empties the room queue", () => {
     const q = new InterSessionQueue();
     q.enqueue("r1", { topicId: "r1", userId: "u", prompt: "A", origin: "src", requestId: RID(1) });

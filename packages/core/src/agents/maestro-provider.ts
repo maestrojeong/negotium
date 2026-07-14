@@ -49,10 +49,10 @@
  *     ever makes deferral not worth it.
  *
  * v0.1.42 host overrides:
- *   - `disallowedTools` removes provider-native AskUserQuestion and Task*
- *     tools from the schema/catalog. Otium owns those surfaces via runtime
- *     ask_user_question and the shared task MCP server so state survives
- *     agent switches.
+ *   - `disallowedTools` removes provider-native AskUserQuestion, Agent, and
+ *     Task* tools from the schema/catalog. Otium owns those surfaces via
+ *     runtime ask_user_question/spawn_subagent and the shared task MCP server
+ *     so state survives agent switches.
  *
  * If a future override becomes per-call (cwd-aware, topic-aware, etc.)
  * we lift the static spread into a per-call wrapper. For now the
@@ -60,13 +60,14 @@
  * Object.assign keeps the surface trivial.
  */
 
-import type { HookRegistration } from "maestro-agent-sdk";
-import { maestroProvider as sdkMaestroProvider } from "maestro-agent-sdk";
+import type { HookRegistration, McpResolver } from "maestro-agent-sdk";
+import { maestroProvider as sdkMaestroProvider, setMcpResolver } from "maestro-agent-sdk";
 import {
   referencesRuntimeSecretStorage,
   shouldRedirectVaultTool,
   VAULT_BROKER_REDIRECT_ERROR,
 } from "#agents/vault-tool-policy";
+import { getMcpServersForQuery } from "#platform/mcp-config";
 import { redactVaultSecrets } from "#storage/vault";
 import type { AgentQueryOptions, UnifiedEvent } from "#types";
 
@@ -77,6 +78,7 @@ import type { AgentQueryOptions, UnifiedEvent } from "#types";
  */
 const MAESTRO_DEFAULT_MAX_TOKENS = 32_768;
 const PROVIDER_ASK_USER_TOOL = "AskUserQuestion";
+const PROVIDER_SUBAGENT_TOOL = "Agent";
 const MAESTRO_NATIVE_TASK_TOOLS = [
   "TaskCreate",
   "TaskUpdate",
@@ -85,9 +87,14 @@ const MAESTRO_NATIVE_TASK_TOOLS = [
   "TaskOutput",
   "TaskStop",
 ] as const;
-const MAESTRO_NATIVE_TASK_TOOL_SET = new Set<string>(MAESTRO_NATIVE_TASK_TOOLS);
+const MAESTRO_PROVIDER_OWNED_TOOL_SET = new Set<string>([
+  PROVIDER_ASK_USER_TOOL,
+  PROVIDER_SUBAGENT_TOOL,
+  ...MAESTRO_NATIVE_TASK_TOOLS,
+]);
 const DEFAULT_MAESTRO_DISALLOWED_TOOLS = [
   PROVIDER_ASK_USER_TOOL,
+  PROVIDER_SUBAGENT_TOOL,
   ...MAESTRO_NATIVE_TASK_TOOLS,
 ] as const;
 
@@ -133,19 +140,30 @@ function buildVaultHook(userId: string): HookRegistration {
 }
 
 export function buildMaestroToolHooks(userId: string): HookRegistration[] {
-  return [buildVaultHook(userId), buildNativeTaskBlockHook()];
+  return [buildVaultHook(userId), buildProviderOwnedToolBlockHook()];
 }
 
-function buildNativeTaskBlockHook(): HookRegistration {
+function providerOwnedToolRedirect(toolName: string): string {
+  if (toolName === PROVIDER_ASK_USER_TOOL) {
+    return "Use the runtime ask_user_question MCP tool instead.";
+  }
+  if (toolName === PROVIDER_SUBAGENT_TOOL) {
+    return "Use the runtime spawn_subagent MCP tool instead.";
+  }
+  return (
+    "Use the shared task MCP tools instead " +
+    "(mcp__task__task_create / task_update / task_list / task_get / task_delete)."
+  );
+}
+
+function buildProviderOwnedToolBlockHook(): HookRegistration {
   return {
-    name: "native-task-redirect",
+    name: "provider-owned-tool-redirect",
     pre({ toolName }) {
-      if (!MAESTRO_NATIVE_TASK_TOOL_SET.has(toolName)) return { decision: "allow" };
+      if (!MAESTRO_PROVIDER_OWNED_TOOL_SET.has(toolName)) return { decision: "allow" };
       return {
         decision: "block",
-        error:
-          `${toolName} is disabled in this environment. Use the Otium task MCP tools instead ` +
-          "(mcp__task__task_create / task_update / task_list / task_get / task_delete).",
+        error: `${toolName} is disabled in this environment. ${providerOwnedToolRedirect(toolName)}`,
       };
     },
   };
@@ -158,6 +176,10 @@ export function maestroProvider(opts: AgentQueryOptions): AsyncGenerator<Unified
     throw new Error(`maestroProvider: unexpected agent "${opts.agent}", expected "maestro"`);
   }
   const userId = opts.userId ?? "";
+  // The SDK deliberately ships with an empty MCP resolver. Keep this wiring in
+  // the provider adapter rather than every host bootstrap so a new Negotium
+  // channel cannot accidentally run Maestro with zero runtime/wiki/task MCPs.
+  setMcpResolver(getMcpServersForQuery as McpResolver);
   const callerDisallowedTools = opts.disallowedTools ?? [];
   const callerToolHooks = (opts as { toolHooks?: HookRegistration[] }).toolHooks ?? [];
   // maestro-agent-sdk's type does not yet include Otium's "cron" sessionType;

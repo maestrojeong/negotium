@@ -1,7 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { switchApiTopicAgent } from "#agents/api-topic-agent-switch";
 import { resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
 import { resolveTopicWorkspaceDir } from "#platform/config";
+import { FROM_SELF_SCHEDULE } from "#platform/constants";
+import { appendJsonlEntry } from "#platform/jsonl";
+import { scheduledSessionInboxPath } from "#query/session-inbox-path";
 import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
 import { clearTopicSessionId, getTopic } from "#storage/api-topics";
 import { createDerivedTopic, TopicTitleConflictError } from "#topics/derive";
@@ -12,6 +16,8 @@ import type { TopicDto } from "#types/api";
 export const SELF_CONFIG_MCP_KEY = "topic-config";
 
 export type SelfConfigField = "agent" | "model" | "effort";
+export const SELF_SCHEDULE_MAX_DELAY_SECONDS = 86_400;
+export const SELF_SCHEDULE_MAX_MESSAGE_LENGTH = 10_000;
 
 export interface SelfConfigContext {
   topicId: string;
@@ -222,6 +228,52 @@ export function getSelfConfigEffort(ctx: SelfConfigContext): SelfConfigResult {
   const value = cfg?.effort ?? fallback;
   const lock = cfg?.effortLocked ? " [locked by user]" : "";
   return ok(`Effort (agent=${agent}): ${value}${lock}`);
+}
+
+/**
+ * Persist a one-shot delayed continuation for this topic. The inbox worker
+ * promotes it into the live tell queue after deliverAt, so it survives node
+ * restarts and follows the same busy-room deferral rules as session messages.
+ */
+export function scheduleSelfConfigContinue(
+  ctx: SelfConfigContext,
+  delaySeconds: number,
+  message: string,
+  nowMs = Date.now(),
+): SelfConfigResult {
+  const topic = requireTopic(ctx);
+  if (isResult(topic)) return topic;
+  if (
+    !Number.isInteger(delaySeconds) ||
+    delaySeconds < 1 ||
+    delaySeconds > SELF_SCHEDULE_MAX_DELAY_SECONDS
+  ) {
+    return err(`delay_seconds must be an integer from 1 to ${SELF_SCHEDULE_MAX_DELAY_SECONDS}.`);
+  }
+  const cleanMessage = message.trim();
+  if (!cleanMessage) return err("message is required.");
+  if (cleanMessage.length > SELF_SCHEDULE_MAX_MESSAGE_LENGTH) {
+    return err(`message must be ${SELF_SCHEDULE_MAX_MESSAGE_LENGTH} characters or fewer.`);
+  }
+
+  const requestId = `scheduled-${randomUUID()}`;
+  const deliverAt = new Date(nowMs + delaySeconds * 1000).toISOString();
+  appendJsonlEntry(scheduledSessionInboxPath(ctx.userId, topic.id), {
+    type: "tell",
+    from: FROM_SELF_SCHEDULE,
+    fromTitle: "Scheduled self",
+    fromTopicId: topic.id,
+    message: cleanMessage,
+    depth: 0,
+    requestId,
+    silent: true,
+    deliverAt,
+    timestamp: new Date(nowMs).toISOString(),
+  });
+  return ok(
+    `Scheduled this topic to resume in ${delaySeconds} seconds at ${deliverAt}. ` +
+      `The continuation is durable across node restarts (delivery granularity is about 5 seconds).`,
+  );
 }
 
 export async function spawnSelfConfigTopic(

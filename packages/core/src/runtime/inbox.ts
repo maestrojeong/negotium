@@ -16,14 +16,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { ForkHandle } from "#agents/fork";
 import { WsHub } from "#bus";
 import { deleteProcessingFile, drainOutboxFile, parseOutboxLine } from "#outbox/file-ops";
 import { debouncedFlush, FALLBACK_INTERVAL_MS, watchDir } from "#outbox/utils";
 import { resolveTopicWorkspaceDir, SESSION_INBOX_DIR } from "#platform/config";
-import { FROM_AUTO_CONTINUE } from "#platform/constants";
+import { FROM_AUTO_CONTINUE, FROM_SELF_SCHEDULE } from "#platform/constants";
+import { appendJsonlEntry, readJsonlLines } from "#platform/jsonl";
 import { logger } from "#platform/logger";
-import { topicIdFromSessionInboxFileName } from "#query/session-inbox-path";
+import {
+  sessionInboxPath,
+  topicIdFromScheduledSessionInboxFileName,
+  topicIdFromSessionInboxFileName,
+} from "#query/session-inbox-path";
 import { appendApiMessage, getApiMessage } from "#storage/api-messages";
 import { clearPendingAsk } from "#storage/session-asks";
 import type { AgentKind } from "#types";
@@ -57,6 +61,51 @@ type SessionInboxEntry =
 
 interface PendingAskScope {
   userId: string;
+}
+
+type ScheduledSessionInboxEntry = Extract<SessionInboxEntry, { type: "tell" }> & {
+  deliverAt: string;
+};
+
+function scheduledEntryDeliveryTime(value: unknown): number | null {
+  if (!value || typeof value !== "object") return null;
+  const entry = value as Partial<ScheduledSessionInboxEntry>;
+  const deliverAt = typeof entry.deliverAt === "string" ? Date.parse(entry.deliverAt) : Number.NaN;
+  if (
+    entry.type !== "tell" ||
+    entry.from !== FROM_SELF_SCHEDULE ||
+    typeof entry.message !== "string" ||
+    !entry.message ||
+    typeof entry.requestId !== "string" ||
+    !entry.requestId ||
+    !Number.isFinite(deliverAt)
+  ) {
+    return null;
+  }
+  return deliverAt;
+}
+
+/**
+ * Avoid claiming and rewriting a future-only schedule file. Rewriting emits
+ * fs.watch events which would otherwise create a 200ms self-triggering flush
+ * loop until the earliest entry becomes due. A concurrent append is safe: it
+ * emits its own watch event and the fallback poll covers missed notifications.
+ */
+function scheduledFileNeedsClaim(filePath: string, nowMs: number): boolean {
+  try {
+    return readJsonlLines(filePath).some((line) => {
+      try {
+        const deliverAt = scheduledEntryDeliveryTime(JSON.parse(line));
+        return deliverAt === null || deliverAt <= nowMs;
+      } catch {
+        return true;
+      }
+    });
+  } catch {
+    // The file may have moved between readdir and this preflight. Let the
+    // atomic claim path decide whether anything remains to process.
+    return true;
+  }
 }
 
 function pendingAskScope(userId: string): PendingAskScope {
@@ -185,6 +234,7 @@ const topicWorkerBusy = new Set<string>();
  * Triggered by fs.watch (200ms debounce) + {@link FALLBACK_INTERVAL_MS} fallback poll.
  */
 export async function flushSessionInbox() {
+  sweepScheduledSessionInbox();
   let userDirs: string[];
   try {
     userDirs = readdirSync(SESSION_INBOX_DIR);
@@ -224,6 +274,70 @@ export async function flushSessionInbox() {
         processTopicInbox({ topicKey, filePath: entryPath, userId: uid, topicId, topicName })
           .catch((e) => logger.error({ err: e, topicKey }, "session-inbox: topic worker crashed"))
           .finally(() => topicWorkerBusy.delete(topicKey));
+      }
+    }
+  }
+}
+
+/**
+ * Promote due schedule_self sidecars into the normal session inbox. Files are
+ * atomically claimed with the same crash-recovery primitive as every outbox;
+ * future entries are appended back and due entries retain their requestId.
+ */
+export function sweepScheduledSessionInbox(nowMs = Date.now()): void {
+  let userDirs: string[];
+  try {
+    userDirs = readdirSync(SESSION_INBOX_DIR);
+  } catch {
+    return;
+  }
+
+  for (const userId of userDirs) {
+    const userInboxDir = join(SESSION_INBOX_DIR, userId);
+    let files: string[];
+    try {
+      files = readdirSync(userInboxDir);
+    } catch {
+      continue;
+    }
+    const scheduledFiles = new Set(
+      files
+        .filter((file) => file.endsWith(".schedule") || file.endsWith(".schedule.processing"))
+        .map((file) =>
+          file.endsWith(".processing") ? file.slice(0, -".processing".length) : file,
+        ),
+    );
+
+    for (const file of scheduledFiles) {
+      const topicId = topicIdFromScheduledSessionInboxFileName(file);
+      if (!topicId) continue;
+      const schedulePath = join(userInboxDir, file);
+      const hasProcessingClaim = files.includes(`${file}.processing`);
+      if (!hasProcessingClaim && !scheduledFileNeedsClaim(schedulePath, nowMs)) continue;
+      const drained = drainOutboxFile(schedulePath, "self-schedule");
+      if (!drained) continue;
+      const pending: ScheduledSessionInboxEntry[] = [];
+      const due: ScheduledSessionInboxEntry[] = [];
+
+      for (const line of drained.lines) {
+        const entry = parseOutboxLine<ScheduledSessionInboxEntry>(line, "self-schedule");
+        const deliverAt = scheduledEntryDeliveryTime(entry);
+        if (!entry || deliverAt === null) {
+          logger.warn({ userId, topicId }, "self-schedule: invalid entry dropped");
+          continue;
+        }
+        (deliverAt <= nowMs ? due : pending).push(entry);
+      }
+
+      for (const entry of due) {
+        const { deliverAt: _deliverAt, ...liveEntry } = entry;
+        appendJsonlEntry(sessionInboxPath(userId, topicId), liveEntry);
+      }
+      for (const entry of pending) appendJsonlEntry(schedulePath, entry);
+      deleteProcessingFile(drained.processingPath, "self-schedule", drained.lines.length);
+
+      if (due.length > 0) {
+        logger.info({ userId, topicId, count: due.length }, "self-schedule: due entries promoted");
       }
     }
   }
@@ -425,17 +539,19 @@ async function handleTellEntry(
       entry.requestId ??
       stableLegacyRequestId("legacy-tell", [topicName, entry.from, entry.message, entry.timestamp]);
     const isAutoContinue = entry.from === FROM_AUTO_CONTINUE;
+    const isSelfSchedule = entry.from === FROM_SELF_SCHEDULE;
+    const isHiddenContinue = isAutoContinue || isSelfSchedule;
     triggerTopicAiTurn(
       topic.id,
       String(scope.userId),
-      isAutoContinue ? entry.message : `[Tell from **${fromLabel}**]\n\n${entry.message}`,
+      isHiddenContinue ? entry.message : `[Tell from **${fromLabel}**]\n\n${entry.message}`,
       (topic.agent ?? undefined) as Parameters<typeof triggerTopicAiTurn>[3],
       {
         origin: fromLabel,
         requestId,
         depth: entry.depth,
         from: fromLabel,
-        hideInjectMessage: isAutoContinue,
+        hideInjectMessage: isHiddenContinue,
         injectAuthorId: "system",
       },
     );
@@ -492,54 +608,73 @@ async function handleAskEntry(
     message: entry.message,
   });
 
-  let sessionId: string | undefined | null;
-  let forkHandle: ForkHandle | undefined;
   const { getTopic, getTopicSessionId } = await import("#storage/api-topics");
   const fullTopic = getTopic(topic.id);
-  const parentSessionId = getTopicSessionId(topic.id);
   const agentOverride = (fullTopic?.agent ?? topic.agent ?? undefined) as AgentKind | undefined;
   const cwd = resolveTopicWorkspaceDir(topic.id);
-  if (parentSessionId && agentOverride) {
-    try {
-      const { forkAgentSession } = await import("#agents/fork");
-      const { getRegistry } = await import("#agents/registry");
-      const { resolveModelForAgent } = await import("#agents/model-catalog");
-      const { getApiTopicConfig } = await import("#storage/api-topic-config");
-      const registry = getRegistry(agentOverride);
-      const topicConfig = getApiTopicConfig(topic.id);
-      const model = resolveModelForAgent(
-        agentOverride,
-        topicConfig?.model ?? fullTopic?.defaultModel,
-        registry,
-      );
-      const requestedEffort = topicConfig?.effort ?? fullTopic?.defaultEffort;
-      const effort =
-        requestedEffort && registry.validateEffort(requestedEffort)
-          ? requestedEffort
-          : registry.defaultEffort;
-      forkHandle = await forkAgentSession({
-        agent: agentOverride,
-        parentSessionId,
-        cwd,
-        userId: scope.userId,
-        topicName,
-        title: `ask: ${entry.from} -> ${topicName}`,
-        model,
-        ...(effort ? { effort } : {}),
-      });
-      sessionId = forkHandle.forkId;
-    } catch (err) {
-      clearPendingAskForEntry(scope, entry, topicName, "main-fork-failed");
-      await notifyAskDrop(scope, entry, topicName, "(error: failed to fork target session)");
-      logger.warn(
-        { err, topicName, from: entry.from, requestId, parentSessionId },
-        "session-inbox: failed to fork target session",
-      );
-      return;
-    }
-  } else {
-    sessionId = null;
+  if (!agentOverride) {
+    clearPendingAskForEntry(scope, entry, topicName, "target-agent-missing");
+    await notifyAskDrop(scope, entry, topicName, "(error: target topic has no agent)");
+    return;
   }
+
+  // Delay the snapshot until the queued turn actually claims the target room.
+  // This ensures the fork includes any user turn that was ahead of the ask.
+  const prepareSession = async () => {
+    const { forkAgentSession } = await import("#agents/fork");
+    const { getRegistry } = await import("#agents/registry");
+    const { resolveModelForAgent } = await import("#agents/model-catalog");
+    const { getApiTopicConfig } = await import("#storage/api-topic-config");
+    const { readConversation } = await import("#storage/conversations");
+    const currentTopic = getTopic(topic.id);
+    const registry = getRegistry(agentOverride);
+    const topicConfig = getApiTopicConfig(topic.id);
+    const model = resolveModelForAgent(
+      agentOverride,
+      topicConfig?.model ?? currentTopic?.defaultModel,
+      registry,
+    );
+    const requestedEffort = topicConfig?.effort ?? currentTopic?.defaultEffort;
+    const effort =
+      requestedEffort && registry.validateEffort(requestedEffort)
+        ? requestedEffort
+        : registry.defaultEffort;
+    const parentSessionId = getTopicSessionId(topic.id);
+
+    if (parentSessionId) {
+      try {
+        return await forkAgentSession({
+          agent: agentOverride,
+          parentSessionId,
+          cwd,
+          userId: scope.userId,
+          topicName,
+          title: `ask: ${entry.from} -> ${topicName}`,
+          model,
+          ...(effort ? { effort } : {}),
+        });
+      } catch (err) {
+        // A stale provider session should not make ask_session unusable. The
+        // unified log is the durable source of truth and can seed a new fork.
+        logger.warn(
+          { err, topicName, from: entry.from, requestId, parentSessionId },
+          "session-inbox: native target fork failed; synthesizing from unified history",
+        );
+      }
+    }
+
+    const rollout = registry.writeRollout({
+      cwd,
+      entries: readConversation(scope.userId, topicName),
+      model,
+      ...(effort ? { effort } : {}),
+    });
+    return {
+      agent: agentOverride,
+      forkId: rollout.sessionId,
+      rolloutPath: rollout.rolloutPath,
+    };
+  };
 
   // Trigger the AI turn. The onDispatched callback registers the reply route
   // at the moment the turn actually starts (immediately, or after being deferred
@@ -555,9 +690,18 @@ async function handleAskEntry(
       contextId: entry.contextId,
       depth: (entry.fromDepth ?? 0) + 1,
       silent: true,
-      sessionId,
-      forkHandle,
+      prepareSession,
       cwd,
+      onSettled: (result) => {
+        if (result.queryId || result.kind !== "error") return;
+        clearPendingAskForEntry(scope, entry, topicName, "target-unavailable-before-dispatch");
+        void notifyAskDrop(
+          scope,
+          entry,
+          topicName,
+          `(error: target topic became unavailable before dispatch)`,
+        );
+      },
       onDispatched: (queryId: string) => {
         registerAskCallback({
           requestId,

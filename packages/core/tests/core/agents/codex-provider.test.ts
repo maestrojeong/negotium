@@ -16,7 +16,7 @@ const codexAuthPath = join(codexAuthDir, "auth.json");
 writeFileSync(codexAuthPath, "{}", "utf8");
 process.env.NEGOTIUM_CODEX_AUTH_FILE = codexAuthPath;
 
-const resumeRunStreamed = mock(async () => {
+const resumeRunStreamed = mock(async (_prompt: string, _opts?: Record<string, unknown>) => {
   throw new Error("thread/resume failed: no rollout found");
 });
 
@@ -89,6 +89,7 @@ describe("codexProvider stale rollout recovery", () => {
         mcp_servers: {},
       },
     });
+    expect(resumeRunStreamed.mock.calls[0]?.[0]).toBe("[System Instructions]\nsystem\n\nhello");
     expect(startRunStreamed.mock.calls[0]?.[0]).toBe("[System Instructions]\nsystem\n\nhello");
     expect(events).toContainEqual({
       type: "session",

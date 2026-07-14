@@ -91,6 +91,7 @@ describe("negotium MCP endpoint", () => {
       "send_files",
       "show_html",
       "set_model",
+      "schedule_self",
     ]) {
       expect(names).toContain(expected);
     }

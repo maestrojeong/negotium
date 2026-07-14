@@ -303,8 +303,8 @@ function prependFirstEvent(
  * Same UnifiedEvent contract as claudeProvider. Uses @openai/codex-sdk.
  *
  * Notes:
- *   - Codex has no `systemPrompt` option; we prepend it to the first turn's
- *     prompt when no sessionId is given (i.e. when the thread is brand new).
+ *   - Codex has no `systemPrompt` option; prepend the current topic/system
+ *     instructions on every invocation, including resumed synthetic threads.
  *   - Per-turn MCP isolation is achieved via CodexOptions.config.mcp_servers,
  *     so the global ~/.codex/config.toml stays untouched.
  *   - Streaming token-by-token text deltas are not exposed by the SDK; only
@@ -378,11 +378,13 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
 
   let currentSessionId = opts.sessionId;
 
-  // Codex SDK has no systemPrompt option — prepend to the first turn only.
+  // Codex SDK has no systemPrompt option. A resumed thread may have been
+  // synthesized from a captured shell, so always refresh the current runtime
+  // instructions instead of trusting historical developer/environment data.
   let thread = opts.sessionId
     ? codex.resumeThread(opts.sessionId, threadOptions)
     : codex.startThread(threadOptions);
-  let prompt = promptForThread(opts, !opts.sessionId);
+  let prompt = promptForThread(opts, true);
 
   let agentTextSoFar = "";
   let finalText = "";

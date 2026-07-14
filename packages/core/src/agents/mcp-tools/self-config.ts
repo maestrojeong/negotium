@@ -6,8 +6,11 @@ import {
   getSelfConfigEffort,
   getSelfConfigModel,
   SELF_CONFIG_MCP_KEY,
+  SELF_SCHEDULE_MAX_DELAY_SECONDS,
+  SELF_SCHEDULE_MAX_MESSAGE_LENGTH,
   type SelfConfigContext,
   type SelfConfigResult,
+  scheduleSelfConfigContinue,
   setSelfConfigAgent,
   setSelfConfigEffort,
   setSelfConfigModel,
@@ -94,6 +97,27 @@ export function createSelfConfigToolDefinitions(
       schema: {},
       async handler() {
         return mcpResult(getSelfConfigEffort(getCtx()));
+      },
+    },
+    {
+      name: "schedule_self",
+      description:
+        "Schedule one durable delayed continuation for THIS topic without blocking the current turn. Use it to check a long-running operation or resume work later. The future message must be self-contained. For recurring or longer-lived schedules, use cron-manager instead.",
+      schema: {
+        delay_seconds: z
+          .number()
+          .int()
+          .min(1)
+          .max(SELF_SCHEDULE_MAX_DELAY_SECONDS)
+          .describe("Seconds before this topic resumes, from 1 through 86400 (24 hours)."),
+        message: z
+          .string()
+          .min(1)
+          .max(SELF_SCHEDULE_MAX_MESSAGE_LENGTH)
+          .describe("Self-contained instruction delivered to your future turn."),
+      },
+      async handler({ delay_seconds, message }: { delay_seconds: number; message: string }) {
+        return mcpResult(scheduleSelfConfigContinue(getCtx(), delay_seconds, message));
       },
     },
     {

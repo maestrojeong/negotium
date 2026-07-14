@@ -5,6 +5,7 @@ describe("claudeProvider host tool policy", () => {
   test("disallows native task store and subagent tools by default", () => {
     expect(buildClaudeDisallowedTools()).toEqual([
       "AskUserQuestion",
+      "Workflow",
       "TodoWrite",
       "TaskCreate",
       "TaskUpdate",
@@ -17,9 +18,20 @@ describe("claudeProvider host tool policy", () => {
     ]);
   });
 
-  test("preserves explicit custom-agent SDK path while still blocking private task stores", () => {
-    expect(buildClaudeDisallowedTools(["Bash", "TaskCreate"], { allowNativeAgents: true })).toEqual(
-      ["AskUserQuestion", "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "Bash"],
-    );
+  test("keeps native subagents blocked even when callers add other policy entries", () => {
+    expect(buildClaudeDisallowedTools(["Bash", "TaskCreate"])).toEqual([
+      "AskUserQuestion",
+      "Workflow",
+      "TodoWrite",
+      "TaskCreate",
+      "TaskUpdate",
+      "TaskList",
+      "TaskGet",
+      "Task",
+      "Agent",
+      "TaskOutput",
+      "TaskStop",
+      "Bash",
+    ]);
   });
 });

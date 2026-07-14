@@ -26,7 +26,11 @@ import {
   setTopicSessionId,
   upsertTopic,
 } from "#storage/api-topics";
-import { appendConversationEventStrict, cloneConversationLog } from "#storage/conversations";
+import {
+  appendConversationEventStrict,
+  cloneConversationLog,
+  readConversation,
+} from "#storage/conversations";
 import { db } from "#storage/forum-db";
 import { isLegacySharedGeneral } from "#topics/personal-general";
 import type { AgentKind } from "#types";
@@ -186,23 +190,35 @@ export async function createDerivedTopic(
       if (copyHistory) {
         const parentSessionId = getTopicSessionId(sourceTopicId);
         if (parentSessionId) {
-          const fork = await forkAgentSession({
-            agent,
-            parentSessionId,
+          try {
+            const fork = await forkAgentSession({
+              agent,
+              parentSessionId,
+              cwd,
+              userId,
+              topicName: topic.title,
+              title,
+              model: rolloutModel,
+              ...(rolloutEffort ? { effort: rolloutEffort } : {}),
+            });
+            sessionId = fork.forkId;
+            rollbackHandle = fork;
+          } catch (err) {
+            logger.warn(
+              { err, sourceTopicId, title: topic.title, agent, parentSessionId },
+              "createDerivedTopic: native fork failed; synthesizing from unified history",
+            );
+          }
+        }
+        if (!sessionId) {
+          const rollout = registry.writeRollout({
             cwd,
-            userId,
-            topicName: topic.title,
-            title,
+            entries: readConversation(userId, topic.title),
             model: rolloutModel,
             ...(rolloutEffort ? { effort: rolloutEffort } : {}),
           });
-          sessionId = fork.forkId;
-          rollbackHandle = fork;
-        } else {
-          logger.info(
-            { sourceTopicId, title: topic.title, agent },
-            "createDerivedTopic: fork requested without active source session; creating topic without SDK fork",
-          );
+          sessionId = rollout.sessionId;
+          rollbackHandle = rollbackHandleFor(agent, rollout.sessionId, rollout.rolloutPath);
         }
       } else {
         const rollout = registry.writeRollout({

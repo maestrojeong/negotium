@@ -79,15 +79,43 @@ function uuidv7(): string {
   ].join("-");
 }
 
-/** Mutate `<environment_context>` payload to point at our cwd. */
-function patchEnvContextCwd(envContext: Record<string, unknown>, cwd: string): void {
+/** Replace captured developer metadata with the policy used for resumed turns. */
+function patchDeveloperSetup(developerSetup: Record<string, unknown>): void {
+  const payload = developerSetup.payload as Record<string, unknown> | undefined;
+  if (!payload) return;
+  payload.content = [
+    {
+      type: "input_text",
+      text: [
+        "<permissions instructions>",
+        "Filesystem sandboxing is disabled for this runtime turn (`danger-full-access`).",
+        "Approval policy is `never`.",
+        "</permissions instructions>",
+      ].join("\n"),
+    },
+  ];
+}
+
+/** Mutate captured `<environment_context>` fields to the current runtime. */
+function patchEnvContext(
+  envContext: Record<string, unknown>,
+  cwd: string,
+  currentDate: string,
+  timezone: string,
+): void {
   const payload = envContext.payload as Record<string, unknown> | undefined;
   if (!payload) return;
   const content = payload.content as Array<Record<string, unknown>> | undefined;
   if (!Array.isArray(content)) return;
   for (const block of content) {
     if (block.type === "input_text" && typeof block.text === "string") {
-      block.text = block.text.replace(/<cwd>[^<]*<\/cwd>/, `<cwd>${cwd}</cwd>`);
+      block.text = block.text
+        .replace(/<cwd>[^<]*<\/cwd>/, `<cwd>${cwd}</cwd>`)
+        .replace(
+          /<current_date>[^<]*<\/current_date>/,
+          `<current_date>${currentDate}</current_date>`,
+        )
+        .replace(/<timezone>[^<]*<\/timezone>/, `<timezone>${timezone}</timezone>`);
     }
   }
 }
@@ -123,6 +151,12 @@ export function writeCodexRollout(opts: CodexRolloutOptions): CodexRolloutResult
   const pairs = opts.pairs ?? extractChatPairs(opts.entries ?? []);
   const now = new Date();
   const tsIso = now.toISOString();
+  const currentDate = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("-");
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || process.env.TZ || "UTC";
 
   // Captured 5-entry SDK shell (session_meta, task_started, developer setup,
   // environment_context, turn_context). Cloned per call so the cached
@@ -139,22 +173,21 @@ export function writeCodexRollout(opts: CodexRolloutOptions): CodexRolloutResult
 
   const developerSetup = clone(shell.developerSetup);
   (developerSetup as Record<string, unknown>).timestamp = tsIso;
+  patchDeveloperSetup(developerSetup);
 
   const envContext = clone(shell.envContext);
   (envContext as Record<string, unknown>).timestamp = tsIso;
-  patchEnvContextCwd(envContext, opts.cwd);
+  patchEnvContext(envContext, opts.cwd, currentDate, timezone);
 
   const turnContext = clone(shell.turnContext);
   (turnContext as Record<string, unknown>).timestamp = tsIso;
   const turnPayload = turnContext.payload as Record<string, unknown>;
   turnPayload.cwd = opts.cwd;
-  turnPayload.current_date = [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, "0"),
-    String(now.getDate()).padStart(2, "0"),
-  ].join("-");
-  turnPayload.timezone =
-    Intl.DateTimeFormat().resolvedOptions().timeZone || process.env.TZ || "UTC";
+  turnPayload.current_date = currentDate;
+  turnPayload.timezone = timezone;
+  turnPayload.approval_policy = "never";
+  turnPayload.sandbox_policy = { type: "danger-full-access" };
+  delete turnPayload.permission_profile;
   if (opts.model) turnPayload.model = opts.model;
   const collaborationMode = turnPayload.collaboration_mode as Record<string, unknown> | undefined;
   const collaborationSettings = collaborationMode?.settings as Record<string, unknown> | undefined;

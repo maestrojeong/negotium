@@ -19,6 +19,9 @@ import type { AskReplySource } from "#storage/session-asks";
 import type { AgentKind } from "#types";
 import { AbortReason } from "./types";
 
+/** Lazily create an isolated provider session immediately before execution. */
+export type PrepareInjectSession = () => Promise<ForkHandle>;
+
 /** A turn started by a session-inject, replayed when its room frees up. */
 export interface DeferredInject {
   topicId: string;
@@ -44,6 +47,8 @@ export interface DeferredInject {
   sessionId?: string | null;
   /** Rollout file backing a synthetic/native fork; cleaned when the turn finishes. */
   forkHandle?: ForkHandle;
+  /** Build a fresh isolated session at dispatch time (used by ask_session). */
+  prepareSession?: PrepareInjectSession;
   /** Working directory override for provider-native resumed sessions. */
   cwd?: string;
   /** Conversation/session namespace override (cron jobs keep isolated rollouts). */
@@ -274,6 +279,7 @@ export class InterSessionQueue {
       (e.effortOverride ?? null) === (base.effortOverride ?? null) &&
       (e.sessionId ?? null) === (base.sessionId ?? null) &&
       (e.forkHandle?.forkId ?? null) === (base.forkHandle?.forkId ?? null) &&
+      (e.prepareSession ?? null) === (base.prepareSession ?? null) &&
       (e.cwd ?? null) === (base.cwd ?? null) &&
       (e.sessionName ?? null) === (base.sessionName ?? null) &&
       (e.sessionType ?? null) === (base.sessionType ?? null) &&

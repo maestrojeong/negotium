@@ -4,9 +4,10 @@ import { buildMaestroDisallowedTools, buildMaestroToolHooks } from "#agents/maes
 import { vaultDel, vaultSet } from "#storage/vault";
 
 describe("maestroProvider host tool policy", () => {
-  test("disallows provider-native ask/task tools through the SDK denylist", () => {
+  test("disallows provider-native ask/task/subagent tools through the SDK denylist", () => {
     expect(buildMaestroDisallowedTools()).toEqual([
       "AskUserQuestion",
+      "Agent",
       "TaskCreate",
       "TaskUpdate",
       "TaskList",
@@ -16,6 +17,7 @@ describe("maestroProvider host tool policy", () => {
     ]);
     expect(buildMaestroDisallowedTools(["Bash", "AskUserQuestion"])).toEqual([
       "AskUserQuestion",
+      "Agent",
       "TaskCreate",
       "TaskUpdate",
       "TaskList",
@@ -75,21 +77,29 @@ describe("maestroProvider host tool policy", () => {
     }
   });
 
-  test("blocks stale native task tool calls in runtime hooks", async () => {
+  test("blocks stale provider-owned task, ask, and subagent calls in runtime hooks", async () => {
     const hooks = buildMaestroToolHooks("user-1");
-    const nativeTaskHook = hooks.find((hook) => hook.name === "native-task-redirect");
-    expect(nativeTaskHook).toBeDefined();
+    const policyHook = hooks.find((hook) => hook.name === "provider-owned-tool-redirect");
+    expect(policyHook).toBeDefined();
 
-    const blocked = await nativeTaskHook?.pre?.({
+    const blocked = await policyHook?.pre?.({
       toolName: "TaskCreate",
       input: {},
     });
     expect(blocked?.decision).toBe("block");
     if (blocked?.decision === "block") {
-      expect(blocked.error).toContain("Otium task MCP");
+      expect(blocked.error).toContain("shared task MCP");
     }
 
-    const allowed = await nativeTaskHook?.pre?.({
+    const ask = await policyHook?.pre?.({ toolName: "AskUserQuestion", input: {} });
+    expect(ask?.decision).toBe("block");
+    if (ask?.decision === "block") expect(ask.error).toContain("ask_user_question");
+
+    const agent = await policyHook?.pre?.({ toolName: "Agent", input: {} });
+    expect(agent?.decision).toBe("block");
+    if (agent?.decision === "block") expect(agent.error).toContain("spawn_subagent");
+
+    const allowed = await policyHook?.pre?.({
       toolName: "Read",
       input: {},
     });

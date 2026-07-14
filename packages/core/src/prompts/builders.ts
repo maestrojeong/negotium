@@ -179,6 +179,10 @@ function buildRuntimeToolSection(agentKind: AgentKind, canSpawnSubagents = false
     agentKind === "codex"
       ? `When you need a blocking user choice, call the \`ask_user_question\` function in the \`${runtimeNamespace}\` namespace with { question: "...", choices: [{ label: "...", description?: "..." }] }.`
       : `When you need a blocking user choice, call the MCP tool "${runtimeNamespace}__ask_user_question" with { question: "...", choices: [{ label: "...", description?: "..." }] }.`;
+  const scheduleSelfToolLine =
+    agentKind === "codex"
+      ? `For a one-shot delayed continuation within 24 hours, call the \`schedule_self\` function in the \`${runtimeNamespace}\` namespace with { delay_seconds: number, message: "self-contained future instruction" }. Use cron-manager for recurring schedules.`
+      : `For a one-shot delayed continuation within 24 hours, call the MCP tool "${runtimeNamespace}__schedule_self" with { delay_seconds: number, message: "self-contained future instruction" }. Use cron-manager for recurring schedules.`;
   const taskToolLine =
     agentKind === "codex"
       ? `For task tracking, use \`task_create\`, \`task_update\`, \`task_list\`, \`task_get\`, and \`task_delete\` functions in the \`${taskNamespace}\` namespace.`
@@ -201,11 +205,7 @@ function buildRuntimeToolSection(agentKind: AgentKind, canSpawnSubagents = false
     agentKind === "claude"
       ? `Do not use provider-native todo/task/subagent tools such as "TodoWrite", "Task", "Agent", "TaskCreate", "TaskUpdate", "TaskList", "TaskOutput", or "TaskStop"; they are disabled or not shared across agents.${canSpawnSubagents ? " For delegation, use the runtime spawn_subagent tool instead." : ""}`
       : agentKind === "maestro"
-        ? `Do not use provider-native task-store tools such as "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput", or "TaskStop"; they are disabled or not shared across agents. ${
-            canSpawnSubagents
-              ? 'Do not use the Maestro "Agent" sub-agent tool for delegation either — use the runtime spawn_subagent tool instead, so the work is visible in its own room and the result returns here automatically.'
-              : 'The Maestro "Agent" sub-agent tool is still available for focused delegation; do not use it as task state.'
-          }`
+        ? `Do not use provider-native task-store tools such as "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput", or "TaskStop"; they are disabled or not shared across agents. Do not use the Maestro "Agent" sub-agent tool either; it is disabled.${canSpawnSubagents ? " Use the runtime spawn_subagent tool for delegation so work is visible in its own room and the result returns here automatically." : " Delegation is unavailable in this room."}`
         : 'Do not use provider-native todo/plan surfaces such as "todo_list" or "update_plan"; they are ignored or not shared across agents.';
 
   const shared = [
@@ -219,6 +219,7 @@ function buildRuntimeToolSection(agentKind: AgentKind, canSpawnSubagents = false
     "Visual HTML runs in a sandbox. Use inline CSS/JS only; local buttons, tabs, filters, forms with preventDefault, canvas, and SVG interactions are supported. External navigation, scripts, network fetches, form posts, popups, and parent-window access are blocked.",
     askUserToolLine,
     'Do not use provider built-in "AskUserQuestion"; it is disabled or unsupported in this headless chat runtime. Use the runtime ask_user_question tool instead.',
+    scheduleSelfToolLine,
     ...(visualDesignGuide() ? ["", visualDesignGuide()] : []),
     "",
     "## Shared Tasks",

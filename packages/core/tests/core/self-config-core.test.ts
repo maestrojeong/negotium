@@ -1,12 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, statSync, unlinkSync } from "node:fs";
 import {
   getSelfConfigModel,
+  scheduleSelfConfigContinue,
   setSelfConfigAgent,
   setSelfConfigEffort,
   setSelfConfigModel,
 } from "#agents/self-config-core";
 import { purgeTopicLogs } from "#agents/topic-cleanup";
 import { resolveTopicWorkspaceDir } from "#platform/config";
+import { readJsonlLines } from "#platform/jsonl";
+import { scheduledSessionInboxPath, sessionInboxPath } from "#query/session-inbox-path";
+import { sweepScheduledSessionInbox } from "#runtime/inbox";
 import {
   deleteApiTopicConfig,
   getApiTopicConfig,
@@ -54,6 +59,10 @@ afterEach(async () => {
     }
     deleteApiTopicConfig(id);
     deleteTopic(id);
+    for (const path of [scheduledSessionInboxPath(USER, id), sessionInboxPath(USER, id)]) {
+      if (existsSync(path)) unlinkSync(path);
+      if (existsSync(`${path}.processing`)) unlinkSync(`${path}.processing`);
+    }
   }
 });
 
@@ -95,6 +104,53 @@ describe("self-config core", () => {
     expect(result.isError).toBe(true);
     expect(result.text).toContain("not a valid effort");
     expect(getApiTopicConfig(topicId)?.effort).toBeUndefined();
+  });
+
+  test("schedule_self persists and promotes a durable delayed continuation", () => {
+    const topicId = seedTopic("codex");
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+
+    const result = scheduleSelfConfigContinue(
+      { topicId, userId: USER },
+      30,
+      "Check the build and report its final status.",
+      now,
+    );
+
+    expect(result.isError).toBeUndefined();
+    const schedulePath = scheduledSessionInboxPath(USER, topicId);
+    const scheduled = JSON.parse(readJsonlLines(schedulePath)[0]!) as Record<string, unknown>;
+    expect(scheduled).toMatchObject({
+      type: "tell",
+      from: "self-schedule",
+      message: "Check the build and report its final status.",
+      deliverAt: "2026-07-14T12:00:30.000Z",
+    });
+
+    const futureFileInode = statSync(schedulePath).ino;
+    sweepScheduledSessionInbox(now + 29_000);
+    expect(existsSync(sessionInboxPath(USER, topicId))).toBe(false);
+    expect(statSync(schedulePath).ino).toBe(futureFileInode);
+
+    sweepScheduledSessionInbox(now + 30_000);
+    const promoted = JSON.parse(readJsonlLines(sessionInboxPath(USER, topicId))[0]!) as Record<
+      string,
+      unknown
+    >;
+    expect(promoted).toMatchObject({
+      type: "tell",
+      from: "self-schedule",
+      message: "Check the build and report its final status.",
+    });
+    expect(promoted.deliverAt).toBeUndefined();
+  });
+
+  test("schedule_self rejects delays beyond 24 hours", () => {
+    const topicId = seedTopic("codex");
+    const result = scheduleSelfConfigContinue({ topicId, userId: USER }, 86_401, "Too far away");
+
+    expect(result.isError).toBe(true);
+    expect(existsSync(scheduledSessionInboxPath(USER, topicId))).toBe(false);
   });
 
   test("set_agent clears stale model/effort overrides and provider session id", () => {

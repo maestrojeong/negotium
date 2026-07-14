@@ -96,13 +96,9 @@ export function runArchiverTurn(params: RunArchiverTurnParams): void {
 
   const wikiDir = getSharedWikiDir();
   const safeTopic = sanitizeTopicName(topicTitle, true);
-  // The archiver runs on claude by default. Two runtime-specific reasons over the
-  // prompt's declared maestro/deepseek-pro: (1) only the claude provider wires
-  // the wiki MCP into a turn — the maestro provider forwards opts straight to
-  // its SDK and never receives a computed `mcpServers`, so a maestro archiver
-  // gets zero wiki tools; (2) the prompt's `model:` frontmatter is a maestro
-  // model, invalid for claude — so we let the claude registry default pick the
-  // model unless a caller overrides it with a matching agent.
+  // Keep the established Claude default for archive quality and compatibility.
+  // Every provider now receives the same host-resolved wiki MCP; callers may
+  // override both agent and model as a matching pair when desired.
   const agent: AgentKind = params.agent ?? "claude";
   const model = params.model;
 
