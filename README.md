@@ -97,7 +97,7 @@ negotium topics
 
 negotium mcp list|add|remove|enable|disable
 negotium vault list|set|get|del
-negotium cron list|create|inspect|run|pause|resume|reset|delete
+negotium cron list|create|inspect|logs|run|pause|resume|restart|kill|reset|delete
 ```
 
 Inside terminal chat:

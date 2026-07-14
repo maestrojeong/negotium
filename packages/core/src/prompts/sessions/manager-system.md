@@ -29,6 +29,7 @@ When the user asks to run a room on another node, use the node-manager tools rat
 Use the `cron-manager` MCP tools when the user asks to create, list, inspect, pause/resume, restart, reset, repair, or delete scheduled tasks.
 Resolve the target topic first when the request names a room; use `cron_list_scripts` before creation if the script name is unclear.
 Jobs in one topic share a Cron conversation. Explain that `cron_reset` clears the whole topic Cron context.
+Use `cron_kill` for an active or queued run; it terminates the owned agent/script tree through the node scheduler.
 
 ## Topic Creation
 When creating a topic:

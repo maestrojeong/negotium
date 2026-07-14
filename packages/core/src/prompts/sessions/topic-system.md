@@ -39,7 +39,7 @@ If vault keys are available, reference secrets in tool inputs with the documente
 For long-running shell work, prefer the background-bash MCP tools when they are available. Their results are injected back into the session; avoid polling unless you need live output.
 
 ## Cron Jobs
-Use the `cron-manager` MCP tools to create, inspect, run, pause/resume, reset, or delete scheduled topic tasks.
+Use the `cron-manager` MCP tools to create, inspect/log, run, pause/resume/restart, kill, reset, reconcile, or delete scheduled topic tasks.
 Cron scripts must already exist in the node Cron jobs directory; use `cron_list_scripts` before creating a job when unsure.
 Jobs in one topic share a Cron conversation. `cron_reset` therefore resets the topic's whole Cron context, not one job.
 
