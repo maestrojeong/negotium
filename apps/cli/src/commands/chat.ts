@@ -20,7 +20,7 @@ import {
   startAiTurn,
   type TopicDto,
 } from "@negotium/core";
-import { startNode } from "../node";
+import { startDefaultNode } from "../node";
 import { renderBusEvent } from "../render";
 
 const DEFAULT_USER = "local";
@@ -41,7 +41,7 @@ export async function chatCommand(args: string[]): Promise<void> {
   const topicArg = args.find((a) => !a.startsWith("--"));
   const agentArg = args.find((a) => a.startsWith("--agent="))?.slice("--agent=".length);
 
-  const node = startNode();
+  const node = await startDefaultNode();
   let topic = ensureTopic(topicArg ?? DEFAULT_TOPIC, agentArg);
 
   console.log(`negotium node on :${node.port} — topic "${topic.title}" (agent: ${topic.agent})`);

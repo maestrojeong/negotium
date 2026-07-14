@@ -11,19 +11,26 @@
  */
 
 import {
+  DATA_DIR,
   killAllBgBash,
   killAllPlaywright,
   logger,
   NEGOTIUM_PORT,
+  type NegotiumNodeModule,
   type NodeMcpEntry,
+  nodeRequestHandlerNames,
   onShutdown,
+  RUN_DIR,
+  runNodeRequestHandlers,
   runShutdown,
+  runtimeBus,
   STATE_DIR,
+  type StartedNegotiumNodeModules,
   setNodeMcpServers,
   setRuntimeMcpPort,
+  startNegotiumNodeModules,
   startSessionInboxWorker,
-  nodeRequestHandlerNames,
-  runNodeRequestHandlers,
+  WORKSPACE_DIR,
 } from "@negotium/core";
 import { handleNegotiumMcpRequest } from "@negotium/mcp";
 import { McpHost, McpManifest } from "@negotium/mcp-host";
@@ -67,7 +74,9 @@ async function wireNodeMcps(host: McpHost, manifest: McpManifest): Promise<void>
   }
 }
 
-export function startNode(opts: { port?: number } = {}): NodeHandle {
+export function startNode(
+  opts: { port?: number; modules?: readonly NegotiumNodeModule[] } = {},
+): NodeHandle {
   const server = Bun.serve({
     port: opts.port ?? NEGOTIUM_PORT,
     hostname: "127.0.0.1",
@@ -90,6 +99,21 @@ export function startNode(opts: { port?: number } = {}): NodeHandle {
   if (!port) throw new Error("negotium node failed to bind a port");
   setRuntimeMcpPort(port);
   const stopInbox = startSessionInboxWorker();
+  let modules: StartedNegotiumNodeModules;
+  try {
+    modules = startNegotiumNodeModules(opts.modules ?? [], {
+      port,
+      stateDir: STATE_DIR,
+      dataDir: DATA_DIR,
+      runDir: RUN_DIR,
+      workspaceDir: WORKSPACE_DIR,
+      bus: runtimeBus(),
+    });
+  } catch (error) {
+    stopInbox();
+    server.stop(true);
+    throw error;
+  }
 
   // Node-assigned MCPs come up in the background — turns that start before
   // they're ready simply run without them for that turn.
@@ -104,6 +128,7 @@ export function startNode(opts: { port?: number } = {}): NodeHandle {
     stopInbox();
     server.stop(true);
   });
+  onShutdown("node-modules", 110, () => modules.stop());
   onShutdown("node-mcp-host", 50, async () => {
     stopSweeper();
     await mcpHost.stopAll();
@@ -112,7 +137,13 @@ export function startNode(opts: { port?: number } = {}): NodeHandle {
   onShutdown("background-bash", 50, () => killAllBgBash());
 
   logger.info(
-    { port, stateDir: STATE_DIR, plugins: nodeRequestHandlerNames() },
+    {
+      port,
+      stateDir: STATE_DIR,
+      plugins: nodeRequestHandlerNames(),
+      modules: modules.names,
+      capabilities: modules.capabilities,
+    },
     "negotium node started",
   );
 
@@ -122,4 +153,14 @@ export function startNode(opts: { port?: number } = {}): NodeHandle {
     // cleanup never diverges between the two paths (idempotent once-guard).
     stop: () => void runShutdown("test"),
   };
+}
+
+/** Reference-host composition. Disabled modules are never imported. */
+export async function startDefaultNode(opts: { port?: number } = {}): Promise<NodeHandle> {
+  const modules: NegotiumNodeModule[] = [];
+  if (process.env.NEGOTIUM_CRON !== "0") {
+    const { createCronModule } = await import("@negotium/module-cron");
+    modules.push(createCronModule());
+  }
+  return startNode({ ...opts, modules });
 }
