@@ -22,8 +22,8 @@ import {
   startAiTurn,
   type TopicDto,
 } from "@negotium/core";
-import { startDefaultNode } from "../node";
-import { renderBusEvent } from "../render";
+import { startDefaultNode } from "@negotium/node";
+import { renderBusEvent } from "@/render";
 
 const DEFAULT_USER = "local";
 const DEFAULT_TOPIC = "chat";

@@ -1,8 +1,8 @@
 {
-  "name": "@negotium/cli",
+  "name": "negotium",
   "version": "0.1.0",
   "type": "module",
-  "description": "negotium CLI \u2014 init a node, manage its MCPs, and chat with the multi-agent runtime from the terminal",
+  "description": "Install the Negotium multi-agent runtime and CLI with one package",
   "license": "Apache-2.0",
   "bin": {
     "negotium": "./dist/main.js"
@@ -18,7 +18,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/maestrojeong/Negotium.git",
-    "directory": "apps/cli"
+    "directory": "apps/negotium"
   },
   "homepage": "https://github.com/maestrojeong/Negotium#readme",
   "bugs": {
@@ -31,28 +31,14 @@
     "build": "bun ../../scripts/build-package.ts src/main.ts",
     "check": "bunx tsc --noEmit",
     "lint": "biome check",
-    "test": "bun test",
     "prepack": "bun run build"
   },
   "dependencies": {
-    "@negotium/adapter-otium": "workspace:*",
-    "@negotium/adapter-telegram": "workspace:*",
-    "@negotium/adapter-terminal": "workspace:*",
-    "@negotium/core": "workspace:*",
-    "@negotium/mcp-host": "workspace:*",
-    "@negotium/module-cron": "workspace:*",
-    "@negotium/node": "workspace:*"
+    "@negotium/cli": "workspace:*"
   },
   "devDependencies": {
-    "@negotium/adapter-sdk": "workspace:*",
     "@types/node": "^20",
     "bun-types": "^1.3.11",
     "typescript": "^5"
-  },
-  "imports": {
-    "#*": "./src/*.ts"
-  },
-  "exports": {
-    ".": "./dist/main.js"
   }
 }
