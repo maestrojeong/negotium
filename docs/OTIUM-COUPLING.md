@@ -326,7 +326,7 @@ negotium 코어는 건드릴 필요가 거의 없다 — ARCHITECTURE.ko.md 8장
 |---|---|---|
 | `/ready`, `/health`, `/capabilities` | `checkAgentAuth(kind)`, `getRegistry(kind)` (defaultModel/validEfforts), `SUPPORTED_AGENTS` | ✅ 거의 그대로. `optionalMcp`는 negotium mcp-manifest 이름을 노출하면 됨 — 단 hub가 아는 otium MCP 이름과 **이름 체계가 다르면 배치가 409**로 막힘 (갭 G6) |
 | provision → hidden topic | `upsertTopic`, `setApiTopicConfig`, `getTopicSessionId`/`setTopicSessionId`, `getTopic` | ✅ 함수는 전부 공개. ❌ `(hostCellId, hostTopicId) → localTopicId` 매핑 테이블(otium `peer_sessions`)은 어댑터가 자체 소유해야 (G1) |
-| turn 실행 | `triggerTopicAiTurn(topicId, userId, prompt, agent, opts)` — `origin`(“user” 전달 시 preempt), `requestId`, `injectAuthorId`, `attachments`, `onDispatched` 지원 | ✅ 핵심 존재. ❌ `executionSpec` 파라미터 없음 — 어댑터가 매 턴 `setApiTopicConfig`로 model/effort/mcp를 먼저 박아넣는 우회 필요 (G2). ❌ `peerBridge` 컨텍스트 없음 — negotium MCP는 ask_user/spawn/self-config/visual을 **로컬에서** 실행 (G3) |
+| turn 실행 | `triggerTopicAiTurn(topicId, userId, prompt, agent, opts)` — `origin`(“user” 전달 시 preempt), `requestId`, `injectAuthorId`, `attachments`, `onDispatched`, `modelOverride`, `effortOverride`, 독립 `sessionName/sessionId`, `onSettled` 지원 | ✅ agent/model/effort와 독립 세션은 턴 단위로 전달 가능. ❌ MCP whitelist까지 포함한 완전한 `executionSpec` 파라미터는 없음 (G2). ❌ `peerBridge` 컨텍스트 없음 — negotium MCP는 ask_user/spawn/self-config/visual을 **로컬에서** 실행 (G3) |
 | turn 멱등 저널 | 없음 (negotium의 requestId dedup은 인박스 큐 스코프) | ❌ 어댑터가 durable `peer_turn_requests` 동등물 소유 (G1) |
 | 이벤트 역류 | `runtimeBus().subscribe` — `message`/`message-updated`/`ai-status` 이벤트; `ai-status` 페이로드가 `{kind: "ai_active"\|"ai_done"\|"ai_error"\|"ai_aborted"\|"tool_call"\|"tool_output"\|"tool_status"\|"file_ready"\|"visual"\|"typing", queryId, …}` | ✅ 정보는 전부 흐른다 (`bus.ts` 주석: “otium WsHub feed를 재구성할 수 있게” 설계됨). 어댑터가 할 일: topicId 필터(local hidden topic) + queryId 필터(supersede 구분) + **`kind`→`type` 개명 및 WsServerMessage 모양 복원** + seq 부여 + 재시도/차단 큐. otium 워커의 `turn-runner.ts` `createForwarder`를 bus 위에 이식하는 것과 같다 |
 | abort (정확 requestId) | `abortRoom(topicId)`, `getRoomQuery(topicId)` | ✅ `getRoomQuery`로 활성 queryId를 확인해 “현재 턴 == 그 requestId의 턴”일 때만 `abortRoom` 호출하면 계약 충족 |
@@ -340,9 +340,9 @@ negotium 코어는 건드릴 필요가 거의 없다 — ARCHITECTURE.ko.md 8장
 **갭 목록 (우선순위순)**
 - **G1** 어댑터 소유 durable 상태: `peer_sessions`·`peer_turn_requests`·`peer_inbox_requests` 동등물
   (SQLite 하나면 충분; 워커 재시작 시 running→failed 일괄 처리 포함).
-- **G2** `triggerTopicAiTurn`에 executionSpec이 없음 → 턴 직전 `setApiTopicConfig` upsert로 우회.
-  주의: 진행 중 턴과의 레이스는 "방당 턴 1개" 불변식 덕에 실질 무해하나, otium처럼
-  agent/model 변경 시 세션 무효화를 어댑터가 직접 해야 함 (`setTopicSessionId(topicId, null)` 상당).
+- **G2** `triggerTopicAiTurn`의 `agent` + `modelOverride` + `effortOverride`로 실행 사양 대부분은
+  턴 단위 전달 가능하다. 남은 갭은 MCP whitelist override다. agent/model 변경 시 독립 peer sessionId를
+  어댑터가 무효화해야 한다 (`sessionName`, `sessionId`, `onSessionId`로 topic 주 세션과 분리 가능).
 - **G3** peerBridge 부재: v0에서는 ask_user/spawn/self-config가 **워커 로컬**에서 동작
   (hub UI에 카드가 안 뜨고, spawn된 방이 hub에 안 생김). placed-room 데모에는 지장 없음.
   v1에서 negotium MCP 도구 정의를 어댑터가 브리지 구현으로 스왑하는 seam이 필요.

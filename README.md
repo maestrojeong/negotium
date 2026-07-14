@@ -37,6 +37,9 @@ negotium serve                 # headless node: MCP endpoint + queue workers
 negotium topics                # list topics on this node
 negotium mcp list|add|remove|enable|disable    # this node's MCP manifest
 negotium vault list|set|get|del                # encrypted secret store
+negotium cron list                             # persistent scheduled turns
+negotium cron create chat standup '0 9 * * 1-5' 'Summarize current work' --timezone=America/Los_Angeles
+negotium cron run|pause|resume|reset|delete <name|id>
 ```
 
 (Until it ships to npm, `negotium` = `bun run apps/cli/src/main.ts`.)
@@ -65,6 +68,13 @@ pm2 start "bun run example/bot.ts" --name negotium-node --cwd ~/telegram-adapter
 | `NEGOTIUM_PORT` | `7777` | the node's open port (runtime MCP endpoint) |
 | `FALLBACK_AGENT` | `maestro` | default agent for new topics |
 | `DEEPSEEK_API_KEY` / `GEMINI_API_KEY` | — | maestro inference / image-QA |
+| `NEGOTIUM_CRON` | `1` | set to `0` to skip importing and starting the Cron module |
+| `NEGOTIUM_CRON_POLL_INTERVAL_MS` | `1000` | Cron due-queue polling interval |
+| `NEGOTIUM_CRON_RUN_TIMEOUT_MS` | `600000` | maximum time for one scheduled turn |
+
+Cron runs in the existing node process. It stores one indexed `next_run_at` per job and gives
+each job its own provider session; it does not create a pm2 process per schedule. A node host
+must remain alive for jobs to execute.
 
 ## What a topic can do
 
@@ -105,8 +115,9 @@ lose history unless `force`).
 | [`@negotium/core`](./packages/core) | The runtime. Everything above; 300+ ported tests |
 | [`@negotium/mcp`](./packages/mcp) | The node's MCP endpoint + node tools |
 | [`@negotium/mcp-host`](./packages/mcp-host) | Declarative `McpServerSpec` process/port manager |
+| [`@negotium/module-cron`](./packages/module-cron) | Optional in-process scheduler + Cron MCP tools |
 | [`@negotium/adapter-telegram`](https://github.com/maestrojeong/telegram-adapter) | Telegram channel as a library (separate repo — consumes negotium as npm deps) |
-| `@negotium/adapter-otium` | otium workspace worker — lives at `otium-copy/negotium-worker`, merges into otium later |
+| `@negotium/module-otium-peer` | Planned Otium invited-worker/relay module; wire contract is documented now |
 | [`negotium-cli`](./apps/cli) | Reference host |
 
 ## Writing your own channel adapter
@@ -126,6 +137,22 @@ runtimeBus().subscribe((ev) => { /* "message" | "ai-status" | "topic-created" | 
 
 See [`apps/cli/src/commands/chat.ts`](./apps/cli/src/commands/chat.ts) (60 lines) and
 [telegram-adapter](https://github.com/maestrojeong/telegram-adapter) for the production version.
+
+## Composing optional modules
+
+Hosts explicitly choose their modules. A disabled module is not imported, does not migrate a
+table, and installs no timer or listener.
+
+```ts
+import { startNode } from "negotium-cli/node";
+import { createCronModule } from "@negotium/module-cron";
+
+const node = startNode({ modules: [createCronModule()] });
+```
+
+Modules publish stable capability IDs such as `scheduler.cron.v1`. The future Otium peer module
+uses the same boundary to advertise an invited computer's abilities without forking the runtime.
+See [`docs/PRODUCT-TOPOLOGY.ko.md`](./docs/PRODUCT-TOPOLOGY.ko.md).
 
 ## Development
 
