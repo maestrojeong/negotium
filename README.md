@@ -6,7 +6,7 @@
   </p>
   <p>
     <a href="./LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-4c1.svg"></a>
-    <img alt="Bun 1.2+" src="https://img.shields.io/badge/runtime-Bun_1.2%2B-000000?logo=bun&logoColor=white">
+    <img alt="Bun 1.2.15+" src="https://img.shields.io/badge/runtime-Bun_1.2.15%2B-000000?logo=bun&logoColor=white">
     <img alt="TypeScript" src="https://img.shields.io/badge/language-TypeScript-3178c6?logo=typescript&logoColor=white">
     <img alt="Status: early stage" src="https://img.shields.io/badge/status-early_stage-f59e0b">
   </p>
@@ -19,8 +19,9 @@ Negotium is a host-agnostic runtime for long-lived AI agents. A node owns its to
 provider sessions, MCP tools, workspace, memory, queues, and encrypted secrets. A terminal,
 Telegram bot, or workspace app is only a thin host around that same runtime.
 
-The project is source-first and early-stage: the packages are not published to npm yet, and
-public APIs may still change.
+The project is source-first and early-stage. Its CLI, node host, adapter SDK, and first-party
+adapters build as publishable npm packages, but no registry release has been made yet and public
+APIs may still change.
 
 ## Why Negotium?
 
@@ -43,7 +44,7 @@ public APIs may still change.
 
 Requirements:
 
-- [Bun](https://bun.sh/) 1.2 or newer
+- [Bun](https://bun.sh/) 1.2.15 or newer
 - Node.js 20+ when using Codex's stdio MCP tools
 - macOS or Linux; the runtime currently expects POSIX process controls
 - credentials for at least one supported agent
@@ -87,6 +88,15 @@ Until the CLI is published, the rest of this document uses `negotium` as shortha
 bun run apps/cli/src/main.ts
 ```
 
+After the first registry release, one global install provides the node and all three adapters:
+
+```bash
+npm install --global negotium
+```
+
+The canonical scoped package remains available as `@negotium/cli`; the unscoped package is a
+functional convenience entrypoint rather than a name-only placeholder.
+
 ## CLI
 
 ```text
@@ -94,6 +104,10 @@ negotium init
 negotium chat [topic] [--agent=claude|codex|maestro]
 negotium serve
 negotium topics
+negotium terminal
+negotium telegram
+negotium otium join|serve|bindings|share|private
+negotium start [terminal telegram otium|all]
 
 negotium mcp list|add|remove|enable|disable
 negotium vault list|set|get|del
@@ -118,8 +132,16 @@ The node binds to `127.0.0.1:7777` by default and serves the runtime MCP endpoin
 inbox worker, configured MCP processes, and enabled modules. Keep it alive with a process
 supervisor such as `launchd`, systemd, or pm2.
 
-One state directory must have **one long-lived runtime process**. A Telegram host already is
-the node, so do not run `negotium serve` against the same state directory at the same time.
+One state directory must have **one long-lived runtime process**. To expose that runtime through
+several channels, let the combined host start the node once:
+
+```bash
+negotium start terminal telegram otium
+```
+
+Do not start separate standalone adapter processes against the same state directory. The combined
+host owns one MCP endpoint, scheduler, task store, topic store, and shutdown lifecycle; adapters
+only own channel-specific identities and mappings.
 
 ## Scheduled agent turns
 
@@ -258,19 +280,19 @@ startAiTurn({
   allowAutoContinue: true,
 });
 
-// Call when the host shuts down.
-unsubscribe();
+// startAiTurn returns immediately and streams in the background.
+// Keep the subscription alive; call unsubscribe() during host shutdown.
 ```
 
 The reference implementation is
-[`apps/cli/src/commands/chat.ts`](./apps/cli/src/commands/chat.ts). The production Telegram
-adapter lives in [maestrojeong/telegram-adapter](https://github.com/maestrojeong/telegram-adapter).
+[`apps/cli/src/commands/chat.ts`](./apps/cli/src/commands/chat.ts). First-party channel adapters
+live together under [`adapters/`](./adapters), while each remains independently publishable.
 
 ### Compose optional modules
 
 ```ts
 import { createCronModule } from "@negotium/module-cron";
-import { startNode } from "negotium-cli/node";
+import { startNode } from "@negotium/node";
 
 const node = startNode({
   modules: [createCronModule()],
@@ -292,7 +314,10 @@ The default state root is `~/.negotium`; override it with `NEGOTIUM_STATE_DIR`.
 ~/.negotium/
 ├── data/       SQLite databases, MCP manifest, generated node secrets
 ├── run/        transient inbox queues, progress state, MCP port files
-└── workspace/  topic workspaces, shared wiki, skills, browser profiles, Cron scripts
+├── workspace/  topic workspaces, shared wiki, skills, browser profiles, Cron scripts
+├── logs/       rotating activity and token-usage JSONL
+├── runtime-mcp-secret
+└── vault-master-key
 ```
 
 Important environment variables:
@@ -300,9 +325,10 @@ Important environment variables:
 | Variable | Default | Purpose |
 |---|---:|---|
 | `NEGOTIUM_STATE_DIR` | `~/.negotium` | Node state root |
+| `NEGOTIUM_LOG_DIR` | `<state>/logs` | Activity and token-usage logs |
 | `NEGOTIUM_PORT` | `7777` | Loopback runtime/MCP port |
 | `FALLBACK_AGENT` | `maestro` | Agent for newly created topics |
-| `FALLBACK_MODEL` | provider default | Optional node-wide model override |
+| `FALLBACK_MODEL` | provider default | Optional model override for the fallback session agent |
 | `NEGOTIUM_CRON` | `1` | Set to `0` to omit the Cron module |
 | `NEGOTIUM_CRON_POLL_INTERVAL_MS` | `1000` | Scheduler polling interval |
 | `NEGOTIUM_CRON_RUN_TIMEOUT_MS` | `600000` | Maximum scheduled-turn duration |
@@ -324,27 +350,37 @@ nodes.
 | [`@negotium/mcp`](./packages/mcp) | Authenticated HTTP MCP endpoint and node/runtime tools |
 | [`@negotium/mcp-host`](./packages/mcp-host) | Long-lived MCP process, port, health, and idle-eviction manager |
 | [`@negotium/module-cron`](./packages/module-cron) | Persistent schedules, run journal, scheduler, and Cron MCP tools |
-| [`negotium-cli`](./apps/cli) | Reference terminal and headless node host |
-
-Planned: `@negotium/module-otium-peer`, which will connect invited worker computers to an
-Otium workspace without putting workspace authority into the core runtime.
+| [`@negotium/node`](./packages/node) | Composable single-process node host used by every adapter |
+| [`@negotium/adapter-sdk`](./packages/adapter-sdk) | Adapter API v2 lifecycle and transcript projection capability contract |
+| [`@negotium/adapter-testkit`](./packages/adapter-testkit) | Runner-neutral contract assertions for adapter authors |
+| [`@negotium/adapter-terminal`](./adapters/terminal) | Responsive local TUI channel |
+| [`@negotium/adapter-telegram`](./adapters/telegram) | Telegram chat/forum channel and durable mapping store |
+| [`@negotium/adapter-otium`](./adapters/otium) | Otium workspace worker and shared-topic binding |
+| [`@negotium/cli`](./apps/cli) | Installable CLI and combined multi-adapter host |
+| [`negotium`](./apps/negotium) | Functional unscoped entry package for the CLI |
 
 ## Development
 
 ```bash
-bun test          # all core, MCP, host, and Cron tests
-bun run build     # TypeScript checks for every workspace package
-bun run lint      # Biome checks
+bun test          # all core, MCP, host, adapter, and Cron tests
+bun run build     # build publishable packages and check every workspace
+bun run lint      # Biome formatter/linter checks
+bun run check     # Biome checks followed by the full build
+bun run release:dry-run  # inspect every npm package without publishing
 ```
 
-Internal package imports use `#` subpath aliases. Cross-package code goes through each
-package's public barrel.
+New app and adapter packages use package-local `@/` source aliases. The build resolves those
+aliases into portable JavaScript and declaration paths; cross-package code goes through each
+package's public export.
 
 ## Design documents
 
 - [Architecture and invariants (한국어)](./docs/ARCHITECTURE.ko.md)
+- [npm release guide (한국어)](./docs/RELEASING.ko.md)
+- [Adapter packaging, composition, and topic loading (한국어)](./docs/ADAPTERS.ko.md)
 - [Clawgram · Negotium · Otium product boundaries (한국어)](./docs/PRODUCT-TOPOLOGY.ko.md)
 - [Otium worker-node coupling contract](./docs/OTIUM-COUPLING.md)
+- [Feature-by-feature review guide (한국어)](./docs/NEGOTIUM-FEATURE-REVIEW.ko.md)
 
 ## License
 
