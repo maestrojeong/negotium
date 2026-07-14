@@ -42,7 +42,7 @@ For long-running shell work, prefer the background-bash MCP tools when they are 
 ## Cron Jobs
 Use the `cron-manager` MCP tools to create, inspect/log, run, pause/resume/restart, kill, reset, reconcile, or delete scheduled Channel tasks.
 Cron scripts must already exist in the node Cron jobs directory; use `cron_list_scripts` before creating a job when unsure.
-Jobs in one topic share a Cron conversation. `cron_reset` therefore resets the topic's whole Cron context, not one job.
+Jobs in one topic share a Cron conversation. The runtime rotates it after every five successful topic Cron runs while retaining the latest five turns. `cron_reset` therefore resets the topic's whole Cron context and rotation counter, not one job.
 
 ## System Health
 Before resource-heavy work such as large file processing, video encoding, large parallel crawls, or enabling browser automation, call `get_system_health` if available and react to resource pressure.

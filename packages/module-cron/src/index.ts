@@ -1,4 +1,10 @@
-export { resetCronTopicContext } from "#context";
+export type { CronTopicRotationResult } from "#context";
+export {
+  CRON_CONTEXT_RETAIN_TURNS,
+  CRON_CONTEXT_ROTATE_EVERY,
+  resetCronTopicContext,
+  rotateCronTopicContext,
+} from "#context";
 export { createCronModule } from "#module";
 export {
   computeNextCronRun,
@@ -26,6 +32,7 @@ export type {
   CronJobRecord,
   CronRunRecord,
   CronRunStatus,
+  CronTopicContextRecord,
   CronTopicSessionRecord,
 } from "#store";
 export {
@@ -40,6 +47,7 @@ export {
   finishCronRun,
   getCronJob,
   getCronJobByOwnerAndName,
+  getCronTopicContext,
   getCronTopicSession,
   listCronJobs,
   listCronJobsForTopic,
@@ -47,9 +55,11 @@ export {
   listCronTopicSessions,
   listOrphanedCronTopicSessions,
   markCronRunStarted,
+  markCronTopicContextRotated,
   recoverPendingCronRuns,
   requestCronCancel,
   requestCronRun,
+  resetCronTopicContextState,
   resetCronTopicSessions,
   setCronJobEnabled,
   setCronJobSessionId,

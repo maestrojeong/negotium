@@ -10,13 +10,18 @@ import {
   isAgentKind,
 } from "@negotium/core";
 import { z } from "zod";
-import { resetCronTopicContext } from "#context";
+import {
+  CRON_CONTEXT_RETAIN_TURNS,
+  CRON_CONTEXT_ROTATE_EVERY,
+  resetCronTopicContext,
+} from "#context";
 import { cronScriptExists, listCronScripts } from "#scripts";
 import {
   createCronJob,
   deleteCronJob,
   getCronJob,
   getCronJobByOwnerAndName,
+  getCronTopicContext,
   listCronJobs,
   listCronRuns,
   listCronTopicSessions,
@@ -77,12 +82,17 @@ function resolveOwnedJob(input: { job_id?: string; name?: string }) {
 
 function jobDto(job: NonNullable<ReturnType<typeof getCronJob>>) {
   const runs = listCronRuns(job.id, 1);
+  const contextState = getCronTopicContext(job.topicId);
   return {
     ...job,
     context: {
       scope: "topic",
       sessionName: `cron-${job.topicId}`,
       providers: listCronTopicSessions(job.topicId).map((session) => session.agent),
+      successfulRunsSinceRotation: contextState?.successfulRunsSinceRotation ?? 0,
+      rotateEvery: CRON_CONTEXT_ROTATE_EVERY,
+      retainTurns: CRON_CONTEXT_RETAIN_TURNS,
+      lastRotatedAt: contextState?.lastRotatedAt ?? null,
     },
     lastRun: runs[0] ?? null,
   };
@@ -325,6 +335,7 @@ server.tool("cron_status", "Show a compact scheduled-task status summary.", {}, 
       nextRunAt: job.nextRunAt,
       lastRun: listCronRuns(job.id, 1)[0] ?? null,
       contextProviders: listCronTopicSessions(job.topicId).map((session) => session.agent),
+      contextRunsSinceRotation: getCronTopicContext(job.topicId)?.successfulRunsSinceRotation ?? 0,
     })),
   });
 });

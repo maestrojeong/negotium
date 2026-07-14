@@ -8,6 +8,7 @@ import {
   finalizeOrphanedCronRuns,
   finishCronRun,
   getCronJob,
+  getCronTopicContext,
   getCronTopicSession,
   listCronRuns,
   listCronTopicSessions,
@@ -219,6 +220,79 @@ describe("cron scheduler", () => {
     ]);
     expect(listCronTopicSessions(topic.id)).toHaveLength(1);
     expect(getCronTopicSession(topic.id, "claude")?.sessionId).toBe("cron-session-2");
+  });
+
+  test("rotates one shared topic context after five successful runs", async () => {
+    const topic = createTopic();
+    const first = createJob(topic);
+    const second = createJob(topic);
+    for (let i = 0; i < 5; i++) requestCronRun(first.id);
+    const seenSessionIds: Array<string | undefined> = [];
+    let dispatchCount = 0;
+    const scheduler = new CronScheduler({
+      dispatch(_job, _run, hooks, context) {
+        dispatchCount += 1;
+        seenSessionIds.push(context.sessionId);
+        const queryId = `rotation-query-${dispatchCount}`;
+        hooks.onDispatched(queryId);
+        hooks.onSessionId(`rotation-session-${dispatchCount}`);
+        hooks.onSettled({ queryId, kind: "completed" });
+        return queryId;
+      },
+    });
+
+    await scheduler.tick();
+    await waitFor(
+      () =>
+        dispatchCount === 5 &&
+        getCronTopicContext(topic.id)?.successfulRunsSinceRotation === 0 &&
+        getCronTopicSession(topic.id, "claude") === null,
+    );
+
+    expect(seenSessionIds).toEqual([
+      undefined,
+      "rotation-session-1",
+      "rotation-session-2",
+      "rotation-session-3",
+      "rotation-session-4",
+    ]);
+    expect(getCronTopicContext(topic.id)?.lastRotatedAt).toBeDefined();
+
+    requestCronRun(second.id);
+    await scheduler.tick();
+    await waitFor(() => dispatchCount === 6);
+
+    expect(seenSessionIds[5]).toBeUndefined();
+    expect(getCronTopicContext(topic.id)?.successfulRunsSinceRotation).toBe(1);
+  });
+
+  test("finishes an overdue durable rotation before dispatch after restart", async () => {
+    const topic = createTopic();
+    const job = createJob(topic);
+    for (let i = 0; i < 5; i++) requestCronRun(job.id);
+    const claimed = claimCronRuns(new Date());
+    for (const entry of claimed) finishCronRun(entry.run.id, { status: "succeeded" });
+    expect(getCronTopicContext(topic.id)?.successfulRunsSinceRotation).toBe(5);
+
+    requestCronRun(job.id);
+    let dispatched = false;
+    let receivedSessionId: string | undefined;
+    const scheduler = new CronScheduler({
+      dispatch(_job, _run, hooks, context) {
+        dispatched = true;
+        receivedSessionId = context.sessionId;
+        hooks.onDispatched("post-restart-query");
+        hooks.onSettled({ queryId: "post-restart-query", kind: "completed" });
+        return "post-restart-query";
+      },
+    });
+
+    await scheduler.tick();
+    await waitFor(() => dispatched);
+
+    expect(receivedSessionId).toBeUndefined();
+    expect(getCronTopicContext(topic.id)?.successfulRunsSinceRotation).toBe(1);
+    expect(getCronTopicContext(topic.id)?.lastRotatedAt).toBeDefined();
   });
 
   test("cancels a deferred request and rejects late session writes on shutdown", async () => {

@@ -34,6 +34,13 @@ export interface CronTopicSessionRecord {
   updatedAt: string;
 }
 
+export interface CronTopicContextRecord {
+  topicId: string;
+  successfulRunsSinceRotation: number;
+  lastRotatedAt?: string;
+  updatedAt: string;
+}
+
 export interface CronRunRecord {
   id: string;
   jobId: string;
@@ -87,6 +94,13 @@ interface TopicSessionRow {
   owner_user_id: string;
   session_id: string;
   created_at: string;
+  updated_at: string;
+}
+
+interface TopicContextRow {
+  topic_id: string;
+  successful_runs_since_rotation: number;
+  last_rotated_at: string | null;
   updated_at: string;
 }
 
@@ -157,6 +171,12 @@ export function ensureCronSchema(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_negotium_cron_topic_sessions_owner
       ON negotium_cron_topic_sessions(owner_user_id, topic_id);
+    CREATE TABLE IF NOT EXISTS negotium_cron_topic_context (
+      topic_id TEXT PRIMARY KEY REFERENCES api_topics(id) ON DELETE CASCADE,
+      successful_runs_since_rotation INTEGER NOT NULL DEFAULT 0,
+      last_rotated_at TEXT,
+      updated_at TEXT NOT NULL
+    );
   `);
   const jobColumns = new Set(
     (db.query("PRAGMA table_info(negotium_cron_jobs)").all() as TableColumnRow[]).map(
@@ -246,6 +266,15 @@ function toTopicSession(row: TopicSessionRow): CronTopicSessionRecord {
     ownerUserId: row.owner_user_id,
     sessionId: row.session_id,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function toTopicContext(row: TopicContextRow): CronTopicContextRecord {
+  return {
+    topicId: row.topic_id,
+    successfulRunsSinceRotation: row.successful_runs_since_rotation,
+    lastRotatedAt: row.last_rotated_at ?? undefined,
     updatedAt: row.updated_at,
   };
 }
@@ -474,6 +503,49 @@ export function resetCronTopicSessions(topicId: string): CronTopicSessionRecord[
   return sessions;
 }
 
+export function getCronTopicContext(topicId: string): CronTopicContextRecord | null {
+  ensureCronSchema();
+  const row = db
+    .query("SELECT * FROM negotium_cron_topic_context WHERE topic_id = ?")
+    .get(topicId) as TopicContextRow | undefined;
+  return row ? toTopicContext(row) : null;
+}
+
+function incrementCronTopicSuccess(topicId: string, now: Date): number {
+  const timestamp = now.toISOString();
+  db.query(
+    `INSERT INTO negotium_cron_topic_context
+       (topic_id,successful_runs_since_rotation,last_rotated_at,updated_at)
+     VALUES (?,1,NULL,?)
+     ON CONFLICT(topic_id) DO UPDATE SET
+       successful_runs_since_rotation = successful_runs_since_rotation + 1,
+       updated_at = excluded.updated_at`,
+  ).run(topicId, timestamp);
+  return getCronTopicContext(topicId)!.successfulRunsSinceRotation;
+}
+
+export function markCronTopicContextRotated(topicId: string, now = new Date()): void {
+  ensureCronSchema();
+  const timestamp = now.toISOString();
+  db.query(
+    `INSERT INTO negotium_cron_topic_context
+       (topic_id,successful_runs_since_rotation,last_rotated_at,updated_at)
+     VALUES (?,0,?,?)
+     ON CONFLICT(topic_id) DO UPDATE SET
+       successful_runs_since_rotation = 0,
+       last_rotated_at = excluded.last_rotated_at,
+       updated_at = excluded.updated_at`,
+  ).run(topicId, timestamp, timestamp);
+}
+
+export function resetCronTopicContextState(topicId: string): boolean {
+  ensureCronSchema();
+  const result = db
+    .query("DELETE FROM negotium_cron_topic_context WHERE topic_id = ?")
+    .run(topicId);
+  return Number(result.changes) > 0;
+}
+
 export function listOrphanedCronTopicSessions(): CronTopicSessionRecord[] {
   ensureCronSchema();
   return (
@@ -611,25 +683,43 @@ export function finishCronRun(
     error?: string;
   },
   now = new Date(),
-): void {
+): number | null {
   ensureCronSchema();
-  const row = db.query("SELECT started_at FROM negotium_cron_runs WHERE id = ?").get(runId) as
-    | { started_at: string | null }
+  const row = db
+    .query(
+      `SELECT r.started_at, r.status, j.topic_id
+       FROM negotium_cron_runs r
+       JOIN negotium_cron_jobs j ON j.id = r.job_id
+       WHERE r.id = ?`,
+    )
+    .get(runId) as
+    | { started_at: string | null; status: CronRunStatus; topic_id: string }
     | undefined;
+  if (!row || (row.status !== "pending" && row.status !== "running")) return null;
   const durationMs = row?.started_at
     ? Math.max(0, now.getTime() - Date.parse(row.started_at))
     : null;
-  db.query(
-    `UPDATE negotium_cron_runs
-     SET status = ?, finished_at = ?, duration_ms = ?, output_preview = ?, error = ? WHERE id = ?`,
-  ).run(
-    result.status,
-    now.toISOString(),
-    durationMs,
-    result.outputPreview?.slice(0, 500) ?? null,
-    result.error ?? null,
-    runId,
-  );
+  let successfulRunsSinceRotation: number | null = null;
+  db.transaction(() => {
+    const updated = db
+      .query(
+        `UPDATE negotium_cron_runs
+       SET status = ?, finished_at = ?, duration_ms = ?, output_preview = ?, error = ?
+       WHERE id = ? AND status IN ('pending','running')`,
+      )
+      .run(
+        result.status,
+        now.toISOString(),
+        durationMs,
+        result.outputPreview?.slice(0, 500) ?? null,
+        result.error ?? null,
+        runId,
+      );
+    if (Number(updated.changes) > 0 && result.status === "succeeded") {
+      successfulRunsSinceRotation = incrementCronTopicSuccess(row.topic_id, now);
+    }
+  })();
+  return successfulRunsSinceRotation;
 }
 
 export function listCronRuns(jobId: string, limit = 20): CronRunRecord[] {

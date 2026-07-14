@@ -9,6 +9,7 @@ import {
   type RuntimeBus,
   runtimeBus,
 } from "@negotium/core";
+import { CRON_CONTEXT_ROTATE_EVERY, rotateCronTopicContext } from "#context";
 import {
   type CronJobRecord,
   type CronRunRecord,
@@ -19,6 +20,7 @@ import {
   finalizeOrphanedCronRuns,
   finishCronRun,
   getCronJob,
+  getCronTopicContext,
   getCronTopicSession,
   markCronRunStarted,
   recoverPendingCronRuns,
@@ -106,6 +108,8 @@ export class CronScheduler {
   readonly #activeByTopic = new Map<string, ActiveRun>();
   readonly #activeByQuery = new Map<string, ActiveRun>();
   readonly #queuedByTopic = new Map<string, QueuedRun[]>();
+  readonly #maintenanceByTopic = new Set<string>();
+  readonly #rotationBypassOnce = new Set<string>();
   #timer?: ReturnType<typeof setInterval>;
   #unsubscribe?: () => void;
   #ticking = false;
@@ -169,6 +173,7 @@ export class CronScheduler {
     this.#queuedByTopic.clear();
     this.#activeByTopic.clear();
     this.#activeByQuery.clear();
+    this.#rotationBypassOnce.clear();
   }
 
   async tick(): Promise<void> {
@@ -205,10 +210,20 @@ export class CronScheduler {
       return;
     }
 
-    if (this.#activeByTopic.has(job.topicId)) {
+    if (this.#activeByTopic.has(job.topicId) || this.#maintenanceByTopic.has(job.topicId)) {
       const queue = this.#queuedByTopic.get(job.topicId) ?? [];
       queue.push({ job, run, queuedAt: this.#now().getTime() });
       this.#queuedByTopic.set(job.topicId, queue);
+      return;
+    }
+    const rotationDue =
+      (getCronTopicContext(job.topicId)?.successfulRunsSinceRotation ?? 0) >=
+      CRON_CONTEXT_ROTATE_EVERY;
+    if (rotationDue && !this.#rotationBypassOnce.delete(job.topicId)) {
+      const queue = this.#queuedByTopic.get(job.topicId) ?? [];
+      queue.push({ job, run, queuedAt: this.#now().getTime() });
+      this.#queuedByTopic.set(job.topicId, queue);
+      this.#beginContextRotation(job.topicId);
       return;
     }
     this.#start(job, run, job.agent ?? topic.agent);
@@ -327,16 +342,45 @@ export class CronScheduler {
     if (active.deferredTimeout) clearTimeout(active.deferredTimeout);
     if (active.queryId) this.#activeByQuery.delete(active.queryId);
     this.#activeByTopic.delete(active.job.topicId);
-    finishCronRun(
+    const successfulRunsSinceRotation = finishCronRun(
       active.run.id,
       { status, outputPreview: active.outputPreview, error },
       this.#now(),
     );
+    if (
+      status === "succeeded" &&
+      successfulRunsSinceRotation !== null &&
+      successfulRunsSinceRotation >= CRON_CONTEXT_ROTATE_EVERY
+    ) {
+      this.#beginContextRotation(active.job.topicId);
+      return;
+    }
     if (!this.#stopped) queueMicrotask(() => this.#drainTopic(active.job.topicId));
   }
 
+  #beginContextRotation(topicId: string): void {
+    if (this.#stopped || this.#maintenanceByTopic.has(topicId)) return;
+    this.#maintenanceByTopic.add(topicId);
+    void rotateCronTopicContext(topicId)
+      .then((result) => {
+        if (!result.rotated) {
+          this.#rotationBypassOnce.add(topicId);
+          logger.warn({ topicId }, "cron: context rotation deferred after cleanup failure");
+        }
+      })
+      .catch((error) => {
+        this.#rotationBypassOnce.add(topicId);
+        logger.warn({ err: error, topicId }, "cron: context rotation failed");
+      })
+      .finally(() => {
+        this.#maintenanceByTopic.delete(topicId);
+        if (!this.#stopped) this.#drainTopic(topicId);
+      });
+  }
+
   #drainTopic(topicId: string): void {
-    if (this.#stopped || this.#activeByTopic.has(topicId)) return;
+    if (this.#stopped || this.#activeByTopic.has(topicId) || this.#maintenanceByTopic.has(topicId))
+      return;
     const queue = this.#queuedByTopic.get(topicId);
     while (queue?.length) {
       const next = queue.shift()!;
