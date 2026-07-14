@@ -1,0 +1,6 @@
+# Preload runs before ANY test file is loaded. Required because test files
+# statically import `@negotium/core`, whose config module evaluates state
+# dirs from process.env at import time — setting env inside a test file is
+# too late (the module cache is already populated with the real paths).
+[test]
+preload = ["./tests/setup.ts"]
