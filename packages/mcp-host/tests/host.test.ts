@@ -232,4 +232,28 @@ describe("McpHost", () => {
     expect(host.listRunning()).toHaveLength(0);
     expect(existsSync(join(portsDir, "dud--node"))).toBe(false);
   });
+
+  test("stopAll joins an in-flight spawn and prevents late children", async () => {
+    manifest.add({
+      key: "slow",
+      transport: "http",
+      command: "bun",
+      args: ["-e", "await Bun.sleep(60_000);"],
+      portRange: { base: 43820, max: 43822 },
+      scope: "node",
+      readyTimeoutMs: 15_000,
+    });
+
+    const pending = host.ensure("slow").then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await Bun.sleep(50);
+    await host.stopAll();
+
+    expect(await pending).toBeInstanceOf(Error);
+    expect(host.listRunning()).toHaveLength(0);
+    expect(existsSync(join(portsDir, "slow--node"))).toBe(false);
+    await expect(host.ensure("slow")).rejects.toThrow(/stopped/);
+  });
 });
