@@ -13,10 +13,32 @@
     },
     "./src/*": "./src/*"
   },
+  "files": [
+    "src",
+    "tsconfig.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "bun": ">=1.2.15"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maestrojeong/Negotium.git",
+    "directory": "packages/module-cron"
+  },
+  "homepage": "https://github.com/maestrojeong/Negotium#readme",
+  "bugs": {
+    "url": "https://github.com/maestrojeong/Negotium/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "bunx tsc --noEmit",
     "lint": "biome check",
-    "test": "bun test"
+    "test": "bun test",
+    "prepack": "bun run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
