@@ -12,6 +12,7 @@ import {
 import {
   type CronJobRecord,
   type CronRunRecord,
+  claimCronCancellations,
   claimCronRuns,
   clearCronTopicSession,
   cronTopicSessionName,
@@ -174,6 +175,7 @@ export class CronScheduler {
     if (this.#ticking || this.#stopped) return;
     this.#ticking = true;
     try {
+      for (const jobId of claimCronCancellations()) this.#cancelJob(jobId);
       for (const claimed of claimCronRuns(this.#now())) {
         this.#enqueueOrStart(claimed.job, claimed.run);
       }
@@ -352,6 +354,33 @@ export class CronScheduler {
       return;
     }
     this.#queuedByTopic.delete(topicId);
+  }
+
+  #cancelJob(jobId: string): void {
+    for (const active of [...this.#activeByTopic.values()]) {
+      if (active.job.id !== jobId) continue;
+      active.abortController.abort();
+      active.cancelDeferred?.();
+      if (active.queryId && getRoomQuery(active.job.topicId)?.queryId === active.queryId) {
+        abortRoom(active.job.topicId);
+      }
+      this.#finish(active, "aborted", "run cancelled by cron_kill");
+    }
+    for (const [topicId, queue] of this.#queuedByTopic) {
+      const kept: QueuedRun[] = [];
+      for (const queued of queue) {
+        if (queued.job.id === jobId) {
+          finishCronRun(queued.run.id, {
+            status: "aborted",
+            error: "queued run cancelled by cron_kill",
+          });
+        } else {
+          kept.push(queued);
+        }
+      }
+      if (kept.length > 0) this.#queuedByTopic.set(topicId, kept);
+      else this.#queuedByTopic.delete(topicId);
+    }
   }
 
   #isActive(active: ActiveRun): boolean {

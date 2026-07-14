@@ -20,6 +20,7 @@ import {
   listCronJobs,
   listCronRuns,
   listCronTopicSessions,
+  requestCronCancel,
   requestCronRun,
   setCronJobEnabled,
 } from "#store";
@@ -199,6 +200,20 @@ server.tool(
   },
 );
 
+server.tool(
+  "cron_logs",
+  "Show durable run history for one scheduled task. This replaces per-process pm2 logs.",
+  { ...jobRef, limit: z.number().int().min(1).max(100).optional() },
+  async ({ limit, ...input }) => {
+    try {
+      const job = resolveOwnedJob(input);
+      return ok({ jobId: job.id, runs: listCronRuns(job.id, limit ?? 20) });
+    } catch (error) {
+      return fail(error);
+    }
+  },
+);
+
 for (const [toolName, enabled] of [
   ["cron_pause", false],
   ["cron_resume", true],
@@ -217,6 +232,20 @@ for (const [toolName, enabled] of [
     },
   );
 }
+
+server.tool(
+  "cron_restart",
+  "Re-arm a scheduled task from the current time. The central scheduler has no per-job process to restart.",
+  jobRef,
+  async (input) => {
+    try {
+      const job = resolveOwnedJob(input);
+      return ok(jobDto(setCronJobEnabled(job.id, true)!));
+    } catch (error) {
+      return fail(error);
+    }
+  },
+);
 
 server.tool(
   "cron_run",
@@ -248,6 +277,24 @@ server.tool(
 );
 
 server.tool(
+  "cron_kill",
+  "Cancel an active or queued run, including its agent or Python process tree.",
+  jobRef,
+  async (input) => {
+    try {
+      const job = resolveOwnedJob(input);
+      return ok({
+        cancellationQueued: true,
+        requestId: requestCronCancel(job.id),
+        jobId: job.id,
+      });
+    } catch (error) {
+      return fail(error);
+    }
+  },
+);
+
+server.tool(
   "cron_delete",
   "Delete a scheduled task and its run history.",
   jobRef,
@@ -266,6 +313,7 @@ server.tool("cron_status", "Show a compact scheduled-task status summary.", {}, 
   if (!userId) return fail("missing user context");
   const jobs = listCronJobs(userId);
   return ok({
+    backend: "sqlite-central-scheduler",
     total: jobs.length,
     enabled: jobs.filter((job) => job.enabled).length,
     disabled: jobs.filter((job) => !job.enabled).length,
@@ -280,5 +328,28 @@ server.tool("cron_status", "Show a compact scheduled-task status summary.", {}, 
     })),
   });
 });
+
+server.tool(
+  "cron_reconcile",
+  "Validate the current user's DB-backed schedules. No pm2 process reconciliation is required.",
+  {},
+  async () => {
+    if (!userId) return fail("missing user context");
+    const jobs = listCronJobs(userId);
+    const invalid = jobs
+      .filter((job) => {
+        const topic = getTopic(job.topicId);
+        return !topic?.agent || !ownsTopic(topic);
+      })
+      .map((job) => job.id);
+    return ok({
+      backend: "sqlite-central-scheduler",
+      checked: jobs.length,
+      invalid,
+      externalProcesses: 0,
+      drift: 0,
+    });
+  },
+);
 
 await server.connect(new StdioServerTransport());

@@ -29,6 +29,7 @@ export type {
   CronTopicSessionRecord,
 } from "#store";
 export {
+  claimCronCancellations,
   claimCronRuns,
   clearCronTopicSession,
   createCronJob,
@@ -47,6 +48,7 @@ export {
   listOrphanedCronTopicSessions,
   markCronRunStarted,
   recoverPendingCronRuns,
+  requestCronCancel,
   requestCronRun,
   resetCronTopicSessions,
   setCronJobEnabled,

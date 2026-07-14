@@ -13,6 +13,7 @@ import {
   listCronTopicSessions,
   markCronRunStarted,
   recoverPendingCronRuns,
+  requestCronCancel,
   requestCronRun,
   setCronTopicSession,
 } from "../src/store";
@@ -248,6 +249,38 @@ describe("cron scheduler", () => {
     expect(cancelled).toBe(true);
     expect(getCronTopicSession(topic.id, "claude")).toBeNull();
     expect(listCronRuns(job.id, 1)[0]).toMatchObject({ status: "aborted" });
+  });
+
+  test("processes durable cron_kill requests for active runs", async () => {
+    const topic = createTopic();
+    const job = createJob(topic);
+    requestCronRun(job.id);
+    let cancelCalled = false;
+    let dispatchReady = false;
+    const scheduler = new CronScheduler({
+      dispatch() {
+        dispatchReady = true;
+        return {
+          status: "deferred",
+          requestId: "cron-kill-target",
+          cancel: () => {
+            cancelCalled = true;
+            return true;
+          },
+        };
+      },
+    });
+
+    await scheduler.tick();
+    await waitFor(() => dispatchReady);
+    requestCronCancel(job.id);
+    await scheduler.tick();
+
+    expect(cancelCalled).toBe(true);
+    expect(listCronRuns(job.id, 1)[0]).toMatchObject({
+      status: "aborted",
+      error: "run cancelled by cron_kill",
+    });
   });
 
   test("disables a job whose owner lost topic membership", async () => {

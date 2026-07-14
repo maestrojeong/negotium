@@ -72,7 +72,7 @@ switch (command) {
         "  topics          list topics on this node",
         "  mcp list|add|remove|enable|disable   manage node MCP manifest",
         "  vault list|set|get|del               node secret store (encrypted at rest)",
-        "  cron list|create|inspect|run|pause|resume|reset|delete",
+        "  cron list|create|inspect|logs|run|pause|resume|restart|kill|reset|delete",
       ].join("\n"),
     );
     if (command && command !== "help" && command !== "--help") process.exitCode = 1;

@@ -141,6 +141,11 @@ export function ensureCronSchema(): void {
       job_id TEXT NOT NULL REFERENCES negotium_cron_jobs(id) ON DELETE CASCADE,
       requested_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS negotium_cron_cancellations (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL REFERENCES negotium_cron_jobs(id) ON DELETE CASCADE,
+      requested_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS negotium_cron_topic_sessions (
       topic_id TEXT NOT NULL,
       agent TEXT NOT NULL,
@@ -498,6 +503,35 @@ export function requestCronRun(jobId: string, now = new Date()): string {
     now.toISOString(),
   );
   return id;
+}
+
+export function requestCronCancel(jobId: string, now = new Date()): string {
+  ensureCronSchema();
+  const id = randomUUID();
+  db.query("INSERT INTO negotium_cron_cancellations (id,job_id,requested_at) VALUES (?,?,?)").run(
+    id,
+    jobId,
+    now.toISOString(),
+  );
+  return id;
+}
+
+export function claimCronCancellations(limit = 100): string[] {
+  ensureCronSchema();
+  const jobIds: string[] = [];
+  db.transaction(() => {
+    const rows = db
+      .query(
+        `SELECT id, job_id FROM negotium_cron_cancellations
+         ORDER BY requested_at LIMIT ?`,
+      )
+      .all(limit) as Array<{ id: string; job_id: string }>;
+    for (const row of rows) {
+      db.query("DELETE FROM negotium_cron_cancellations WHERE id = ?").run(row.id);
+      if (!jobIds.includes(row.job_id)) jobIds.push(row.job_id);
+    }
+  })();
+  return jobIds;
 }
 
 function insertRun(

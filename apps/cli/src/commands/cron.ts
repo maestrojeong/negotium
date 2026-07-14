@@ -16,6 +16,7 @@ import {
   getCronJobByOwnerAndName,
   listCronJobs,
   listCronRuns,
+  requestCronCancel,
   requestCronRun,
   resetCronTopicContext,
   setCronJobEnabled,
@@ -51,8 +52,8 @@ function usage(): void {
       "  list",
       "  create <topic> <name> '<schedule>' <prompt...> [--timezone=IANA] [--agent=...] [--model=...] [--effort=...]",
       "  create <topic> <name> '<schedule>' --script=job.py [--timezone=IANA] [--agent=...]",
-      "  inspect <name|id>",
-      "  run|pause|resume|reset|delete <name|id>",
+      "  inspect|logs <name|id>",
+      "  run|pause|resume|restart|kill|reset|delete <name|id>",
       "",
       "The node must stay alive (`negotium serve`, chat, or an adapter) for schedules to run.",
       `Python prompt scripts live in ${CRON_JOBS_DIR}.`,
@@ -126,7 +127,8 @@ export async function cronCommand(args: string[]): Promise<void> {
         printJob(job);
         return;
       }
-      case "inspect": {
+      case "inspect":
+      case "logs": {
         const ref = positional(rest)[0];
         if (!ref) throw new Error("provide a cron name or id");
         const job = resolveJob(ref);
@@ -137,6 +139,8 @@ export async function cronCommand(args: string[]): Promise<void> {
       case "run":
       case "pause":
       case "resume":
+      case "restart":
+      case "kill":
       case "reset":
       case "delete": {
         const ref = positional(rest)[0];
@@ -146,6 +150,8 @@ export async function cronCommand(args: string[]): Promise<void> {
         if (sub === "run") console.log(`queued ${requestCronRun(job.id)}`);
         if (sub === "pause") printJob(setCronJobEnabled(job.id, false)!);
         if (sub === "resume") printJob(setCronJobEnabled(job.id, true)!);
+        if (sub === "restart") printJob(setCronJobEnabled(job.id, true)!);
+        if (sub === "kill") console.log(`cancellation queued ${requestCronCancel(job.id)}`);
         if (sub === "reset") {
           await resetCronTopicContext(job.topicId);
           console.log(`reset shared Cron context for topic ${job.topicId}`);
