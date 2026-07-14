@@ -29,11 +29,13 @@ switch (command) {
     const { startDefaultNode } = await import("./node");
     const node = await startDefaultNode();
     console.log(`negotium node listening on 127.0.0.1:${node.port} (ctrl-c to stop)`);
-    process.on("SIGINT", () => {
-      node.stop();
-      process.exit(0);
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        void node.stop().then(resolve);
+      };
+      process.once("SIGINT", finish);
+      process.once("SIGTERM", finish);
     });
-    await new Promise(() => {});
     break;
   }
   case "topics": {

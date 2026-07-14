@@ -6,6 +6,7 @@ export type {
   RoomQueryControl,
 } from "./active-rooms";
 export {
+  abortAllRooms,
   abortRoom,
   clearRoomQuery,
   decideNewQuery,

@@ -8,6 +8,7 @@
 
 // ── Agents ──────────────────────────────────────────────────────────
 export { checkAgentAuth } from "#agents/auth-check";
+export { killOwnedCodexTreesForShutdown } from "#agents/codex-tree-kill";
 export type { ForkHandle } from "#agents/fork";
 export { cleanupAgentFork, forkAgentSession } from "#agents/fork";
 export { runAgent, SUPPORTED_AGENTS } from "#agents/index";
@@ -92,7 +93,7 @@ export {
 } from "#platform/node-plugins";
 export { killAllPlaywright } from "#platform/playwright/manager";
 // ── Query control ───────────────────────────────────────────────────
-export { abortRoom, getRoomQuery, interSessionQueue } from "#query/active-rooms";
+export { abortAllRooms, abortRoom, getRoomQuery, interSessionQueue } from "#query/active-rooms";
 export { sessionInboxPath } from "#query/session-inbox-path";
 export { AbortReason } from "#query/types";
 export type { AskPending } from "#runtime/ask-callbacks";

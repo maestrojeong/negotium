@@ -129,6 +129,19 @@ export function abortRoom(topicId: string, reason: AbortReason = AbortReason.Ext
   return true;
 }
 
+/** Abort every in-flight provider turn before the node tears down its resources. */
+export function abortAllRooms(reason: AbortReason = AbortReason.External): number {
+  let aborted = 0;
+  for (const running of activeByRoom.values()) {
+    running.abortReason = reason;
+    if (!running.abortController.signal.aborted) {
+      running.abortController.abort();
+      aborted++;
+    }
+  }
+  return aborted;
+}
+
 export function isUserOrigin(origin: string | undefined): boolean {
   return !origin || origin === "user";
 }

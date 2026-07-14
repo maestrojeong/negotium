@@ -4,6 +4,7 @@ import {
   acquireCodexSpawnLock,
   findNewCodexChildren,
   killCodexTrees,
+  killOwnedCodexTreesForShutdown,
   registerOwnedCodexPids,
   snapshotCodexChildren,
   unregisterOwnedCodexPids,
@@ -216,6 +217,52 @@ describe("codex-tree-kill", () => {
     // Should not throw on a dead PID.
     expect(() => killCodexTrees([pid])).not.toThrow();
   });
+
+  test("shutdown reaper waits for and kills resistant descendants", async () => {
+    const parent = spawn(
+      process.execPath,
+      [
+        "-e",
+        `const cp = require('child_process');
+         const child = cp.spawn(process.execPath, ['-e',
+           "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"
+         ]);
+         console.log(child.pid);
+         setInterval(() => {}, 1000);`,
+      ],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    const parentPid = parent.pid;
+    expect(parentPid).toBeDefined();
+    if (!parentPid) return;
+
+    let childPid: number | undefined;
+    parent.stdout?.on("data", (buf: Buffer) => {
+      childPid = Number(buf.toString().trim());
+    });
+    await waitFor(() => childPid !== undefined, 2_000);
+    expect(childPid).toBeDefined();
+    if (childPid === undefined) return;
+
+    registerOwnedCodexPids([parentPid]);
+    try {
+      await killOwnedCodexTreesForShutdown(100);
+      expect(await waitFor(() => !isAlive(parentPid), 2_000)).toBe(true);
+      expect(await waitFor(() => !isAlive(childPid!), 2_000)).toBe(true);
+    } finally {
+      unregisterOwnedCodexPids([parentPid]);
+      try {
+        process.kill(parentPid, "SIGKILL");
+      } catch {
+        // already dead
+      }
+      try {
+        process.kill(childPid, "SIGKILL");
+      } catch {
+        // already dead
+      }
+    }
+  }, 10_000);
 
   test("killCodexTrees SIGKILLs surviving descendants even when root dies fast", async () => {
     // Parent dies on SIGTERM; child ignores SIGTERM and only dies on SIGKILL.

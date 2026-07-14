@@ -89,9 +89,9 @@ export async function chatCommand(args: string[]): Promise<void> {
   });
 
   await new Promise<void>((resolve) => {
-    rl.on("close", () => {
+    rl.on("close", async () => {
       unsubscribe();
-      node.stop();
+      await node.stop();
       resolve();
     });
   });

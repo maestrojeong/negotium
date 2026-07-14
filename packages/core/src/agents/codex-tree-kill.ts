@@ -244,17 +244,15 @@ function isSameProcess(pid: number, lstart: string): boolean {
   return lstart !== "" && isAlive(pid) && getProcLstart(pid) === lstart;
 }
 
-/**
- * SIGTERM every PID in the descendant tree of each root in `rootPids`, then
- * schedule a SIGKILL fallback after `SIGKILL_DELAY_MS` for any survivors.
- * Safe to call multiple times; no-op if all PIDs are already dead.
- */
-export function killCodexTrees(rootPids: number[]): void {
-  if (rootPids.length === 0) return;
+type CodexKillPlan = {
+  rootPids: number[];
+  targets: Map<number, string>;
+};
 
-  // Walk trees once up-front so we have the full target set before SIGTERM
-  // shuffles parent/child relationships. Store lstart fingerprints as well so
-  // the SIGKILL fallback cannot kill an unrelated process after PID reuse.
+/** Capture the complete tree before signalling changes parent/child relationships. */
+function signalCodexTrees(rootPids: number[]): CodexKillPlan | null {
+  if (rootPids.length === 0) return null;
+
   const targets = new Map<number, string>();
   for (const root of rootPids) {
     for (const pid of collectTree(root)) {
@@ -263,7 +261,6 @@ export function killCodexTrees(rootPids: number[]): void {
   }
 
   logger.warn({ rootPids, totalPids: targets.size }, "codex-tree-kill: SIGTERM process tree");
-
   for (const pid of targets.keys()) {
     try {
       process.kill(pid, "SIGTERM");
@@ -271,60 +268,98 @@ export function killCodexTrees(rootPids: number[]): void {
       // already dead or permission denied
     }
   }
+  return { rootPids, targets };
+}
+
+function hasSameProcessSurvivors(targets: Map<number, string>): boolean {
+  for (const [pid, lstart] of targets) {
+    if (isSameProcess(pid, lstart)) return true;
+  }
+  return false;
+}
+
+/** Kill survivors from a previously fingerprinted plan without risking PID reuse. */
+function killCodexStragglers({ rootPids, targets }: CodexKillPlan): void {
+  const aliveTargets: number[] = [];
+  let droppedAsPossibleReuse = 0;
+  for (const [pid, lstart] of targets) {
+    if (isSameProcess(pid, lstart)) {
+      aliveTargets.push(pid);
+    } else if (isAlive(pid)) {
+      droppedAsPossibleReuse++;
+    }
+  }
+  if (aliveTargets.length === 0) return;
+
+  // PID-reuse defence: re-walk the trees (children may have spawned siblings
+  // mid-SIGTERM), but ONLY signal PIDs that were in the SIGTERM-time targets.
+  const reachable = new Set<number>(aliveTargets);
+  for (const root of rootPids) {
+    const rootLstart = targets.get(root);
+    if (rootLstart && isSameProcess(root, rootLstart)) {
+      for (const pid of collectTree(root)) reachable.add(pid);
+    }
+  }
+  const stragglers: number[] = [];
+  for (const pid of reachable) {
+    const lstart = targets.get(pid);
+    if (lstart && isSameProcess(pid, lstart)) stragglers.push(pid);
+    else if (isAlive(pid)) droppedAsPossibleReuse++;
+  }
+  logger.warn(
+    {
+      aliveRoots: rootPids.filter((pid) => {
+        const lstart = targets.get(pid);
+        return lstart ? isSameProcess(pid, lstart) : false;
+      }),
+      totalStragglers: stragglers.length,
+      droppedAsPossibleReuse,
+    },
+    "codex-tree-kill: SIGKILL fallback after SIGTERM timeout",
+  );
+  for (const pid of stragglers) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already dead
+    }
+  }
+}
+
+/**
+ * SIGTERM every PID in the descendant tree of each root in `rootPids`, then
+ * schedule a SIGKILL fallback after `SIGKILL_DELAY_MS` for any survivors.
+ * Safe to call multiple times; no-op if all PIDs are already dead.
+ */
+export function killCodexTrees(rootPids: number[]): void {
+  const plan = signalCodexTrees(rootPids);
+  if (!plan) return;
 
   const killTimer = setTimeout(() => {
-    // Survivors must be computed from `targets` (the full SIGTERM set), NOT
-    // just `rootPids`. A common case: codex root accepts SIGTERM quickly but
-    // an stdio MCP grandchild is mid-write and survives the grace window. The
-    // previous root-only check returned early in that case and left the
-    // grandchild as a zombie.
-    const aliveTargets: number[] = [];
-    let droppedAsPossibleReuse = 0;
-    for (const [pid, lstart] of targets) {
-      if (isSameProcess(pid, lstart)) {
-        aliveTargets.push(pid);
-      } else if (isAlive(pid)) {
-        droppedAsPossibleReuse++;
-      }
-    }
-    if (aliveTargets.length === 0) return;
-
-    // PID-reuse defence: re-walk the trees (children may have spawned siblings
-    // mid-SIGTERM), but ONLY signal PIDs that were in the SIGTERM-time `targets`
-    // set. Between SIGTERM and SIGKILL_DELAY_MS, an OS may have reused some of
-    // those PIDs for unrelated processes — without this intersect we'd
-    // SIGKILL them by accident.
-    const reachable = new Set<number>(aliveTargets);
-    for (const root of rootPids) {
-      const rootLstart = targets.get(root);
-      if (rootLstart && isSameProcess(root, rootLstart)) {
-        for (const pid of collectTree(root)) reachable.add(pid);
-      }
-    }
-    const stragglers: number[] = [];
-    for (const pid of reachable) {
-      const lstart = targets.get(pid);
-      if (lstart && isSameProcess(pid, lstart)) stragglers.push(pid);
-      else if (isAlive(pid)) droppedAsPossibleReuse++;
-    }
-    logger.warn(
-      {
-        aliveRoots: rootPids.filter((pid) => {
-          const lstart = targets.get(pid);
-          return lstart ? isSameProcess(pid, lstart) : false;
-        }),
-        totalStragglers: stragglers.length,
-        droppedAsPossibleReuse,
-      },
-      "codex-tree-kill: SIGKILL fallback after SIGTERM timeout",
-    );
-    for (const pid of stragglers) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // already dead
-      }
-    }
+    killCodexStragglers(plan);
   }, SIGKILL_DELAY_MS);
   killTimer.unref?.();
+}
+
+/**
+ * Reap every Codex tree owned by this node during process shutdown.
+ *
+ * The direct-child snapshot covers the narrow spawn window before a provider
+ * has registered its PID. Unlike the normal abort path, this function awaits
+ * the grace period with a referenced timer so node shutdown cannot exit before
+ * SIGKILL fallback has had a chance to remove resistant MCP/shell descendants.
+ */
+export async function killOwnedCodexTreesForShutdown(graceMs = 3_000): Promise<void> {
+  const roots = new Set(globalOwnedCodexPids);
+  for (const pid of snapshotCodexChildren().keys()) roots.add(pid);
+  const plan = signalCodexTrees([...roots]);
+  if (!plan) return;
+
+  const deadline = Date.now() + Math.max(0, graceMs);
+  while (Date.now() < deadline && hasSameProcessSurvivors(plan.targets)) {
+    await new Promise<void>((resolve) =>
+      setTimeout(resolve, Math.min(100, Math.max(1, deadline - Date.now()))),
+    );
+  }
+  killCodexStragglers(plan);
 }

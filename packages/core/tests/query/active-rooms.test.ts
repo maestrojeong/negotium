@@ -5,6 +5,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  abortAllRooms,
   clearRoomQuery,
   decideNewQuery,
   deferInject,
@@ -84,6 +85,22 @@ describe("clearRoomQuery (stale guard)", () => {
     expect(getRoomQuery("r6")?.queryId).toBe("new");
     clearRoomQuery("r6", "new");
     expect(getRoomQuery("r6")).toBeUndefined();
+  });
+});
+
+describe("abortAllRooms", () => {
+  test("aborts every active room for graceful node shutdown", () => {
+    const first = makeControl("r1", "q1", "user");
+    const second = makeControl("r2", "q2", "from-topic");
+    setRoomQuery(first);
+    setRoomQuery(second);
+
+    expect(abortAllRooms()).toBe(2);
+    expect(first.abortController.signal.aborted).toBe(true);
+    expect(second.abortController.signal.aborted).toBe(true);
+    expect(first.abortReason).toBe(AbortReason.External);
+    expect(second.abortReason).toBe(AbortReason.External);
+    expect(abortAllRooms()).toBe(0);
   });
 });
 

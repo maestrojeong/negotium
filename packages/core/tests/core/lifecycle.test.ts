@@ -95,6 +95,27 @@ describe("lifecycle shutdown registry", () => {
     expect(count).toBe(1);
   });
 
+  test("concurrent triggers join the in-flight shutdown", async () => {
+    let release!: () => void;
+    let count = 0;
+    onShutdown("slow", 100, async () => {
+      count++;
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    });
+
+    const first = runShutdown("SIGINT");
+    const second = runShutdown("SIGTERM");
+    expect(second).toBe(first);
+    await Bun.sleep(10);
+    expect(count).toBe(1);
+
+    release();
+    await Promise.all([first, second]);
+    expect(count).toBe(1);
+  });
+
   test("async handlers are awaited (next handler waits for prior completion)", async () => {
     const log: string[] = [];
     onShutdown("a", 100, async () => {

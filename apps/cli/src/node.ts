@@ -11,9 +11,11 @@
  */
 
 import {
+  abortAllRooms,
   DATA_DIR,
   killAllBgBash,
   killAllPlaywright,
+  killOwnedCodexTreesForShutdown,
   logger,
   NEGOTIUM_PORT,
   type NegotiumNodeModule,
@@ -37,7 +39,7 @@ import { McpHost, McpManifest } from "@negotium/mcp-host";
 
 export interface NodeHandle {
   port: number;
-  stop: () => void;
+  stop: () => Promise<void>;
 }
 
 /**
@@ -124,9 +126,13 @@ export function startNode(
 
   // Priority convention (see core lifecycle.ts): 100 = graceful
   // network/queue closes, 50 = external-process reapers.
-  onShutdown("node-server", 100, () => {
+  onShutdown("node-server", 130, () => {
     stopInbox();
     server.stop(true);
+  });
+  onShutdown("active-agent-turns", 120, async () => {
+    abortAllRooms();
+    await killOwnedCodexTreesForShutdown();
   });
   onShutdown("node-modules", 110, () => modules.stop());
   onShutdown("node-mcp-host", 50, async () => {
@@ -151,7 +157,7 @@ export function startNode(
     port,
     // Manual stop routes through the same registry as SIGINT/SIGTERM so
     // cleanup never diverges between the two paths (idempotent once-guard).
-    stop: () => void runShutdown("test"),
+    stop: () => runShutdown("test"),
   };
 }
 

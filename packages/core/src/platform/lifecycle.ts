@@ -45,6 +45,7 @@ export interface ShutdownHandler {
 const handlers: ShutdownHandler[] = [];
 let signalHooksInstalled = false;
 let triggered = false;
+let shutdownPromise: Promise<void> | null = null;
 
 /** Per-handler hard ceiling. A hung cleanup can't keep the process up
  *  beyond this; we log and move on so subsequent handlers still run. */
@@ -96,9 +97,14 @@ function ensureSignalHooks(): void {
  *
  * Exported for tests / explicit "I want shutdown now" callers.
  */
-export async function runShutdown(reason: SignalReason): Promise<void> {
-  if (triggered) return;
+export function runShutdown(reason: SignalReason): Promise<void> {
+  if (shutdownPromise) return shutdownPromise;
   triggered = true;
+  shutdownPromise = performShutdown(reason);
+  return shutdownPromise;
+}
+
+async function performShutdown(reason: SignalReason): Promise<void> {
   logger.info({ reason, handlerCount: handlers.length }, "lifecycle: shutdown sequence starting");
   // Stable sort: descending priority, registration order on ties.
   const ordered = handlers
@@ -114,12 +120,16 @@ export async function runShutdown(reason: SignalReason): Promise<void> {
 
   for (const h of ordered) {
     const start = Date.now();
+    let handlerTimeout: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        Promise.resolve(h.fn()),
-        new Promise<void>((_, reject) =>
-          setTimeout(() => reject(new Error("handler timeout")), HANDLER_TIMEOUT_MS),
-        ),
+        Promise.resolve().then(() => h.fn()),
+        new Promise<void>((_, reject) => {
+          handlerTimeout = setTimeout(
+            () => reject(new Error("handler timeout")),
+            HANDLER_TIMEOUT_MS,
+          );
+        }),
       ]);
       logger.info(
         { handler: h.name, priority: h.priority, ms: Date.now() - start },
@@ -130,6 +140,8 @@ export async function runShutdown(reason: SignalReason): Promise<void> {
         { err, handler: h.name, priority: h.priority, ms: Date.now() - start },
         "lifecycle: shutdown handler failed or timed out (continuing)",
       );
+    } finally {
+      if (handlerTimeout) clearTimeout(handlerTimeout);
     }
   }
   clearTimeout(hardExit);
@@ -143,6 +155,7 @@ export async function runShutdown(reason: SignalReason): Promise<void> {
 export function __resetForTests(): void {
   handlers.length = 0;
   triggered = false;
+  shutdownPromise = null;
   signalHooksInstalled = false;
   // No way to remove process.once listeners that haven't fired yet —
   // they'll just become no-ops because `triggered` is false-but-handlers
