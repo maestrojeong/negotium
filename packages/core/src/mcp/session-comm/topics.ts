@@ -9,7 +9,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sessionInboxPath } from "#query/session-inbox-path";
 import { sanitizeTopicName } from "#security/sanitize";
-import { appendApiMessage } from "#storage/api-messages";
 // NOTE: see `runtime.ts` — import these from `@/types` directly to keep
 // `maestro-agent-sdk` (whose `bootstrapHostPath()` prints to stdout) out of
 // this stdio MCP server's import graph.
@@ -139,39 +138,6 @@ export function getTopicsForUser(): { [name: string]: TopicEntry } {
   } catch (e) {
     process.stderr.write(`warn: session-comm: failed to load topics from DB: ${e}\n`);
     return {};
-  }
-}
-
-/**
- * Deliver a tell/ask message into a topic by writing it to `api_messages`
- * (same SQLite file the REST server reads). The message persists and shows in
- * the target topic's history. NOTE: this does not yet live-broadcast over WS or
- * auto-trigger the target's agent — that requires an in-process consumer in the
- * REST server (follow-up); for now the message appears on the next load of the
- * target topic.
- */
-export function deliverMessageToTopic(
-  topicId: string,
-  fromTopic: string,
-  message: string,
-): { ok: true } | { ok: false; error: string } {
-  try {
-    // TODO(C2-A idempotency): accept/pass a stable delivery id so direct MCP
-    // crash-replay cannot duplicate visible session messages.
-    const id =
-      (globalThis.crypto?.randomUUID?.() as string | undefined) ??
-      `tell-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const text = fromTopic ? `[from ${fromTopic}]\n${message}` : message;
-    appendApiMessage({
-      id,
-      topicId,
-      authorId: "system",
-      text,
-      createdAt: new Date().toISOString(),
-    });
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
 

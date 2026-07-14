@@ -58,7 +58,6 @@ if (_agentArg !== undefined && !isAgentKind(_agentArg)) {
   throw new Error(`Invalid --agent arg: ${_agentArg}`);
 }
 export const currentAgent: AgentKind = _agentArg ?? FALLBACK_AGENT;
-export const progressTopic = currentTopic;
 
 // Max tell_session relay depth — env parse/기본값 로직은 @/platform/config 로 이동.
 export { MAX_TELL_DEPTH } from "#platform/config";
