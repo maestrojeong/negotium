@@ -140,9 +140,26 @@ negotium cron list
 negotium serve
 ```
 
-Each job has durable run history and its own provider session. The scheduler uses one timer
-and an indexed `next_run_at`; it does not create one process per job. Scheduled work waits
-behind an active human turn and never preempts it.
+Every job belongs to a topic. Jobs in the same topic execute serially and share one Cron
+conversation, so a later job can use conclusions and state produced by earlier scheduled runs.
+That Cron conversation is separate from the topic's live human conversation. Provider-native
+resume IDs are kept per agent under the shared topic context; when a different agent runs, the
+runtime rebuilds its rollout from the provider-neutral Cron log.
+
+Jobs can also use a Python script whose stdout becomes the task prompt:
+
+```bash
+# Put daily-report.py in ~/.negotium/workspace/cron/jobs first.
+negotium cron create operations daily-report '0 9 * * *' \
+  --script=daily-report.py \
+  --timezone=America/Los_Angeles
+```
+
+The scheduler uses one timer and an indexed `next_run_at`; it does not create one pm2 process
+per job. Scheduled work waits behind an active human turn and never preempts it. If the node
+process stops, execution stops too, but schedules and manual requests remain in SQLite. Run the
+whole node under `launchd`, systemd, or pm2; after restart a missed schedule is coalesced into one
+run instead of replaying an unbounded backlog.
 
 Set `NEGOTIUM_CRON=0` to keep the module completely unloaded.
 
@@ -259,7 +276,8 @@ const node = startNode({
 await node.stop();
 ```
 
-Modules advertise stable capability IDs such as `scheduler.cron.v1`. A disabled module is not
+Modules advertise stable capability IDs such as `scheduler.cron.v1` and
+`scheduler.cron.v2`. A disabled module is not
 imported and cannot migrate a table or install background work.
 
 ## Node state
@@ -270,7 +288,7 @@ The default state root is `~/.negotium`; override it with `NEGOTIUM_STATE_DIR`.
 ~/.negotium/
 ├── data/       SQLite databases, MCP manifest, generated node secrets
 ├── run/        transient inbox queues, progress state, MCP port files
-└── workspace/  topic workspaces, shared wiki, skills, browser profiles
+└── workspace/  topic workspaces, shared wiki, skills, browser profiles, Cron scripts
 ```
 
 Important environment variables:
@@ -284,6 +302,10 @@ Important environment variables:
 | `NEGOTIUM_CRON` | `1` | Set to `0` to omit the Cron module |
 | `NEGOTIUM_CRON_POLL_INTERVAL_MS` | `1000` | Scheduler polling interval |
 | `NEGOTIUM_CRON_RUN_TIMEOUT_MS` | `600000` | Maximum scheduled-turn duration |
+| `NEGOTIUM_CRON_QUEUE_TIMEOUT_MS` | `300000` | Maximum wait behind a busy topic |
+| `NEGOTIUM_CRON_SCRIPT_TIMEOUT_MS` | `600000` | Maximum Python prompt-script duration |
+| `NEGOTIUM_CRON_JOBS_DIR` | `workspace/cron/jobs` | Python prompt-script directory |
+| `NEGOTIUM_CRON_PYTHON` | `uv` or `python3` | Optional Python executable override |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`, or `fatal` |
 
 The vault stores row-bound authenticated ciphertext in `data/vault.db`; its node master key is

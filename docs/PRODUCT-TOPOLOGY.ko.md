@@ -78,7 +78,8 @@ Otium central에 실제 `node-invites` claim API가 생기기 전에는 Negotium
 
 - 비활성 모듈: import 0, timer/listener 0, schema migration 0, 모듈별 turn hot-path dispatch 0.
 - 활성 모듈: node startup에서 한 번 등록하고 event/query 경로에는 O(1) 조회만 추가.
-- Cron: job별 프로세스 없이 timer 하나, `(enabled, next_run_at)` 인덱스 조회 하나. job마다 독립 세션.
+- Cron: job별 프로세스 없이 timer 하나, `(enabled, next_run_at)` 인덱스 조회 하나. topic별 공용 Cron
+  문맥과 직렬 실행 큐를 사용하며 agent별 native resume ID는 공용 로그 아래에서 재구성한다.
 - Otium peer: worker마다 outbound 연결 하나. 배치된 방의 입력/이벤트만 전송하며 SQLite 전체를
   동기화하지 않는다.
 - 파일: turn에 필요한 파일만 content-addressed/streaming 전송하고 완료 후 정책에 따라 정리.
@@ -91,8 +92,8 @@ Otium peer idle/turn throughput을 각각 측정한다.
 
 1. **완료** — 명시적 node module lifecycle, reverse-order cleanup, 중복 capability 방지.
 2. **완료** — 동적 MCP capability 등록/해제.
-3. **완료** — `@negotium/module-cron`: 영속 job/run/request, timezone Cron, 독립 session,
-   CLI와 MCP 관리, 사용자 turn 우선순위 유지.
+3. **완료** — `@negotium/module-cron`: 영속 job/run/request, timezone Cron, topic 공유 Cron 문맥,
+   prompt/Python-script source, CLI와 MCP 관리, 사용자 turn 우선순위 유지.
 4. **다음** — `@negotium/module-otium-peer`: central 인증·디스커버리, provision/turn/event journal,
    capability endpoint, relay client.
 5. **Otium 변경 필요** — one-time node invite create/claim API와 workspace 노드 관리 UI.
