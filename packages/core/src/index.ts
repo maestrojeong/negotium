@@ -25,8 +25,13 @@ export {
   resolveModelForAgent,
 } from "#agents/model-catalog";
 export { getRegistry } from "#agents/registry";
-export type { PurgeSessionRef, PurgeTopicLogsOptions } from "#agents/topic-cleanup";
-export { purgeTopicLogs } from "#agents/topic-cleanup";
+export type {
+  PurgeSessionRef,
+  PurgeTopicLogsOptions,
+  RotateTopicLogsOptions,
+  RotateTopicLogsResult,
+} from "#agents/topic-cleanup";
+export { purgeTopicLogs, rotateTopicLogs } from "#agents/topic-cleanup";
 export type { RuntimeBus, RuntimeBusEvent, RuntimeBusListener } from "#bus";
 // ── Host boundary ───────────────────────────────────────────────────
 export { runtimeBus, setRuntimeBus, WsHub } from "#bus";
