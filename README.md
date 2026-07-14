@@ -144,7 +144,11 @@ Every job belongs to a topic. Jobs in the same topic execute serially and share 
 conversation, so a later job can use conclusions and state produced by earlier scheduled runs.
 That Cron conversation is separate from the topic's live human conversation. Provider-native
 resume IDs are kept per agent under the shared topic context; when a different agent runs, the
-runtime rebuilds its rollout from the provider-neutral Cron log.
+runtime rebuilds its rollout from the provider-neutral Cron log. After every five successful
+topic Cron runs, Negotium rotates the native provider sessions and carries the latest five
+conversation turns into the replacement session. The cadence is topic-wide rather than
+per-job, so several schedules cannot unexpectedly reset each other's context, and the shared
+history stays useful without growing forever.
 
 Jobs can also use a Python script whose stdout becomes the task prompt:
 
