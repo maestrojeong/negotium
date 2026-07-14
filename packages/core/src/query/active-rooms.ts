@@ -36,12 +36,28 @@ export interface DeferredInject {
   contextId?: string;
   /** Agent override for injected turns that must resume a provider-specific session. */
   agentOverride?: AgentKind;
+  /** Model override for specialized internal turns such as cron. */
+  modelOverride?: string;
+  /** Effort override for specialized internal turns such as cron. */
+  effortOverride?: import("#types").EffortLevel;
   /** SDK-native session/thread id to resume for a forked injected turn. */
   sessionId?: string | null;
   /** Rollout file backing a synthetic/native fork; cleaned when the turn finishes. */
   forkHandle?: ForkHandle;
   /** Working directory override for provider-native resumed sessions. */
   cwd?: string;
+  /** Conversation/session namespace override (cron jobs keep isolated rollouts). */
+  sessionName?: string;
+  /** MCP/tool scope override for a specialized internal turn. */
+  sessionType?: "dm" | "forum" | "ephemeral" | "manager" | "cron";
+  /** Optional session owner; when present the topic's main session is not replaced. */
+  onSessionId?: (sessionId: string) => void;
+  /** Final result hook for optional modules that own an internal turn. */
+  onSettled?: (result: {
+    queryId: string;
+    kind: "completed" | "aborted" | "error";
+    error?: string;
+  }) => void;
   /** True after a session-expired recovery retry has already been attempted. */
   _sessionRetried?: boolean;
   /** Original ask_session replies represented by this inject, preserved across dequeueAll merges. */
@@ -213,9 +229,15 @@ export class InterSessionQueue {
           (e.silent ?? false) === (base.silent ?? false)) &&
       (e.onDispatched !== undefined) === (base.onDispatched !== undefined) &&
       (e.agentOverride ?? null) === (base.agentOverride ?? null) &&
+      (e.modelOverride ?? null) === (base.modelOverride ?? null) &&
+      (e.effortOverride ?? null) === (base.effortOverride ?? null) &&
       (e.sessionId ?? null) === (base.sessionId ?? null) &&
       (e.forkHandle?.forkId ?? null) === (base.forkHandle?.forkId ?? null) &&
-      (e.cwd ?? null) === (base.cwd ?? null);
+      (e.cwd ?? null) === (base.cwd ?? null) &&
+      (e.sessionName ?? null) === (base.sessionName ?? null) &&
+      (e.sessionType ?? null) === (base.sessionType ?? null) &&
+      (e.onSessionId ?? null) === (base.onSessionId ?? null) &&
+      (e.onSettled ?? null) === (base.onSettled ?? null);
     let take = 1;
     while (take < q.length && mergeable(q[take])) take++;
     const batch = q.splice(0, take);

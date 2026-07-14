@@ -6,6 +6,8 @@ import {
   getForumMcpServers,
   getManagerMcpServers,
   markPlaywrightUnavailable,
+  OPTIONAL_FORUM_MCP_SERVERS,
+  registerRuntimeMcpServer,
 } from "#platform/mcp-config";
 
 /**
@@ -334,5 +336,32 @@ describe("mcp-config: playwright transport selection per agent", () => {
 
     expect(consumePlaywrightUnavailable(userId, "coding")).toBe(true);
     expect(consumePlaywrightUnavailable(userId, "coding")).toBe(false);
+  });
+
+  test("optional modules can mount and unmount an MCP capability at node startup", () => {
+    const unregister = registerRuntimeMcpServer("test-cron-manager", {
+      scopes: ["forum", "manager"],
+      forumRequired: true,
+      build: ({ userId }) => ({ command: "test-cron", args: [userId] }),
+    });
+
+    try {
+      const servers = getForumMcpServers({
+        userId,
+        session: "coding",
+        agent: "codex",
+        enabled: [],
+      });
+      expect(servers["test-cron-manager"]).toEqual({ command: "test-cron", args: [userId] });
+      expect(OPTIONAL_FORUM_MCP_SERVERS).not.toContain("test-cron-manager");
+    } finally {
+      unregister();
+    }
+
+    expect(
+      getForumMcpServers({ userId, session: "coding", agent: "codex", enabled: [] })[
+        "test-cron-manager"
+      ],
+    ).toBeUndefined();
   });
 });

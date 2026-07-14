@@ -58,17 +58,31 @@ export { errMsg } from "#platform/error";
 export { appendJsonlEntry } from "#platform/jsonl";
 export { onShutdown, runShutdown } from "#platform/lifecycle";
 export { logger } from "#platform/logger";
-export type { NodeMcpEntry } from "#platform/mcp-config";
+export type {
+  NodeMcpEntry,
+  RuntimeMcpBuildContext,
+  RuntimeMcpCatalogEntry,
+  RuntimeMcpScope,
+} from "#platform/mcp-config";
 // ── Runtime MCP wiring ──────────────────────────────────────────────
 export {
+  buildStdioMcpServer,
   consumePlaywrightUnavailable,
   getMcpServersForQuery,
   getNodeMcpServers,
   markPlaywrightUnavailable,
   OPTIONAL_FORUM_MCP_SERVERS,
+  registerRuntimeMcpServer,
   setNodeMcpServers,
   setPlaywrightUnavailableNotifier,
 } from "#platform/mcp-config";
+export type {
+  NegotiumNodeModule,
+  NegotiumNodeModuleContext,
+  NegotiumNodeModuleHandle,
+  StartedNegotiumNodeModules,
+} from "#platform/modules";
+export { startNegotiumNodeModules } from "#platform/modules";
 export type { NodeRequestHandler } from "#platform/node-plugins";
 export {
   nodeRequestHandlerNames,
@@ -94,6 +108,7 @@ export type { FileHooks } from "#runtime/file-hooks";
 export { setFileHooks, storeLocalFileAsUpload } from "#runtime/file-hooks";
 export { renderTurnFooter } from "#runtime/footer";
 export { flushSessionInbox, startSessionInboxWorker } from "#runtime/inbox";
+export type { AiTurnSettlement, AiTurnTopic } from "#runtime/turn-runner";
 export {
   deliverAskCallbackToCaller,
   startAiTurn,

@@ -29,7 +29,7 @@ import type { AgentKind, AgentQueryOptions } from "#types";
  * means switching agents mid-topic just works: each turn re-spawns with the
  * right runtime.
  */
-function serverLaunch(
+export function buildStdioMcpServer(
   agent: AgentKind | undefined,
   serverFile: string,
   serverArgs: string[],
@@ -155,9 +155,9 @@ export function consumePlaywrightUnavailable(userId: string, topic: string | und
  * order of server names in user-facing displays.
  */
 
-type McpScope = "dm" | "forum" | "fork" | "manager" | "cron";
+export type RuntimeMcpScope = "dm" | "forum" | "fork" | "manager" | "cron";
 
-interface McpBuildContext {
+export interface RuntimeMcpBuildContext {
   userId: string;
   /** "dm" for DM scope, topic/session name for forum/fork. */
   session: string;
@@ -178,8 +178,8 @@ interface McpBuildContext {
   silent?: boolean;
 }
 
-interface McpServerEntry {
-  scopes: readonly McpScope[];
+export interface RuntimeMcpCatalogEntry {
+  scopes: readonly RuntimeMcpScope[];
   /** Forum scope only: cannot be removed via the enabled whitelist. */
   forumRequired?: boolean;
   /**
@@ -188,7 +188,7 @@ interface McpServerEntry {
    * catalog entirely." Used by the playwright entry when the manager
    * cannot provide a long-lived port.
    */
-  build(ctx: McpBuildContext): Record<string, unknown> | null;
+  build(ctx: RuntimeMcpBuildContext): Record<string, unknown> | null;
 }
 
 // --- Playwright transport builders ---
@@ -227,7 +227,7 @@ function longLivedHttpMcp(agent: AgentKind | undefined, port: number) {
 
 // --- Catalog ---
 
-const MCP_CATALOG: Record<string, McpServerEntry> = {
+const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   playwright: {
     scopes: ["dm", "forum", "fork", "cron"],
     build({ userId, session, playwrightPort, agent }) {
@@ -291,14 +291,14 @@ const MCP_CATALOG: Record<string, McpServerEntry> = {
   paddleocr: {
     scopes: ["dm", "forum", "fork", "cron"],
     build({ agent }) {
-      return serverLaunch(agent, PADDLEOCR_SERVER, []);
+      return buildStdioMcpServer(agent, PADDLEOCR_SERVER, []);
     },
   },
   "token-stats": {
     scopes: ["dm", "forum", "manager", "cron"],
     forumRequired: true,
     build({ userId, agent }) {
-      return serverLaunch(agent, TOKEN_STATS_SERVER, [`--user-id=${userId}`]);
+      return buildStdioMcpServer(agent, TOKEN_STATS_SERVER, [`--user-id=${userId}`]);
     },
   },
   // Otium-owned shared task system. This is the only authoritative task/todo
@@ -310,7 +310,7 @@ const MCP_CATALOG: Record<string, McpServerEntry> = {
     build({ userId, session, topicId, agent }) {
       const args = [`--user-id=${userId}`, `--topic=${session}`];
       if (topicId) args.push(`--topic-id=${topicId}`);
-      return serverLaunch(agent, TASK_SERVER, args);
+      return buildStdioMcpServer(agent, TASK_SERVER, args);
     },
   },
   "session-comm": {
@@ -330,7 +330,7 @@ const MCP_CATALOG: Record<string, McpServerEntry> = {
         `--agent=${effectiveAgent}`,
         ...(silent ? ["--reply-only=true"] : []),
       ];
-      return serverLaunch(effectiveAgent, SESSION_COMM_SERVER, args);
+      return buildStdioMcpServer(effectiveAgent, SESSION_COMM_SERVER, args);
     },
   },
   wiki: {
@@ -343,14 +343,14 @@ const MCP_CATALOG: Record<string, McpServerEntry> = {
       const resolvedWikiTopicId =
         wikiTopicId ?? topicId ?? (session !== "dm" ? session : undefined);
       if (resolvedWikiTopicId) args.push(`--topic-id=${resolvedWikiTopicId}`);
-      return serverLaunch(agent, WIKI_SERVER, args);
+      return buildStdioMcpServer(agent, WIKI_SERVER, args);
     },
   },
   "system-health": {
     scopes: ["dm", "forum", "manager", "cron"],
     forumRequired: true,
     build({ agent }) {
-      return serverLaunch(agent, SYSTEM_HEALTH_SERVER, []);
+      return buildStdioMcpServer(agent, SYSTEM_HEALTH_SERVER, []);
     },
   },
   "background-bash": {
@@ -365,7 +365,7 @@ const MCP_CATALOG: Record<string, McpServerEntry> = {
     forumRequired: true,
     build({ userId, agent }) {
       const args = [`--user-id=${userId}`];
-      return serverLaunch(agent, AGENT_HEALTH_SERVER, args);
+      return buildStdioMcpServer(agent, AGENT_HEALTH_SERVER, args);
     },
   },
   vault: {
@@ -380,31 +380,68 @@ const MCP_CATALOG: Record<string, McpServerEntry> = {
       // MCP result reaches Codex, while arbitrary shell could write a secret to
       // disk and reveal it through a later Read.
       if (agent === "codex") args.push("--http-only=true");
-      return serverLaunch(agent, VAULT_SERVER, args);
+      return buildStdioMcpServer(agent, VAULT_SERVER, args);
     },
   },
 };
 
 // --- Derived catalog views ---
 
-function namesInScope(scope: McpScope): string[] {
+function namesInScope(scope: RuntimeMcpScope): string[] {
   return Object.entries(MCP_CATALOG)
     .filter(([, e]) => e.scopes.includes(scope))
     .map(([name]) => name);
 }
 
 /** All forum-eligible MCP server names, in display order. */
-export const ALL_FORUM_MCP_SERVER_NAMES = namesInScope("forum") as readonly string[];
+const allForumMcpServerNames: string[] = [];
+export const ALL_FORUM_MCP_SERVER_NAMES: readonly string[] = allForumMcpServerNames;
 
 /** Forum servers that cannot be removed via the enabled whitelist. */
-export const REQUIRED_FORUM_MCP_SERVERS = Object.entries(MCP_CATALOG)
-  .filter(([, e]) => e.scopes.includes("forum") && e.forumRequired)
-  .map(([name]) => name) as readonly string[];
+const requiredForumMcpServers: string[] = [];
+export const REQUIRED_FORUM_MCP_SERVERS: readonly string[] = requiredForumMcpServers;
 
 /** Forum servers that can be toggled via the enabled whitelist (not required). */
-export const OPTIONAL_FORUM_MCP_SERVERS = ALL_FORUM_MCP_SERVER_NAMES.filter(
-  (n) => !REQUIRED_FORUM_MCP_SERVERS.includes(n),
-) as readonly string[];
+const optionalForumMcpServers: string[] = [];
+export const OPTIONAL_FORUM_MCP_SERVERS: readonly string[] = optionalForumMcpServers;
+
+function refreshForumCatalogViews(): void {
+  const all = namesInScope("forum");
+  const required = Object.entries(MCP_CATALOG)
+    .filter(([, entry]) => entry.scopes.includes("forum") && entry.forumRequired)
+    .map(([name]) => name);
+  allForumMcpServerNames.splice(0, allForumMcpServerNames.length, ...all);
+  requiredForumMcpServers.splice(0, requiredForumMcpServers.length, ...required);
+  optionalForumMcpServers.splice(
+    0,
+    optionalForumMcpServers.length,
+    ...all.filter((name) => !required.includes(name)),
+  );
+}
+
+refreshForumCatalogViews();
+
+/**
+ * Mount one MCP capability supplied by an optional node module.
+ *
+ * Registration happens once at node startup, never in the per-event hot path.
+ * The returned cleanup closure only removes the exact entry installed by this
+ * call, making module stop/restart safe.
+ */
+export function registerRuntimeMcpServer(name: string, entry: RuntimeMcpCatalogEntry): () => void {
+  const key = name.trim();
+  if (!key || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(key)) {
+    throw new Error(`invalid runtime MCP server name: ${name}`);
+  }
+  if (MCP_CATALOG[key]) throw new Error(`runtime MCP server already registered: ${key}`);
+  MCP_CATALOG[key] = entry;
+  refreshForumCatalogViews();
+  return () => {
+    if (MCP_CATALOG[key] !== entry) return;
+    delete MCP_CATALOG[key];
+    refreshForumCatalogViews();
+  };
+}
 
 /**
  * Format the active MCP config for display (used by get_mcp_config /
@@ -496,8 +533,8 @@ function buildNodeMcpSpecs(
 }
 
 function buildScope(
-  scope: McpScope,
-  ctx: McpBuildContext,
+  scope: RuntimeMcpScope,
+  ctx: RuntimeMcpBuildContext,
   filter: (name: string) => boolean = () => true,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};

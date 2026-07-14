@@ -187,6 +187,7 @@ async function streamAgentEvents(
   _effort: EffortLevel | undefined,
   userId: string,
   retryableSessionExpired = true,
+  onSessionId?: (sessionId: string) => void,
 ): Promise<StreamAgentOutcome> {
   const abortController = control.abortController;
   const hub = WsHub.get();
@@ -531,7 +532,22 @@ async function streamAgentEvents(
           // temporary session ids and must not clobber the topic's durable
           // session; visible tell/reply injects do belong to the main topic
           // session, same as user messages.
-          if (!silent && sessionEventMatchesCurrentExecution(topicId, queryId, agentType, model)) {
+          if (!silent && onSessionId && getRoomQuery(topicId)?.queryId === queryId) {
+            try {
+              // A user turn may preempt and requeue this injected turn. Carry
+              // the newest provider session into that deferred copy.
+              if (control.injectParams) control.injectParams.sessionId = event.sessionId;
+              onSessionId(event.sessionId);
+            } catch (err) {
+              logger.warn(
+                { err, topicId, queryId, agentType },
+                "ai: isolated session owner rejected provider session id",
+              );
+            }
+          } else if (
+            !silent &&
+            sessionEventMatchesCurrentExecution(topicId, queryId, agentType, model)
+          ) {
             setTopicSessionId(topicId, event.sessionId, {
               reason: "provider-session-event",
               queryId,
@@ -634,6 +650,15 @@ function redispatchInject(inject: DeferredInject): void {
       { topicId: inject.topicId, origin: inject.origin },
       "ai: dropping deferred inject — topic gone or AI no longer invited",
     );
+    try {
+      inject.onSettled?.({
+        queryId: "",
+        kind: "error",
+        error: "topic gone or AI no longer invited",
+      });
+    } catch (err) {
+      logger.warn({ err, topicId: inject.topicId }, "ai: deferred settlement hook failed");
+    }
     return;
   }
   startAiTurn({
@@ -658,9 +683,15 @@ function redispatchInject(inject: DeferredInject): void {
     silent: inject.silent,
     contextId: inject.contextId,
     agentOverride: inject.agentOverride,
+    modelOverride: inject.modelOverride,
+    effortOverride: inject.effortOverride,
     sessionId: inject.sessionId,
     forkHandle: inject.forkHandle,
     cwd: inject.cwd,
+    sessionName: inject.sessionName,
+    sessionType: inject.sessionType,
+    onSessionId: inject.onSessionId,
+    onSettled: inject.onSettled,
     askReplySources: inject.askReplySources,
     _sessionRetried: inject._sessionRetried,
     from: inject.from,
@@ -876,6 +907,12 @@ export interface AiTurnTopic {
   aiMention?: boolean;
 }
 
+export interface AiTurnSettlement {
+  queryId: string;
+  kind: "completed" | "aborted" | "error";
+  error?: string;
+}
+
 /**
  * Start one AI turn for a topic: resolve agent/model/effort from
  * `config override > topic default`, run the agent, and stream events. Returns
@@ -907,9 +944,19 @@ export function startAiTurn(params: {
   silent?: boolean;
   contextId?: string;
   agentOverride?: AgentKind;
+  modelOverride?: string;
+  effortOverride?: EffortLevel;
   sessionId?: string | null;
   forkHandle?: ForkHandle;
   cwd?: string;
+  /** Provider conversation namespace. Defaults to the visible topic title. */
+  sessionName?: string;
+  /** Tool/catalog scope. Defaults to manager or forum based on topic kind. */
+  sessionType?: "dm" | "forum" | "ephemeral" | "manager" | "cron";
+  /** Own this turn's provider session without replacing the topic's main session. */
+  onSessionId?: (sessionId: string) => void;
+  /** Observe the final non-retry outcome of this turn. */
+  onSettled?: (result: AiTurnSettlement) => void;
   askReplySources?: DeferredInject["askReplySources"];
   _sessionRetried?: boolean;
   /** FROM_AUTO_CONTINUE: appends a system-reminder that blocks re-evaluation of model/effort. */
@@ -926,8 +973,14 @@ export function startAiTurn(params: {
   const silent = params.silent;
   const contextId = params.contextId;
   const agentOverride = params.agentOverride;
+  const modelOverride = params.modelOverride;
+  const effortOverride = params.effortOverride;
   const forkHandle = params.forkHandle;
   const cwd = params.cwd;
+  const sessionName = params.sessionName ?? topic.title;
+  const sessionType = params.sessionType;
+  const onSessionId = params.onSessionId;
+  const onSettled = params.onSettled;
   const askReplySources = params.askReplySources;
   const sessionRetried = params._sessionRetried === true;
 
@@ -946,9 +999,15 @@ export function startAiTurn(params: {
       silent,
       contextId,
       agentOverride,
+      modelOverride,
+      effortOverride,
       sessionId,
       forkHandle,
       cwd,
+      sessionName,
+      sessionType,
+      onSessionId,
+      onSettled,
       askReplySources,
       _sessionRetried: sessionRetried,
       onDispatched,
@@ -1006,9 +1065,15 @@ export function startAiTurn(params: {
           silent,
           contextId,
           agentOverride,
+          modelOverride,
+          effortOverride,
           sessionId,
           forkHandle,
           cwd,
+          sessionName,
+          sessionType,
+          onSessionId,
+          onSettled,
           askReplySources,
           _sessionRetried: sessionRetried,
           onDispatched,
@@ -1021,7 +1086,13 @@ export function startAiTurn(params: {
   } catch (err) {
     logger.warn({ err, topicId, userId }, "ai: failed to write active query state");
   }
-  onDispatched?.(queryId);
+  try {
+    onDispatched?.(queryId);
+  } catch (err) {
+    // Module/adapter observers are outside the turn's trust boundary. A broken
+    // observer must not leave the room occupied without starting its provider.
+    logger.warn({ err, topicId, queryId }, "ai: dispatch hook failed");
+  }
 
   // Priority: config override > topic default. (Per-message slash overrides
   // were removed — switching is config-only now.) Cross-agent-stale models are
@@ -1030,9 +1101,11 @@ export function startAiTurn(params: {
   const configuredAgent = agentOverride ?? topic.agent;
   const agentKind: AgentKind = (configuredAgent ?? "maestro") as AgentKind;
   const registry = getRegistry(agentKind);
-  const requestedModel = override?.model ?? topic.defaultModel;
+  const requestedModel = modelOverride ?? override?.model ?? topic.defaultModel;
   const resolvedModel = resolveModelForAgent(agentKind, requestedModel, registry);
-  const requestedEffort = (override?.effort ?? topic.defaultEffort) as EffortLevel | undefined;
+  const requestedEffort = (effortOverride ?? override?.effort ?? topic.defaultEffort) as
+    | EffortLevel
+    | undefined;
   const resolvedEffort =
     requestedEffort && registry.validateEffort(requestedEffort)
       ? requestedEffort
@@ -1152,7 +1225,7 @@ export function startAiTurn(params: {
   }
 
   if (!silent && !sessionRetried) {
-    appendConversationEvent(userId, topic.title, agentKind, {
+    appendConversationEvent(userId, sessionName, agentKind, {
       type: "user_message",
       content: agentPrompt,
     });
@@ -1214,8 +1287,8 @@ export function startAiTurn(params: {
       systemPrompt: effectiveSystemPrompt,
       sessionId,
       userId,
-      session: topic.title,
-      sessionType: isManager ? "manager" : "forum",
+      session: sessionName,
+      sessionType: sessionType ?? (isManager ? "manager" : "forum"),
       abortController,
       model: resolvedModel,
       effort: resolvedEffort,
@@ -1255,12 +1328,13 @@ export function startAiTurn(params: {
     resolvedEffort,
     userId,
     !sessionRetried,
+    onSessionId,
   )
     .then(async (outcome) => {
       if (outcome.kind === "session-expired") {
         const retrySessionId = resolveSessionRetryId({
           topicId,
-          topicTitle: topic.title,
+          topicTitle: sessionName,
           userId,
           agent: agentKind,
           sessionId,
@@ -1291,9 +1365,15 @@ export function startAiTurn(params: {
           silent,
           contextId,
           agentOverride,
+          modelOverride,
+          effortOverride,
           sessionId: retrySessionId,
           forkHandle,
           cwd,
+          sessionName,
+          sessionType,
+          onSessionId,
+          onSettled,
           askReplySources,
           _sessionRetried: true,
         });
@@ -1316,7 +1396,25 @@ export function startAiTurn(params: {
         }
         await deliverAskError(queryId, topic.title, outcome.error);
         await settleSubagentFailure(queryId, classifyAgentError(outcome.error, agentKind));
+        try {
+          onSettled?.({ queryId, kind: "error", error: outcome.error });
+        } catch (err) {
+          logger.warn({ err, topicId, queryId }, "ai: turn settlement hook failed");
+        }
         return;
+      }
+      const requeuedAfterUserPreemption =
+        outcome.kind === "aborted" &&
+        control.abortReason === AbortReason.Internal &&
+        Boolean(control.injectParams);
+      if (requeuedAfterUserPreemption) return;
+      try {
+        onSettled?.({
+          queryId,
+          kind: outcome.kind === "aborted" ? "aborted" : "completed",
+        });
+      } catch (err) {
+        logger.warn({ err, topicId, queryId }, "ai: turn settlement hook failed");
       }
     })
     .catch((err) => {
@@ -1330,6 +1428,15 @@ export function startAiTurn(params: {
           queryId,
           err instanceof Error ? err.message : "Agent process crashed",
         );
+      }
+      try {
+        onSettled?.({
+          queryId,
+          kind: "error",
+          error: err instanceof Error ? err.message : "Agent process crashed",
+        });
+      } catch (hookErr) {
+        logger.warn({ err: hookErr, topicId, queryId }, "ai: turn settlement hook failed");
       }
     });
 
@@ -1364,9 +1471,19 @@ export function triggerTopicAiTurn(
     depth?: number;
     silent?: boolean;
     contextId?: string;
+    modelOverride?: string;
+    effortOverride?: EffortLevel;
     sessionId?: string | null;
     forkHandle?: ForkHandle;
     cwd?: string;
+    /** Provider conversation namespace override for isolated internal sessions. */
+    sessionName?: string;
+    /** MCP/tool scope override for isolated internal sessions. */
+    sessionType?: "dm" | "forum" | "ephemeral" | "manager" | "cron";
+    /** Persist provider session ids outside the topic's main session slot. */
+    onSessionId?: (sessionId: string) => void;
+    /** Observe the final non-retry outcome of this turn. */
+    onSettled?: (result: AiTurnSettlement) => void;
     askReplySources?: DeferredInject["askReplySources"];
     /** Internal source marker, e.g. FROM_AUTO_CONTINUE for config-change resumes. */
     from?: string;
@@ -1433,9 +1550,15 @@ export function triggerTopicAiTurn(
     silent: opts?.silent,
     contextId: opts?.contextId,
     agentOverride: agentType,
+    modelOverride: opts?.modelOverride,
+    effortOverride: opts?.effortOverride,
     sessionId,
     forkHandle: opts?.forkHandle,
     cwd: opts?.cwd,
+    sessionName: opts?.sessionName,
+    sessionType: opts?.sessionType,
+    onSessionId: opts?.onSessionId,
+    onSettled: opts?.onSettled,
     askReplySources: opts?.askReplySources,
     from: opts?.from,
   });
