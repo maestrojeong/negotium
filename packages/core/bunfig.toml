@@ -1,0 +1,6 @@
+[test]
+# Preload runs before ANY test file is loaded. Required because test files
+# statically import modules that evaluate `SESSIONS_DB` from process.env at
+# top level — setting env inside a test file is too late (the module cache
+# is already populated with the production DB path).
+preload = ["./tests/setup.ts"]
