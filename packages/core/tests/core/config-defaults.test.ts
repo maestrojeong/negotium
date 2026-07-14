@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import {
   FALLBACK_MODEL,
   GATEWAY_MODEL,
   resolveDefaultModel,
   SESSION_MODEL,
+  TSX_BIN,
 } from "#platform/config";
 
 const MODEL_ENV_KEYS = [
@@ -32,6 +34,10 @@ function restoreEnv(snapshot: Record<string, string | undefined>) {
 }
 
 describe("role default models", () => {
+  test("tsx executable resolves across hoisted workspace installs", () => {
+    expect(existsSync(TSX_BIN)).toBe(true);
+  });
+
   test("unset model env leaves registry defaults authoritative", () => {
     expect(FALLBACK_MODEL).toBeUndefined();
     expect(SESSION_MODEL).toBeUndefined();

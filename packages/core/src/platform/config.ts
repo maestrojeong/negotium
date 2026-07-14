@@ -22,6 +22,18 @@ const HOME = homedir();
 // Split into fileURLToPath → dirname → resolve to avoid that.
 export const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
+/** Resolve a dependency executable from either a package-local or hoisted install. */
+function resolveDependencyBin(name: string): string {
+  let dir = PROJECT_ROOT;
+  while (true) {
+    const candidate = resolve(dir, "node_modules", ".bin", name);
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) return candidate;
+    dir = parent;
+  }
+}
+
 // Each machine is one negotium node; all node state lives in one dotdir.
 // NEGOTIUM_STATE_DIR overrides (useful for tests and multi-node-on-one-box).
 const STATE_DIR_ENV = envText("NEGOTIUM_STATE_DIR");
@@ -109,7 +121,7 @@ export function resolveBrowserProxy(): BrowserProxyConfig | null {
 // the user's workspace dir, not PROJECT_ROOT — so we pass TSX_TSCONFIG_PATH
 // explicitly via env. Requires package.json `"type": "module"` so the servers'
 // top-level `await` loads as ESM under node.
-export const TSX_BIN = resolve(PROJECT_ROOT, "node_modules/.bin/tsx");
+export const TSX_BIN = resolveDependencyBin("tsx");
 export const TSCONFIG_PATH = resolve(PROJECT_ROOT, "tsconfig.json");
 
 export const SESSION_COMM_SERVER = resolve(PROJECT_ROOT, "src/mcp/session-comm/server.ts");
