@@ -798,15 +798,14 @@ export class TerminalApp {
       return;
     }
     if (command === "del") {
-      const title = args.join(" ").trim().toLowerCase();
-      const topic = title
-        ? this.#state.topics.find((candidate) => candidate.title.toLowerCase() === title)
-        : activeTopic(this.#state);
+      if (args.length > 0) {
+        this.#state = { ...this.#state, notice: "Usage: /del" };
+        this.#queueRender();
+        return;
+      }
+      const topic = activeTopic(this.#state);
       if (!topic) {
-        this.#state = {
-          ...this.#state,
-          notice: title ? `Topic not found: ${args.join(" ")}` : "No topic selected",
-        };
+        this.#state = { ...this.#state, notice: "No topic selected" };
         this.#queueRender();
         return;
       }

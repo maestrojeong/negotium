@@ -90,7 +90,7 @@ indicator. Topics and transcript use temporary overlays.
 
 Commands: `/compact` (summarize and shrink provider context), `/status` (separate latest context
 occupancy from aggregate turn usage), `/new` (reset the current context), `/topics` (open the
-topic picker), `/del [name]`,
+topic picker), `/del` (delete the current topic),
 `/copy [all]`, `/abort`, `/help`, `/quit`.
 
 A reset keeps the visible transcript, cancels active and queued work accepted before the reset,

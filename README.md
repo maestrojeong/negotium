@@ -121,7 +121,7 @@ Inside terminal chat:
 ```text
 /new                  reset the current topic's AI context, including personal General
 /topics               open the topic picker
-/del [topic]          archive and delete a topic
+/del                  archive and delete the current topic
 /copy [all]           copy the last answer or transcript
 /abort                stop the current turn
 /quit                 close the terminal host

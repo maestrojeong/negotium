@@ -9,7 +9,7 @@ export const TERMINAL_COMMANDS: readonly TerminalCommand[] = [
   { name: "compact", usage: "/compact", description: "summarize and shrink context" },
   { name: "status", usage: "/status", description: "show model and token usage" },
   { name: "topics", usage: "/topics", description: "open topic picker" },
-  { name: "del", usage: "/del [name]", description: "delete a topic" },
+  { name: "del", usage: "/del", description: "delete the current topic" },
   { name: "copy", usage: "/copy [all]", description: "copy answer or transcript" },
   { name: "abort", usage: "/abort", description: "stop the active turn" },
   { name: "help", usage: "/help", description: "show keyboard help" },

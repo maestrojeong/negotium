@@ -9,11 +9,12 @@ describe("terminal slash command completion", () => {
   test("adds an argument space only for commands that accept arguments", () => {
     expect(completeCommand("/ne", 0)).toBe("/new");
     expect(completeCommand("/to", 0)).toBe("/topics");
+    expect(completeCommand("/de", 0)).toBe("/del");
     expect(completeCommand("/he", 0)).toBe("/help");
   });
 
   test("does not suggest after argument entry starts", () => {
-    expect(commandSuggestions("/del work")).toEqual([]);
+    expect(commandSuggestions("/copy all")).toEqual([]);
   });
 
   test("suggests context parity commands", () => {
@@ -23,6 +24,7 @@ describe("terminal slash command completion", () => {
 
   test("uses only the short delete command", () => {
     expect(commandSuggestions("/de").map((command) => command.name)).toEqual(["del"]);
+    expect(commandSuggestions("/de")[0]?.usage).toBe("/del");
     expect(commandSuggestions("/delete")).toEqual([]);
   });
 });
