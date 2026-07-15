@@ -223,6 +223,7 @@ describe("cron scheduler", () => {
   });
 
   test("rotates one shared topic context after five successful runs", async () => {
+    const now = new Date("2026-07-14T12:01:00Z");
     const topic = createTopic();
     const first = createJob(topic);
     const second = createJob(topic);
@@ -230,6 +231,7 @@ describe("cron scheduler", () => {
     const seenSessionIds: Array<string | undefined> = [];
     let dispatchCount = 0;
     const scheduler = new CronScheduler({
+      now: () => now,
       dispatch(_job, _run, hooks, context) {
         dispatchCount += 1;
         seenSessionIds.push(context.sessionId);
@@ -267,10 +269,11 @@ describe("cron scheduler", () => {
   });
 
   test("finishes an overdue durable rotation before dispatch after restart", async () => {
+    const now = new Date("2026-07-14T12:01:00Z");
     const topic = createTopic();
     const job = createJob(topic);
     for (let i = 0; i < 5; i++) requestCronRun(job.id);
-    const claimed = claimCronRuns(new Date());
+    const claimed = claimCronRuns(now);
     for (const entry of claimed) finishCronRun(entry.run.id, { status: "succeeded" });
     expect(getCronTopicContext(topic.id)?.successfulRunsSinceRotation).toBe(5);
 
@@ -278,6 +281,7 @@ describe("cron scheduler", () => {
     let dispatched = false;
     let receivedSessionId: string | undefined;
     const scheduler = new CronScheduler({
+      now: () => now,
       dispatch(_job, _run, hooks, context) {
         dispatched = true;
         receivedSessionId = context.sessionId;
