@@ -68,8 +68,10 @@ export { killAllBgBash } from "#platform/background-bash/manager";
 // ── Platform ────────────────────────────────────────────────────────
 export {
   DATA_DIR,
+  LOG_DIR,
   MAX_TELL_DEPTH,
   NEGOTIUM_PORT,
+  NODE_CONTROL_TOKEN,
   RUN_DIR,
   resolveTopicWorkspaceDir,
   SESSION_INBOX_DIR,
@@ -140,7 +142,11 @@ export { flushSessionInbox, startSessionInboxWorker } from "#runtime/inbox";
 export type { AiTurnSettlement, AiTurnTopic } from "#runtime/turn-runner";
 export {
   deliverAskCallbackToCaller,
+  resolveInitialTurnSessionId,
+  resolveTopicTurnExecution,
+  resolveTopicTurnSession,
   startAiTurn,
+  startDurableTurnRequestWorker,
   triggerTopicAiTurn,
 } from "#runtime/turn-runner";
 export { isSensitivePath } from "#security/sensitive-path";
@@ -163,7 +169,24 @@ export {
   setTopicSessionId,
   upsertTopic,
 } from "#storage/api-topics";
+export { getGlobalAiName } from "#storage/app-settings";
 export { db } from "#storage/forum-db";
+export type { StoredRuntimeEvent } from "#storage/runtime-events";
+export {
+  latestRuntimeEventSeq,
+  listRecentRuntimeEventsForTopic,
+  listRuntimeEventsAfter,
+} from "#storage/runtime-events";
+export type {
+  RuntimeProcessLease,
+  RuntimeProcessLeaseHandle,
+} from "#storage/runtime-process-leases";
+export {
+  acquireRuntimeProcessLease,
+  getRuntimeProcessLease,
+  PROCESS_LEASE_HEARTBEAT_MS,
+  PROCESS_LEASE_STALE_MS,
+} from "#storage/runtime-process-leases";
 export type { VaultEntry, VaultEntryWithValue } from "#storage/vault";
 export {
   normalizeVaultKey,
@@ -185,8 +208,14 @@ export {
   updateTopic,
 } from "#topics/derive";
 export type { DeleteTopicCascadeOptions } from "#topics/lifecycle";
-export { deleteTopicCascade, TopicArchiveRequiredError } from "#topics/lifecycle";
+export {
+  deleteTopicCascade,
+  TopicArchiveRequiredError,
+  TopicTurnStillActiveError,
+} from "#topics/lifecycle";
 export { ensurePersonalGeneral } from "#topics/personal-general";
+export type { RestartTopicSessionResult } from "#topics/session";
+export { restartTopicSession } from "#topics/session";
 // ── Types ───────────────────────────────────────────────────────────
 export * from "#types";
 export type {

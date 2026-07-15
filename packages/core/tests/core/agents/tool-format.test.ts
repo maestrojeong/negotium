@@ -26,16 +26,30 @@ describe("formatToolUse", () => {
     ).toEqual({ title: "Usage chart" });
   });
 
-  test("keeps tool_call summaries small and drops body-like fields", () => {
+  test("keeps bounded Write and Edit previews for compact timeline cards", () => {
+    const write = summarizeToolInput("Write", {
+      file_path: `/tmp/${"a".repeat(100)}/report.md`,
+      content: "large body ".repeat(100),
+      message: "large message ".repeat(100),
+      text: "large text ".repeat(100),
+    });
+    expect(write).toMatchObject({
+      file_path: `/tmp/${"a".repeat(47)}...${"a".repeat(18)}/report.md`,
+      lines: 1,
+    });
+    expect(String(write?.preview)).toStartWith("large body");
+    expect(String(write?.preview).length).toBeLessThanOrEqual(90);
+
     expect(
-      summarizeToolInput("Write", {
-        file_path: `/tmp/${"a".repeat(100)}/report.md`,
-        content: "large body ".repeat(100),
-        message: "large message ".repeat(100),
-        text: "large text ".repeat(100),
+      summarizeToolInput("Edit", {
+        file_path: "/workspace/src/app.ts",
+        old_string: "const status = 'old';",
+        new_string: "const status = 'new';",
       }),
     ).toEqual({
-      file_path: `/tmp/${"a".repeat(47)}...${"a".repeat(18)}/report.md`,
+      file_path: "/workspace/src/app.ts",
+      before: "const status = 'old';",
+      after: "const status = 'new';",
     });
   });
 

@@ -38,7 +38,16 @@ function commitApiTopicSwitch(
   opts: SwitchApiTopicAgentOptions,
   bridgedSessionId: string | null,
 ): void {
-  setApiTopicAgent(opts.topicId, opts.agent);
+  const registry = getRegistry(opts.agent);
+  const model = resolveModelForAgent(opts.agent, opts.defaultModel, registry);
+  const effort =
+    opts.defaultEffort && registry.validateEffort(opts.defaultEffort)
+      ? opts.defaultEffort
+      : registry.defaultEffort;
+  // Keep the durable topic DTO internally consistent too. The turn runner's
+  // model-owner guard remains the final safety net for legacy rows, but a
+  // Codex topic should never continue advertising Maestro's deepseek-pro.
+  setApiTopicAgent(opts.topicId, opts.agent, { model, effort });
   setApiTopicConfig(opts.topicId, opts.config);
   if (bridgedSessionId) {
     setTopicSessionId(opts.topicId, bridgedSessionId, {

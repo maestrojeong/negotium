@@ -206,6 +206,11 @@ export const RUNTIME_MCP_SECRET = loadOrCreateLocalSecret(
   "RUNTIME_MCP_SECRET",
   "runtime-mcp-secret",
 );
+/** Local bearer token for the loopback node-control API. */
+export const NODE_CONTROL_TOKEN = loadOrCreateLocalSecret(
+  "NEGOTIUM_CONTROL_TOKEN",
+  "node-control-token",
+);
 export const VAULT_MASTER_KEY = loadOrCreateLocalSecret(
   "NEGOTIUM_VAULT_MASTER_KEY",
   "vault-master-key",

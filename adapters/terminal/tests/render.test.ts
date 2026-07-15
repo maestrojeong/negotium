@@ -1,6 +1,28 @@
 import { describe, expect, test } from "bun:test";
-import { displayWidth, renderApp, stripAnsi, wrapText } from "@/render";
-import { createInitialState } from "@/state";
+import type { MessageDto, TopicDto } from "@negotium/core";
+import {
+  displayWidth,
+  effectiveTopicModel,
+  renderApp,
+  stripAnsi,
+  workingFrame,
+  wrapText,
+} from "@/render";
+import { applyRuntimeEvent, createInitialState, setMessages, setTopics } from "@/state";
+
+function topic(): TopicDto {
+  return {
+    id: "topic",
+    title: "Terminal",
+    kind: "agent",
+    agent: "codex",
+    defaultModel: "gpt",
+    defaultEffort: "medium",
+    participants: [{ userId: "local", role: "owner" }],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    lastMessageAt: "2026-01-01T00:00:00.000Z",
+  };
+}
 
 describe("terminal renderer", () => {
   test("counts Korean glyphs as wide characters", () => {
@@ -13,7 +35,117 @@ describe("terminal renderer", () => {
     expect(output.split("\n")).toHaveLength(30);
   });
 
+  test("uses a neutral border for the always-active message composer", () => {
+    const output = renderApp(createInitialState("local"), 120, 30);
+    expect(output).toContain("\u001b[38;2;48;52;67m");
+    expect(output).not.toContain("\u001b[38;2;119;103;239m");
+  });
+
+  test("does not display a stale Maestro model after switching the topic to Codex", () => {
+    const stale = { ...topic(), defaultModel: "deepseek-pro" };
+    expect(effectiveTopicModel(stale)).toBe("gpt-5.6-luna");
+
+    const state = setTopics(createInitialState("local"), [stale]);
+    const output = stripAnsi(renderApp(state, 120, 30));
+    expect(output).toContain("Terminal · codex · gpt-5.6-luna");
+    expect(output).not.toContain("Terminal · codex · deepseek-pro");
+  });
+
   test("strips terminal escape sequences", () => {
     expect(stripAnsi("safe\u001b[2Jbad")).toBe("safebad");
+  });
+
+  test("renders markdown lists and fenced code in the conversation flow", () => {
+    const message: MessageDto = {
+      id: "message",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text: "## Result\n- first\n```ts\nconst ok = true;\n```",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [message]);
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("• first");
+    expect(output).toContain("code · ts");
+    expect(output).toContain("const ok = true;");
+  });
+
+  test("shows compact tool status without verbose output", () => {
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: { kind: "ai_active", queryId: "query" },
+    });
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: { kind: "tool_call", queryId: "query", toolUseId: "tool", label: "Bash(test)" },
+    });
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: { kind: "tool_output", queryId: "query", toolUseId: "tool", content: "ok" },
+    });
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("Bash · test");
+    expect(output).not.toContain("ok");
+    expect(output).toContain("Working");
+  });
+
+  test("animates the working indicator without requiring another runtime event", () => {
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: { kind: "ai_active", queryId: "query" },
+    });
+
+    const first = stripAnsi(renderApp(state, 100, 30, 0));
+    const second = stripAnsi(renderApp(state, 100, 30, 1));
+    expect(first).toContain(`${workingFrame(0)} Working`);
+    expect(second).toContain(`${workingFrame(1)} Working`);
+    expect(first).not.toBe(second);
+  });
+
+  test("uses the workspace-wide AI name instead of the provider name", () => {
+    const message: MessageDto = {
+      id: "ai-message",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text: "hello",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = { ...state, aiName: "Nova" };
+    state = setMessages(state, "topic", [message]);
+
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("✦ Nova");
+    expect(output).not.toContain("✦ codex");
+  });
+
+  test("scroll offset exposes old conversation lines and a history marker", () => {
+    const messages: MessageDto[] = Array.from({ length: 20 }, (_, index) => ({
+      id: `message-${index}`,
+      topicId: "topic",
+      authorId: "local",
+      text: `conversation-${index}`,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }));
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", messages);
+    const latest = stripAnsi(renderApp(state, 100, 16));
+    expect(latest).toContain("conversation-19");
+    expect(latest).not.toContain("conversation-0");
+
+    state = { ...state, scrollOffset: 10_000 };
+    const history = stripAnsi(renderApp(state, 100, 16));
+    expect(history).toContain("↑ history");
+    expect(history).toContain("conversation-0");
+    expect(history).not.toContain("conversation-19");
   });
 });

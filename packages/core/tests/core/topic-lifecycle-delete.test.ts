@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { runtimeBus } from "#bus";
@@ -13,12 +14,18 @@ import { resetFileHooks, setFileHooks } from "#runtime/file-hooks";
 import { getActiveVisualForPrompt, storeTopicVisual } from "#runtime/visual-store";
 import { deleteTopic, getTopic, upsertTopic } from "#storage/api-topics";
 import { appendConversationEventStrict, getConversationPath } from "#storage/conversations";
+import {
+  claimRuntimeTurnLease,
+  getRuntimeTurnLease,
+  releaseRuntimeTurnLease,
+} from "#storage/runtime-leases";
 import { createPendingAsk, listPendingAsksForCaller } from "#storage/session-asks";
 import { getTopicArchiveState, setTopicArchiveState } from "#storage/topic-archive-state";
 import type { TopicDto } from "#types/api";
 
 let archiveShouldFail = false;
 let archiveError: Error = new Error("archive failed");
+let archiveObservedActiveLease = false;
 
 const calls = {
   archive: [] as Array<{ topicId: string; title: string }>,
@@ -28,6 +35,7 @@ const createdTopicIds: string[] = [];
 
 mock.module("#storage/topic-archive", () => ({
   archiveTopicMessages: (topicId: string, title: string) => {
+    archiveObservedActiveLease ||= getRuntimeTurnLease(topicId) !== null;
     calls.archive.push({ topicId, title });
     if (archiveShouldFail) throw archiveError;
     return { path: `/tmp/${topicId}.jsonl`, messageCount: 3, lastRowid: 9 };
@@ -81,6 +89,7 @@ afterEach(() => {
 beforeEach(() => {
   archiveShouldFail = false;
   archiveError = new Error("archive failed");
+  archiveObservedActiveLease = false;
   calls.archive = [];
   calls.archiver = [];
 });
@@ -138,6 +147,32 @@ describe("deleteTopicCascade archive policy", () => {
     expect(abortController.signal.aborted).toBe(true);
     expect(calls.archive).toEqual([{ topicId: topic.id, title: topic.title }]);
     expect(getTopic(topic.id)).toBeNull();
+  });
+
+  test("waits for a turn lease owned by another process before archiving", async () => {
+    const topic = makeTopic("topic-delete-remote-running", "Delete Remote Running Topic");
+    const remoteOwner = `remote-${randomUUID()}`;
+    const queryId = `query-${randomUUID()}`;
+    expect(
+      claimRuntimeTurnLease({
+        topicId: topic.id,
+        queryId,
+        origin: "user",
+        ownerId: remoteOwner,
+      }),
+    ).toBe(true);
+    const releaseTimer = setTimeout(() => {
+      releaseRuntimeTurnLease(topic.id, queryId, remoteOwner);
+    }, 25);
+
+    try {
+      await deleteTopicCascade(topic, "owner-user");
+      expect(archiveObservedActiveLease).toBe(false);
+      expect(getTopic(topic.id)).toBeNull();
+    } finally {
+      clearTimeout(releaseTimer);
+      releaseRuntimeTurnLease(topic.id, queryId, remoteOwner);
+    }
   });
 
   test("cascades topic-owned runtime, participant, visual, upload, and filesystem state", async () => {

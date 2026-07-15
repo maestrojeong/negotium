@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import type { NegotiumAdapterHandle } from "@negotium/adapter-sdk";
-import { isAgentKind } from "@negotium/core";
+import { acquireRuntimeProcessLease, getRuntimeProcessLease, isAgentKind } from "@negotium/core";
 import { startDefaultNode } from "@negotium/node";
 import TelegramBot from "node-telegram-bot-api";
 import { startTelegramAdapter, type TelegramAdapterHandle } from "@/index";
@@ -47,12 +47,34 @@ export async function runTelegramCli(): Promise<void> {
   if (!process.env.TELEGRAM_BOT_TOKEN?.trim()) {
     throw new Error("TELEGRAM_BOT_TOKEN is required");
   }
-  const node = await startDefaultNode();
+  let leaseLost = false;
+  let stopForLeaseLoss: (() => void) | undefined;
+  const singleton = acquireRuntimeProcessLease("adapter:telegram", {
+    onLost: () => {
+      leaseLost = true;
+      process.stderr.write("negotium-telegram: singleton lease lost; shutting down\n");
+      stopForLeaseLoss?.();
+    },
+  });
+  if (!singleton) {
+    const current = getRuntimeProcessLease("adapter:telegram");
+    throw new Error(`Telegram adapter is already running${current ? ` (pid ${current.pid})` : ""}`);
+  }
+  let node: Awaited<ReturnType<typeof startDefaultNode>>;
+  try {
+    // Channel processes coordinate through SQLite, not a shared listening
+    // port. An ephemeral port lets Terminal, Telegram, and Otium coexist.
+    node = await startDefaultNode({ port: 0 });
+  } catch (error) {
+    singleton.stop();
+    throw error;
+  }
   let channel: TelegramEnvironmentHandle;
   try {
     channel = startTelegramFromEnv();
   } catch (error) {
     await node.stop();
+    singleton.stop();
     throw error;
   }
 
@@ -66,8 +88,11 @@ export async function runTelegramCli(): Promise<void> {
         .catch(() => {})
         .then(() => node.stop())
         .catch(() => {})
+        .finally(() => singleton.stop())
         .finally(resolve);
     };
+    stopForLeaseLoss = stop;
+    if (leaseLost) stop();
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
   });

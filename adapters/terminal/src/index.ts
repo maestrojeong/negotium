@@ -4,8 +4,8 @@ import { type EmbeddedClientOptions, EmbeddedNegotiumClient, type NegotiumClient
 
 export type { TerminalAppOptions } from "@/app";
 export { TerminalApp } from "@/app";
-export type { EmbeddedClientOptions, NegotiumClient } from "@/client";
-export { EmbeddedNegotiumClient } from "@/client";
+export type { EmbeddedClientOptions, NegotiumClient, RemoteClientOptions } from "@/client";
+export { EmbeddedNegotiumClient, RemoteNegotiumClient } from "@/client";
 export { renderApp } from "@/render";
 export type { AppState } from "@/state";
 

@@ -15,6 +15,15 @@
 
 import type { ForkHandle } from "#agents/fork";
 import { logger } from "#platform/logger";
+import {
+  claimRuntimeTurnLease,
+  getRuntimeTurnLease,
+  heartbeatRuntimeTurnLease,
+  RUNTIME_INSTANCE_ID,
+  type RuntimeTurnLease,
+  releaseRuntimeTurnLease,
+  requestRuntimeTurnAbort,
+} from "#storage/runtime-leases";
 import type { AskReplySource } from "#storage/session-asks";
 import type { AgentKind, PeerRuntimeBridgeContext } from "#types";
 import { AbortReason } from "./types";
@@ -25,6 +34,8 @@ export type PrepareInjectSession = () => Promise<ForkHandle>;
 /** A turn started by a session-inject, replayed when its room frees up. */
 export interface DeferredInject {
   topicId: string;
+  /** Topic execution epoch captured when this work was accepted. */
+  runtimeEpoch?: number;
   userId: string;
   prompt: string;
   /** Inject source — the topic name/id this inject came from (never "user"). */
@@ -45,6 +56,8 @@ export interface DeferredInject {
   effortOverride?: import("#types").EffortLevel;
   /** SDK-native session/thread id to resume for a forked injected turn. */
   sessionId?: string | null;
+  /** Explicit provider-session ownership boundary. */
+  sessionScope?: "topic" | "isolated";
   /** Rollout file backing a synthetic/native fork; cleaned when the turn finishes. */
   forkHandle?: ForkHandle;
   /** Build a fresh isolated session at dispatch time (used by ask_session). */
@@ -105,18 +118,53 @@ export interface RoomQueryControl {
 // ── Room-keyed in-flight registry ──────────────────────────────────────
 
 const activeByRoom = new Map<string, RoomQueryControl>();
+const leaseMonitors = new Map<string, ReturnType<typeof setInterval>>();
 
 export function getRoomQuery(topicId: string): RoomQueryControl | undefined {
   return activeByRoom.get(topicId);
 }
 
 export function getRoomQueryStatus(topicId: string, queryId: string): "running" | "not_found" {
-  return activeByRoom.get(topicId)?.queryId === queryId ? "running" : "not_found";
+  if (activeByRoom.get(topicId)?.queryId === queryId) return "running";
+  return getRuntimeTurnLease(topicId)?.queryId === queryId ? "running" : "not_found";
 }
 
-export function setRoomQuery(control: RoomQueryControl): void {
+export function setRoomQuery(control: RoomQueryControl): boolean {
   control.startedAt ??= Date.now();
+  const claimed = claimRuntimeTurnLease({
+    topicId: control.topicId,
+    queryId: control.queryId,
+    origin: control.origin,
+  });
+  if (!claimed) return false;
+
+  const previousMonitor = leaseMonitors.get(control.topicId);
+  if (previousMonitor) clearInterval(previousMonitor);
   activeByRoom.set(control.topicId, control);
+  const monitor = setInterval(() => {
+    const current = activeByRoom.get(control.topicId);
+    if (!current || current.queryId !== control.queryId) {
+      clearInterval(monitor);
+      if (leaseMonitors.get(control.topicId) === monitor) {
+        leaseMonitors.delete(control.topicId);
+      }
+      return;
+    }
+    const heartbeat = heartbeatRuntimeTurnLease(control.topicId, control.queryId);
+    if (!heartbeat.owned) {
+      control.abortReason = AbortReason.External;
+      control.abortController.abort();
+      return;
+    }
+    if (heartbeat.abortRequested && !control.abortController.signal.aborted) {
+      control.abortReason =
+        heartbeat.abortReason === "internal" ? AbortReason.Internal : AbortReason.External;
+      control.abortController.abort();
+    }
+  }, 1_000);
+  monitor.unref?.();
+  leaseMonitors.set(control.topicId, monitor);
+  return true;
 }
 
 /**
@@ -127,17 +175,29 @@ export function setRoomQuery(control: RoomQueryControl): void {
  */
 export function clearRoomQuery(topicId: string, queryId: string): void {
   const cur = activeByRoom.get(topicId);
-  if (cur && cur.queryId === queryId) activeByRoom.delete(topicId);
+  if (cur && cur.queryId === queryId) {
+    activeByRoom.delete(topicId);
+    const monitor = leaseMonitors.get(topicId);
+    if (monitor) clearInterval(monitor);
+    leaseMonitors.delete(topicId);
+  }
+  releaseRuntimeTurnLease(topicId, queryId);
 }
 
 /** Abort the currently-running turn in a room, if any. Cleanup is still owned by
  *  the streaming turn's finally block so deferred injects drain in order. */
 export function abortRoom(topicId: string, reason: AbortReason = AbortReason.External): boolean {
   const running = activeByRoom.get(topicId);
-  if (!running) return false;
-  running.abortReason = reason;
-  running.abortController.abort();
-  return true;
+  if (running) {
+    running.abortReason = reason;
+    running.abortController.abort();
+    requestRuntimeTurnAbort(topicId, reason === AbortReason.Internal ? "internal" : "external");
+    return true;
+  }
+  return requestRuntimeTurnAbort(
+    topicId,
+    reason === AbortReason.Internal ? "internal" : "external",
+  );
 }
 
 /** Abort every in-flight provider turn before the node tears down its resources. */
@@ -162,7 +222,9 @@ export function isUserOrigin(origin: string | undefined): boolean {
 export type NewQueryDecision =
   | { action: "proceed" }
   | { action: "abort-replace"; running: RoomQueryControl }
-  | { action: "defer" };
+  | { action: "defer" }
+  | { action: "remote-defer"; running: RuntimeTurnLease }
+  | { action: "remote-abort-wait"; running: RuntimeTurnLease };
 
 /**
  * Decide what to do when a new turn (with `incomingOrigin`) arrives on a room.
@@ -170,7 +232,13 @@ export type NewQueryDecision =
  */
 export function decideNewQuery(topicId: string, incomingOrigin: string): NewQueryDecision {
   const running = activeByRoom.get(topicId);
-  if (!running) return { action: "proceed" };
+  if (!running) {
+    const remote = getRuntimeTurnLease(topicId);
+    if (!remote || remote.ownerId === RUNTIME_INSTANCE_ID) return { action: "proceed" };
+    return isUserOrigin(incomingOrigin)
+      ? { action: "remote-abort-wait", running: remote }
+      : { action: "remote-defer", running: remote };
+  }
   // Session-injects never preempt — the user keeps priority. Defer it (whether
   // the running turn is a user turn or another inject).
   if (!isUserOrigin(incomingOrigin)) return { action: "defer" };
@@ -279,6 +347,7 @@ export class InterSessionQueue {
       (e.agentOverride ?? null) === (base.agentOverride ?? null) &&
       (e.modelOverride ?? null) === (base.modelOverride ?? null) &&
       (e.effortOverride ?? null) === (base.effortOverride ?? null) &&
+      (e.runtimeEpoch ?? 0) === (base.runtimeEpoch ?? 0) &&
       (e.sessionId ?? null) === (base.sessionId ?? null) &&
       (e.forkHandle?.forkId ?? null) === (base.forkHandle?.forkId ?? null) &&
       (e.prepareSession ?? null) === (base.prepareSession ?? null) &&

@@ -20,9 +20,22 @@ function tableColumns(table: string): Set<string> {
   return new Set(rows.map((row) => row.name));
 }
 
-/** Persist the single authoritative agent for an API topic. */
-export function setApiTopicAgent(topicId: string, agent: AgentKind): void {
-  db.query("UPDATE api_topics SET agent = ? WHERE id = ?").run(agent, topicId);
+/** Persist the authoritative agent and, when supplied, its normalized base defaults. */
+export function setApiTopicAgent(
+  topicId: string,
+  agent: AgentKind,
+  defaults?: { model: string; effort?: EffortLevel },
+): void {
+  if (!defaults) {
+    db.query("UPDATE api_topics SET agent = ? WHERE id = ?").run(agent, topicId);
+    return;
+  }
+  db.query("UPDATE api_topics SET agent = ?, base_model = ?, base_effort = ? WHERE id = ?").run(
+    agent,
+    defaults.model,
+    defaults.effort ?? null,
+    topicId,
+  );
 }
 
 db.exec(`

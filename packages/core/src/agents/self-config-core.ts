@@ -116,7 +116,7 @@ export function setSelfConfigModel(ctx: SelfConfigContext, model: string): SelfC
 
   const agent = currentAgent(topic);
   const registry = getRegistry(agent);
-  if (!registry.validateModel(model)) {
+  if (resolveModelForAgent(agent, model, registry) !== model) {
     return err(
       `'${model}' is not a valid model for agent '${agent}'. If it belongs to another agent, call set_agent first.`,
     );
@@ -136,7 +136,10 @@ export function getSelfConfigModel(ctx: SelfConfigContext): SelfConfigResult {
 
   const cfg = getApiTopicConfig(topic.id);
   const agent = currentAgent(topic);
-  const value = cfg?.model ?? `default (${effectiveDefaultModel(topic, agent)})`;
+  const registry = getRegistry(agent);
+  const fallback = effectiveDefaultModel(topic, agent);
+  const resolved = cfg?.model ? resolveModelForAgent(agent, cfg.model, registry) : fallback;
+  const value = cfg?.model && resolved === cfg.model ? cfg.model : `default (${fallback})`;
   const lock = cfg?.modelLocked ? " [locked by user]" : "";
   return ok(`Model (agent=${agent}): ${value}${lock}`);
 }

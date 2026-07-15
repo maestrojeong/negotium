@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { runtimeBus } from "#bus";
 import type { NegotiumNodeModuleContext } from "#platform/modules";
 import { startNegotiumNodeModules } from "#platform/modules";
+import { acquireRuntimeProcessLease } from "#storage/runtime-process-leases";
 
 const context: NegotiumNodeModuleContext = {
   port: 7777,
@@ -58,5 +59,36 @@ describe("optional node modules", () => {
         context,
       ),
     ).toThrow("duplicate negotium module capability: scheduler.cron.v1");
+  });
+
+  test("does not start a singleton module owned by another process", async () => {
+    const role = `module:test:${crypto.randomUUID()}`;
+    const owner = acquireRuntimeProcessLease(role, {
+      ownerId: `external-${crypto.randomUUID()}`,
+      heartbeatMs: 60_000,
+    });
+    expect(owner).not.toBeNull();
+    let startCount = 0;
+    try {
+      const started = startNegotiumNodeModules(
+        [
+          {
+            name: "single",
+            singleton: role,
+            capabilities: ["single.v1"],
+            start() {
+              startCount += 1;
+            },
+          },
+        ],
+        context,
+      );
+      expect(started.names).toEqual([]);
+      expect(started.capabilities).toEqual([]);
+      expect(startCount).toBe(0);
+      await started.stop();
+    } finally {
+      owner?.stop();
+    }
   });
 });

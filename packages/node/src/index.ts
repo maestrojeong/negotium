@@ -10,8 +10,10 @@
  * core's registerNodeRequestHandler (plugin chain ahead of the MCP handler).
  */
 
+import { createServer } from "node:net";
 import {
   abortAllRooms,
+  acquireRuntimeProcessLease,
   DATA_DIR,
   killAllBgBash,
   killAllPlaywright,
@@ -30,6 +32,7 @@ import {
   type StartedNegotiumNodeModules,
   setNodeMcpServers,
   setRuntimeMcpPort,
+  startDurableTurnRequestWorker,
   startNegotiumNodeModules,
   startSessionInboxWorker,
   sweepStaleSubagentCards,
@@ -37,10 +40,60 @@ import {
 } from "@negotium/core";
 import { handleNegotiumMcpRequest } from "@negotium/mcp";
 import { McpHost, McpManifest } from "@negotium/mcp-host";
+import {
+  createNodeControlHandler,
+  NODE_CONTROL_PROTOCOL_VERSION,
+  NODE_DAEMON_ROLE,
+  removeNodeDaemonInfo,
+  writeNodeDaemonInfo,
+} from "./control";
+
+export type {
+  NodeDaemonConnection,
+  NodeDaemonInfo,
+  NodeDaemonStatus,
+} from "./control";
+export {
+  inspectNodeDaemon,
+  NODE_CONTROL_BASE_PATH,
+  NODE_CONTROL_PROTOCOL_VERSION,
+  NODE_DAEMON_INFO_PATH,
+  readNodeDaemonInfo,
+  stopNodeDaemon,
+  waitForNodeDaemon,
+} from "./control";
 
 export interface NodeHandle {
   port: number;
+  /** Settles after every registered node cleanup handler has completed. */
+  completed: Promise<void>;
   stop: () => Promise<void>;
+}
+
+export interface StartNodeOptions {
+  port?: number;
+  modules?: readonly NegotiumNodeModule[];
+  /** Publish this node as the state directory's client-connectable process. */
+  advertise?: boolean;
+  /** Refuse to start while another healthy node owns this state directory. */
+  singleton?: boolean;
+}
+
+async function availableLoopbackPort(): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const probe = createServer();
+    probe.unref();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const address = probe.address();
+      const port = address && typeof address === "object" ? address.port : 0;
+      probe.close((error) => {
+        if (error) reject(error);
+        else if (port > 0) resolve(port);
+        else reject(new Error("failed to allocate a loopback port"));
+      });
+    });
+  });
 }
 
 /**
@@ -77,31 +130,68 @@ async function wireNodeMcps(host: McpHost, manifest: McpManifest): Promise<void>
   }
 }
 
-export function startNode(
-  opts: { port?: number; modules?: readonly NegotiumNodeModule[] } = {},
-): NodeHandle {
+export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   sweepStaleSubagentCards();
-  const server = Bun.serve({
-    port: opts.port ?? NEGOTIUM_PORT,
-    hostname: "127.0.0.1",
-    idleTimeout: 240,
-    async fetch(req) {
-      // External integrations (otium worker, future peers, webhooks) mount
-      // ahead of the built-in routes via registerNodeRequestHandler.
-      const plugin = await runNodeRequestHandlers(req);
-      if (plugin) return plugin;
-      const mcp = await handleNegotiumMcpRequest(req);
-      if (mcp) return mcp;
-      const url = new URL(req.url);
-      if (url.pathname === "/health") {
-        return Response.json({ ok: true, name: "negotium", stateDir: STATE_DIR });
-      }
-      return new Response("negotium node", { status: 404 });
-    },
+  const startedAt = new Date().toISOString();
+  const processLease = opts.singleton
+    ? acquireRuntimeProcessLease(NODE_DAEMON_ROLE, {
+        onLost: () => {
+          logger.error("node daemon: singleton lease lost; shutting down");
+          void runShutdown("test");
+        },
+      })
+    : null;
+  if (opts.singleton && !processLease) {
+    throw new Error(`a Negotium node is already running for ${STATE_DIR}`);
+  }
+
+  let requestStop = () => {
+    void runShutdown("test");
+  };
+  let server: ReturnType<typeof Bun.serve>;
+  const control = createNodeControlHandler({
+    port: () => server?.port ?? 0,
+    startedAt,
+    requestShutdown: () => requestStop(),
   });
+  try {
+    server = Bun.serve({
+      port: opts.port ?? NEGOTIUM_PORT,
+      hostname: "127.0.0.1",
+      idleTimeout: 240,
+      async fetch(req) {
+        const controlResponse = await control(req);
+        if (controlResponse) return controlResponse;
+        // External integrations (otium worker, future peers, webhooks) mount
+        // ahead of the built-in routes via registerNodeRequestHandler.
+        const plugin = await runNodeRequestHandlers(req);
+        if (plugin) return plugin;
+        const mcp = await handleNegotiumMcpRequest(req);
+        if (mcp) return mcp;
+        const url = new URL(req.url);
+        if (url.pathname === "/health") {
+          return Response.json({
+            ok: true,
+            name: "negotium",
+            pid: process.pid,
+            protocolVersion: NODE_CONTROL_PROTOCOL_VERSION,
+            stateDir: STATE_DIR,
+          });
+        }
+        return new Response("negotium node", { status: 404 });
+      },
+    });
+  } catch (error) {
+    processLease?.stop();
+    throw error;
+  }
   const port = server.port;
-  if (!port) throw new Error("negotium node failed to bind a port");
+  if (!port) {
+    processLease?.stop();
+    throw new Error("negotium node failed to bind a port");
+  }
   setRuntimeMcpPort(port);
+  const stopTurnRequests = startDurableTurnRequestWorker();
   const stopInbox = startSessionInboxWorker();
   let modules: StartedNegotiumNodeModules;
   try {
@@ -114,8 +204,10 @@ export function startNode(
       bus: runtimeBus(),
     });
   } catch (error) {
+    stopTurnRequests();
     stopInbox();
     server.stop(true);
+    processLease?.stop();
     throw error;
   }
 
@@ -124,14 +216,39 @@ export function startNode(
   const mcpHost = new McpHost();
   const manifest = new McpManifest();
   const stopSweeper = mcpHost.startSweeper();
+
+  let resolveCompleted!: () => void;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  let advertised: ReturnType<typeof writeNodeDaemonInfo> | null = null;
+  try {
+    advertised = opts.advertise ? writeNodeDaemonInfo(port, startedAt) : null;
+  } catch (error) {
+    stopSweeper();
+    stopTurnRequests();
+    stopInbox();
+    server.stop(true);
+    processLease?.stop();
+    void modules.stop();
+    void mcpHost.stopAll();
+    throw error;
+  }
   void wireNodeMcps(mcpHost, manifest);
 
   // Priority convention (see core lifecycle.ts): 100 = graceful
   // network/queue closes, 50 = external-process reapers.
   onShutdown("node-server", 130, () => {
+    stopTurnRequests();
     stopInbox();
     server.stop(true);
   });
+  if (advertised) {
+    onShutdown("node-daemon-advertisement", 129, () => {
+      removeNodeDaemonInfo({ pid: advertised.pid, port: advertised.port });
+    });
+  }
+  if (processLease) onShutdown("node-daemon-lease", 128, () => processLease.stop());
   onShutdown("active-agent-turns", 120, async () => {
     abortAllRooms();
     await killOwnedCodexTreesForShutdown();
@@ -143,6 +260,7 @@ export function startNode(
   });
   onShutdown("playwright", 50, () => killAllPlaywright());
   onShutdown("background-bash", 50, () => killAllBgBash());
+  onShutdown("node-completed", -100, resolveCompleted);
 
   logger.info(
     {
@@ -155,20 +273,38 @@ export function startNode(
     "negotium node started",
   );
 
+  const stop = () => runShutdown("test");
+  requestStop = () => {
+    void stop();
+  };
   return {
     port,
+    completed,
     // Manual stop routes through the same registry as SIGINT/SIGTERM so
     // cleanup never diverges between the two paths (idempotent once-guard).
-    stop: () => runShutdown("test"),
+    stop,
   };
 }
 
 /** Reference-host composition. Disabled modules are never imported. */
-export async function startDefaultNode(opts: { port?: number } = {}): Promise<NodeHandle> {
+export async function startDefaultNode(
+  opts: Omit<StartNodeOptions, "modules"> = {},
+): Promise<NodeHandle> {
   const modules: NegotiumNodeModule[] = [];
   if (process.env.NEGOTIUM_CRON !== "0") {
     const { createCronModule } = await import("@negotium/module-cron");
     modules.push(createCronModule());
   }
-  return startNode({ ...opts, modules });
+  const port = opts.port === 0 ? await availableLoopbackPort() : opts.port;
+  return startNode({ ...opts, port, modules });
+}
+
+/** Long-lived local node entry used by the CLI's detached child process. */
+export async function runNodeDaemon(opts: { port?: number } = {}): Promise<void> {
+  const node = await startDefaultNode({
+    port: opts.port ?? 0,
+    advertise: true,
+    singleton: true,
+  });
+  await node.completed;
 }

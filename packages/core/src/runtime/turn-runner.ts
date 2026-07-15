@@ -55,6 +55,7 @@ import {
 } from "#runtime/attachments";
 import { buildMentionOnlyChannelPrompt } from "#runtime/channel-context";
 import { classifyAgentError, isSessionExpiredError, stringifyError } from "#runtime/errors";
+import { withTurnSilenceHeartbeat } from "#runtime/event-heartbeat";
 import { upsertTaskPanelMessage } from "#runtime/tasks";
 import { getTopicConfig } from "#runtime/topic-config";
 import { nextUsageAlert } from "#runtime/usage-alert";
@@ -91,6 +92,21 @@ import {
 } from "#storage/api-topics";
 import { getGlobalAiName } from "#storage/app-settings";
 import { appendConversationEvent, readConversation } from "#storage/conversations";
+import {
+  getRuntimeTurnLease,
+  RUNTIME_INSTANCE_ID,
+  requestRuntimeTurnAbort,
+} from "#storage/runtime-leases";
+import { getRuntimeTopicEpoch, isRuntimeTopicMaintenance } from "#storage/runtime-topic-state";
+import {
+  claimNextRuntimeUserTurnRequest,
+  completeRuntimeUserTurnRequest,
+  enqueueRuntimeUserTurnRequest,
+  getRuntimeUserTurnRequest,
+  markRuntimeUserTurnRunning,
+  type RuntimeUserTurnExecution,
+  releaseRuntimeUserTurnClaim,
+} from "#storage/runtime-turn-requests";
 import type { PendingAskUserId } from "#storage/session-asks";
 import { getSharedWikiDir } from "#storage/wiki";
 import { getTopics } from "#topics/derive";
@@ -512,7 +528,9 @@ async function streamAgentEvents(
             const label =
               event.toolName === "thinking"
                 ? `Thinking… ${elapsed}s`
-                : `${event.toolName} running ${elapsed}s`;
+                : event.toolName === "working"
+                  ? `Working… ${elapsed}s`
+                  : `${event.toolName} running ${elapsed}s`;
             hub.broadcastToolStatus(topicId, queryId, "progress", label, {
               toolName: event.toolName,
               elapsed,
@@ -696,13 +714,10 @@ function redispatchInject(inject: DeferredInject): void {
     agentOverride: inject.agentOverride,
     modelOverride: inject.modelOverride,
     effortOverride: inject.effortOverride,
-    // A visible inject may have waited behind a user turn which advanced the
-    // topic session after enqueue. Resume that newest main session. Silent
-    // ask forks and externally-owned sessions retain their isolated id.
-    sessionId:
-      !inject.silent && !inject.forkHandle && !inject.onSessionId
-        ? getTopicSessionId(topic.id)
-        : inject.sessionId,
+    // Topic-owned turns carry undefined and re-resolve the newest durable
+    // session here; isolated/external turns carry their explicit id.
+    sessionId: inject.sessionId,
+    sessionScope: inject.sessionScope,
     forkHandle: inject.forkHandle,
     prepareSession: inject.prepareSession,
     cwd: inject.cwd,
@@ -714,6 +729,7 @@ function redispatchInject(inject: DeferredInject): void {
     onSettled: inject.onSettled,
     peerBridge: inject.peerBridge,
     askReplySources: inject.askReplySources,
+    _runtimeEpoch: inject.runtimeEpoch,
     _sessionRetried: inject._sessionRetried,
     from: inject.from,
   });
@@ -959,6 +975,8 @@ export interface AiTurnExecutionOptions {
   modelOverride?: string;
   effortOverride?: EffortLevel;
   sessionId?: string | null;
+  /** Explicitly isolate a provider conversation from the topic's durable session. */
+  sessionScope?: "topic" | "isolated";
   forkHandle?: ForkHandle;
   /** Lazily create an isolated provider session immediately before execution. */
   prepareSession?: DeferredInject["prepareSession"];
@@ -988,6 +1006,10 @@ export interface StartAiTurnParams extends AiTurnExecutionOptions {
   prompt: string;
   allowAutoContinue: boolean;
   agentOverride?: AgentKind;
+  /** Stable query id reserved before a cross-process handoff. Internal only. */
+  _queryId?: string;
+  /** Topic epoch captured when queued. Internal reset-fence guard only. */
+  _runtimeEpoch?: number;
   _sessionRetried?: boolean;
 }
 
@@ -996,6 +1018,232 @@ export interface TriggerTopicAiTurnOptions extends AiTurnExecutionOptions {
   hideInjectMessage?: boolean;
   /** Visible injected-message author. Execution still runs as `userId`. */
   injectAuthorId?: string;
+}
+
+export interface ResolvedTopicTurnExecution {
+  agent: AgentKind;
+  model: string;
+  effort?: EffortLevel;
+}
+
+/** One canonical resolver for provider execution and user-visible metadata. */
+export function resolveTopicTurnExecution(
+  topic: AiTurnTopic,
+  overrides: Pick<AiTurnExecutionOptions, "modelOverride" | "effortOverride"> & {
+    agentOverride?: AgentKind;
+  } = {},
+): ResolvedTopicTurnExecution {
+  const config = getTopicConfig(topic.id);
+  const agent = (overrides.agentOverride ?? topic.agent ?? "maestro") as AgentKind;
+  const registry = getRegistry(agent);
+  const usesTopicDefaults = !overrides.agentOverride || overrides.agentOverride === topic.agent;
+  const model = resolveModelForAgent(
+    agent,
+    overrides.modelOverride ??
+      (usesTopicDefaults ? (config?.model ?? topic.defaultModel) : undefined),
+    registry,
+  );
+  const requestedEffort = (overrides.effortOverride ??
+    (usesTopicDefaults ? (config?.effort ?? topic.defaultEffort) : undefined)) as
+    | EffortLevel
+    | undefined;
+  const effort =
+    requestedEffort && registry.validateEffort(requestedEffort)
+      ? requestedEffort
+      : registry.defaultEffort;
+  return { agent, model, ...(effort ? { effort } : {}) };
+}
+
+export interface ResolvedTopicTurnSession {
+  sessionId: string | null | undefined;
+  isolated: boolean;
+}
+
+/**
+ * Resolve topic-session ownership from execution compatibility, rather than
+ * asking each adapter to remember when a provider session is safe to reuse.
+ */
+export function resolveTopicTurnSession(
+  topic: AiTurnTopic,
+  requestedSessionId: string | null | undefined,
+  options: Pick<
+    AiTurnExecutionOptions,
+    "silent" | "sessionScope" | "sessionName" | "sessionType" | "modelOverride" | "effortOverride"
+  > & {
+    agentOverride?: AgentKind;
+    hasFork?: boolean;
+    preparesSession?: boolean;
+    externalSessionOwner?: boolean;
+  } = {},
+): ResolvedTopicTurnSession {
+  const main = resolveTopicTurnExecution(topic);
+  const requested = resolveTopicTurnExecution(topic, options);
+  const incompatibleWithMain = requested.agent !== main.agent || requested.model !== main.model;
+  const alternateNamespace =
+    (options.sessionName !== undefined && options.sessionName !== topic.title) ||
+    options.sessionType === "cron";
+  const isolated = Boolean(
+    options.sessionScope === "isolated" ||
+      options.silent ||
+      options.hasFork ||
+      options.preparesSession ||
+      options.externalSessionOwner ||
+      incompatibleWithMain ||
+      alternateNamespace,
+  );
+  return {
+    sessionId: resolveInitialTurnSessionId(topic.id, requestedSessionId, isolated),
+    isolated,
+  };
+}
+
+/**
+ * Resolve the provider resume key for a new turn. Direct user/channel turns
+ * inherit the topic's durable session unless a caller explicitly supplies a
+ * key (including null for an intentional fresh start). Isolated ask/cron
+ * sessions remain owned by their caller and never borrow the main topic key.
+ */
+export function resolveInitialTurnSessionId(
+  topicId: string,
+  requestedSessionId: string | null | undefined,
+  isolated: boolean,
+): string | null | undefined {
+  if (requestedSessionId !== undefined) return requestedSessionId;
+  return isolated ? undefined : getTopicSessionId(topicId);
+}
+
+const remoteInjectWaiters = new Map<string, ReturnType<typeof setInterval>>();
+
+function serializableUserTurnExecution(params: StartAiTurnParams): RuntimeUserTurnExecution {
+  return {
+    runtimeEpoch: params._runtimeEpoch ?? getRuntimeTopicEpoch(params.topic.id),
+    sourceRequestId: params.requestId,
+    agentOverride: params.agentOverride,
+    modelOverride: params.modelOverride,
+    effortOverride: params.effortOverride,
+    sessionId: params.sessionId,
+    sessionIdSpecified: params.sessionId !== undefined,
+    sessionScope: params.sessionScope,
+    cwd: params.cwd,
+    sessionName: params.sessionName,
+    sessionType: params.sessionType,
+    bridgeSessionFromHistory: params.bridgeSessionFromHistory,
+    peerBridge: params.peerBridge,
+    from: params.from,
+  };
+}
+
+function waitToStartRemoteUserTurn(params: StartAiTurnParams, queryId: string): string {
+  const previous = getRuntimeUserTurnRequest(params.topic.id);
+  const execution = serializableUserTurnExecution(params);
+  const queuedQueryId = enqueueRuntimeUserTurnRequest({
+    topicId: params.topic.id,
+    userId: params.userId,
+    prompt: params.prompt,
+    attachments: params.attachments,
+    allowAutoContinue: params.allowAutoContinue,
+    requestId: queryId,
+    execution,
+    topicEpoch: execution.runtimeEpoch,
+  });
+  if (previous && previous.requestId !== queuedQueryId) {
+    WsHub.get().broadcastAborted(params.topic.id, previous.requestId, "superseded");
+  }
+  return queuedQueryId;
+}
+
+function announceQueuedUserTurn(params: StartAiTurnParams, queryId: string): void {
+  try {
+    params.onDispatched?.(queryId);
+  } catch (err) {
+    logger.warn({ err, topicId: params.topic.id, queryId }, "ai: queued dispatch hook failed");
+  }
+  if (!params.silent) WsHub.get().broadcastAiActive(params.topic.id, queryId);
+}
+
+function waitToDrainRemoteInject(topicId: string): void {
+  if (remoteInjectWaiters.has(topicId)) return;
+  const timer = setInterval(() => {
+    if (
+      getRuntimeTurnLease(topicId) ||
+      getRoomQuery(topicId) ||
+      isRuntimeTopicMaintenance(topicId)
+    ) {
+      return;
+    }
+    clearInterval(timer);
+    remoteInjectWaiters.delete(topicId);
+    const next = takeDeferredInject(topicId);
+    if (next) redispatchInject(next);
+  }, 100);
+  timer.unref?.();
+  remoteInjectWaiters.set(topicId, timer);
+}
+
+let durableTurnWorker: ReturnType<typeof setInterval> | null = null;
+let durableTurnWorkerBusy = false;
+
+async function drainOneDurableUserTurn(): Promise<void> {
+  if (durableTurnWorkerBusy) return;
+  durableTurnWorkerBusy = true;
+  try {
+    const request = claimNextRuntimeUserTurnRequest(RUNTIME_INSTANCE_ID);
+    if (!request) return;
+    const topic = getTopic(request.topicId);
+    if (!topic?.agent) {
+      completeRuntimeUserTurnRequest(request.topicId, request.requestId);
+      return;
+    }
+    const execution = request.execution;
+    const queryId = startAiTurn({
+      topic,
+      userId: request.userId,
+      prompt: request.prompt,
+      attachments: request.attachments,
+      allowAutoContinue: request.allowAutoContinue,
+      origin: "user",
+      requestId: execution?.sourceRequestId,
+      agentOverride: execution?.agentOverride,
+      modelOverride: execution?.modelOverride,
+      effortOverride: execution?.effortOverride,
+      ...(execution?.sessionIdSpecified ? { sessionId: execution.sessionId } : {}),
+      sessionScope: execution?.sessionScope,
+      cwd: execution?.cwd,
+      sessionName: execution?.sessionName,
+      sessionType: execution?.sessionType,
+      bridgeSessionFromHistory: execution?.bridgeSessionFromHistory,
+      peerBridge: execution?.peerBridge,
+      from: execution?.from,
+      _queryId: request.requestId,
+      _runtimeEpoch: execution?.runtimeEpoch ?? request.topicEpoch,
+      onSettled: () => {
+        completeRuntimeUserTurnRequest(request.topicId, request.requestId);
+      },
+    });
+    if (!queryId) {
+      releaseRuntimeUserTurnClaim(request.topicId, request.requestId, RUNTIME_INSTANCE_ID);
+      return;
+    }
+    markRuntimeUserTurnRunning(request.topicId, request.requestId, RUNTIME_INSTANCE_ID, queryId);
+  } finally {
+    durableTurnWorkerBusy = false;
+  }
+}
+
+/** Start a process-local claimant for durable user turns. Multiple processes
+ * may run this worker; SQLite claims and topic leases choose exactly one. */
+export function startDurableTurnRequestWorker(): () => void {
+  if (durableTurnWorker) return () => {};
+  durableTurnWorker = setInterval(() => {
+    void drainOneDurableUserTurn();
+  }, 100);
+  durableTurnWorker.unref?.();
+  void drainOneDurableUserTurn();
+  return () => {
+    if (!durableTurnWorker) return;
+    clearInterval(durableTurnWorker);
+    durableTurnWorker = null;
+  };
 }
 
 /**
@@ -1012,10 +1260,44 @@ export interface TriggerTopicAiTurnOptions extends AiTurnExecutionOptions {
  * turn. Follow-up turns pass false, so config changes cannot recurse.
  */
 export function startAiTurn(params: StartAiTurnParams): string | null {
-  const { topic, userId, allowAutoContinue, onDispatched } = params;
+  // A caller may have retained an old DTO while another surface changed the
+  // topic. Durable state is authoritative at the execution boundary.
+  const storedTopic = getTopic(params.topic.id);
+  if (!storedTopic || (!storedTopic.agent && !params.agentOverride)) {
+    if (params.forkHandle) cleanupAgentFork(params.forkHandle);
+    try {
+      params.onSettled?.({
+        queryId: "",
+        kind: "error",
+        error: storedTopic ? "topic no longer has an AI agent" : "topic no longer exists",
+      });
+    } catch (err) {
+      logger.warn({ err, topicId: params.topic.id }, "ai: rejected-turn settlement hook failed");
+    }
+    return null;
+  }
+  const topic: TopicDto = storedTopic;
+  const { userId, allowAutoContinue, onDispatched } = params;
   const prompt = params.prompt;
   const attachments = params.attachments;
-  let sessionId = params.sessionId;
+  const execution = resolveTopicTurnExecution(topic, params);
+  const sessionResolution = resolveTopicTurnSession(topic, params.sessionId, {
+    agentOverride: params.agentOverride,
+    modelOverride: params.modelOverride,
+    effortOverride: params.effortOverride,
+    silent: params.silent,
+    sessionScope: params.sessionScope,
+    sessionName: params.sessionName,
+    sessionType: params.sessionType,
+    hasFork: Boolean(params.forkHandle),
+    preparesSession: Boolean(params.prepareSession),
+    externalSessionOwner: Boolean(params.onSessionId),
+  });
+  let sessionId = sessionResolution.sessionId;
+  // Topic-owned sessions are deliberately re-resolved after a defer. Isolated
+  // and explicit sessions retain the id supplied by their owner.
+  const deferredSessionId =
+    params.sessionId === undefined && !sessionResolution.isolated ? undefined : sessionId;
   const origin = params.origin ?? "user";
   const topicId = topic.id;
   const requestId = params.requestId;
@@ -1025,6 +1307,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   const agentOverride = params.agentOverride;
   const modelOverride = params.modelOverride;
   const effortOverride = params.effortOverride;
+  const sessionScope = params.sessionScope;
   let forkHandle = params.forkHandle;
   const prepareSession = params.prepareSession;
   const cwd = params.cwd;
@@ -1037,14 +1320,30 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   const peerBridge = params.peerBridge;
   const askReplySources = params.askReplySources;
   const sessionRetried = params._sessionRetried === true;
+  const queryId = params._queryId ?? randomUUID();
+  const currentRuntimeEpoch = getRuntimeTopicEpoch(topic.id);
+  const runtimeEpoch = params._runtimeEpoch ?? currentRuntimeEpoch;
+  if (params._runtimeEpoch !== undefined && params._runtimeEpoch !== currentRuntimeEpoch) {
+    if (params.forkHandle) cleanupAgentFork(params.forkHandle);
+    if (!params.silent && params._queryId) {
+      WsHub.get().broadcastAborted(topic.id, params._queryId, "stopped");
+    }
+    try {
+      params.onSettled?.({ queryId, kind: "aborted" });
+    } catch (err) {
+      logger.warn({ err, topicId: topic.id, queryId }, "ai: stale-turn settlement hook failed");
+    }
+    logger.info(
+      { topicId: topic.id, queryId, queuedEpoch: params._runtimeEpoch, currentRuntimeEpoch },
+      "ai: dropped work queued before topic reset",
+    );
+    return null;
+  }
 
-  // Abort-on-new-message priority (Otium handler.ts L175-208). At most one
-  // in-flight turn per room: a user message preempts whatever is running; a
-  // session-inject waits its turn behind the user.
-  const decision = decideNewQuery(topicId, origin);
-  if (decision.action === "defer") {
+  const deferCurrentTurn = (): boolean => {
     const queued = deferInject({
       topicId,
+      runtimeEpoch,
       userId,
       prompt,
       origin,
@@ -1055,7 +1354,8 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       agentOverride,
       modelOverride,
       effortOverride,
-      sessionId,
+      sessionId: deferredSessionId,
+      sessionScope,
       forkHandle,
       prepareSession,
       cwd,
@@ -1072,8 +1372,38 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       from: params.from,
     });
     if (!queued && forkHandle) cleanupAgentFork(forkHandle);
+    return queued;
+  };
+
+  // Abort-on-new-message priority (Otium handler.ts L175-208). At most one
+  // in-flight turn per room: a user message preempts whatever is running; a
+  // session-inject waits its turn behind the user.
+  const decision = decideNewQuery(topicId, origin);
+  if (decision.action === "defer") {
+    deferCurrentTurn();
     logger.info({ topicId, origin }, "ai: session-inject deferred behind running turn");
     return null;
+  }
+  if (decision.action === "remote-defer") {
+    if (deferCurrentTurn()) waitToDrainRemoteInject(topicId);
+    logger.info(
+      { topicId, origin, remoteQueryId: decision.running.queryId },
+      "ai: session-inject deferred behind a turn owned by another process",
+    );
+    return null;
+  }
+  if (decision.action === "remote-abort-wait") {
+    requestRuntimeTurnAbort(topicId, "internal");
+    const queuedQueryId = waitToStartRemoteUserTurn(
+      { ...params, topic, _runtimeEpoch: runtimeEpoch },
+      queryId,
+    );
+    announceQueuedUserTurn({ ...params, topic }, queuedQueryId);
+    logger.info(
+      { topicId, queryId: queuedQueryId, remoteQueryId: decision.running.queryId },
+      "ai: user turn waiting for another process to release the topic lease",
+    );
+    return queuedQueryId;
   }
   if (decision.action === "abort-replace") {
     const running = decision.running;
@@ -1111,8 +1441,6 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     );
   }
 
-  const queryId = randomUUID();
-
   const abortController = new AbortController();
   const control: RoomQueryControl = {
     topicId,
@@ -1128,6 +1456,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       ? undefined
       : {
           topicId,
+          runtimeEpoch,
           userId,
           prompt,
           origin,
@@ -1138,7 +1467,8 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           agentOverride,
           modelOverride,
           effortOverride,
-          sessionId,
+          sessionId: deferredSessionId,
+          sessionScope,
           forkHandle,
           prepareSession,
           cwd,
@@ -1155,7 +1485,23 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           from: params.from,
         },
   };
-  setRoomQuery(control);
+  if (!setRoomQuery(control)) {
+    // Another process won the lease between the decision and the atomic claim.
+    // Preserve the same user-priority behavior and retry after that owner
+    // releases (or its heartbeat expires).
+    if (isUserOrigin(origin)) {
+      requestRuntimeTurnAbort(topicId, "internal");
+      const queuedQueryId = waitToStartRemoteUserTurn(
+        { ...params, topic, _runtimeEpoch: runtimeEpoch },
+        queryId,
+      );
+      announceQueuedUserTurn({ ...params, topic }, queuedQueryId);
+      return queuedQueryId;
+    } else if (deferCurrentTurn()) {
+      waitToDrainRemoteInject(topicId);
+    }
+    return null;
+  }
   try {
     writeQueryState(userId, topic.title, prompt);
   } catch (err) {
@@ -1173,18 +1519,9 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   // were removed — switching is config-only now.) Cross-agent-stale models are
   // dropped to the agent's default by resolveModelForAgent.
   const override = getTopicConfig(topicId);
-  const configuredAgent = agentOverride ?? topic.agent;
-  const agentKind: AgentKind = (configuredAgent ?? "maestro") as AgentKind;
-  const registry = getRegistry(agentKind);
-  const requestedModel = modelOverride ?? override?.model ?? topic.defaultModel;
-  const resolvedModel = resolveModelForAgent(agentKind, requestedModel, registry);
-  const requestedEffort = (effortOverride ?? override?.effort ?? topic.defaultEffort) as
-    | EffortLevel
-    | undefined;
-  const resolvedEffort =
-    requestedEffort && registry.validateEffort(requestedEffort)
-      ? requestedEffort
-      : registry.defaultEffort;
+  const agentKind = execution.agent;
+  const resolvedModel = execution.model;
+  const resolvedEffort = execution.effort;
 
   const workspaceCwd = cwd ?? workspaceCwdFor(topicId);
   mkdirSync(workspaceCwd, { recursive: true });
@@ -1426,7 +1763,11 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       peerBridge,
     });
   }
-  const events = runWithPlaywright();
+  // Provider streams can stay silent while reasoning, starting MCPs, or
+  // waiting on a long tool. Otium covers Claude thinking signals; this
+  // channel-neutral fallback keeps every Negotium host alive for all agents.
+  const providerEvents = runWithPlaywright();
+  const events = silent ? providerEvents : withTurnSilenceHeartbeat(providerEvents);
 
   // Let UI show typing indicator while AI works (including tool calls / thinking).
   if (!silent) {
@@ -1451,6 +1792,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   )
     .then(async (outcome) => {
       if (outcome.kind === "session-expired") {
+        if (!silent) WsHub.get().broadcastAborted(topicId, queryId, "stopped");
         const retrySessionId = resolveSessionRetryId({
           topicId,
           topicTitle: sessionName,
@@ -1495,6 +1837,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           modelOverride,
           effortOverride,
           sessionId: retrySessionId,
+          sessionScope,
           forkHandle,
           // Keep the recipe so a later user preemption can replay from a
           // clean snapshot. A non-empty retrySessionId suppresses immediate
@@ -1509,6 +1852,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           onSettled,
           peerBridge,
           askReplySources,
+          _runtimeEpoch: runtimeEpoch,
           _sessionRetried: true,
         });
         return;
@@ -1600,18 +1944,17 @@ export function triggerTopicAiTurn(
     title: topic.title,
     kind: topic.kind,
     description: topic.description,
-    agent: agentType ?? topic.agent,
+    agent: topic.agent,
     defaultModel: topic.defaultModel,
     defaultEffort: topic.defaultEffort,
     aiMode: topic.aiMode,
     aiMention: topic.aiMention,
   };
-  const sessionId =
-    opts?.sessionId !== undefined
-      ? opts.sessionId
-      : opts?.silent
-        ? undefined
-        : getTopicSessionId(topicId);
+  const execution = resolveTopicTurnExecution(topicCfg, {
+    agentOverride: agentType,
+    modelOverride: opts?.modelOverride,
+    effortOverride: opts?.effortOverride,
+  });
 
   if (!opts?.silent && !opts?.hideInjectMessage) {
     // Show the injected message in the receiving topic immediately, decoupled
@@ -1622,10 +1965,10 @@ export function triggerTopicAiTurn(
       id: `tell-${randomUUID()}`,
       topicId,
       authorId: opts?.injectAuthorId ?? userId,
-      authorName: agentType ?? topic.agent,
+      authorName: execution.agent,
       text: prompt,
-      agentType: agentType ?? topic.agent,
-      model: topic.defaultModel,
+      agentType: execution.agent,
+      model: execution.model,
       createdAt: now,
     };
     appendApiMessage(injectMsg);
@@ -1649,7 +1992,8 @@ export function triggerTopicAiTurn(
     agentOverride: agentType,
     modelOverride: opts?.modelOverride,
     effortOverride: opts?.effortOverride,
-    sessionId,
+    sessionId: opts?.sessionId,
+    sessionScope: opts?.sessionScope,
     forkHandle: opts?.forkHandle,
     prepareSession: opts?.prepareSession,
     cwd: opts?.cwd,

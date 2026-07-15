@@ -1,4 +1,5 @@
-import type { MessageDto } from "@negotium/core";
+import { getRegistry, type MessageDto, resolveModelForAgent, type TopicDto } from "@negotium/core";
+import { commandSuggestions } from "@/commands";
 import {
   type AppState,
   activeMessages,
@@ -26,6 +27,21 @@ const theme = {
   red: [245, 116, 128] as Rgb,
 };
 
+// cli-spinners' compact "dots" pattern: fast, stable-width, and reads as
+// active computation rather than a slow mechanical wheel.
+const WORKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+
+export function workingFrame(frame: number): string {
+  const index = Math.abs(Math.trunc(frame)) % WORKING_FRAMES.length;
+  return WORKING_FRAMES[index] ?? WORKING_FRAMES[0];
+}
+
+/** Hide legacy cross-agent defaults such as codex + deepseek-pro. */
+export function effectiveTopicModel(topic: TopicDto | null): string {
+  if (!topic?.agent) return topic?.defaultModel ?? "-";
+  return resolveModelForAgent(topic.agent, topic.defaultModel, getRegistry(topic.agent));
+}
+
 interface UiLine {
   text: string;
   fg?: Rgb;
@@ -47,7 +63,7 @@ function paint(
 }
 
 export function stripAnsi(value: string): string {
-  // biome-ignore lint/complexity/useRegexLiterals: a string pattern avoids embedding control characters in source.
+  // biome-ignore lint/complexity/useRegexLiterals: avoids literal terminal control bytes in source.
   return value.replace(new RegExp("\\u001b\\[[0-?]*[ -/]*[@-~]", "g"), "");
 }
 
@@ -99,7 +115,7 @@ function sliceWidth(value: string, width: number): string {
 
 function fit(value: string, width: number): string {
   if (width <= 0) return "";
-  const clean = safeText(value).replace(/\n/g, " ");
+  const clean = safeText(value).replaceAll("\n", " ");
   const clipped = sliceWidth(clean, width);
   return clipped + " ".repeat(Math.max(0, width - displayWidth(clipped)));
 }
@@ -120,25 +136,25 @@ export function wrapText(value: string, width: number): string[] {
       output.push("");
       continue;
     }
-    let line = "";
-    let lineWidth = 0;
-    for (const char of [...paragraph]) {
-      const charWidth = runeWidth(char);
-      if (lineWidth + charWidth > width && line) {
-        output.push(line);
-        line = "";
-        lineWidth = 0;
+    let current = "";
+    let currentWidth = 0;
+    for (const character of [...paragraph]) {
+      const characterWidth = runeWidth(character);
+      if (currentWidth + characterWidth > width && current) {
+        output.push(current);
+        current = "";
+        currentWidth = 0;
       }
-      line += char;
-      lineWidth += charWidth;
+      current += character;
+      currentWidth += characterWidth;
     }
-    output.push(line);
+    output.push(current);
   }
   return output.length > 0 ? output : [""];
 }
 
-function line(value: string, options: Omit<UiLine, "text"> = {}): UiLine {
-  return { text: value, ...options };
+function line(text: string, options: Omit<UiLine, "text"> = {}): UiLine {
+  return { text, ...options };
 }
 
 function framePane(
@@ -148,16 +164,10 @@ function framePane(
   height: number,
   options: { active?: boolean; accent?: Rgb } = {},
 ): string[] {
-  if (width < 4 || height < 2) {
-    return Array.from({ length: height }, () =>
-      paint(" ".repeat(Math.max(0, width)), { bg: theme.canvas }),
-    );
-  }
-  const innerWidth = width - 2;
+  const innerWidth = Math.max(1, width - 2);
   const borderColor = options.active ? (options.accent ?? theme.borderActive) : theme.border;
   const label = ` ${sliceWidth(title, Math.max(0, innerWidth - 3))} `;
-  const topPlain = `╭${label}${"─".repeat(Math.max(0, innerWidth - displayWidth(label)))}╮`;
-  const top = paint(topPlain, {
+  const top = paint(`╭${label}${"─".repeat(Math.max(0, innerWidth - displayWidth(label)))}╮`, {
     fg: borderColor,
     bg: theme.canvas,
     bold: true,
@@ -180,149 +190,331 @@ function framePane(
   return [top, ...body, bottom];
 }
 
+function cleanInlineMarkdown(value: string): string {
+  return value
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
+    .replace(/(\*\*|__)(.*?)\1/g, "$2")
+    .replace(/(?<!\*)\*([^*]+)\*/g, "$1")
+    .replace(/`([^`]+)`/g, "‹$1›");
+}
+
+/** Lightweight block renderer adapted to agent replies: headings, lists, quotes and fenced code. */
+export function renderMarkdown(value: string, width: number): UiLine[] {
+  const result: UiLine[] = [];
+  let codeLanguage = "";
+  let inCode = false;
+  for (const rawLine of safeText(value).split("\n")) {
+    const fence = rawLine.match(/^\s*```([^`]*)$/);
+    if (fence) {
+      if (!inCode) {
+        codeLanguage = fence[1]?.trim() ?? "";
+        result.push(
+          line(`  ┌─ code${codeLanguage ? ` · ${codeLanguage}` : ""}`, {
+            fg: theme.cyan,
+            bg: theme.surfaceRaised,
+            bold: true,
+          }),
+        );
+      } else {
+        result.push(line("  └─", { fg: theme.subtle, bg: theme.surfaceRaised }));
+      }
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) {
+      for (const wrapped of wrapText(rawLine || " ", Math.max(4, width - 4))) {
+        result.push(line(`  │ ${wrapped}`, { fg: theme.text, bg: theme.surfaceRaised }));
+      }
+      continue;
+    }
+    const heading = rawLine.match(/^\s{0,3}(#{1,6})\s+(.+)$/);
+    if (heading) {
+      for (const wrapped of wrapText(cleanInlineMarkdown(heading[2]), Math.max(4, width - 2))) {
+        result.push(line(`  ${wrapped}`, { fg: theme.accent, bold: true }));
+      }
+      continue;
+    }
+    const bullet = rawLine.match(/^\s*[-+*]\s+(.+)$/);
+    if (bullet) {
+      for (const [index, wrapped] of wrapText(
+        cleanInlineMarkdown(bullet[1]),
+        Math.max(4, width - 5),
+      ).entries()) {
+        result.push(line(`  ${index === 0 ? "•" : " "} ${wrapped}`, { fg: theme.text }));
+      }
+      continue;
+    }
+    const ordered = rawLine.match(/^\s*(\d+[.)])\s+(.+)$/);
+    if (ordered) {
+      const marker = ordered[1];
+      for (const [index, wrapped] of wrapText(
+        cleanInlineMarkdown(ordered[2]),
+        Math.max(4, width - marker.length - 4),
+      ).entries()) {
+        result.push(line(`  ${index === 0 ? marker : " ".repeat(marker.length)} ${wrapped}`));
+      }
+      continue;
+    }
+    const quote = rawLine.match(/^\s*>\s?(.*)$/);
+    if (quote) {
+      for (const wrapped of wrapText(cleanInlineMarkdown(quote[1]), Math.max(4, width - 5))) {
+        result.push(line(`  ▏ ${wrapped}`, { fg: theme.muted }));
+      }
+      continue;
+    }
+    if (/^\s*([-*_])(?:\s*\1){2,}\s*$/.test(rawLine)) {
+      result.push(line(`  ${"─".repeat(Math.max(1, width - 4))}`, { fg: theme.border }));
+      continue;
+    }
+    if (!rawLine.trim()) {
+      result.push(line(""));
+      continue;
+    }
+    for (const wrapped of wrapText(cleanInlineMarkdown(rawLine), Math.max(4, width - 2))) {
+      result.push(line(`  ${wrapped}`, { fg: theme.text }));
+    }
+  }
+  if (inCode) result.push(line("  └─", { fg: theme.subtle, bg: theme.surfaceRaised }));
+  return result;
+}
+
 function timestamp(message: MessageDto): string {
   const date = new Date(message.createdAt);
   if (Number.isNaN(date.getTime())) return "";
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function messageLines(message: MessageDto, width: number, userId: string): UiLine[] {
+function subagentLines(message: MessageDto, width: number): UiLine[] {
+  const card = message.subagentCard;
+  if (!card) return [];
+  const done = card.status === "completed";
+  const failed = card.status === "failed";
+  const color = failed ? theme.red : done ? theme.green : theme.cyan;
+  const output = card.errorMessage ?? card.resultSummary ?? card.task;
+  return [
+    line(`  ↳ ${card.name}  ${card.status}`, { fg: color, bold: true }),
+    ...wrapText(output, Math.max(4, width - 6))
+      .slice(0, 4)
+      .map((text) => line(`    ${text}`, { fg: theme.muted })),
+    line(""),
+  ];
+}
+
+function messageLines(
+  message: MessageDto,
+  width: number,
+  userId: string,
+  aiName: string,
+): UiLine[] {
+  if (message.kind === "subagent" && message.subagentCard) return subagentLines(message, width);
+  if (message.kind === "tool") {
+    const [title = "Tool", ...details] = safeText(message.text).split("\n");
+    const done = Boolean(message.editedAt);
+    return [
+      line(`  ${done ? "✓" : "●"} ${title}`, {
+        fg: done ? theme.green : theme.cyan,
+        dim: done,
+      }),
+      ...details.slice(0, 2).flatMap((detail) =>
+        wrapText(detail, Math.max(4, width - 6))
+          .slice(0, 1)
+          .map((text) =>
+            line(`    ${text}`, {
+              fg: detail.startsWith("-")
+                ? theme.red
+                : detail.startsWith("+")
+                  ? theme.green
+                  : theme.muted,
+              dim: true,
+            }),
+          ),
+      ),
+    ];
+  }
   const own = message.authorId === userId;
   const ai = message.authorId === "ai";
-  const name = own ? "YOU" : ai ? (message.agentType ?? "AGENT").toUpperCase() : "SYSTEM";
+  const system = !own && !ai;
+  const name = own ? "You" : ai ? aiName : "System";
   const color = own ? theme.cyan : ai ? theme.accent : theme.muted;
-  const icon = own ? "◆" : ai ? "✦" : message.kind === "subagent" ? "↳" : "•";
-  const header = joinSides(` ${icon}  ${name}`, timestamp(message), width);
-  const bodyWidth = Math.max(8, width - 4);
-  const body = wrapText(message.text, bodyWidth).map((text) =>
-    line(`  ┃ ${text}`, { fg: theme.text, bg: theme.surfaceRaised }),
-  );
-  return [line(header, { fg: color, bold: true }), ...body, line("")];
+  const icon = own ? "›" : ai ? "✦" : "•";
+  const header = joinSides(`  ${icon} ${name}`, timestamp(message), Math.max(1, width - 2));
+  const body = ai
+    ? renderMarkdown(message.text, Math.max(4, width - 2))
+    : wrapText(message.text, Math.max(4, width - 6)).map((text) =>
+        line(`    ${text}`, { fg: system ? theme.muted : theme.text }),
+      );
+  return [line(header, { fg: color, bold: !system }), ...body, line("")];
+}
+
+function activityLines(state: AppState, animationFrame = 0): UiLine[] {
+  const topic = activeTopic(state);
+  if (!topic) return [];
+  const activity = state.activity[topic.id];
+  if (!activity) return [];
+  const result: UiLine[] = [];
+  if (activity.running) {
+    const rawDetail = activity.status?.trim();
+    const detail = rawDetail?.startsWith("Working…")
+      ? rawDetail.slice("Working…".length).trim()
+      : rawDetail;
+    const lastToolLabel = activity.tools.at(-1)?.label;
+    result.push(
+      line(
+        `  ${workingFrame(animationFrame)} Working${detail && detail !== "Thinking…" && detail !== lastToolLabel ? ` · ${detail}` : ""}`,
+        { fg: theme.amber, bold: true },
+      ),
+    );
+  } else if (activity.error) {
+    result.push(line(`  ! ${activity.error}`, { fg: theme.red }));
+  }
+  if (result.length > 0) result.push(line(""));
+  return result;
+}
+
+function taskLines(state: AppState, width: number): UiLine[] {
+  const taskPanel = activeTaskPanel(state);
+  if (!taskPanel) return [];
+  return [
+    line("  ◫ Shared tasks", { fg: theme.amber, bold: true }),
+    ...safeText(taskPanel.text)
+      .split("\n")
+      .slice(1, 6)
+      .flatMap((task) =>
+        wrapText(task.trimStart(), Math.max(4, width - 6)).map((text) =>
+          line(`    ${text}`, { fg: theme.muted }),
+        ),
+      ),
+    line(""),
+  ];
 }
 
 function helpLines(): UiLine[] {
   return [
-    line("  KEYBOARD", { fg: theme.accent, bold: true }),
+    line("  Keyboard", { fg: theme.accent, bold: true }),
     line(""),
-    line("  Enter          send message / confirm decision"),
-    line("  Ctrl-P / Ctrl-N previous / next topic"),
-    line("  ↑ / ↓          select decision option"),
-    line("  PgUp / PgDn    scroll conversation"),
-    line("  Ctrl-X         abort active turn"),
-    line("  Ctrl-O         topic switcher"),
-    line("  Ctrl-C         quit cleanly"),
+    line("  Enter send · Ctrl-J / Alt-Enter newline"),
+    line("  ← → move · Ctrl/Alt-← → move by word · ↑ ↓ history"),
+    line("  Ctrl-W delete word · Ctrl-U/K clear before/after cursor"),
+    line("  Mouse wheel / PgUp/PgDn scroll · Ctrl-X abort · Ctrl-T transcript"),
+    line("  Ctrl-O topics · Ctrl-P/N previous/next topic · Ctrl-C twice to quit"),
     line(""),
-    line("  COMMANDS", { fg: theme.cyan, bold: true }),
-    line("  /new <name> [agent]    /topic <name>"),
-    line("  /abort  /topics  /help  /quit", { fg: theme.muted }),
+    line("  Commands", { fg: theme.cyan, bold: true }),
+    line("  /new  /topic  /topics  /delete  /copy"),
+    line("  /abort  /help  /quit", { fg: theme.muted }),
   ];
 }
 
-function conversationLines(state: AppState, width: number, height: number): UiLine[] {
-  if (state.overlay === "help") return helpLines().slice(0, height);
-  if (state.overlay === "topics") {
-    return [
-      line("  SWITCH TOPIC", { fg: theme.accent, bold: true }),
-      line(""),
-      ...state.topics.map((topic, index) =>
-        line(
-          `  ${topic.id === state.activeTopicId ? "●" : "○"}  ${index + 1}. ${topic.title}   ${topic.agent ?? "no-agent"}`,
-          {
-            fg: topic.id === state.activeTopicId ? theme.text : theme.muted,
-            bg: topic.id === state.activeTopicId ? theme.selected : theme.surface,
-            bold: topic.id === state.activeTopicId,
-          },
-        ),
-      ),
-      line(""),
-      line("  Ctrl-P / Ctrl-N to move · Esc to close", {
-        fg: theme.subtle,
-      }),
-    ].slice(0, height);
+export function plainTranscript(state: AppState): string {
+  const topic = activeTopic(state);
+  const rows = [`# ${topic?.title ?? "Conversation"}`];
+  for (const message of activeMessages(state).filter(
+    (item) => !item.id.startsWith("tasks-") && item.kind !== "tool",
+  )) {
+    const author =
+      message.authorId === state.userId
+        ? "You"
+        : message.authorId === "ai"
+          ? state.aiName
+          : "System";
+    rows.push("", `${author}:`, safeText(message.text));
   }
+  return rows.join("\n");
+}
 
+function topicOverlayLines(state: AppState, animationFrame = 0): UiLine[] {
+  return [
+    line("  Topics", { fg: theme.accent, bold: true }),
+    line("  ↑↓ select · Enter open · N new · D/Del delete · Esc close", { fg: theme.muted }),
+    line(""),
+    ...state.topics.map((topic, index) => {
+      const selected = index === state.topicPickerIndex;
+      const running = state.activity[topic.id]?.running;
+      return line(
+        `  ${selected ? "›" : " "} ${running ? workingFrame(animationFrame) : "○"} ${topic.title}  ·  ${topic.agent ?? "no agent"}`,
+        {
+          fg: selected ? theme.text : running ? theme.green : theme.muted,
+          bg: selected ? theme.selected : theme.canvas,
+          bold: selected,
+        },
+      );
+    }),
+  ];
+}
+
+function conversationContentLines(state: AppState, width: number, animationFrame = 0): UiLine[] {
   const all: UiLine[] = [];
-  const messages = activeMessages(state).filter((message) => !message.id.startsWith("tasks-"));
-  for (const message of messages) {
-    all.push(...messageLines(message, width, state.userId));
+  for (const message of activeMessages(state).filter((item) => !item.id.startsWith("tasks-"))) {
+    all.push(...messageLines(message, width, state.userId, state.aiName));
   }
+  all.push(...activityLines(state, animationFrame), ...taskLines(state, width));
   if (all.length === 0) {
     all.push(
       line(""),
-      line("        ✦", { fg: theme.accent, bold: true }),
-      line("  Start a conversation", { fg: theme.text, bold: true }),
-      line("  Ask, build, research, or delegate from the composer below.", {
-        fg: theme.muted,
-      }),
+      line("  ✦ Start a conversation", { fg: theme.accent, bold: true }),
+      line("  Ask, build, research, or delegate from the composer below.", { fg: theme.muted }),
     );
   }
-  const maxOffset = Math.max(0, all.length - height);
+  return all;
+}
+
+function conversationLines(
+  state: AppState,
+  width: number,
+  height: number,
+  animationFrame = 0,
+): UiLine[] {
+  if (state.overlay === "help") return helpLines().slice(0, height);
+  if (state.overlay === "topics") return topicOverlayLines(state, animationFrame).slice(0, height);
+  if (state.overlay === "transcript") {
+    return [
+      line("  Transcript · Ctrl-T close", { fg: theme.accent, bold: true }),
+      line(""),
+      ...plainTranscript(state)
+        .split("\n")
+        .flatMap((text) => wrapText(text, Math.max(4, width - 4)).map((part) => line(`  ${part}`))),
+    ].slice(0, height);
+  }
+  if (state.overlay === "confirm-delete") {
+    const topic = state.topics.find((candidate) => candidate.id === state.pendingDeleteTopicId);
+    return [
+      line(""),
+      line(`  Delete “${topic?.title ?? "this topic"}”?`, { fg: theme.red, bold: true }),
+      line(""),
+      line("  The transcript is archived before the topic and its runtime state are removed."),
+      line("  Press y to delete or n to cancel.", { fg: theme.amber }),
+    ].slice(0, height);
+  }
+
+  const all = conversationContentLines(state, width, animationFrame);
+  const canScroll = all.length > height;
+  const contentHeight = canScroll && state.scrollOffset > 0 ? Math.max(1, height - 1) : height;
+  const maxOffset = Math.max(0, all.length - contentHeight);
   const offset = Math.min(maxOffset, state.scrollOffset);
   const end = all.length - offset;
-  return all.slice(Math.max(0, end - height), end);
-}
-
-function topicLines(state: AppState, height: number): UiLine[] {
-  const activeIndex = Math.max(
-    0,
-    state.topics.findIndex((topic) => topic.id === state.activeTopicId),
-  );
-  const start = Math.max(0, activeIndex - Math.floor(height / 2));
-  return state.topics.slice(start, start + height).map((topic) => {
-    const selected = topic.id === state.activeTopicId;
-    const running = state.activity[topic.id]?.running;
-    return line(` ${selected ? "▸" : " "} ${running ? "●" : "○"} ${topic.title}`, {
-      fg: selected ? theme.text : running ? theme.green : theme.muted,
-      bg: selected ? theme.selected : theme.surface,
-      bold: selected,
-    });
-  });
-}
-
-function activityLines(state: AppState, height: number): UiLine[] {
-  const topic = activeTopic(state);
-  if (!topic) return [line("  No active topic", { fg: theme.muted })];
-  const activity = state.activity[topic.id] ?? { running: false, tools: [] };
-  const lines: UiLine[] = [
-    line(activity.running ? "  ●  RUNNING" : "  ○  READY", {
-      fg: activity.running ? theme.green : theme.muted,
-      bold: true,
-    }),
-    line(`  ${activity.status ?? "Waiting for input"}`, { fg: theme.muted }),
-  ];
-  if (activity.error) {
-    lines.push(line(`  ! ${activity.error}`, { fg: theme.red }));
-  }
-  if (activity.tools.length > 0) {
-    lines.push(line(""), line("  RECENT TOOLS", { fg: theme.cyan, bold: true }));
-    for (const tool of activity.tools.slice(-4)) {
-      lines.push(
-        line(`  ${tool.status === "done" ? "✓" : "↻"}  ${tool.label}`, {
-          fg: tool.status === "done" ? theme.green : theme.text,
+  const visible = all.slice(Math.max(0, end - contentHeight), end);
+  return offset > 0
+    ? [
+        line(`  ↑ history · ${offset} lines from latest · wheel down/PgDn to return`, {
+          fg: theme.amber,
+          dim: true,
         }),
-      );
-    }
-  }
-  const taskPanel = activeTaskPanel(state);
-  if (taskPanel) {
-    lines.push(line(""), line("  SHARED TASKS", { fg: theme.amber, bold: true }));
-    for (const taskLine of safeText(taskPanel.text).split("\n").slice(1)) {
-      lines.push(line(`  ${taskLine.trimStart()}`, { fg: theme.text }));
-    }
-  }
-  return lines.slice(0, height);
+        ...visible,
+      ]
+    : visible;
 }
 
 function decisionPane(state: AppState, width: number): string[] {
+  if (state.overlay) return [];
   const ask = activeQuestion(state);
   const question = ask?.askUserQuestion;
   if (!ask || !question?.choices.length) return [];
   const selected = Math.min(state.askChoiceIndex, question.choices.length - 1);
   const content: UiLine[] = [
-    line(`  ${question.question}`, { fg: theme.text, bold: true }),
+    line(`  ${question.question}`, { bold: true }),
     ...question.choices.map((choice, index) =>
       line(
-        `  ${index === selected ? "●" : "○"}  ${choice.label}${choice.description ? ` — ${choice.description}` : ""}`,
+        `  ${index === selected ? "●" : "○"} ${choice.label}${choice.description ? ` — ${choice.description}` : ""}`,
         {
           fg: index === selected ? theme.text : theme.muted,
           bg: index === selected ? theme.selected : theme.surface,
@@ -331,103 +523,131 @@ function decisionPane(state: AppState, width: number): string[] {
       ),
     ),
   ];
-  const height = Math.min(8, Math.max(4, content.length + 2));
-  return framePane("decision required  ·  ↑↓ select  ·  enter confirm", content, width, height, {
-    active: true,
-    accent: theme.amber,
-  });
+  return framePane(
+    "decision required · ↑↓ select · Enter confirm",
+    content,
+    width,
+    Math.min(8, Math.max(4, content.length + 2)),
+    { active: true, accent: theme.amber },
+  );
+}
+
+function inputVisualLines(state: AppState, width: number): UiLine[] {
+  if (!state.input) {
+    return [
+      line("  › █ Type a message or /command…", { fg: theme.subtle, bg: theme.surfaceRaised }),
+    ];
+  }
+  const contentWidth = Math.max(4, width - 5);
+  const result: UiLine[] = [];
+  for (const [row, inputLine] of state.input.split("\n").entries()) {
+    const points = Array.from(inputLine);
+    const marked =
+      row === state.inputCursor.row
+        ? `${points.slice(0, state.inputCursor.col).join("")}█${points.slice(state.inputCursor.col).join("")}`
+        : inputLine;
+    for (const [visualIndex, wrapped] of wrapText(marked, contentWidth).entries()) {
+      result.push(
+        line(`${row === 0 && visualIndex === 0 ? "  › " : "    "}${wrapped}`, {
+          bg: theme.surfaceRaised,
+        }),
+      );
+    }
+  }
+  return result;
 }
 
 function composerPane(state: AppState, width: number): string[] {
   const topic = activeTopic(state);
   const activity = topic ? state.activity[topic.id] : undefined;
-  const label = activity?.running
-    ? "working  ·  type to supersede  ·  ctrl-x abort"
-    : "message  ·  enter send  ·  ctrl-o topics  ·  /help";
-  const placeholder = state.input ? `  ❯  ${state.input}█` : "  ❯  Type a message or /command…█";
-  return framePane(
-    label,
-    [
-      line(placeholder, {
-        fg: state.input ? theme.text : theme.subtle,
-        bg: theme.surfaceRaised,
-      }),
-    ],
-    width,
-    3,
-    { active: true },
+  const title = state.input.startsWith("/new ")
+    ? "new topic · type <name> [agent] · Enter create"
+    : activity?.running
+      ? "working · Enter supersedes · Ctrl-X abort"
+      : "message · Enter send · Ctrl-J newline · Ctrl-O topics";
+  const inputLines = inputVisualLines(state, width).slice(-5);
+  const suggestions = commandSuggestions(state.input);
+  const suggestionLines = suggestions.slice(0, 4).map((command, index) =>
+    line(
+      `    ${index === state.suggestionIndex ? "›" : " "} ${command.usage}  ${command.description}`,
+      {
+        fg: index === state.suggestionIndex ? theme.text : theme.muted,
+        bg: index === state.suggestionIndex ? theme.selected : theme.surface,
+      },
+    ),
   );
+  const content = [...inputLines, ...suggestionLines];
+  return framePane(title, content, width, Math.min(9, Math.max(3, content.length + 2)));
 }
 
-function headerLines(state: AppState, width: number): string[] {
+function headerLines(state: AppState, width: number, animationFrame = 0): string[] {
   const topic = activeTopic(state);
   const activity = topic ? state.activity[topic.id] : undefined;
-  const status = activity?.running ? "● RUNNING" : "○ READY";
-  const first = joinSides("  ◆  NEGOTIUM  /  TERMINAL", `${status}  LOCAL RUNTIME  `, width);
-  const breadcrumb = `  ${topic?.title ?? "NO TOPIC"}  /  ${(topic?.agent ?? "-").toUpperCase()}  ·  ${topic?.defaultModel ?? "-"}`;
-  const notice = state.notice ? `! ${state.notice}  ` : "Ctrl-C quit  ";
+  const status = activity?.running ? `${workingFrame(animationFrame)} Working` : "○ ready";
   return [
-    paint(first, {
+    paint(joinSides("  NEGOTIUM", `${status}  `, width), {
       fg: activity?.running ? theme.green : theme.accent,
       bg: theme.surfaceRaised,
       bold: true,
     }),
-    paint(joinSides(breadcrumb, notice, width), {
-      fg: state.notice ? theme.amber : theme.muted,
-      bg: theme.canvas,
-    }),
+    paint(
+      joinSides(
+        `  ${topic?.title ?? "no topic"} · ${topic?.agent ?? "-"} · ${effectiveTopicModel(topic)}`,
+        state.notice ? `! ${state.notice}  ` : "Ctrl-C twice to quit  ",
+        width,
+      ),
+      { fg: state.notice ? theme.amber : theme.muted, bg: theme.canvas },
+    ),
   ];
 }
 
-export function renderApp(state: AppState, columns: number, rows: number): string {
+function renderBody(lines: UiLine[], width: number, height: number): string[] {
+  return Array.from({ length: height }, (_, index) => {
+    const item = lines[index] ?? line("");
+    return paint(fit(item.text, width), {
+      fg: item.fg ?? theme.text,
+      bg: item.bg ?? theme.canvas,
+      bold: item.bold,
+      dim: item.dim,
+    });
+  });
+}
+
+export function renderApp(
+  state: AppState,
+  columns: number,
+  rows: number,
+  animationFrame = 0,
+): string {
   const width = Math.max(32, columns);
   const height = Math.max(14, rows);
-  const header = headerLines(state, width);
+  const header = headerLines(state, width, animationFrame);
   const decision = decisionPane(state, width);
   const composer = composerPane(state, width);
   const bodyHeight = Math.max(3, height - header.length - decision.length - composer.length);
-  const wide = width >= 104;
-  let body: string[];
+  const body = renderBody(
+    conversationLines(state, width, bodyHeight, animationFrame),
+    width,
+    bodyHeight,
+  );
+  return [...header, ...body, ...decision, ...composer].slice(0, height).join("\n");
+}
 
-  if (wide) {
-    const gapWidth = 1;
-    const leftWidth = Math.min(24, Math.max(21, Math.floor(width * 0.19)));
-    const rightWidth = Math.min(32, Math.max(27, Math.floor(width * 0.24)));
-    const centerWidth = width - leftWidth - rightWidth - gapWidth * 2;
-    const left = framePane(
-      "topics  ·  ctrl-p / ctrl-n",
-      topicLines(state, bodyHeight - 2),
-      leftWidth,
-      bodyHeight,
-    );
-    const center = framePane(
-      "conversation",
-      conversationLines(state, centerWidth - 2, bodyHeight - 2),
-      centerWidth,
-      bodyHeight,
-      { active: true },
-    );
-    const right = framePane(
-      "activity",
-      activityLines(state, bodyHeight - 2),
-      rightWidth,
-      bodyHeight,
-    );
-    const gap = paint(" ".repeat(gapWidth), { bg: theme.canvas });
-    body = Array.from(
-      { length: bodyHeight },
-      (_, index) => `${left[index]}${gap}${center[index]}${gap}${right[index]}`,
-    );
-  } else {
-    body = framePane(
-      activeTopic(state)?.title ?? "conversation",
-      conversationLines(state, width - 2, bodyHeight - 2),
-      width,
-      bodyHeight,
-      { active: true },
-    );
-  }
-
-  const rendered = [...header, ...body, ...decision, ...composer];
-  return rendered.slice(0, height).join("\n");
+export function maxConversationScrollOffset(
+  state: AppState,
+  columns: number,
+  rows: number,
+): number {
+  if (state.overlay) return 0;
+  const width = Math.max(32, columns);
+  const height = Math.max(14, rows);
+  const bodyHeight = Math.max(
+    3,
+    height -
+      headerLines(state, width).length -
+      decisionPane(state, width).length -
+      composerPane(state, width).length,
+  );
+  const lineCount = conversationContentLines(state, width).length;
+  return lineCount > bodyHeight ? lineCount - Math.max(1, bodyHeight - 1) : 0;
 }

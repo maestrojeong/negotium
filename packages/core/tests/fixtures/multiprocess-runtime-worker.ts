@@ -1,0 +1,50 @@
+const [mode, value = ""] = process.argv.slice(2);
+
+switch (mode) {
+  case "bus-listen": {
+    const { runtimeBus } = await import("../../src/index");
+    const stop = runtimeBus().subscribe((event) => {
+      if (event.topicId !== value || event.type !== "topic-updated") return;
+      stop();
+      process.stdout.write(`EVENT ${event.topicId}\n`, () => process.exit(0));
+    });
+    process.stdout.write("READY\n");
+    setTimeout(() => process.exit(2), 5_000);
+    break;
+  }
+  case "bus-write": {
+    const { runtimeBus } = await import("../../src/index");
+    runtimeBus().broadcastTopicUpdated(value);
+    process.stdout.write("WROTE\n");
+    break;
+  }
+  case "singleton": {
+    const { acquireRuntimeProcessLease } = await import("../../src/index");
+    const lease = acquireRuntimeProcessLease(value);
+    if (!lease) {
+      process.stdout.write("BUSY\n");
+      break;
+    }
+    process.stdout.write("CLAIMED\n");
+    setTimeout(() => {
+      lease.stop();
+      process.exit(0);
+    }, 2_000);
+    break;
+  }
+  case "node": {
+    const { startDefaultNode } = await import("../../../node/src/index");
+    const node = await startDefaultNode({ port: 0 });
+    process.stdout.write(`READY ${node.port}\n`);
+    process.stdin.setEncoding("utf8");
+    for await (const chunk of process.stdin) {
+      if (String(chunk).includes("stop")) break;
+    }
+    await node.stop();
+    break;
+  }
+  default:
+    throw new Error(`unknown worker mode: ${mode}`);
+}
+
+export {};

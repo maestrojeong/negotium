@@ -7,12 +7,19 @@
  * channel-agnostic seam: negotium core never knows what a "websocket" or a
  * "chat" is.
  *
- * A default in-process bus is installed so the runtime works headless (events
- * are still observable via `subscribe`). Hosts may either subscribe to the
- * default bus or install their own implementation with `setRuntimeBus`.
+ * The default bus is backed by the shared SQLite store. Every process writes
+ * events to one monotonic log and tails events written by its peers, while
+ * still delivering its own events synchronously. Hosts may replace it with
+ * `setRuntimeBus` in tests or specialized embeddings.
  */
 
+import { randomUUID } from "node:crypto";
 import type { ToolCallSummaryInput } from "#agents/tool-format";
+import {
+  appendRuntimeEvent,
+  latestRuntimeEventSeq,
+  listRuntimeEventsAfter,
+} from "#storage/runtime-events";
 import type { AgentKind } from "#types";
 import type { MessageDto } from "#types/api";
 
@@ -26,6 +33,9 @@ export interface RuntimeBusEvent {
     | "topic-deleted";
   topicId: string;
   payload: unknown;
+  /** Durable event-log ordering metadata when available. */
+  seq?: number;
+  createdAt?: string;
 }
 
 export type RuntimeBusListener = (event: RuntimeBusEvent) => void;
@@ -82,16 +92,79 @@ export interface RuntimeBus {
   subscribe(listener: RuntimeBusListener): () => void;
 }
 
-class InProcessBus implements RuntimeBus {
-  private listeners = new Set<RuntimeBusListener>();
+export interface SqliteRuntimeBusOptions {
+  sourceId?: string;
+  pollIntervalMs?: number;
+}
 
-  private emit(event: RuntimeBusEvent): void {
+export class SqliteRuntimeBus implements RuntimeBus {
+  private listeners = new Set<RuntimeBusListener>();
+  private readonly sourceId: string;
+  private readonly pollIntervalMs: number;
+  private cursor: number;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private polling = false;
+
+  constructor(options: SqliteRuntimeBusOptions = {}) {
+    this.sourceId = options.sourceId ?? `${process.pid}-${randomUUID()}`;
+    this.pollIntervalMs = Math.max(25, options.pollIntervalMs ?? 100);
+    this.cursor = latestRuntimeEventSeq();
+  }
+
+  private deliver(event: RuntimeBusEvent): void {
     for (const listener of this.listeners) {
       try {
         listener(event);
       } catch {
         // A broken subscriber must never break the runtime.
       }
+    }
+  }
+
+  private emit(event: RuntimeBusEvent): void {
+    // Do not jump the read cursor to our insert's seq. Another process may
+    // have committed an event immediately before this insert that we have not
+    // tailed yet. The poller advances through every seq in order and skips our
+    // own rows after the synchronous delivery below.
+    const stored = appendRuntimeEvent(this.sourceId, event);
+    this.deliver({ ...event, seq: stored.seq, createdAt: stored.createdAt });
+  }
+
+  private startPolling(): void {
+    if (this.pollTimer) return;
+    this.pollTimer = setInterval(() => this.poll(), this.pollIntervalMs);
+    this.pollTimer.unref?.();
+    this.poll();
+  }
+
+  private stopPolling(): void {
+    if (!this.pollTimer) return;
+    clearInterval(this.pollTimer);
+    this.pollTimer = null;
+  }
+
+  private poll(): void {
+    if (this.polling || this.listeners.size === 0) return;
+    this.polling = true;
+    try {
+      while (true) {
+        const events = listRuntimeEventsAfter(this.cursor);
+        if (events.length === 0) break;
+        for (const event of events) {
+          this.cursor = Math.max(this.cursor, event.seq);
+          if (event.sourceId === this.sourceId) continue;
+          this.deliver({
+            type: event.type,
+            topicId: event.topicId,
+            payload: event.payload,
+            seq: event.seq,
+            createdAt: event.createdAt,
+          });
+        }
+        if (events.length < 500) break;
+      }
+    } finally {
+      this.polling = false;
     }
   }
 
@@ -215,11 +288,15 @@ class InProcessBus implements RuntimeBus {
 
   subscribe(listener: RuntimeBusListener): () => void {
     this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    this.startPolling();
+    return () => {
+      this.listeners.delete(listener);
+      if (this.listeners.size === 0) this.stopPolling();
+    };
   }
 }
 
-let current: RuntimeBus = new InProcessBus();
+let current: RuntimeBus = new SqliteRuntimeBus();
 
 export function runtimeBus(): RuntimeBus {
   return current;

@@ -1,8 +1,12 @@
-import type { AgentKind, RuntimeBusEvent } from "@negotium/core";
+import type { AgentKind, MessageDto, RuntimeBusEvent } from "@negotium/core";
 import type { NegotiumClient } from "@/client";
-import { renderApp } from "@/render";
+import { copyToClipboard } from "@/clipboard";
+import { commandSuggestions, completeCommand } from "@/commands";
+import { maxConversationScrollOffset, plainTranscript, renderApp } from "@/render";
+import { TerminalScreenRenderer } from "@/screen-renderer";
 import {
   type AppState,
+  activeMessages,
   activeQuestion,
   activeTopic,
   applyRuntimeEvent,
@@ -12,11 +16,29 @@ import {
   setTopics,
   upsertMessage,
 } from "@/state";
+import { InputHistory, TextBuffer } from "@/text-buffer";
 
-const ENTER_ALT_SCREEN = "\u001b[?1049h\u001b[?25l\u001b[?2004h";
-const EXIT_ALT_SCREEN = "\u001b[?2004l\u001b[?25h\u001b[?1049l";
-const CLEAR_AND_HOME = "\u001b[2J\u001b[H";
+const ENTER_ALT_SCREEN = "\u001b[?1049h\u001b[?25l\u001b[?2004h\u001b[?1000h\u001b[?1006h";
+const EXIT_ALT_SCREEN = "\u001b[?1006l\u001b[?1000l\u001b[?2004l\u001b[?25h\u001b[?1049l";
 const AGENTS = new Set<AgentKind>(["claude", "codex", "maestro"]);
+const NEW_TOPIC_KEYS = new Set(["n", "ㅜ"]);
+const DELETE_TOPIC_KEYS = new Set(["d", "ㅇ", "\u007f", "\b", "\u001b[3~"]);
+const CONFIRM_KEYS = new Set(["y", "ㅛ"]);
+const CANCEL_KEYS = new Set(["n", "ㅜ"]);
+// biome-ignore lint/complexity/useRegexLiterals: avoids a literal terminal control byte in source.
+const SGR_MOUSE_PATTERN = new RegExp("\\u001b\\[<(\\d+);\\d+;\\d+[mM]", "g");
+
+export function consumeMouseInput(raw: string): { input: string; scrollDelta: number } {
+  let scrollDelta = 0;
+  const input = raw.replace(SGR_MOUSE_PATTERN, (_sequence, rawButton: string) => {
+    const button = Number.parseInt(rawButton, 10);
+    if (Number.isFinite(button) && (button & 64) !== 0) {
+      scrollDelta += (button & 1) === 0 ? 3 : -3;
+    }
+    return "";
+  });
+  return { input, scrollDelta };
+}
 
 export interface TerminalAppOptions {
   userId: string;
@@ -28,12 +50,26 @@ export class TerminalApp {
   readonly #client: NegotiumClient;
   readonly #options: TerminalAppOptions;
   #state: AppState;
+  readonly #input = new TextBuffer();
+  readonly #screen = new TerminalScreenRenderer();
+  #history = new InputHistory();
+  #pasting = false;
   #renderQueued = false;
+  #renderTimer: ReturnType<typeof setTimeout> | undefined;
+  #animationTimer: ReturnType<typeof setInterval> | undefined;
+  #animationFrame = 0;
+  #topicsRefreshGeneration = 0;
+  readonly #messageLoadGeneration = new Map<string, number>();
+  readonly #queuedRuntimeEvents = new Map<string, RuntimeBusEvent[]>();
+  #lastInterruptAt = 0;
   #running = false;
   #stopRequested = false;
   #finishRun: (() => void) | null = null;
   #onData = (chunk: Buffer | string) => this.#handleInput(String(chunk));
-  #onResize = () => this.#queueRender();
+  #onResize = () => {
+    this.#screen.invalidate();
+    this.#queueRender();
+  };
   #onSignal = () => this.#requestExit();
 
   constructor(client: NegotiumClient, options: TerminalAppOptions) {
@@ -51,16 +87,22 @@ export class TerminalApp {
     try {
       clientStartAttempted = true;
       await this.#client.start((event) => this.#handleRuntimeEvent(event));
+      this.#history = new InputHistory(this.#client.listInputHistory?.() ?? []);
       if (this.#stopRequested) return;
-      this.#refreshTopics(this.#options.preferredTopic);
-      if (this.#state.topics.length === 0) {
-        const created = this.#client.createTopic(
-          this.#options.preferredTopic ?? "chat",
-          this.#options.defaultAgent,
+      await this.#refreshTopics(this.#options.preferredTopic ?? "General");
+      if (this.#options.preferredTopic) {
+        const preferred = this.#state.topics.find(
+          (topic) => topic.title.toLowerCase() === this.#options.preferredTopic?.toLowerCase(),
         );
-        this.#state = setTopics(this.#state, [created], created.title);
+        if (!preferred) {
+          const created = await this.#client.createTopic(
+            this.#options.preferredTopic,
+            this.#options.defaultAgent,
+          );
+          this.#state = setTopics(this.#state, await this.#client.listTopics(), created.title);
+        }
       }
-      this.#loadActiveMessages();
+      await this.#loadActiveMessages();
       this.#running = true;
 
       process.stdout.write(ENTER_ALT_SCREEN);
@@ -73,6 +115,13 @@ export class TerminalApp {
       process.once("SIGINT", this.#onSignal);
       process.once("SIGTERM", this.#onSignal);
       this.#render();
+      this.#animationTimer = setInterval(() => {
+        const topic = activeTopic(this.#state);
+        if (!topic || !this.#state.activity[topic.id]?.running) return;
+        this.#animationFrame += 1;
+        this.#queueRender();
+      }, 80);
+      this.#animationTimer.unref?.();
 
       await new Promise<void>((resolve) => {
         this.#finishRun = resolve;
@@ -90,6 +139,15 @@ export class TerminalApp {
   }
 
   #handleRuntimeEvent(event: RuntimeBusEvent): void {
+    if (
+      this.#messageLoadGeneration.has(event.topicId) &&
+      (event.type === "message" || event.type === "message-updated" || event.type === "ai-status")
+    ) {
+      const queued = this.#queuedRuntimeEvents.get(event.topicId) ?? [];
+      queued.push(event);
+      this.#queuedRuntimeEvents.set(event.topicId, queued);
+      return;
+    }
     this.#state = applyRuntimeEvent(this.#state, event);
     if (
       event.type === "topic-created" ||
@@ -97,48 +155,141 @@ export class TerminalApp {
       event.type === "topic-deleted"
     ) {
       const previous = this.#state.activeTopicId;
-      this.#refreshTopics();
-      if (this.#state.activeTopicId && this.#state.activeTopicId !== previous) {
-        this.#loadActiveMessages();
-      }
+      void this.#refreshTopicsAfterEvent(previous);
     }
     this.#queueRender();
   }
 
-  #refreshTopics(preferredTitle?: string): void {
-    this.#state = setTopics(this.#state, this.#client.listTopics(), preferredTitle);
+  async #refreshTopicsAfterEvent(previous: string | null): Promise<void> {
+    try {
+      await this.#refreshTopics();
+      if (this.#state.activeTopicId && this.#state.activeTopicId !== previous) {
+        await this.#loadActiveMessages();
+      }
+    } catch (error) {
+      this.#state = {
+        ...this.#state,
+        notice: `Node connection error: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    this.#queueRender();
   }
 
-  #loadActiveMessages(): void {
+  async #refreshTopics(preferredTitle?: string): Promise<void> {
+    const generation = ++this.#topicsRefreshGeneration;
+    const topics = await this.#client.listTopics();
+    if (generation !== this.#topicsRefreshGeneration) return;
+    this.#state = setTopics(this.#state, topics, preferredTitle);
+  }
+
+  async #loadActiveMessages(): Promise<void> {
     const topic = activeTopic(this.#state);
     if (!topic) return;
-    this.#state = setMessages(this.#state, topic.id, this.#client.listMessages(topic.id));
+    const generation = (this.#messageLoadGeneration.get(topic.id) ?? 0) + 1;
+    this.#messageLoadGeneration.set(topic.id, generation);
+    let messages: MessageDto[];
+    let recentEvents: RuntimeBusEvent[];
+    try {
+      [messages, recentEvents] = await Promise.all([
+        this.#client.listMessages(topic.id),
+        this.#client.listRecentEvents?.(topic.id) ?? [],
+      ]);
+    } catch (error) {
+      if (this.#messageLoadGeneration.get(topic.id) === generation) {
+        this.#messageLoadGeneration.delete(topic.id);
+        const queued = this.#queuedRuntimeEvents.get(topic.id) ?? [];
+        this.#queuedRuntimeEvents.delete(topic.id);
+        for (const event of queued) this.#state = applyRuntimeEvent(this.#state, event);
+      }
+      throw error;
+    }
+    if (this.#messageLoadGeneration.get(topic.id) !== generation) return;
+    this.#state = setMessages(this.#state, topic.id, messages);
+    for (const event of recentEvents) {
+      this.#state = applyRuntimeEvent(this.#state, event);
+    }
+    this.#messageLoadGeneration.delete(topic.id);
+    const queued = this.#queuedRuntimeEvents.get(topic.id) ?? [];
+    this.#queuedRuntimeEvents.delete(topic.id);
+    for (const event of queued) this.#state = applyRuntimeEvent(this.#state, event);
   }
 
   #queueRender(): void {
     if (!this.#running || this.#renderQueued) return;
     this.#renderQueued = true;
-    queueMicrotask(() => {
+    this.#renderTimer = setTimeout(() => {
+      this.#renderTimer = undefined;
       this.#renderQueued = false;
       if (this.#running) this.#render();
-    });
+    }, 16);
   }
 
   #render(): void {
     const columns = process.stdout.columns ?? 100;
     const rows = process.stdout.rows ?? 30;
-    process.stdout.write(`${CLEAR_AND_HOME}${renderApp(this.#state, columns, rows)}`);
+    const patch = this.#screen.update(renderApp(this.#state, columns, rows, this.#animationFrame));
+    if (patch) process.stdout.write(patch);
+  }
+
+  #syncInput(): void {
+    const suggestions = commandSuggestions(this.#input.text);
+    this.#state = {
+      ...this.#state,
+      input: this.#input.text,
+      inputCursor: this.#input.cursor,
+      suggestionIndex:
+        suggestions.length === 0
+          ? 0
+          : Math.min(this.#state.suggestionIndex, suggestions.length - 1),
+    };
+  }
+
+  #replaceInput(value: string): void {
+    this.#input.setText(value);
+    this.#syncInput();
+    this.#queueRender();
   }
 
   #handleInput(raw: string): void {
     if (!this.#running) return;
-    const chunk = raw.replaceAll("\u001b[200~", "").replaceAll("\u001b[201~", "");
-    if (chunk === "\u0003") {
-      this.#requestExit(); // Ctrl-C
+    const mouse = consumeMouseInput(raw);
+    if (mouse.scrollDelta !== 0) this.#scroll(mouse.scrollDelta);
+    let chunk = mouse.input;
+    if (!chunk) return;
+    const pasteStart = "\u001b[200~";
+    const pasteEnd = "\u001b[201~";
+    if (this.#pasting) {
+      const end = chunk.indexOf(pasteEnd);
+      if (end < 0) {
+        this.#input.insert(chunk);
+        this.#syncInput();
+        this.#queueRender();
+        return;
+      }
+      this.#input.insert(chunk.slice(0, end));
+      this.#pasting = false;
+      chunk = chunk.slice(end + pasteEnd.length);
+      this.#syncInput();
+      if (!chunk) {
+        this.#queueRender();
+        return;
+      }
+    }
+    const start = chunk.indexOf(pasteStart);
+    if (start >= 0) {
+      const before = chunk.slice(0, start);
+      if (before) this.#handleInput(before);
+      this.#pasting = true;
+      this.#handleInput(chunk.slice(start + pasteStart.length));
       return;
     }
+    if (chunk === "\u0003") {
+      this.#handleInterrupt(); // Ctrl-C
+      return;
+    }
+    this.#lastInterruptAt = 0;
     if (chunk === "\u0018") {
-      this.#abort(); // Ctrl-X
+      void this.#abort(); // Ctrl-X
       return;
     }
     if (chunk === "\u0010") {
@@ -150,15 +301,84 @@ export class TerminalApp {
       return;
     }
     if (chunk === "\u000f") {
+      this.#toggleTopics();
+      return;
+    }
+    if (chunk === "\u0014") {
       this.#state = {
         ...this.#state,
-        overlay: this.#state.overlay === "topics" ? null : "topics",
+        overlay: this.#state.overlay === "transcript" ? null : "transcript",
       };
       this.#queueRender();
       return;
     }
+    if (chunk === "\u0019") {
+      void this.#copy(false); // Ctrl-Y
+      return;
+    }
     if (chunk === "\u000c") {
+      this.#screen.invalidate();
       this.#render(); // Ctrl-L
+      return;
+    }
+    if (chunk === "\u0001" || chunk === "\u001b[H" || chunk === "\u001b[1~") {
+      this.#input.moveHome();
+      this.#syncInput();
+      this.#queueRender();
+      return;
+    }
+    if (chunk === "\u0005" || chunk === "\u001b[F" || chunk === "\u001b[4~") {
+      this.#input.moveEnd();
+      this.#syncInput();
+      this.#queueRender();
+      return;
+    }
+    if (chunk === "\u001b[D" || chunk === "\u0002") {
+      this.#input.moveLeft();
+      this.#syncInput();
+      this.#queueRender();
+      return;
+    }
+    if (chunk === "\u001b[C" || chunk === "\u0006") {
+      this.#input.moveRight();
+      this.#syncInput();
+      this.#queueRender();
+      return;
+    }
+    if (chunk === "\u001bb" || chunk === "\u001b[1;5D") {
+      this.#input.moveWordLeft();
+      this.#syncInput();
+      this.#queueRender();
+      return;
+    }
+    if (chunk === "\u001bf" || chunk === "\u001b[1;5C") {
+      this.#input.moveWordRight();
+      this.#syncInput();
+      this.#queueRender();
+      return;
+    }
+    if (chunk === "\u001b[3~") {
+      this.#input.deleteForward();
+      this.#syncInput();
+      this.#queueRender();
+      return;
+    }
+    if (chunk === "\u0017") {
+      this.#input.deleteWordLeft(); // Ctrl-W
+      this.#syncInput();
+      this.#queueRender();
+      return;
+    }
+    if (chunk === "\u0015") {
+      this.#input.clearBeforeCursor(); // Ctrl-U
+      this.#syncInput();
+      this.#queueRender();
+      return;
+    }
+    if (chunk === "\u000b") {
+      this.#input.clearAfterCursor(); // Ctrl-K
+      this.#syncInput();
+      this.#queueRender();
       return;
     }
     if (chunk === "\u001b[5~") {
@@ -169,54 +389,106 @@ export class TerminalApp {
       this.#scroll(-8); // PageDown
       return;
     }
+    if (this.#state.overlay === "confirm-delete") {
+      const key = chunk.toLowerCase();
+      if (CONFIRM_KEYS.has(key)) void this.#confirmTopicDelete();
+      else if (CANCEL_KEYS.has(key) || chunk === "\u001b") {
+        this.#state = { ...this.#state, overlay: null, pendingDeleteTopicId: undefined };
+        this.#queueRender();
+      }
+      return;
+    }
+    if (this.#state.overlay === "topics") {
+      const key = chunk.toLowerCase();
+      if (chunk === "\u001b[A") this.#moveTopicPicker(-1);
+      else if (chunk === "\u001b[B") this.#moveTopicPicker(1);
+      else if (chunk === "\r") this.#selectPickedTopic();
+      else if (NEW_TOPIC_KEYS.has(key)) {
+        this.#openNewTopicComposer();
+      } else if (DELETE_TOPIC_KEYS.has(key)) {
+        this.#requestTopicDelete(this.#state.topics[this.#state.topicPickerIndex]);
+      } else if (chunk === "\u001b") {
+        this.#state = { ...this.#state, overlay: null };
+        this.#queueRender();
+      }
+      return;
+    }
     if (chunk === "\u001b[A") {
-      this.#moveAskChoice(-1);
+      if (activeQuestion(this.#state)) this.#moveAskChoice(-1);
+      else if (commandSuggestions(this.#input.text).length > 0) this.#moveSuggestion(-1);
+      else if (this.#input.isOnFirstLine) {
+        const previous = this.#history.previous(this.#input.text);
+        if (previous !== null) this.#replaceInput(previous);
+      } else {
+        this.#input.moveUp();
+        this.#syncInput();
+        this.#queueRender();
+      }
       return;
     }
     if (chunk === "\u001b[B") {
-      this.#moveAskChoice(1);
+      if (activeQuestion(this.#state)) this.#moveAskChoice(1);
+      else if (commandSuggestions(this.#input.text).length > 0) this.#moveSuggestion(1);
+      else if (this.#input.isOnLastLine) {
+        const next = this.#history.next();
+        if (next !== null) this.#replaceInput(next);
+      } else {
+        this.#input.moveDown();
+        this.#syncInput();
+        this.#queueRender();
+      }
       return;
     }
-    if (chunk === "\r" || chunk === "\n") {
-      this.#submit();
+    if (chunk === "\t" || chunk === "\u001b[Z") {
+      const completed = completeCommand(this.#input.text, this.#state.suggestionIndex);
+      if (completed !== null) this.#replaceInput(completed);
+      return;
+    }
+    if (chunk === "\r") {
+      void this.#submit();
+      return;
+    }
+    if (chunk === "\n" || chunk === "\u001b\r" || chunk === "\u001b\n") {
+      this.#input.insert("\n");
+      this.#syncInput();
+      this.#queueRender();
       return;
     }
     if (chunk === "\u007f" || chunk === "\b") {
-      this.#state = {
-        ...this.#state,
-        input: [...this.#state.input].slice(0, -1).join(""),
-      };
+      this.#input.backspace();
+      this.#syncInput();
       this.#queueRender();
       return;
     }
     if (chunk === "\u001b") {
-      this.#state = { ...this.#state, overlay: null, input: "" };
+      this.#input.setText("");
+      this.#history.reset();
+      this.#syncInput();
+      this.#state = { ...this.#state, overlay: null };
       this.#queueRender();
       return;
     }
     if (chunk.startsWith("\u001b")) return;
 
-    const printable = [...chunk.replaceAll("\r", " ").replaceAll("\n", " ").replaceAll("\t", " ")]
+    const printable = [...chunk.replaceAll("\r", "").replaceAll("\n", "").replaceAll("\t", " ")]
       .filter((character) => {
         const code = character.charCodeAt(0);
         return code > 0x1f && code !== 0x7f;
       })
       .join("");
     if (printable) {
-      this.#state = {
-        ...this.#state,
-        input: `${this.#state.input}${printable}`,
-      };
+      this.#input.insert(printable);
+      this.#syncInput();
       this.#queueRender();
     }
   }
 
-  #submit(): void {
+  async #submit(): Promise<void> {
     const ask = activeQuestion(this.#state);
     if (ask?.askUserQuestion?.choices.length) {
       const index = Math.min(this.#state.askChoiceIndex, ask.askUserQuestion.choices.length - 1);
       const choice = ask.askUserQuestion.choices[index];
-      const result = this.#client.answerQuestion(ask.topicId, ask.id, choice.label);
+      const result = await this.#client.answerQuestion(ask.topicId, ask.id, choice.label);
       this.#state = {
         ...this.#state,
         askChoiceIndex: 0,
@@ -226,16 +498,19 @@ export class TerminalApp {
       return;
     }
 
-    const text = this.#state.input.trim();
+    const text = this.#input.text.trim();
     if (!text) return;
+    this.#history.record(text);
+    this.#client.appendInputHistory?.(text);
+    this.#input.setText("");
+    this.#syncInput();
     this.#state = {
       ...this.#state,
-      input: "",
       overlay: null,
       notice: undefined,
     };
     if (text.startsWith("/")) {
-      this.#runCommand(text);
+      await this.#runCommand(text);
       return;
     }
     const topic = activeTopic(this.#state);
@@ -244,19 +519,47 @@ export class TerminalApp {
       this.#queueRender();
       return;
     }
-    const message = this.#client.sendMessage(topic, text);
-    this.#state = upsertMessage(this.#state, message);
+    const optimisticQueryId = `terminal-pending-${Date.now()}`;
+    this.#state = applyRuntimeEvent(
+      { ...this.#state, scrollOffset: 0 },
+      {
+        type: "ai-status",
+        topicId: topic.id,
+        payload: { kind: "ai_active", queryId: optimisticQueryId },
+      },
+    );
+    this.#queueRender();
+    try {
+      const message = await this.#client.sendMessage(topic, text);
+      this.#state = upsertMessage(this.#state, message);
+    } catch (error) {
+      if (this.#state.activity[topic.id]?.queryId === optimisticQueryId) {
+        this.#state = applyRuntimeEvent(this.#state, {
+          type: "ai-status",
+          topicId: topic.id,
+          payload: {
+            kind: "ai_error",
+            queryId: optimisticQueryId,
+            error: "Message could not be sent",
+          },
+        });
+      }
+      this.#state = {
+        ...this.#state,
+        notice: error instanceof Error ? error.message : String(error),
+      };
+    }
     this.#queueRender();
   }
 
-  #runCommand(commandLine: string): void {
+  async #runCommand(commandLine: string): Promise<void> {
     const [command = "", ...args] = commandLine.slice(1).trim().split(/\s+/);
     if (command === "quit" || command === "exit") {
       this.#requestExit();
       return;
     }
     if (command === "abort") {
-      this.#abort();
+      await this.#abort();
       return;
     }
     if (command === "help") {
@@ -265,8 +568,7 @@ export class TerminalApp {
       return;
     }
     if (command === "topics") {
-      this.#state = { ...this.#state, overlay: "topics" };
-      this.#queueRender();
+      this.#toggleTopics(true);
       return;
     }
     if (command === "topic") {
@@ -280,23 +582,42 @@ export class TerminalApp {
         this.#queueRender();
         return;
       }
-      this.#activateTopic(topic.id);
+      await this.#activateTopic(topic.id);
       return;
     }
     if (command === "new") {
+      if (args.length === 0) {
+        const topic = activeTopic(this.#state);
+        if (!topic) {
+          this.#state = { ...this.#state, notice: "No topic selected" };
+          this.#queueRender();
+          return;
+        }
+        try {
+          const notice = await this.#client.resetTopic(topic);
+          this.#state = { ...this.#state, notice };
+        } catch (error) {
+          this.#state = {
+            ...this.#state,
+            notice: error instanceof Error ? error.message : String(error),
+          };
+        }
+        this.#queueRender();
+        return;
+      }
       const maybeAgent = args.at(-1) as AgentKind | undefined;
       const agent = maybeAgent && AGENTS.has(maybeAgent) ? maybeAgent : this.#options.defaultAgent;
       const nameParts = maybeAgent && AGENTS.has(maybeAgent) ? args.slice(0, -1) : args;
       const title = nameParts.join(" ").trim();
       if (!title) {
-        this.#state = { ...this.#state, notice: "Usage: /new <name> [agent]" };
+        this.#state = { ...this.#state, notice: "Usage: /new [name] [agent]" };
         this.#queueRender();
         return;
       }
       try {
-        const created = this.#client.createTopic(title, agent);
-        this.#refreshTopics(created.title);
-        this.#loadActiveMessages();
+        const created = await this.#client.createTopic(title, agent);
+        await this.#refreshTopics(created.title);
+        await this.#loadActiveMessages();
       } catch (error) {
         this.#state = {
           ...this.#state,
@@ -306,13 +627,40 @@ export class TerminalApp {
       this.#queueRender();
       return;
     }
+    if (command === "delete") {
+      const title = args.join(" ").trim().toLowerCase();
+      const topic = title
+        ? this.#state.topics.find((candidate) => candidate.title.toLowerCase() === title)
+        : activeTopic(this.#state);
+      if (!topic) {
+        this.#state = {
+          ...this.#state,
+          notice: title ? `Topic not found: ${args.join(" ")}` : "No topic selected",
+        };
+        this.#queueRender();
+        return;
+      }
+      this.#requestTopicDelete(topic);
+      return;
+    }
+    if (command === "copy") {
+      void this.#copy(args[0]?.toLowerCase() === "all");
+      return;
+    }
     this.#state = { ...this.#state, notice: `Unknown command: /${command}` };
     this.#queueRender();
   }
 
-  #activateTopic(topicId: string): void {
+  async #activateTopic(topicId: string): Promise<void> {
     this.#state = selectTopic(this.#state, topicId);
-    this.#loadActiveMessages();
+    try {
+      await this.#loadActiveMessages();
+    } catch (error) {
+      this.#state = {
+        ...this.#state,
+        notice: error instanceof Error ? error.message : String(error),
+      };
+    }
     this.#queueRender();
   }
 
@@ -321,7 +669,128 @@ export class TerminalApp {
     const index = this.#state.topics.findIndex((topic) => topic.id === this.#state.activeTopicId);
     const next =
       (Math.max(0, index) + delta + this.#state.topics.length) % this.#state.topics.length;
-    this.#activateTopic(this.#state.topics[next].id);
+    void this.#activateTopic(this.#state.topics[next].id);
+  }
+
+  #toggleTopics(forceOpen = false): void {
+    const activeIndex = Math.max(
+      0,
+      this.#state.topics.findIndex((topic) => topic.id === this.#state.activeTopicId),
+    );
+    this.#state = {
+      ...this.#state,
+      overlay: forceOpen || this.#state.overlay !== "topics" ? "topics" : null,
+      topicPickerIndex: activeIndex,
+    };
+    this.#queueRender();
+  }
+
+  #openNewTopicComposer(notice = "Type a new topic name, then press Enter"): void {
+    this.#state = {
+      ...this.#state,
+      overlay: null,
+      notice,
+    };
+    this.#replaceInput("/new ");
+  }
+
+  #moveTopicPicker(delta: number): void {
+    if (this.#state.topics.length === 0) return;
+    const index =
+      (this.#state.topicPickerIndex + delta + this.#state.topics.length) %
+      this.#state.topics.length;
+    this.#state = { ...this.#state, topicPickerIndex: index };
+    this.#queueRender();
+  }
+
+  #selectPickedTopic(): void {
+    const topic = this.#state.topics[this.#state.topicPickerIndex];
+    if (topic) void this.#activateTopic(topic.id);
+  }
+
+  #moveSuggestion(delta: number): void {
+    const count = commandSuggestions(this.#input.text).length;
+    if (count === 0) return;
+    this.#state = {
+      ...this.#state,
+      suggestionIndex: (this.#state.suggestionIndex + delta + count) % count,
+    };
+    this.#queueRender();
+  }
+
+  #requestTopicDelete(topic: AppState["topics"][number] | undefined): void {
+    if (!topic) return;
+    if (topic.kind === "manager") {
+      this.#state = { ...this.#state, overlay: null, notice: "Manager topics cannot be deleted" };
+      this.#queueRender();
+      return;
+    }
+    this.#state = {
+      ...this.#state,
+      overlay: "confirm-delete",
+      pendingDeleteTopicId: topic.id,
+    };
+    this.#queueRender();
+  }
+
+  async #confirmTopicDelete(): Promise<void> {
+    const topic = this.#state.topics.find(
+      (candidate) => candidate.id === this.#state.pendingDeleteTopicId,
+    );
+    if (!topic) {
+      this.#state = { ...this.#state, overlay: null, pendingDeleteTopicId: undefined };
+      this.#queueRender();
+      return;
+    }
+    this.#state = {
+      ...this.#state,
+      overlay: null,
+      pendingDeleteTopicId: undefined,
+      notice: `Deleting ${topic.title}…`,
+    };
+    this.#queueRender();
+    try {
+      await this.#client.deleteTopic(topic);
+      await this.#refreshTopics();
+      await this.#loadActiveMessages();
+      this.#state = { ...this.#state, notice: `Deleted ${topic.title}` };
+    } catch (error) {
+      this.#state = {
+        ...this.#state,
+        notice: error instanceof Error ? error.message : String(error),
+      };
+    }
+    this.#queueRender();
+  }
+
+  async #copy(all: boolean): Promise<void> {
+    const text = all
+      ? plainTranscript(this.#state)
+      : activeMessages(this.#state)
+          .slice()
+          .reverse()
+          .find((message) => message.authorId === "ai" && message.text.trim())?.text;
+    if (!text) {
+      this.#state = {
+        ...this.#state,
+        notice: all ? "Nothing to copy" : "No agent response to copy",
+      };
+      this.#queueRender();
+      return;
+    }
+    try {
+      const result = await copyToClipboard(text);
+      this.#state = {
+        ...this.#state,
+        notice: `${all ? "Transcript" : "Last response"} copied via ${result.method}${result.truncated ? " (truncated)" : ""}`,
+      };
+    } catch (error) {
+      this.#state = {
+        ...this.#state,
+        notice: `Copy failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    this.#queueRender();
   }
 
   #moveAskChoice(delta: number): void {
@@ -333,20 +802,67 @@ export class TerminalApp {
   }
 
   #scroll(delta: number): void {
+    const maxOffset = maxConversationScrollOffset(
+      this.#state,
+      process.stdout.columns ?? 100,
+      process.stdout.rows ?? 30,
+    );
     this.#state = {
       ...this.#state,
-      scrollOffset: Math.max(0, this.#state.scrollOffset + delta),
+      scrollOffset: Math.min(maxOffset, Math.max(0, this.#state.scrollOffset + delta)),
     };
     this.#queueRender();
   }
 
-  #abort(): void {
+  async #abort(): Promise<void> {
     const topic = activeTopic(this.#state);
-    const aborted = topic ? this.#client.abort(topic.id) : false;
+    let aborted = false;
+    try {
+      aborted = topic ? await this.#client.abort(topic.id) : false;
+    } catch (error) {
+      this.#state = {
+        ...this.#state,
+        notice: error instanceof Error ? error.message : String(error),
+      };
+      this.#queueRender();
+      return;
+    }
     this.#state = {
       ...this.#state,
       notice: aborted ? "Turn aborted" : "Nothing is running",
     };
+    this.#queueRender();
+  }
+
+  #handleInterrupt(): void {
+    const topic = activeTopic(this.#state);
+    if (topic && this.#state.activity[topic.id]?.running) {
+      this.#lastInterruptAt = 0;
+      void this.#abort();
+      return;
+    }
+    if (this.#input.text || this.#state.overlay) {
+      this.#lastInterruptAt = 0;
+      this.#input.setText("");
+      this.#history.reset();
+      this.#syncInput();
+      this.#state = {
+        ...this.#state,
+        overlay: null,
+        pendingDeleteTopicId: undefined,
+        notice: "Input cleared",
+      };
+      this.#queueRender();
+      return;
+    }
+
+    const now = Date.now();
+    if (now - this.#lastInterruptAt <= 1_500) {
+      this.#requestExit();
+      return;
+    }
+    this.#lastInterruptAt = now;
+    this.#state = { ...this.#state, notice: "Press Ctrl-C again to exit" };
     this.#queueRender();
   }
 
@@ -358,6 +874,12 @@ export class TerminalApp {
   }
 
   async #cleanup(clientStartAttempted: boolean, uiActive: boolean): Promise<void> {
+    if (this.#renderTimer) clearTimeout(this.#renderTimer);
+    if (this.#animationTimer) clearInterval(this.#animationTimer);
+    this.#renderTimer = undefined;
+    this.#animationTimer = undefined;
+    this.#renderQueued = false;
+    this.#screen.reset();
     if (uiActive) {
       process.stdin.off("data", this.#onData);
       process.stdout.off("resize", this.#onResize);

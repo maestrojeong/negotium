@@ -1,0 +1,42 @@
+import { expect, test } from "bun:test";
+import { TerminalScreenRenderer } from "@/screen-renderer";
+
+const CLEAR_DISPLAY = "\u001b[2J";
+
+test("draws the initial frame without clearing the whole display", () => {
+  const renderer = new TerminalScreenRenderer();
+  const output = renderer.update("first\nsecond");
+
+  expect(output).toContain("\u001b[1;1H\u001b[2Kfirst");
+  expect(output).toContain("\u001b[2;1H\u001b[2Ksecond");
+  expect(output).not.toContain(CLEAR_DISPLAY);
+});
+
+test("emits nothing when the frame has not changed", () => {
+  const renderer = new TerminalScreenRenderer();
+  renderer.update("first\nsecond");
+
+  expect(renderer.update("first\nsecond")).toBe("");
+});
+
+test("updates only changed rows", () => {
+  const renderer = new TerminalScreenRenderer();
+  renderer.update("first\nsecond\nthird");
+
+  const output = renderer.update("first\nchanged\nthird");
+  expect(output).toContain("\u001b[2;1H\u001b[2Kchanged");
+  expect(output).not.toContain("\u001b[1;1H");
+  expect(output).not.toContain("\u001b[3;1H");
+  expect(output).not.toContain(CLEAR_DISPLAY);
+});
+
+test("clears stale rows and can invalidate a resized frame", () => {
+  const renderer = new TerminalScreenRenderer();
+  renderer.update("first\nsecond");
+
+  expect(renderer.update("first")).toContain("\u001b[2;1H\u001b[2K");
+  renderer.invalidate();
+  const output = renderer.update("first");
+  expect(output).toContain("\u001b[1;1H\u001b[2Kfirst");
+  expect(output).not.toContain(CLEAR_DISPLAY);
+});

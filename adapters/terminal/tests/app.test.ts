@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { TerminalApp } from "@/app";
+import { consumeMouseInput, TerminalApp } from "@/app";
 import type { NegotiumClient } from "@/client";
 
 function setTty(stream: NodeJS.ReadStream | NodeJS.WriteStream, value: boolean): () => void {
@@ -10,6 +10,13 @@ function setTty(stream: NodeJS.ReadStream | NodeJS.WriteStream, value: boolean):
     else delete (stream as { isTTY?: boolean }).isTTY;
   };
 }
+
+test("translates SGR mouse wheel events into conversation scrolling", () => {
+  expect(consumeMouseInput("\u001b[<64;10;5M\u001b[<64;10;5M\u001b[<65;10;5Mtext")).toEqual({
+    input: "text",
+    scrollDelta: 3,
+  });
+});
 
 test("stops a started client when terminal initialization fails", async () => {
   let stopped = 0;
@@ -25,6 +32,12 @@ test("stops a started client when terminal initialization fails", async () => {
       return [];
     },
     createTopic() {
+      throw new Error("not reached");
+    },
+    async resetTopic() {
+      throw new Error("not reached");
+    },
+    async deleteTopic() {
       throw new Error("not reached");
     },
     sendMessage() {

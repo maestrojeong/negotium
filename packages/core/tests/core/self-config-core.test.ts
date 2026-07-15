@@ -83,7 +83,17 @@ describe("self-config core", () => {
     const result = getSelfConfigModel({ topicId, userId: USER });
 
     expect(result.isError).toBeUndefined();
-    expect(result.text).toContain("Model (agent=codex): sonnet");
+    expect(result.text).toContain("Model (agent=codex): default (gpt-5.6-luna)");
+  });
+
+  test("set_model rejects a model owned by another agent even when Codex accepts open IDs", () => {
+    const topicId = seedTopic("codex");
+
+    const result = setSelfConfigModel({ topicId, userId: USER }, "deepseek-pro");
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("not a valid model for agent 'codex'");
+    expect(getApiTopicConfig(topicId)?.model).toBeUndefined();
   });
 
   test("set_model rejects unsupported legacy Claude aliases", () => {
@@ -169,6 +179,7 @@ describe("self-config core", () => {
       expect(result.isError).toBeUndefined();
       const config = getApiTopicConfig(topicId);
       expect(getTopic(topicId)?.agent).toBe("maestro");
+      expect(getTopic(topicId)?.defaultModel).toBe("deepseek-pro");
       expect(config?.model).toBeUndefined();
       expect(config?.effort).toBeUndefined();
       expect(getTopicSessionId(topicId)).toBeNull();

@@ -12,6 +12,8 @@
  */
 
 import type { RuntimeBus } from "#bus";
+import { logger } from "#platform/logger";
+import { acquireRuntimeProcessLease } from "#storage/runtime-process-leases";
 
 export interface NegotiumNodeModuleContext {
   port: number;
@@ -29,6 +31,8 @@ export interface NegotiumNodeModuleHandle {
 export interface NegotiumNodeModule {
   /** Stable capability name, e.g. `cron` or `otium-peer`. */
   name: string;
+  /** Run this module in at most one process sharing the same state database. */
+  singleton?: boolean | string;
   /** Stable wire-facing capabilities advertised by hosts such as Otium. */
   capabilities?: readonly string[];
   // biome-ignore lint/suspicious/noConfusingVoidType: modules without cleanup intentionally return nothing.
@@ -57,18 +61,69 @@ export function startNegotiumNodeModules(
       if (!name) throw new Error("negotium module name must not be empty");
       if (seen.has(name)) throw new Error(`duplicate negotium module: ${name}`);
       seen.add(name);
+      const moduleCapabilities: string[] = [];
       for (const rawCapability of module.capabilities ?? []) {
         const capability = rawCapability.trim();
         if (!/^[a-z0-9][a-z0-9._-]*$/.test(capability)) {
           throw new Error(`invalid negotium module capability: ${rawCapability}`);
         }
-        if (seenCapabilities.has(capability)) {
+        if (seenCapabilities.has(capability) || moduleCapabilities.includes(capability)) {
           throw new Error(`duplicate negotium module capability: ${capability}`);
         }
-        seenCapabilities.add(capability);
-        capabilities.push(capability);
+        moduleCapabilities.push(capability);
       }
-      started.push({ name, handle: module.start(context) ?? {} });
+      const singletonRole =
+        typeof module.singleton === "string"
+          ? module.singleton.trim()
+          : module.singleton
+            ? `module:${name}`
+            : null;
+      let moduleHandle: NegotiumNodeModuleHandle | undefined;
+      let moduleStopped = false;
+      const stopModule = async (): Promise<void> => {
+        if (moduleStopped) return;
+        moduleStopped = true;
+        await moduleHandle?.stop?.();
+      };
+      const singletonLease = singletonRole
+        ? acquireRuntimeProcessLease(singletonRole, {
+            onLost: () => {
+              logger.error(
+                { module: name, role: singletonRole },
+                "node module singleton lease lost; stopping module",
+              );
+              void stopModule().catch((error) =>
+                logger.error({ error, module: name }, "node module stop after lease loss failed"),
+              );
+            },
+          })
+        : null;
+      if (singletonRole && !singletonLease) {
+        logger.info({ module: name, role: singletonRole }, "node module owned by another process");
+        continue;
+      }
+      try {
+        moduleHandle = module.start(context) ?? {};
+        const handle: NegotiumNodeModuleHandle = singletonLease
+          ? {
+              async stop() {
+                try {
+                  await stopModule();
+                } finally {
+                  singletonLease.stop();
+                }
+              },
+            }
+          : moduleHandle;
+        for (const capability of moduleCapabilities) {
+          seenCapabilities.add(capability);
+          capabilities.push(capability);
+        }
+        started.push({ name, handle });
+      } catch (error) {
+        singletonLease?.stop();
+        throw error;
+      }
     }
   } catch (error) {
     // Startup is synchronous, so cleanup can be scheduled without delaying the

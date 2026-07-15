@@ -78,6 +78,7 @@ export function summarizeToolInput(
   input: Record<string, unknown>,
 ): ToolCallSummaryInput | undefined {
   const summary: ToolCallSummaryInput = {};
+  const shortName = name.split("__").at(-1)?.toLowerCase() ?? name.toLowerCase();
 
   if (name === "AskUserQuestion") {
     const question = summarizePrimitive(input.question);
@@ -90,6 +91,19 @@ export function summarizeToolInput(
   for (const key of SUMMARY_KEYS) {
     const value = summarizePrimitive(input[key]);
     if (value !== undefined) summary[key] = value;
+  }
+
+  if (shortName === "edit") {
+    const before = summarizePrimitive(input.old_string);
+    const after = summarizePrimitive(input.new_string);
+    if (typeof before === "string") summary.before = before;
+    if (typeof after === "string") summary.after = after;
+  }
+  if (shortName === "write") {
+    const content = typeof input.content === "string" ? input.content : undefined;
+    const preview = summarizePrimitive(content);
+    if (typeof preview === "string") summary.preview = preview;
+    if (content !== undefined) summary.lines = content.split("\n").length;
   }
 
   return Object.keys(summary).length > 0 ? summary : undefined;

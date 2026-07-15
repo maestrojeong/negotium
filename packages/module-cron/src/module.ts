@@ -31,6 +31,7 @@ function envMs(name: string, fallback: number): number {
 export function createCronModule(options: CronModuleOptions = {}): NegotiumNodeModule {
   return {
     name: "cron",
+    singleton: true,
     capabilities: ["scheduler.cron.v1", "scheduler.cron.v2"],
     start(context) {
       ensureCronSchema();

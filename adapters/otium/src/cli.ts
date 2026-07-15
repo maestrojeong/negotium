@@ -67,7 +67,13 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
     }
     case "serve": {
       const [
-        { onShutdown, registerNodeRequestHandler, unregisterNodeRequestHandler },
+        {
+          acquireRuntimeProcessLease,
+          getRuntimeProcessLease,
+          onShutdown,
+          registerNodeRequestHandler,
+          unregisterNodeRequestHandler,
+        },
         { startDefaultNode },
         otium,
       ] = await Promise.all([
@@ -75,9 +81,25 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
         import("@negotium/node"),
         import("@/index"),
       ]);
+      let leaseLost = false;
+      let stopForLeaseLoss: (() => void) | undefined;
+      const singleton = acquireRuntimeProcessLease("adapter:otium", {
+        onLost: () => {
+          leaseLost = true;
+          console.error("negotium otium: singleton lease lost; shutting down");
+          stopForLeaseLoss?.();
+        },
+      });
+      if (!singleton) {
+        const current = getRuntimeProcessLease("adapter:otium");
+        throw new Error(
+          `Otium adapter is already running${current ? ` (pid ${current.pid})` : ""}`,
+        );
+      }
       const { handleOtiumPeerRequest, startOtiumWorker } = otium;
       const worker = startOtiumWorker();
       if (!worker) {
+        singleton.stop();
         throw new Error(
           "not joined to an otium workspace — run `negotium otium join <code>` first",
         );
@@ -91,11 +113,15 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
         worker.stop();
       };
       onShutdown("otium-worker", 100, stopWorker);
+      onShutdown("otium-singleton", 90, () => singleton.stop());
       let node: Awaited<ReturnType<typeof startDefaultNode>>;
       try {
-        node = await startDefaultNode();
+        // Channel processes coordinate through SQLite, not a shared listening
+        // port. An ephemeral port lets Terminal, Telegram, and Otium coexist.
+        node = await startDefaultNode({ port: 0 });
       } catch (error) {
         stopWorker();
+        singleton.stop();
         throw error;
       }
       console.log(
@@ -103,6 +129,8 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
       );
       await new Promise<void>((resolve) => {
         const stop = () => void node.stop().finally(resolve);
+        stopForLeaseLoss = stop;
+        if (leaseLost) stop();
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);
       });
