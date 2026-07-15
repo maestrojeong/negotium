@@ -31,6 +31,7 @@ import {
   type RuntimeTopicMaintenanceHandle,
 } from "#storage/runtime-topic-state";
 import { cancelRuntimeUserTurnRequestsBeforeEpoch } from "#storage/runtime-turn-requests";
+import { isLegacySharedGeneral } from "#topics/personal-general";
 import type { AgentKind, EffortLevel } from "#types";
 
 const RESET_TURN_WAIT_MS = 5_000;
@@ -89,8 +90,8 @@ export async function restartTopicSession(
 ): Promise<RestartTopicSessionResult> {
   const topic = getTopic(topicId);
   if (!topic) return { text: "Topic not found.", isError: true };
-  if (topic.kind === "manager") {
-    return { text: "The personal General session cannot be reset.", isError: true };
+  if (isLegacySharedGeneral(topic.id)) {
+    return { text: "The legacy shared General session cannot be reset.", isError: true };
   }
   const owner = topic.participants.some(
     (participant) => participant.userId === userId && participant.role === "owner",

@@ -116,16 +116,22 @@ describe("restartTopicSession", () => {
     }
   });
 
-  test("does not reset a manager room", async () => {
+  test("resets a personal General manager room", async () => {
     const { owner, topic } = createTopic();
     topic.kind = "manager";
+    topic.title = "General";
     const { upsertTopic } = await import("#storage/api-topics");
     upsertTopic(topic);
+    setTopicSessionId(topic.id, "personal-general-session", {
+      reason: "test",
+      agent: "codex",
+    });
 
     const result = await restartTopicSession(topic.id, owner);
 
-    expect(result.isError).toBe(true);
-    expect(result.text).toContain("General");
+    expect(result.isError).toBeUndefined();
+    expect(result.text).toBe('Session reset for "General". The next message starts fresh.');
+    expect(getTopicSessionId(topic.id)).toBeNull();
   });
 });
 
