@@ -68,10 +68,16 @@ export type { RuntimeBus, RuntimeBusEvent, RuntimeBusListener } from "#bus";
 export { runtimeBus, setRuntimeBus, WsHub } from "#bus";
 export type {
   PeerRuntimeBridge,
+  PeerRuntimeFileRequest,
   PeerRuntimeSpawnRequest,
+  PeerRuntimeVisualRequest,
+  PeerRuntimeVisualResult,
 } from "#mcp/peer-bridge";
 export {
+  dispatchPeerRuntimeFile,
   dispatchPeerRuntimeSpawn,
+  dispatchPeerRuntimeVisual,
+  flushPeerRuntimeEvents,
   registerPeerRuntimeBridge,
 } from "#mcp/peer-bridge";
 export type { RuntimeMcpContext } from "#mcp/runtime-spec";
@@ -84,6 +90,14 @@ export {
   resolveRuntimeMcpToken,
   setRuntimeMcpPort,
 } from "#mcp/runtime-spec";
+export {
+  deliverPeerReply,
+  type PeerForwardArgs,
+  type PeerForwardResult,
+  type PeerSessionBridge,
+  type RemoteReplyRoute,
+  registerPeerSessionBridge,
+} from "#mcp/session-comm/peer-forward";
 // ── Media ───────────────────────────────────────────────────────────
 export { extractFileEvents, extractFileTagPaths, stripFileTags } from "#media/file-events";
 export type { ExtractionResult, TranscribeAudioOptions } from "#media/text-extractor";
@@ -152,7 +166,11 @@ export { sessionInboxPath } from "#query/session-inbox-path";
 export { AbortReason } from "#query/types";
 export type { AskPending } from "#runtime/ask-callbacks";
 // ── Runtime ─────────────────────────────────────────────────────────
-export { registerAskCallback, resolveAskCallback } from "#runtime/ask-callbacks";
+export {
+  failInterruptedRemoteAskCallbacks,
+  registerAskCallback,
+  resolveAskCallback,
+} from "#runtime/ask-callbacks";
 export type { IngestAttachmentArgs, IngestedAttachment } from "#runtime/attachments";
 export {
   attachmentPromptLine,
@@ -160,7 +178,13 @@ export {
   ingestAttachment,
 } from "#runtime/attachments";
 export type { FileHooks } from "#runtime/file-hooks";
-export { setFileHooks, storeLocalFileAsUpload } from "#runtime/file-hooks";
+export {
+  fileHooks,
+  resolveAttachmentByFileId,
+  resolveUploadedFilePathByFileId,
+  setFileHooks,
+  storeLocalFileAsUpload,
+} from "#runtime/file-hooks";
 export { renderTurnFooter } from "#runtime/footer";
 export { flushSessionInbox, startSessionInboxWorker } from "#runtime/inbox";
 export type { AiTurnSettlement, AiTurnTopic } from "#runtime/turn-runner";
@@ -213,6 +237,7 @@ export {
   PROCESS_LEASE_HEARTBEAT_MS,
   PROCESS_LEASE_STALE_MS,
 } from "#storage/runtime-process-leases";
+export { clearPendingAsk } from "#storage/session-asks";
 export type { VaultEntry, VaultEntryWithValue } from "#storage/vault";
 export {
   normalizeVaultKey,

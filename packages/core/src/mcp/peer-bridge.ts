@@ -9,8 +9,45 @@ export interface PeerRuntimeSpawnRequest {
   input: Record<string, unknown>;
 }
 
+export interface PeerRuntimeVisualRequest {
+  bridge: PeerRuntimeBridgeContext;
+  userId: string;
+  agent: AgentKind;
+  model?: string;
+  kind: "html" | "mermaid" | "image" | "video";
+  title?: string;
+  html?: string;
+  code?: string;
+  theme?: string;
+  fileId?: string;
+  mimeType?: string;
+  source?: string;
+}
+
+export type PeerRuntimeVisualResult =
+  | { ok: true; id: number; url: string; title: string | null }
+  | { ok: false; error: string };
+
+export interface PeerRuntimeFileRequest {
+  bridge: PeerRuntimeBridgeContext;
+  userId: string;
+  agent: AgentKind;
+  model?: string;
+  path: string;
+  source: string;
+}
+
 export interface PeerRuntimeBridge {
   spawnSubagent(request: PeerRuntimeSpawnRequest): Promise<McpToolResult>;
+  /** Wait until already-broadcast runtime events for this local turn have
+   *  reached the canonical host before an out-of-band bridge mutation. */
+  flushEvents?(localTopicId: string): Promise<boolean>;
+  showVisual?(request: PeerRuntimeVisualRequest): Promise<PeerRuntimeVisualResult>;
+  sendFile?(request: PeerRuntimeFileRequest): Promise<{ ok: true } | { ok: false; error: string }>;
+}
+
+export function flushPeerRuntimeEvents(localTopicId: string): Promise<boolean> {
+  return activeBridge?.flushEvents?.(localTopicId) ?? Promise.resolve(true);
 }
 
 let activeBridge: PeerRuntimeBridge | null = null;
@@ -32,4 +69,16 @@ export function dispatchPeerRuntimeSpawn(
   request: PeerRuntimeSpawnRequest,
 ): Promise<McpToolResult> | null {
   return activeBridge?.spawnSubagent(request) ?? null;
+}
+
+export function dispatchPeerRuntimeVisual(
+  request: PeerRuntimeVisualRequest,
+): Promise<PeerRuntimeVisualResult> | null {
+  return activeBridge?.showVisual?.(request) ?? null;
+}
+
+export function dispatchPeerRuntimeFile(
+  request: PeerRuntimeFileRequest,
+): Promise<{ ok: true } | { ok: false; error: string }> | null {
+  return activeBridge?.sendFile?.(request) ?? null;
 }

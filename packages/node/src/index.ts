@@ -72,6 +72,8 @@ export interface NodeHandle {
 
 export interface StartNodeOptions {
   port?: number;
+  /** Reject request bodies above this size before route handlers parse them. */
+  maxRequestBodySize?: number;
   modules?: readonly NegotiumNodeModule[];
   /** Publish this node as the state directory's client-connectable process. */
   advertise?: boolean;
@@ -159,6 +161,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
       port: opts.port ?? NEGOTIUM_PORT,
       hostname: "127.0.0.1",
       idleTimeout: 240,
+      ...(opts.maxRequestBodySize ? { maxRequestBodySize: opts.maxRequestBodySize } : {}),
       async fetch(req) {
         const controlResponse = await control(req);
         if (controlResponse) return controlResponse;

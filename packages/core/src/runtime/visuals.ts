@@ -80,10 +80,10 @@ export function topicAllowsVisualFileId(topicId: string, fileId: string): boolea
 export function isPathInside(baseDir: string, filePath: string): boolean {
   const base = resolve(baseDir);
   const normalized = resolve(filePath);
-  if (normalized !== base && !normalized.startsWith(`${base}/`)) return false;
   try {
+    const realBase = realpathSync(base);
     const real = realpathSync(normalized);
-    return real === base || real.startsWith(`${base}/`);
+    return real === realBase || real.startsWith(`${realBase}/`);
   } catch {
     return false;
   }

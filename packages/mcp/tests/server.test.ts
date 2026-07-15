@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -9,6 +9,7 @@ import {
   getTopicSessionId,
   issueRuntimeMcpToken,
   type RuntimeMcpContext,
+  registerPeerRuntimeBridge,
   registerTopic,
   sessionInboxPath,
   setTopicSessionId,
@@ -96,10 +97,70 @@ describe("negotium MCP endpoint", () => {
       "set_model",
       "set_agent",
       "schedule_self",
+      "get_self_schedule",
+      "update_self_schedule",
+      "cancel_self_schedule",
     ]) {
       expect(names).toContain(expected);
     }
     expect(names).not.toContain("send_message");
+  });
+
+  test("send_file uses the canonical hub bridge during a peer turn", async () => {
+    const filePath = join(ctx.cwd, "peer-output.txt");
+    writeFileSync(filePath, "peer output");
+    const calls: Array<{ path: string; source: string }> = [];
+    const unregister = registerPeerRuntimeBridge({
+      async spawnSubagent() {
+        return { content: [{ type: "text", text: "unused" }] };
+      },
+      async sendFile(request) {
+        calls.push({ path: request.path, source: request.source });
+        return { ok: true };
+      },
+      async showVisual() {
+        return { ok: false, error: "hub unavailable" };
+      },
+    });
+    const peerCtx: RuntimeMcpContext = {
+      ...ctx,
+      peerBridge: {
+        hubCellId: "hub-cell",
+        hostTopicId: "host-topic",
+        hostQueryId: "host-query",
+        canSpawnSubagents: true,
+      },
+    };
+    const peerClient = new Client({ name: "negotium-peer-mcp-test", version: "1.0.0" });
+    const token = issueRuntimeMcpToken(peerCtx);
+    const url = new URL(
+      `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+    );
+
+    try {
+      await peerClient.connect(new StreamableHTTPClientTransport(url));
+      const result = await peerClient.callTool({
+        name: "send_file",
+        arguments: { file_path: filePath },
+      });
+      expect(result.isError).toBeFalsy();
+      expect(calls).toEqual([{ path: filePath, source: "runtime.send_file" }]);
+      const visualResult = await peerClient.callTool({
+        name: "show_html",
+        arguments: { html: "<p>not delivered</p>" },
+      });
+      expect(visualResult.isError).toBeFalsy();
+      expect(resultText(visualResult)).toContain("queued for ordered display");
+      const scheduleResult = await peerClient.callTool({
+        name: "schedule_self",
+        arguments: { delay_seconds: 60, message: "This must run on the hub." },
+      });
+      expect(scheduleResult.isError).toBe(true);
+      expect(resultText(scheduleResult)).toContain("canonical hub");
+    } finally {
+      await peerClient.close();
+      unregister();
+    }
   });
 
   test("register_topic creates a topic owned by the token's user", async () => {

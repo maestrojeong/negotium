@@ -24,6 +24,7 @@ import {
   createAskUserToolDefinition,
   createSelfConfigToolDefinitions,
   createSpawnSubagentToolDefinition,
+  dispatchPeerRuntimeFile,
   dispatchPeerRuntimeSpawn,
   errorResult,
   FROM_AUTO_CONTINUE,
@@ -74,15 +75,17 @@ function requireTopicAccess(
 function isPathInside(baseDir: string, filePath: string): boolean {
   const cwd = resolve(baseDir);
   const normalized = resolve(filePath);
-  if (normalized !== cwd && !normalized.startsWith(`${cwd}/`)) return false;
   try {
+    const realCwd = realpathSync(cwd);
     const real = realpathSync(normalized);
-    return real === cwd || real.startsWith(`${cwd}/`);
+    return real === realCwd || real.startsWith(`${realCwd}/`);
   } catch (err) {
-    // ENOENT: file doesn't exist yet — the path-level check already passed,
-    // so this is an in-workspace path. Let localFileInfo's statSync surface
-    // the precise "File not found" error instead of a misleading access denial.
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return true;
+    // For a missing output, preserve the precise not-found error only when its
+    // lexical path is inside the workspace. Existing paths use realpath above
+    // so symlink escapes and platform aliases are handled correctly.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return normalized === cwd || normalized.startsWith(`${cwd}/`);
+    }
     return false;
   }
 }
@@ -116,6 +119,22 @@ async function deliverFile(ctx: RuntimeMcpContext, filePath: string) {
 
   const info = localFileInfo(ctx, filePath);
   if ("error" in info) return errorResult(`Error: ${info.error}`);
+
+  if (ctx.peerBridge) {
+    const bridged = await dispatchPeerRuntimeFile({
+      bridge: ctx.peerBridge,
+      userId: ctx.userId,
+      agent: ctx.agent,
+      model: ctx.model,
+      path: info.normalizedPath,
+      source: "runtime.send_file",
+    });
+    if (!bridged) return errorResult("Error: the peer file bridge is not available on this node.");
+    if (!bridged.ok) return errorResult(`Error: Failed to send file on hub: ${bridged.error}`);
+    return textResult(
+      `File sent to chat: ${info.name} (${info.ext || "no extension"}, ${info.sizeMB} MB)`,
+    );
+  }
 
   const attachment = storeLocalFileAsUpload(info.normalizedPath, {
     ownerUserId: ctx.userId,
@@ -161,7 +180,11 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
   const server = new McpServer({ name: RUNTIME_MCP_KEY, version: "1.0.0" });
 
   for (const def of visualToolDefinitions) {
-    server.tool(def.name, def.description, def.schema as any, def.handler as any);
+    const handler =
+      ctx.peerBridge && (def.name === "show_html" || def.name === "show_mermaid")
+        ? async () => textResult("Visual queued for ordered display on the canonical hub.")
+        : def.handler;
+    server.tool(def.name, def.description, def.schema as any, handler as any);
   }
 
   const selfConfigCtx: SelfConfigContext = {
@@ -172,6 +195,22 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
     onConfigChanged: (field) => appendAutoContinue(ctx, field),
   };
   for (const def of createSelfConfigToolDefinitions(selfConfigCtx)) {
+    if (
+      ctx.peerBridge &&
+      [
+        "schedule_self",
+        "get_self_schedule",
+        "update_self_schedule",
+        "cancel_self_schedule",
+      ].includes(def.name)
+    ) {
+      server.tool(def.name, def.description, def.schema as any, async () =>
+        errorResult(
+          "Error: self-schedules for placed topics must be created on the canonical hub; the peer schedule bridge is not available yet.",
+        ),
+      );
+      continue;
+    }
     // A placed room is canonical on the hub. Until these mutations have a
     // peer bridge, creating worker-local topics would leak mirror state into
     // local pickers and diverge from the hub transcript.

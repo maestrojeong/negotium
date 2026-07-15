@@ -1,18 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, statSync, unlinkSync } from "node:fs";
 import {
+  cancelSelfConfigSchedule,
   getSelfConfigModel,
+  getSelfConfigSchedule,
   scheduleSelfConfigContinue,
   setSelfConfigAgent,
   setSelfConfigEffort,
   setSelfConfigModel,
+  updateSelfConfigSchedule,
 } from "#agents/self-config-core";
 import { purgeTopicLogs } from "#agents/topic-cleanup";
 import { runtimeBus } from "#bus";
 import { resolveTopicWorkspaceDir } from "#platform/config";
-import { readJsonlLines } from "#platform/jsonl";
-import { scheduledSessionInboxPath, sessionInboxPath } from "#query/session-inbox-path";
-import { sweepScheduledSessionInbox } from "#runtime/inbox";
+import { AbortReason } from "#query/types";
+import { dispatchDueSelfSchedules } from "#runtime/inbox";
 import {
   deleteApiTopicConfig,
   getApiTopicConfig,
@@ -26,6 +27,11 @@ import {
   upsertTopic,
 } from "#storage/api-topics";
 import { appendConversationEvent, readConversation } from "#storage/conversations";
+import {
+  deleteSelfSchedulesForTopic,
+  getPendingSelfSchedule,
+  listSelfSchedulesForTopic,
+} from "#storage/self-schedules";
 import { getVisibleTopics } from "#topics/derive";
 
 const USER = "self-config-core-test-user";
@@ -60,11 +66,8 @@ afterEach(async () => {
       });
     }
     deleteApiTopicConfig(id);
+    deleteSelfSchedulesForTopic(id);
     deleteTopic(id);
-    for (const path of [scheduledSessionInboxPath(USER, id), sessionInboxPath(USER, id)]) {
-      if (existsSync(path)) unlinkSync(path);
-      if (existsSync(`${path}.processing`)) unlinkSync(`${path}.processing`);
-    }
   }
 });
 
@@ -129,7 +132,7 @@ describe("self-config core", () => {
     expect(getApiTopicConfig(topicId)?.effort).toBeUndefined();
   });
 
-  test("schedule_self persists and promotes a durable delayed continuation", () => {
+  test("schedule_self keeps one editable and cancellable pending schedule per topic", () => {
     const topicId = seedTopic("codex");
     const now = Date.parse("2026-07-14T12:00:00.000Z");
 
@@ -141,31 +144,151 @@ describe("self-config core", () => {
     );
 
     expect(result.isError).toBeUndefined();
-    const schedulePath = scheduledSessionInboxPath(USER, topicId);
-    const scheduled = JSON.parse(readJsonlLines(schedulePath)[0]!) as Record<string, unknown>;
+    const scheduled = getPendingSelfSchedule(topicId);
     expect(scheduled).toMatchObject({
-      type: "tell",
-      from: "self-schedule",
+      topicId,
+      userId: USER,
       message: "Check the build and report its final status.",
-      deliverAt: "2026-07-14T12:00:30.000Z",
+      deliverAt: now + 30_000,
+      status: "pending",
+    });
+    expect(result.text).toContain(scheduled!.id);
+
+    const duplicate = scheduleSelfConfigContinue(
+      { topicId, userId: USER },
+      60,
+      "A second pending schedule",
+      now,
+    );
+    expect(duplicate.isError).toBe(true);
+    expect(duplicate.text).toContain("update_self_schedule or cancel_self_schedule");
+    expect(listSelfSchedulesForTopic(topicId)).toHaveLength(1);
+
+    expect(getSelfConfigSchedule({ topicId, userId: USER }, now).text).toContain(scheduled!.id);
+    const updated = updateSelfConfigSchedule(
+      { topicId, userId: USER },
+      scheduled!.id,
+      { delaySeconds: 90, message: "Check the updated build status." },
+      now + 1_000,
+    );
+    expect(updated.isError).toBeUndefined();
+    expect(getPendingSelfSchedule(topicId)).toMatchObject({
+      id: scheduled!.id,
+      message: "Check the updated build status.",
+      deliverAt: now + 91_000,
     });
 
-    const futureFileInode = statSync(schedulePath).ino;
-    sweepScheduledSessionInbox(now + 29_000);
-    expect(existsSync(sessionInboxPath(USER, topicId))).toBe(false);
-    expect(statSync(schedulePath).ino).toBe(futureFileInode);
+    expect(cancelSelfConfigSchedule({ topicId, userId: USER }, "wrong-id").isError).toBe(true);
+    expect(
+      cancelSelfConfigSchedule({ topicId, userId: USER }, scheduled!.id).isError,
+    ).toBeUndefined();
+    expect(getPendingSelfSchedule(topicId)).toBeNull();
+  });
 
-    sweepScheduledSessionInbox(now + 30_000);
-    const promoted = JSON.parse(readJsonlLines(sessionInboxPath(USER, topicId))[0]!) as Record<
-      string,
-      unknown
-    >;
-    expect(promoted).toMatchObject({
-      type: "tell",
-      from: "self-schedule",
-      message: "Check the build and report its final status.",
+  test("a due self-schedule is claimed once and removed after its turn settles", async () => {
+    const topicId = seedTopic("codex");
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+    scheduleSelfConfigContinue({ topicId, userId: USER }, 30, "Check the build.", now);
+    let settle: ((result: { queryId: string; kind: "completed" }) => void) | undefined;
+
+    expect(
+      await dispatchDueSelfSchedules(now + 29_000, () => {
+        throw new Error("not due");
+      }),
+    ).toBe(0);
+    const started = await dispatchDueSelfSchedules(
+      now + 30_000,
+      (dispatchedTopicId, dispatchedUserId, prompt, _agent, options) => {
+        expect(dispatchedTopicId).toBe(topicId);
+        expect(dispatchedUserId).toBe(USER);
+        expect(prompt).toContain("Check the build.");
+        settle = options?.onSettled as typeof settle;
+        return "scheduled-query";
+      },
+    );
+
+    expect(started).toBe(1);
+    expect(listSelfSchedulesForTopic(topicId)).toMatchObject([
+      { status: "running", runningQueryId: "scheduled-query" },
+    ]);
+    settle?.({ queryId: "scheduled-query", kind: "completed" });
+    expect(listSelfSchedulesForTopic(topicId)).toEqual([]);
+  });
+
+  test("a busy-room dispatch race returns the schedule to durable pending state", async () => {
+    const topicId = seedTopic("codex");
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+    scheduleSelfConfigContinue({ topicId, userId: USER }, 1, "Try again when idle.", now);
+    const scheduleId = getPendingSelfSchedule(topicId)!.id;
+
+    const started = await dispatchDueSelfSchedules(now + 1_000, () => null);
+
+    expect(started).toBe(0);
+    expect(getPendingSelfSchedule(topicId)).toMatchObject({
+      id: scheduleId,
+      status: "pending",
+      message: "Try again when idle.",
     });
-    expect(promoted.deliverAt).toBeUndefined();
+  });
+
+  test("a running schedule may create its one successor, which wins if the run is interrupted", async () => {
+    const topicId = seedTopic("codex");
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+    scheduleSelfConfigContinue({ topicId, userId: USER }, 1, "Check once.", now);
+    const originalId = getPendingSelfSchedule(topicId)!.id;
+    let settle:
+      | ((result: { queryId: string; kind: "aborted"; abortReason: AbortReason }) => void)
+      | undefined;
+
+    expect(
+      await dispatchDueSelfSchedules(now + 1_000, (_topicId, _userId, _prompt, _agent, options) => {
+        settle = options?.onSettled as typeof settle;
+        return "scheduled-query";
+      }),
+    ).toBe(1);
+    expect(getPendingSelfSchedule(topicId)).toBeNull();
+
+    const next = scheduleSelfConfigContinue(
+      { topicId, userId: USER },
+      60,
+      "Check again.",
+      now + 2_000,
+    );
+    expect(next.isError).toBeUndefined();
+    const successor = getPendingSelfSchedule(topicId)!;
+    expect(successor.id).not.toBe(originalId);
+
+    settle?.({
+      queryId: "scheduled-query",
+      kind: "aborted",
+      abortReason: AbortReason.Internal,
+    });
+    expect(listSelfSchedulesForTopic(topicId)).toMatchObject([
+      { id: successor.id, status: "pending", message: "Check again." },
+    ]);
+  });
+
+  test("an explicitly stopped self-schedule is consumed instead of immediately retrying", async () => {
+    const topicId = seedTopic("codex");
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+    scheduleSelfConfigContinue({ topicId, userId: USER }, 1, "Stop means stop.", now);
+    let settle:
+      | ((result: { queryId: string; kind: "aborted"; abortReason: AbortReason }) => void)
+      | undefined;
+
+    expect(
+      await dispatchDueSelfSchedules(now + 1_000, (_topicId, _userId, _prompt, _agent, options) => {
+        settle = options?.onSettled as typeof settle;
+        return "scheduled-query";
+      }),
+    ).toBe(1);
+
+    settle?.({
+      queryId: "scheduled-query",
+      kind: "aborted",
+      abortReason: AbortReason.External,
+    });
+    expect(listSelfSchedulesForTopic(topicId)).toEqual([]);
   });
 
   test("schedule_self rejects delays beyond 24 hours", () => {
@@ -173,7 +296,7 @@ describe("self-config core", () => {
     const result = scheduleSelfConfigContinue({ topicId, userId: USER }, 86_401, "Too far away");
 
     expect(result.isError).toBe(true);
-    expect(existsSync(scheduledSessionInboxPath(USER, topicId))).toBe(false);
+    expect(getPendingSelfSchedule(topicId)).toBeNull();
   });
 
   test("set_agent clears stale model/effort overrides and provider session id", () => {

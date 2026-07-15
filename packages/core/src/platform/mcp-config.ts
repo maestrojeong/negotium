@@ -323,7 +323,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
     // "fresh-start ready" state until the user manually visits it.
     scopes: ["forum", "fork", "manager"],
     forumRequired: true,
-    build({ userId, session, topicId, agent, depth = 0, silent }) {
+    build({ userId, session, topicId, agent, depth = 0, silent, peerBridge }) {
       const effectiveAgent = agent ?? FALLBACK_AGENT;
       const args = [
         `--user-id=${userId}`,
@@ -332,6 +332,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
         `--depth=${depth}`,
         `--agent=${effectiveAgent}`,
         ...(silent ? ["--reply-only=true"] : []),
+        ...(peerBridge ? [`--peer-host-query-id=${peerBridge.hostQueryId}`] : []),
       ];
       return buildStdioMcpServer(effectiveAgent, SESSION_COMM_SERVER, args);
     },

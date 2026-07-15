@@ -181,8 +181,8 @@ function buildRuntimeToolSection(agentKind: AgentKind, canSpawnSubagents = false
       : `When you need a blocking user choice, call the MCP tool "${runtimeNamespace}__ask_user_question" with { question: "...", choices: [{ label: "...", description?: "..." }] }.`;
   const scheduleSelfToolLine =
     agentKind === "codex"
-      ? `For a one-shot delayed continuation within 24 hours, call the \`schedule_self\` function in the \`${runtimeNamespace}\` namespace with { delay_seconds: number, message: "self-contained future instruction" }. Use cron-manager for recurring schedules.`
-      : `For a one-shot delayed continuation within 24 hours, call the MCP tool "${runtimeNamespace}__schedule_self" with { delay_seconds: number, message: "self-contained future instruction" }. Use cron-manager for recurring schedules.`;
+      ? `For a one-shot delayed continuation within 24 hours, call the \`schedule_self\` function in the \`${runtimeNamespace}\` namespace with { delay_seconds: number, message: "self-contained future instruction" }. Only one pending self-schedule is allowed per topic; use \`get_self_schedule\`, \`update_self_schedule\`, or \`cancel_self_schedule\` in that namespace to manage it. Use cron-manager for recurring schedules.`
+      : `For a one-shot delayed continuation within 24 hours, call the MCP tool "${runtimeNamespace}__schedule_self" with { delay_seconds: number, message: "self-contained future instruction" }. Only one pending self-schedule is allowed per topic; manage it with "${runtimeNamespace}__get_self_schedule", "${runtimeNamespace}__update_self_schedule", or "${runtimeNamespace}__cancel_self_schedule". Use cron-manager for recurring schedules.`;
   const taskToolLine =
     agentKind === "codex"
       ? `For task tracking, use \`task_create\`, \`task_update\`, \`task_list\`, \`task_get\`, and \`task_delete\` functions in the \`${taskNamespace}\` namespace.`

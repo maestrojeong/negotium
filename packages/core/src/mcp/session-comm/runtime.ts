@@ -47,6 +47,9 @@ export const userId = parseUserIdArg(args);
 export const currentTopic = args.find((a) => a.startsWith("--topic="))?.split("=")[1] || "";
 export const currentTopicId =
   args.find((a) => a.startsWith("--topic-id="))?.slice("--topic-id=".length) || "";
+export const peerHostQueryId =
+  args.find((a) => a.startsWith("--peer-host-query-id="))?.slice("--peer-host-query-id=".length) ||
+  "";
 export const currentDepth = Number(
   args.find((a) => a.startsWith("--depth="))?.split("=")[1] ?? "0",
 );

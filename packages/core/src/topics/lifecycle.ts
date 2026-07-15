@@ -40,6 +40,7 @@ import {
   cancelRuntimeUserTurnRequests,
   cancelRuntimeUserTurnRequestsBeforeEpoch,
 } from "#storage/runtime-turn-requests";
+import { deleteSelfSchedulesForTopic } from "#storage/self-schedules";
 import { deletePendingAsksForTopic } from "#storage/session-asks";
 import { archiveTopicMessages } from "#storage/topic-archive";
 import { deleteTopicArchiveState } from "#storage/topic-archive-state";
@@ -260,6 +261,7 @@ async function deleteTopicCascadeImpl(
     killBgBash(userId, topicId);
     deleteTopicProfileDir(userId, topicId);
     cancelAskCallbacksForTopic(topicId);
+    deleteSelfSchedulesForTopic(topicId);
 
     await cleanupParticipantResources(topic, participantUserIds, sessionId, cwd);
     try {

@@ -1,14 +1,16 @@
-import { randomUUID } from "node:crypto";
 import { switchApiTopicAgent } from "#agents/api-topic-agent-switch";
 import { resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
 import { WsHub } from "#bus";
 import { resolveTopicWorkspaceDir } from "#platform/config";
-import { FROM_SELF_SCHEDULE } from "#platform/constants";
-import { appendJsonlEntry } from "#platform/jsonl";
-import { scheduledSessionInboxPath } from "#query/session-inbox-path";
 import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
 import { getTopic } from "#storage/api-topics";
+import {
+  cancelPendingSelfSchedule,
+  createPendingSelfSchedule,
+  getPendingSelfSchedule,
+  updatePendingSelfSchedule,
+} from "#storage/self-schedules";
 import { createDerivedTopic, TopicTitleConflictError } from "#topics/derive";
 import { topicMarkdownLink } from "#topics/links";
 import type { AgentKind, EffortLevel } from "#types";
@@ -43,13 +45,19 @@ function err(text: string): SelfConfigResult {
   return { text, isError: true };
 }
 
-function requireTopic(ctx: SelfConfigContext): TopicDto | SelfConfigResult {
+function requireAccessibleTopic(ctx: SelfConfigContext): TopicDto | SelfConfigResult {
   if (!ctx.topicId || !ctx.userId) return err("Error: missing topicId/userId context.");
   const topic = getTopic(ctx.topicId);
   if (!topic) return err(`Error: topic '${ctx.topicId}' not found.`);
   if (!topic.participants.some((p) => p.userId === ctx.userId)) {
     return err("Error: user is not a member of this topic.");
   }
+  return topic;
+}
+
+function requireTopic(ctx: SelfConfigContext): TopicDto | SelfConfigResult {
+  const topic = requireAccessibleTopic(ctx);
+  if (isResult(topic)) return topic;
   if (!topic.agent) return err("Error: this topic has no AI agent invited.");
   return topic;
 }
@@ -237,9 +245,9 @@ export function getSelfConfigEffort(ctx: SelfConfigContext): SelfConfigResult {
 }
 
 /**
- * Persist a one-shot delayed continuation for this topic. The inbox worker
- * promotes it into the live tell queue after deliverAt, so it survives node
- * restarts and follows the same busy-room deferral rules as session messages.
+ * Persist the topic's sole pending one-shot continuation. The inbox worker
+ * claims due rows only when the room is idle and keeps running claims durable
+ * until the turn settles.
  */
 export function scheduleSelfConfigContinue(
   ctx: SelfConfigContext,
@@ -262,24 +270,104 @@ export function scheduleSelfConfigContinue(
     return err(`message must be ${SELF_SCHEDULE_MAX_MESSAGE_LENGTH} characters or fewer.`);
   }
 
-  const requestId = `scheduled-${randomUUID()}`;
-  const deliverAt = new Date(nowMs + delaySeconds * 1000).toISOString();
-  appendJsonlEntry(scheduledSessionInboxPath(ctx.userId, topic.id), {
-    type: "tell",
-    from: FROM_SELF_SCHEDULE,
-    fromTitle: "Scheduled self",
-    fromTopicId: topic.id,
+  const deliverAtMs = nowMs + delaySeconds * 1000;
+  const created = createPendingSelfSchedule({
+    topicId: topic.id,
+    userId: ctx.userId,
     message: cleanMessage,
-    depth: 0,
-    requestId,
-    silent: true,
-    deliverAt,
-    timestamp: new Date(nowMs).toISOString(),
+    deliverAt: deliverAtMs,
+    now: nowMs,
   });
+  if (!created.ok) {
+    return err(
+      `This topic already has a pending self-schedule (${created.existing.id}) for ` +
+        `${new Date(created.existing.deliverAt).toISOString()}. ` +
+        "Use update_self_schedule or cancel_self_schedule instead of creating another one.",
+    );
+  }
+  const deliverAt = new Date(deliverAtMs).toISOString();
   return ok(
     `Scheduled this topic to resume in ${delaySeconds} seconds at ${deliverAt}. ` +
+      `Schedule ID: ${created.schedule.id}. ` +
       `The continuation is durable across node restarts (delivery granularity is about 5 seconds).`,
   );
+}
+
+export function getSelfConfigSchedule(
+  ctx: SelfConfigContext,
+  nowMs = Date.now(),
+): SelfConfigResult {
+  const topic = requireAccessibleTopic(ctx);
+  if (isResult(topic)) return topic;
+  const schedule = getPendingSelfSchedule(topic.id);
+  if (!schedule) return ok("This topic has no pending self-schedule.");
+  const remainingSeconds = Math.max(0, Math.ceil((schedule.deliverAt - nowMs) / 1000));
+  return ok(
+    [
+      `Pending self-schedule: ${schedule.id}`,
+      `Deliver at: ${new Date(schedule.deliverAt).toISOString()} (in about ${remainingSeconds} seconds)`,
+      `Message: ${schedule.message}`,
+    ].join("\n"),
+  );
+}
+
+export function updateSelfConfigSchedule(
+  ctx: SelfConfigContext,
+  scheduleId: string,
+  updates: { delaySeconds?: number; message?: string },
+  nowMs = Date.now(),
+): SelfConfigResult {
+  const topic = requireAccessibleTopic(ctx);
+  if (isResult(topic)) return topic;
+  if (updates.delaySeconds === undefined && updates.message === undefined) {
+    return err("Provide delay_seconds, message, or both.");
+  }
+  if (
+    updates.delaySeconds !== undefined &&
+    (!Number.isInteger(updates.delaySeconds) ||
+      updates.delaySeconds < 1 ||
+      updates.delaySeconds > SELF_SCHEDULE_MAX_DELAY_SECONDS)
+  ) {
+    return err(`delay_seconds must be an integer from 1 to ${SELF_SCHEDULE_MAX_DELAY_SECONDS}.`);
+  }
+  let cleanMessage: string | undefined;
+  if (updates.message !== undefined) {
+    cleanMessage = updates.message.trim();
+    if (!cleanMessage) return err("message is required when provided.");
+    if (cleanMessage.length > SELF_SCHEDULE_MAX_MESSAGE_LENGTH) {
+      return err(`message must be ${SELF_SCHEDULE_MAX_MESSAGE_LENGTH} characters or fewer.`);
+    }
+  }
+
+  const updated = updatePendingSelfSchedule({
+    topicId: topic.id,
+    scheduleId,
+    message: cleanMessage,
+    deliverAt: updates.delaySeconds === undefined ? undefined : nowMs + updates.delaySeconds * 1000,
+    now: nowMs,
+  });
+  if (!updated) {
+    return err(
+      `Pending self-schedule '${scheduleId}' was not found. It may have been cancelled, replaced, or already started.`,
+    );
+  }
+  return ok(
+    `Updated self-schedule ${updated.id}. It will resume at ${new Date(updated.deliverAt).toISOString()}.`,
+  );
+}
+
+export function cancelSelfConfigSchedule(
+  ctx: SelfConfigContext,
+  scheduleId: string,
+): SelfConfigResult {
+  const topic = requireAccessibleTopic(ctx);
+  if (isResult(topic)) return topic;
+  if (!cancelPendingSelfSchedule(topic.id, scheduleId)) {
+    return err(
+      `Pending self-schedule '${scheduleId}' was not found. It may have been cancelled, replaced, or already started.`,
+    );
+  }
+  return ok(`Cancelled self-schedule ${scheduleId}.`);
 }
 
 export async function spawnSelfConfigTopic(

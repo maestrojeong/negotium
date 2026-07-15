@@ -17,6 +17,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { WsHub } from "#bus";
+import { deliverPeerReply, type RemoteReplyRoute } from "#mcp/session-comm/peer-forward";
 import { deleteProcessingFile, drainOutboxFile, parseOutboxLine } from "#outbox/file-ops";
 import { debouncedFlush, FALLBACK_INTERVAL_MS, watchDir } from "#outbox/utils";
 import { resolveTopicWorkspaceDir, SESSION_INBOX_DIR } from "#platform/config";
@@ -28,7 +29,16 @@ import {
   topicIdFromScheduledSessionInboxFileName,
   topicIdFromSessionInboxFileName,
 } from "#query/session-inbox-path";
+import { AbortReason } from "#query/types";
 import { appendApiMessage, getApiMessage } from "#storage/api-messages";
+import { RUNTIME_INSTANCE_ID } from "#storage/runtime-leases";
+import {
+  claimNextDueSelfSchedule,
+  completeSelfSchedule,
+  heartbeatSelfScheduleClaim,
+  markSelfScheduleRunning,
+  releaseSelfScheduleClaim,
+} from "#storage/self-schedules";
 import { clearPendingAsk } from "#storage/session-asks";
 import type { AgentKind } from "#types";
 
@@ -45,6 +55,7 @@ type SessionInboxEntry =
       message: string;
       contextId?: string;
       fromDepth?: number;
+      remoteReply?: RemoteReplyRoute;
       timestamp: string;
     }
   | {
@@ -118,6 +129,7 @@ function clearPendingAskForEntry(
   topicName: string,
   reason: string,
 ): void {
+  if (entry.remoteReply) return;
   if (!entry.from) return;
   const cleared = clearPendingAsk({
     userId: scope.userId,
@@ -234,6 +246,9 @@ const topicWorkerBusy = new Set<string>();
  * Triggered by fs.watch (200ms debounce) + {@link FALLBACK_INTERVAL_MS} fallback poll.
  */
 export async function flushSessionInbox() {
+  await dispatchDueSelfSchedules();
+  // Upgrade compatibility: schedules written by versions before the SQLite
+  // manager remain consumable from their legacy `.schedule` sidecars.
   sweepScheduledSessionInbox();
   let userDirs: string[];
   try {
@@ -277,6 +292,97 @@ export async function flushSessionInbox() {
       }
     }
   }
+}
+
+type SelfScheduleTurnTrigger = typeof import("#runtime/turn-runner").triggerTopicAiTurn;
+
+/**
+ * Claim and start due DB-backed self-schedules. A busy-topic race is removed
+ * from the process-local defer queue and returned to durable pending state;
+ * interrupted runs are retried after the topic is idle again.
+ */
+export async function dispatchDueSelfSchedules(
+  nowMs = Date.now(),
+  triggerOverride?: SelfScheduleTurnTrigger,
+): Promise<number> {
+  const trigger = triggerOverride ?? (await import("#runtime/turn-runner")).triggerTopicAiTurn;
+  const { cancelDeferredInject } = await import("#query/active-rooms");
+  const { getTopic } = await import("#storage/api-topics");
+  const ownerId = `${RUNTIME_INSTANCE_ID}:self-schedule`;
+  let started = 0;
+
+  // Bound one sweep so a corrupt/hostile database cannot monopolize the inbox
+  // worker. The 5s fallback poll picks up any remaining due topics.
+  for (let index = 0; index < 100; index++) {
+    const schedule = claimNextDueSelfSchedule(ownerId, nowMs);
+    if (!schedule) break;
+    const topic = getTopic(schedule.topicId);
+    if (
+      !topic?.agent ||
+      !topic.participants.some((participant) => participant.userId === schedule.userId)
+    ) {
+      completeSelfSchedule(schedule.id, ownerId);
+      logger.warn(
+        { scheduleId: schedule.id, topicId: schedule.topicId, userId: schedule.userId },
+        "self-schedule: target topic unavailable, dropping",
+      );
+      continue;
+    }
+
+    let settled = false;
+    let claimHeartbeat: ReturnType<typeof setInterval> | null = null;
+    const stopClaimHeartbeat = () => {
+      if (!claimHeartbeat) return;
+      clearInterval(claimHeartbeat);
+      claimHeartbeat = null;
+    };
+    const fromLabel = "Scheduled self";
+    const queryId = trigger(
+      topic.id,
+      schedule.userId,
+      `[Tell from **${fromLabel}**]\n\n${schedule.message}`,
+      topic.agent,
+      {
+        origin: fromLabel,
+        requestId: schedule.id,
+        depth: 0,
+        from: fromLabel,
+        injectAuthorId: "system",
+        onSettled: (result) => {
+          settled = true;
+          stopClaimHeartbeat();
+          if (result.kind === "aborted" && result.abortReason === AbortReason.Internal) {
+            // User preemption requeues injects in memory. Remove that copy and
+            // restore the durable schedule instead; a newer pending schedule
+            // created by this run wins if one already exists.
+            cancelDeferredInject(topic.id, schedule.id);
+            releaseSelfScheduleClaim(schedule.id, ownerId);
+            return;
+          }
+          completeSelfSchedule(schedule.id, ownerId);
+        },
+      },
+    );
+
+    if (!queryId) {
+      if (!settled) {
+        // The room became busy between the DB idle check and turn claim.
+        cancelDeferredInject(topic.id, schedule.id);
+        releaseSelfScheduleClaim(schedule.id, ownerId);
+      }
+      // Avoid immediately reclaiming the same overdue schedule in this sweep.
+      break;
+    }
+    if (markSelfScheduleRunning(schedule.id, ownerId, queryId) && !settled) {
+      claimHeartbeat = setInterval(() => {
+        if (heartbeatSelfScheduleClaim(schedule.id, ownerId)) return;
+        stopClaimHeartbeat();
+      }, 1_000);
+      claimHeartbeat.unref?.();
+    }
+    started++;
+  }
+  return started;
 }
 
 /**
@@ -536,8 +642,7 @@ async function handleTellEntry(
   // Trigger AI turn (defers behind a running user turn via B's abort-on-new-message).
   if (isAiEnabled) {
     const isAutoContinue = entry.from === FROM_AUTO_CONTINUE;
-    const isSelfSchedule = entry.from === FROM_SELF_SCHEDULE;
-    const isHiddenContinue = isAutoContinue || isSelfSchedule;
+    const isHiddenContinue = isAutoContinue;
     triggerTopicAiTurn(
       topic.id,
       String(scope.userId),
@@ -570,6 +675,7 @@ async function handleAskEntry(
   const { triggerTopicAiTurn } = await import("#runtime/turn-runner");
   const { registerAskCallback } = await import("#runtime/ask-callbacks");
   const fromLabel = entryFromLabel(entry);
+  const remoteReply = entry.remoteReply;
 
   // Build the prompt with read-only instruction (mirrors Otium).
   const prompt = `[ASK from ${fromLabel}]\n${entry.message}\n\n이건 ${fromLabel}이 당신의 context를 참조하려는 요청입니다 (READ-only).\n가지고 있는 정보를 그대로 공유하세요.\n출력 내용은 자동으로 "${fromLabel}" 세션에 돌아갑니다.`;
@@ -577,7 +683,21 @@ async function handleAskEntry(
   if (!isAiEnabled) {
     logger.warn({ topicName, from: entry.from }, "session-inbox: ask to non-AI topic, dropping");
     clearPendingAskForEntry(scope, entry, topicName, "target-ai-disabled");
-    await notifyAskDrop(scope, entry, topicName, `(error: target topic "${topicName}" has no AI)`);
+    if (remoteReply) {
+      await deliverPeerReply(
+        remoteReply,
+        topic.title,
+        `(error: target topic "${topicName}" has no AI)`,
+        "error",
+      );
+    } else {
+      await notifyAskDrop(
+        scope,
+        entry,
+        topicName,
+        `(error: target topic "${topicName}" has no AI)`,
+      );
+    }
     return;
   }
 
@@ -586,8 +706,8 @@ async function handleAskEntry(
   const requestId = entry.requestId;
 
   // Look up the caller topic to route the reply back.
-  const callerTopic = await resolveEntryCallerTopic(scope, entry);
-  const callerTopicId = callerTopic?.id;
+  const callerTopic = remoteReply ? null : await resolveEntryCallerTopic(scope, entry);
+  const callerTopicId = remoteReply?.topicId ?? callerTopic?.id;
   if (!requestId || !callerTopicId) {
     clearPendingAskForEntry(scope, entry, topicName, "caller-topic-not-found");
     logger.warn(
@@ -597,13 +717,15 @@ async function handleAskEntry(
     return;
   }
 
-  persistVisibleAskMessage({
-    callerTopicId,
-    callerUserId: String(scope.userId),
-    targetLabel: topic.title,
-    requestId,
-    message: entry.message,
-  });
+  if (!remoteReply) {
+    persistVisibleAskMessage({
+      callerTopicId,
+      callerUserId: String(scope.userId),
+      targetLabel: topic.title,
+      requestId,
+      message: entry.message,
+    });
+  }
 
   const { getTopic, getTopicSessionId } = await import("#storage/api-topics");
   const fullTopic = getTopic(topic.id);
@@ -692,12 +814,21 @@ async function handleAskEntry(
       onSettled: (result) => {
         if (result.queryId || result.kind !== "error") return;
         clearPendingAskForEntry(scope, entry, topicName, "target-unavailable-before-dispatch");
-        void notifyAskDrop(
-          scope,
-          entry,
-          topicName,
-          `(error: target topic became unavailable before dispatch)`,
-        );
+        if (remoteReply) {
+          void deliverPeerReply(
+            remoteReply,
+            topic.title,
+            `(error: target topic became unavailable before dispatch)`,
+            "error",
+          );
+        } else {
+          void notifyAskDrop(
+            scope,
+            entry,
+            topicName,
+            `(error: target topic became unavailable before dispatch)`,
+          );
+        }
       },
       onDispatched: (queryId: string) => {
         registerAskCallback({
@@ -707,12 +838,16 @@ async function handleAskEntry(
           callerUserId: String(scope.userId),
           targetQueryId: queryId,
           createdAt: Date.now(),
-          pendingAsk: {
-            userId: scope.userId,
-            from: entry.from,
-            to: topicName,
-            requestId,
-          },
+          ...(remoteReply
+            ? { remoteReply }
+            : {
+                pendingAsk: {
+                  userId: scope.userId,
+                  from: entry.from,
+                  to: topicName,
+                  requestId,
+                },
+              }),
         });
       },
     },

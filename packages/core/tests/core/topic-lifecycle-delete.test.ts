@@ -19,6 +19,11 @@ import {
   getRuntimeTurnLease,
   releaseRuntimeTurnLease,
 } from "#storage/runtime-leases";
+import {
+  createPendingSelfSchedule,
+  deleteSelfSchedulesForTopic,
+  getPendingSelfSchedule,
+} from "#storage/self-schedules";
 import { createPendingAsk, listPendingAsksForCaller } from "#storage/session-asks";
 import { getTopicArchiveState, setTopicArchiveState } from "#storage/topic-archive-state";
 import type { TopicDto } from "#types/api";
@@ -83,7 +88,10 @@ afterAll(() => {
 
 afterEach(() => {
   resetFileHooks();
-  for (const id of createdTopicIds.splice(0)) deleteTopic(id);
+  for (const id of createdTopicIds.splice(0)) {
+    deleteSelfSchedulesForTopic(id);
+    deleteTopic(id);
+  }
 });
 
 beforeEach(() => {
@@ -215,6 +223,12 @@ describe("deleteTopicCascade archive policy", () => {
     }
 
     setTopicArchiveState(topic.id, 7, "/tmp/snapshot.jsonl");
+    createPendingSelfSchedule({
+      topicId: topic.id,
+      userId: "owner-user",
+      message: "future work",
+      deliverAt: Date.now() + 60_000,
+    });
     storeTopicVisual(topic.id, "<p>visual</p>", "visual", "owner-user");
     registerAskCallback({
       requestId: "callback-request",
@@ -239,6 +253,7 @@ describe("deleteTopicCascade archive policy", () => {
     expect(existsSync(profile)).toBe(false);
     expect(deletedUploadTopics).toEqual([topic.id]);
     expect(getTopicArchiveState(topic.id)).toBeNull();
+    expect(getPendingSelfSchedule(topic.id)).toBeNull();
     expect(getActiveVisualForPrompt(topic.id, "owner-user")).toBeNull();
     expect(resolveAskCallback("target-query")).toBeNull();
     for (const participant of topic.participants) {

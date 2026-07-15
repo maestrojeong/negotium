@@ -78,6 +78,7 @@ export interface DeferredInject {
   onSettled?: (result: {
     queryId: string;
     kind: "completed" | "aborted" | "error";
+    abortReason?: AbortReason;
     error?: string;
   }) => void;
   /** Canonical hub identity for a placed-room runtime turn. */
@@ -113,6 +114,8 @@ export interface RoomQueryControl {
    * turns (a preempted user turn is simply discarded).
    */
   injectParams?: DeferredInject;
+  /** True only after this process successfully queued a local replay. */
+  injectRequeued?: boolean;
 }
 
 // ── Room-keyed in-flight registry ──────────────────────────────────────

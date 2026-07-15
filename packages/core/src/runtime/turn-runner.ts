@@ -7,7 +7,8 @@
  * back through the placement adapter.
  */
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { cleanupAgentFork, type ForkHandle } from "#agents/fork";
 import { scheduleIdleArchiveForTopic } from "#agents/idle-archiver";
 import { runAgent } from "#agents/index";
@@ -21,6 +22,11 @@ import { resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
 import { formatToolUse, summarizeToolInput } from "#agents/tool-format";
 import { WsHub } from "#bus";
+import {
+  dispatchPeerRuntimeFile,
+  dispatchPeerRuntimeVisual,
+  flushPeerRuntimeEvents,
+} from "#mcp/peer-bridge";
 import { ensureBgBash } from "#platform/background-bash/manager";
 import { FROM_AUTO_CONTINUE } from "#platform/constants";
 import { logger } from "#platform/logger";
@@ -72,6 +78,7 @@ import {
   buildImageHtml,
   buildMermaidHtml,
   buildVideoHtml,
+  isPathInside,
   isVisualsShowHtmlTool,
   isVisualsShowImageTool,
   isVisualsShowMermaidTool,
@@ -81,6 +88,7 @@ import {
   resolveVisualMediaInput,
   stripMermaidFence,
 } from "#runtime/visuals";
+import { isSensitivePath } from "#security/sensitive-path";
 import {
   appendApiMessage,
   softDeleteApiMessage,
@@ -219,10 +227,12 @@ export async function streamAgentEvents(
   userId: string,
   retryableSessionExpired = true,
   onSessionId?: (sessionId: string) => void,
+  execution?: { silent?: boolean; peerBridge?: PeerRuntimeBridgeContext },
 ): Promise<StreamAgentOutcome> {
   const abortController = control.abortController;
   const hub = WsHub.get();
-  const silent = control.injectParams?.silent ?? false;
+  const silent = execution?.silent ?? control.injectParams?.silent ?? false;
+  const peerBridge = execution?.peerBridge ?? control.injectParams?.peerBridge;
   let errorOccurred = false;
   let terminalEmitted = false;
   let pendingSawDelta = false;
@@ -322,6 +332,33 @@ export async function streamAgentEvents(
     hub.broadcastToolOutput(topicId, queryId, toolUseId, `Displayed: ${url}`);
     markVisualToolResultHandled(event.toolUseId);
   };
+  const broadcastBridgedVisual = (
+    event: Extract<UnifiedEvent, { type: "tool_use" }>,
+    visual: { id: number; url: string },
+  ): void => {
+    const toolUseId = bindToolUseId(event.toolUseId, `visual-${visual.id}`);
+    // The hub bridge already stored and broadcast the visual. Only complete
+    // the worker-side tool row; forwarding another visual would duplicate it.
+    hub.broadcastToolOutput(topicId, queryId, toolUseId, `Displayed: ${visual.url}`);
+    markVisualToolResultHandled(event.toolUseId);
+  };
+  const failBridgedVisual = (
+    event: Extract<UnifiedEvent, { type: "tool_use" }>,
+    kind: "html" | "mermaid" | "image" | "video",
+    reason: string,
+  ): void => {
+    logger.warn(
+      { topicId, queryId, toolName: event.name, error: reason },
+      "peer visual bridge failed",
+    );
+    hub.broadcastToolOutput(
+      topicId,
+      queryId,
+      bindToolUseId(event.toolUseId),
+      `Failed to display ${kind}: ${reason}`,
+    );
+    markVisualToolResultHandled(event.toolUseId);
+  };
   let outcome: StreamAgentOutcome = { kind: "completed" };
 
   try {
@@ -329,15 +366,18 @@ export async function streamAgentEvents(
       if (abortController.signal.aborted) break;
 
       switch (event.type) {
-        case "text_delta":
+        case "text_delta": {
           pendingSawDelta = true;
-          accumulatedText += event.content;
-          pendingText += event.content;
+          const incoming = event.content;
+          accumulatedText += incoming;
+          pendingText += incoming;
           break;
+        }
         case "text":
           if (!pendingSawDelta) {
-            accumulatedText += event.content;
-            pendingText += event.content;
+            const incoming = event.content;
+            accumulatedText += incoming;
+            pendingText += incoming;
           }
           break;
         case "tool_use":
@@ -359,8 +399,37 @@ export async function streamAgentEvents(
             }
             if (!silent) {
               const title = normalizeVisualTitle(input.title);
-              const vizId = storeTopicVisual(topicId, input.html, title, userId);
-              broadcastStoredVisual(event, vizId, title, "html");
+              if (peerBridge) {
+                hub.broadcastToolCall(
+                  topicId,
+                  queryId,
+                  event.name,
+                  summarizeToolInput(event.name, event.input),
+                  formatToolUse(event.name, event.input),
+                  bindToolUseId(event.toolUseId),
+                );
+                if (!(await flushPeerRuntimeEvents(topicId))) {
+                  failBridgedVisual(event, "html", "ordered event delivery is blocked");
+                  break;
+                }
+                const bridged = await dispatchPeerRuntimeVisual({
+                  bridge: peerBridge,
+                  userId,
+                  agent: agentType,
+                  model,
+                  kind: "html",
+                  title,
+                  html: input.html,
+                });
+                if (!bridged?.ok) {
+                  failBridgedVisual(event, "html", bridged?.error ?? "visual bridge unavailable");
+                  break;
+                }
+                broadcastBridgedVisual(event, bridged);
+              } else {
+                const vizId = storeTopicVisual(topicId, input.html, title, userId);
+                broadcastStoredVisual(event, vizId, title, "html");
+              }
             }
           } else if (isVisualsShowMermaidTool(event.name)) {
             const input = event.input as { code?: unknown; title?: unknown; theme?: unknown };
@@ -375,9 +444,43 @@ export async function streamAgentEvents(
             if (!silent) {
               const title = normalizeVisualTitle(input.title);
               const theme = normalizeMermaidTheme(input.theme);
-              const html = buildMermaidHtml(code, theme);
-              const vizId = storeTopicMermaidVisual(topicId, code, html, title, userId);
-              broadcastStoredVisual(event, vizId, title, "mermaid");
+              if (peerBridge) {
+                hub.broadcastToolCall(
+                  topicId,
+                  queryId,
+                  event.name,
+                  summarizeToolInput(event.name, event.input),
+                  formatToolUse(event.name, event.input),
+                  bindToolUseId(event.toolUseId),
+                );
+                if (!(await flushPeerRuntimeEvents(topicId))) {
+                  failBridgedVisual(event, "mermaid", "ordered event delivery is blocked");
+                  break;
+                }
+                const bridged = await dispatchPeerRuntimeVisual({
+                  bridge: peerBridge,
+                  userId,
+                  agent: agentType,
+                  model,
+                  kind: "mermaid",
+                  title,
+                  code,
+                  theme,
+                });
+                if (!bridged?.ok) {
+                  failBridgedVisual(
+                    event,
+                    "mermaid",
+                    bridged?.error ?? "visual bridge unavailable",
+                  );
+                  break;
+                }
+                broadcastBridgedVisual(event, bridged);
+              } else {
+                const html = buildMermaidHtml(code, theme);
+                const vizId = storeTopicMermaidVisual(topicId, code, html, title, userId);
+                broadcastStoredVisual(event, vizId, title, "mermaid");
+              }
             }
           } else if (isVisualsShowImageTool(event.name) || isVisualsShowVideoTool(event.name)) {
             const input = event.input as {
@@ -430,6 +533,29 @@ export async function streamAgentEvents(
             }
             try {
               const title = normalizeVisualTitle(input.title);
+              if (peerBridge) {
+                if (!(await flushPeerRuntimeEvents(topicId))) {
+                  failMediaVisual("ordered event delivery is blocked");
+                  break;
+                }
+                const bridged = await dispatchPeerRuntimeVisual({
+                  bridge: peerBridge,
+                  userId,
+                  agent: agentType,
+                  model,
+                  kind,
+                  title,
+                  fileId: media.fileId,
+                  mimeType: media.mimeType,
+                  source: media.source,
+                });
+                if (!bridged?.ok) {
+                  failMediaVisual(bridged?.error ?? "visual bridge unavailable");
+                  break;
+                }
+                broadcastBridgedVisual(event, bridged);
+                break;
+              }
               const html =
                 kind === "image"
                   ? buildImageHtml(
@@ -483,7 +609,41 @@ export async function streamAgentEvents(
           }
           break;
         case "file":
-          if (!silent) hub.broadcastFileReady(topicId, queryId, event.path, event.source);
+          if (!silent && peerBridge) {
+            const cwd = workspaceCwdFor(topicId);
+            const path = isAbsolute(event.path) ? event.path : resolve(cwd, event.path);
+            if (!isPathInside(cwd, path)) {
+              logger.warn({ topicId, path }, "peer output file is outside the topic workspace");
+              break;
+            }
+            let safePath: string;
+            try {
+              safePath = realpathSync(path);
+              if (!statSync(safePath).isFile()) {
+                logger.warn({ topicId, path }, "peer output path is not a regular file");
+                break;
+              }
+            } catch (error) {
+              logger.warn({ topicId, path, error }, "peer output file is unavailable");
+              break;
+            }
+            if (isSensitivePath(safePath)) {
+              logger.warn({ topicId, path: safePath }, "peer output file is sensitive");
+              break;
+            }
+            const sent = await dispatchPeerRuntimeFile({
+              bridge: peerBridge,
+              userId,
+              agent: agentType,
+              model,
+              path: safePath,
+              source: event.source,
+            });
+            if (!sent?.ok)
+              logger.warn({ error: sent?.error, path }, "peer output file bridge failed");
+          } else if (!silent) {
+            hub.broadcastFileReady(topicId, queryId, event.path, event.source);
+          }
           break;
         case "result":
           {
@@ -793,6 +953,7 @@ type AskPendingFileRef = {
     to: string;
     requestId?: string;
   };
+  remoteReply?: import("#mcp/session-comm/peer-forward").RemoteReplyRoute;
 };
 
 async function clearPendingAskFile(
@@ -837,7 +998,11 @@ export async function deliverAskCallbackToCaller(
   sourceLabel: string,
   body: string,
   kind: "reply" | "error",
-): Promise<void> {
+): Promise<boolean> {
+  if (pending.remoteReply) {
+    const { deliverPeerReply } = await import("#mcp/session-comm/peer-forward");
+    return deliverPeerReply(pending.remoteReply, sourceLabel, body, kind);
+  }
   const callerTopic = getTopic(pending.callerTopicId);
   const heading = kind === "error" ? `Error from ${sourceLabel}` : `Reply from ${sourceLabel}`;
   const prompt = `[${heading}]\n\n${body}`;
@@ -848,13 +1013,14 @@ export async function deliverAskCallbackToCaller(
     try {
       appendAskReplyMessage(pending.callerTopicId, prompt);
       await clearPendingAskFile(pending);
+      return true;
     } catch (err) {
       logger.warn(
         { err, requestId: pending.requestId, callerTopicId: pending.callerTopicId },
         "sessions: ask callback direct delivery failed",
       );
+      return false;
     }
-    return;
   }
 
   const queued = askReplyInjectBatcher.enqueue({
@@ -887,14 +1053,14 @@ export async function deliverAskCallbackToCaller(
     // caller turn is coalesced into one prompt.
     appendAskReplyMessage(pending.callerTopicId, prompt, callerTopic.agent);
     await markPendingAskFile(pending, "queued_for_caller");
-    return;
+    return true;
   }
 
   // A replay can encounter the same request while its original callback is
   // still queued. That request is already owned; do not append it twice.
   if (interSessionQueue.hasRequest(pending.callerTopicId, pending.requestId)) {
     await markPendingAskFile(pending, "queued_for_caller");
-    return;
+    return true;
   }
 
   logger.warn(
@@ -903,6 +1069,7 @@ export async function deliverAskCallbackToCaller(
   );
   appendAskReplyMessage(pending.callerTopicId, prompt, callerTopic.agent);
   await clearPendingAskFile(pending);
+  return true;
 }
 
 /** Deliver an ask callback error to the caller topic (in-process, no-op if no pending ask). */
@@ -1003,6 +1170,8 @@ export interface AiTurnTopic {
 export interface AiTurnSettlement {
   queryId: string;
   kind: "completed" | "aborted" | "error";
+  /** Distinguishes user preemption from an explicit stop for durable owners. */
+  abortReason?: AbortReason;
   error?: string;
 }
 
@@ -1376,7 +1545,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       WsHub.get().broadcastAborted(topic.id, params._queryId, "stopped");
     }
     try {
-      params.onSettled?.({ queryId, kind: "aborted" });
+      params.onSettled?.({ queryId, kind: "aborted", abortReason: AbortReason.External });
     } catch (err) {
       logger.warn({ err, topicId: topic.id, queryId }, "ai: stale-turn settlement hook failed");
     }
@@ -1465,6 +1634,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         ? { ...runningInject, sessionId: undefined, forkHandle: undefined }
         : runningInject;
       const queued = deferInject(requeuedInject);
+      running.injectRequeued = queued;
       if (queued && runningInject.prepareSession) {
         // The queued copy retained requestId, so detach it from the dying
         // control. The async preparation may still publish an old fork after
@@ -1836,6 +2006,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     userId,
     !sessionRetried,
     onSessionId,
+    { silent, peerBridge },
   )
     .then(async (outcome) => {
       if (outcome.kind === "session-expired") {
@@ -1928,15 +2099,16 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         }
         return;
       }
-      const requeuedAfterUserPreemption =
-        outcome.kind === "aborted" &&
-        control.abortReason === AbortReason.Internal &&
-        Boolean(control.injectParams);
+      const requeuedAfterUserPreemption = wasLocallyRequeuedAfterUserPreemption(
+        outcome.kind,
+        control,
+      );
       if (requeuedAfterUserPreemption) return;
       try {
         onSettled?.({
           queryId,
           kind: outcome.kind === "aborted" ? "aborted" : "completed",
+          ...(outcome.kind === "aborted" ? { abortReason: control.abortReason } : {}),
         });
       } catch (err) {
         logger.warn({ err, topicId, queryId }, "ai: turn settlement hook failed");
@@ -1966,6 +2138,18 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     });
 
   return queryId;
+}
+
+export function wasLocallyRequeuedAfterUserPreemption(
+  outcomeKind: StreamAgentOutcome["kind"],
+  control: Pick<RoomQueryControl, "abortReason" | "injectParams" | "injectRequeued">,
+): boolean {
+  return (
+    outcomeKind === "aborted" &&
+    control.abortReason === AbortReason.Internal &&
+    Boolean(control.injectParams) &&
+    control.injectRequeued === true
+  );
 }
 
 /**

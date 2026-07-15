@@ -1,9 +1,11 @@
 import {
   closeSync,
+  existsSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -52,19 +54,63 @@ function pendingAskDir(userId: PendingAskUserId): string {
   return join(SESSION_ASKS_DIR, String(userId));
 }
 
+const ASK_FILENAME_PREFIX = "v2-";
+
+function encodeAskKey(key: Pick<AskKey, "from" | "to">): string {
+  return Buffer.from(JSON.stringify([key.from, key.to]), "utf8").toString("base64url");
+}
+
 function pendingAskPath(key: AskKey): string {
+  return join(pendingAskDir(key.userId), `${ASK_FILENAME_PREFIX}${encodeAskKey(key)}.pending`);
+}
+
+function legacyPendingAskPath(key: AskKey): string | null {
+  if (key.from.includes("___") || /[\\/]/.test(key.from) || /[\\/]/.test(key.to)) return null;
   return join(pendingAskDir(key.userId), `${key.from}___${key.to}.pending`);
+}
+
+function resolvePendingAskPath(key: AskKey): string {
+  const current = pendingAskPath(key);
+  if (existsSync(current)) return current;
+  const legacy = legacyPendingAskPath(key);
+  if (!legacy || !existsSync(legacy)) return current;
+
+  // Keep one durable identity across the filename transition. renameSync is
+  // atomic within this directory, so concurrent creators observe either the
+  // legacy request or its v2 name, never a copied half-state.
+  try {
+    renameSync(legacy, current);
+    return current;
+  } catch {
+    return existsSync(current) ? current : legacy;
+  }
 }
 
 function parsePendingAskFilename(fileName: string): { from: string; to: string } | null {
   if (!fileName.endsWith(".pending")) return null;
   const raw = fileName.slice(0, -".pending".length);
+  if (raw.startsWith(ASK_FILENAME_PREFIX)) {
+    try {
+      const decoded = JSON.parse(
+        Buffer.from(raw.slice(ASK_FILENAME_PREFIX.length), "base64url").toString("utf8"),
+      ) as unknown;
+      if (
+        Array.isArray(decoded) &&
+        decoded.length === 2 &&
+        decoded.every((part) => typeof part === "string")
+      ) {
+        return { from: decoded[0], to: decoded[1] };
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  // Read files created before the opaque v2 key was introduced.
   const sep = raw.indexOf("___");
   if (sep < 0) return null;
-  return {
-    from: raw.slice(0, sep),
-    to: raw.slice(sep + 3),
-  };
+  return { from: raw.slice(0, sep), to: raw.slice(sep + 3) };
 }
 
 function readPendingAskFile(path: string, fallback: AskKey): PendingAskRecord | null {
@@ -111,8 +157,7 @@ function isStale(record: PendingAskRecord | null, path: string): boolean {
   }
 }
 
-function writePendingAsk(record: PendingAskRecord): void {
-  const path = pendingAskPath(record);
+function writePendingAsk(record: PendingAskRecord, path = pendingAskPath(record)): void {
   mkdirSync(pendingAskDir(record.userId), { recursive: true });
   writeFileSync(path, `${JSON.stringify(record)}\n`);
 }
@@ -126,7 +171,7 @@ export function createPendingAsk(args: {
 }):
   | { ok: true; record: PendingAskRecord }
   | { ok: false; existing: PendingAskRecord | null; stale: boolean } {
-  const path = pendingAskPath(args);
+  const path = resolvePendingAskPath(args);
   const now = new Date().toISOString();
   const record: PendingAskRecord = {
     userId: args.userId,
@@ -166,7 +211,7 @@ export function createPendingAsk(args: {
 export function markPendingAskState(
   args: AskIdentity & { state: PendingAskState },
 ): PendingAskRecord | null {
-  const path = pendingAskPath(args);
+  const path = resolvePendingAskPath(args);
   const record = readPendingAskFile(path, args);
   if (!record) return null;
   if (args.requestId && record.requestId !== args.requestId) return record;
@@ -175,12 +220,12 @@ export function markPendingAskState(
     state: args.state,
     updatedAt: new Date().toISOString(),
   };
-  writePendingAsk(next);
+  writePendingAsk(next, path);
   return next;
 }
 
 export function clearPendingAsk(args: AskIdentity): boolean {
-  const path = pendingAskPath(args);
+  const path = resolvePendingAskPath(args);
   const record = readPendingAskFile(path, args);
   if (args.requestId && record && record.requestId !== args.requestId) return false;
   try {

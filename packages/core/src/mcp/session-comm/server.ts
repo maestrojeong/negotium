@@ -28,6 +28,7 @@ import {
   isReplyOnly,
   MAX_MESSAGE_LENGTH,
   MAX_TELL_DEPTH,
+  peerHostQueryId,
   userId,
 } from "./runtime";
 import { getMcpConfig, setCurrentTopicDescription, setMcpConfig } from "./topic-config";
@@ -117,7 +118,7 @@ server.tool(
     // Disabled or unattached nodes answer with an error — skip silently so
     // single-node behavior is untouched.
     const remoteSections: string[] = [];
-    const peers = await peerSessionsForUser(userId);
+    const peers = await peerSessionsForUser(userId, peerHostQueryId || undefined);
     if (peers.ok && peers.nodes) {
       for (const node of peers.nodes) {
         if (!node.node) continue;
@@ -344,6 +345,7 @@ if (!isReplyOnly) {
           message,
           requestId,
           fromDepth: currentDepth,
+          ...(peerHostQueryId ? { sourceQueryId: peerHostQueryId } : {}),
         });
         if (!result.ok) {
           clearPendingAsk({ userId, from: fromRef.key, to, requestId });
@@ -436,6 +438,7 @@ if (!isReplyOnly) {
           toNode: remote.node,
           toTopic: remote.topic,
           userId,
+          ...(peerHostQueryId ? { sourceQueryId: peerHostQueryId } : {}),
         });
         if (!result.ok) {
           return mcpError(`Error: "${to}" 원격 abort 실패: ${result.error}`);
@@ -511,6 +514,7 @@ if (!isReplyOnly) {
           message,
           requestId,
           depth: currentDepth + 1,
+          ...(peerHostQueryId ? { sourceQueryId: peerHostQueryId } : {}),
         });
         if (!result.ok) {
           return mcpError(`Error: "${to}" 원격 세션에 전송 실패: ${result.error}`);

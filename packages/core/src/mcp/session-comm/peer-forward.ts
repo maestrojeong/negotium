@@ -1,5 +1,5 @@
 /**
- * Remote-node forwarding stub.
+ * Remote-node forwarding adapter hook.
  *
  * Addressing keeps the `"<node>/<topic>"` shape so cross-node session-comm can
  * plug in later (an otium-hub adapter, a negotium peer protocol, …) without
@@ -19,11 +19,42 @@ export interface PeerForwardArgs {
   requestId?: string;
   depth?: number;
   fromDepth?: number;
+  /** Hub turn authorizing a worker-originated peer call. */
+  sourceQueryId?: string;
 }
 
 export type PeerForwardResult = { ok: true } | { ok: false; error: string };
 
-export async function forwardToPeer(_args: PeerForwardArgs): Promise<PeerForwardResult> {
+export interface RemoteReplyRoute {
+  nodeName: string;
+  nodeCellId: string;
+  topicId: string;
+  userId: string;
+  requestId: string;
+}
+
+export interface PeerSessionBridge {
+  forward(args: PeerForwardArgs): Promise<PeerForwardResult>;
+  sessions(userId: string, sourceQueryId?: string): Promise<PeerSessionsResult>;
+  reply(
+    route: RemoteReplyRoute,
+    sourceTitle: string,
+    replyText: string,
+    kind: "reply" | "error",
+  ): Promise<boolean>;
+}
+
+let activeBridge: PeerSessionBridge | null = null;
+
+export function registerPeerSessionBridge(bridge: PeerSessionBridge): () => void {
+  activeBridge = bridge;
+  return () => {
+    if (activeBridge === bridge) activeBridge = null;
+  };
+}
+
+export async function forwardToPeer(args: PeerForwardArgs): Promise<PeerForwardResult> {
+  if (activeBridge) return activeBridge.forward(args);
   return {
     ok: false,
     error: "remote nodes are not connected on this negotium node (standalone mode)",
@@ -42,6 +73,19 @@ export interface PeerSessionsResult {
   nodes?: Array<{ node: string; error?: string; sessions?: PeerSessionEntry[] }>;
 }
 
-export async function peerSessionsForUser(_userId: string): Promise<PeerSessionsResult> {
+export async function peerSessionsForUser(
+  userId: string,
+  sourceQueryId?: string,
+): Promise<PeerSessionsResult> {
+  if (activeBridge) return activeBridge.sessions(userId, sourceQueryId);
   return { ok: true, nodes: [] };
+}
+
+export async function deliverPeerReply(
+  route: RemoteReplyRoute,
+  sourceTitle: string,
+  replyText: string,
+  kind: "reply" | "error",
+): Promise<boolean> {
+  return (await activeBridge?.reply(route, sourceTitle, replyText, kind)) ?? false;
 }
