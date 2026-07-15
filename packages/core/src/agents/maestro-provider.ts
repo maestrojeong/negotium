@@ -60,6 +60,7 @@
  * Object.assign keeps the surface trivial.
  */
 
+import "#platform/maestro-bootstrap-env";
 import type { HookRegistration, McpResolver } from "maestro-agent-sdk";
 import { maestroProvider as sdkMaestroProvider, setMcpResolver } from "maestro-agent-sdk";
 import {

@@ -12,6 +12,7 @@
  * clear if the upstream default ever changes; users can still switch to
  * `deepseek-flash` per-topic via `/model deepseek-flash`.
  */
+import "#platform/maestro-bootstrap-env";
 import {
   setConversationReader,
   maestroRegistry as upstreamMaestroRegistry,

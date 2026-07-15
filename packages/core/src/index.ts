@@ -6,6 +6,8 @@
  * Deep imports are not part of the public contract.
  */
 
+import "#platform/maestro-bootstrap-env";
+
 // ── Agents ──────────────────────────────────────────────────────────
 export { checkAgentAuth } from "#agents/auth-check";
 export { killOwnedCodexTreesForShutdown } from "#agents/codex-tree-kill";
