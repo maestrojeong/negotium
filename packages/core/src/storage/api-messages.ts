@@ -256,6 +256,23 @@ export function updateApiMessageText(
   return getApiMessage(topicId, messageId);
 }
 
+/** Attach terminal turn usage to an already-persisted assistant segment. */
+export function updateApiMessageUsage(
+  topicId: string,
+  messageId: string,
+  usage: NonNullable<MessageDto["usage"]>,
+): MessageDto | null {
+  const res = db
+    .query(
+      `UPDATE api_messages
+       SET usage = ?
+       WHERE topic_id = ? AND id = ? AND deleted = 0`,
+    )
+    .run(JSON.stringify(usage), topicId, messageId);
+  if (Number(res.changes ?? 0) === 0) return null;
+  return getApiMessage(topicId, messageId);
+}
+
 export function updateApiMessageAskUserQuestion(
   topicId: string,
   messageId: string,

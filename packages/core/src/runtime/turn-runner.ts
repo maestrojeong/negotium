@@ -81,7 +81,11 @@ import {
   resolveVisualMediaInput,
   stripMermaidFence,
 } from "#runtime/visuals";
-import { appendApiMessage } from "#storage/api-messages";
+import {
+  appendApiMessage,
+  softDeleteApiMessage,
+  updateApiMessageUsage,
+} from "#storage/api-messages";
 import { getTopicBrief } from "#storage/api-topic-brief";
 import {
   clearTopicSessionId,
@@ -203,7 +207,7 @@ function sessionEventMatchesCurrentExecution(
   return configuredModel === model;
 }
 
-async function streamAgentEvents(
+export async function streamAgentEvents(
   topicId: string,
   topicTitle: string,
   queryId: string,
@@ -221,8 +225,11 @@ async function streamAgentEvents(
   const silent = control.injectParams?.silent ?? false;
   let errorOccurred = false;
   let terminalEmitted = false;
-  let sawDelta = false;
+  let pendingSawDelta = false;
   let accumulatedText = "";
+  let pendingText = "";
+  let lastVisibleMessageId: string | null = null;
+  const visibleMessageIds: string[] = [];
   let lastTaskPanelText: string | null = null;
   let syntheticToolCounter = 0;
   const providerToolIds = new Map<string, string>();
@@ -264,6 +271,37 @@ async function streamAgentEvents(
     const providerId = normalizeToolUseId(providerToolUseId);
     return providerId ? handledVisualToolResultIds.has(providerId) : false;
   };
+  const emitPendingAssistantMessage = (usage?: MessageDto["usage"]): MessageDto | null => {
+    const text = pendingText.trimEnd();
+    pendingText = "";
+    pendingSawDelta = false;
+    if (silent || !text.trim()) return null;
+    const message: MessageDto = {
+      id: randomUUID(),
+      topicId,
+      authorId: "ai",
+      text,
+      queryId,
+      agentType,
+      model,
+      usage,
+      createdAt: new Date().toISOString(),
+    };
+    appendApiMessage(message);
+    hub.broadcastMessage(topicId, message);
+    lastVisibleMessageId = message.id;
+    visibleMessageIds.push(message.id);
+    return message;
+  };
+  const discardVisibleAssistantMessages = (): void => {
+    for (const messageId of visibleMessageIds.splice(0)) {
+      const deleted = softDeleteApiMessage(topicId, messageId);
+      if (deleted) {
+        hub.broadcastMessageUpdated(topicId, messageId, { deleted: true, text: "" });
+      }
+    }
+    lastVisibleMessageId = null;
+  };
   const broadcastStoredVisual = (
     event: Extract<UnifiedEvent, { type: "tool_use" }>,
     vizId: number,
@@ -292,15 +330,22 @@ async function streamAgentEvents(
 
       switch (event.type) {
         case "text_delta":
-          sawDelta = true;
+          pendingSawDelta = true;
           accumulatedText += event.content;
+          pendingText += event.content;
           break;
         case "text":
-          if (!sawDelta) {
+          if (!pendingSawDelta) {
             accumulatedText += event.content;
+            pendingText += event.content;
           }
           break;
         case "tool_use":
+          // Provider text is streamed before the tool event that follows it.
+          // Persist that completed segment first so every host receives the
+          // original assistant → tool → assistant ordering instead of a block
+          // of tools followed by one consolidated answer at turn completion.
+          emitPendingAssistantMessage();
           // Match both the bare name (Codex reports MCP server/tool separately)
           // and each provider's public MCP-name form.
           if (isVisualsShowHtmlTool(event.name)) {
@@ -441,30 +486,27 @@ async function streamAgentEvents(
           if (!silent) hub.broadcastFileReady(topicId, queryId, event.path, event.source);
           break;
         case "result":
-          // Persist the AI's final answer so it survives reloads / shows in
-          // history. The client receives this as the canonical message event.
-          if (!silent && accumulatedText.trim()) {
-            const aiMsg: MessageDto = {
-              id: randomUUID(),
-              topicId,
-              authorId: "ai",
-              text: accumulatedText.trimEnd(),
-              queryId,
-              agentType,
-              model,
-              usage: event.usage
-                ? {
-                    input: event.usage.inputTokens,
-                    output: event.usage.outputTokens,
-                    cachedInput: event.usage.cacheReadInputTokens,
-                    context: event.usage.contextTokens,
-                    contextWindow: event.usage.contextWindow,
-                  }
-                : undefined,
-              createdAt: new Date().toISOString(),
-            };
-            appendApiMessage(aiMsg);
-            hub.broadcastMessage(topicId, aiMsg);
+          {
+            const usage: MessageDto["usage"] = event.usage
+              ? {
+                  input: event.usage.inputTokens,
+                  output: event.usage.outputTokens,
+                  cachedInput: event.usage.cacheReadInputTokens,
+                  context: event.usage.contextTokens,
+                  contextWindow: event.usage.contextWindow,
+                }
+              : undefined;
+            const finalMessage = emitPendingAssistantMessage(usage);
+            // A tool-only ending has no trailing text segment to carry usage.
+            // Attach it to the latest visible segment without changing its
+            // timeline position; ai_done still carries the same usage to
+            // remote hosts that do not accept generic message patches.
+            if (!finalMessage && usage && lastVisibleMessageId) {
+              const updated = updateApiMessageUsage(topicId, lastVisibleMessageId, usage);
+              if (updated) {
+                hub.broadcastMessageUpdated(topicId, lastVisibleMessageId, { usage });
+              }
+            }
           }
           if (!silent) {
             scheduleIdleArchiveForTopic(topicId, userId);
@@ -600,20 +642,8 @@ async function streamAgentEvents(
     if (!errorOccurred && abortController.signal.aborted) {
       // reason discriminates supersede (new user message) vs explicit stop.
       const isSuperseded = control.abortReason === AbortReason.Internal;
-      if (!silent && !isSuperseded && accumulatedText.trim()) {
-        const partialMsg: MessageDto = {
-          id: randomUUID(),
-          topicId,
-          authorId: "ai",
-          text: accumulatedText.trimEnd(),
-          queryId,
-          agentType,
-          model,
-          createdAt: new Date().toISOString(),
-        };
-        appendApiMessage(partialMsg);
-        hub.broadcastMessage(topicId, partialMsg);
-      }
+      if (isSuperseded) discardVisibleAssistantMessages();
+      else emitPendingAssistantMessage();
       if (!silent) hub.broadcastAborted(topicId, queryId, wsAbortReason(control.abortReason));
       terminalEmitted = true;
       outcome = { kind: "aborted" };
@@ -642,6 +672,12 @@ async function streamAgentEvents(
       if (silent) deliverAskError(queryId, topicTitle, msg);
     }
   } finally {
+    const discardIncompleteSegments =
+      outcome.kind === "session-expired" ||
+      outcome.kind === "provider-error" ||
+      (outcome.kind === "aborted" && control.abortReason === AbortReason.Internal) ||
+      (!terminalEmitted && !abortController.signal.aborted);
+    if (discardIncompleteSegments) discardVisibleAssistantMessages();
     if (!terminalEmitted && !silent) {
       hub.broadcastDone(topicId, queryId, undefined, { agent: agentType, model });
     }

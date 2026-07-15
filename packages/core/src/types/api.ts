@@ -400,6 +400,7 @@ export type WsServerMessage =
       text?: string;
       deleted?: boolean;
       editedAt?: string;
+      usage?: MessageTokenUsage;
       askUserQuestion?: AskUserQuestionDto;
       subagentCard?: SubagentCardDto;
     }

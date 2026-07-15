@@ -71,14 +71,24 @@ describe("translateBusEvent — golden WsServerMessage shapes", () => {
       translateBusEvent({
         type: "message-updated",
         topicId,
-        payload: { messageId: "tasks-q1", patch: { text: "📋 Tasks (1/2)", editedAt: "T" } },
+        payload: {
+          messageId: "tasks-q1",
+          patch: {
+            text: "📋 Tasks (1/2)",
+            deleted: true,
+            editedAt: "T",
+            usage: { input: 10, output: 5 },
+          },
+        },
       }),
     ).toEqual({
       type: "message_updated",
       topicId,
       messageId: "tasks-q1",
       text: "📋 Tasks (1/2)",
+      deleted: true,
       editedAt: "T",
+      usage: { input: 10, output: 5 },
     });
   });
 

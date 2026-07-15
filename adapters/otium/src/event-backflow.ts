@@ -117,7 +117,9 @@ export function translateBusEvent(event: RuntimeBusEvent): RawEvent | null {
       topicId,
       messageId: payload.messageId,
       text: payload.patch.text,
+      deleted: payload.patch.deleted,
       editedAt: payload.patch.editedAt,
+      usage: payload.patch.usage,
     });
   }
   if (event.type !== "ai-status") return null;
