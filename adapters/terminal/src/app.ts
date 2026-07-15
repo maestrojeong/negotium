@@ -818,7 +818,7 @@ export class TerminalApp {
       this.#queueRender();
       return;
     }
-    if (command === "delete") {
+    if (command === "del") {
       const title = args.join(" ").trim().toLowerCase();
       const topic = title
         ? this.#state.topics.find((candidate) => candidate.title.toLowerCase() === title)

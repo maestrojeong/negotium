@@ -424,7 +424,7 @@ function helpLines(): UiLine[] {
     line("  Ctrl-O topics · Ctrl-P/N previous/next topic · Ctrl-C twice to quit"),
     line(""),
     line("  Commands", { fg: theme.cyan, bold: true }),
-    line("  /new  /topic  /topics  /delete  /copy"),
+    line("  /new  /topic  /topics  /del  /copy"),
     line("  /abort  /help  /quit", { fg: theme.muted }),
   ];
 }
@@ -663,7 +663,7 @@ function inputVisualLines(state: AppState, width: number): UiLine[] {
 
 function composerPane(state: AppState, width: number): string[] {
   const title = state.input.startsWith("/new ")
-    ? "new topic · type <name> [agent] · Enter create"
+    ? "new topic · type a name · Enter create"
     : "Ctrl-O topics";
   const inputLines = inputVisualLines(state, width).slice(-5);
   const suggestions = commandSuggestions(state.input);

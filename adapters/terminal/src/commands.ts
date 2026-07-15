@@ -5,12 +5,12 @@ export interface TerminalCommand {
 }
 
 export const TERMINAL_COMMANDS: readonly TerminalCommand[] = [
-  { name: "new", usage: "/new [name] [agent]", description: "reset session or create topic" },
+  { name: "new", usage: "/new", description: "reset the current session" },
   { name: "compact", usage: "/compact", description: "summarize and shrink context" },
   { name: "status", usage: "/status", description: "show model and token usage" },
   { name: "topic", usage: "/topic <name>", description: "switch topic" },
   { name: "topics", usage: "/topics", description: "open topic picker" },
-  { name: "delete", usage: "/delete [name]", description: "delete a topic" },
+  { name: "del", usage: "/del [name]", description: "delete a topic" },
   { name: "copy", usage: "/copy [all]", description: "copy answer or transcript" },
   { name: "abort", usage: "/abort", description: "stop the active turn" },
   { name: "help", usage: "/help", description: "show keyboard help" },

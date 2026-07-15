@@ -119,11 +119,10 @@ negotium cron list|create|inspect|logs|run|pause|resume|restart|kill|reset|delet
 Inside terminal chat:
 
 ```text
-/new                  reset the current non-General topic's AI context
-/new <topic> [agent]  create and enter a topic
+/new                  reset the current topic's AI context, including personal General
 /topic <topic>        enter an existing topic
 /topics               open the topic picker
-/delete [topic]       archive and delete a topic
+/del [topic]          archive and delete a topic
 /copy [all]           copy the last answer or transcript
 /abort                stop the current turn
 /quit                 close the terminal host

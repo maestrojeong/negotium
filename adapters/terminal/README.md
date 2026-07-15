@@ -89,13 +89,13 @@ indicator. Topics and transcript use temporary overlays.
 | `Ctrl-C` | abort/cancel; press twice on an idle screen to quit this TUI |
 
 Commands: `/compact` (summarize and shrink provider context), `/status` (separate latest context
-occupancy from aggregate turn usage), `/new` (reset the current non-General context),
-`/new <name> [agent]` (create topic), `/topic <name>`, `/topics`, `/delete [name]`,
+occupancy from aggregate turn usage), `/new` (reset the current context), `/topic <name>`,
+`/topics`, `/del [name]`,
 `/copy [all]`, `/abort`, `/help`, `/quit`.
 
 A reset keeps the visible transcript, cancels active and queued work accepted before the reset,
-and lets later requests start with a fresh provider context. The personal `General` manager cannot
-be reset.
+and lets later requests start with a fresh provider context. This includes the private `General`
+topic. Create another topic with `N` in the `Ctrl-O` topic overlay.
 
 Compaction also preserves the visible transcript, but replaces provider-native and provider-neutral
 context with a standalone summary so the next turn can continue with a smaller context. Reopening a
