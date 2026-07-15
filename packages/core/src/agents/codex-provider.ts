@@ -412,6 +412,7 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
   let prompt = promptForThread(opts, true);
 
   let agentTextSoFar = "";
+  let currentAgentMessageId: string | undefined;
   let finalText = "";
   let stopReason = "end_turn";
 
@@ -569,6 +570,11 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
               const item = event.item;
               if (!item) break;
               if (item.type === "agent_message") {
+                const messageId = item.id != null ? String(item.id) : undefined;
+                if (messageId !== currentAgentMessageId) {
+                  currentAgentMessageId = messageId;
+                  agentTextSoFar = "";
+                }
                 const text = String(item.text ?? "");
                 const newChars = text.slice(agentTextSoFar.length);
                 if (newChars) {

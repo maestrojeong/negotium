@@ -545,8 +545,12 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
             const beat = thinkingBeat();
             if (beat) yield beat;
           } else if (delta.delta.type === "text_delta" && delta.delta.text) {
+            // Claude only exposes tool_use blocks on the completed assistant
+            // message below. Forwarding text deltas here would place all text
+            // before those tools, making the original block order impossible
+            // for consumers to reconstruct. The completed message emits text
+            // and tool blocks in their canonical order.
             thinkingStart = null;
-            yield { type: "text_delta", content: delta.delta.text };
           } else {
             // Tool-args streaming (partial_json) etc. — thinking stretch over.
             thinkingStart = null;

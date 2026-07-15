@@ -37,6 +37,65 @@ mock.module("#platform/config", () => ({
 }));
 
 describe("claudeProvider terminal handling", () => {
+  test("emits completed assistant blocks in canonical text/tool order", async () => {
+    mock.module("@anthropic-ai/claude-agent-sdk", () => ({
+      query: async function* () {
+        yield { type: "system", subtype: "init", session_id: "sess-order" };
+        yield {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "prefetched text" },
+          },
+        };
+        yield {
+          type: "assistant",
+          message: {
+            model: "claude-test",
+            content: [
+              { type: "tool_use", id: "tool-1", name: "Bash", input: { command: "pwd" } },
+              { type: "text", text: "between tools" },
+              { type: "tool_use", id: "tool-2", name: "Bash", input: { command: "ls" } },
+            ],
+          },
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          result: "between tools",
+          stop_reason: "end_turn",
+        };
+      },
+    }));
+
+    const { claudeProvider } = await import("#agents/claude-provider");
+    const events = [];
+    for await (const event of claudeProvider({
+      agent: "claude",
+      prompt: "do work",
+      session: "dev",
+      sessionType: "forum",
+      systemPrompt: "system",
+      cwd: "/tmp",
+      userId: "test-user",
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      { type: "session", sessionId: "sess-order" },
+      { type: "tool_use", name: "Bash", input: { command: "pwd" }, toolUseId: "tool-1" },
+      { type: "text", content: "between tools" },
+      { type: "tool_use", name: "Bash", input: { command: "ls" }, toolUseId: "tool-2" },
+      {
+        type: "result",
+        content: "between tools",
+        stopReason: "end_turn",
+        usage: undefined,
+      },
+    ]);
+  });
+
   test("stops consuming SDK stream after a `result` message", async () => {
     let consumedPastResult = false;
     mock.module("@anthropic-ai/claude-agent-sdk", () => ({

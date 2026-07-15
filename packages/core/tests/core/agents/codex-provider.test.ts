@@ -141,6 +141,44 @@ describe("codexProvider stale rollout recovery", () => {
       toolUseId: "patch-1:2",
     });
   });
+
+  test("streams each agent message from its own item boundary", async () => {
+    streamedEvents = async function* multipleMessages() {
+      yield { type: "thread.started", thread_id: "019dee65-ffff-7aaa-8aaa-cccccccccccc" };
+      yield {
+        type: "item.updated",
+        item: { id: "message-1", type: "agent_message", text: "first status" },
+      };
+      yield {
+        type: "item.completed",
+        item: { id: "message-1", type: "agent_message", text: "first status" },
+      };
+      yield {
+        type: "item.started",
+        item: { id: "tool-1", type: "command_execution", command: "pwd" },
+      };
+      yield {
+        type: "item.completed",
+        item: { id: "tool-1", type: "command_execution", aggregated_output: "/tmp" },
+      };
+      yield {
+        type: "item.updated",
+        item: { id: "message-2", type: "agent_message", text: "second status" },
+      };
+      yield {
+        type: "item.completed",
+        item: { id: "message-2", type: "agent_message", text: "second status" },
+      };
+      yield { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } };
+    };
+
+    const events = [];
+    for await (const event of codexProvider(opts({ sessionId: null }))) events.push(event);
+
+    expect(
+      events.filter((event) => event.type === "text_delta").map((event) => event.content),
+    ).toEqual(["first status", "second status"]);
+  });
 });
 
 describe("codexProvider MCP config", () => {
