@@ -1,5 +1,13 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
   BROWSER_PROFILES_DIR,
@@ -812,8 +820,7 @@ export interface CloneProfileResult {
  *
  * Copy strategy:
  *   - macOS APFS: `cp -cR` triggers clonefile() (metadata-only, ms-level).
- *   - Other CoW filesystems: same flag uses native CoW if supported.
- *   - Fallback: regular full copy (still correct, just slower).
+ *   - Other platforms, or if clonefile fails: regular recursive copy.
  */
 export async function cloneProfileForChild(opts: {
   userId: string;
@@ -858,8 +865,16 @@ export async function cloneProfileForChild(opts: {
       rmSync(dstDir, { recursive: true, force: true });
     }
     mkdirSync(dirname(dstDir), { recursive: true });
-    // `-c` requests clonefile() on APFS; harmless no-op elsewhere.
-    execFileSync("cp", ["-cR", srcDir, dstDir], { stdio: "pipe" });
+    if (process.platform === "darwin") {
+      try {
+        // `-c` requests clonefile() on APFS for a fast copy-on-write clone.
+        execFileSync("cp", ["-cR", srcDir, dstDir], { stdio: "pipe" });
+      } catch {
+        cpSync(srcDir, dstDir, { recursive: true });
+      }
+    } else {
+      cpSync(srcDir, dstDir, { recursive: true });
+    }
   } catch (e) {
     const reason = `copy-failed: ${e instanceof Error ? e.message : String(e)}`;
     logger.warn({ srcDir, dstDir, err: e }, "Playwright profile clone failed");
