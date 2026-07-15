@@ -9,6 +9,7 @@ export function topicsCommand(): void {
     return;
   }
   for (const t of topics) {
+    const model = t.effectiveModel ?? t.defaultModel;
     const flags = [
       t.accessMode ?? "private",
       t.isSubagent ? "subagent" : null,
@@ -17,7 +18,7 @@ export function topicsCommand(): void {
       .filter(Boolean)
       .join(",");
     console.log(
-      `${t.title}  ${t.agent ?? "no-ai"}${t.defaultModel ? `/${t.defaultModel}` : ""}` +
+      `${t.title}  ${t.agent ?? "no-ai"}${model ? `/${model}` : ""}` +
         `${flags ? `  [${flags}]` : ""}  ${t.id}`,
     );
   }
