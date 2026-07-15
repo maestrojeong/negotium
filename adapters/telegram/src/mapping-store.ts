@@ -60,6 +60,12 @@ export interface TelegramMappingStore {
   loadTombstones(): PersistedTombstone[];
   saveTombstone(topicId: string, title: string): void;
   deleteTombstone(topicId: string): void;
+  clearTombstones(): void;
+  /** Forum supergroup selected by auto-connect. A configured environment
+   *  value may overwrite it, but normal restarts recover it from here. */
+  loadForumChatId(): number | undefined;
+  saveForumChatId(chatId: number): void;
+  clearForumChatId(): void;
   // ── outbound retry queue ──────────────────────────────────────────
   outboxEnqueue(entry: {
     chatId: number;
@@ -75,6 +81,7 @@ export interface TelegramMappingStore {
   outboxReschedule(id: number, attempts: number, nextTryAt: number, lastError: string): void;
   outboxMarkDead(id: number, attempts: number, lastError: string): void;
   outboxDelete(id: number): void;
+  outboxDeleteByChat(chatId: number): void;
   /** All entries (tests/operator inspection). */
   outboxAll(): OutboxEntry[];
   close(): void;
@@ -168,6 +175,12 @@ function createTables(db: Database): void {
       last_error TEXT
     )`,
   );
+  db.run(
+    `CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )`,
+  );
 }
 
 /** Open (creating if needed) the mapping database. `path` is injectable for
@@ -218,6 +231,25 @@ export function openMappingStore(path?: string): TelegramMappingStore {
     deleteTombstone(topicId: string): void {
       db.run("DELETE FROM tombstones WHERE topic_id = ?", [topicId]);
     },
+    clearTombstones(): void {
+      db.run("DELETE FROM tombstones");
+    },
+    loadForumChatId(): number | undefined {
+      const row = db.query("SELECT value FROM settings WHERE key = 'forum_chat_id'").get() as {
+        value: string;
+      } | null;
+      if (!row) return undefined;
+      const value = Number.parseInt(row.value, 10);
+      return Number.isSafeInteger(value) ? value : undefined;
+    },
+    saveForumChatId(chatId: number): void {
+      db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('forum_chat_id', ?)", [
+        String(chatId),
+      ]);
+    },
+    clearForumChatId(): void {
+      db.run("DELETE FROM settings WHERE key = 'forum_chat_id'");
+    },
     outboxEnqueue(entry): void {
       db.run(
         `INSERT INTO outbox (chat_id, thread_id, html, plain, attempts, next_try_at, last_error)
@@ -255,6 +287,9 @@ export function openMappingStore(path?: string): TelegramMappingStore {
     },
     outboxDelete(id: number): void {
       db.run("DELETE FROM outbox WHERE id = ?", [id]);
+    },
+    outboxDeleteByChat(chatId: number): void {
+      db.run("DELETE FROM outbox WHERE chat_id = ?", [chatId]);
     },
     outboxAll(): OutboxEntry[] {
       const rows = db.query("SELECT * FROM outbox ORDER BY id ASC").all() as OutboxRow[];

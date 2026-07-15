@@ -86,6 +86,7 @@ describe("forum mode: unmapped live topics (finding 2)", () => {
 
     const fakeA = new FakeTelegramClient();
     fakeA.createMode = "reject";
+    fakeA.createRejectError = new Error("400 Bad Request: invalid forum topic name");
     const adapterA = startTelegramAdapter({
       startTurn: () => null,
       client: fakeA,

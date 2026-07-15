@@ -1,4 +1,10 @@
-import type { TelegramClientLike, TelegramIncomingMessage } from "@/types";
+import type {
+  TelegramChatMember,
+  TelegramClientLike,
+  TelegramIncomingMessage,
+  TelegramMyChatMemberUpdate,
+  TelegramUser,
+} from "@/types";
 
 export interface SentCall {
   chatId: number;
@@ -12,8 +18,8 @@ export interface SentCall {
  *  - `createMode: "auto"` — threads created immediately (default)
  *  - `createMode: "manual"` — createForumTopic stays pending until
  *    `resolvePendingCreates()` (exercises the adapter's race buffering)
- *  - `createMode: "reject"` — createForumTopic rejects (exercises the
- *    general-chat fallback + tombstone path)
+ *  - `createMode: "reject"` — createForumTopic rejects with
+ *    `createRejectError` (permission recovery or permanent tombstone path)
  */
 export class FakeTelegramClient implements TelegramClientLike {
   /** Successful sends only (what "arrived" in Telegram). */
@@ -39,9 +45,13 @@ export class FakeTelegramClient implements TelegramClientLike {
   /** "hang" makes sendMessage never settle (exercises the send watchdog). */
   sendMode: "auto" | "hang" = "auto";
   createMode: "auto" | "manual" | "reject" = "auto";
+  createRejectError: unknown = new Error("400 Bad Request: not enough rights to manage topics");
   nextThreadId = 100;
   private pendingCreates: Array<{ resolve: () => void; reject: (err: unknown) => void }> = [];
   private handlers: Array<(msg: TelegramIncomingMessage) => void> = [];
+  private memberHandlers: Array<(update: TelegramMyChatMemberUpdate) => void> = [];
+  me: TelegramUser = { id: 999_000, is_bot: true, username: "negotium_test_bot" };
+  members = new Map<string, TelegramChatMember>();
 
   sendMessage(chatId: number, text: string, opts?: Record<string, unknown>): Promise<unknown> {
     this.attempts.push({ chatId, text, opts });
@@ -101,7 +111,7 @@ export class FakeTelegramClient implements TelegramClientLike {
   createForumTopic(chatId: number, name: string): Promise<{ message_thread_id: number }> {
     this.forumCalls.push({ chatId, name });
     if (this.createMode === "reject") {
-      return Promise.reject(new Error("400 Bad Request: not enough rights to manage topics"));
+      return Promise.reject(this.createRejectError);
     }
     const threadId = this.nextThreadId++;
     if (this.createMode === "auto") return Promise.resolve({ message_thread_id: threadId });
@@ -128,12 +138,35 @@ export class FakeTelegramClient implements TelegramClientLike {
     return true;
   }
 
-  on(_event: "message", handler: (msg: TelegramIncomingMessage) => void): void {
-    this.handlers.push(handler);
+  getMe(): Promise<TelegramUser> {
+    return Promise.resolve(this.me);
+  }
+
+  getChatMember(chatId: number, userId: number): Promise<TelegramChatMember> {
+    return Promise.resolve(this.members.get(`${chatId}:${userId}`) ?? { status: "member" });
+  }
+
+  on(event: "message", handler: (msg: TelegramIncomingMessage) => void): void;
+  on(event: "my_chat_member", handler: (update: TelegramMyChatMemberUpdate) => void): void;
+  on(
+    event: "message" | "my_chat_member",
+    handler:
+      | ((msg: TelegramIncomingMessage) => void)
+      | ((update: TelegramMyChatMemberUpdate) => void),
+  ): void {
+    if (event === "message") {
+      this.handlers.push(handler as (msg: TelegramIncomingMessage) => void);
+    } else {
+      this.memberHandlers.push(handler as (update: TelegramMyChatMemberUpdate) => void);
+    }
   }
 
   emit(msg: TelegramIncomingMessage): void {
     for (const handler of this.handlers) handler(msg);
+  }
+
+  emitMyChatMember(update: TelegramMyChatMemberUpdate): void {
+    for (const handler of this.memberHandlers) handler(update);
   }
 
   callsFor(chatId: number): SentCall[] {

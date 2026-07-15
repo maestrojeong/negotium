@@ -109,7 +109,7 @@ describe("forum mode", () => {
     }
   });
 
-  test("createForumTopic failure falls back to the general chat with a title prefix and never retries", async () => {
+  test("missing Manage Topics falls back to General without retrying every message", async () => {
     fake.createMode = "reject";
     try {
       const title = room("no-rights");
@@ -125,10 +125,17 @@ describe("forum mode", () => {
         expect(call.chatId).toBe(FORUM_CHAT);
         expect(call.opts?.message_thread_id).toBeUndefined(); // general chat, no thread
       }
-      // Tombstoned: exactly one creation attempt despite two later messages.
+      // Permission-blocked: exactly one attempt until a membership update
+      // confirms Manage Topics was granted.
       expect(fake.forumCalls.filter((c) => c.name === title)).toHaveLength(1);
     } finally {
       fake.createMode = "auto";
+      fake.emitMyChatMember({
+        chat: { id: FORUM_CHAT, type: "supergroup", is_forum: true, title: "Test Forum" },
+        from: { id: 1 },
+        new_chat_member: { status: "administrator", can_manage_topics: true },
+      });
+      await waitFor(() => fake.calls.some((call) => call.text.includes("permission confirmed")));
     }
   });
 

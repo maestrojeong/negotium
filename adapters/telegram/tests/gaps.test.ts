@@ -421,17 +421,43 @@ describe("outbound files", () => {
 });
 
 describe("typing indicator", () => {
-  test("ai_active fires a best-effort typing chat action in every bound chat", async () => {
+  test("ai_active keeps the typing action alive until the turn finishes", async () => {
     const USER = freshUser();
-    const { fake, adapter } = startAdapter({ userId: USER });
+    const { fake, adapter } = startAdapter({ userId: USER, typingHeartbeatMs: 10 });
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("typing-room"));
       const topic = getTopicByNameForUser(room("typing-room"), USER)!;
       runtimeBus().broadcastAiActive(topic.id, "query-1");
-      await waitFor(() =>
-        fake.chatActions.some((a) => a.chatId === chatId && a.action === "typing"),
+      await waitFor(
+        () =>
+          fake.chatActions.filter((a) => a.chatId === chatId && a.action === "typing").length >= 2,
       );
+      runtimeBus().broadcastDone(topic.id, "query-1");
+      const stoppedAt = fake.chatActions.length;
+      await Bun.sleep(40);
+      expect(fake.chatActions).toHaveLength(stoppedAt);
+    } finally {
+      adapter.stop();
+    }
+  });
+
+  test("a session-retry abort clears the superseded query heartbeat", async () => {
+    const USER = freshUser();
+    const { fake, adapter } = startAdapter({ userId: USER, typingHeartbeatMs: 10 });
+    const chatId = freshChat();
+    try {
+      await mapChat(fake, chatId, room("typing-retry-room"));
+      const topic = getTopicByNameForUser(room("typing-retry-room"), USER)!;
+      runtimeBus().broadcastAiActive(topic.id, "expired-query");
+      await waitFor(() => fake.chatActions.filter((a) => a.chatId === chatId).length >= 2);
+      runtimeBus().broadcastAborted(topic.id, "expired-query", "stopped");
+      runtimeBus().broadcastAiActive(topic.id, "retry-query");
+      runtimeBus().broadcastDone(topic.id, "retry-query");
+
+      const stoppedAt = fake.chatActions.length;
+      await Bun.sleep(40);
+      expect(fake.chatActions).toHaveLength(stoppedAt);
     } finally {
       adapter.stop();
     }

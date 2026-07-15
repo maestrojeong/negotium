@@ -6,8 +6,10 @@ import { join } from "node:path";
 import {
   getAllMessagesForTopic,
   getTopicByNameForUser,
+  getTopicSessionId,
   type MessageDto,
   runtimeBus,
+  setTopicSessionId,
   type TopicDto,
   upsertTopic,
 } from "@negotium/core";
@@ -38,6 +40,7 @@ function inbound(chatId: number, text: string, threadId?: number, fromId = ALLOW
     from: { id: fromId },
     text,
     ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
+    ...(threadId !== undefined ? { is_topic_message: true as const } : {}),
   });
 }
 
@@ -133,9 +136,23 @@ describe("commands", () => {
     await waitFor(() => fake.callsFor(chat(3)).some((c) => c.text.includes("already exists")));
   });
 
-  test("/new without a name replies usage", async () => {
+  test("/new without a name resets the mapped topic session in place", async () => {
+    const topic = getTopicByNameForUser(room("my-room"), USER);
+    expect(topic).not.toBeNull();
+    setTopicSessionId(topic!.id, "telegram-reset-session", {
+      reason: "test",
+      agent: topic!.agent,
+    });
     inbound(chat(3), "/new");
-    await waitFor(() => fake.callsFor(chat(3)).some((c) => c.text === "usage: /new <name>"));
+    await waitFor(() =>
+      fake
+        .callsFor(chat(3))
+        .some(
+          (call) =>
+            call.text === `Session reset for "${room("my-room")}". The next message starts fresh.`,
+        ),
+    );
+    expect(getTopicSessionId(topic!.id)).toBeNull();
   });
 
   test("/topics and /load exclude hidden adapter topics", async () => {

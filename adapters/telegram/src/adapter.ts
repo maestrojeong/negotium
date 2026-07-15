@@ -46,6 +46,7 @@ import {
   composeAttachmentPrompt,
   createDerivedTopic,
   deleteTopicCascade,
+  ensurePersonalGeneral,
   errMsg,
   extractFileTagPaths,
   getTopic,
@@ -62,6 +63,7 @@ import {
   type RegisterTopicOptions,
   registerTopic,
   renderTurnFooter,
+  restartTopicSession,
   runtimeBus,
   startAiTurn,
   stripFileTags,
@@ -73,7 +75,12 @@ import {
 } from "@negotium/core";
 import { openMappingStore } from "@/mapping-store";
 import { renderOutbound } from "@/render";
-import type { TelegramClientLike, TelegramIncomingMessage } from "@/types";
+import type {
+  TelegramChatMember,
+  TelegramClientLike,
+  TelegramIncomingMessage,
+  TelegramMyChatMemberUpdate,
+} from "@/types";
 
 export interface TelegramAdapterOptions {
   client: TelegramClientLike;
@@ -96,6 +103,8 @@ export interface TelegramAdapterOptions {
   forumChatId?: number;
   /** Mapping-db path override (tests); default `${DATA_DIR}/adapter-telegram.db`. */
   mappingDbPath?: string;
+  /** Refresh interval for Telegram's short-lived typing action. Default 4s. */
+  typingHeartbeatMs?: number;
   /** Per-delivery watchdog: a send that hasn't settled in this long is
    *  abandoned so the topic's queue keeps draining. Override is a test hook;
    *  default 60s. */
@@ -159,6 +168,39 @@ const MAX_PARENT_HOPS = 5;
 const DEFAULT_SEND_TIMEOUT_MS = 60_000;
 /** Extensions delivered via sendPhoto (mirrors clawgram's IMAGE_EXTS). */
 const PHOTO_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp"]);
+
+function onboardingGuide(botUsername?: string): string {
+  const identity = botUsername ? `\nBot username: @${botUsername.replace(/^@/, "")}\n` : "\n";
+  return (
+    "Welcome to Negotium. This DM is your General manager: chat naturally here to create, " +
+    "delegate work to, stop, or delete topics.\n\n" +
+    "Connect a Telegram workspace:\n" +
+    "1. Create a supergroup and enable Topics.\n" +
+    "2. Add this bot to the group.\n" +
+    '3. Promote the bot to administrator and enable "Manage Topics".\n' +
+    "4. The group connects automatically; no /connect command is needed.\n" +
+    identity +
+    "After connection, use the group's General topic as the manager and each forum topic as " +
+    "an independent agent conversation."
+  );
+}
+
+function isChatAdmin(member: TelegramChatMember): boolean {
+  return member.status === "administrator" || member.status === "creator";
+}
+
+function canManageTopics(member: TelegramChatMember): boolean {
+  return (
+    member.status === "creator" ||
+    (member.status === "administrator" && member.can_manage_topics === true)
+  );
+}
+
+function isManageTopicsPermissionError(info: TelegramErrorInfo): boolean {
+  return /not enough rights|need administrator rights|chat_admin_required|manage topics/i.test(
+    info.description,
+  );
+}
 
 function defaultTopicTitle(chatId: number, threadId?: number): string {
   return threadId === undefined ? `tg-${chatId}` : `tg-${chatId}-${threadId}`;
@@ -226,20 +268,29 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   const { client, forumChatId } = opts;
   const userId = opts.userId ?? "local";
   const allowed = new Set((opts.allowedUsers ?? []).map((s) => s.trim()).filter(Boolean));
+  const isAllowed = (telegramUserId: number | undefined): boolean =>
+    allowed.size === 0 || allowed.has(String(telegramUserId));
   const titleFor = opts.topicTitleFor ?? defaultTopicTitle;
   const sendTimeoutMs = opts.sendTimeoutMs ?? DEFAULT_SEND_TIMEOUT_MS;
+  const typingHeartbeatMs = Math.max(250, opts.typingHeartbeatMs ?? 4_000);
   const footerEnabled = opts.footer === true;
   const dispatchTurn = opts.startTurn ?? startAiTurn;
-  const forumMode = forumChatId !== undefined && typeof client.createForumTopic === "function";
-  // forumMode implies forumChatId is a number — narrow it once here; every
-  // forum-path use below is guarded by `forumMode`.
-  const forumChat = forumChatId as number;
-  if (forumChatId !== undefined && !forumMode) {
+  const store = openMappingStore(opts.mappingDbPath);
+  const restoredForumChatId = store.loadForumChatId();
+  const initialForumChatId = forumChatId ?? restoredForumChatId;
+  let forumChat = initialForumChatId ?? 0;
+  let forumMode = initialForumChatId !== undefined && typeof client.createForumTopic === "function";
+  // A configured override is operator-authorized. A restored auto-connected
+  // group is re-verified asynchronously before materializing new threads.
+  let forumManageTopicsAvailable = forumMode && forumChatId !== undefined;
+  if (forumChatId !== undefined) store.saveForumChatId(forumChatId);
+  if (initialForumChatId !== undefined && !forumMode) {
     logger.warn(
-      { forumChatId },
+      { forumChatId: initialForumChatId },
       "telegram adapter: forumChatId set but client lacks createForumTopic — forum mode disabled",
     );
   }
+  const personalGeneral = ensurePersonalGeneral(userId);
 
   // ── mapping state ───────────────────────────────────────────────────
   // Two indexes over the same ChatMapping objects. byKey is 1:1 (a chat or
@@ -248,8 +299,81 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   // e.g. a DM chat and a forum thread bound to the same room).
   const byKey = new Map<string, ChatMapping>(); // `${chatId}` | `${chatId}:${threadId}`
   const byTopic = new Map<string, Set<ChatMapping>>();
-  const store = openMappingStore(opts.mappingDbPath);
+  const targetByQueryId = new Map<string, ChatMapping>();
+  const typingHeartbeatByQueryId = new Map<string, ReturnType<typeof setInterval>>();
+  const ownerDmChatIds = new Set<number>(
+    [...allowed]
+      .map((value) => Number.parseInt(value, 10))
+      .filter((value) => Number.isSafeInteger(value) && value > 0),
+  );
   let stopped = false;
+  let botIdentity: Awaited<ReturnType<NonNullable<TelegramClientLike["getMe"]>>> | undefined;
+  let botIdentityPromise: Promise<typeof botIdentity> | undefined;
+
+  function typingTargets(topicId: string, queryId?: string): ChatMapping[] {
+    const target = queryId ? targetByQueryId.get(queryId) : undefined;
+    return target ? [target] : [...(byTopic.get(topicId) ?? [])];
+  }
+
+  function sendTyping(topicId: string, queryId?: string): void {
+    if (typeof client.sendChatAction !== "function") return;
+    for (const mapping of typingTargets(topicId, queryId)) {
+      void client
+        .sendChatAction(mapping.chatId, "typing", threadOpts(mapping.threadId))
+        .catch(() => {});
+    }
+  }
+
+  function stopTypingHeartbeat(queryId: string): void {
+    const timer = typingHeartbeatByQueryId.get(queryId);
+    if (!timer) return;
+    clearInterval(timer);
+    typingHeartbeatByQueryId.delete(queryId);
+  }
+
+  function startTypingHeartbeat(topicId: string, queryId: string): void {
+    stopTypingHeartbeat(queryId);
+    sendTyping(topicId, queryId);
+    const timer = setInterval(() => {
+      if (stopped) {
+        stopTypingHeartbeat(queryId);
+        return;
+      }
+      sendTyping(topicId, queryId);
+    }, typingHeartbeatMs);
+    timer.unref?.();
+    typingHeartbeatByQueryId.set(queryId, timer);
+  }
+
+  function resolveBotIdentity(): Promise<typeof botIdentity> {
+    if (botIdentity) return Promise.resolve(botIdentity);
+    if (typeof client.getMe !== "function") return Promise.resolve(undefined);
+    if (botIdentityPromise) return botIdentityPromise;
+    botIdentityPromise = (async () => {
+      let attempt = 0;
+      while (!stopped) {
+        try {
+          botIdentity = await client.getMe!();
+          return botIdentity;
+        } catch (err) {
+          attempt += 1;
+          const waitMs = Math.min(5_000, 250 * 2 ** Math.min(attempt - 1, 5));
+          logger.warn(
+            { err, attempt, waitMs },
+            "telegram adapter: getMe failed while resolving onboarding identity; retrying",
+          );
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+        }
+      }
+      return undefined;
+    })().finally(() => {
+      botIdentityPromise = undefined;
+    });
+    return botIdentityPromise;
+  }
+
+  // Warm the identity cache so the common first-DM path has no added latency.
+  void resolveBotIdentity();
 
   const mappingKey = (chatId: number, threadId?: number): string =>
     threadId === undefined ? String(chatId) : `${chatId}:${threadId}`;
@@ -623,6 +747,10 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     });
   }
 
+  function enqueueTarget(topicId: string, target: ChatMapping, payload: OutboundPayload): void {
+    enqueueSend(topicId, () => deliverPayload(target.chatId, target.threadId, payload));
+  }
+
   // ── forum mode: materialize runtime topics as forum threads ─────────
   /** One in-flight `createForumTopic`: messages arriving meanwhile are
    *  buffered (flushed in order once the thread exists); `cancelled` is set
@@ -632,6 +760,10 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     cancelled: boolean;
   }
   const pendingByTopic = new Map<string, PendingMaterialization>();
+  /** Topics waiting for the bot's Manage Topics permission. Unlike permanent
+   *  tombstones, these are retried when Telegram reports the permission was
+   *  granted. */
+  const permissionBlockedTopics = new Map<string, string>();
   /** topicId → title for topics whose thread creation failed: subsequent
    *  messages go to the general chat with a `[title]` prefix instead of
    *  re-attempting creation on every message. Persisted so restarts keep the
@@ -658,9 +790,11 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
 
   function materializeTopic(topic: TopicDto): void {
     if (
+      !forumManageTopicsAvailable ||
       suppressMaterialize > 0 ||
       byTopic.has(topic.id) ||
       pendingByTopic.has(topic.id) ||
+      permissionBlockedTopics.has(topic.id) ||
       materializeTombstones.has(topic.id)
     ) {
       return;
@@ -668,6 +802,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     if (!isTopicVisible(topic)) return;
     // Only rooms the adapter's (single) negotium user can see.
     if (!topic.participants?.some((p) => p.userId === userId)) return;
+    const materializationChat = forumChat;
     const pending: PendingMaterialization = { buffer: [], cancelled: false };
     pendingByTopic.set(topic.id, pending);
     void (async () => {
@@ -675,24 +810,45 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       try {
         // forumMode implies createForumTopic exists (checked at start).
         created = await client.createForumTopic!(
-          forumChat,
+          materializationChat,
           topic.title.slice(0, FORUM_TOPIC_NAME_MAX),
         );
       } catch (err) {
-        pendingByTopic.delete(topic.id);
+        if (pendingByTopic.get(topic.id) === pending) pendingByTopic.delete(topic.id);
         // Adapter stopped or topic deleted while the call was in flight —
         // not a creation failure; don't tombstone (store may be closed).
         if (stopped || pending.cancelled) return;
+        const errorInfo = telegramErrorInfo(err);
+        if (isManageTopicsPermissionError(errorInfo)) {
+          const permissionWasAvailable = forumManageTopicsAvailable;
+          forumManageTopicsAvailable = false;
+          permissionBlockedTopics.set(topic.id, topic.title);
+          logger.warn(
+            { err, topicId: topic.id, title: topic.title },
+            "telegram adapter: Manage Topics unavailable — waiting for permission recovery",
+          );
+          if (permissionWasAvailable) {
+            reply(
+              forumChat,
+              undefined,
+              'Forum topic creation is paused. Enable the bot administrator permission "Manage Topics"; pending topics will be retried automatically.',
+            );
+          }
+          flushBuffered(topic.id, pending.buffer, (payload) =>
+            deliverFallback(topic.title, payload),
+          );
+          return;
+        }
         logger.warn(
           { err, topicId: topic.id, title: topic.title },
-          "telegram adapter: createForumTopic failed — falling back to general chat",
+          "telegram adapter: createForumTopic failed permanently — falling back to general chat",
         );
         materializeTombstones.set(topic.id, topic.title);
         store.saveTombstone(topic.id, topic.title);
         flushBuffered(topic.id, pending.buffer, (payload) => deliverFallback(topic.title, payload));
         return;
       }
-      pendingByTopic.delete(topic.id);
+      if (pendingByTopic.get(topic.id) === pending) pendingByTopic.delete(topic.id);
       const threadId = created.message_thread_id;
       if (stopped || pending.cancelled) {
         // Cancelled = the topic was deleted while creation was in flight:
@@ -700,7 +856,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
         // Stopped = abandon silently (no post-stop sends, no closed-DB save).
         if (pending.cancelled && typeof client.deleteForumTopic === "function") {
           void client
-            .deleteForumTopic(forumChat, threadId)
+            .deleteForumTopic(materializationChat, threadId)
             .catch((err) =>
               logger.warn(
                 { err, topicId: topic.id, threadId },
@@ -710,9 +866,9 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
         }
         return;
       }
-      bindMapping(forumChat, threadId, topic.id);
+      bindMapping(materializationChat, threadId, topic.id);
       flushBuffered(topic.id, pending.buffer, (payload) =>
-        deliverPayload(forumChat, threadId, payload),
+        deliverPayload(materializationChat, threadId, payload),
       );
     })();
   }
@@ -761,14 +917,22 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     return undefined;
   }
 
-  function routeMessage(topicId: string, payload: OutboundPayload): void {
+  function routeMessage(topicId: string, payload: OutboundPayload, queryId?: string): void {
     const pending = pendingByTopic.get(topicId);
     if (pending) {
       pending.buffer.push(payload); // thread creation in flight — flushed in order later
       return;
     }
+    const specificTarget = queryId ? targetByQueryId.get(queryId) : undefined;
+    if (specificTarget) {
+      enqueueTarget(topicId, specificTarget, payload);
+      return;
+    }
     const mappings = byTopic.get(topicId);
     if (mappings && mappings.size > 0) {
+      // A Telegram-owned query has a specific target above. Events produced by
+      // Terminal or another surface intentionally fan out to every mapped
+      // personal General so the owner's channel views stay synchronized.
       enqueueFanout(topicId, mappings, payload);
       return;
     }
@@ -780,6 +944,10 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     const topic = getTopic(topicId);
     if (!topic) return;
     if (forumMode) {
+      if (!forumManageTopicsAvailable || permissionBlockedTopics.has(topicId)) {
+        enqueueSend(topicId, () => deliverFallback(topic.title, payload));
+        return;
+      }
       // Lazy materialization: first message for a live topic with no binding
       // (topic predates the adapter, missed topic-created, dropped binding…)
       // — create its thread now instead of silently discarding the message.
@@ -808,8 +976,240 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       .catch((err) => logger.warn({ err, chatId }, "telegram adapter: reply failed"));
   }
 
+  async function sendOnboardingGuide(chatId: number, threadId?: number): Promise<void> {
+    const bot = await resolveBotIdentity();
+    if (stopped) return;
+    await client
+      .sendMessage(chatId, onboardingGuide(bot?.username), threadOpts(threadId))
+      .catch((err) => logger.warn({ err, chatId }, "telegram adapter: onboarding guide failed"));
+  }
+
+  function materializeVisibleTopics(): void {
+    if (!forumMode || !forumManageTopicsAvailable) return;
+    for (const topic of listTopics()) {
+      if (
+        isTopicVisible(topic) &&
+        topic.participants.some((participant) => participant.userId === userId)
+      ) {
+        materializeTopic(topic);
+      }
+    }
+  }
+
+  function restoreForumTopicCreation({ retryPermanent = false } = {}): void {
+    forumManageTopicsAvailable = true;
+    permissionBlockedTopics.clear();
+    if (retryPermanent) {
+      materializeTombstones.clear();
+      store.clearTombstones();
+    }
+    materializeVisibleTopics();
+  }
+
+  async function notifyOwnerDms(text: string): Promise<void> {
+    await Promise.allSettled([...ownerDmChatIds].map((chatId) => client.sendMessage(chatId, text)));
+  }
+
+  async function disconnectForum(chatId: number): Promise<boolean> {
+    if (!forumMode || forumChat !== chatId) return false;
+
+    for (const [topicId, pending] of pendingByTopic) {
+      pending.cancelled = true;
+      if (pendingByTopic.get(topicId) === pending) pendingByTopic.delete(topicId);
+    }
+    for (const mapping of [...byKey.values()]) {
+      if (mapping.chatId === chatId) unloadMapping(mapping.chatId, mapping.threadId);
+    }
+    for (const [queryId, target] of targetByQueryId) {
+      if (target.chatId === chatId) targetByQueryId.delete(queryId);
+    }
+
+    permissionBlockedTopics.clear();
+    materializeTombstones.clear();
+    store.clearTombstones();
+    store.outboxDeleteByChat(chatId);
+    store.clearForumChatId();
+    forumMode = false;
+    forumManageTopicsAvailable = false;
+    forumChat = 0;
+
+    await notifyOwnerDms(
+      "The Telegram forum was disconnected because the bot left or was removed. Your Negotium topics were preserved; promote the bot in a forum group to reconnect.",
+    );
+    logger.info({ userId, forumChatId: chatId }, "telegram adapter: forum disconnected");
+    return true;
+  }
+
+  async function linkForumAndAnnounce(
+    ownerTelegramId: number,
+    chat: { id: number; title?: string },
+    botMember: TelegramChatMember,
+  ): Promise<boolean> {
+    if (typeof client.createForumTopic !== "function") {
+      reply(
+        ownerTelegramId,
+        undefined,
+        "This Telegram client cannot create forum topics, so the group was not connected.",
+      );
+      return false;
+    }
+    if (forumMode && forumChat !== chat.id) {
+      reply(
+        ownerTelegramId,
+        undefined,
+        `A different forum group (${forumChat}) is already connected to this Negotium node.`,
+      );
+      return false;
+    }
+    const hasManageTopics = canManageTopics(botMember);
+    if (forumMode && forumChat === chat.id) {
+      const recovered = hasManageTopics && !forumManageTopicsAvailable;
+      const lostPermission = !hasManageTopics && forumManageTopicsAvailable;
+      if (hasManageTopics) {
+        restoreForumTopicCreation({ retryPermanent: recovered });
+        if (recovered) {
+          await Promise.allSettled([
+            client.sendMessage(
+              chat.id,
+              "Manage Topics permission confirmed. Pending Negotium topics are being created now.",
+            ),
+            notifyOwnerDms(
+              `Manage Topics permission confirmed for “${chat.title?.trim() || chat.id}”. Pending topics are being retried.`,
+            ),
+          ]);
+        }
+      } else {
+        forumManageTopicsAvailable = false;
+        if (lostPermission) {
+          await notifyOwnerDms(
+            `Manage Topics permission was removed from “${chat.title?.trim() || chat.id}”. Existing topics are preserved; restore the permission to resume topic creation.`,
+          );
+        }
+      }
+      return true;
+    }
+
+    forumChat = chat.id;
+    forumMode = true;
+    forumManageTopicsAvailable = hasManageTopics;
+    permissionBlockedTopics.clear();
+    materializeTombstones.clear();
+    store.clearTombstones();
+    store.saveForumChatId(chat.id);
+    bindMapping(chat.id, undefined, personalGeneral.id);
+    ownerDmChatIds.add(ownerTelegramId);
+
+    // Existing agent rooms become forum topics just like rooms created after
+    // connection. General is already mapped above and therefore skipped.
+    materializeVisibleTopics();
+
+    const title = chat.title?.trim() || String(chat.id);
+    const permissionWarning = hasManageTopics
+      ? ""
+      : '\n\nWarning: enable the bot administrator permission "Manage Topics" before creating or deleting topics.';
+    await Promise.allSettled([
+      client.sendMessage(
+        chat.id,
+        `Negotium connected to “${title}”. Use this General topic to create and manage topics in natural language.${permissionWarning}`,
+      ),
+      client.sendMessage(
+        ownerTelegramId,
+        `Connected forum group “${title}” (${chat.id}). No /connect command is needed.${permissionWarning}`,
+      ),
+    ]);
+    logger.info(
+      {
+        userId,
+        ownerTelegramId,
+        forumChatId: chat.id,
+        canManageTopics: hasManageTopics,
+      },
+      "telegram adapter: auto-connected forum group",
+    );
+    return true;
+  }
+
+  async function tryAutoConnectFromMessage(msg: TelegramIncomingMessage): Promise<boolean> {
+    const senderId = msg.from?.id;
+    if (
+      msg.chat.type !== "supergroup" ||
+      !msg.chat.is_forum ||
+      senderId === undefined ||
+      !isAllowed(senderId)
+    ) {
+      return false;
+    }
+    if (forumMode && msg.chat.id !== forumChat) return false;
+    if (forumMode && forumManageTopicsAvailable) return true;
+    if (typeof client.getMe !== "function" || typeof client.getChatMember !== "function") {
+      return false;
+    }
+
+    try {
+      const bot = await resolveBotIdentity();
+      if (!bot) return false;
+      const [botMember, senderMember] = await Promise.all([
+        client.getChatMember(msg.chat.id, bot.id),
+        client.getChatMember(msg.chat.id, senderId),
+      ]);
+      if (!isChatAdmin(botMember) || !isChatAdmin(senderMember)) return false;
+      await linkForumAndAnnounce(senderId, msg.chat, botMember);
+      return forumMode && forumChat === msg.chat.id;
+    } catch (err) {
+      logger.debug(
+        { err, groupId: msg.chat.id, senderId },
+        "telegram adapter: lazy forum auto-connect check failed",
+      );
+      return false;
+    }
+  }
+
+  async function verifyInitialForumPermissions(): Promise<void> {
+    if (!forumMode) return;
+    if (forumChatId !== undefined) return;
+    if (typeof client.getMe !== "function" || typeof client.getChatMember !== "function") {
+      // Embedded legacy clients cannot expose membership state. Preserve the
+      // previous configured-forum behavior instead of disabling the adapter.
+      forumManageTopicsAvailable = true;
+      return;
+    }
+    try {
+      const bot = await resolveBotIdentity();
+      if (!bot || stopped || !forumMode) return;
+      const member = await client.getChatMember(forumChat, bot.id);
+      if (member.status === "left" || member.status === "kicked") {
+        await disconnectForum(forumChat);
+        return;
+      }
+      if (canManageTopics(member)) {
+        const restoredAutoConnection =
+          forumChatId === undefined && restoredForumChatId !== undefined;
+        restoreForumTopicCreation({ retryPermanent: restoredAutoConnection });
+      } else {
+        forumManageTopicsAvailable = false;
+      }
+    } catch (err) {
+      logger.warn(
+        { err, forumChatId: forumChat },
+        "telegram adapter: initial forum permission check failed",
+      );
+    }
+  }
+
+  void verifyInitialForumPermissions();
+
   /** Persist the user message and start the AI turn (single fixed userId). */
-  function runTurn(topic: TopicDto, prompt: string): void {
+  function runTurn(
+    topic: TopicDto,
+    prompt: string,
+    chatId: number,
+    threadId: number | undefined,
+  ): void {
+    const target: ChatMapping = {
+      topicId: topic.id,
+      chatId,
+      ...(threadId !== undefined ? { threadId } : {}),
+    };
     appendApiMessage({
       id: randomUUID(),
       topicId: topic.id,
@@ -817,7 +1217,17 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       text: prompt,
       createdAt: new Date().toISOString(),
     });
-    dispatchTurn({ topic, userId, prompt, allowAutoContinue: true });
+    const rememberTarget = (queryId: string): void => {
+      targetByQueryId.set(queryId, target);
+    };
+    const queryId = dispatchTurn({
+      topic,
+      userId,
+      prompt,
+      allowAutoContinue: true,
+      onDispatched: rememberTarget,
+    });
+    if (queryId) rememberTarget(queryId);
   }
 
   // Preserve Telegram arrival order per chat/thread even when attachment
@@ -902,7 +1312,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
         { chatId },
         "telegram adapter: media message but client lacks getFileLink — caption only",
       );
-      if (caption) runTurn(topic, caption);
+      if (caption) runTurn(topic, caption, chatId, threadId);
       else reply(chatId, threadId, "this bot cannot download attachments");
       return;
     }
@@ -936,7 +1346,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
 
     const userText = voiceText ? (caption ? `${voiceText}\n\n${caption}` : voiceText) : caption;
     if (!userText && promptLines.length === 0) return;
-    runTurn(topic, composeAttachmentPrompt(userText, promptLines));
+    runTurn(topic, composeAttachmentPrompt(userText, promptLines), chatId, threadId);
   }
 
   // ── media groups (albums) ───────────────────────────────────────────
@@ -1024,7 +1434,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
         { chatId },
         "telegram adapter: media group but client lacks getFileLink — captions only",
       );
-      if (captions.length > 0) runTurn(topic, captions.join("\n"));
+      if (captions.length > 0) runTurn(topic, captions.join("\n"), chatId, threadId);
       else reply(chatId, threadId, "this bot cannot download attachments");
       return;
     }
@@ -1044,16 +1454,20 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     if (stopped) return;
     const userText = captions.join("\n");
     if (!userText && promptLines.length === 0) return;
-    runTurn(topic, composeAttachmentPrompt(userText, promptLines));
+    runTurn(topic, composeAttachmentPrompt(userText, promptLines), chatId, threadId);
   }
 
   // ── commands ────────────────────────────────────────────────────────
   /** Handle a leading-slash command. Commands never start an AI turn. */
-  function handleCommand(text: string, chatId: number, threadId?: number): void {
+  async function handleCommand(text: string, chatId: number, threadId?: number): Promise<void> {
     const [rawCmd = ""] = text.split(/\s+/);
     const cmd = rawCmd.replace(/@\w+$/, ""); // tolerate "/abort@MyBot" in groups
     const arg = extractCommandArg(text);
     switch (cmd) {
+      case "/start": {
+        await sendOnboardingGuide(chatId, threadId);
+        return;
+      }
       case "/abort": {
         const mapping = byKey.get(mappingKey(chatId, threadId));
         reply(
@@ -1094,7 +1508,18 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       }
       case "/new": {
         if (!arg) {
-          reply(chatId, threadId, "usage: /new <name>");
+          const mapping = byKey.get(mappingKey(chatId, threadId));
+          const topic = mapping ? getTopic(mapping.topicId) : null;
+          if (!topic) {
+            reply(chatId, threadId, "nothing to reset — this chat has no topic yet");
+            return;
+          }
+          try {
+            const result = await restartTopicSession(topic.id, userId, "telegram-session-reset");
+            reply(chatId, threadId, result.text);
+          } catch (err) {
+            reply(chatId, threadId, errMsg(err, "session reset failed"));
+          }
           return;
         }
         try {
@@ -1214,22 +1639,33 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
         reply(
           chatId,
           threadId,
-          "commands: /new <name>, /topics, /agent <claude|codex|maestro>, " +
+          "commands: /new [name], /topics, /agent <claude|codex|maestro>, " +
             "/load <topic>, /unload, /fork [name], /spawn [name], " +
             "/del [name], /del! [name], /abort",
         );
     }
   }
 
-  client.on("message", (msg: TelegramIncomingMessage) => {
+  function handleIncomingMessage(msg: TelegramIncomingMessage): void {
     if (stopped) return;
-    // Whitelist rejection is silent — same posture as clawgram (don't leak
-    // the bot's existence to strangers) and no topic is ever created.
-    if (allowed.size > 0 && !allowed.has(String(msg.from?.id))) return;
     const chatId = msg.chat.id;
-    const threadId = msg.message_thread_id;
+    // General can contain generic reply threads with message_thread_id, but it
+    // is not a forum topic. Only is_topic_message=true may select an agent room.
+    const generalForumMessage =
+      msg.chat.type === "supergroup" && msg.chat.is_forum === true && msg.is_topic_message !== true;
+    const threadId = generalForumMessage ? undefined : msg.message_thread_id;
     const text = msg.text?.trim();
     const hasMedia = Boolean(msg.photo?.length || msg.document || msg.voice);
+    const privateDm = msg.chat.type === "private";
+    const firstPrivateContact = privateDm && !byKey.has(mappingKey(chatId));
+
+    if (privateDm) ownerDmChatIds.add(chatId);
+    if (privateDm || (forumMode && chatId === forumChat && threadId === undefined)) {
+      bindMapping(chatId, threadId, personalGeneral.id);
+    }
+    if (firstPrivateContact && text !== "/start") {
+      void sendOnboardingGuide(chatId);
+    }
 
     if (text?.startsWith("/")) {
       // Abort is an out-of-band control and must not wait behind a slow file
@@ -1237,7 +1673,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       // can change the chat's topic mapping.
       const command = text.split(/\s+/, 1)[0]?.replace(/@\w+$/, "");
       if (command === "/abort") {
-        handleCommand(text, chatId, threadId);
+        void handleCommand(text, chatId, threadId);
       } else {
         enqueueInbound(chatId, threadId, () => handleCommand(text, chatId, threadId));
       }
@@ -1252,7 +1688,63 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       return;
     }
     if (!text) return;
-    enqueueInbound(chatId, threadId, () => runTurn(resolveMapping(chatId, threadId), text));
+    enqueueInbound(chatId, threadId, () =>
+      runTurn(resolveMapping(chatId, threadId), text, chatId, threadId),
+    );
+  }
+
+  client.on("message", (msg: TelegramIncomingMessage) => {
+    if (stopped) return;
+    // Whitelist rejection is silent — same posture as clawgram (don't leak
+    // the bot's existence to strangers) and no topic is ever created.
+    if (!isAllowed(msg.from?.id)) return;
+
+    if (msg.chat.type === "supergroup" && msg.chat.is_forum) {
+      if (forumMode && msg.chat.id !== forumChat) return;
+      if (!forumMode || !forumManageTopicsAvailable) {
+        void tryAutoConnectFromMessage(msg).then((connected) => {
+          if (connected && !stopped) handleIncomingMessage(msg);
+        });
+        return;
+      }
+    }
+    handleIncomingMessage(msg);
+  });
+
+  client.on("my_chat_member", (update: TelegramMyChatMemberUpdate) => {
+    if (stopped || update.chat.type !== "supergroup" || !update.chat.is_forum) return;
+    const status = update.new_chat_member?.status;
+    if ((status === "left" || status === "kicked") && forumChat === update.chat.id) {
+      void disconnectForum(update.chat.id).catch((err) =>
+        logger.warn({ err, groupId: update.chat.id }, "telegram adapter: forum disconnect failed"),
+      );
+      return;
+    }
+    if (
+      forumMode &&
+      forumChat === update.chat.id &&
+      status !== "administrator" &&
+      status !== "creator"
+    ) {
+      const permissionWasAvailable = forumManageTopicsAvailable;
+      forumManageTopicsAvailable = false;
+      if (permissionWasAvailable) {
+        void notifyOwnerDms(
+          'The bot no longer has forum administrator access. Existing topics are preserved; restore administrator + "Manage Topics" to resume topic creation.',
+        );
+      }
+      return;
+    }
+    if (
+      (status !== "administrator" && status !== "creator") ||
+      update.from?.id === undefined ||
+      (!isAllowed(update.from.id) && (!forumMode || forumChat !== update.chat.id))
+    ) {
+      return;
+    }
+    void linkForumAndAnnounce(update.from.id, update.chat, update.new_chat_member!).catch((err) =>
+      logger.warn({ err, groupId: update.chat.id }, "telegram adapter: forum auto-connect failed"),
+    );
   });
 
   // ── outbound: RuntimeBus → Telegram ─────────────────────────────────
@@ -1267,14 +1759,19 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       return;
     }
     if (event.type === "ai-status") {
-      // Turn started → best-effort typing indicator in every bound chat.
-      const status = event.payload as { kind?: string } | null;
+      // Telegram typing actions expire after a few seconds. Keep refreshing
+      // while the turn is active so long tool/model waits still look alive.
+      const status = event.payload as { kind?: string; queryId?: string } | null;
       if (status?.kind === "ai_active" && typeof client.sendChatAction === "function") {
-        for (const mapping of byTopic.get(event.topicId) ?? []) {
-          void client
-            .sendChatAction(mapping.chatId, "typing", threadOpts(mapping.threadId))
-            .catch(() => {});
-        }
+        if (status.queryId) startTypingHeartbeat(event.topicId, status.queryId);
+        else sendTyping(event.topicId);
+      }
+      if (
+        status?.queryId &&
+        (status.kind === "ai_done" || status.kind === "ai_error" || status.kind === "ai_aborted")
+      ) {
+        stopTypingHeartbeat(status.queryId);
+        targetByQueryId.delete(status.queryId);
       }
       return;
     }
@@ -1292,7 +1789,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       if (footer) text = text ? `${text}\n\n*${footer}*` : `*${footer}*`;
     }
     if (!text && files.length === 0) return;
-    routeMessage(event.topicId, { text, files });
+    routeMessage(event.topicId, { text, files }, msg.queryId);
   });
 
   return {
@@ -1306,6 +1803,8 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
         clearTimeout(outboxTimer);
         outboxTimer = undefined;
       }
+      for (const timer of typingHeartbeatByQueryId.values()) clearInterval(timer);
+      typingHeartbeatByQueryId.clear();
       // Clawgram's clearMediaGroupBuffer behavior: cancel timers and DROP
       // buffered album items — a flush must not fire into a stopped adapter.
       for (const entry of mediaGroups.values()) {

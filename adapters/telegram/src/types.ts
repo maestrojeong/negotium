@@ -13,6 +13,11 @@ export interface TelegramClientLike {
   sendMessage(chatId: number, text: string, opts?: Record<string, unknown>): Promise<unknown>;
   /** Subscribe to incoming messages (long polling or webhook — adapter doesn't care). */
   on(event: "message", handler: (msg: TelegramIncomingMessage) => void): void;
+  /** Bot membership changes, used to auto-connect when it is promoted in a forum group. */
+  on(event: "my_chat_member", handler: (update: TelegramMyChatMemberUpdate) => void): void;
+  /** Identity and membership lookups used by the missed-promotion fallback. */
+  getMe?(): Promise<TelegramUser>;
+  getChatMember?(chatId: number, userId: number): Promise<TelegramChatMember>;
   /**
    * Forum surface — optional so DM-only bots still satisfy the interface.
    * Required for forum mode ({@link TelegramAdapterOptions.forumChatId}):
@@ -38,11 +43,36 @@ export interface TelegramClientLike {
   sendChatAction?(chatId: number, action: string, opts?: Record<string, unknown>): Promise<unknown>;
 }
 
+export interface TelegramUser {
+  id: number;
+  is_bot?: boolean;
+  username?: string;
+}
+
+export interface TelegramChat {
+  id: number;
+  type?: "private" | "group" | "supergroup" | "channel";
+  title?: string;
+  is_forum?: boolean;
+}
+
+export interface TelegramChatMember {
+  status?: string;
+  can_manage_topics?: boolean;
+  user?: TelegramUser;
+}
+
+export interface TelegramMyChatMemberUpdate {
+  chat: TelegramChat;
+  from?: TelegramUser;
+  new_chat_member?: TelegramChatMember;
+}
+
 /** The subset of Telegram's `Message` update the adapter reads.
  *  Media shapes mirror node-telegram-bot-api's `Message` fields. */
 export interface TelegramIncomingMessage {
-  chat: { id: number };
-  from?: { id: number };
+  chat: TelegramChat;
+  from?: TelegramUser;
   text?: string;
   /** Caption of a media message (photo/document/…). */
   caption?: string;
@@ -55,4 +85,6 @@ export interface TelegramIncomingMessage {
   media_group_id?: string;
   /** Forum topic thread id — present when the message was posted in a forum thread. */
   message_thread_id?: number;
+  /** True only when message_thread_id identifies a real forum topic. */
+  is_topic_message?: true;
 }
