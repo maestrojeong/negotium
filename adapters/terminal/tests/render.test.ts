@@ -51,11 +51,24 @@ describe("terminal renderer", () => {
   });
 
   test("shows a dedicated topic-name composer after choosing new topic", () => {
-    const state = { ...createInitialState("local"), creatingTopic: true };
+    const previousMessage: MessageDto = {
+      id: "previous-message",
+      topicId: "topic",
+      authorId: "ai",
+      text: "existing topic conversation",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [previousMessage]);
+    state = { ...state, creatingTopic: true };
     const output = stripAnsi(renderApp(state, 120, 30));
 
     expect(output).toContain("new topic · type a name · Enter create");
     expect(output).toContain("Type a topic name…");
+    expect(output).toContain("New topic");
+    expect(output).toContain("○ naming");
+    expect(output).not.toContain("existing topic conversation");
+    expect(output).not.toContain("Terminal · codex · gpt");
     expect(output).not.toContain("/new ");
   });
 

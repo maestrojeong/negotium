@@ -545,6 +545,15 @@ function conversationLines(
   if (state.overlay === "help") return helpLines().slice(0, height);
   if (state.overlay === "status") return statusLines(state).slice(0, height);
   if (state.overlay === "topics") return topicOverlayLines(state, animationFrame).slice(0, height);
+  if (state.creatingTopic) {
+    return [
+      line(""),
+      line("  New topic", { fg: theme.accent, bold: true }),
+      line(""),
+      line("  Type only the topic name in the composer below."),
+      line("  Enter create · Esc cancel", { fg: theme.muted }),
+    ].slice(0, height);
+  }
   if (state.overlay === "transcript") {
     return [
       line("  Transcript · Ctrl-T close", { fg: theme.accent, bold: true }),
@@ -698,6 +707,19 @@ function footerLines(
   animationFrame = 0,
   nowMs = terminalNowMs(),
 ): string[] {
+  if (state.creatingTopic) {
+    return [
+      paint(joinSides("  New topic", "○ naming  ", width), {
+        fg: theme.accent,
+        bg: theme.surfaceRaised,
+        bold: true,
+      }),
+      paint(joinSides("", "Esc cancel  ", width), {
+        fg: theme.muted,
+        bg: theme.canvas,
+      }),
+    ];
+  }
   const topic = activeTopic(state);
   const activity = topic ? state.activity[topic.id] : undefined;
   const status = activity?.running
