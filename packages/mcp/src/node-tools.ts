@@ -1,7 +1,8 @@
 /**
  * Node tools — the negotium MCP's headline tool surface for driving the
- * local runtime: create/list topics, fire-and-forget messaging into other
- * topics' session inboxes, and abort/delete lifecycle control.
+ * local runtime: create/list topics and abort/restart/delete lifecycle control.
+ * Cross-topic messaging belongs exclusively to the session-comm MCP
+ * (`tell_session` / `ask_session`) so there is one unambiguous contract.
  *
  * Every tool is keyed by `ctx.userId` from the verified per-turn token; a
  * caller can never see or touch another user's topics.
@@ -24,6 +25,7 @@ import {
   logger,
   type RuntimeMcpContext,
   registerTopic,
+  restartTopicSession,
   sessionInboxPath,
   TopicArchiveRequiredError,
   type TopicDto,
@@ -64,7 +66,8 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
   server.tool(
     "register_topic",
     "Create a new topic (agent room) on this negotium node, owned by the calling user. " +
-      "Returns the new topic's id, title, agent, and model. Use send_message to hand it work.",
+      "Returns the new topic's id, title, agent, and model. Use the session-comm tell_session " +
+      "tool to hand the new topic work.",
     {
       title: z.string().describe("Unique title for the new topic."),
       agent: z
@@ -116,45 +119,6 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
   );
 
   server.tool(
-    "send_message",
-    "Send a fire-and-forget message to another topic on this node. The message is appended to the " +
-      "target topic's durable inbox queue and triggers (or is delivered into) its agent turn; no reply " +
-      "is returned to this call. If the target is mid-turn, delivery is deferred until the turn ends.",
-    {
-      topic: z.string().describe("Target topic title or id."),
-      message: z.string().describe("Message text to deliver to the target topic."),
-    },
-    async ({ topic, message }) => {
-      const resolved = resolveTopicForUser(ctx, topic);
-      if ("error" in resolved) return errorResult(resolved.error);
-      const target = resolved.topic;
-      if (!message.trim()) return errorResult("Error: message is required.");
-
-      const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      try {
-        appendJsonlEntry(sessionInboxPath(ctx.userId, target.id), {
-          type: "tell",
-          from: ctx.topicTitle,
-          fromTopicId: ctx.topicId,
-          message,
-          depth: 0,
-          requestId,
-          timestamp: new Date().toISOString(),
-        });
-      } catch (err) {
-        logger.error({ err, topicId: target.id }, "negotium MCP: send_message inbox write failed");
-        return errorResult(`Error: failed to queue message for "${target.title}": ${errMsg(err)}`);
-      }
-      return textResult(
-        [
-          `Message queued for "${target.title}" (request_id: ${requestId}).`,
-          "Delivery is fire-and-forget: no reply will be returned to this call. If the target is mid-turn, the message is delivered when that turn completes.",
-        ].join("\n"),
-      );
-    },
-  );
-
-  server.tool(
     "abort_topic",
     "Abort the running turn in another topic on this node. Fire-and-forget: also queues an abort " +
       "signal in the topic's inbox so a turn that has not started yet is cancelled too. Returns whether an active turn was aborted.",
@@ -185,6 +149,29 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
           ? `Aborted the active turn in "${target.title}".`
           : `No active turn in "${target.title}"; abort signal queued in its inbox.`,
       );
+    },
+  );
+
+  server.tool(
+    "restart_topic",
+    "Reset another topic's AI context while preserving the topic and its visible message history. " +
+      "The next message starts a fresh provider session. Only the topic owner can restart it.",
+    {
+      topic: z.string().describe("Target topic title or id."),
+    },
+    async ({ topic }) => {
+      const resolved = resolveTopicForUser(ctx, topic);
+      if ("error" in resolved) return errorResult(resolved.error);
+      const target = resolved.topic;
+      if (target.id === ctx.topicId) {
+        return errorResult("Error: cannot restart the current topic from within its own turn.");
+      }
+      if (target.kind === "manager") {
+        return errorResult("Error: manager rooms are system-managed and cannot be restarted.");
+      }
+
+      const result = await restartTopicSession(target.id, ctx.userId, "runtime-mcp-session-reset");
+      return result.isError ? errorResult(`Error: ${result.text}`) : textResult(result.text);
     },
   );
 

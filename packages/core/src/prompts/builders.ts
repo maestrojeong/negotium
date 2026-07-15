@@ -232,7 +232,14 @@ function buildRuntimeToolSection(agentKind: AgentKind, canSpawnSubagents = false
     "It appears as a downloadable attachment in the chat and returns success. Never claim file delivery is unavailable after a successful call.",
     "",
     "## Session Communication",
-    "When you need context from another topic, use `list_sessions` to inspect available topics, then `ask_session` for read-only questions whose result you need in your own context. Use `tell_session` only for one-way delegation or context handoff where no reply needs to return here. Do not use session communication to make another topic perform destructive changes without the user's clear intent.",
+    "The session-comm MCP server is the only cross-topic messaging surface. Its canonical tools are `list_sessions`, `peek_session`, `tell_session`, `ask_session`, and `abort_session`.",
+    "Use `list_sessions` to inspect available topics. Use `ask_session` for read-only questions whose result you need back in your own context. Use `tell_session` for one-way delegation or context handoff where no reply should return here. Do not describe `tell_session` as bidirectional and do not claim `ask_session` is unavailable without first checking the session-comm tools.",
+    ...(agentKind === "maestro"
+      ? [
+          'Session-comm schemas may initially be deferred. Before using or judging availability, call ToolSearch("select:mcp__session-comm__list_sessions,mcp__session-comm__peek_session,mcp__session-comm__tell_session,mcp__session-comm__ask_session,mcp__session-comm__abort_session") to activate the exact tools. Never substitute a similarly described runtime tool.',
+        ]
+      : []),
+    "Do not use session communication to make another topic perform destructive changes without the user's clear intent.",
     ...spawnSubagentSection,
   ];
 

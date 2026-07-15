@@ -40,6 +40,8 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain("mcp__task__task_create");
     expect(prompt).toContain("TodoWrite");
     expect(prompt).toContain('"Task", "Agent"');
+    expect(prompt).toContain("`tell_session`");
+    expect(prompt).toContain("`ask_session`");
     expect(prompt).toContain("mcp__runtime__set_model");
     expect(prompt).not.toContain("{{");
   });
@@ -64,7 +66,14 @@ describe("session system prompt builders", () => {
     });
 
     expect(prompt).toContain("## Manager Role");
-    expect(prompt).toContain("topic-admin MCP tools");
+    expect(prompt).toContain("runtime MCP tools");
+    expect(prompt).toContain("`register_topic`");
+    expect(prompt).toContain("`restart_topic`");
+    expect(prompt).not.toContain("`create_topic`");
+    expect(prompt).not.toContain("`update_topic`");
+    expect(prompt).toContain("session-comm `tell_session`");
+    expect(prompt).toContain("`ask_session`");
+    expect(prompt).not.toContain("send_message");
     expect(prompt).toContain("mcp__runtime");
     expect(prompt).toContain("send_file");
     expect(prompt).toContain("ask_user_question");
@@ -88,6 +97,9 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain("mcp__runtime__ask_user_question");
     expect(prompt).toContain("mcp__task__task_update");
     expect(prompt).toContain("mcp__runtime__set_model");
+    expect(prompt).toContain("mcp__session-comm__tell_session");
+    expect(prompt).toContain("mcp__session-comm__ask_session");
+    expect(prompt).toContain("ToolSearch");
     expect(prompt).toContain('Do not use provider built-in "AskUserQuestion"');
     expect(prompt).toContain(
       'Do not use the Maestro "Agent" sub-agent tool either; it is disabled',

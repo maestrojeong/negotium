@@ -1,14 +1,17 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
+  getTopicByNameForUser,
+  getTopicSessionId,
   issueRuntimeMcpToken,
   type RuntimeMcpContext,
   registerTopic,
   sessionInboxPath,
+  setTopicSessionId,
 } from "@negotium/core";
 import { handleNegotiumMcpRequest } from "../src/index";
 
@@ -82,8 +85,8 @@ describe("negotium MCP endpoint", () => {
     for (const expected of [
       "register_topic",
       "list_topics",
-      "send_message",
       "abort_topic",
+      "restart_topic",
       "delete_topic",
       "ask_user_question",
       "spawn_subagent",
@@ -95,6 +98,7 @@ describe("negotium MCP endpoint", () => {
     ]) {
       expect(names).toContain(expected);
     }
+    expect(names).not.toContain("send_message");
   });
 
   test("register_topic creates a topic owned by the token's user", async () => {
@@ -129,45 +133,6 @@ describe("negotium MCP endpoint", () => {
     expect(text).not.toContain("other-user-room");
   });
 
-  test("send_message queues a durable tell entry in the target inbox", async () => {
-    const result = await client.callTool({
-      name: "send_message",
-      arguments: { topic: "worker-room", message: "scan the ports" },
-    });
-    expect(result.isError).toBeFalsy();
-    expect(resultText(result)).toContain("no reply will be returned");
-
-    const listed = resultText(await client.callTool({ name: "list_topics", arguments: {} }));
-    const workerId = /"worker-room" \(id: ([0-9a-f-]{36})/.exec(listed)?.[1];
-    expect(workerId).toBeTruthy();
-
-    const inboxFile = sessionInboxPath(USER_ID, workerId!);
-    expect(existsSync(inboxFile)).toBe(true);
-    const entries = readFileSync(inboxFile, "utf-8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
-    expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({
-      type: "tell",
-      from: "main-room",
-      fromTopicId: mainTopic.id,
-      message: "scan the ports",
-      depth: 0,
-    });
-    expect(entries[0].requestId).toBeTruthy();
-    expect(entries[0].timestamp).toBeTruthy();
-  });
-
-  test("send_message refuses topics the user cannot see", async () => {
-    const result = await client.callTool({
-      name: "send_message",
-      arguments: { topic: "other-user-room", message: "hi" },
-    });
-    expect(result.isError).toBe(true);
-    expect(resultText(result)).toContain("not found");
-  });
-
   test("abort_topic reports idle targets and queues the abort signal", async () => {
     const result = await client.callTool({
       name: "abort_topic",
@@ -188,6 +153,33 @@ describe("negotium MCP endpoint", () => {
   test("abort_topic refuses the current topic", async () => {
     const result = await client.callTool({
       name: "abort_topic",
+      arguments: { topic: mainTopic.id },
+    });
+    expect(result.isError).toBe(true);
+    expect(resultText(result)).toContain("current topic");
+  });
+
+  test("restart_topic clears AI context but preserves the topic", async () => {
+    const worker = getTopicByNameForUser("worker-room", USER_ID)!;
+    setTopicSessionId(worker.id, "01940000-0000-7000-8000-000000000000", {
+      reason: "test",
+      agent: "codex",
+    });
+
+    const result = await client.callTool({
+      name: "restart_topic",
+      arguments: { topic: worker.id },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(resultText(result)).toContain('Session reset for "worker-room"');
+    expect(getTopicSessionId(worker.id)).toBeNull();
+    expect(getTopicByNameForUser("worker-room", USER_ID)?.id).toBe(worker.id);
+  });
+
+  test("restart_topic refuses the current topic", async () => {
+    const result = await client.callTool({
+      name: "restart_topic",
       arguments: { topic: mainTopic.id },
     });
     expect(result.isError).toBe(true);
