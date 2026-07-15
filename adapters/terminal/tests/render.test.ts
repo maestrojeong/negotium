@@ -244,9 +244,16 @@ describe("terminal renderer", () => {
     state = { ...state, aiName: "Nova" };
     state = setMessages(state, "topic", messages);
 
-    const output = stripAnsi(renderApp(state, 100, 30));
+    const rendered = renderApp(state, 100, 30);
+    const renderedLines = rendered.split("\n");
+    const outputLines = stripAnsi(rendered).split("\n");
+    const userLine = renderedLines[outputLines.findIndex((line) => line.includes("› question"))];
+    const aiLine = renderedLines[outputLines.findIndex((line) => line.includes("● answer"))];
+    const output = outputLines.join("\n");
     expect(output).toContain("› question");
     expect(output).toContain("● answer");
+    expect(userLine).toContain("\u001b[48;2;24;27;36m");
+    expect(aiLine).toContain("\u001b[48;2;10;11;15m");
     expect(output).not.toContain("You");
     expect(output).not.toContain("Nova");
     expect(output).not.toContain("06:39");

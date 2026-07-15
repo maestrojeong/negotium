@@ -338,13 +338,13 @@ function messageLines(message: MessageDto, width: number, userId: string): UiLin
   }
   const own = message.authorId === userId;
   const ai = message.authorId === "ai";
-  const system = !own && !ai;
   const icon = own ? "›" : ai ? "●" : "•";
   const body = ai
     ? renderMarkdown(message.text, Math.max(4, width - 6))
     : wrapText(message.text, Math.max(4, width - 6)).map((text, index) =>
         line(`${index === 0 ? `  ${icon} ` : "    "}${text}`, {
-          fg: system ? theme.muted : theme.text,
+          fg: theme.text,
+          bg: theme.surfaceRaised,
         }),
       );
   if (ai) {
@@ -356,6 +356,10 @@ function messageLines(message: MessageDto, width: number, userId: string): UiLin
         text: `  ${icon} ${first.text.trimStart()}`,
       };
     }
+  }
+  if (!ai) {
+    const padding = line("", { bg: theme.surfaceRaised });
+    return [padding, ...body, padding, line("")];
   }
   return [...body, line("")];
 }
