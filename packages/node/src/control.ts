@@ -11,11 +11,7 @@ import {
 import { dirname, resolve } from "node:path";
 import {
   type AgentKind,
-  abortRoom,
-  answerPendingAskUserQuestion,
-  appendApiMessage,
-  compactTopicSession,
-  deleteTopicCascade,
+  type compactTopicSession,
   ensurePersonalGeneral,
   getTopic,
   getVisibleTopics,
@@ -24,17 +20,17 @@ import {
   listApiMessages,
   listRecentRuntimeEventsForTopic,
   listRuntimeEventsAfter,
-  type MessageDto,
   NODE_CONTROL_TOKEN,
   RUN_DIR,
   type RuntimeBusEvent,
-  registerTopic,
-  restartTopicSession,
-  runtimeBus,
   STATE_DIR,
   type StoredRuntimeEvent,
-  startAiTurn,
+  type startAiTurn,
+  submitUserMessage,
+  switchTopicModel,
   type TopicDto,
+  TopicServiceError,
+  topicService,
 } from "@negotium/core";
 
 export const NODE_CONTROL_PROTOCOL_VERSION = 1;
@@ -75,6 +71,12 @@ interface ControlHandlerOptions {
 
 function jsonError(status: number, error: string): Response {
   return Response.json({ ok: false, error }, { status });
+}
+
+function topicServiceError(error: TopicServiceError): Response {
+  const status =
+    error.code === "TOPIC_NOT_FOUND" ? 404 : error.code === "TOPIC_FORBIDDEN" ? 403 : 400;
+  return jsonError(status, error.message);
 }
 
 function safeEqual(left: string, right: string): boolean {
@@ -263,7 +265,7 @@ export function createNodeControlHandler(
         if (agent !== undefined && !["claude", "codex", "maestro"].includes(String(agent))) {
           return jsonError(400, "Invalid agent");
         }
-        const topic = registerTopic({
+        const topic = topicService.create({
           title,
           userId,
           kind: "agent",
@@ -303,20 +305,12 @@ export function createNodeControlHandler(
         const text = requiredText(body.text, "text");
         const topic = topicForUser(topicId, userId);
         if (!topic) return jsonError(404, "Topic not found");
-        const message: MessageDto = {
-          id: randomUUID(),
-          topicId,
-          authorId: userId,
-          text,
-          createdAt: new Date().toISOString(),
-        };
-        appendApiMessage(message);
-        runtimeBus().broadcastMessage(topicId, message);
-        (options.startTurn ?? startAiTurn)({
+        const { message } = submitUserMessage({
           topic,
           userId,
-          prompt: text,
-          allowAutoContinue: true,
+          text,
+          sourceAdapter: "terminal",
+          startTurn: options.startTurn,
         });
         return Response.json({ ok: true, message }, { status: 201 });
       }
@@ -330,18 +324,23 @@ export function createNodeControlHandler(
         return Response.json({ ok: true, events });
       }
 
+      const modelMatch = path.match(/^\/topics\/([^/]+)\/model$/);
+      if (modelMatch && req.method === "POST") {
+        const topicId = decodeURIComponent(modelMatch[1]);
+        const body = await bodyRecord(req);
+        const userId = requiredText(body.userId, "userId");
+        const model = requiredText(body.model, "model");
+        if (!topicForUser(topicId, userId)) return jsonError(404, "Topic not found");
+        const result = switchTopicModel({ topicId, userId, model });
+        if (!result.ok) return jsonError(400, result.error);
+        return Response.json({ ok: true, model: result.model, result: result.text });
+      }
+
       const deleteMatch = path.match(/^\/topics\/([^/]+)$/);
       if (deleteMatch && req.method === "DELETE") {
         const topicId = decodeURIComponent(deleteMatch[1]);
         const userId = requiredText(url.searchParams.get("user"), "user");
-        const topic = topicForUser(topicId, userId);
-        if (!topic) return jsonError(404, "Topic not found");
-        if (topic.kind === "manager") return jsonError(400, "Manager topics cannot be deleted");
-        const owner = topic.participants.some(
-          (participant) => participant.userId === userId && participant.role === "owner",
-        );
-        if (!owner) return jsonError(403, "Only a topic owner can delete it");
-        await deleteTopicCascade(topic, userId);
+        await topicService.delete({ topicId, userId });
         return Response.json({ ok: true });
       }
 
@@ -350,8 +349,7 @@ export function createNodeControlHandler(
         const topicId = decodeURIComponent(abortMatch[1]);
         const body = await bodyRecord(req);
         const userId = requiredText(body.userId, "userId");
-        if (!topicForUser(topicId, userId)) return jsonError(404, "Topic not found");
-        return Response.json({ ok: true, aborted: abortRoom(topicId) });
+        return Response.json({ ok: true, aborted: topicService.abortTurn(topicId, userId) });
       }
 
       const resetMatch = path.match(/^\/topics\/([^/]+)\/session\/reset$/);
@@ -359,8 +357,11 @@ export function createNodeControlHandler(
         const topicId = decodeURIComponent(resetMatch[1]);
         const body = await bodyRecord(req);
         const userId = requiredText(body.userId, "userId");
-        if (!topicForUser(topicId, userId)) return jsonError(404, "Topic not found");
-        const result = await restartTopicSession(topicId, userId, "node-control-session-reset");
+        const result = await topicService.reset({
+          topicId,
+          userId,
+          reason: "node-control-session-reset",
+        });
         if (result.isError) return jsonError(409, result.text);
         return Response.json({ ok: true, result: result.text });
       }
@@ -370,12 +371,12 @@ export function createNodeControlHandler(
         const topicId = decodeURIComponent(compactMatch[1]);
         const body = await bodyRecord(req);
         const userId = requiredText(body.userId, "userId");
-        if (!topicForUser(topicId, userId)) return jsonError(404, "Topic not found");
-        const result = await (options.compactSession ?? compactTopicSession)(
+        const result = await topicService.compact({
           topicId,
           userId,
-          "node-control-session-compact",
-        );
+          reason: "node-control-session-compact",
+          compactSession: options.compactSession,
+        });
         if (result.isError) return jsonError(409, result.text);
         return Response.json({ ok: true, result: result.text });
       }
@@ -387,13 +388,13 @@ export function createNodeControlHandler(
         const topicId = requiredText(body.topicId, "topicId");
         const userId = requiredText(body.userId, "userId");
         const label = requiredText(body.label, "label");
-        if (!topicForUser(topicId, userId)) return jsonError(404, "Topic not found");
-        const result = answerPendingAskUserQuestion(topicId, messageId, label, userId);
+        const result = topicService.answerQuestion(topicId, messageId, label, userId);
         return Response.json(result, { status: result.ok ? 200 : 409 });
       }
 
       return jsonError(404, "Control route not found");
     } catch (error) {
+      if (error instanceof TopicServiceError) return topicServiceError(error);
       return jsonError(400, error instanceof Error ? error.message : String(error));
     }
   };

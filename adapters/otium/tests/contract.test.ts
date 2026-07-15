@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
   assertAdapterStopIsIdempotent,
+  assertNegotiumAdapterCapability,
   assertNegotiumAdapterDefinition,
   assertNegotiumAdapterHandle,
 } from "@negotium/adapter-testkit";
@@ -19,6 +20,9 @@ import { startFakeCentral } from "./helpers";
 
 test("otium implements the shared adapter lifecycle", async () => {
   assertNegotiumAdapterDefinition(otiumAdapter, "otium");
+  assertNegotiumAdapterCapability(otiumAdapter, "localUserInput", false);
+  assertNegotiumAdapterCapability(otiumAdapter, "topicManagement", false);
+  assertNegotiumAdapterCapability(otiumAdapter, "externalPlacedTurn", true);
   const central = startFakeCentral();
   try {
     const handle = startOtiumAdapter({ join: central.join });

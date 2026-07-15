@@ -157,7 +157,7 @@ export function setSelfConfigAgent(ctx: SelfConfigContext, agent: AgentKind): Se
   if (cfg.agentLocked) return err("Agent for this topic is locked by the user. Cannot override.");
   if (!hasExplicitAgentSwitchRequest(ctx.currentUserPrompt, agent)) {
     return err(
-      "Agent switch requires an explicit current user request such as '/model gpt-5.6-luna' or 'codex로 바꿔'.",
+      `Agent switch to '${agent}' requires an explicit request in the current user message.`,
     );
   }
 

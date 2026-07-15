@@ -128,6 +128,11 @@ export function startOtiumAdapter(options: OtiumAdapterOptions): OtiumWorkerHand
 /** Declarative form used by hosts that load adapters from a registry. */
 export const otiumAdapter = defineNegotiumAdapter({
   name: "otium",
+  capabilities: {
+    localUserInput: false,
+    topicManagement: false,
+    externalPlacedTurn: true,
+  },
   projection: {
     transcript: "full",
     // The hub has no generic bound-topic projection/backfill endpoint yet.

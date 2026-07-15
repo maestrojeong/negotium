@@ -18,6 +18,7 @@ db.exec(`
     topic_id TEXT NOT NULL,
     parent_id TEXT,
     author_id TEXT NOT NULL,
+    source_adapter TEXT,
     text TEXT NOT NULL,
     query_id TEXT,
     agent_type TEXT,
@@ -34,6 +35,11 @@ db.exec(`
     created_at TEXT NOT NULL
   )
 `);
+try {
+  db.exec("ALTER TABLE api_messages ADD COLUMN source_adapter TEXT");
+} catch {
+  // Column already exists.
+}
 try {
   db.exec("ALTER TABLE api_messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0");
 } catch {
@@ -86,6 +92,7 @@ export interface ApiMessageRow {
   topic_id: string;
   parent_id: string | null;
   author_id: string;
+  source_adapter: string | null;
   text: string;
   query_id: string | null;
   agent_type: string | null;
@@ -137,6 +144,7 @@ function rowToDto(r: ApiMessageRow): MessageDto {
     topicId: r.topic_id,
     parentId: r.parent_id ?? undefined,
     authorId: r.author_id,
+    sourceAdapter: r.source_adapter ?? undefined,
     text: r.text,
     queryId: r.query_id ?? undefined,
     agentType: (r.agent_type as AgentKind | null) ?? undefined,
@@ -183,8 +191,8 @@ export function appendApiMessage(msg: MessageDto, options: AppendApiMessageOptio
     const result = db
       .query(
         `INSERT INTO api_messages
-         (id, topic_id, parent_id, author_id, text, query_id, agent_type, model, attachments, usage, deleted, edited_at, reactions, kind, ask_user_question, subagent_card, mentions, thread_root_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (id, topic_id, parent_id, author_id, source_adapter, text, query_id, agent_type, model, attachments, usage, deleted, edited_at, reactions, kind, ask_user_question, subagent_card, mentions, thread_root_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO NOTHING`,
       )
       .run(
@@ -192,6 +200,7 @@ export function appendApiMessage(msg: MessageDto, options: AppendApiMessageOptio
         msg.topicId,
         msg.parentId ?? null,
         msg.authorId,
+        msg.sourceAdapter ?? null,
         msg.text,
         msg.queryId ?? null,
         msg.agentType ?? null,

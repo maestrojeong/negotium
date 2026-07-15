@@ -29,6 +29,34 @@ export const MODEL_OWNER: Record<string, AgentKind> = {
   "deepseek-flash": "maestro",
 };
 
+export interface SelectableModel {
+  /** Canonical token accepted by user-facing `/model` commands. */
+  model: string;
+  /** Runtime owner kept internal so channel UIs only need to show `model`. */
+  agent: AgentKind;
+}
+
+/**
+ * Canonical model picker shared by every channel. Keep this deliberately
+ * finite even though the Codex backend accepts arbitrary future model ids:
+ * user-facing completion should only promise models we intentionally support.
+ */
+export const SELECTABLE_MODELS: readonly SelectableModel[] = [
+  { model: "deepseek-pro", agent: "maestro" },
+  { model: "deepseek-flash", agent: "maestro" },
+  { model: "gpt-5.6-luna", agent: "codex" },
+  { model: "gpt-5.6-terra", agent: "codex" },
+  { model: "gpt-5.6-sol", agent: "codex" },
+  { model: "sonnet", agent: "claude" },
+  { model: "opus", agent: "claude" },
+  { model: "fable", agent: "claude" },
+];
+
+export function selectableModel(value: string): SelectableModel | undefined {
+  const normalized = value.trim().toLowerCase();
+  return SELECTABLE_MODELS.find((candidate) => candidate.model === normalized);
+}
+
 export function modelOwner(model: string): AgentKind | undefined {
   if (model.startsWith("claude-")) return "claude";
   if (model.startsWith("deepseek-")) return "maestro";

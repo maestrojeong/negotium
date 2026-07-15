@@ -43,6 +43,8 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain("`tell_session`");
     expect(prompt).toContain("`ask_session`");
     expect(prompt).toContain("mcp__runtime__set_model");
+    expect(prompt).toContain("`set_agent` autonomous calls are forbidden");
+    expect(prompt).toContain("explicitly asks to change the model, agent backend");
     expect(prompt).not.toContain("{{");
   });
 

@@ -10,6 +10,7 @@ import {
   type MessageDto,
   runtimeBus,
   setTopicSessionId,
+  submitUserMessage,
   type TopicDto,
   upsertTopic,
 } from "@negotium/core";
@@ -84,6 +85,28 @@ afterAll(() => {
 });
 
 describe("inbound", () => {
+  test("publishes an inbound user message for simultaneous Terminal clients", () => {
+    const chatId = chat(11);
+    const seen: MessageDto[] = [];
+    const unsubscribe = runtimeBus().subscribe((event) => {
+      if (event.type === "message" && (event.payload as MessageDto).authorId === USER) {
+        seen.push(event.payload as MessageDto);
+      }
+    });
+
+    try {
+      inbound(chatId, "visible in the terminal");
+      const topic = getTopicByNameForUser(`tg-${chatId}`, USER);
+      expect(topic).not.toBeNull();
+      expect(seen.map((message) => [message.topicId, message.text])).toContainEqual([
+        topic!.id,
+        "visible in the terminal",
+      ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   test("creates a topic per chat and persists the user message", () => {
     inbound(chat(1), "hello negotium");
     const topic = getTopicByNameForUser(`tg-${chat(1)}`, USER);
@@ -229,13 +252,30 @@ describe("outbound", () => {
     expect(chunks.map((c) => c.text).join("")).toBe("x".repeat(9000));
   });
 
-  test("skips tool-kind messages and echoes of the user's own messages", async () => {
+  test("skips tool-kind messages and echoes originating from Telegram", async () => {
     const topic = getTopicByNameForUser(room("outbound-room"), USER)!;
     const before = fake.callsFor(chat(7)).length;
     runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "tool noise", { kind: "tool" }));
-    runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "echo", { authorId: USER }));
+    runtimeBus().broadcastMessage(
+      topic.id,
+      aiMessage(topic.id, "echo", { authorId: USER, sourceAdapter: "telegram" }),
+    );
     await Bun.sleep(30);
     expect(fake.callsFor(chat(7))).toHaveLength(before);
+  });
+
+  test("relays the same user's Terminal message into a mapped Telegram chat", async () => {
+    const topic = getTopicByNameForUser(room("outbound-room"), USER)!;
+    const before = fake.callsFor(chat(7)).length;
+    submitUserMessage({
+      topic,
+      userId: USER,
+      text: "written from terminal",
+      sourceAdapter: "terminal",
+      startTurn: () => null,
+    });
+    await waitFor(() => fake.callsFor(chat(7)).length > before);
+    expect(fake.callsFor(chat(7)).at(-1)?.text).toBe("written from terminal");
   });
 
   test("falls back to plain text when Telegram rejects the HTML", async () => {

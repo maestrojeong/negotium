@@ -32,6 +32,8 @@ export {
   AGENT_DISPLAY_NAME,
   modelOwner,
   resolveModelForAgent,
+  SELECTABLE_MODELS,
+  selectableModel,
 } from "#agents/model-catalog";
 export { getRegistry } from "#agents/registry";
 export type {
@@ -41,8 +43,28 @@ export type {
   RotateTopicLogsResult,
 } from "#agents/topic-cleanup";
 export { purgeTopicLogs, rotateTopicLogs } from "#agents/topic-cleanup";
-export type { RuntimeBus, RuntimeBusEvent, RuntimeBusListener } from "#bus";
+// ── Application use cases ──────────────────────────────────────────
+export type { ExecuteExternalUserTurnParams } from "#application/execute-external-user-turn";
+export { executeExternalUserTurn } from "#application/execute-external-user-turn";
+export type {
+  SubmitUserMessageParams,
+  SubmitUserMessageResult,
+} from "#application/submit-user-message";
+export { submitUserMessage } from "#application/submit-user-message";
+export type {
+  SwitchTopicModelParams,
+  SwitchTopicModelResult,
+} from "#application/switch-topic-model";
+export { switchTopicModel } from "#application/switch-topic-model";
+export type {
+  CompactUserTopicParams,
+  DeleteUserTopicParams,
+  TopicServiceErrorCode,
+  TopicSessionParams,
+} from "#application/topic-service";
+export { TopicServiceError, topicService } from "#application/topic-service";
 // ── Host boundary ───────────────────────────────────────────────────
+export type { RuntimeBus, RuntimeBusEvent, RuntimeBusListener } from "#bus";
 export { runtimeBus, setRuntimeBus, WsHub } from "#bus";
 export type {
   PeerRuntimeBridge,

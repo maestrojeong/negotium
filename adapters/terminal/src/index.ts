@@ -47,6 +47,11 @@ export function startTerminalAdapter(options: TerminalAdapterOptions): TerminalA
 /** Declarative form used by hosts that load adapters from a registry. */
 export const terminalAdapter = defineNegotiumAdapter({
   name: "terminal",
+  capabilities: {
+    localUserInput: true,
+    topicManagement: true,
+    externalPlacedTurn: false,
+  },
   projection: {
     transcript: "full",
     historyBackfill: true,

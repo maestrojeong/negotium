@@ -14,6 +14,7 @@ export function assertNegotiumAdapterDefinition<Name extends string>(
   const candidate = value as {
     apiVersion?: unknown;
     name?: unknown;
+    capabilities?: unknown;
     projection?: unknown;
     start?: unknown;
   };
@@ -31,6 +32,30 @@ export function assertNegotiumAdapterDefinition<Name extends string>(
     (projection.externalAuthors !== "native" && projection.externalAuthors !== "relayed")
   ) {
     throw new TypeError(`adapter ${expectedName} must declare transcript projection capabilities`);
+  }
+  const capabilities = candidate.capabilities as Record<string, unknown> | undefined;
+  if (
+    !capabilities ||
+    typeof capabilities.localUserInput !== "boolean" ||
+    typeof capabilities.topicManagement !== "boolean" ||
+    typeof capabilities.externalPlacedTurn !== "boolean"
+  ) {
+    throw new TypeError(`adapter ${expectedName} must declare behavioral capabilities`);
+  }
+}
+
+export type NegotiumAdapterCapability = "localUserInput" | "topicManagement" | "externalPlacedTurn";
+
+/** Capability-specific contract check; adapters test only surfaces they claim. */
+export function assertNegotiumAdapterCapability(
+  definition: NegotiumAdapterDefinition<string, unknown, NegotiumAdapterHandle>,
+  capability: NegotiumAdapterCapability,
+  expected: boolean,
+): void {
+  if (definition.capabilities[capability] !== expected) {
+    throw new TypeError(
+      `adapter ${definition.name} capability ${capability} must be ${String(expected)}`,
+    );
   }
 }
 

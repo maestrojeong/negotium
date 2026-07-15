@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
   appendApiMessage,
+  getApiTopicConfig,
   getTopicSessionId,
   latestRuntimeEventSeq,
   NODE_CONTROL_TOKEN,
@@ -108,10 +109,10 @@ test("POST message broadcasts the persisted user message to peer Terminal client
     }),
   );
   const topic = ((await created?.json()) as { topic: { id: string } }).topic;
-  const seen: string[] = [];
+  const seen: Array<{ text: string; sourceAdapter?: string }> = [];
   const unsubscribe = runtimeBus().subscribe((event) => {
     if (event.type === "message" && event.topicId === topic.id) {
-      seen.push((event.payload as { text: string }).text);
+      seen.push(event.payload as { text: string; sourceAdapter?: string });
     }
   });
 
@@ -119,14 +120,47 @@ test("POST message broadcasts the persisted user message to peer Terminal client
     const response = await localHandler(
       request(`/topics/${encodeURIComponent(topic.id)}/messages`, {
         method: "POST",
-        body: JSON.stringify({ userId, text: "visible in every terminal" }),
+        body: JSON.stringify({
+          userId,
+          text: "visible in every terminal",
+          sourceAdapter: "telegram",
+        }),
       }),
     );
     expect(response?.status).toBe(201);
-    expect(seen).toEqual(["visible in every terminal"]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      text: "visible in every terminal",
+      sourceAdapter: "terminal",
+    });
   } finally {
     unsubscribe();
   }
+});
+
+test("POST model applies a picker selection without a public agent argument", async () => {
+  const topic = registerTopic({
+    title: `Model ${randomUUID()}`,
+    userId,
+    agent: "codex",
+  });
+
+  const response = await handler(
+    request(`/topics/${encodeURIComponent(topic.id)}/model`, {
+      method: "POST",
+      body: JSON.stringify({ userId, model: "gpt-5.6-sol" }),
+    }),
+  );
+  const body = (await response?.json()) as { model?: string; result?: string };
+
+  expect(response?.status).toBe(200);
+  expect(body.model).toBe("gpt-5.6-sol");
+  expect(body.result).not.toContain("codex");
+  expect(getApiTopicConfig(topic.id)).toMatchObject({
+    model: "gpt-5.6-sol",
+    agentLocked: true,
+    modelLocked: true,
+  });
 });
 
 test("message history pages backward from the latest messages", async () => {

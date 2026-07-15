@@ -1,11 +1,5 @@
-import { randomUUID } from "node:crypto";
 import {
   type AgentKind,
-  abortRoom,
-  answerPendingAskUserQuestion,
-  appendApiMessage,
-  compactTopicSession,
-  deleteTopicCascade,
   ensurePersonalGeneral,
   getAllMessagesForTopic,
   getApiMessage,
@@ -14,11 +8,11 @@ import {
   listRecentRuntimeEventsForTopic,
   type MessageDto,
   type RuntimeBusEvent,
-  registerTopic,
-  restartTopicSession,
   runtimeBus,
-  startAiTurn,
+  submitUserMessage,
+  switchTopicModel,
   type TopicDto,
+  topicService,
 } from "@negotium/core";
 import {
   NODE_CONTROL_BASE_PATH,
@@ -55,6 +49,7 @@ export interface NegotiumClient {
   createTopic(title: string, agent?: AgentKind): ClientResult<TopicDto>;
   resetTopic(topic: TopicDto): Promise<string>;
   compactTopic(topic: TopicDto): Promise<string>;
+  setModel(topic: TopicDto, model: string): ClientResult<string>;
   deleteTopic(topic: TopicDto): Promise<void>;
   sendMessage(topic: TopicDto, text: string): ClientResult<MessageDto>;
   answerQuestion(
@@ -150,7 +145,7 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
   }
 
   createTopic(title: string, agent?: AgentKind): TopicDto {
-    return registerTopic({
+    return topicService.create({
       title,
       userId: this.#userId,
       kind: "agent",
@@ -159,43 +154,42 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
   }
 
   async resetTopic(topic: TopicDto): Promise<string> {
-    const result = await restartTopicSession(topic.id, this.#userId, "terminal-session-reset");
+    const result = await topicService.reset({
+      topicId: topic.id,
+      userId: this.#userId,
+      reason: "terminal-session-reset",
+    });
     if (result.isError) throw new Error(result.text);
     return result.text;
   }
 
   async compactTopic(topic: TopicDto): Promise<string> {
-    const result = await compactTopicSession(topic.id, this.#userId, "terminal-session-compact");
+    const result = await topicService.compact({
+      topicId: topic.id,
+      userId: this.#userId,
+      reason: "terminal-session-compact",
+    });
     if (result.isError) throw new Error(result.text);
     return result.text;
   }
 
+  setModel(topic: TopicDto, model: string): string {
+    const result = switchTopicModel({ topicId: topic.id, userId: this.#userId, model });
+    if (!result.ok) throw new Error(result.error);
+    return result.text;
+  }
+
   async deleteTopic(topic: TopicDto): Promise<void> {
-    if (topic.kind === "manager") throw new Error("Manager topics cannot be deleted");
-    const owner = topic.participants.some(
-      (participant) => participant.userId === this.#userId && participant.role === "owner",
-    );
-    if (!owner) throw new Error("Only a topic owner can delete it");
-    await deleteTopicCascade(topic, this.#userId);
+    await topicService.delete({ topicId: topic.id, userId: this.#userId });
   }
 
   sendMessage(topic: TopicDto, text: string): MessageDto {
-    const message: MessageDto = {
-      id: randomUUID(),
-      topicId: topic.id,
-      authorId: this.#userId,
-      text,
-      createdAt: new Date().toISOString(),
-    };
-    appendApiMessage(message);
-    runtimeBus().broadcastMessage(topic.id, message);
-    startAiTurn({
+    return submitUserMessage({
       topic,
       userId: this.#userId,
-      prompt: text,
-      allowAutoContinue: true,
-    });
-    return message;
+      text,
+      sourceAdapter: "terminal",
+    }).message;
   }
 
   answerQuestion(
@@ -203,12 +197,12 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
     messageId: string,
     label: string,
   ): { ok: boolean; error?: string } {
-    const result = answerPendingAskUserQuestion(topicId, messageId, label, this.#userId);
+    const result = topicService.answerQuestion(topicId, messageId, label, this.#userId);
     return result.ok ? { ok: true } : { ok: false, error: result.error };
   }
 
   abort(topicId: string): boolean {
-    return abortRoom(topicId);
+    return topicService.abortTurn(topicId, this.#userId);
   }
 
   listInputHistory(): string[] {
@@ -339,6 +333,14 @@ export class RemoteNegotiumClient implements NegotiumClient {
       180_000,
     );
     return String(result.result ?? `Compacted context for "${topic.title}".`);
+  }
+
+  async setModel(topic: TopicDto, model: string): Promise<string> {
+    const result = await this.#request(`/topics/${encodeURIComponent(topic.id)}/model`, {
+      method: "POST",
+      body: JSON.stringify({ userId: this.#userId, model }),
+    });
+    return String(result.result ?? `Model set to '${model}'.`);
   }
 
   async deleteTopic(topic: TopicDto): Promise<void> {

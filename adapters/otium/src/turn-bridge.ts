@@ -22,6 +22,8 @@ import {
   abortRoom,
   clearTopicSessionId,
   type EffortLevel,
+  type ExecuteExternalUserTurnParams,
+  executeExternalUserTurn,
   getApiTopicConfig,
   getRoomQuery,
   getTopic,
@@ -30,7 +32,6 @@ import {
   isTopicVisible,
   logger,
   setApiTopicConfig,
-  triggerTopicAiTurn,
   upsertTopic,
 } from "@negotium/core";
 import type { PeerNode } from "@/central";
@@ -144,14 +145,14 @@ export function provisionMirrorTopic(
 
 export type RunPeerTurnResult = { ok: true } | { ok: false; error: string; status: number };
 
-type TurnTrigger = typeof triggerTopicAiTurn;
+type TurnTrigger = NonNullable<ExecuteExternalUserTurnParams["dispatch"]>;
 
-let turnTrigger: TurnTrigger = triggerTopicAiTurn;
+let turnTrigger: TurnTrigger | undefined;
 
 /** Test seam — replace the turn dispatcher so tests never start a real
  *  provider turn (and never spend agent API tokens). */
 export function __setTurnTriggerForTests(trigger: TurnTrigger | null): void {
-  turnTrigger = trigger ?? triggerTopicAiTurn;
+  turnTrigger = trigger ?? undefined;
 }
 
 /**
@@ -229,25 +230,32 @@ export function runPeerTurn(
 
   let queryId: string | null = null;
   try {
-    queryId = turnTrigger(localTopicId, payload.userId, payload.message, turnAgent, {
-      // "user" origin: a fresh hub message preempts a running turn, exactly
-      // like a local room.
-      origin: "user",
-      requestId: payload.requestId,
-      injectAuthorId: payload.userId,
-      attachments: payload.attachments,
-      // Provider session recovery dispatches a fresh queryId. Keep the
-      // forwarder on that retry so its messages and terminal are not filtered
-      // as stale events from the superseded provider attempt.
-      onDispatched: (dispatchedQueryId) => {
-        forwarder.queryId = dispatchedQueryId;
+    queryId = executeExternalUserTurn({
+      topicId: localTopicId,
+      userId: payload.userId,
+      text: payload.message,
+      agent: turnAgent,
+      options: {
+        // "user" origin: a fresh hub message preempts a running turn, exactly
+        // like a local room.
+        origin: "user",
+        requestId: payload.requestId,
+        injectAuthorId: payload.userId,
+        attachments: payload.attachments,
+        // Provider session recovery dispatches a fresh queryId. Keep the
+        // forwarder on that retry so its messages and terminal are not filtered
+        // as stale events from the superseded provider attempt.
+        onDispatched: (dispatchedQueryId) => {
+          forwarder.queryId = dispatchedQueryId;
+        },
+        peerBridge: {
+          hubCellId: hostCellId,
+          hostTopicId: payload.hostTopicId,
+          hostQueryId: payload.requestId,
+          canSpawnSubagents: execution.canSpawnSubagents,
+        },
       },
-      peerBridge: {
-        hubCellId: hostCellId,
-        hostTopicId: payload.hostTopicId,
-        hostQueryId: payload.requestId,
-        canSpawnSubagents: execution.canSpawnSubagents,
-      },
+      ...(turnTrigger ? { dispatch: turnTrigger } : {}),
     });
   } catch (err) {
     forwarder.finish({

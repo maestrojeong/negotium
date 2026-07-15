@@ -36,16 +36,12 @@
  * inject a fake client and never touch the network).
  */
 
-import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import type { NegotiumAdapterHandle } from "@negotium/adapter-sdk";
 import {
   type AgentKind,
-  abortRoom,
-  appendApiMessage,
   composeAttachmentPrompt,
   createDerivedTopic,
-  deleteTopicCascade,
   ensurePersonalGeneral,
   errMsg,
   extractFileTagPaths,
@@ -61,16 +57,16 @@ import {
   logger,
   type MessageDto,
   type RegisterTopicOptions,
-  registerTopic,
   renderTurnFooter,
-  restartTopicSession,
   runtimeBus,
   startAiTurn,
   stripFileTags,
+  submitUserMessage,
   TopicArchiveRequiredError,
   type TopicDto,
   TopicTitleConflictError,
   TopicValidationError,
+  topicService,
   transcribeAudio,
 } from "@negotium/core";
 import { openMappingStore } from "@/mapping-store";
@@ -518,7 +514,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   function registerTopicLocal(options: RegisterTopicOptions): TopicDto {
     suppressMaterialize++;
     try {
-      return registerTopic(options);
+      return topicService.create(options);
     } finally {
       suppressMaterialize--;
     }
@@ -1579,22 +1575,16 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       chatId,
       ...(threadId !== undefined ? { threadId } : {}),
     };
-    appendApiMessage({
-      id: randomUUID(),
-      topicId: topic.id,
-      authorId: userId,
-      text: prompt,
-      createdAt: new Date().toISOString(),
-    });
     const rememberTarget = (queryId: string): void => {
       targetByQueryId.set(queryId, target);
     };
-    const queryId = dispatchTurn({
+    const { queryId } = submitUserMessage({
       topic,
       userId,
-      prompt,
-      allowAutoContinue: true,
+      text: prompt,
+      sourceAdapter: "telegram",
       onDispatched: rememberTarget,
+      startTurn: dispatchTurn,
     });
     if (queryId) rememberTarget(queryId);
   }
@@ -1842,7 +1832,9 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
         reply(
           chatId,
           threadId,
-          mapping && abortRoom(mapping.topicId) ? "aborted" : "nothing running",
+          mapping && topicService.abortTurn(mapping.topicId, userId)
+            ? "aborted"
+            : "nothing running",
         );
         return;
       }
@@ -1884,7 +1876,11 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
             return;
           }
           try {
-            const result = await restartTopicSession(topic.id, userId, "telegram-session-reset");
+            const result = await topicService.reset({
+              topicId: topic.id,
+              userId,
+              reason: "telegram-session-reset",
+            });
             reply(chatId, threadId, result.text);
           } catch (err) {
             reply(chatId, threadId, errMsg(err, "session reset failed"));
@@ -1990,7 +1986,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
         // thread is gone right after (clawgram's ordering quirk).
         reply(chatId, threadId, `deleting topic "${topic.title}"…`);
         // Mapping/thread cleanup rides the core topic-deleted bus event.
-        void deleteTopicCascade(topic, userId, { force }).catch((err) => {
+        void topicService.delete({ topicId: topic.id, userId, force }).catch((err) => {
           if (err instanceof TopicArchiveRequiredError) {
             reply(
               chatId,
@@ -2167,7 +2163,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     }
     if (event.type !== "message") return;
     const msg = event.payload as MessageDto;
-    if (msg.authorId === userId) return; // echo of the user's own inbound message
+    if (msg.authorId === userId && msg.sourceAdapter === "telegram") return;
     if (msg.kind === "tool") return; // tool chatter stays off the chat
     if (!msg.text) return;
     const runtimeMessageId = msg.authorId === "ai" ? msg.id : undefined;

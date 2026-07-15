@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   assertAdapterStopIsIdempotent,
+  assertNegotiumAdapterCapability,
   assertNegotiumAdapterDefinition,
   assertNegotiumAdapterHandle,
 } from "@negotium/adapter-testkit";
@@ -12,6 +13,9 @@ import { FakeTelegramClient } from "./fake-client";
 
 test("telegram implements the shared adapter lifecycle", async () => {
   assertNegotiumAdapterDefinition(telegramAdapter, "telegram");
+  assertNegotiumAdapterCapability(telegramAdapter, "localUserInput", true);
+  assertNegotiumAdapterCapability(telegramAdapter, "topicManagement", true);
+  assertNegotiumAdapterCapability(telegramAdapter, "externalPlacedTurn", false);
   const dir = mkdtempSync(join(tmpdir(), "negotium-telegram-contract-"));
   const handle = startTelegramAdapter({
     startTurn: () => null,

@@ -25,6 +25,11 @@ export { startTelegramAdapter };
 /** Declarative form used by hosts that load adapters from a registry. */
 export const telegramAdapter = defineNegotiumAdapter({
   name: "telegram",
+  capabilities: {
+    localUserInput: true,
+    topicManagement: true,
+    externalPlacedTurn: false,
+  },
   projection: {
     transcript: "live-only",
     historyBackfill: false,

@@ -174,6 +174,8 @@ export interface MessageDto {
   topicId: string;
   parentId?: string;
   authorId: string;
+  /** Originating adapter for live cross-channel echo suppression/routing. */
+  sourceAdapter?: string;
   /** Display name of the author, resolved from the user store at read time. */
   authorName?: string;
   /** Current profile image URL for the author, resolved from the user store at read time. */

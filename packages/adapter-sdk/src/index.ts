@@ -1,6 +1,6 @@
 /** Stable lifecycle contract implemented by every first-party channel adapter. */
 
-export const NEGOTIUM_ADAPTER_API_VERSION = 2 as const;
+export const NEGOTIUM_ADAPTER_API_VERSION = 3 as const;
 
 export type Awaitable<T> = T | Promise<T>;
 
@@ -21,6 +21,16 @@ export interface NegotiumAdapterProjectionCapabilities {
   readonly externalAuthors: "native" | "relayed";
 }
 
+/** Optional behavioral surfaces are declared independently from lifecycle. */
+export interface NegotiumAdapterCapabilities {
+  /** Accepts a human message originating on this adapter. */
+  readonly localUserInput: boolean;
+  /** Exposes create/delete/reset/compact topic commands. */
+  readonly topicManagement: boolean;
+  /** Executes a turn placed by an external peer runtime. */
+  readonly externalPlacedTurn: boolean;
+}
+
 export interface NegotiumAdapterDefinition<
   Name extends string,
   Options,
@@ -28,6 +38,7 @@ export interface NegotiumAdapterDefinition<
 > {
   readonly apiVersion: typeof NEGOTIUM_ADAPTER_API_VERSION;
   readonly name: Name;
+  readonly capabilities: NegotiumAdapterCapabilities;
   readonly projection: NegotiumAdapterProjectionCapabilities;
   start(options: Options): Awaitable<Handle>;
 }

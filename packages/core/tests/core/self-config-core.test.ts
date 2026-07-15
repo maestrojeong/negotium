@@ -214,7 +214,7 @@ describe("self-config core", () => {
       );
 
       expect(result.isError).toBe(true);
-      expect(result.text).toContain("explicit current user request");
+      expect(result.text).toContain("explicit request");
       expect(getTopic(topicId)?.agent).toBe("codex");
     } finally {
       if (prevDeepseekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
