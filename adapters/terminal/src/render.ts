@@ -31,7 +31,7 @@ const theme = {
 // cli-spinners' compact "dots" pattern: fast, stable-width, and reads as
 // active computation rather than a slow mechanical wheel.
 const WORKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
-export const WORKING_FRAME_INTERVAL_MS = 16;
+export const WORKING_FRAME_INTERVAL_MS = 50;
 
 export function workingFrame(frame: number): string {
   const index = Math.abs(Math.trunc(frame)) % WORKING_FRAMES.length;

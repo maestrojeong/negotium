@@ -200,7 +200,7 @@ describe("terminal renderer", () => {
   });
 
   test("animates the working indicator without requiring another runtime event", () => {
-    expect(WORKING_FRAME_INTERVAL_MS).toBe(16);
+    expect(WORKING_FRAME_INTERVAL_MS).toBe(50);
     let state = setTopics(createInitialState("local"), [topic()]);
     state = applyRuntimeEvent(state, {
       type: "ai-status",
