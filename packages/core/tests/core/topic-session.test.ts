@@ -38,6 +38,8 @@ describe("restartTopicSession", () => {
       nextUsageAlert(owner, topic.id, topic.title, {
         inputTokens: 1_100_000,
         outputTokens: 0,
+        contextTokens: 90_000,
+        contextWindow: 100_000,
       }),
     ).not.toBeNull();
 
@@ -51,6 +53,8 @@ describe("restartTopicSession", () => {
       nextUsageAlert(owner, topic.id, topic.title, {
         inputTokens: 1_100_000,
         outputTokens: 0,
+        contextTokens: 90_000,
+        contextWindow: 100_000,
       }),
     ).not.toBeNull();
   });

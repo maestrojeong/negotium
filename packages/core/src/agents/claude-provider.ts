@@ -495,6 +495,8 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
   const THINKING_BEAT_MS = 5000;
   let thinkingStart: number | null = null;
   let lastThinkingBeat = 0;
+  let lastContextTokens: number | undefined;
+  let lastContextModel: string | undefined;
   const thinkingBeat = (): { type: "tool_progress"; toolName: string; elapsed: number } | null => {
     const now = Date.now();
     if (thinkingStart === null) {
@@ -606,6 +608,9 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
       if (message.type === "result") {
         const m = message as SDKResultMessage;
         if (m.subtype === "success") {
+          const contextWindow =
+            (lastContextModel ? m.modelUsage?.[lastContextModel]?.contextWindow : undefined) ??
+            Object.values(m.modelUsage ?? {})[0]?.contextWindow;
           yield {
             type: "result",
             content: m.result,
@@ -616,6 +621,9 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
                   outputTokens: m.usage.output_tokens,
                   cacheCreationInputTokens: m.usage.cache_creation_input_tokens ?? undefined,
                   cacheReadInputTokens: m.usage.cache_read_input_tokens ?? undefined,
+                  ...(lastContextTokens !== undefined && contextWindow
+                    ? { contextTokens: lastContextTokens, contextWindow }
+                    : {}),
                 }
               : undefined,
           };
@@ -632,6 +640,15 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
       if (message.type === "assistant") {
         const m = message as SDKAssistantMessage;
         const content = (m.message?.content ?? []) as ContentBlock[];
+        const usage = m.message?.usage;
+        if (usage) {
+          lastContextTokens =
+            (usage.input_tokens ?? 0) +
+            (usage.cache_creation_input_tokens ?? 0) +
+            (usage.cache_read_input_tokens ?? 0) +
+            (usage.output_tokens ?? 0);
+          lastContextModel = m.message.model;
+        }
 
         for (const block of content) {
           if (block.type === "text") {

@@ -282,6 +282,39 @@ describe("repairPoisonedRollout", () => {
 });
 
 describe("writeCodexRollout", () => {
+  test("extracts the latest per-request context usage from token-count events", async () => {
+    const { extractLatestCodexContextUsage } = await import("#agents/rollout/codex");
+    const jsonl = [
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: { total_tokens: 50_000 },
+            model_context_window: 258_400,
+          },
+        },
+      }),
+      JSON.stringify({ type: "response_item", payload: { type: "message" } }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: { total_tokens: 104_464 },
+            model_context_window: 258_400,
+          },
+        },
+      }),
+      '{"type":"event_msg","payload":',
+    ].join("\n");
+
+    expect(extractLatestCodexContextUsage(jsonl)).toEqual({
+      contextTokens: 104_464,
+      contextWindow: 258_400,
+    });
+  });
+
   test("produces a valid JSONL containing the supplied dialogue", async () => {
     const { writeCodexRollout } = await import("#agents/rollout/codex");
     const result = writeCodexRollout({

@@ -15,7 +15,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -137,6 +137,75 @@ export interface CodexRolloutOptions {
 export interface CodexRolloutResult {
   threadId: string;
   rolloutPath: string;
+}
+
+export interface CodexContextUsage {
+  contextTokens: number;
+  contextWindow: number;
+}
+
+/** Read the latest per-request context measurement from a Codex rollout. */
+export function extractLatestCodexContextUsage(jsonl: string): CodexContextUsage | undefined {
+  const lines = jsonl.trimEnd().split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    try {
+      const entry = JSON.parse(lines[index] ?? "") as {
+        type?: string;
+        payload?: {
+          type?: string;
+          info?: {
+            last_token_usage?: { total_tokens?: number };
+            model_context_window?: number;
+          };
+        };
+      };
+      if (entry.type !== "event_msg" || entry.payload?.type !== "token_count") continue;
+      const contextTokens = entry.payload.info?.last_token_usage?.total_tokens;
+      const contextWindow = entry.payload.info?.model_context_window;
+      if (
+        typeof contextTokens === "number" &&
+        Number.isFinite(contextTokens) &&
+        contextTokens >= 0 &&
+        typeof contextWindow === "number" &&
+        Number.isFinite(contextWindow) &&
+        contextWindow > 0
+      ) {
+        return { contextTokens, contextWindow };
+      }
+    } catch {
+      // A concurrently appended final line may be incomplete; keep scanning.
+    }
+  }
+  return undefined;
+}
+
+/** Resolve a thread's current rollout and return its latest context measurement. */
+export function readLatestCodexContextUsage(threadId: string): CodexContextUsage | undefined {
+  const sessionsDir = codexSessionsDir();
+  const candidates: string[] = [];
+  const buckets = candidateDateBuckets(threadId);
+  try {
+    if (buckets) {
+      for (const bucket of buckets) {
+        const dir = join(sessionsDir, bucket);
+        if (!existsSync(dir)) continue;
+        const glob = new Bun.Glob(`rollout-*-${threadId}.jsonl`);
+        for (const rel of glob.scanSync({ cwd: dir, onlyFiles: true })) {
+          candidates.push(join(dir, rel));
+        }
+      }
+    } else {
+      const glob = new Bun.Glob(`**/rollout-*-${threadId}.jsonl`);
+      for (const rel of glob.scanSync({ cwd: sessionsDir, onlyFiles: true })) {
+        candidates.push(join(sessionsDir, rel));
+      }
+    }
+    const path = candidates.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+    return path ? extractLatestCodexContextUsage(readFileSync(path, "utf8")) : undefined;
+  } catch (error) {
+    logger.debug({ error, threadId }, "codex context usage: rollout read failed");
+    return undefined;
+  }
 }
 
 /**

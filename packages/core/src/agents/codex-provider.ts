@@ -14,6 +14,7 @@ import {
   snapshotCodexChildren,
   unregisterOwnedCodexPids,
 } from "#agents/codex-tree-kill";
+import { readLatestCodexContextUsage } from "#agents/rollout/codex";
 import { extractFileEvents } from "#media/file-events";
 import { codexAuthFilePath } from "#platform/config";
 import { errMsg } from "#platform/error";
@@ -584,6 +585,9 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
               const usage = event.usage;
               if (!usage) break;
               attemptCompleted = true;
+              const contextUsage = currentSessionId
+                ? readLatestCodexContextUsage(currentSessionId)
+                : undefined;
               yield {
                 type: "result",
                 content: finalText,
@@ -592,6 +596,7 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
                   inputTokens: usage.input_tokens,
                   outputTokens: usage.output_tokens,
                   cacheReadInputTokens: usage.cached_input_tokens,
+                  ...contextUsage,
                 },
               };
               if (finalText) yield* extractFileEvents(finalText, "result");

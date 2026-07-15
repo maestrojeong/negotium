@@ -43,11 +43,25 @@ describe("claudeProvider terminal handling", () => {
       query: async function* () {
         yield { type: "system", subtype: "init", session_id: "sess-1" };
         yield {
+          type: "assistant",
+          message: {
+            model: "claude-test",
+            content: [],
+            usage: {
+              input_tokens: 1_000,
+              cache_creation_input_tokens: 200,
+              cache_read_input_tokens: 3_000,
+              output_tokens: 100,
+            },
+          },
+        };
+        yield {
           type: "result",
           subtype: "success",
           result: "done",
           stop_reason: "end_turn",
           usage: { input_tokens: 1, output_tokens: 2 },
+          modelUsage: { "claude-test": { contextWindow: 200_000 } },
         };
         // The provider must close the generator before reaching this point.
         consumedPastResult = true;
@@ -66,12 +80,19 @@ describe("claudeProvider terminal handling", () => {
       userId: "test-user",
     };
 
-    const events: Array<{ type: string }> = [];
+    const events: Array<{
+      type: string;
+      usage?: { contextTokens?: number; contextWindow?: number };
+    }> = [];
     for await (const event of claudeProvider(baseOpts)) {
       events.push(event);
     }
 
     expect(events.map((e) => e.type)).toEqual(["session", "result"]);
+    expect(events.at(-1)?.usage).toMatchObject({
+      contextTokens: 4_300,
+      contextWindow: 200_000,
+    });
     expect(consumedPastResult).toBe(false);
   });
 

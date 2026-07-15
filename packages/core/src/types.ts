@@ -10,10 +10,15 @@ export interface SessionContext {
 }
 
 export interface TokenUsage {
+  /** Aggregate billable input across every model call made during this turn. */
   inputTokens: number;
   outputTokens: number;
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
+  /** Tokens occupied by the latest model call, not aggregate turn spend. */
+  contextTokens?: number;
+  /** Provider-reported context window for the latest model call. */
+  contextWindow?: number;
 }
 
 /** Agent identifier — one of the supported AI provider backends. */

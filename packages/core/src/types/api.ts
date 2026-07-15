@@ -155,6 +155,16 @@ export interface UpdateTopicRequest {
   aiMention?: boolean;
 }
 
+export interface MessageTokenUsage {
+  /** Aggregate input consumed by every model call in the turn. */
+  input: number;
+  output: number;
+  cachedInput?: number;
+  /** Latest-request context occupancy, distinct from aggregate turn input. */
+  context?: number;
+  contextWindow?: number;
+}
+
 export interface MessageDto {
   id: string;
   topicId: string;
@@ -169,7 +179,7 @@ export interface MessageDto {
   queryId?: string;
   agentType?: AgentKind;
   model?: string;
-  usage?: { input: number; output: number };
+  usage?: MessageTokenUsage;
   /** Soft-delete tombstone flag. Deleted messages keep rowid stable. */
   deleted?: boolean;
   /** Set when a message's text was edited in place. */
@@ -310,7 +320,7 @@ export type WsServerMessage =
       type: "ai_done";
       queryId: string;
       topicId: string;
-      usage?: { input: number; output: number };
+      usage?: MessageTokenUsage;
       // Provider metadata for the completed turn. The answer text itself is
       // delivered by the persisted `message` event.
       agent?: AgentKind;

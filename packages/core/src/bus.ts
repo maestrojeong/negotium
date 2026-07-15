@@ -57,7 +57,7 @@ export interface RuntimeBus {
   broadcastDone(
     topicId: string,
     queryId: string,
-    usage?: { input: number; output: number },
+    usage?: NonNullable<MessageDto["usage"]>,
     meta?: { agent?: AgentKind; model?: string },
   ): void;
   broadcastError(topicId: string, queryId: string, error: string): void;
@@ -206,7 +206,7 @@ export class SqliteRuntimeBus implements RuntimeBus {
   broadcastDone(
     topicId: string,
     queryId: string,
-    usage?: { input: number; output: number },
+    usage?: NonNullable<MessageDto["usage"]>,
     meta?: { agent?: AgentKind; model?: string },
   ): void {
     this.broadcastAiStatus(topicId, {

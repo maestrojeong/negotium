@@ -453,7 +453,13 @@ async function streamAgentEvents(
               agentType,
               model,
               usage: event.usage
-                ? { input: event.usage.inputTokens, output: event.usage.outputTokens }
+                ? {
+                    input: event.usage.inputTokens,
+                    output: event.usage.outputTokens,
+                    cachedInput: event.usage.cacheReadInputTokens,
+                    context: event.usage.contextTokens,
+                    contextWindow: event.usage.contextWindow,
+                  }
                 : undefined,
               createdAt: new Date().toISOString(),
             };
@@ -466,7 +472,13 @@ async function streamAgentEvents(
               topicId,
               queryId,
               event.usage
-                ? { input: event.usage.inputTokens, output: event.usage.outputTokens }
+                ? {
+                    input: event.usage.inputTokens,
+                    output: event.usage.outputTokens,
+                    cachedInput: event.usage.cacheReadInputTokens,
+                    context: event.usage.contextTokens,
+                    contextWindow: event.usage.contextWindow,
+                  }
                 : undefined,
               { agent: agentType, model },
             );
