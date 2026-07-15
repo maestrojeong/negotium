@@ -1,6 +1,6 @@
 {
   "name": "@negotium/adapter-testkit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Framework-neutral contract assertions for Negotium adapters",
   "license": "Apache-2.0",

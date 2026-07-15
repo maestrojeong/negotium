@@ -1,6 +1,6 @@
 {
   "name": "@negotium/mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "The negotium MCP server \u2014 mount this one MCP to give any agent host sessions, subagents, tasks, wiki/skills, vault and MCP management",
   "license": "Apache-2.0",
