@@ -71,6 +71,20 @@ async function run(
   return output;
 }
 
+async function runInteractive(command: string, commandArgs: string[], cwd = root): Promise<void> {
+  const child = Bun.spawn([command, ...commandArgs], {
+    cwd,
+    env: process.env,
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const exitCode = await child.exited;
+  if (exitCode !== 0) {
+    fail(`${command} ${commandArgs.join(" ")} exited with status ${exitCode}`);
+  }
+}
+
 async function loadAndValidatePackages(): Promise<void> {
   const versions = new Set<string>();
   const packageIndexes = new Map(releasePackages.map((pkg, index) => [pkg.name, index]));
@@ -276,7 +290,7 @@ async function localPublish(packages: ReleasePackage[]): Promise<void> {
       continue;
     }
     console.log(`\n==> publish ${pkg.name}@${pkg.manifest?.version}`);
-    await run("npm", ["publish", "--access", "public"], resolve(root, pkg.directory));
+    await runInteractive("npm", ["publish", "--access", "public"], resolve(root, pkg.directory));
     await waitUntilPublished(pkg);
   }
 }
