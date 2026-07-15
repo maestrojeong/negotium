@@ -22,12 +22,18 @@ interface TopicActivity {
   tools: ToolActivity[];
 }
 
+export interface MessageHistoryStatus {
+  hasMore: boolean;
+  loading: boolean;
+}
+
 export interface AppState {
   userId: string;
   aiName: string;
   topics: TopicDto[];
   activeTopicId: string | null;
   messages: Record<string, MessageDto[]>;
+  messageHistory: Record<string, MessageHistoryStatus>;
   activity: Record<string, TopicActivity>;
   input: string;
   inputCursor: { row: number; col: number };
@@ -47,6 +53,7 @@ export function createInitialState(userId: string): AppState {
     topics: [],
     activeTopicId: null,
     messages: {},
+    messageHistory: {},
     activity: {},
     input: "",
     inputCursor: { row: 0, col: 0 },
@@ -124,6 +131,17 @@ export function selectTopic(state: AppState, topicId: string): AppState {
 
 export function setMessages(state: AppState, topicId: string, messages: MessageDto[]): AppState {
   return { ...state, messages: { ...state.messages, [topicId]: messages } };
+}
+
+export function setMessageHistoryStatus(
+  state: AppState,
+  topicId: string,
+  status: MessageHistoryStatus,
+): AppState {
+  return {
+    ...state,
+    messageHistory: { ...state.messageHistory, [topicId]: status },
+  };
 }
 
 export function upsertMessage(state: AppState, message: MessageDto): AppState {

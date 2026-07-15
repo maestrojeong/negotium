@@ -398,7 +398,7 @@ function helpLines(): UiLine[] {
     line("  Alt-Enter newline"),
     line("  ← → move · Ctrl/Alt-← → move by word · ↑ ↓ history"),
     line("  Ctrl-W delete word · Ctrl-U/K clear before/after cursor"),
-    line("  Mouse wheel / PgUp/PgDn scroll · Ctrl-T transcript"),
+    line("  Mouse wheel / PgUp/PgDn scroll · Ctrl-E load older · Ctrl-T transcript"),
     line("  Ctrl-O topics · Ctrl-P/N previous/next topic · Ctrl-C twice to quit"),
     line(""),
     line("  Commands", { fg: theme.cyan, bold: true }),
@@ -538,21 +538,46 @@ function conversationLines(
   }
 
   const all = conversationContentLines(state, width, animationFrame);
-  const canScroll = all.length > height;
-  const contentHeight = canScroll && state.scrollOffset > 0 ? Math.max(1, height - 1) : height;
-  const maxOffset = Math.max(0, all.length - contentHeight);
-  const offset = Math.min(maxOffset, state.scrollOffset);
+  const { contentHeight, maxOffset, offset } = conversationViewport(
+    all.length,
+    height,
+    state.scrollOffset,
+  );
   const end = all.length - offset;
   const visible = all.slice(Math.max(0, end - contentHeight), end);
+  const history = state.activeTopicId ? state.messageHistory[state.activeTopicId] : undefined;
+  const marker =
+    offset >= maxOffset && history?.loading
+      ? "  ↑ Loading older messages…"
+      : offset >= maxOffset && history?.hasMore
+        ? "  ↑ Loaded history start · Ctrl-E load older"
+        : offset >= maxOffset
+          ? "  ↑ Start of conversation"
+          : `  ↑ history · ${offset} lines from latest · wheel down/PgDn to return`;
   return offset > 0
     ? [
-        line(`  ↑ history · ${offset} lines from latest · wheel down/PgDn to return`, {
+        line(marker, {
           fg: theme.amber,
           dim: true,
         }),
         ...visible,
       ]
     : visible;
+}
+
+function conversationViewport(
+  lineCount: number,
+  height: number,
+  requestedOffset: number,
+): { contentHeight: number; maxOffset: number; offset: number } {
+  if (lineCount <= height) return { contentHeight: height, maxOffset: 0, offset: 0 };
+  const contentHeight = Math.max(1, height - 1);
+  const maxOffset = Math.max(0, lineCount - contentHeight);
+  return {
+    contentHeight,
+    maxOffset,
+    offset: Math.min(maxOffset, Math.max(0, requestedOffset)),
+  };
 }
 
 function decisionPane(state: AppState, width: number): string[] {
@@ -710,5 +735,5 @@ export function maxConversationScrollOffset(
       composerPane(state, width).length,
   );
   const lineCount = conversationContentLines(state, width).length;
-  return lineCount > bodyHeight ? lineCount - Math.max(1, bodyHeight - 1) : 0;
+  return conversationViewport(lineCount, bodyHeight, state.scrollOffset).maxOffset;
 }

@@ -202,7 +202,7 @@ describe("terminal renderer", () => {
     expect(output).not.toContain("✦ codex");
   });
 
-  test("scroll offset exposes old conversation lines and a history marker", () => {
+  test("clamps at the loaded history boundary and exposes explicit older loading", () => {
     const messages: MessageDto[] = Array.from({ length: 20 }, (_, index) => ({
       id: `message-${index}`,
       topicId: "topic",
@@ -216,10 +216,20 @@ describe("terminal renderer", () => {
     expect(latest).toContain("conversation-19");
     expect(latest).not.toContain("conversation-0");
 
-    state = { ...state, scrollOffset: 10_000 };
+    state = {
+      ...state,
+      scrollOffset: 10_000,
+      messageHistory: { topic: { hasMore: true, loading: false } },
+    };
     const history = stripAnsi(renderApp(state, 100, 16));
-    expect(history).toContain("↑ history");
+    expect(history).toContain("Loaded history start · Ctrl-E load older");
     expect(history).toContain("conversation-0");
     expect(history).not.toContain("conversation-19");
+
+    state = {
+      ...state,
+      messageHistory: { topic: { hasMore: false, loading: false } },
+    };
+    expect(stripAnsi(renderApp(state, 100, 16))).toContain("Start of conversation");
   });
 });

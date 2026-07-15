@@ -79,6 +79,7 @@ indicator. Topics and transcript use temporary overlays.
 | `Up` / `Down` | edit multiline input, history, suggestions, or ask choices |
 | `PageUp` / `PageDown` | scroll conversation |
 | Mouse wheel / trackpad | scroll conversation history |
+| `Ctrl-E` | load one older 50-message page |
 | Mouse drag | select screen text and copy it on release |
 | `Ctrl-O` | toggle topic overlay |
 | `Ctrl-T` | toggle the plain transcript overlay |
@@ -98,8 +99,9 @@ be reset.
 
 Compaction also preserves the visible transcript, but replaces provider-native and provider-neutral
 context with a standalone summary so the next turn can continue with a smaller context. Reopening a
-topic initially loads the latest 50 messages; scrolling to the top fetches older pages until the full
-persisted history is available.
+topic initially loads the latest three pages (150 messages). Wheel and PageUp stop at the loaded
+boundary; `Ctrl-E` explicitly loads one older 50-message page. The boundary becomes the fixed start
+of the conversation after the full persisted history is available.
 
 The picker reads every `visibility: visible` topic, including both private and
 shared topics. Internal Otium execution mirrors remain hidden and do not appear

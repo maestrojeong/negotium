@@ -1,5 +1,10 @@
 import type { AgentKind, RuntimeBusEvent } from "@negotium/core";
-import type { MessageHistoryPage, NegotiumClient } from "@/client";
+import {
+  INITIAL_MESSAGE_HISTORY_LIMIT,
+  MESSAGE_HISTORY_PAGE_SIZE,
+  type MessageHistoryPage,
+  type NegotiumClient,
+} from "@/client";
 import { copyToClipboard } from "@/clipboard";
 import { commandSuggestions, completeCommand } from "@/commands";
 import {
@@ -24,6 +29,7 @@ import {
   applyRuntimeEvent,
   createInitialState,
   selectTopic,
+  setMessageHistoryStatus,
   setMessages,
   setTopics,
   upsertMessage,
@@ -235,7 +241,9 @@ export class TerminalApp {
     let recentEvents: RuntimeBusEvent[];
     try {
       const messageRequest: Promise<MessageHistoryPage> = this.#client.listMessagePage
-        ? Promise.resolve(this.#client.listMessagePage(topic.id))
+        ? Promise.resolve(
+            this.#client.listMessagePage(topic.id, undefined, INITIAL_MESSAGE_HISTORY_LIMIT),
+          )
         : Promise.resolve(this.#client.listMessages(topic.id)).then((messages) => ({
             messages,
             hasMore: false,
@@ -260,6 +268,10 @@ export class TerminalApp {
       hasMore: messagePage.hasMore,
       loading: false,
     });
+    this.#state = setMessageHistoryStatus(this.#state, topic.id, {
+      hasMore: messagePage.hasMore,
+      loading: false,
+    });
     for (const event of recentEvents) {
       this.#state = applyRuntimeEvent(this.#state, event);
     }
@@ -269,15 +281,20 @@ export class TerminalApp {
     for (const event of queued) this.#state = applyRuntimeEvent(this.#state, event);
   }
 
-  async #loadOlderMessages(topicId: string, extraOffset: number): Promise<void> {
+  async #loadOlderMessages(topicId: string, targetOffset: number): Promise<void> {
     const history = this.#messageHistory.get(topicId);
     if (!this.#client.listMessagePage || !history?.hasMore || history.loading) return;
     const cursor = history.cursor;
     if (!cursor) return;
     this.#messageHistory.set(topicId, { ...history, loading: true });
+    this.#state = setMessageHistoryStatus(this.#state, topicId, {
+      hasMore: history.hasMore,
+      loading: true,
+    });
+    this.#queueRender();
 
     try {
-      const page = await this.#client.listMessagePage(topicId, cursor);
+      const page = await this.#client.listMessagePage(topicId, cursor, MESSAGE_HISTORY_PAGE_SIZE);
       const latestHistory = this.#messageHistory.get(topicId);
       if (!latestHistory || latestHistory.cursor !== cursor) return;
 
@@ -290,16 +307,33 @@ export class TerminalApp {
         hasMore: page.hasMore,
         loading: false,
       });
-      if (this.#state.activeTopicId === topicId && extraOffset > 0) {
+      this.#state = setMessageHistoryStatus(this.#state, topicId, {
+        hasMore: page.hasMore,
+        loading: false,
+      });
+      if (this.#state.activeTopicId === topicId) {
+        const maxOffset = maxConversationScrollOffset(
+          this.#state,
+          process.stdout.columns ?? 100,
+          process.stdout.rows ?? 30,
+        );
         this.#state = {
           ...this.#state,
-          scrollOffset: this.#state.scrollOffset + extraOffset,
+          scrollOffset: Math.min(maxOffset, Math.max(0, targetOffset)),
+          notice:
+            older.length === 0 || !page.hasMore
+              ? "Start of conversation"
+              : `Loaded ${older.length} older messages`,
         };
       }
     } catch (error) {
       const latestHistory = this.#messageHistory.get(topicId);
       if (latestHistory?.cursor === cursor) {
         this.#messageHistory.set(topicId, { ...latestHistory, loading: false });
+        this.#state = setMessageHistoryStatus(this.#state, topicId, {
+          hasMore: latestHistory.hasMore,
+          loading: false,
+        });
       }
       this.#state = {
         ...this.#state,
@@ -421,6 +455,10 @@ export class TerminalApp {
       void this.#copy(false); // Ctrl-Y
       return;
     }
+    if (chunk === "\u0005") {
+      this.#loadOlderHistory(); // Ctrl-E
+      return;
+    }
     if (chunk === "\u000c") {
       this.#screen.invalidate();
       this.#render(); // Ctrl-L
@@ -432,7 +470,7 @@ export class TerminalApp {
       this.#queueRender();
       return;
     }
-    if (chunk === "\u0005" || chunk === "\u001b[F" || chunk === "\u001b[4~") {
+    if (chunk === "\u001b[F" || chunk === "\u001b[4~") {
       this.#input.moveEnd();
       this.#syncInput();
       this.#queueRender();
@@ -999,6 +1037,26 @@ export class TerminalApp {
     this.#queueRender();
   }
 
+  #loadOlderHistory(): void {
+    const topic = activeTopic(this.#state);
+    if (!topic || !this.#client.listMessagePage) return;
+    const history = this.#messageHistory.get(topic.id);
+    if (!history || history.loading) return;
+    if (!history.hasMore || !history.cursor) {
+      this.#state = { ...this.#state, notice: "Start of conversation" };
+      this.#queueRender();
+      return;
+    }
+
+    const currentMax = maxConversationScrollOffset(
+      this.#state,
+      process.stdout.columns ?? 100,
+      process.stdout.rows ?? 30,
+    );
+    this.#state = { ...this.#state, scrollOffset: currentMax };
+    void this.#loadOlderMessages(topic.id, currentMax + 8);
+  }
+
   #scroll(delta: number): void {
     const maxOffset = maxConversationScrollOffset(
       this.#state,
@@ -1010,10 +1068,6 @@ export class TerminalApp {
       ...this.#state,
       scrollOffset: Math.min(maxOffset, Math.max(0, desiredOffset)),
     };
-    const topic = activeTopic(this.#state);
-    if (topic && delta > 0 && desiredOffset >= maxOffset) {
-      void this.#loadOlderMessages(topic.id, Math.max(0, desiredOffset - maxOffset));
-    }
     this.#queueRender();
   }
 

@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 import { consumeMouseInput, TerminalApp } from "@/app";
-import type { NegotiumClient } from "@/client";
+import {
+  INITIAL_MESSAGE_HISTORY_LIMIT,
+  INITIAL_MESSAGE_HISTORY_PAGE_COUNT,
+  MESSAGE_HISTORY_PAGE_SIZE,
+  type NegotiumClient,
+} from "@/client";
 import { stripAnsi } from "@/render";
 import { highlightScreenSelection, screenSelectionText } from "@/selection";
 
@@ -19,6 +24,12 @@ test("translates SGR mouse wheel events into conversation scrolling", () => {
     scrollDelta: 3,
     events: [],
   });
+});
+
+test("preloads three message pages before requiring explicit older-history loading", () => {
+  expect(MESSAGE_HISTORY_PAGE_SIZE).toBe(50);
+  expect(INITIAL_MESSAGE_HISTORY_PAGE_COUNT).toBe(3);
+  expect(INITIAL_MESSAGE_HISTORY_LIMIT).toBe(150);
 });
 
 test("parses left-button drag selection events", () => {

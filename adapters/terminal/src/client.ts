@@ -31,6 +31,11 @@ import { appendTerminalInputHistory, loadTerminalInputHistory } from "@/history-
 
 export type ClientResult<T> = T | Promise<T>;
 
+export const MESSAGE_HISTORY_PAGE_SIZE = 50;
+export const INITIAL_MESSAGE_HISTORY_PAGE_COUNT = 3;
+export const INITIAL_MESSAGE_HISTORY_LIMIT =
+  MESSAGE_HISTORY_PAGE_SIZE * INITIAL_MESSAGE_HISTORY_PAGE_COUNT;
+
 export interface MessageHistoryPage {
   messages: MessageDto[];
   cursor?: string;
@@ -42,7 +47,11 @@ export interface NegotiumClient {
   stop(): Promise<void>;
   listTopics(): ClientResult<TopicDto[]>;
   listMessages(topicId: string): ClientResult<MessageDto[]>;
-  listMessagePage?(topicId: string, cursor?: string): ClientResult<MessageHistoryPage>;
+  listMessagePage?(
+    topicId: string,
+    cursor?: string,
+    limit?: number,
+  ): ClientResult<MessageHistoryPage>;
   createTopic(title: string, agent?: AgentKind): ClientResult<TopicDto>;
   resetTopic(topic: TopicDto): Promise<string>;
   compactTopic(topic: TopicDto): Promise<string>;
@@ -121,8 +130,12 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
       .filter((message): message is MessageDto => message !== null);
   }
 
-  listMessagePage(topicId: string, cursor?: string): MessageHistoryPage {
-    const result = listApiMessages(topicId, { cursor, limit: 50 });
+  listMessagePage(
+    topicId: string,
+    cursor?: string,
+    limit = MESSAGE_HISTORY_PAGE_SIZE,
+  ): MessageHistoryPage {
+    const result = listApiMessages(topicId, { cursor, limit });
     return { messages: result.page, cursor: result.cursor, hasMore: result.hasMore };
   }
 
@@ -276,8 +289,12 @@ export class RemoteNegotiumClient implements NegotiumClient {
     return (result.messages ?? []) as MessageDto[];
   }
 
-  async listMessagePage(topicId: string, cursor?: string): Promise<MessageHistoryPage> {
-    const query = new URLSearchParams({ user: this.#userId, limit: "50" });
+  async listMessagePage(
+    topicId: string,
+    cursor?: string,
+    limit = MESSAGE_HISTORY_PAGE_SIZE,
+  ): Promise<MessageHistoryPage> {
+    const query = new URLSearchParams({ user: this.#userId, limit: String(limit) });
     if (cursor) query.set("cursor", cursor);
     const result = await this.#request(
       `/topics/${encodeURIComponent(topicId)}/messages?${query.toString()}`,
