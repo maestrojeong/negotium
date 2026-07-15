@@ -33,6 +33,32 @@ describe("terminal adapter state", () => {
     expect(state.activeTopicId).toBe("b");
   });
 
+  test("places subagent topics directly after their visible parent", () => {
+    const parent = topic("parent", "Parent");
+    const child = {
+      ...topic("child", "Child"),
+      isSubagent: true,
+      parentTopicId: parent.id,
+    };
+    const other = topic("other", "Other");
+
+    const state = setTopics(createInitialState("local"), [child, parent, other]);
+
+    expect(state.topics.map((candidate) => candidate.id)).toEqual(["parent", "child", "other"]);
+  });
+
+  test("keeps an orphaned subagent visible in its original position", () => {
+    const child = {
+      ...topic("child", "Child"),
+      isSubagent: true,
+      parentTopicId: "missing-parent",
+    };
+
+    const state = setTopics(createInitialState("local"), [child, topic("other", "Other")]);
+
+    expect(state.topics.map((candidate) => candidate.id)).toEqual(["child", "other"]);
+  });
+
   test("focuses a created topic before the refreshed list arrives", () => {
     let state = setTopics(createInitialState("local"), [topic("a", "A")]);
     state = focusCreatedTopic(state, topic("b", "B"));
@@ -81,6 +107,91 @@ describe("terminal adapter state", () => {
     expect(state.activity.a?.startedAtMs).toBe(Date.parse("2026-01-01T00:00:00.000Z"));
   });
 
+  test("ignores late terminal events from a superseded query", () => {
+    const staleTerminals = [
+      { kind: "ai_done", queryId: "old" },
+      { kind: "ai_aborted", queryId: "old", reason: "superseded" },
+      { kind: "ai_error", queryId: "old", error: "late failure" },
+    ] as const;
+
+    for (const terminal of staleTerminals) {
+      let state = setTopics(createInitialState("local"), [topic("a", "A")]);
+      state = applyRuntimeEvent(state, {
+        type: "ai-status",
+        topicId: "a",
+        payload: { kind: "ai_active", queryId: "old" },
+      });
+      state = applyRuntimeEvent(state, {
+        type: "ai-status",
+        topicId: "a",
+        payload: { kind: "ai_active", queryId: "new" },
+      });
+      state = applyRuntimeEvent(state, {
+        type: "ai-status",
+        topicId: "a",
+        payload: terminal,
+      });
+
+      expect(state.activity.a).toMatchObject({
+        running: true,
+        queryId: "new",
+        status: "Thinking…",
+      });
+    }
+  });
+
+  test("ignores late tool events from a superseded query", () => {
+    const staleTools = [
+      { kind: "tool_call", queryId: "old", toolUseId: "late", name: "Bash", label: "Bash(pwd)" },
+      { kind: "tool_output", queryId: "old", toolUseId: "late", content: "/tmp" },
+      { kind: "tool_status", queryId: "old", content: "late status" },
+    ] as const;
+
+    let state = setTopics(createInitialState("local"), [topic("a", "A")]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      payload: { kind: "ai_active", queryId: "old" },
+    });
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      payload: { kind: "ai_active", queryId: "new" },
+    });
+
+    for (const payload of staleTools) {
+      state = applyRuntimeEvent(state, { type: "ai-status", topicId: "a", payload });
+    }
+
+    expect(state.activity.a).toMatchObject({
+      running: true,
+      queryId: "new",
+      status: "Thinking…",
+      tools: [],
+    });
+    expect(state.messages.a ?? []).toEqual([]);
+  });
+
+  test("applies a terminal event for the current query", () => {
+    let state = setTopics(createInitialState("local"), [topic("a", "A")]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      payload: { kind: "ai_active", queryId: "new" },
+    });
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      payload: { kind: "ai_aborted", queryId: "new", reason: "stopped" },
+    });
+
+    expect(state.activity.a).toMatchObject({
+      running: false,
+      queryId: "new",
+      status: "Aborted",
+    });
+  });
+
   test("tracks blocking ask cards and clears them after selection", () => {
     const ask: MessageDto = {
       id: "ask-1",
@@ -109,6 +220,28 @@ describe("terminal adapter state", () => {
       },
     });
     expect(activeQuestion(state)).toBeNull();
+  });
+
+  test("removes a live message after a supersede tombstone", () => {
+    const message: MessageDto = {
+      id: "obsolete",
+      topicId: "a",
+      authorId: "ai",
+      text: "obsolete status",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic("a", "A")]);
+    state = setMessages(state, "a", [message]);
+    state = applyRuntimeEvent(state, {
+      type: "message-updated",
+      topicId: "a",
+      payload: {
+        messageId: message.id,
+        patch: { deleted: true, text: "" },
+      },
+    });
+
+    expect(state.messages.a).toEqual([]);
   });
 
   test("pairs tool output with the current tool activity", () => {

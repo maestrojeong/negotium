@@ -46,6 +46,20 @@ export function workingElapsedSeconds(
   return Math.max(0, Math.floor((nowMs - startedAtMs) / 1_000));
 }
 
+export function formatElapsedDuration(totalSeconds: number): string {
+  const elapsed = Number.isFinite(totalSeconds) ? Math.max(0, Math.floor(totalSeconds)) : 0;
+  const days = Math.floor(elapsed / 86_400);
+  const hours = Math.floor((elapsed % 86_400) / 3_600);
+  const minutes = Math.floor((elapsed % 3_600) / 60);
+  const seconds = elapsed % 60;
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (days > 0 || hours > 0) parts.push(`${hours}h`);
+  if (days > 0 || hours > 0 || minutes > 0) parts.push(`${minutes}m`);
+  parts.push(`${seconds}s`);
+  return parts.join(" ");
+}
+
 /** Hide legacy cross-agent defaults such as codex + deepseek-pro. */
 export function effectiveTopicModel(topic: TopicDto | null): string {
   if (!topic?.agent) return topic?.defaultModel ?? "-";
@@ -385,7 +399,7 @@ function activityLines(state: AppState, animationFrame = 0, nowMs = terminalNowM
     const elapsed = workingElapsedSeconds(activity.startedAtMs, nowMs);
     result.push(
       line(
-        `  ${workingFrame(animationFrame)} Working · ${elapsed}s${detail && detail !== lastToolLabel ? ` · ${detail}` : ""}`,
+        `  ${workingFrame(animationFrame)} Working · ${formatElapsedDuration(elapsed)}${detail && detail !== lastToolLabel ? ` · ${detail}` : ""}`,
         { fg: theme.amber, bold: true },
       ),
     );
@@ -400,7 +414,7 @@ function taskLines(state: AppState, width: number): UiLine[] {
   const taskPanel = activeTaskPanel(state);
   if (!taskPanel) return [];
   return [
-    line("  ◫ Shared tasks", { fg: theme.amber, bold: true }),
+    line("  ◫ Tasks", { fg: theme.amber, bold: true }),
     ...safeText(taskPanel.text)
       .split("\n")
       .slice(1, 6)
@@ -500,8 +514,9 @@ function topicOverlayLines(state: AppState, animationFrame = 0): UiLine[] {
     ...state.topics.map((topic, index) => {
       const selected = index === state.topicPickerIndex;
       const running = state.activity[topic.id]?.running;
+      const childPrefix = topic.isSubagent ? "  ↳ " : "";
       return line(
-        `  ${selected ? "›" : " "} ${running ? workingFrame(animationFrame) : "○"} ${topic.title}  ·  ${topic.agent ?? "no agent"}  ·  ${effectiveTopicModel(topic)}`,
+        `  ${selected ? "›" : " "} ${childPrefix}${running ? workingFrame(animationFrame) : "○"} ${topic.title}  ·  ${topic.agent ?? "no agent"}  ·  ${effectiveTopicModel(topic)}`,
         {
           fg: selected ? theme.text : running ? theme.green : theme.muted,
           bg: selected ? theme.selected : theme.canvas,
@@ -701,12 +716,7 @@ function composerPane(state: AppState, width: number): string[] {
   return state.creatingTopic ? [hint, ...input] : [...input, hint];
 }
 
-function footerLines(
-  state: AppState,
-  width: number,
-  animationFrame = 0,
-  nowMs = terminalNowMs(),
-): string[] {
+function footerLines(state: AppState, width: number): string[] {
   if (state.creatingTopic) {
     return [
       paint(joinSides("  New topic", "○ naming  ", width), {
@@ -721,19 +731,15 @@ function footerLines(
     ];
   }
   const topic = activeTopic(state);
-  const activity = topic ? state.activity[topic.id] : undefined;
-  const status = activity?.running
-    ? `${workingFrame(animationFrame)} Working · ${workingElapsedSeconds(activity.startedAtMs, nowMs)}s`
-    : "○ ready";
   return [
     paint(
       joinSides(
         `  ${topic?.title ?? "no topic"} · ${topic?.agent ?? "-"} · ${effectiveTopicModel(topic)}`,
-        `${status}  `,
+        "",
         width,
       ),
       {
-        fg: activity?.running ? theme.green : theme.accent,
+        fg: theme.accent,
         bg: theme.surfaceRaised,
         bold: true,
       },
@@ -766,7 +772,7 @@ export function renderApp(
 ): string {
   const width = Math.max(32, columns);
   const height = Math.max(14, rows);
-  const footer = footerLines(state, width, animationFrame, nowMs);
+  const footer = footerLines(state, width);
   const decision = decisionPane(state, width);
   const composer = composerPane(state, width);
   const bodyHeight = Math.max(3, height - footer.length - decision.length - composer.length);

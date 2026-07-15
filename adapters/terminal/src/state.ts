@@ -101,21 +101,60 @@ export function activeTaskPanel(state: AppState): MessageDto | null {
   );
 }
 
+function orderTopicsByParent(topics: TopicDto[]): TopicDto[] {
+  const topicIds = new Set(topics.map((topic) => topic.id));
+  const childrenByParent = new Map<string, TopicDto[]>();
+  const attachedChildIds = new Set<string>();
+
+  for (const topic of topics) {
+    if (
+      !topic.isSubagent ||
+      !topic.parentTopicId ||
+      topic.parentTopicId === topic.id ||
+      !topicIds.has(topic.parentTopicId)
+    ) {
+      continue;
+    }
+    const children = childrenByParent.get(topic.parentTopicId) ?? [];
+    children.push(topic);
+    childrenByParent.set(topic.parentTopicId, children);
+    attachedChildIds.add(topic.id);
+  }
+
+  const ordered: TopicDto[] = [];
+  const visited = new Set<string>();
+  const appendTopic = (topic: TopicDto): void => {
+    if (visited.has(topic.id)) return;
+    visited.add(topic.id);
+    ordered.push(topic);
+    for (const child of childrenByParent.get(topic.id) ?? []) appendTopic(child);
+  };
+
+  for (const topic of topics) {
+    if (!attachedChildIds.has(topic.id)) appendTopic(topic);
+  }
+  // Keep malformed/cyclic relationships discoverable instead of dropping them.
+  for (const topic of topics) appendTopic(topic);
+  return ordered;
+}
+
 export function setTopics(state: AppState, topics: TopicDto[], preferredTitle?: string): AppState {
-  const stillVisible = topics.some((topic) => topic.id === state.activeTopicId);
+  const orderedTopics = orderTopicsByParent(topics);
+  const stillVisible = orderedTopics.some((topic) => topic.id === state.activeTopicId);
   const preferred = preferredTitle
-    ? topics.find((topic) => topic.title.toLowerCase() === preferredTitle.toLowerCase())
+    ? orderedTopics.find((topic) => topic.title.toLowerCase() === preferredTitle.toLowerCase())
     : undefined;
-  const nextActive = preferred?.id ?? (stillVisible ? state.activeTopicId : topics[0]?.id) ?? null;
+  const nextActive =
+    preferred?.id ?? (stillVisible ? state.activeTopicId : orderedTopics[0]?.id) ?? null;
   return {
     ...state,
-    topics,
+    topics: orderedTopics,
     activeTopicId: nextActive,
     scrollOffset: nextActive === state.activeTopicId ? state.scrollOffset : 0,
     askChoiceIndex: nextActive === state.activeTopicId ? state.askChoiceIndex : 0,
     topicPickerIndex: Math.max(
       0,
-      topics.findIndex((topic) => topic.id === nextActive),
+      orderedTopics.findIndex((topic) => topic.id === nextActive),
     ),
   };
 }
@@ -214,6 +253,13 @@ function patchMessage(
   return { ...state, messages: { ...state.messages, [topicId]: next } };
 }
 
+function removeMessage(state: AppState, topicId: string, messageId: string): AppState {
+  const current = state.messages[topicId] ?? [];
+  const next = current.filter((message) => message.id !== messageId);
+  if (next.length === current.length) return state;
+  return { ...state, messages: { ...state.messages, [topicId]: next } };
+}
+
 function activityFor(state: AppState, topicId: string): TopicActivity {
   return state.activity[topicId] ?? { running: false, tools: [] };
 }
@@ -225,6 +271,11 @@ function setActivity(state: AppState, topicId: string, activity: TopicActivity):
 function activityStartMs(createdAt?: string): number {
   const parsed = createdAt ? Date.parse(createdAt) : Number.NaN;
   return Number.isFinite(parsed) ? parsed : terminalNowMs();
+}
+
+function isStaleTerminalStatus(current: TopicActivity, status: Record<string, unknown>): boolean {
+  const queryId = typeof status.queryId === "string" ? status.queryId.trim() : "";
+  return Boolean(queryId && current.queryId && queryId !== current.queryId);
 }
 
 function compactPath(value: unknown): string {
@@ -289,6 +340,10 @@ function applyAiStatus(
     });
   }
   if (kind === "ai_done") {
+    // A superseded provider can finish unwinding after its replacement has
+    // already broadcast ai_active. Its late terminal event must not stop the
+    // replacement's spinner or overwrite its status.
+    if (isStaleTerminalStatus(current, status)) return state;
     return setActivity(state, topicId, {
       ...current,
       running: false,
@@ -296,6 +351,7 @@ function applyAiStatus(
     });
   }
   if (kind === "ai_aborted") {
+    if (isStaleTerminalStatus(current, status)) return state;
     return setActivity(state, topicId, {
       ...current,
       running: false,
@@ -303,6 +359,7 @@ function applyAiStatus(
     });
   }
   if (kind === "ai_error") {
+    if (isStaleTerminalStatus(current, status)) return state;
     return setActivity(state, topicId, {
       ...current,
       running: false,
@@ -311,6 +368,7 @@ function applyAiStatus(
     });
   }
   if (kind === "tool_call") {
+    if (isStaleTerminalStatus(current, status)) return state;
     const queryId = String(status.queryId ?? "");
     const tool: ToolActivity = {
       id: String(status.toolUseId ?? `${queryId || "query"}:tool`),
@@ -339,6 +397,7 @@ function applyAiStatus(
     });
   }
   if (kind === "tool_output") {
+    if (isStaleTerminalStatus(current, status)) return state;
     const id = String(status.toolUseId ?? "");
     const tools = current.tools.map((tool) =>
       tool.id === id ? { ...tool, output: String(status.content ?? ""), status: "done" } : tool,
@@ -349,6 +408,7 @@ function applyAiStatus(
     });
   }
   if (kind === "tool_status") {
+    if (isStaleTerminalStatus(current, status)) return state;
     return setActivity(state, topicId, {
       ...current,
       status: String(status.content ?? current.status ?? "Working…"),
@@ -367,6 +427,7 @@ export function applyRuntimeEvent(state: AppState, event: RuntimeBusEvent): AppS
       patch?: Partial<MessageDto>;
     };
     if (!payload.messageId || !payload.patch) return state;
+    if (payload.patch.deleted) return removeMessage(state, event.topicId, payload.messageId);
     return patchMessage(state, event.topicId, payload.messageId, payload.patch);
   }
   if (event.type === "ai-status") {

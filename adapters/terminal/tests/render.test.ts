@@ -3,6 +3,7 @@ import type { MessageDto, TopicDto } from "@negotium/core";
 import {
   displayWidth,
   effectiveTopicModel,
+  formatElapsedDuration,
   renderApp,
   stripAnsi,
   WORKING_FRAME_INTERVAL_MS,
@@ -26,6 +27,14 @@ function topic(): TopicDto {
 }
 
 describe("terminal renderer", () => {
+  test("formats working time with day, hour, minute, and second units", () => {
+    expect(formatElapsedDuration(0)).toBe("0s");
+    expect(formatElapsedDuration(45)).toBe("45s");
+    expect(formatElapsedDuration(451)).toBe("7m 31s");
+    expect(formatElapsedDuration(3_605)).toBe("1h 0m 5s");
+    expect(formatElapsedDuration(93_784)).toBe("1d 2h 3m 4s");
+  });
+
   test("counts Korean glyphs as wide characters", () => {
     expect(displayWidth("a한")).toBe(3);
     expect(wrapText("가나다", 4)).toEqual(["가나", "다"]);
@@ -72,7 +81,7 @@ describe("terminal renderer", () => {
     expect(output).not.toContain("/new ");
   });
 
-  test("places terminal status below the composer without a product wordmark", () => {
+  test("places topic metadata below the composer without duplicating live status", () => {
     const state = setTopics(createInitialState("local"), [topic()]);
     const output = stripAnsi(renderApp(state, 120, 30));
     const lines = output.split("\n");
@@ -80,7 +89,8 @@ describe("terminal renderer", () => {
     const statusIndex = lines.findIndex((line) => line.includes("Terminal · codex · gpt"));
 
     expect(statusIndex).toBeGreaterThan(composerIndex);
-    expect(lines[statusIndex]).toContain("○ ready");
+    expect(lines[statusIndex]).not.toContain("ready");
+    expect(lines[statusIndex]).not.toContain("Working");
     expect(output).not.toContain("NEGOTIUM");
   });
 
@@ -111,6 +121,30 @@ describe("terminal renderer", () => {
 
     const output = stripAnsi(renderApp(state, 120, 30));
     expect(output).toContain("Terminal  ·  codex  ·  gpt");
+  });
+
+  test("indents subagent topics with a child arrow in the topic picker", () => {
+    const parent = { ...topic(), id: "parent", title: "Parent" };
+    const child = {
+      ...topic(),
+      id: "child",
+      title: "Child",
+      isSubagent: true,
+      parentTopicId: parent.id,
+    };
+    const state = {
+      ...setTopics(createInitialState("local"), [child, parent]),
+      overlay: "topics" as const,
+    };
+
+    const output = stripAnsi(renderApp(state, 120, 30));
+    const parentLine = output.split("\n").find((row) => row.includes("Parent"));
+    const childLine = output.split("\n").find((row) => row.includes("Child"));
+
+    expect(parentLine).not.toContain("↳");
+    expect(childLine).toContain("↳ ○ Child");
+    expect(output.indexOf("Parent")).toBeLessThan(output.indexOf("Child"));
+    expect(output).not.toContain("SUBAGENT");
   });
 
   test("separates latest context occupancy from aggregate turn spend", () => {
@@ -199,6 +233,24 @@ describe("terminal renderer", () => {
     expect(output).toContain("Working");
   });
 
+  test("labels the task panel as Tasks like Telegram", () => {
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [
+      {
+        id: "tasks-query",
+        topicId: "topic",
+        authorId: "system",
+        text: "📋 Tasks (0/1)\n  ☐ Verify the result",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("◫ Tasks");
+    expect(output).toContain("☐ Verify the result");
+    expect(output).not.toContain("Shared tasks");
+  });
+
   test("animates the working indicator without requiring another runtime event", () => {
     expect(WORKING_FRAME_INTERVAL_MS).toBe(50);
     let state = setTopics(createInitialState("local"), [topic()]);
@@ -212,6 +264,8 @@ describe("terminal renderer", () => {
     const second = stripAnsi(renderApp(state, 100, 30, 1));
     expect(first).toContain(`${workingFrame(0)} Working`);
     expect(second).toContain(`${workingFrame(1)} Working`);
+    expect(first.match(/Working/g)).toHaveLength(1);
+    expect(second.match(/Working/g)).toHaveLength(1);
     expect(first).not.toBe(second);
   });
 
@@ -239,8 +293,8 @@ describe("terminal renderer", () => {
 
     const at106 = stripAnsi(renderApp(state, 100, 30, 0, startedAt + 106_000));
     const at107 = stripAnsi(renderApp(state, 100, 30, 1, startedAt + 107_000));
-    expect(at106).toContain("Working · 106s");
-    expect(at107).toContain("Working · 107s");
+    expect(at106).toContain("Working · 1m 46s");
+    expect(at107).toContain("Working · 1m 47s");
     expect(at106).not.toContain("111s");
   });
 
