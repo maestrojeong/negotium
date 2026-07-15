@@ -36,8 +36,10 @@ import {
 } from "@/state";
 import { InputHistory, TextBuffer } from "@/text-buffer";
 
-const ENTER_ALT_SCREEN = "\u001b[?1049h\u001b[?25l\u001b[?2004h\u001b[?1002h\u001b[?1006h";
-const EXIT_ALT_SCREEN = "\u001b[?1006l\u001b[?1002l\u001b[?2004l\u001b[?25h\u001b[?1049l";
+export const ENTER_ALT_SCREEN =
+  "\u001b]11;#0a0b0f\u0007\u001b[?1049h\u001b[48;2;10;11;15m\u001b[2J\u001b[H\u001b[?25l\u001b[?2004h\u001b[?1002h\u001b[?1006h";
+const EXIT_ALT_SCREEN =
+  "\u001b[0m\u001b[?1006l\u001b[?1002l\u001b[?2004l\u001b[?25h\u001b[?1049l\u001b]111\u0007";
 const AGENTS = new Set<AgentKind>(["claude", "codex", "maestro"]);
 const NEW_TOPIC_KEYS = new Set(["n", "ㅜ"]);
 const DELETE_TOPIC_KEYS = new Set(["d", "ㅇ", "\u007f", "\b", "\u001b[3~"]);

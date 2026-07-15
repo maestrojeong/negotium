@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
+import { ENTER_ALT_SCREEN } from "@/app";
 import { TerminalScreenRenderer } from "@/screen-renderer";
 
 const CLEAR_DISPLAY = "\u001b[2J";
+
+test("fills the alternate screen with the terminal canvas color on entry", () => {
+  expect(ENTER_ALT_SCREEN).toStartWith("\u001b]11;#0a0b0f\u0007");
+  expect(ENTER_ALT_SCREEN).toContain("\u001b[48;2;10;11;15m\u001b[2J\u001b[H");
+});
 
 test("draws the initial frame without clearing the whole display", () => {
   const renderer = new TerminalScreenRenderer();
