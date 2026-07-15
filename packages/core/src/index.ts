@@ -150,11 +150,13 @@ export {
   triggerTopicAiTurn,
 } from "#runtime/turn-runner";
 export { isSensitivePath } from "#security/sensitive-path";
+export type { MessagePage } from "#storage/api-messages";
 // ── Storage ─────────────────────────────────────────────────────────
 export {
   appendApiMessage,
   getAllMessagesForTopic,
   getApiMessage,
+  listApiMessages,
 } from "#storage/api-messages";
 export { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
 export {

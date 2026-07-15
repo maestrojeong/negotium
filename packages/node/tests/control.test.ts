@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
+  appendApiMessage,
   getTopicSessionId,
   latestRuntimeEventSeq,
   NODE_CONTROL_TOKEN,
@@ -126,6 +127,50 @@ test("POST message broadcasts the persisted user message to peer Terminal client
   } finally {
     unsubscribe();
   }
+});
+
+test("message history pages backward from the latest messages", async () => {
+  const topic = registerTopic({
+    title: `History ${randomUUID()}`,
+    userId,
+    agent: "codex",
+  });
+  for (let index = 0; index < 55; index += 1) {
+    appendApiMessage({
+      id: randomUUID(),
+      topicId: topic.id,
+      authorId: userId,
+      text: `history-${index}`,
+      createdAt: new Date(2026, 0, 1, 0, 0, index).toISOString(),
+    });
+  }
+
+  const latest = await handler(
+    request(`/topics/${encodeURIComponent(topic.id)}/messages?user=${userId}&limit=20`),
+  );
+  const latestBody = (await latest?.json()) as {
+    messages: Array<{ id: string; text: string }>;
+    cursor: string;
+    hasMore: boolean;
+  };
+  expect(latestBody.messages.map((message) => message.text)).toEqual(
+    Array.from({ length: 20 }, (_, index) => `history-${index + 35}`),
+  );
+  expect(latestBody.hasMore).toBe(true);
+
+  const older = await handler(
+    request(
+      `/topics/${encodeURIComponent(topic.id)}/messages?user=${userId}&limit=20&cursor=${encodeURIComponent(latestBody.cursor)}`,
+    ),
+  );
+  const olderBody = (await older?.json()) as {
+    messages: Array<{ text: string }>;
+    hasMore: boolean;
+  };
+  expect(olderBody.messages.map((message) => message.text)).toEqual(
+    Array.from({ length: 20 }, (_, index) => `history-${index + 15}`),
+  );
+  expect(olderBody.hasMore).toBe(true);
 });
 
 test("an open SSE stream stops exposing a topic after participant removal", async () => {

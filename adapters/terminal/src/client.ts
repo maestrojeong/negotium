@@ -9,6 +9,7 @@ import {
   getAllMessagesForTopic,
   getApiMessage,
   getVisibleTopics,
+  listApiMessages,
   listRecentRuntimeEventsForTopic,
   type MessageDto,
   type RuntimeBusEvent,
@@ -29,11 +30,18 @@ import { appendTerminalInputHistory, loadTerminalInputHistory } from "@/history-
 
 export type ClientResult<T> = T | Promise<T>;
 
+export interface MessageHistoryPage {
+  messages: MessageDto[];
+  cursor?: string;
+  hasMore: boolean;
+}
+
 export interface NegotiumClient {
   start(onEvent: (event: RuntimeBusEvent) => void): Promise<void>;
   stop(): Promise<void>;
   listTopics(): ClientResult<TopicDto[]>;
   listMessages(topicId: string): ClientResult<MessageDto[]>;
+  listMessagePage?(topicId: string, cursor?: string): ClientResult<MessageHistoryPage>;
   createTopic(title: string, agent?: AgentKind): ClientResult<TopicDto>;
   resetTopic(topic: TopicDto): Promise<string>;
   deleteTopic(topic: TopicDto): Promise<void>;
@@ -109,6 +117,11 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
     return rows
       .map((row) => (typeof row.id === "string" ? getApiMessage(topicId, row.id) : null))
       .filter((message): message is MessageDto => message !== null);
+  }
+
+  listMessagePage(topicId: string, cursor?: string): MessageHistoryPage {
+    const result = listApiMessages(topicId, { cursor, limit: 50 });
+    return { messages: result.page, cursor: result.cursor, hasMore: result.hasMore };
   }
 
   listRecentEvents(topicId: string): RuntimeBusEvent[] {
@@ -253,6 +266,19 @@ export class RemoteNegotiumClient implements NegotiumClient {
       `/topics/${encodeURIComponent(topicId)}/messages?user=${encodeURIComponent(this.#userId)}`,
     );
     return (result.messages ?? []) as MessageDto[];
+  }
+
+  async listMessagePage(topicId: string, cursor?: string): Promise<MessageHistoryPage> {
+    const query = new URLSearchParams({ user: this.#userId, limit: "50" });
+    if (cursor) query.set("cursor", cursor);
+    const result = await this.#request(
+      `/topics/${encodeURIComponent(topicId)}/messages?${query.toString()}`,
+    );
+    return {
+      messages: (result.messages ?? []) as MessageDto[],
+      cursor: typeof result.cursor === "string" ? result.cursor : undefined,
+      hasMore: result.hasMore === true,
+    };
   }
 
   async listRecentEvents(topicId: string): Promise<RuntimeBusEvent[]> {

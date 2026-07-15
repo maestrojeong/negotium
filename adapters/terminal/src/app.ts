@@ -1,5 +1,5 @@
-import type { AgentKind, MessageDto, RuntimeBusEvent } from "@negotium/core";
-import type { NegotiumClient } from "@/client";
+import type { AgentKind, RuntimeBusEvent } from "@negotium/core";
+import type { MessageHistoryPage, NegotiumClient } from "@/client";
 import { copyToClipboard } from "@/clipboard";
 import { commandSuggestions, completeCommand } from "@/commands";
 import {
@@ -65,6 +65,10 @@ export class TerminalApp {
   #animationFrame = 0;
   #topicsRefreshGeneration = 0;
   readonly #messageLoadGeneration = new Map<string, number>();
+  readonly #messageHistory = new Map<
+    string,
+    { cursor?: string; hasMore: boolean; loading: boolean }
+  >();
   readonly #queuedRuntimeEvents = new Map<string, RuntimeBusEvent[]>();
   #lastInterruptAt = 0;
   #running = false;
@@ -192,11 +196,17 @@ export class TerminalApp {
     if (!topic) return;
     const generation = (this.#messageLoadGeneration.get(topic.id) ?? 0) + 1;
     this.#messageLoadGeneration.set(topic.id, generation);
-    let messages: MessageDto[];
+    let messagePage: MessageHistoryPage;
     let recentEvents: RuntimeBusEvent[];
     try {
-      [messages, recentEvents] = await Promise.all([
-        this.#client.listMessages(topic.id),
+      const messageRequest: Promise<MessageHistoryPage> = this.#client.listMessagePage
+        ? Promise.resolve(this.#client.listMessagePage(topic.id))
+        : Promise.resolve(this.#client.listMessages(topic.id)).then((messages) => ({
+            messages,
+            hasMore: false,
+          }));
+      [messagePage, recentEvents] = await Promise.all([
+        messageRequest,
         this.#client.listRecentEvents?.(topic.id) ?? [],
       ]);
     } catch (error) {
@@ -209,7 +219,12 @@ export class TerminalApp {
       throw error;
     }
     if (this.#messageLoadGeneration.get(topic.id) !== generation) return;
-    this.#state = setMessages(this.#state, topic.id, messages);
+    this.#state = setMessages(this.#state, topic.id, messagePage.messages);
+    this.#messageHistory.set(topic.id, {
+      cursor: messagePage.cursor,
+      hasMore: messagePage.hasMore,
+      loading: false,
+    });
     for (const event of recentEvents) {
       this.#state = applyRuntimeEvent(this.#state, event);
     }
@@ -217,6 +232,46 @@ export class TerminalApp {
     const queued = this.#queuedRuntimeEvents.get(topic.id) ?? [];
     this.#queuedRuntimeEvents.delete(topic.id);
     for (const event of queued) this.#state = applyRuntimeEvent(this.#state, event);
+  }
+
+  async #loadOlderMessages(topicId: string, extraOffset: number): Promise<void> {
+    const history = this.#messageHistory.get(topicId);
+    if (!this.#client.listMessagePage || !history?.hasMore || history.loading) return;
+    const cursor = history.cursor;
+    if (!cursor) return;
+    this.#messageHistory.set(topicId, { ...history, loading: true });
+
+    try {
+      const page = await this.#client.listMessagePage(topicId, cursor);
+      const latestHistory = this.#messageHistory.get(topicId);
+      if (!latestHistory || latestHistory.cursor !== cursor) return;
+
+      const current = this.#state.messages[topicId] ?? [];
+      const currentIds = new Set(current.map((message) => message.id));
+      const older = page.messages.filter((message) => !currentIds.has(message.id));
+      this.#state = setMessages(this.#state, topicId, [...older, ...current]);
+      this.#messageHistory.set(topicId, {
+        cursor: page.cursor,
+        hasMore: page.hasMore,
+        loading: false,
+      });
+      if (this.#state.activeTopicId === topicId && extraOffset > 0) {
+        this.#state = {
+          ...this.#state,
+          scrollOffset: this.#state.scrollOffset + extraOffset,
+        };
+      }
+    } catch (error) {
+      const latestHistory = this.#messageHistory.get(topicId);
+      if (latestHistory?.cursor === cursor) {
+        this.#messageHistory.set(topicId, { ...latestHistory, loading: false });
+      }
+      this.#state = {
+        ...this.#state,
+        notice: `History load failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    this.#queueRender();
   }
 
   #queueRender(): void {
@@ -453,7 +508,7 @@ export class TerminalApp {
       void this.#submit();
       return;
     }
-    if (chunk === "\n" || chunk === "\u001b\r" || chunk === "\u001b\n") {
+    if (chunk === "\u001b\r" || chunk === "\u001b\n") {
       this.#input.insert("\n");
       this.#syncInput();
       this.#queueRender();
@@ -812,10 +867,15 @@ export class TerminalApp {
       process.stdout.columns ?? 100,
       process.stdout.rows ?? 30,
     );
+    const desiredOffset = this.#state.scrollOffset + delta;
     this.#state = {
       ...this.#state,
-      scrollOffset: Math.min(maxOffset, Math.max(0, this.#state.scrollOffset + delta)),
+      scrollOffset: Math.min(maxOffset, Math.max(0, desiredOffset)),
     };
+    const topic = activeTopic(this.#state);
+    if (topic && delta > 0 && desiredOffset >= maxOffset) {
+      void this.#loadOlderMessages(topic.id, Math.max(0, desiredOffset - maxOffset));
+    }
     this.#queueRender();
   }
 

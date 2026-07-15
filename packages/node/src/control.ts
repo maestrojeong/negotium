@@ -16,12 +16,11 @@ import {
   appendApiMessage,
   deleteTopicCascade,
   ensurePersonalGeneral,
-  getAllMessagesForTopic,
-  getApiMessage,
   getTopic,
   getVisibleTopics,
   isParticipant,
   latestRuntimeEventSeq,
+  listApiMessages,
   listRecentRuntimeEventsForTopic,
   listRuntimeEventsAfter,
   type MessageDto,
@@ -111,13 +110,6 @@ function topicsForUser(userId: string): TopicDto[] {
 function topicForUser(topicId: string, userId: string): TopicDto | null {
   const topic = getTopic(topicId);
   return topic && isParticipant(topic, userId) ? topic : null;
-}
-
-function messagesForTopic(topicId: string): MessageDto[] {
-  const rows = getAllMessagesForTopic(topicId) as Array<{ id?: unknown }>;
-  return rows
-    .map((row) => (typeof row.id === "string" ? getApiMessage(topicId, row.id) : null))
-    .filter((message): message is MessageDto => message !== null);
 }
 
 function runtimeEvent(event: StoredRuntimeEvent): RuntimeBusEvent {
@@ -289,7 +281,18 @@ export function createNodeControlHandler(
         const topicId = decodeURIComponent(messagesMatch[1]);
         const userId = requiredText(url.searchParams.get("user"), "user");
         if (!topicForUser(topicId, userId)) return jsonError(404, "Topic not found");
-        return Response.json({ ok: true, messages: messagesForTopic(topicId) });
+        const cursor = url.searchParams.get("cursor");
+        const parsedLimit = Number.parseInt(url.searchParams.get("limit") ?? "50", 10);
+        const result = listApiMessages(topicId, {
+          cursor,
+          limit: Number.isFinite(parsedLimit) ? parsedLimit : 50,
+        });
+        return Response.json({
+          ok: true,
+          messages: result.page,
+          cursor: result.cursor,
+          hasMore: result.hasMore,
+        });
       }
       if (messagesMatch && req.method === "POST") {
         const topicId = decodeURIComponent(messagesMatch[1]);

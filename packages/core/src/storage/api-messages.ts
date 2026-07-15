@@ -354,8 +354,8 @@ export function listApiMessages(
   let anchorRowid: number | null = null;
   if (options?.cursor) {
     const cur = db
-      .query("SELECT rowid AS rowid FROM api_messages WHERE id = ?")
-      .get(options.cursor) as { rowid: number } | undefined;
+      .query("SELECT rowid AS rowid FROM api_messages WHERE topic_id = ? AND id = ?")
+      .get(topicId, options.cursor) as { rowid: number } | undefined;
     if (cur) anchorRowid = cur.rowid;
   }
 
@@ -364,7 +364,7 @@ export function listApiMessages(
       ? db
           .query(
             `SELECT *, rowid AS rowid FROM api_messages
-             WHERE topic_id = ? AND thread_root_id IS NULL AND rowid < ?
+             WHERE topic_id = ? AND deleted = 0 AND thread_root_id IS NULL AND rowid < ?
              ORDER BY rowid DESC
              LIMIT ?`,
           )
@@ -372,7 +372,7 @@ export function listApiMessages(
       : db
           .query(
             `SELECT *, rowid AS rowid FROM api_messages
-             WHERE topic_id = ? AND thread_root_id IS NULL
+             WHERE topic_id = ? AND deleted = 0 AND thread_root_id IS NULL
              ORDER BY rowid DESC
              LIMIT ?`,
           )
