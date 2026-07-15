@@ -258,7 +258,7 @@ Representative tests: `adapters/telegram/tests/`.
 - [ ] Event sequences start at one, remain contiguous, and resume without skipping.
 - [ ] Final message precedes terminal success.
 - [ ] Interrupted requests converge to a hub-visible terminal state after restart.
-- [ ] File, remote ask, bridge, and relay gaps fail explicitly until implemented.
+- [x] Input/output files, remote ask/reply, and visual/runtime bridges use hub-owned data.
 
 Representative tests: `adapters/otium/tests/` and `scripts/otium-experiment/`.
 

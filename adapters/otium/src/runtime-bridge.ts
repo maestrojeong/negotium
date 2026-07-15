@@ -1,7 +1,15 @@
 /** Worker-side runtime MCP mutations that must execute on Otium's canonical hub. */
 
-import { errorResult, logger, type McpToolResult, type PeerRuntimeBridge } from "@negotium/core";
+import {
+  errorResult,
+  logger,
+  type McpToolResult,
+  type PeerRuntimeBridge,
+  resolveAttachmentByFileId,
+  resolveUploadedFilePathByFileId,
+} from "@negotium/core";
 import { mintPeerToken, resolvePeerNodeByCellId } from "@/central";
+import { getActiveForwarder } from "@/event-backflow";
 
 const PEER_BRIDGE_TIMEOUT_MS = 15_000;
 
@@ -21,7 +29,13 @@ function isMcpToolResult(value: unknown): value is McpToolResult {
   );
 }
 
-export const otiumPeerRuntimeBridge: PeerRuntimeBridge = {
+export const otiumPeerRuntimeBridge = {
+  async flushEvents(localTopicId) {
+    const forwarder = getActiveForwarder(localTopicId);
+    if (!forwarder) return false;
+    await forwarder.chain;
+    return !forwarder.deliveryBlocked;
+  },
   async spawnSubagent(request) {
     const hubNode = await resolvePeerNodeByCellId(request.bridge.hubCellId).catch(() => null);
     if (!hubNode) return errorResult("Error: Hub node is no longer attached.");
@@ -72,4 +86,123 @@ export const otiumPeerRuntimeBridge: PeerRuntimeBridge = {
     }
     return parsed.result;
   },
-};
+  async showVisual(request) {
+    const hubNode = await resolvePeerNodeByCellId(request.bridge.hubCellId).catch(() => null);
+    if (!hubNode) return { ok: false, error: "hub node is no longer attached" };
+    let token: string;
+    try {
+      token = await mintPeerToken(hubNode.cellId);
+    } catch (error) {
+      return { ok: false, error: `peer token mint failed: ${(error as Error).message}` };
+    }
+
+    let hubFileId = request.fileId;
+    if (request.kind === "image" || request.kind === "video") {
+      const localPath = request.fileId ? resolveUploadedFilePathByFileId(request.fileId) : null;
+      const localAttachment = request.fileId ? resolveAttachmentByFileId(request.fileId) : null;
+      if (!localPath || !localAttachment) {
+        return { ok: false, error: "worker media file is unavailable" };
+      }
+      const form = new FormData();
+      form.set("hostQueryId", request.bridge.hostQueryId);
+      form.set("userId", request.userId);
+      form.set("agent", request.agent);
+      if (request.model) form.set("model", request.model);
+      form.set("announce", "false");
+      form.set(
+        "file",
+        Bun.file(localPath, { type: localAttachment.mimeType }),
+        localAttachment.filename,
+      );
+      const fileResponse = await fetch(
+        `${hubNode.baseUrl.replace(/\/+$/, "")}/api/v1/peer/bridge/file`,
+        {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: form,
+          signal: AbortSignal.timeout(PEER_BRIDGE_TIMEOUT_MS),
+        },
+      ).catch(() => null);
+      const fileBody = fileResponse
+        ? ((await fileResponse.json().catch(() => null)) as {
+            ok?: boolean;
+            error?: string;
+            attachment?: { id?: string };
+          } | null)
+        : null;
+      if (!fileResponse?.ok || !fileBody?.ok || !fileBody.attachment?.id) {
+        return { ok: false, error: fileBody?.error ?? "hub media upload failed" };
+      }
+      hubFileId = fileBody.attachment.id;
+    }
+
+    const response = await fetch(
+      `${hubNode.baseUrl.replace(/\/+$/, "")}/api/v1/peer/bridge/visual`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          hostQueryId: request.bridge.hostQueryId,
+          userId: request.userId,
+          kind: request.kind,
+          ...(request.title ? { title: request.title } : {}),
+          ...(request.html ? { html: request.html } : {}),
+          ...(request.code ? { code: request.code } : {}),
+          ...(request.theme ? { theme: request.theme } : {}),
+          ...(hubFileId ? { fileId: hubFileId } : {}),
+          ...(request.mimeType ? { mimeType: request.mimeType } : {}),
+          ...(request.source ? { source: request.source } : {}),
+        }),
+        signal: AbortSignal.timeout(PEER_BRIDGE_TIMEOUT_MS),
+      },
+    ).catch(() => null);
+    const body = response
+      ? ((await response.json().catch(() => null)) as {
+          ok?: boolean;
+          error?: string;
+          id?: number;
+          url?: string;
+          title?: string | null;
+        } | null)
+      : null;
+    if (!response?.ok || !body?.ok || typeof body.id !== "number" || !body.url) {
+      return { ok: false, error: body?.error ?? "hub visual bridge failed" };
+    }
+    return { ok: true, id: body.id, url: body.url, title: body.title ?? null };
+  },
+  async sendFile(request) {
+    const hubNode = await resolvePeerNodeByCellId(request.bridge.hubCellId).catch(() => null);
+    if (!hubNode) return { ok: false, error: "hub node is no longer attached" };
+    try {
+      const token = await mintPeerToken(hubNode.cellId);
+      const form = new FormData();
+      form.set("hostQueryId", request.bridge.hostQueryId);
+      form.set("userId", request.userId);
+      form.set("agent", request.agent);
+      if (request.model) form.set("model", request.model);
+      form.set("announce", "true");
+      form.set("file", Bun.file(request.path), request.path.split("/").pop() ?? "output");
+      const response = await fetch(
+        `${hubNode.baseUrl.replace(/\/+$/, "")}/api/v1/peer/bridge/file`,
+        {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: form,
+          signal: AbortSignal.timeout(PEER_BRIDGE_TIMEOUT_MS),
+        },
+      );
+      const body = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        error?: string;
+      } | null;
+      return response.ok && body?.ok
+        ? { ok: true }
+        : { ok: false, error: body?.error ?? `peer call failed (${response.status})` };
+    } catch (error) {
+      return { ok: false, error: (error as Error).message };
+    }
+  },
+} satisfies PeerRuntimeBridge;

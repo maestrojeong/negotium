@@ -1,14 +1,14 @@
 #!/usr/bin/env bun
 /**
- * otium ↔ negotium coupling experiment — hub-side bootstrap (v0, zero
- * otium-copy changes). Implements docs/OTIUM-COUPLING.md §5.2–5.3:
+ * otium ↔ negotium coupling experiment — hub-side bootstrap.
+ * Implements docs/OTIUM-COUPLING.md §5.2–5.3 against the current checkouts:
  *
- *   1. boot otium-copy central-api (port 4600, fresh state dir)
+ *   1. boot otium central-api (port 4600, fresh state dir)
  *   2. admin login via the dev email-code flow (EMAIL_MODE=dev returns the code)
  *   3. create a workspace
  *   4. register the HUB runtime cell with a direct baseUrl (no relay) and
  *      assign it as the workspace primary
- *   5. boot otium-copy runtime-api as the hub (port 4000, OTIUM_MULTI_NODE=1)
+ *   5. boot otium runtime-api as the hub (port 4000, OTIUM_MULTI_NODE=1)
  *   6. register the WORKER cell (direct baseUrl http://127.0.0.1:7777) and
  *      attach it as worker "nego"
  *   7. print the invite code = base64url(JSON {v, central, cellId, secret})
@@ -19,7 +19,7 @@
  * Usage:
  *   bun scripts/otium-experiment/hub-setup.ts
  * Env overrides:
- *   OTIUM_COPY_DIR   (default: ~/otium-copy)
+ *   OTIUM_COPY_DIR   (default: ~/otium)
  *   EXPERIMENT_DIR   (default: /tmp/otium-experiment)
  *   ADMIN_EMAIL      (default: yeonwoo.jeong@bluehole.net)
  *   CENTRAL_PORT / HUB_PORT / WORKER_PORT (default: 4600 / 4000 / 7777)
@@ -30,7 +30,7 @@ import { existsSync, mkdirSync, openSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-const OTIUM_COPY_DIR = resolve(process.env.OTIUM_COPY_DIR ?? join(homedir(), "otium-copy"));
+const OTIUM_COPY_DIR = resolve(process.env.OTIUM_COPY_DIR ?? join(homedir(), "otium"));
 const EXPERIMENT_DIR = resolve(process.env.EXPERIMENT_DIR ?? "/tmp/otium-experiment");
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "yeonwoo.jeong@bluehole.net";
 const CENTRAL_PORT = Number(process.env.CENTRAL_PORT ?? 4600);
@@ -41,9 +41,18 @@ const CENTRAL_URL = `http://127.0.0.1:${CENTRAL_PORT}`;
 const HUB_URL = `http://127.0.0.1:${HUB_PORT}`;
 const WORKER_URL = `http://127.0.0.1:${WORKER_PORT}`;
 const STATE_FILE = join(EXPERIMENT_DIR, "state.json");
+const WORKER_STATE_DIR = join(EXPERIMENT_DIR, "worker-state");
+const spawnedPids: number[] = [];
 
 function die(message: string): never {
   console.error(`\nERROR: ${message}`);
+  for (const pid of spawnedPids.reverse()) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // The child already exited.
+    }
+  }
   process.exit(1);
 }
 
@@ -72,11 +81,13 @@ function spawnDetached(opts: {
   const proc = Bun.spawn(opts.cmd, {
     cwd: opts.cwd,
     env: { ...process.env, ...opts.env },
+    detached: true,
     stdout: fd,
     stderr: fd,
     stdin: "ignore",
   });
   proc.unref();
+  spawnedPids.push(proc.pid);
   console.log(`  started ${opts.label} (pid ${proc.pid}, log ${logPath})`);
   return proc.pid;
 }
@@ -259,6 +270,7 @@ const state = {
   centralUrl: CENTRAL_URL,
   hubUrl: HUB_URL,
   workerUrl: WORKER_URL,
+  workerStateDir: WORKER_STATE_DIR,
   workspaceId,
   slug,
   adminEmail: ADMIN_EMAIL,
@@ -272,8 +284,12 @@ await Bun.write(STATE_FILE, `${JSON.stringify(state, null, 2)}\n`);
 
 console.log(`[7/7] done — state saved to ${STATE_FILE}\n`);
 console.log("── worker node: run these ─────────────────────────────────────");
-console.log(`  negotium otium join ${invite}`);
-console.log("  negotium otium serve");
+console.log(
+  `  NEGOTIUM_STATE_DIR=${WORKER_STATE_DIR} bun apps/cli/src/main.ts otium join ${invite}`,
+);
+console.log(
+  `  NEGOTIUM_STATE_DIR=${WORKER_STATE_DIR} bun apps/cli/src/main.ts otium serve --port ${WORKER_PORT}`,
+);
 console.log("\n── then drive the E2E ─────────────────────────────────────────");
 console.log("  bun scripts/otium-experiment/run-e2e.ts");
 console.log("\n(servers keep running; stop with `kill <pid>` — PIDs in state.json)");

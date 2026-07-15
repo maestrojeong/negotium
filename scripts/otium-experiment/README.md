@@ -1,16 +1,16 @@
 # otium ↔ negotium coupling — local E2E checklist (v0)
 
 One machine, no cloud, no relay. Contract: `docs/OTIUM-COUPLING.md`.
-otium-copy is used **unmodified** — the "invite code" is a local-only credential bundle
+The current `~/otium` checkout is used — the "invite code" is a local-only credential bundle
 minted through central's admin API, not a one-time production invite.
 
 ## Ports
 
 | service | port | source |
 |---|---|---|
-| central-api | 4600 | `~/otium-copy/apps/central-api` |
-| hub runtime-api | 4000 | `~/otium-copy/apps/runtime-api` |
-| negotium worker | 7777 | this repo (`negotium otium serve`) |
+| central-api | 4600 | `~/otium/apps/central-api` |
+| hub runtime-api | 4000 | `~/otium/apps/runtime-api` |
+| negotium worker | 7777 | this repo (`negotium otium serve --port 7777`) |
 
 ## 1. Hub side — automated
 
@@ -25,7 +25,7 @@ both cells with **direct** baseUrls (`http://127.0.0.1:4000` / `:7777` — no
 relay needed), attaches worker `nego`, and prints:
 
 ```
-negotium otium join <base64url-code>
+bun apps/cli/src/main.ts otium join <base64url-code>
 ```
 
 Notes:
@@ -40,11 +40,12 @@ Notes:
 
 ```bash
 cd ~/negotium
-negotium otium join <code-from-step-1>
-negotium otium serve
+export NEGOTIUM_STATE_DIR=/tmp/otium-experiment/worker-state
+bun apps/cli/src/main.ts otium join <code-from-step-1>
+bun apps/cli/src/main.ts otium serve --port 7777
 ```
 
-`join` persists `{central, cellId, secret}` to `~/.negotium/data/otium-join.json`
+`join` persists `{central, cellId, secret}` under the experiment's isolated worker state
 (0600) and self-checks against central ("attached to workspace as nego").
 `serve` sees the join file and mounts the otium peer routes
 (`/ready`, `/api/v1/peer/*`) in front of the negotium MCP handler on :7777.
@@ -59,6 +60,10 @@ placing.
 ```bash
 bun scripts/otium-experiment/run-e2e.ts            # defaults: AGENT=claude, one-line prompt
 # PROMPT="..." AGENT=claude bun scripts/otium-experiment/run-e2e.ts
+
+# Optional feature-level cross-process suite (adds provider turns):
+E2E_FEATURES=input,artifact,ask bun scripts/otium-experiment/run-e2e.ts
+# E2E_FEATURES=all is equivalent.
 ```
 
 What it does (the placement/turn flow in the coupling contract §1.3–1.4) and what proves what:
@@ -80,6 +85,20 @@ What it does (the placement/turn flow in the coupling contract §1.3–1.4) and 
    negotium bus → adapter backflow → `POST {hub}/api/v1/peer/event` (seq 1..n)
    → hub journal → room. Terminal `ai_done` marks `peer_turns.status=completed`.
 
+With `E2E_FEATURES`, the driver creates isolated rooms for each additional
+contract and fails unless the hub observes the real end result:
+
+- `input`: uploads a marker file to the hub, attaches it to a placed turn, and
+  requires the worker agent to read the copied file and return the marker.
+- `artifact`: requires the worker to create and `send_file` a marker file, then
+  call `show_html`, `show_mermaid`, `show_image`, and `show_video`. The driver
+  downloads the announced hub attachment, compares its bytes, and requires
+  exactly one hub-owned attachment/visual for every expected title and kind.
+- `ask`: creates a local hub target and a placed caller, then requires the
+  worker to call `ask_session` back to the hub. The marker must return through
+  remote reply and appear in the canonical placed hub room. This also exercises
+  active `sourceQueryId` user delegation.
+
 ## 4. Manual verification (optional but instructive)
 
 - Hub UI feed: `open http://127.0.0.1:4000` and log in with the ADMIN_KEY from
@@ -87,7 +106,7 @@ What it does (the placement/turn flow in the coupling contract §1.3–1.4) and 
   render live while the worker runs.
 - Worker-side state:
   ```bash
-  sqlite3 ~/.negotium/data/sessions.db \
+  sqlite3 /tmp/otium-experiment/worker-state/data/sessions.db \
     "SELECT request_id,status FROM otium_peer_turn_requests ORDER BY created_at DESC LIMIT 5;
      SELECT host_topic_id,local_topic_id FROM otium_peer_sessions;"
   ```
@@ -107,20 +126,17 @@ What it does (the placement/turn flow in the coupling contract §1.3–1.4) and 
   the worker's event POSTs get 404, retry ≤5 times, then hard-block; the local
   turn still finishes locally and no later seq is ever sent.
 
-## 5. Known v0 gaps you will hit if you stray off the happy path
+## 5. Current limitations
 
 | gap | symptom |
 |---|---|
-| partial peerBridge | `spawn_subagent` is hub-bridged and keeps placement on this worker; `ask_user`/self-config still run worker-local. Keep those prompts tool-light. |
-| remote ask | `ask_session` **to** the worker → 501 honest error; sender times out. `tell_session` works. |
-| input-file | attachments on a placed room → hub shows "attachment transfer failed" (worker answers 501); the turn is not dispatched. |
 | MCP names | placing a room whose MCP override names servers negotium doesn't have → 409 `node "nego" lacks MCP: …`. Leave the room's MCP override empty. |
-| visual/file URLs | `visual`/`file_ready` events carry worker-local URLs — visible in the hub feed but not clickable. |
+| direct URL | `serve --port` must match the worker cell's registered `baseUrl`; relay transport is not implemented yet. |
+| projection | generic local-message projection and history backfill into the hub are not implemented. |
 
 ## 6. Teardown
 
 ```bash
 kill $(bun -e 'const s=await Bun.file("/tmp/otium-experiment/state.json").json();console.log(s.central.pid,s.hub.pid)')
 rm -rf /tmp/otium-experiment
-rm ~/.negotium/data/otium-join.json   # detach the worker
 ```

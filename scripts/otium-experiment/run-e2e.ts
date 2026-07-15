@@ -4,7 +4,9 @@
  * (docs/OTIUM-COUPLING.md §5.4). Prerequisites:
  *
  *   1. bun scripts/otium-experiment/hub-setup.ts      (central + hub running)
- *   2. negotium otium join <code>  &&  negotium otium serve (worker on :7777)
+ *   2. export NEGOTIUM_STATE_DIR=/tmp/otium-experiment/worker-state
+ *      bun apps/cli/src/main.ts otium join <code>
+ *      bun apps/cli/src/main.ts otium serve --port 7777
  *
  * This script then, as a hub user:
  *   - checks the node picker sees "nego" ready
@@ -15,7 +17,8 @@
  *   - polls the hub room until the worker's ai message + terminal arrive back
  *
  * Env: PROMPT (default one-liner), AGENT (default claude),
- *      EXPERIMENT_DIR (default /tmp/otium-experiment)
+ *      EXPERIMENT_DIR (default /tmp/otium-experiment),
+ *      E2E_FEATURES (comma list: input,artifact,ask; or all)
  */
 
 import { existsSync } from "node:fs";
@@ -26,6 +29,14 @@ const STATE_FILE = join(EXPERIMENT_DIR, "state.json");
 const AGENT = process.env.AGENT ?? "claude";
 const PROMPT = process.env.PROMPT ?? "Reply with exactly one word: pong. Do not use any tools.";
 const TURN_TIMEOUT_MS = Number(process.env.TURN_TIMEOUT_MS ?? 180_000);
+const requestedFeatures = new Set(
+  (process.env.E2E_FEATURES ?? "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean),
+);
+const featureEnabled = (name: string) =>
+  requestedFeatures.has("all") || requestedFeatures.has(name);
 
 function die(message: string): never {
   console.error(`\nERROR: ${message}`);
@@ -58,6 +69,19 @@ async function hub<T = Record<string, unknown>>(
   return { status: response.status, body: (await response.json().catch(() => null)) as T };
 }
 
+async function hubForm<T = Record<string, unknown>>(
+  path: string,
+  form: FormData,
+): Promise<{ status: number; body: T }> {
+  const response = await fetch(`${state.hubUrl}${path}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${jwt}` },
+    body: form,
+    signal: AbortSignal.timeout(30_000),
+  });
+  return { status: response.status, body: (await response.json().catch(() => null)) as T };
+}
+
 function expectOk<T extends { ok?: boolean; error?: string }>(
   label: string,
   result: { status: number; body: T },
@@ -66,6 +90,115 @@ function expectOk<T extends { ok?: boolean; error?: string }>(
     die(`${label} failed (${result.status}): ${result.body?.error ?? "no error body"}`);
   }
   return result.body;
+}
+
+type HubMessage = {
+  authorId: string;
+  text: string;
+  queryId?: string;
+  attachments?: Array<{ id: string; filename: string; url: string }>;
+};
+
+async function createAgentRoom(
+  prefix: string,
+  placeOnWorker: boolean,
+): Promise<{
+  topicId: string;
+  title: string;
+}> {
+  const title = `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const created = expectOk(
+    `create ${prefix} room`,
+    await hub<{ ok: boolean; error?: string; data?: { id: string } }>("/api/v1/agents", {
+      method: "POST",
+      body: JSON.stringify({ title, agent: AGENT }),
+    }),
+  );
+  const topicId = created.data?.id ?? "";
+  if (!topicId) die(`${prefix} room create returned no id`);
+  if (placeOnWorker) {
+    expectOk(
+      `place ${prefix} room`,
+      await hub<{ ok: boolean; error?: string }>(`/api/v1/topics/${topicId}/node`, {
+        method: "PUT",
+        body: JSON.stringify({ nodeName: state.worker.nodeName }),
+      }),
+    );
+  }
+  return { topicId, title };
+}
+
+async function topicMessages(topicId: string): Promise<HubMessage[]> {
+  const result = await hub<{ ok: boolean; data?: HubMessage[] }>(
+    `/api/v1/topics/${topicId}/messages`,
+  );
+  return Array.isArray(result.body?.data) ? result.body.data : [];
+}
+
+async function dispatchTurn(
+  topicId: string,
+  prompt: string,
+  attachments: string[] = [],
+): Promise<string> {
+  expectOk(
+    "POST /messages",
+    await hub<{ ok: boolean; error?: string }>(`/api/v1/topics/${topicId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ text: prompt, ...(attachments.length ? { attachments } : {}) }),
+    }),
+  );
+  const dispatched = expectOk(
+    "POST /ai",
+    await hub<{ ok: boolean; error?: string; data?: { queryId: string } }>(
+      `/api/v1/topics/${topicId}/ai`,
+      {
+        method: "POST",
+        body: JSON.stringify({ text: prompt, ...(attachments.length ? { attachments } : {}) }),
+      },
+    ),
+  );
+  const requestId = dispatched.data?.queryId ?? "";
+  if (!requestId.startsWith("pt-")) die(`expected peer requestId, got ${requestId}`);
+  return requestId;
+}
+
+async function waitForMessage(
+  topicId: string,
+  predicate: (message: HubMessage) => boolean,
+  label: string,
+): Promise<HubMessage> {
+  const deadline = Date.now() + TURN_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const found = (await topicMessages(topicId)).find(predicate);
+    if (found) return found;
+    await Bun.sleep(1500);
+  }
+  die(`${label} did not appear within ${TURN_TIMEOUT_MS / 1000}s`);
+}
+
+async function waitForVisual(topicId: string, title: string, kind: string): Promise<void> {
+  const deadline = Date.now() + TURN_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const visuals = await hub<{
+      ok: boolean;
+      data?: { visuals?: Array<{ title?: string; kind?: string }> };
+    }>(`/api/v1/topics/${topicId}/visual`);
+    const found =
+      visuals.body.data?.visuals?.some(
+        (visual) => visual.title === title && visual.kind === kind,
+      ) ?? false;
+    if (found) return;
+    await Bun.sleep(1000);
+  }
+  die(`hub-owned ${kind} visual ${JSON.stringify(title)} was not stored`);
+}
+
+async function topicVisuals(topicId: string): Promise<Array<{ title?: string; kind?: string }>> {
+  const visuals = await hub<{
+    ok: boolean;
+    data?: { visuals?: Array<{ title?: string; kind?: string }> };
+  }>(`/api/v1/topics/${topicId}/visual`);
+  return visuals.body.data?.visuals ?? [];
 }
 
 // ── 0. worker reachable? ─────────────────────────────────────────────
@@ -96,6 +229,7 @@ console.log("[1/5] logging into the hub with ADMIN_KEY");
 // ── 2. node picker sees the worker ───────────────────────────────────
 
 console.log("[2/5] checking the workspace node list");
+let hubNodeName = "";
 {
   const nodes = expectOk(
     "GET /api/v1/peer/workspace-nodes",
@@ -108,6 +242,7 @@ console.log("[2/5] checking the workspace node list");
   const worker = nodes.data?.nodes.find((node) => node.nodeName === state.worker.nodeName);
   if (!worker) die(`node "${state.worker.nodeName}" is not in the workspace node list`);
   if (!worker.ready) die(`node "${state.worker.nodeName}" is attached but not ready`);
+  hubNodeName = nodes.data?.nodes.find((node) => node.self)?.nodeName ?? "";
   console.log(`  node "${state.worker.nodeName}" is ready`);
 }
 
@@ -190,5 +325,136 @@ console.log(`  requestId: ${requestId}`);
 console.log(`  answer:    ${answer.text.slice(0, 200)}`);
 console.log("──────────────────────────────────────────────────────────────");
 console.log(
-  "\nOptional follow-ups (scripts/otium-experiment/README.md): abort mid-turn, tell_session nego/<room>, hub restart behavior.",
+  "\nOptional feature suite: E2E_FEATURES=input,artifact,ask bun scripts/otium-experiment/run-e2e.ts",
 );
+
+// ── Optional feature-level cross-process checks ─────────────────────
+
+if (featureEnabled("input")) {
+  const marker = `INPUT_OK_${Date.now().toString(36)}`;
+  console.log(`\n[feature:input] uploading and reading attachment marker ${marker}`);
+  const form = new FormData();
+  form.set(
+    "file",
+    new File([`attachment marker: ${marker}\n`], "peer-input.txt", { type: "text/plain" }),
+  );
+  const uploaded = expectOk(
+    "POST /api/v1/upload",
+    await hubForm<{
+      ok: boolean;
+      error?: string;
+      data?: { fileId: string };
+    }>("/api/v1/upload", form),
+  );
+  const fileId = uploaded.data?.fileId ?? "";
+  if (!fileId) die("upload returned no fileId");
+  const room = await createAgentRoom("placed-input", true);
+  const requestId = await dispatchTurn(
+    room.topicId,
+    "Read the attached text file and reply with only the marker after `attachment marker:`.",
+    [fileId],
+  );
+  const answer = await waitForMessage(
+    room.topicId,
+    (message) => message.authorId === "ai" && message.queryId === requestId,
+    "input-file answer",
+  );
+  if (!answer.text.includes(marker)) die(`input marker missing from answer: ${answer.text}`);
+  console.log("  input attachment copied to worker and read successfully");
+}
+
+if (featureEnabled("artifact")) {
+  const marker = `ARTIFACT_OK_${Date.now().toString(36)}`;
+  const htmlTitle = `Peer HTML ${marker}`;
+  const mermaidTitle = `Peer Mermaid ${marker}`;
+  const imageTitle = `Peer Image ${marker}`;
+  const videoTitle = `Peer Video ${marker}`;
+  console.log(`\n[feature:artifact] bridging files + all visual kinds marker ${marker}`);
+  const room = await createAgentRoom("placed-artifact", true);
+  const requestId = await dispatchTurn(
+    room.topicId,
+    [
+      `Create a file named peer-output.txt in the current workspace containing exactly ${marker}.`,
+      "Call the runtime send_file tool with that file's absolute path.",
+      `Call show_html with title ${JSON.stringify(htmlTitle)} and HTML containing ${marker}.`,
+      `Call show_mermaid with title ${JSON.stringify(mermaidTitle)} and code ` +
+        `graph TD; A[${marker}] --> B[done].`,
+      "Create peer-image.png by base64-decoding " +
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=.",
+      `Call show_image for peer-image.png with title ${JSON.stringify(imageTitle)}.`,
+      "Create peer-video.mp4 containing the bytes peer-video-placeholder.",
+      `Call show_video for peer-video.mp4 with title ${JSON.stringify(videoTitle)}.`,
+      `After all five tools succeed, reply with exactly ${marker}.`,
+    ].join(" "),
+  );
+  await waitForMessage(
+    room.topicId,
+    (message) => message.authorId === "ai" && message.queryId === requestId,
+    "artifact turn answer",
+  );
+  const attachmentMessage = await waitForMessage(
+    room.topicId,
+    (message) =>
+      message.attachments?.some((attachment) => attachment.filename === "peer-output.txt") === true,
+    "bridged output attachment",
+  );
+  const attachment = attachmentMessage.attachments?.find(
+    (entry) => entry.filename === "peer-output.txt",
+  );
+  if (!attachment) die("bridged output attachment metadata missing");
+  const downloaded = await fetch(`${state.hubUrl}${attachment.url}`, {
+    headers: { authorization: `Bearer ${jwt}` },
+    signal: AbortSignal.timeout(30_000),
+  });
+  const bytes = await downloaded.text();
+  if (!downloaded.ok || bytes.trim() !== marker) {
+    die(`bridged output bytes mismatch (${downloaded.status}): ${JSON.stringify(bytes)}`);
+  }
+
+  await Promise.all([
+    waitForVisual(room.topicId, htmlTitle, "html"),
+    waitForVisual(room.topicId, mermaidTitle, "mermaid"),
+    waitForVisual(room.topicId, imageTitle, "image"),
+    waitForVisual(room.topicId, videoTitle, "video"),
+  ]);
+  const allMessages = await topicMessages(room.topicId);
+  const outputCopies = allMessages
+    .flatMap((message) => message.attachments ?? [])
+    .filter((entry) => entry.filename === "peer-output.txt");
+  if (outputCopies.length !== 1) {
+    die(`expected exactly one bridged output attachment, found ${outputCopies.length}`);
+  }
+  const allVisuals = await topicVisuals(room.topicId);
+  for (const [title, kind] of [
+    [htmlTitle, "html"],
+    [mermaidTitle, "mermaid"],
+    [imageTitle, "image"],
+    [videoTitle, "video"],
+  ] as const) {
+    const copies = allVisuals.filter((visual) => visual.title === title && visual.kind === kind);
+    if (copies.length !== 1) die(`expected exactly one ${kind} visual, found ${copies.length}`);
+  }
+  console.log("  output bytes and all four visual kinds are hub-owned and unique");
+}
+
+if (featureEnabled("ask")) {
+  if (!hubNodeName) die("hub node has no nodeName; remote ask target cannot be addressed");
+  const marker = `ASK_OK_${Date.now().toString(36)}`;
+  console.log(`\n[feature:ask] worker ask_session → hub → worker reply marker ${marker}`);
+  const target = await createAgentRoom("hub-ask-target", false);
+  const caller = await createAgentRoom("placed-ask-caller", true);
+  await dispatchTurn(
+    caller.topicId,
+    [
+      `Call ask_session with target ${JSON.stringify(`${hubNodeName}/${target.title}`)}.`,
+      `Ask it to reply with exactly ${marker}.`,
+      `When the reply is injected, reply with exactly ${marker}.`,
+    ].join(" "),
+  );
+  await waitForMessage(
+    caller.topicId,
+    (message) => message.authorId === "ai" && message.text.includes(marker),
+    "remote ask reply in placed caller",
+  );
+  console.log("  remote ask reply returned to the canonical hub room");
+}

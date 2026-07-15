@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { getApiTopicConfig, getTopic, getTopicSessionId, setTopicSessionId } from "@negotium/core";
 import { configureOtiumCentral, type PeerNode } from "@/central";
 import { getActiveForwarder, type SendPeerEvent } from "@/event-backflow";
+import { storePeerInputFile } from "@/peer-files";
 import { PEER_PROTOCOL_VERSION, type PlacedTopicExecutionSpec } from "@/protocol";
 import { getPeerSession, getPeerTurnRequest } from "@/store";
 import { __setTurnTriggerForTests, provisionMirrorTopic, runPeerTurn } from "@/turn-bridge";
@@ -149,6 +150,78 @@ describe("provisionMirrorTopic", () => {
 });
 
 describe("runPeerTurn", () => {
+  test("rejects an attachment uploaded for another peer topic", async () => {
+    const source = provisionMirrorTopic(HUB_CELL_ID, {
+      userId: USER,
+      hostTopicId: "host-attachment-source",
+      topicTitle: "source",
+      execution: execution(),
+    });
+    if (!source.ok) throw new Error(source.error);
+    const attachment = await storePeerInputFile(
+      new File(["private bytes"], "private.txt", { type: "text/plain" }),
+      { topicId: source.localTopicId, ownerUserId: USER },
+    );
+    __setTurnTriggerForTests(() => "must-not-dispatch");
+
+    const result = runPeerTurn(
+      hubNode(),
+      HUB_CELL_ID,
+      {
+        v: PEER_PROTOCOL_VERSION,
+        requestId: `pt-cross-topic-file-${crypto.randomUUID()}`,
+        userId: USER,
+        hostTopicId: "host-attachment-target",
+        topicTitle: "target",
+        execution: execution(),
+        message: "read it",
+        attachments: [attachment.id],
+      },
+      { sendEvent: recordingSender().send },
+    );
+
+    expect(result).toEqual({ ok: false, error: "attachment access denied", status: 403 });
+  });
+
+  test("accepts an attachment owned by the same peer topic and user", async () => {
+    const hostTopicId = `host-owned-file-${crypto.randomUUID()}`;
+    const target = provisionMirrorTopic(HUB_CELL_ID, {
+      userId: USER,
+      hostTopicId,
+      topicTitle: "target",
+      execution: execution(),
+    });
+    if (!target.ok) throw new Error(target.error);
+    const attachment = await storePeerInputFile(
+      new File(["allowed bytes"], "allowed.txt", { type: "text/plain" }),
+      { topicId: target.localTopicId, ownerUserId: USER },
+    );
+    let receivedAttachments: string[] | undefined;
+    __setTurnTriggerForTests((_topicId, _userId, _prompt, _agent, opts) => {
+      receivedAttachments = opts?.attachments;
+      return "owned-file-query";
+    });
+
+    const result = runPeerTurn(
+      hubNode(),
+      HUB_CELL_ID,
+      {
+        v: PEER_PROTOCOL_VERSION,
+        requestId: `pt-owned-file-${crypto.randomUUID()}`,
+        userId: USER,
+        hostTopicId,
+        topicTitle: "target",
+        execution: execution(),
+        message: "read it",
+        attachments: [attachment.id],
+      },
+      { sendEvent: recordingSender().send },
+    );
+
+    expect(result).toEqual({ ok: true });
+    expect(receivedAttachments).toEqual([attachment.id]);
+  });
+
   test("claims the requestId once and wires triggerTopicAiTurn with hub semantics", async () => {
     const calls: Array<{
       topicId: string;

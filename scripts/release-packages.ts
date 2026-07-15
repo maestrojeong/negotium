@@ -272,6 +272,10 @@ for (const path of [
     const bin = join(smokeRoot, "node_modules", ".bin", "negotium");
     const help = await run("bun", [bin, "--help"], smokeRoot, false, smokeEnv);
     if (!help.includes("usage: negotium")) fail("packed negotium binary did not render CLI help");
+    const otiumHelp = await run("bun", [bin, "otium", "--help"], smokeRoot, false, smokeEnv);
+    if (!otiumHelp.includes("usage: negotium otium")) {
+      fail("packed negotium binary did not load the Otium adapter CLI");
+    }
     console.log(`packed install smoke passed for ${packages.length} packages`);
   } finally {
     await rm(smokeRoot, { recursive: true, force: true });

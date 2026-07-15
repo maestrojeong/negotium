@@ -22,12 +22,28 @@ export interface FakeCentral {
   verifyRequests: string[];
   hubBaseUrl: string;
   setHubBaseUrl: (baseUrl: string) => void;
+  addPeerNode: (node: {
+    cellId: string;
+    nodeName: string | null;
+    isPrimary: boolean;
+    baseUrl: string;
+    self: boolean;
+  }) => void;
   stop: () => void;
 }
 
 export function startFakeCentral(): FakeCentral {
   const verifyRequests: string[] = [];
-  const state = { hubBaseUrl: "http://127.0.0.1:1" };
+  const state = {
+    hubBaseUrl: "http://127.0.0.1:1",
+    additionalNodes: [] as Array<{
+      cellId: string;
+      nodeName: string | null;
+      isPrimary: boolean;
+      baseUrl: string;
+      self: boolean;
+    }>,
+  };
   const expiresAt = () => new Date(Date.now() + 300_000).toISOString();
   const server = Bun.serve({
     port: 0,
@@ -88,6 +104,7 @@ export function startFakeCentral(): FakeCentral {
               baseUrl: "http://127.0.0.1:7777",
               self: true,
             },
+            ...state.additionalNodes,
           ],
         });
       }
@@ -104,6 +121,9 @@ export function startFakeCentral(): FakeCentral {
     },
     setHubBaseUrl: (baseUrl: string) => {
       state.hubBaseUrl = baseUrl;
+    },
+    addPeerNode: (node) => {
+      state.additionalNodes.push(node);
     },
     stop: () => server.stop(true),
   };

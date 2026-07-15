@@ -12,6 +12,8 @@
  * (registerNodeRequestHandler) — negotium core knows nothing about otium.
  */
 
+import { MAX_PEER_INPUT_REQUEST_BYTES } from "@/protocol";
+
 function parseArgs(args: string[]): { positional: string[]; options: Map<string, string> } {
   const positional: string[] = [];
   const options = new Map<string, string>();
@@ -35,6 +37,19 @@ function parseArgs(args: string[]): { positional: string[]; options: Map<string,
     }
   }
   return { positional, options };
+}
+
+export function parseOtiumServePort(args: string[], fallback: number): number {
+  const parsed = parseArgs(args);
+  if (parsed.positional.length > 0 || [...parsed.options.keys()].some((key) => key !== "port")) {
+    throw new Error("usage: negotium otium serve [--port <1-65535>]");
+  }
+  const raw = parsed.options.get("port");
+  const port = raw === undefined ? fallback : Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("serve port must be an integer between 1 and 65535");
+  }
+  return port;
 }
 
 async function resolveHostNodeId(explicit?: string): Promise<string> {
@@ -66,21 +81,19 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
       break;
     }
     case "serve": {
-      const [
-        {
-          acquireRuntimeProcessLease,
-          getRuntimeProcessLease,
-          onShutdown,
-          registerNodeRequestHandler,
-          unregisterNodeRequestHandler,
-        },
-        { startDefaultNode },
-        otium,
-      ] = await Promise.all([
-        import("@negotium/core"),
+      const {
+        acquireRuntimeProcessLease,
+        getRuntimeProcessLease,
+        NEGOTIUM_PORT,
+        onShutdown,
+        registerNodeRequestHandler,
+        unregisterNodeRequestHandler,
+      } = await import("@negotium/core");
+      const [{ startDefaultNode }, otium] = await Promise.all([
         import("@negotium/node"),
         import("@/index"),
       ]);
+      const port = parseOtiumServePort(commandArgs, NEGOTIUM_PORT);
       let leaseLost = false;
       let stopForLeaseLoss: (() => void) | undefined;
       const singleton = acquireRuntimeProcessLease("adapter:otium", {
@@ -116,9 +129,10 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
       onShutdown("otium-singleton", 90, () => singleton.stop());
       let node: Awaited<ReturnType<typeof startDefaultNode>>;
       try {
-        // Channel processes coordinate through SQLite, not a shared listening
-        // port. An ephemeral port lets Terminal, Telegram, and Otium coexist.
-        node = await startDefaultNode({ port: 0 });
+        node = await startDefaultNode({
+          port,
+          maxRequestBodySize: MAX_PEER_INPUT_REQUEST_BYTES,
+        });
       } catch (error) {
         stopWorker();
         singleton.stop();
@@ -195,7 +209,8 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
           "usage: negotium otium <join|serve|bindings|share|private> [args]",
           "",
           "  join <code>   store credentials from an Otium invite code",
-          "  serve         run the node with Otium peer routes mounted",
+          "  serve [--port <port>]",
+          "                 run peer routes on a stable port (default: NEGOTIUM_PORT or 7777)",
           "  bindings      list internal mirrors and shared topic bindings",
           "  share <host-topic> <local-topic> --user <id> [--host-node <cell>]",
           "                 publish one private local topic to Otium as shared",

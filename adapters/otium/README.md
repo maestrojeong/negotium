@@ -9,7 +9,7 @@ flow back into the workspace UI.
 ```bash
 npm install --global @negotium/cli
 negotium otium join <invite-code>   # store credentials (…/otium-join.json, 0600)
-negotium otium serve                # negotium node + otium peer routes on one port
+negotium otium serve --port 7777    # must match the worker cell's direct baseUrl
 negotium otium bindings             # inspect internal/shared transports
 negotium otium share <host-topic-id> <local-topic-id> --user <user-id>
 negotium otium private <local-topic-id> --user <user-id>
@@ -50,7 +50,8 @@ negotium start telegram  # another shell
 negotium start terminal  # another shell; may be repeated
 ```
 
-Otium holds a state-directory singleton lease and owns an ephemeral loopback node. The integration
+Otium holds a state-directory singleton lease and owns a stable loopback node port
+(`NEGOTIUM_PORT`, default 7777, or `--port`). The integration
 mounts through negotium's plugin chain
 (`registerNodeRequestHandler`) — negotium core knows nothing about otium.
 

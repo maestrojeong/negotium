@@ -13,10 +13,8 @@
  *   ④ body `v` check → 400 on newer protocol
  * Hub-only writes additionally require `verified.fromIsPrimary`.
  *
- * Implemented: /ready, capabilities, health, provision, turn, abort, tell,
- * sessions. Honest stubs (remaining gaps, see doc §4): ask (no remote reply
- * path), reply (worker never sends cross-node asks), input-file (no
- * upload store / FileHooks yet).
+ * Implements the worker peer protocol, including cross-node session messages,
+ * file transfer, and runtime visual bridging.
  */
 
 import { statfsSync } from "node:fs";
@@ -27,6 +25,7 @@ import {
   DATA_DIR,
   flushSessionInbox,
   getRegistry,
+  getTopic,
   getTopicByNameForUser,
   getTopicSessionId,
   isTopicShared,
@@ -44,22 +43,27 @@ import {
   type VerifiedPeer,
   verifyPeerToken,
 } from "@/central";
+import { storePeerInputFile } from "@/peer-files";
 import {
+  MAX_PEER_INPUT_FILE_BYTES,
+  MAX_PEER_INPUT_REQUEST_BYTES,
   MAX_PEER_MESSAGE_LENGTH,
   PEER_PROTOCOL_VERSION,
   type PeerSessionEntry,
   type PeerTurnRequest,
   parseExecutionSpec,
 } from "@/protocol";
+import { acceptRemoteAskReply } from "@/session-bridge";
 import {
   claimPeerInboxRequest,
+  getPeerSession,
   type PeerInboxKind,
   peerInboxPayloadHash,
   releasePeerInboxRequest,
 } from "@/store";
 import { abortHostedPeerTurn, provisionMirrorTopic, runPeerTurn } from "@/turn-bridge";
 
-const RUNTIME_VERSION = "0.1.0";
+const RUNTIME_VERSION = "0.1.1";
 
 function jsonError(error: string, status: number): Response {
   return Response.json({ ok: false, error }, { status });
@@ -125,6 +129,12 @@ function localCapabilities() {
   return {
     protocolVersion: PEER_PROTOCOL_VERSION,
     runtimeVersion: RUNTIME_VERSION,
+    features: {
+      remoteAsk: true,
+      inputFiles: true,
+      outputFiles: true,
+      visualBridge: true,
+    },
     agents,
     // These are negotium MCP catalog names — a hub room whose MCP
     // override uses otium-only names will fail placement with 409.
@@ -288,6 +298,8 @@ async function handleTurn(req: Request): Promise<Response> {
 async function handleAbort(req: Request): Promise<Response> {
   const peer = await requirePeer(req);
   if (!peer.ok) return peer.response;
+  const originError = requirePrimaryOrigin(peer);
+  if (originError) return originError;
   const body = await readBody(req);
   if (!body) return jsonError("invalid JSON body", 400);
   const protocolError = checkProtocol(body);
@@ -322,6 +334,8 @@ async function handleAbort(req: Request): Promise<Response> {
 async function handleTell(req: Request): Promise<Response> {
   const peer = await requirePeer(req);
   if (!peer.ok) return peer.response;
+  const originError = requirePrimaryOrigin(peer);
+  if (originError) return originError;
   const body = await readBody(req);
   if (!body) return jsonError("invalid JSON body", 400);
   const protocolError = checkProtocol(body);
@@ -399,6 +413,8 @@ function claimInboundPeerMessage(args: {
 async function handleSessions(req: Request): Promise<Response> {
   const peer = await requirePeer(req);
   if (!peer.ok) return peer.response;
+  const originError = requirePrimaryOrigin(peer);
+  if (originError) return originError;
   const body = await readBody(req);
   if (!body) return jsonError("invalid JSON body", 400);
   const protocolError = checkProtocol(body);
@@ -427,30 +443,103 @@ async function handleSessions(req: Request): Promise<Response> {
 async function handleAsk(req: Request): Promise<Response> {
   const peer = await requirePeer(req);
   if (!peer.ok) return peer.response;
+  const originError = requirePrimaryOrigin(peer);
+  if (originError) return originError;
   const body = await readBody(req);
   if (!body) return jsonError("invalid JSON body", 400);
   const protocolError = checkProtocol(body);
   if (protocolError) return protocolError;
-  // Negotium's inbox ask path has no remoteReply route, so this
-  // worker cannot honor the "/peer/reply on completion" obligation yet.
-  // Failing visibly is contract-safe — the sender times out and reports.
-  return jsonError(
-    "remote ask is not supported by this negotium worker yet (no /peer/reply route back)",
-    501,
-  );
+  const requestId = str(body, "requestId");
+  const userId = str(body, "userId");
+  const toTopic = str(body, "toTopic");
+  const fromLabel = str(body, "fromLabel");
+  const message = str(body, "message");
+  const fromDepth =
+    body.fromDepth === undefined
+      ? 0
+      : typeof body.fromDepth === "number"
+        ? body.fromDepth
+        : Number.NaN;
+  const replyTo = body.replyTo as { topicId?: unknown } | undefined;
+  const replyTopicId = typeof replyTo?.topicId === "string" ? replyTo.topicId : null;
+  if (!requestId || !userId || !toTopic || !fromLabel || !message || !replyTopicId) {
+    return jsonError(
+      "requestId, userId, toTopic, fromLabel, message, replyTo.topicId are required",
+      400,
+    );
+  }
+  if (message.length > MAX_PEER_MESSAGE_LENGTH) return jsonError("message too long", 400);
+  if (!Number.isInteger(fromDepth) || fromDepth < 0) {
+    return jsonError("fromDepth must be a non-negative integer", 400);
+  }
+  const topic = getTopicByNameForUser(toTopic, userId);
+  if (!topic || !isTopicShared(topic)) {
+    return jsonError(`shared topic "${toTopic}" not found on this node`, 404);
+  }
+  if (!topic.agent) return jsonError(`topic "${toTopic}" has no AI invited`, 409);
+
+  const claim = claimInboundPeerMessage({
+    fromCellId: peer.verified.fromCellId,
+    requestId,
+    kind: "ask",
+    topicId: topic.id,
+    payload: { userId, toTopic, fromLabel, message, fromDepth, replyTopicId },
+  });
+  if (claim === "conflict") return jsonError("requestId already belongs to another ask", 409);
+  if (claim === "replay") return Response.json({ ok: true, replayed: true });
+  try {
+    appendJsonlEntry(sessionInboxPath(userId, topic.id), {
+      type: "ask",
+      requestId,
+      from: fromLabel,
+      fromTitle: fromLabel,
+      message,
+      fromDepth,
+      timestamp: new Date().toISOString(),
+      remoteReply: {
+        nodeName: peer.verified.fromNodeName ?? "",
+        nodeCellId: peer.verified.fromCellId,
+        topicId: replyTopicId,
+        userId,
+        requestId,
+      },
+    });
+  } catch (error) {
+    releasePeerInboxRequest(peer.verified.fromCellId, requestId, "ask");
+    throw error;
+  }
+  void flushSessionInbox();
+  return Response.json({ ok: true });
 }
 
 async function handleReply(req: Request): Promise<Response> {
   const peer = await requirePeer(req);
   if (!peer.ok) return peer.response;
+  const originError = requirePrimaryOrigin(peer);
+  if (originError) return originError;
   const body = await readBody(req);
   if (!body) return jsonError("invalid JSON body", 400);
   const protocolError = checkProtocol(body);
   if (protocolError) return protocolError;
-  // This worker never sends cross-node asks (session-comm forward is a
-  // stub), so there is never a pending ask to settle. 404 is the
-  // contract-compliant answer (doc §2.1 #11) — the sender times out.
-  return jsonError("no pending ask for this requestId", 404);
+  const requestId = str(body, "requestId");
+  const userId = str(body, "userId");
+  const replyText = typeof body.replyText === "string" ? body.replyText : null;
+  const fromLabel = str(body, "fromLabel") ?? "peer";
+  const kind = body.kind === "error" ? "error" : "reply";
+  if (!requestId || !userId || replyText === null) {
+    return jsonError("requestId, userId and replyText are required", 400);
+  }
+  const accepted = await acceptRemoteAskReply({
+    fromCellId: peer.verified.fromCellId,
+    requestId,
+    userId,
+    fromLabel,
+    replyText,
+    kind,
+  });
+  return accepted
+    ? Response.json({ ok: true })
+    : jsonError("no pending ask for this requestId", 404);
 }
 
 async function handleInputFile(req: Request): Promise<Response> {
@@ -458,9 +547,29 @@ async function handleInputFile(req: Request): Promise<Response> {
   if (!peer.ok) return peer.response;
   const originError = requirePrimaryOrigin(peer);
   if (originError) return originError;
-  // No upload store / FileHooks exists on this worker yet. The hub surfaces
-  // this as "attachment transfer failed" and the turn is not dispatched.
-  return jsonError("attachment transfer is not supported by this negotium worker yet", 501);
+  const contentLength = Number(req.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_PEER_INPUT_REQUEST_BYTES) {
+    return jsonError("file too large", 413);
+  }
+  const form = await req.formData().catch(() => null);
+  if (!form) return jsonError("expected multipart/form-data", 400);
+  const hostTopicId = form.get("hostTopicId");
+  const userId = form.get("userId");
+  const file = form.get("file");
+  if (typeof hostTopicId !== "string" || typeof userId !== "string" || !(file instanceof File)) {
+    return jsonError("hostTopicId, userId, and file are required", 400);
+  }
+  if (file.size > MAX_PEER_INPUT_FILE_BYTES) return jsonError("file too large", 413);
+  const session = getPeerSession(peer.verified.fromCellId, hostTopicId);
+  const topic = session ? getTopic(session.local_topic_id) : null;
+  if (!session || !topic?.participants.some((participant) => participant.userId === userId)) {
+    return jsonError("provisioned peer room not found", 404);
+  }
+  const stored = await storePeerInputFile(file, {
+    topicId: session.local_topic_id,
+    ownerUserId: userId,
+  });
+  return Response.json({ ok: true, fileId: stored.id });
 }
 
 // ── Router ───────────────────────────────────────────────────────────

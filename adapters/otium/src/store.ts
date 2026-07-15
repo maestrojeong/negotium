@@ -76,6 +76,39 @@ db.exec(`
   )
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS otium_remote_asks (
+    request_id       TEXT PRIMARY KEY,
+    expected_cell_id TEXT NOT NULL,
+    user_id          TEXT NOT NULL,
+    caller_topic_id  TEXT NOT NULL,
+    from_key         TEXT NOT NULL,
+    to_key           TEXT NOT NULL,
+    source_query_id  TEXT,
+    created_at       INTEGER NOT NULL
+  )
+`);
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_otium_remote_asks_created
+  ON otium_remote_asks(created_at)
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS otium_peer_reply_outbox (
+    node_cell_id TEXT NOT NULL,
+    request_id   TEXT NOT NULL,
+    node_name    TEXT NOT NULL,
+    topic_id     TEXT NOT NULL,
+    user_id      TEXT NOT NULL,
+    source_title TEXT NOT NULL,
+    reply_text   TEXT NOT NULL,
+    kind         TEXT NOT NULL CHECK (kind IN ('reply', 'error')),
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (node_cell_id, request_id)
+  )
+`);
+
 // ── peer sessions: Otium room → hidden mirror OR user-selected shared topic ──
 
 export type PeerTopicBindingMode = "mirror" | "shared";
@@ -168,6 +201,7 @@ export interface PeerTopicCleanupResult {
   sessions: number;
   turns: number;
   inboxRequests: number;
+  remoteAsks: number;
 }
 
 /**
@@ -190,10 +224,13 @@ export function cleanupPeerStateForLocalTopic(localTopicId: string): PeerTopicCl
     const inboxRequests = db.run("DELETE FROM otium_peer_inbox_requests WHERE topic_id = ?", [
       localTopicId,
     ]).changes;
+    const remoteAsks = db.run("DELETE FROM otium_remote_asks WHERE caller_topic_id = ?", [
+      localTopicId,
+    ]).changes;
     const sessions = db.run("DELETE FROM otium_peer_sessions WHERE local_topic_id = ?", [
       localTopicId,
     ]).changes;
-    return { sessions, turns, inboxRequests };
+    return { sessions, turns, inboxRequests, remoteAsks };
   })();
 }
 
@@ -340,5 +377,134 @@ export function releasePeerInboxRequest(
   db.run(
     "DELETE FROM otium_peer_inbox_requests WHERE from_cell_id = ? AND request_id = ? AND kind = ?",
     [fromCellId, requestId, kind],
+  );
+}
+
+// ── outbound remote asks: durable reply routing across worker restarts ──
+
+export interface RemoteAskRow {
+  request_id: string;
+  expected_cell_id: string;
+  user_id: string;
+  caller_topic_id: string;
+  from_key: string;
+  to_key: string;
+  source_query_id: string | null;
+  created_at: number;
+}
+
+export function createRemoteAsk(args: {
+  requestId: string;
+  expectedCellId: string;
+  userId: string;
+  callerTopicId: string;
+  from: string;
+  to: string;
+  sourceQueryId?: string;
+  createdAt?: number;
+}): boolean {
+  const result = db.run(
+    `INSERT OR IGNORE INTO otium_remote_asks
+       (request_id, expected_cell_id, user_id, caller_topic_id, from_key, to_key,
+        source_query_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      args.requestId,
+      args.expectedCellId,
+      args.userId,
+      args.callerTopicId,
+      args.from,
+      args.to,
+      args.sourceQueryId ?? null,
+      args.createdAt ?? Date.now(),
+    ],
+  );
+  return result.changes === 1;
+}
+
+export function getRemoteAsk(requestId: string): RemoteAskRow | null {
+  return (
+    db
+      .query<RemoteAskRow, [string]>("SELECT * FROM otium_remote_asks WHERE request_id = ?")
+      .get(requestId) ?? null
+  );
+}
+
+export function deleteRemoteAsk(requestId: string): boolean {
+  return db.run("DELETE FROM otium_remote_asks WHERE request_id = ?", [requestId]).changes === 1;
+}
+
+export function pruneRemoteAsks(olderThan: number): number {
+  return db.run("DELETE FROM otium_remote_asks WHERE created_at < ?", [olderThan]).changes;
+}
+
+// ── outbound peer replies: durable until the source node acknowledges ──
+
+export interface PeerReplyOutboxRow {
+  node_cell_id: string;
+  request_id: string;
+  node_name: string;
+  topic_id: string;
+  user_id: string;
+  source_title: string;
+  reply_text: string;
+  kind: "reply" | "error";
+  created_at: number;
+  updated_at: number;
+}
+
+export function upsertPeerReplyOutbox(args: {
+  nodeCellId: string;
+  requestId: string;
+  nodeName: string;
+  topicId: string;
+  userId: string;
+  sourceTitle: string;
+  replyText: string;
+  kind: "reply" | "error";
+}): void {
+  const now = Date.now();
+  db.run(
+    `INSERT INTO otium_peer_reply_outbox
+       (node_cell_id, request_id, node_name, topic_id, user_id, source_title,
+        reply_text, kind, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(node_cell_id, request_id) DO UPDATE SET
+       node_name = excluded.node_name,
+       topic_id = excluded.topic_id,
+       user_id = excluded.user_id,
+       source_title = excluded.source_title,
+       reply_text = excluded.reply_text,
+       kind = excluded.kind,
+       updated_at = excluded.updated_at`,
+    [
+      args.nodeCellId,
+      args.requestId,
+      args.nodeName,
+      args.topicId,
+      args.userId,
+      args.sourceTitle,
+      args.replyText,
+      args.kind,
+      now,
+      now,
+    ],
+  );
+}
+
+export function listPeerReplyOutbox(limit = 100): PeerReplyOutboxRow[] {
+  return db
+    .query<PeerReplyOutboxRow, [number]>(
+      "SELECT * FROM otium_peer_reply_outbox ORDER BY created_at LIMIT ?",
+    )
+    .all(limit);
+}
+
+export function deletePeerReplyOutbox(nodeCellId: string, requestId: string): boolean {
+  return (
+    db.run("DELETE FROM otium_peer_reply_outbox WHERE node_cell_id = ? AND request_id = ?", [
+      nodeCellId,
+      requestId,
+    ]).changes === 1
   );
 }

@@ -1,6 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { registerTopic } from "@negotium/core";
+import {
+  registerTopic,
+  resolveAttachmentByFileId,
+  resolveUploadedFilePathByFileId,
+} from "@negotium/core";
 import { configureOtiumCentral, resetPeerCentralCaches } from "@/central";
+import { installPeerFileHooks } from "@/peer-files";
 import { handleOtiumPeerRequest } from "@/peer-server";
 import { PEER_PROTOCOL_VERSION } from "@/protocol";
 import { getPeerSession } from "@/store";
@@ -41,6 +46,18 @@ async function call(
   opts: { method?: string; token?: string; body?: unknown } = {},
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const response = await handleOtiumPeerRequest(request(path, opts));
+  if (!response) throw new Error(`expected a peer response for ${path}`);
+  return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+}
+
+async function callForm(path: string, form: FormData) {
+  const response = await handleOtiumPeerRequest(
+    new Request(`${BASE}${path}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${HUB_TOKEN}` },
+      body: form,
+    }),
+  );
   if (!response) throw new Error(`expected a peer response for ${path}`);
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 }
@@ -107,6 +124,21 @@ describe("peer auth", () => {
     expect(body.error).toBe("only the workspace hub may call this endpoint");
   });
 
+  test("non-primary peers cannot invoke worker user/session endpoints", async () => {
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ["/api/v1/peer/tell", { v: PEER_PROTOCOL_VERSION }],
+      ["/api/v1/peer/ask", { v: PEER_PROTOCOL_VERSION }],
+      ["/api/v1/peer/abort", { v: PEER_PROTOCOL_VERSION }],
+      ["/api/v1/peer/sessions", { v: PEER_PROTOCOL_VERSION }],
+      ["/api/v1/peer/reply", { v: PEER_PROTOCOL_VERSION }],
+    ];
+    for (const [path, body] of cases) {
+      const response = await call(path, { token: WORKER_PEER_TOKEN, body });
+      expect(response.status).toBe(403);
+      expect(response.body.error).toBe("only the workspace hub may call this endpoint");
+    }
+  });
+
   test("newer protocol version → 400", async () => {
     const { status, body } = await call("/api/v1/peer/sessions", {
       token: HUB_TOKEN,
@@ -127,6 +159,12 @@ describe("capabilities / health", () => {
     expect(body.ok).toBe(true);
     expect(body.protocolVersion).toBe(1);
     expect(typeof body.runtimeVersion).toBe("string");
+    expect(body.features).toEqual({
+      remoteAsk: true,
+      inputFiles: true,
+      outputFiles: true,
+      visualBridge: true,
+    });
     const agents = body.agents as Array<Record<string, unknown>>;
     expect(agents.map((a) => a.kind).sort()).toEqual(["claude", "codex", "maestro"]);
     for (const agent of agents) {
@@ -282,22 +320,77 @@ describe("sessions / abort / stubs", () => {
     expect(body.error).toBe("turn not found or already completed");
   });
 
-  test("ask / reply / input-file answer honestly instead of pretending", async () => {
+  test("ask, reply, and input-file validate their contracts", async () => {
     const ask = await call("/api/v1/peer/ask", {
       token: HUB_TOKEN,
       body: { v: PEER_PROTOCOL_VERSION },
     });
-    expect(ask.status).toBe(501);
+    expect(ask.status).toBe(400);
+
+    for (const [index, fromDepth] of [-1, 0.5, "1"].entries()) {
+      const invalidDepth = await call("/api/v1/peer/ask", {
+        token: HUB_TOKEN,
+        body: {
+          v: PEER_PROTOCOL_VERSION,
+          requestId: `depth-${index}`,
+          userId: USER,
+          toTopic: "unused",
+          fromLabel: "hub/source",
+          message: "?",
+          fromDepth,
+          replyTo: { topicId: "host-source" },
+        },
+      });
+      expect(invalidDepth.status).toBe(400);
+    }
 
     const reply = await call("/api/v1/peer/reply", {
       token: HUB_TOKEN,
       body: { v: PEER_PROTOCOL_VERSION, requestId: "r1" },
     });
-    expect(reply.status).toBe(404);
-    expect(reply.body.error).toBe("no pending ask for this requestId");
+    expect(reply.status).toBe(400);
 
     const inputFile = await call("/api/v1/peer/input-file", { token: HUB_TOKEN, body: {} });
-    expect(inputFile.status).toBe(501);
+    expect(inputFile.status).toBe(400);
+  });
+
+  test("input-file stores multipart bytes for a provisioned mirror", async () => {
+    const hostTopicId = `host-file-${Date.now()}`;
+    const provisioned = await call("/api/v1/peer/provision", {
+      token: HUB_TOKEN,
+      body: {
+        v: PEER_PROTOCOL_VERSION,
+        userId: USER,
+        hostTopicId,
+        topicTitle: "peer-file-target",
+        execution: {
+          agent: "codex",
+          model: "gpt-5.6-luna",
+          effort: "medium",
+          mcp: [],
+          canSpawnSubagents: true,
+        },
+      },
+    });
+    expect(provisioned.status).toBe(200);
+    const uninstall = installPeerFileHooks();
+    try {
+      const form = new FormData();
+      form.set("hostTopicId", hostTopicId);
+      form.set("userId", USER);
+      form.set("file", new File(["peer bytes"], "notes.txt", { type: "text/plain" }));
+      const uploaded = await callForm("/api/v1/peer/input-file", form);
+      expect(uploaded.status).toBe(200);
+      const fileId = uploaded.body.fileId as string;
+      expect(resolveAttachmentByFileId(fileId)).toEqual(
+        expect.objectContaining({ id: fileId, filename: "notes.txt", sizeBytes: 10 }),
+      );
+      expect(await Bun.file(resolveUploadedFilePathByFileId(fileId) as string).text()).toBe(
+        "peer bytes",
+      );
+    } finally {
+      uninstall();
+    }
   });
 });
 

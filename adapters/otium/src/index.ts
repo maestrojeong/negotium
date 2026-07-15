@@ -10,11 +10,19 @@
  */
 
 import { defineNegotiumAdapter, type NegotiumAdapterHandle } from "@negotium/adapter-sdk";
-import { logger, registerPeerRuntimeBridge, runtimeBus } from "@negotium/core";
+import {
+  failInterruptedRemoteAskCallbacks,
+  logger,
+  registerPeerRuntimeBridge,
+  registerPeerSessionBridge,
+  runtimeBus,
+} from "@negotium/core";
 import { configureOtiumCentral, selfPeerNode } from "@/central";
 import { startEventBackflow } from "@/event-backflow";
 import { loadJoin, type OtiumJoin } from "@/join";
+import { installPeerFileHooks } from "@/peer-files";
 import { otiumPeerRuntimeBridge } from "@/runtime-bridge";
+import { otiumPeerSessionBridge, startPeerReplyOutboxWorker } from "@/session-bridge";
 import { cleanupPeerStateForLocalTopic, failInterruptedPeerTurnRequestsOnStartup } from "@/store";
 
 export {
@@ -87,10 +95,18 @@ export function startOtiumAdapter(options: OtiumAdapterOptions): OtiumWorkerHand
   }
   const stopBackflow = startEventBackflow();
   const unregisterRuntimeBridge = registerPeerRuntimeBridge(otiumPeerRuntimeBridge);
+  const unregisterSessionBridge = registerPeerSessionBridge(otiumPeerSessionBridge);
+  const stopPeerReplyOutbox = startPeerReplyOutboxWorker();
+  void failInterruptedRemoteAskCallbacks().then((failedAsks) => {
+    if (failedAsks > 0) {
+      logger.warn({ failedAsks }, "otium: failed remote asks interrupted by previous process");
+    }
+  });
+  const uninstallFileHooks = installPeerFileHooks();
   const unsubscribeTopicCleanup = runtimeBus().subscribe((event) => {
     if (event.type !== "topic-deleted") return;
     const removed = cleanupPeerStateForLocalTopic(event.topicId);
-    if (removed.sessions + removed.turns + removed.inboxRequests > 0) {
+    if (removed.sessions + removed.turns + removed.inboxRequests + removed.remoteAsks > 0) {
       logger.info(
         { topicId: event.topicId, ...removed },
         "otium: removed peer state for deleted local topic",
@@ -119,6 +135,9 @@ export function startOtiumAdapter(options: OtiumAdapterOptions): OtiumWorkerHand
       stopped = true;
       unsubscribeTopicCleanup();
       unregisterRuntimeBridge();
+      unregisterSessionBridge();
+      stopPeerReplyOutbox();
+      uninstallFileHooks();
       stopBackflow();
       configureOtiumCentral(null);
     },

@@ -42,6 +42,7 @@ import {
   registerTurnForwarder,
   type SendPeerEvent,
 } from "@/event-backflow";
+import { peerFileAllowsAccess } from "@/peer-files";
 import type { PeerProvisionRequest, PeerTurnRequest, PlacedTopicExecutionSpec } from "@/protocol";
 import {
   claimPeerTurnRequest,
@@ -201,6 +202,15 @@ export function runPeerTurn(
   }
   const localTopicId = provisioned.localTopicId;
   const localTopic = getTopic(localTopicId);
+  if (
+    payload.attachments?.some(
+      (fileId) =>
+        !peerFileAllowsAccess(fileId, { topicId: localTopicId, ownerUserId: payload.userId }),
+    )
+  ) {
+    markPeerTurnRequestFailed(hostCellId, payload.requestId, "attachment access denied");
+    return { ok: false, error: "attachment access denied", status: 403 };
+  }
   const turnAgent =
     provisioned.bindingMode === "shared" && localTopic?.agent
       ? localTopic.agent

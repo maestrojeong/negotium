@@ -50,6 +50,13 @@ authorization: Bearer <peer token>
 content-type: application/json
 ```
 
+Workspace peer tokens authenticate the calling node. For calls from a worker
+to the primary hub, session-comm also forwards the current hosted turn as
+`sourceQueryId`. The hub accepts the claimed `userId` only when that turn is
+active, assigned to the calling cell, and belongs to the user. Primary-origin
+calls remain authoritative. Secondary-to-secondary user calls are rejected
+until a future central-issued delegation credential can be verified by workers.
+
 The hub-only endpoints below additionally require the verified caller to be the workspace primary.
 
 ## Placement and execution
@@ -80,12 +87,17 @@ central; hub-only endpoints also verify primary origin.
 | `GET /api/v1/peer/health` | peer | Uptime and bounded CPU, memory, and optional disk metrics |
 | `POST /api/v1/peer/provision` | peer + hub | Idempotently create/update a mirror or shared binding |
 | `POST /api/v1/peer/turn` | peer + hub | Claim a request ID and accept asynchronous execution |
-| `POST /api/v1/peer/abort` | peer | Abort the exact request or the topic-scoped active turn |
+| `POST /api/v1/peer/abort` | peer + hub | Abort the exact request or the topic-scoped active turn |
 | `POST /api/v1/peer/input-file` | peer + hub | Store a bounded attachment and return a worker file ID |
-| `POST /api/v1/peer/tell` | peer | Durably claim and enqueue fire-and-forget work |
-| `POST /api/v1/peer/ask` | peer | Enqueue an ask and reply to the source node on completion |
-| `POST /api/v1/peer/sessions` | peer | Return the caller-visible session list |
-| `POST /api/v1/peer/reply` | peer | Settle a cross-node ask callback |
+| `POST /api/v1/peer/tell` | peer + hub | Durably claim and enqueue fire-and-forget work |
+| `POST /api/v1/peer/ask` | peer + hub | Enqueue an ask and reply to the source node on completion |
+| `POST /api/v1/peer/sessions` | peer + hub | Return the caller-visible session list |
+| `POST /api/v1/peer/reply` | peer + hub | Settle a cross-node ask callback |
+
+When a placed worker asks a primary-hub topic, the hub records a one-shot callback route while the
+source peer turn is active. The eventual reply returns through
+`POST /api/v1/peer/ask-callback`; the hub consumes that route and injects the callback into the
+canonical source topic. A worker mirror must not start an unbridged local callback turn.
 
 Hub-only convenience routes such as topic placement, event application, bridge endpoints, and node
 selection do not belong on the worker.
@@ -200,10 +212,10 @@ event ordering. Disconnects fail pending requests visibly; reconnect uses bounde
 | Ordered event backflow with bounded retry | Implemented |
 | Exact abort, tell, and session listing | Implemented |
 | Hub-backed subagent bridge | Implemented |
-| Remote ask/reply | Not implemented |
-| Input/output file and visual bridge | Not implemented |
-| Hub-backed ask-user and self-configuration | Not implemented |
-| Worker-origin peer session communication | Not implemented |
+| Remote ask/reply | Implemented |
+| Input/output file and visual bridge | Implemented |
+| Hub-backed ask-user and self-configuration | Not implemented; these tools remain worker-local |
+| Worker-origin peer session communication | Implemented |
 | Relay client | Not implemented; direct URL is validated |
 
 Acceptance criteria for these gaps belong in [Feature review](./FEATURE-REVIEW.md), not in this wire
