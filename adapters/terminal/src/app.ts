@@ -28,10 +28,13 @@ import {
   activeTopic,
   applyRuntimeEvent,
   createInitialState,
+  focusCreatedTopic,
+  openTopicPicker,
   selectTopic,
   setMessageHistoryStatus,
   setMessages,
   setTopics,
+  startTopicCreation,
   upsertMessage,
 } from "@/state";
 import { InputHistory, TextBuffer } from "@/text-buffer";
@@ -40,7 +43,6 @@ export const ENTER_ALT_SCREEN =
   "\u001b]11;#0a0b0f\u0007\u001b[?1049h\u001b[48;2;10;11;15m\u001b[2J\u001b[H\u001b[?25l\u001b[?2004h\u001b[?1002h\u001b[?1006h";
 const EXIT_ALT_SCREEN =
   "\u001b[0m\u001b[?1006l\u001b[?1002l\u001b[?2004l\u001b[?25h\u001b[?1049l\u001b]111\u0007";
-const AGENTS = new Set<AgentKind>(["claude", "codex", "maestro"]);
 const NEW_TOPIC_KEYS = new Set(["n", "ㅜ"]);
 const DELETE_TOPIC_KEYS = new Set(["d", "ㅇ", "\u007f", "\b", "\u001b[3~"]);
 const CONFIRM_KEYS = new Set(["y", "ㅛ"]);
@@ -150,7 +152,9 @@ export class TerminalApp {
             this.#options.preferredTopic,
             this.#options.defaultAgent,
           );
-          this.#state = setTopics(this.#state, await this.#client.listTopics(), created.title);
+          this.#state = focusCreatedTopic(this.#state, created);
+          await this.#refreshTopics(created.title);
+          this.#state = selectTopic(this.#state, created.id);
         }
       }
       await this.#loadActiveMessages();
@@ -609,7 +613,7 @@ export class TerminalApp {
       this.#input.setText("");
       this.#history.reset();
       this.#syncInput();
-      this.#state = { ...this.#state, overlay: null };
+      this.#state = { ...this.#state, overlay: null, creatingTopic: false };
       this.#queueRender();
       return;
     }
@@ -645,6 +649,13 @@ export class TerminalApp {
 
     const text = this.#input.text.trim();
     if (!text) return;
+    if (this.#state.creatingTopic) {
+      this.#input.setText("");
+      this.#syncInput();
+      this.#state = { ...this.#state, creatingTopic: false, notice: undefined };
+      await this.#createTopic(text);
+      return;
+    }
     this.#history.record(text);
     this.#client.appendInputHistory?.(text);
     this.#input.setText("");
@@ -762,53 +773,21 @@ export class TerminalApp {
       this.#toggleTopics(true);
       return;
     }
-    if (command === "topic") {
-      const title = args.join(" ").toLowerCase();
-      const topic = this.#state.topics.find((candidate) => candidate.title.toLowerCase() === title);
-      if (!topic) {
-        this.#state = {
-          ...this.#state,
-          notice: `Topic not found: ${args.join(" ")}`,
-        };
-        this.#queueRender();
-        return;
-      }
-      await this.#activateTopic(topic.id);
-      return;
-    }
     if (command === "new") {
-      if (args.length === 0) {
-        const topic = activeTopic(this.#state);
-        if (!topic) {
-          this.#state = { ...this.#state, notice: "No topic selected" };
-          this.#queueRender();
-          return;
-        }
-        try {
-          const notice = await this.#client.resetTopic(topic);
-          this.#state = { ...this.#state, notice };
-        } catch (error) {
-          this.#state = {
-            ...this.#state,
-            notice: error instanceof Error ? error.message : String(error),
-          };
-        }
+      if (args.length > 0) {
+        this.#state = { ...this.#state, notice: "Usage: /new" };
         this.#queueRender();
         return;
       }
-      const maybeAgent = args.at(-1) as AgentKind | undefined;
-      const agent = maybeAgent && AGENTS.has(maybeAgent) ? maybeAgent : this.#options.defaultAgent;
-      const nameParts = maybeAgent && AGENTS.has(maybeAgent) ? args.slice(0, -1) : args;
-      const title = nameParts.join(" ").trim();
-      if (!title) {
-        this.#state = { ...this.#state, notice: "Usage: /new [name] [agent]" };
+      const topic = activeTopic(this.#state);
+      if (!topic) {
+        this.#state = { ...this.#state, notice: "No topic selected" };
         this.#queueRender();
         return;
       }
       try {
-        const created = await this.#client.createTopic(title, agent);
-        await this.#refreshTopics(created.title);
-        await this.#loadActiveMessages();
+        const notice = await this.#client.resetTopic(topic);
+        this.#state = { ...this.#state, notice };
       } catch (error) {
         this.#state = {
           ...this.#state,
@@ -864,25 +843,33 @@ export class TerminalApp {
   }
 
   #toggleTopics(forceOpen = false): void {
-    const activeIndex = Math.max(
-      0,
-      this.#state.topics.findIndex((topic) => topic.id === this.#state.activeTopicId),
-    );
-    this.#state = {
-      ...this.#state,
-      overlay: forceOpen || this.#state.overlay !== "topics" ? "topics" : null,
-      topicPickerIndex: activeIndex,
-    };
+    this.#state =
+      forceOpen || this.#state.overlay !== "topics"
+        ? openTopicPicker(this.#state)
+        : { ...this.#state, overlay: null };
     this.#queueRender();
   }
 
-  #openNewTopicComposer(notice = "Type a new topic name, then press Enter"): void {
-    this.#state = {
-      ...this.#state,
-      overlay: null,
-      notice,
-    };
-    this.#replaceInput("/new ");
+  #openNewTopicComposer(): void {
+    this.#state = startTopicCreation(this.#state);
+    this.#replaceInput("");
+  }
+
+  async #createTopic(title: string): Promise<void> {
+    try {
+      const created = await this.#client.createTopic(title, this.#options.defaultAgent);
+      this.#state = focusCreatedTopic(this.#state, created);
+      await this.#refreshTopics(created.title);
+      this.#state = selectTopic(this.#state, created.id);
+      await this.#loadActiveMessages();
+      this.#state = { ...this.#state, notice: `Created ${created.title}` };
+    } catch (error) {
+      this.#state = {
+        ...this.#state,
+        notice: error instanceof Error ? error.message : String(error),
+      };
+    }
+    this.#queueRender();
   }
 
   #moveTopicPicker(delta: number): void {
@@ -943,8 +930,8 @@ export class TerminalApp {
     try {
       await this.#client.deleteTopic(topic);
       await this.#refreshTopics();
+      this.#state = openTopicPicker(this.#state, `Deleted ${topic.title}`);
       await this.#loadActiveMessages();
-      this.#state = { ...this.#state, notice: `Deleted ${topic.title}` };
     } catch (error) {
       this.#state = {
         ...this.#state,
@@ -1100,7 +1087,7 @@ export class TerminalApp {
       void this.#abort();
       return;
     }
-    if (this.#input.text || this.#state.overlay) {
+    if (this.#input.text || this.#state.overlay || this.#state.creatingTopic) {
       this.#lastInterruptAt = 0;
       this.#input.setText("");
       this.#history.reset();
@@ -1109,6 +1096,7 @@ export class TerminalApp {
         ...this.#state,
         overlay: null,
         pendingDeleteTopicId: undefined,
+        creatingTopic: false,
         notice: "Input cleared",
       };
       this.#queueRender();

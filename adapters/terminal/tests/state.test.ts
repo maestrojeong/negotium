@@ -4,8 +4,11 @@ import {
   activeQuestion,
   applyRuntimeEvent,
   createInitialState,
+  focusCreatedTopic,
+  openTopicPicker,
   setMessages,
   setTopics,
+  startTopicCreation,
 } from "@/state";
 
 function topic(id: string, title: string): TopicDto {
@@ -28,6 +31,36 @@ describe("terminal adapter state", () => {
     state = { ...state, activeTopicId: "b" };
     state = setTopics(state, [topic("a", "A"), topic("b", "B")]);
     expect(state.activeTopicId).toBe("b");
+  });
+
+  test("focuses a created topic before the refreshed list arrives", () => {
+    let state = setTopics(createInitialState("local"), [topic("a", "A")]);
+    state = focusCreatedTopic(state, topic("b", "B"));
+
+    expect(state.activeTopicId).toBe("b");
+    expect(state.topics.map((candidate) => candidate.id)).toEqual(["a", "b"]);
+
+    state = setTopics(state, [topic("a", "A"), topic("b", "B")]);
+    expect(state.activeTopicId).toBe("b");
+  });
+
+  test("opens the topic picker on the active topic after a deletion refresh", () => {
+    let state = setTopics(createInitialState("local"), [topic("a", "A"), topic("b", "B")]);
+    state = { ...state, activeTopicId: "b" };
+    state = openTopicPicker(state, "Deleted A");
+
+    expect(state.overlay).toBe("topics");
+    expect(state.topicPickerIndex).toBe(1);
+    expect(state.notice).toBe("Deleted A");
+  });
+
+  test("starts topic creation without exposing an internal slash command", () => {
+    const state = startTopicCreation(createInitialState("local"));
+
+    expect(state.creatingTopic).toBe(true);
+    expect(state.overlay).toBeNull();
+    expect(state.input).toBe("");
+    expect(state.notice).toContain("topic name");
   });
 
   test("keeps one local start time when the same active event is replayed", () => {

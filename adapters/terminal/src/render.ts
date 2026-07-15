@@ -424,7 +424,7 @@ function helpLines(): UiLine[] {
     line("  Ctrl-O topics · Ctrl-P/N previous/next topic · Ctrl-C twice to quit"),
     line(""),
     line("  Commands", { fg: theme.cyan, bold: true }),
-    line("  /new  /topic  /topics  /del  /copy"),
+    line("  /new  /topics  /del  /copy"),
     line("  /abort  /help  /quit", { fg: theme.muted }),
   ];
 }
@@ -639,7 +639,10 @@ function decisionPane(state: AppState, width: number): string[] {
 function inputVisualLines(state: AppState, width: number): UiLine[] {
   if (!state.input) {
     return [
-      line("  › █ Type a message or /command…", { fg: theme.subtle, bg: theme.surfaceRaised }),
+      line(`  › █ ${state.creatingTopic ? "Type a topic name…" : "Type a message or /command…"}`, {
+        fg: theme.subtle,
+        bg: theme.surfaceRaised,
+      }),
     ];
   }
   const contentWidth = Math.max(4, width - 5);
@@ -662,11 +665,9 @@ function inputVisualLines(state: AppState, width: number): UiLine[] {
 }
 
 function composerPane(state: AppState, width: number): string[] {
-  const title = state.input.startsWith("/new ")
-    ? "new topic · type a name · Enter create"
-    : "Ctrl-O topics";
+  const title = state.creatingTopic ? "new topic · type a name · Enter create" : "Ctrl-O topics";
   const inputLines = inputVisualLines(state, width).slice(-5);
-  const suggestions = commandSuggestions(state.input);
+  const suggestions = state.creatingTopic ? [] : commandSuggestions(state.input);
   const suggestionLines = suggestions
     .slice(0, Math.max(0, 6 - inputLines.length))
     .map((command, index) =>
@@ -688,7 +689,7 @@ function composerPane(state: AppState, width: number): string[] {
     }),
   );
   const hint = paint(fit(`  ${title}`, width), { fg: theme.muted, bg: theme.canvas });
-  return state.input.startsWith("/new ") ? [hint, ...input] : [...input, hint];
+  return state.creatingTopic ? [hint, ...input] : [...input, hint];
 }
 
 function footerLines(

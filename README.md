@@ -120,13 +120,15 @@ Inside terminal chat:
 
 ```text
 /new                  reset the current topic's AI context, including personal General
-/topic <topic>        enter an existing topic
 /topics               open the topic picker
 /del [topic]          archive and delete a topic
 /copy [all]           copy the last answer or transcript
 /abort                stop the current turn
 /quit                 close the terminal host
 ```
+
+Use `Ctrl-O` to choose topics. Press `N`, enter a topic name, and press `Enter` to create and open
+it. Deleting a topic returns to the topic picker.
 
 ### Run the node and Terminal clients
 

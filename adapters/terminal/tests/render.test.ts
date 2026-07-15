@@ -50,6 +50,15 @@ describe("terminal renderer", () => {
     expect(lines[labelIndex - 1]?.trim()).toBe("");
   });
 
+  test("shows a dedicated topic-name composer after choosing new topic", () => {
+    const state = { ...createInitialState("local"), creatingTopic: true };
+    const output = stripAnsi(renderApp(state, 120, 30));
+
+    expect(output).toContain("new topic · type a name · Enter create");
+    expect(output).toContain("Type a topic name…");
+    expect(output).not.toContain("/new ");
+  });
+
   test("places terminal status below the composer without a product wordmark", () => {
     const state = setTopics(createInitialState("local"), [topic()]);
     const output = stripAnsi(renderApp(state, 120, 30));

@@ -42,6 +42,7 @@ export interface AppState {
   suggestionIndex: number;
   topicPickerIndex: number;
   pendingDeleteTopicId?: string;
+  creatingTopic: boolean;
   scrollOffset: number;
   askChoiceIndex: number;
   overlay: Overlay;
@@ -61,6 +62,7 @@ export function createInitialState(userId: string): AppState {
     inputCursor: { row: 0, col: 0 },
     suggestionIndex: 0,
     topicPickerIndex: 0,
+    creatingTopic: false,
     scrollOffset: 0,
     askChoiceIndex: 0,
     overlay: null,
@@ -126,8 +128,39 @@ export function selectTopic(state: AppState, topicId: string): AppState {
     scrollOffset: 0,
     askChoiceIndex: 0,
     overlay: null,
+    creatingTopic: false,
     topicPickerIndex: state.topics.findIndex((topic) => topic.id === topicId),
     notice: undefined,
+  };
+}
+
+/** Select a newly-created topic before asynchronous list refreshes can race it. */
+export function focusCreatedTopic(state: AppState, topic: TopicDto): AppState {
+  const topics = state.topics.some((candidate) => candidate.id === topic.id)
+    ? state.topics.map((candidate) => (candidate.id === topic.id ? topic : candidate))
+    : [...state.topics, topic];
+  return selectTopic(setTopics(state, topics), topic.id);
+}
+
+export function openTopicPicker(state: AppState, notice = state.notice): AppState {
+  return {
+    ...state,
+    overlay: "topics",
+    creatingTopic: false,
+    topicPickerIndex: Math.max(
+      0,
+      state.topics.findIndex((topic) => topic.id === state.activeTopicId),
+    ),
+    notice,
+  };
+}
+
+export function startTopicCreation(state: AppState): AppState {
+  return {
+    ...state,
+    overlay: null,
+    creatingTopic: true,
+    notice: "Type a new topic name, then press Enter",
   };
 }
 

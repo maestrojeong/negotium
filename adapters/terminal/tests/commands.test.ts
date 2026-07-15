@@ -3,17 +3,17 @@ import { commandSuggestions, completeCommand } from "@/commands";
 
 describe("terminal slash command completion", () => {
   test("filters commands by prefix", () => {
-    expect(commandSuggestions("/to").map((command) => command.name)).toEqual(["topic", "topics"]);
+    expect(commandSuggestions("/to").map((command) => command.name)).toEqual(["topics"]);
   });
 
   test("adds an argument space only for commands that accept arguments", () => {
     expect(completeCommand("/ne", 0)).toBe("/new");
-    expect(completeCommand("/to", 0)).toBe("/topic ");
+    expect(completeCommand("/to", 0)).toBe("/topics");
     expect(completeCommand("/he", 0)).toBe("/help");
   });
 
   test("does not suggest after argument entry starts", () => {
-    expect(commandSuggestions("/topic work")).toEqual([]);
+    expect(commandSuggestions("/del work")).toEqual([]);
   });
 
   test("suggests context parity commands", () => {
