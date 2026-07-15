@@ -75,7 +75,7 @@ indicator. Topics and transcript use temporary overlays.
 | Key | Action |
 | --- | --- |
 | `Enter` | send text, or accept the selected ask choice |
-| `Ctrl-J` / `Alt-Enter` | insert a newline |
+| `Alt-Enter` | insert a newline |
 | `Ctrl-P` / `Ctrl-N` | previous / next topic |
 | `Up` / `Down` | edit multiline input, history, suggestions, or ask choices |
 | `PageUp` / `PageDown` | scroll conversation |

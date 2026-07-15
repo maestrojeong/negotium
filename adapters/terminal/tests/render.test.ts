@@ -36,10 +36,13 @@ describe("terminal renderer", () => {
     expect(output.split("\n")).toHaveLength(30);
   });
 
-  test("uses a neutral border for the always-active message composer", () => {
-    const output = renderApp(createInitialState("local"), 120, 30);
-    expect(output).toContain("\u001b[38;2;48;52;67m");
-    expect(output).not.toContain("\u001b[38;2;119;103;239m");
+  test("keeps the always-active message composer flat and borderless", () => {
+    const output = stripAnsi(renderApp(createInitialState("local"), 120, 30));
+    expect(output).toContain("Ctrl-O topics");
+    expect(output).not.toContain("Enter send");
+    expect(output).not.toContain("Ctrl-J");
+    expect(output).not.toContain("╭ message");
+    expect(output).not.toContain("╰");
   });
 
   test("does not display a stale Maestro model after switching the topic to Codex", () => {
@@ -50,6 +53,16 @@ describe("terminal renderer", () => {
     const output = stripAnsi(renderApp(state, 120, 30));
     expect(output).toContain("Terminal · codex · gpt-5.6-luna");
     expect(output).not.toContain("Terminal · codex · deepseek-pro");
+  });
+
+  test("shows both the agent and effective model in the topic picker", () => {
+    const state = {
+      ...setTopics(createInitialState("local"), [topic()]),
+      overlay: "topics" as const,
+    };
+
+    const output = stripAnsi(renderApp(state, 120, 30));
+    expect(output).toContain("Terminal  ·  codex  ·  gpt");
   });
 
   test("strips terminal escape sequences", () => {
@@ -71,6 +84,21 @@ describe("terminal renderer", () => {
     expect(output).toContain("• first");
     expect(output).toContain("code · ts");
     expect(output).toContain("const ok = true;");
+  });
+
+  test("hides system messages from the Terminal conversation", () => {
+    const systemMessage: MessageDto = {
+      id: "system-message",
+      topicId: "topic",
+      authorId: "system",
+      text: "internal orchestration detail",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const state = setMessages(setTopics(createInitialState("local"), [topic()]), "topic", [
+      systemMessage,
+    ]);
+
+    expect(stripAnsi(renderApp(state, 100, 30))).not.toContain("internal orchestration detail");
   });
 
   test("shows compact tool status without verbose output", () => {

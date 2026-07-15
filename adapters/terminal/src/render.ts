@@ -308,6 +308,7 @@ function messageLines(
   userId: string,
   aiName: string,
 ): UiLine[] {
+  if (message.kind === "system" || message.authorId === "system") return [];
   if (message.kind === "subagent" && message.subagentCard) return subagentLines(message, width);
   if (message.kind === "tool") {
     const [title = "Tool", ...details] = safeText(message.text).split("\n");
@@ -394,7 +395,7 @@ function helpLines(): UiLine[] {
   return [
     line("  Keyboard", { fg: theme.accent, bold: true }),
     line(""),
-    line("  Enter send · Ctrl-J / Alt-Enter newline"),
+    line("  Alt-Enter newline"),
     line("  ← → move · Ctrl/Alt-← → move by word · ↑ ↓ history"),
     line("  Ctrl-W delete word · Ctrl-U/K clear before/after cursor"),
     line("  Mouse wheel / PgUp/PgDn scroll · Ctrl-X abort · Ctrl-T transcript"),
@@ -410,7 +411,11 @@ export function plainTranscript(state: AppState): string {
   const topic = activeTopic(state);
   const rows = [`# ${topic?.title ?? "Conversation"}`];
   for (const message of activeMessages(state).filter(
-    (item) => !item.id.startsWith("tasks-") && item.kind !== "tool",
+    (item) =>
+      !item.id.startsWith("tasks-") &&
+      item.kind !== "tool" &&
+      item.kind !== "system" &&
+      item.authorId !== "system",
   )) {
     const author =
       message.authorId === state.userId
@@ -432,7 +437,7 @@ function topicOverlayLines(state: AppState, animationFrame = 0): UiLine[] {
       const selected = index === state.topicPickerIndex;
       const running = state.activity[topic.id]?.running;
       return line(
-        `  ${selected ? "›" : " "} ${running ? workingFrame(animationFrame) : "○"} ${topic.title}  ·  ${topic.agent ?? "no agent"}`,
+        `  ${selected ? "›" : " "} ${running ? workingFrame(animationFrame) : "○"} ${topic.title}  ·  ${topic.agent ?? "no agent"}  ·  ${effectiveTopicModel(topic)}`,
         {
           fg: selected ? theme.text : running ? theme.green : theme.muted,
           bg: selected ? theme.selected : theme.canvas,
@@ -445,7 +450,9 @@ function topicOverlayLines(state: AppState, animationFrame = 0): UiLine[] {
 
 function conversationContentLines(state: AppState, width: number, animationFrame = 0): UiLine[] {
   const all: UiLine[] = [];
-  for (const message of activeMessages(state).filter((item) => !item.id.startsWith("tasks-"))) {
+  for (const message of activeMessages(state).filter(
+    (item) => !item.id.startsWith("tasks-") && item.kind !== "system" && item.authorId !== "system",
+  )) {
     all.push(...messageLines(message, width, state.userId, state.aiName));
   }
   all.push(...activityLines(state, animationFrame), ...taskLines(state, width));
@@ -559,13 +566,9 @@ function inputVisualLines(state: AppState, width: number): UiLine[] {
 }
 
 function composerPane(state: AppState, width: number): string[] {
-  const topic = activeTopic(state);
-  const activity = topic ? state.activity[topic.id] : undefined;
   const title = state.input.startsWith("/new ")
     ? "new topic · type <name> [agent] · Enter create"
-    : activity?.running
-      ? "working · Enter supersedes · Ctrl-X abort"
-      : "message · Enter send · Ctrl-J newline · Ctrl-O topics";
+    : "Ctrl-O topics";
   const inputLines = inputVisualLines(state, width).slice(-5);
   const suggestions = commandSuggestions(state.input);
   const suggestionLines = suggestions.slice(0, 4).map((command, index) =>
@@ -577,8 +580,18 @@ function composerPane(state: AppState, width: number): string[] {
       },
     ),
   );
-  const content = [...inputLines, ...suggestionLines];
-  return framePane(title, content, width, Math.min(9, Math.max(3, content.length + 2)));
+  const content = [...inputLines, ...suggestionLines].slice(0, 8);
+  return [
+    paint(fit(`  ${title}`, width), { fg: theme.muted, bg: theme.canvas }),
+    ...content.map((item) =>
+      paint(fit(item.text, width), {
+        fg: item.fg ?? theme.text,
+        bg: item.bg ?? theme.surfaceRaised,
+        bold: item.bold,
+        dim: item.dim,
+      }),
+    ),
+  ];
 }
 
 function headerLines(state: AppState, width: number, animationFrame = 0): string[] {
