@@ -4,6 +4,7 @@ import {
   abortRoom,
   answerPendingAskUserQuestion,
   appendApiMessage,
+  compactTopicSession,
   deleteTopicCascade,
   ensurePersonalGeneral,
   getAllMessagesForTopic,
@@ -44,6 +45,7 @@ export interface NegotiumClient {
   listMessagePage?(topicId: string, cursor?: string): ClientResult<MessageHistoryPage>;
   createTopic(title: string, agent?: AgentKind): ClientResult<TopicDto>;
   resetTopic(topic: TopicDto): Promise<string>;
+  compactTopic(topic: TopicDto): Promise<string>;
   deleteTopic(topic: TopicDto): Promise<void>;
   sendMessage(topic: TopicDto, text: string): ClientResult<MessageDto>;
   answerQuestion(
@@ -145,6 +147,12 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
 
   async resetTopic(topic: TopicDto): Promise<string> {
     const result = await restartTopicSession(topic.id, this.#userId, "terminal-session-reset");
+    if (result.isError) throw new Error(result.text);
+    return result.text;
+  }
+
+  async compactTopic(topic: TopicDto): Promise<string> {
+    const result = await compactTopicSession(topic.id, this.#userId, "terminal-session-compact");
     if (result.isError) throw new Error(result.text);
     return result.text;
   }
@@ -304,6 +312,18 @@ export class RemoteNegotiumClient implements NegotiumClient {
     return String(result.result ?? `Session reset for "${topic.title}".`);
   }
 
+  async compactTopic(topic: TopicDto): Promise<string> {
+    const result = await this.#request(
+      `/topics/${encodeURIComponent(topic.id)}/session/compact`,
+      {
+        method: "POST",
+        body: JSON.stringify({ userId: this.#userId }),
+      },
+      180_000,
+    );
+    return String(result.result ?? `Compacted context for "${topic.title}".`);
+  }
+
   async deleteTopic(topic: TopicDto): Promise<void> {
     await this.#request(
       `/topics/${encodeURIComponent(topic.id)}?user=${encodeURIComponent(this.#userId)}`,
@@ -351,9 +371,9 @@ export class RemoteNegotiumClient implements NegotiumClient {
     appendTerminalInputHistory(this.#userId, text);
   }
 
-  async #request(path: string, init: RequestInit = {}): Promise<ApiEnvelope> {
+  async #request(path: string, init: RequestInit = {}, timeoutMs = 15_000): Promise<ApiEnvelope> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15_000);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(`${this.#baseUrl}${NODE_CONTROL_BASE_PATH}${path}`, {
         ...init,

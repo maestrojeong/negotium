@@ -5,7 +5,7 @@ import {
   type TopicDto,
 } from "@negotium/core";
 
-type Overlay = "help" | "topics" | "transcript" | "confirm-delete" | null;
+type Overlay = "help" | "status" | "topics" | "transcript" | "confirm-delete" | null;
 
 interface ToolActivity {
   id: string;

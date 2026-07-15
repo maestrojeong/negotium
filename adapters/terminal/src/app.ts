@@ -627,6 +627,52 @@ export class TerminalApp {
       this.#queueRender();
       return;
     }
+    if (command === "status") {
+      this.#state = { ...this.#state, overlay: "status" };
+      this.#queueRender();
+      return;
+    }
+    if (command === "compact") {
+      const topic = activeTopic(this.#state);
+      if (!topic) {
+        this.#state = { ...this.#state, notice: "No topic selected" };
+        this.#queueRender();
+        return;
+      }
+      const queryId = `terminal-compact-${Date.now()}`;
+      this.#state = applyRuntimeEvent(
+        { ...this.#state, notice: "Compacting context…" },
+        {
+          type: "ai-status",
+          topicId: topic.id,
+          payload: { kind: "ai_active", queryId },
+        },
+      );
+      this.#queueRender();
+      try {
+        const notice = await this.#client.compactTopic(topic);
+        this.#state = applyRuntimeEvent(
+          { ...this.#state, notice },
+          {
+            type: "ai-status",
+            topicId: topic.id,
+            payload: { kind: "ai_done", queryId },
+          },
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.#state = applyRuntimeEvent(
+          { ...this.#state, notice: message },
+          {
+            type: "ai-status",
+            topicId: topic.id,
+            payload: { kind: "ai_error", queryId, error: message },
+          },
+        );
+      }
+      this.#queueRender();
+      return;
+    }
     if (command === "topics") {
       this.#toggleTopics(true);
       return;

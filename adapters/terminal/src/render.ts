@@ -398,12 +398,54 @@ function helpLines(): UiLine[] {
     line("  Alt-Enter newline"),
     line("  ← → move · Ctrl/Alt-← → move by word · ↑ ↓ history"),
     line("  Ctrl-W delete word · Ctrl-U/K clear before/after cursor"),
-    line("  Mouse wheel / PgUp/PgDn scroll · Ctrl-X abort · Ctrl-T transcript"),
+    line("  Mouse wheel / PgUp/PgDn scroll · Ctrl-T transcript"),
     line("  Ctrl-O topics · Ctrl-P/N previous/next topic · Ctrl-C twice to quit"),
     line(""),
     line("  Commands", { fg: theme.cyan, bold: true }),
     line("  /new  /topic  /topics  /delete  /copy"),
     line("  /abort  /help  /quit", { fg: theme.muted }),
+  ];
+}
+
+function tokenCount(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) return "unavailable";
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 100_000 ? 0 : 1)}K`;
+  return String(Math.round(value));
+}
+
+function statusLines(state: AppState): UiLine[] {
+  const topic = activeTopic(state);
+  const latest = activeMessages(state)
+    .slice()
+    .reverse()
+    .find((message) => message.authorId === "ai" && message.usage);
+  const usage = latest?.usage;
+  const ratio =
+    usage?.context !== undefined && usage.contextWindow
+      ? Math.round((usage.context / usage.contextWindow) * 100)
+      : undefined;
+  return [
+    line("  Status", { fg: theme.accent, bold: true }),
+    line(""),
+    line(`  Topic       ${topic?.title ?? "none"}`),
+    line(`  Agent       ${topic?.agent ?? "none"}`),
+    line(`  Model       ${effectiveTopicModel(topic)}`),
+    line(""),
+    line(
+      `  Context     ${tokenCount(usage?.context)} / ${tokenCount(usage?.contextWindow)}${ratio === undefined ? "" : ` (${ratio}%)`}`,
+      { fg: ratio !== undefined && ratio >= 80 ? theme.amber : theme.text },
+    ),
+    line("  Measured on the latest model request", { fg: theme.muted, dim: true }),
+    line(""),
+    line(`  Last turn   input ${tokenCount(usage?.input)} · output ${tokenCount(usage?.output)}`),
+    line(`  Cache read  ${tokenCount(usage?.cachedInput)}`),
+    line("  Turn input is aggregate spend; it is not context size.", {
+      fg: theme.muted,
+      dim: true,
+    }),
+    line(""),
+    line("  Esc close", { fg: theme.muted }),
   ];
 }
 
@@ -473,6 +515,7 @@ function conversationLines(
   animationFrame = 0,
 ): UiLine[] {
   if (state.overlay === "help") return helpLines().slice(0, height);
+  if (state.overlay === "status") return statusLines(state).slice(0, height);
   if (state.overlay === "topics") return topicOverlayLines(state, animationFrame).slice(0, height);
   if (state.overlay === "transcript") {
     return [
@@ -571,27 +614,28 @@ function composerPane(state: AppState, width: number): string[] {
     : "Ctrl-O topics";
   const inputLines = inputVisualLines(state, width).slice(-5);
   const suggestions = commandSuggestions(state.input);
-  const suggestionLines = suggestions.slice(0, 4).map((command, index) =>
-    line(
-      `    ${index === state.suggestionIndex ? "›" : " "} ${command.usage}  ${command.description}`,
-      {
-        fg: index === state.suggestionIndex ? theme.text : theme.muted,
-        bg: index === state.suggestionIndex ? theme.selected : theme.surface,
-      },
-    ),
+  const suggestionLines = suggestions
+    .slice(0, Math.max(0, 6 - inputLines.length))
+    .map((command, index) =>
+      line(
+        `    ${index === state.suggestionIndex ? "›" : " "} ${command.usage}  ${command.description}`,
+        {
+          fg: index === state.suggestionIndex ? theme.text : theme.muted,
+          bg: index === state.suggestionIndex ? theme.selected : theme.surface,
+        },
+      ),
+    );
+  const content = [line(""), ...inputLines, line(""), ...suggestionLines].slice(0, 8);
+  const input = content.map((item) =>
+    paint(fit(item.text, width), {
+      fg: item.fg ?? theme.text,
+      bg: item.bg ?? theme.surfaceRaised,
+      bold: item.bold,
+      dim: item.dim,
+    }),
   );
-  const content = [...inputLines, ...suggestionLines].slice(0, 8);
-  return [
-    paint(fit(`  ${title}`, width), { fg: theme.muted, bg: theme.canvas }),
-    ...content.map((item) =>
-      paint(fit(item.text, width), {
-        fg: item.fg ?? theme.text,
-        bg: item.bg ?? theme.surfaceRaised,
-        bold: item.bold,
-        dim: item.dim,
-      }),
-    ),
-  ];
+  const hint = paint(fit(`  ${title}`, width), { fg: theme.muted, bg: theme.canvas });
+  return state.input.startsWith("/new ") ? [hint, ...input] : [...input, hint];
 }
 
 function headerLines(state: AppState, width: number, animationFrame = 0): string[] {

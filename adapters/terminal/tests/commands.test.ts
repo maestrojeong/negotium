@@ -14,4 +14,9 @@ describe("terminal slash command completion", () => {
   test("does not suggest after argument entry starts", () => {
     expect(commandSuggestions("/topic work")).toEqual([]);
   });
+
+  test("suggests context parity commands", () => {
+    expect(commandSuggestions("/comp").map((command) => command.name)).toEqual(["compact"]);
+    expect(commandSuggestions("/stat").map((command) => command.name)).toEqual(["status"]);
+  });
 });

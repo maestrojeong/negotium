@@ -38,11 +38,16 @@ describe("terminal renderer", () => {
 
   test("keeps the always-active message composer flat and borderless", () => {
     const output = stripAnsi(renderApp(createInitialState("local"), 120, 30));
+    const lines = output.split("\n");
+    const labelIndex = lines.findIndex((line) => line.includes("Ctrl-O topics"));
     expect(output).toContain("Ctrl-O topics");
     expect(output).not.toContain("Enter send");
     expect(output).not.toContain("Ctrl-J");
     expect(output).not.toContain("╭ message");
     expect(output).not.toContain("╰");
+    expect(lines[labelIndex - 3]?.trim()).toBe("");
+    expect(lines[labelIndex - 2]).toContain("Type a message");
+    expect(lines[labelIndex - 1]?.trim()).toBe("");
   });
 
   test("does not display a stale Maestro model after switching the topic to Codex", () => {
@@ -63,6 +68,33 @@ describe("terminal renderer", () => {
 
     const output = stripAnsi(renderApp(state, 120, 30));
     expect(output).toContain("Terminal  ·  codex  ·  gpt");
+  });
+
+  test("separates latest context occupancy from aggregate turn spend", () => {
+    const message: MessageDto = {
+      id: "usage-message",
+      topicId: "topic",
+      authorId: "ai",
+      text: "done",
+      usage: {
+        input: 1_343_881,
+        output: 4_698,
+        cachedInput: 1_230_336,
+        context: 104_464,
+        contextWindow: 258_400,
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const state = {
+      ...setMessages(setTopics(createInitialState("local"), [topic()]), "topic", [message]),
+      overlay: "status" as const,
+    };
+
+    const output = stripAnsi(renderApp(state, 120, 30));
+    expect(output).toContain("104K / 258K (40%)");
+    expect(output).toContain("input 1.34M");
+    expect(output).toContain("Cache read  1.23M");
+    expect(output).toContain("not context size");
   });
 
   test("strips terminal escape sequences", () => {
