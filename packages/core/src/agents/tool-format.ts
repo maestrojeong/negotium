@@ -17,6 +17,7 @@ export type ToolCallSummaryInput = Record<string, ToolCallSummaryValue>;
 const TOOL_SUMMARY_MAX_CHARS = 90;
 const TOOL_SUMMARY_HEAD_CHARS = 52;
 const TOOL_SUMMARY_TAIL_CHARS = 28;
+const SHELL_SUMMARY_MAX_PARTS = 3;
 
 const SUMMARY_KEYS = [
   "command",
@@ -44,6 +45,208 @@ export function summarizeDisplayText(value: string): string {
   return `${normalized.slice(0, TOOL_SUMMARY_HEAD_CHARS).trimEnd()}...${normalized
     .slice(-TOOL_SUMMARY_TAIL_CHARS)
     .trimStart()}`;
+}
+
+function unwrapShellCommand(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  const match = normalized.match(/^(?:\/[^\s]+\/)?(?:zsh|bash|sh)\s+-[a-z]*c\s+(.+)$/i);
+  if (!match?.[1]) return normalized;
+  const payload = match[1].trim();
+  const quote = payload[0];
+  return (quote === '"' || quote === "'") && payload.at(-1) === quote
+    ? payload.slice(1, -1).trim()
+    : payload;
+}
+
+function splitShellCommands(value: string): string[] {
+  const commands: string[] = [];
+  let current = "";
+  let quote = "";
+  let escaped = false;
+  const flush = () => {
+    const command = current.trim();
+    if (command) commands.push(command);
+    current = "";
+  };
+
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i] ?? "";
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      current += char;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      current += char;
+      if (char === quote) quote = "";
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      current += char;
+      continue;
+    }
+    const pair = value.slice(i, i + 2);
+    if (pair === "&&" || pair === "||") {
+      flush();
+      i += 1;
+      continue;
+    }
+    if (char === ";") {
+      flush();
+      continue;
+    }
+    current += char;
+  }
+  flush();
+  return commands;
+}
+
+function shellWords(value: string): string[] {
+  const words: string[] = [];
+  let current = "";
+  let quote = "";
+  let escaped = false;
+  const flush = () => {
+    if (current) words.push(current);
+    current = "";
+  };
+
+  for (const char of value) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = "";
+      else current += char;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      flush();
+      continue;
+    }
+    current += char;
+  }
+  flush();
+  return words;
+}
+
+function commandName(value: string): string {
+  return value.replace(/\\/g, "/").split("/").at(-1) || value;
+}
+
+function compactPath(value: string): string {
+  const normalized = value.replace(/\\/g, "/").replace(/\/$/, "");
+  return normalized.split("/").at(-1) || normalized;
+}
+
+function looksLikePath(value: string): boolean {
+  return (
+    value.includes("/") ||
+    /^\.?[A-Za-z0-9_-]+\.(?:[A-Za-z0-9_-]+)$/.test(value) ||
+    /^(?:CLAUDE|AGENTS|README|STYLE)(?:\.[A-Za-z0-9_-]+)?$/i.test(value)
+  );
+}
+
+function summarizeTargets(values: string[]): string {
+  const targets = values.filter((value) => value && !value.startsWith("-")).map(compactPath);
+  if (targets.length === 0) return "";
+  if (targets.length === 1) return targets[0] ?? "";
+  return `${targets[0]} +${targets.length - 1}`;
+}
+
+function summarizeShellPart(value: string): string {
+  const words = shellWords(value).filter((word) => !/^\d*>/.test(word));
+  while (words[0] === "sudo") words.shift();
+  if (words[0] === "env") {
+    words.shift();
+    while (words[0] && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]) || words[0].startsWith("-"))) {
+      words.shift();
+    }
+  }
+  const executable = commandName(words.shift() ?? "");
+  if (!executable || executable === "true" || executable === "printf" || executable === "echo") {
+    return "";
+  }
+
+  if (executable === "pwd") return "pwd";
+  if (executable === "command" && words[0] === "-v") {
+    return words[1] ? `find ${commandName(words[1])}` : "find command";
+  }
+  if (executable === "git") {
+    while (words[0]?.startsWith("-")) {
+      const option = words.shift();
+      if (
+        option === "-C" ||
+        option === "-c" ||
+        option === "--git-dir" ||
+        option === "--work-tree"
+      ) {
+        words.shift();
+      }
+    }
+    const operation = words.shift();
+    const targets = words.filter((word) => looksLikePath(word));
+    const target = summarizeTargets(targets);
+    return ["git", operation, target].filter(Boolean).join(" ");
+  }
+  if (executable === "sed") {
+    const target = summarizeTargets(words.filter(looksLikePath));
+    return target ? `sed ${target}` : "sed";
+  }
+  if (executable === "rg") {
+    const filesOnly = words.includes("--files");
+    const values = words.filter((word) => !word.startsWith("-"));
+    const target = summarizeTargets(values);
+    return filesOnly ? ["rg files", target].filter(Boolean).join(" ") : `rg ${target || "search"}`;
+  }
+  if (
+    executable === "bun" ||
+    executable === "npm" ||
+    executable === "pnpm" ||
+    executable === "yarn"
+  ) {
+    const operation = words[0];
+    if (operation === "test") {
+      const targets = words.slice(1).filter((word) => !word.startsWith("-"));
+      return targets.length > 0
+        ? `${executable} test ${targets.length} files`
+        : `${executable} test`;
+    }
+    return [executable, operation].filter(Boolean).join(" ");
+  }
+  if (executable === "ls" || executable === "cat" || executable === "node") {
+    const target = summarizeTargets(words.filter(looksLikePath));
+    return [executable, target].filter(Boolean).join(" ");
+  }
+
+  const detail = words.find((word) => !word.startsWith("-"));
+  return [executable, detail ? compactPath(detail) : ""].filter(Boolean).join(" ");
+}
+
+/** Convert a raw Codex/Claude shell invocation into a bounded display label. */
+export function summarizeShellCommand(value: string): string {
+  const payload = unwrapShellCommand(value);
+  const parts = splitShellCommands(payload).map(summarizeShellPart).filter(Boolean);
+  if (parts.length === 0) return summarizeDisplayText(payload);
+  const visible = parts.slice(0, SHELL_SUMMARY_MAX_PARTS);
+  const remainder = parts.length - visible.length;
+  return summarizeDisplayText(`${visible.join(" · ")}${remainder > 0 ? ` · +${remainder}` : ""}`);
 }
 
 function summarizePrimitive(value: unknown): string | number | boolean | undefined {
@@ -89,7 +292,11 @@ export function summarizeToolInput(
   }
 
   for (const key of SUMMARY_KEYS) {
-    const value = summarizePrimitive(input[key]);
+    const raw = input[key];
+    const value =
+      (key === "command" || key === "cmd") && typeof raw === "string"
+        ? summarizeShellCommand(raw)
+        : summarizePrimitive(raw);
     if (value !== undefined) summary[key] = value;
   }
 
@@ -120,8 +327,9 @@ export function formatToolUse(name: string, input: Record<string, unknown>): str
     const type = String(input.subagent_type);
     const desc = input.description ? ` ${String(input.description).slice(0, 60)}` : "";
     detail = `[${type}]${desc}`;
-  } else if (input.command) detail = String(input.command);
-  else if (input.file_path || input.path) detail = String(input.file_path || input.path);
+  } else if (input.command || input.cmd) {
+    detail = summarizeShellCommand(String(input.command || input.cmd));
+  } else if (input.file_path || input.path) detail = String(input.file_path || input.path);
   else if (input.file_id) detail = String(input.file_id);
   else if (input.url) detail = String(input.url);
   else if (input.pattern) detail = String(input.pattern);

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatToolUse, summarizeToolInput } from "#agents/tool-format";
+import { formatToolUse, summarizeShellCommand, summarizeToolInput } from "#agents/tool-format";
 
 describe("formatToolUse", () => {
   test("View shows the question before the image path", () => {
@@ -15,6 +15,30 @@ describe("formatToolUse", () => {
     expect(formatToolUse("Read", { file_path: "/tmp/uploads/photo.jpg" })).toBe(
       "Read(/tmp/uploads/photo.jpg)",
     );
+  });
+
+  test("turns wrapped compound shell commands into compact intent labels", () => {
+    expect(
+      summarizeShellCommand(
+        `/bin/zsh -lc "printf '%s\\n' '--- repo ---' && git -C /Users/me/clawgram status --short --branch"`,
+      ),
+    ).toBe("git status");
+    expect(
+      summarizeShellCommand(
+        `/bin/zsh -lc "git diff --stat && printf '%s\\n' '--- package ---' && sed -n '1,180p' package.json"`,
+      ),
+    ).toBe("git diff · sed package.json");
+    expect(
+      summarizeShellCommand("/Users/me/.bun/bin/bun test tests/a.test.ts tests/b.test.ts"),
+    ).toBe("bun test 2 files");
+  });
+
+  test("uses the compact shell summary in labels and client-safe input", () => {
+    const command = `/bin/zsh -lc "pwd && rg --files attachments /Users/me/wiki"`;
+    expect(formatToolUse("Bash", { command })).toBe("Bash(pwd · rg files attachments +1)");
+    expect(summarizeToolInput("Bash", { command })).toEqual({
+      command: "pwd · rg files attachments +1",
+    });
   });
 
   test("summarizes tool inputs without raw html payloads", () => {
