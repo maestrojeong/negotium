@@ -30,11 +30,12 @@ async function* fallbackEvents() {
 }
 
 const startRunStreamed = mock(async (_prompt: string, _opts?: Record<string, unknown>) => ({
-  events: fallbackEvents(),
+  events: streamedEvents(),
 }));
 const resumeThread = mock(() => ({ runStreamed: resumeRunStreamed }));
 const startThread = mock(() => ({ runStreamed: startRunStreamed }));
 const codexConstructor = mock((_options?: Record<string, unknown>) => {});
+let streamedEvents: () => AsyncGenerator<Record<string, unknown>> = fallbackEvents;
 
 mock.module("@openai/codex-sdk", () => ({
   Codex: class {
@@ -67,6 +68,7 @@ function opts(overrides: Partial<AgentQueryOptions> = {}): AgentQueryOptions {
 
 describe("codexProvider stale rollout recovery", () => {
   beforeEach(() => {
+    streamedEvents = fallbackEvents;
     resumeRunStreamed.mockClear();
     startRunStreamed.mockClear();
     resumeThread.mockClear();
@@ -96,6 +98,48 @@ describe("codexProvider stale rollout recovery", () => {
       sessionId: "019dee65-ffff-7aaa-8aaa-aaaaaaaaaaaa",
     });
     expect(events).toContainEqual({ type: "text", content: "fresh answer" });
+  });
+
+  test("surfaces native apply_patch changes as Write/Edit/Delete tool events", async () => {
+    streamedEvents = async function* fileChanges() {
+      yield { type: "thread.started", thread_id: "019dee65-ffff-7aaa-8aaa-bbbbbbbbbbbb" };
+      yield {
+        type: "item.completed",
+        item: {
+          id: "patch-1",
+          type: "file_change",
+          status: "completed",
+          changes: [
+            { path: "src/new.ts", kind: "add" },
+            { path: "src/app.ts", kind: "update" },
+            { path: "src/old.ts", kind: "delete" },
+          ],
+        },
+      };
+      yield { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } };
+    };
+
+    const events = [];
+    for await (const event of codexProvider(opts({ sessionId: null }))) events.push(event);
+
+    expect(events).toContainEqual({
+      type: "tool_use",
+      name: "Write",
+      input: { file_path: "src/new.ts", change_kind: "add" },
+      toolUseId: "patch-1:0",
+    });
+    expect(events).toContainEqual({
+      type: "tool_use",
+      name: "Edit",
+      input: { file_path: "src/app.ts", change_kind: "update" },
+      toolUseId: "patch-1:1",
+    });
+    expect(events).toContainEqual({
+      type: "tool_use",
+      name: "Delete",
+      input: { file_path: "src/old.ts", change_kind: "delete" },
+      toolUseId: "patch-1:2",
+    });
   });
 });
 

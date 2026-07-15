@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import type {
+  FileChangeItem,
   McpToolCallItem,
   ModelReasoningEffort,
   SandboxMode,
@@ -150,6 +151,29 @@ function summarizeMcpToolCallResult(item: McpToolCallItem): string {
   if (text) return text.slice(0, 200);
   // Fall back to a JSON dump of structured_content for non-text content blocks.
   return JSON.stringify(item.result.structured_content ?? "").slice(0, 200);
+}
+
+function fileChangeEvents(item: FileChangeItem): UnifiedEvent[] {
+  return item.changes.flatMap((change, index) => {
+    const name = change.kind === "add" ? "Write" : change.kind === "delete" ? "Delete" : "Edit";
+    const toolUseId = `${item.id}:${index}`;
+    const success = item.status === "completed";
+    return [
+      {
+        type: "tool_use" as const,
+        name,
+        input: { file_path: change.path, change_kind: change.kind },
+        toolUseId,
+      },
+      {
+        type: "tool_result" as const,
+        toolUseId,
+        content: success
+          ? `${change.kind} applied: ${change.path}`
+          : `${change.kind} failed: ${change.path}`,
+      },
+    ];
+  });
 }
 
 function promptForThread(opts: AgentQueryOptions, includeSystemPrompt: boolean): string {
@@ -575,6 +599,10 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
                   toolUseId: String(item.id ?? ""),
                   content: String(item.aggregated_output ?? "").slice(0, 200),
                 };
+              } else if (item.type === "file_change") {
+                for (const fileEvent of fileChangeEvents(item as unknown as FileChangeItem)) {
+                  yield fileEvent;
+                }
               } else if (item.type === "error") {
                 yield { type: "error", content: String(item.message ?? "") };
               }
