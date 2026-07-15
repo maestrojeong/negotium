@@ -8,6 +8,7 @@
 import { rmSync } from "node:fs";
 import { runArchiverTurn } from "#agents/archiver";
 import { cancelIdleArchiveForTopic } from "#agents/idle-archiver";
+import { cancelSubagentWatchForDeletedTopic } from "#agents/mcp-tools/spawn-subagent";
 import { type PurgeSessionRef, purgeTopicLogs } from "#agents/topic-cleanup";
 import { WsHub } from "#bus";
 import { killBgBash } from "#platform/background-bash/manager";
@@ -30,6 +31,7 @@ import {
   deleteTopic as deleteTopicDB,
   getTopicMemoryOrigin,
   getTopicSessionId,
+  listTopics,
   reparentTopicChildren,
 } from "#storage/api-topics";
 import { getRuntimeTurnLease } from "#storage/runtime-leases";
@@ -154,11 +156,22 @@ export async function deleteTopicCascade(
   userId: string,
   options: DeleteTopicCascadeOptions = {},
 ): Promise<void> {
+  await deleteTopicCascadeImpl(topic, userId, options, new Set());
+}
+
+async function deleteTopicCascadeImpl(
+  topic: TopicDto,
+  userId: string,
+  options: DeleteTopicCascadeOptions,
+  deletingAncestorIds: ReadonlySet<string>,
+): Promise<void> {
   const topicId = topic.id;
   if (topicId === GENERAL_TOPIC_ID || (topic.kind === "manager" && !options.allowManager)) {
     logger.warn({ topicId }, "deleteTopicCascade: refused to delete essential topic");
     return;
   }
+  const deletingTopicIds = new Set(deletingAncestorIds);
+  deletingTopicIds.add(topicId);
   const force = options.force === true;
   const maintenance = beginRuntimeTopicMaintenance(topicId);
   if (!maintenance) throw new Error("Topic maintenance is already in progress.");
@@ -200,10 +213,12 @@ export async function deleteTopicCascade(
         const memoryTopic = getTopicMemoryOrigin(topicId) ?? topic;
         runArchiverTurn({
           userId,
-          // A root topic is about to disappear, so its durable summary is file
-          // + General memory only. Passing the deleted id to wiki MCP would let
-          // the detached archiver recreate an orphan api_topic_brief row later.
-          ...(memoryTopic.id !== topicId ? { topicId: memoryTopic.id } : {}),
+          // A memory origin that is also disappearing in this cascade must use
+          // file + General memory only. Passing its id to wiki MCP would let the
+          // detached archiver recreate an orphan api_topic_brief row later.
+          ...(memoryTopic.id !== topicId && !deletingTopicIds.has(memoryTopic.id)
+            ? { topicId: memoryTopic.id }
+            : {}),
           topicTitle: memoryTopic.title,
           archivePath: archived.path,
           messageCount: archived.messageCount,
@@ -214,6 +229,23 @@ export async function deleteTopicCascade(
           "deleteTopicCascade: background archiver launch failed - raw archive preserved",
         );
       }
+    }
+
+    cancelSubagentWatchForDeletedTopic(topicId);
+
+    // spawn_subagent rooms are owned by the room that created them. Delete
+    // them through the same lifecycle before removing the parent so their
+    // active turns, archives, rollouts, and filesystem state are all cleaned
+    // up. Other derived rooms (fork/spawn) remain independent and are
+    // reparented below as before.
+    const spawnedChildren = listTopics().filter(
+      (candidate) =>
+        candidate.parentTopicId === topicId &&
+        candidate.isSubagent &&
+        !deletingTopicIds.has(candidate.id),
+    );
+    for (const child of spawnedChildren) {
+      await deleteTopicCascadeImpl(child, userId, options, deletingTopicIds);
     }
 
     const sessionId = getTopicSessionId(topicId);

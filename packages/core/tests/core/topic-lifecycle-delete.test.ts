@@ -280,20 +280,61 @@ describe("deleteTopicCascade archive policy", () => {
     expect(getTopic("root-topic")).not.toBeNull();
   });
 
-  test("reparents surviving descendants instead of leaving a dangling parent id", async () => {
+  test("deletes a top-level agent's subagents without recreating the deleted memory root", async () => {
+    const root = makeTopic("cascade-root", "Cascade Root");
+    const child = makeTopic("cascade-subagent", "Cascade Subagent", {
+      parentTopicId: root.id,
+      isSubagent: true,
+    });
+
+    await deleteTopicCascade(root, "owner-user");
+
+    expect(getTopic(root.id)).toBeNull();
+    expect(getTopic(child.id)).toBeNull();
+    expect(calls.archiver).toEqual([
+      {
+        userId: "owner-user",
+        topicTitle: root.title,
+        archivePath: `/tmp/${root.id}.jsonl`,
+        messageCount: 3,
+      },
+      {
+        userId: "owner-user",
+        topicTitle: root.title,
+        archivePath: `/tmp/${child.id}.jsonl`,
+        messageCount: 3,
+      },
+    ]);
+  });
+
+  test("deletes spawned subagents and reparents other derived children", async () => {
     const root = makeTopic("reparent-root", "Reparent Root");
     const middle = makeTopic("reparent-middle", "Reparent Middle", {
       parentTopicId: root.id,
       isFork: true,
     });
-    const leaf = makeTopic("reparent-leaf", "Reparent Leaf", {
+    const firstSubagent = makeTopic("reparent-subagent-one", "Subagent One", {
       parentTopicId: middle.id,
       isSubagent: true,
+    });
+    const secondSubagent = makeTopic("reparent-subagent-two", "Subagent Two", {
+      parentTopicId: middle.id,
+      isSubagent: true,
+    });
+    const survivingFork = makeTopic("reparent-fork", "Surviving Fork", {
+      parentTopicId: middle.id,
+      isFork: true,
     });
 
     await deleteTopicCascade(middle, "owner-user");
 
-    expect(getTopic(leaf.id)?.parentTopicId).toBe(root.id);
+    expect(getTopic(middle.id)).toBeNull();
+    expect(getTopic(firstSubagent.id)).toBeNull();
+    expect(getTopic(secondSubagent.id)).toBeNull();
+    expect(getTopic(survivingFork.id)?.parentTopicId).toBe(root.id);
+    expect(calls.archive.map((call) => call.topicId).sort()).toEqual(
+      [middle.id, firstSubagent.id, secondSubagent.id].sort(),
+    );
   });
 
   test("blocks delete when archive fails and force is false", async () => {

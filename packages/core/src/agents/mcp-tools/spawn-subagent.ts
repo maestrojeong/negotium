@@ -102,6 +102,18 @@ function dropWatch(watch: SubagentWatch): void {
   if (watch.queryId) childByQueryId.delete(watch.queryId);
 }
 
+/** Drop deferred/in-flight bookkeeping when a subagent room is hard-deleted. */
+export function cancelSubagentWatchForDeletedTopic(childTopicId: string): void {
+  const watch = watchesByChild.get(childTopicId);
+  if (!watch) return;
+  dropWatch(watch);
+  patchSubagentCard(watch.parentTopicId, watch.cardMessageId, {
+    status: "failed",
+    errorMessage: "subagent room was deleted",
+    finishedAt: new Date().toISOString(),
+  });
+}
+
 /** Last-resort delivery: a plain system message in the parent room. */
 function appendParentSystemNote(watch: SubagentWatch, prompt: string): void {
   const now = new Date().toISOString();
