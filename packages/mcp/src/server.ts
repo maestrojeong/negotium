@@ -272,7 +272,14 @@ function unauthorized(): Response {
   return jsonRpcError(401, -32001, "Unauthorized");
 }
 
+// McpServer.close() closes its transport, whose onclose hook comes back here.
+// Keep the teardown idempotent so that callback cannot recursively close the
+// same server until the stack overflows.
+const closingServers = new WeakSet<McpServer>();
+
 async function closeServer(server: McpServer): Promise<void> {
+  if (closingServers.has(server)) return;
+  closingServers.add(server);
   try {
     await server.close();
   } catch (err) {
