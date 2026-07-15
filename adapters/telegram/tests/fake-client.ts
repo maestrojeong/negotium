@@ -12,6 +12,11 @@ export interface SentCall {
   opts?: Record<string, unknown>;
 }
 
+export interface EditedCall {
+  text: string;
+  opts: Record<string, unknown>;
+}
+
 /**
  * In-memory Telegram double: records sends, replays inbound via `emit`, and
  * implements the optional forum surface with controllable behavior:
@@ -28,6 +33,8 @@ export class FakeTelegramClient implements TelegramClientLike {
   attempts: SentCall[] = [];
   forumCalls: Array<{ chatId: number; name: string }> = [];
   deleteCalls: Array<{ chatId: number; threadId: number }> = [];
+  deletedMessageCalls: Array<{ chatId: number; messageId: number }> = [];
+  editCalls: EditedCall[] = [];
   photoCalls: Array<{ chatId: number; path: string; opts?: Record<string, unknown> }> = [];
   docCalls: Array<{ chatId: number; path: string; opts?: Record<string, unknown> }> = [];
   chatActions: Array<{ chatId: number; action: string; opts?: Record<string, unknown> }> = [];
@@ -39,6 +46,8 @@ export class FakeTelegramClient implements TelegramClientLike {
   failWith: unknown = null;
   /** First `count` sendMessage calls reject with `error`, then sends recover. */
   failNextSends: { count: number; error: unknown } | null = null;
+  /** First `count` editMessageText calls reject with `error`, then edits recover. */
+  failNextEdits: { count: number; error: unknown } | null = null;
   /** While > 0, HTML sends reject with a node-telegram-bot-api-shaped 429
    *  (retry_after 0) and decrement the counter. */
   rateLimit429Next = 0;
@@ -47,6 +56,7 @@ export class FakeTelegramClient implements TelegramClientLike {
   createMode: "auto" | "manual" | "reject" = "auto";
   createRejectError: unknown = new Error("400 Bad Request: not enough rights to manage topics");
   nextThreadId = 100;
+  nextMessageId = 1;
   private pendingCreates: Array<{ resolve: () => void; reject: (err: unknown) => void }> = [];
   private handlers: Array<(msg: TelegramIncomingMessage) => void> = [];
   private memberHandlers: Array<(update: TelegramMyChatMemberUpdate) => void> = [];
@@ -76,7 +86,21 @@ export class FakeTelegramClient implements TelegramClientLike {
       return Promise.reject(new Error("400 Bad Request: can't parse entities"));
     }
     this.calls.push({ chatId, text, opts });
+    return Promise.resolve({ message_id: this.nextMessageId++ });
+  }
+
+  editMessageText(text: string, opts: Record<string, unknown>): Promise<unknown> {
+    this.editCalls.push({ text, opts });
+    if (this.failNextEdits && this.failNextEdits.count > 0) {
+      this.failNextEdits.count--;
+      return Promise.reject(this.failNextEdits.error);
+    }
     return Promise.resolve({});
+  }
+
+  deleteMessage(chatId: number, messageId: number): Promise<unknown> {
+    this.deletedMessageCalls.push({ chatId, messageId });
+    return Promise.resolve(true);
   }
 
   async getFileLink(fileId: string): Promise<string> {
@@ -87,7 +111,7 @@ export class FakeTelegramClient implements TelegramClientLike {
 
   async sendPhoto(chatId: number, path: string, opts?: Record<string, unknown>): Promise<unknown> {
     this.photoCalls.push({ chatId, path, opts });
-    return {};
+    return { message_id: this.nextMessageId++ };
   }
 
   async sendDocument(
@@ -96,7 +120,7 @@ export class FakeTelegramClient implements TelegramClientLike {
     opts?: Record<string, unknown>,
   ): Promise<unknown> {
     this.docCalls.push({ chatId, path, opts });
-    return {};
+    return { message_id: this.nextMessageId++ };
   }
 
   async sendChatAction(

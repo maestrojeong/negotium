@@ -393,6 +393,38 @@ describe("outbound files", () => {
     }
   });
 
+  test("a supersede tombstone removes delivered text and file messages", async () => {
+    const USER = freshUser();
+    const { fake, adapter } = startAdapter({ userId: USER });
+    const chatId = freshChat();
+    try {
+      await mapChat(fake, chatId, room("files-supersede"));
+      const topic = getTopicByNameForUser(room("files-supersede"), USER)!;
+      const pdf = join(TMP, "obsolete-report.pdf");
+      writeFileSync(pdf, "obsolete-pdf");
+      const message = aiMessage(topic.id, `obsolete [FILE:${pdf}]`, {
+        queryId: "files-supersede-query",
+      });
+
+      runtimeBus().broadcastMessage(topic.id, message);
+      await waitFor(
+        () =>
+          fake.callsFor(chatId).some((call) => call.text.trim() === "obsolete") &&
+          fake.docCalls.some((call) => call.path === pdf),
+      );
+
+      runtimeBus().broadcastMessageUpdated(topic.id, message.id, {
+        deleted: true,
+        text: "",
+      });
+
+      await waitFor(() => fake.deletedMessageCalls.length >= 2);
+      expect(fake.deletedMessageCalls.filter((call) => call.chatId === chatId)).toHaveLength(2);
+    } finally {
+      adapter.stop();
+    }
+  });
+
   test("sensitive paths are blocked; missing files surface a path notice", async () => {
     const USER = freshUser();
     const { fake, adapter } = startAdapter({ userId: USER });
@@ -490,6 +522,45 @@ describe("durable retry outbox", () => {
       // Queue drained — nothing left pending or dead.
       const check = openMappingStore(dbPath);
       expect(check.outboxAll()).toHaveLength(0);
+      check.close();
+    } finally {
+      adapter.stop();
+    }
+  });
+
+  test("a supersede tombstone cancels a pending durable retry", async () => {
+    const USER = freshUser();
+    const dbPath = freshDb();
+    const { fake, adapter } = startAdapter({
+      userId: USER,
+      mappingDbPath: dbPath,
+      outbox: { pollMs: 10, baseDelayMs: 80 },
+    });
+    const chatId = freshChat();
+    try {
+      await mapChat(fake, chatId, room("retry-cancel-room"));
+      const topic = getTopicByNameForUser(room("retry-cancel-room"), USER)!;
+      const message = aiMessage(topic.id, "obsolete retry", { queryId: "retry-cancel-query" });
+      fake.failNextSends = { count: 1, error: serverError() };
+
+      runtimeBus().broadcastMessage(topic.id, message);
+      await waitFor(() => {
+        const check = openMappingStore(dbPath);
+        const queued = check.outboxAll().some((entry) => entry.runtimeMessageId === message.id);
+        check.close();
+        return queued;
+      });
+
+      runtimeBus().broadcastMessageUpdated(topic.id, message.id, {
+        deleted: true,
+        text: "",
+      });
+      await Bun.sleep(120);
+
+      expect(fake.attempts.filter((call) => call.text === message.text)).toHaveLength(1);
+      expect(fake.callsFor(chatId).some((call) => call.text === message.text)).toBe(false);
+      const check = openMappingStore(dbPath);
+      expect(check.outboxAll().some((entry) => entry.runtimeMessageId === message.id)).toBe(false);
       check.close();
     } finally {
       adapter.stop();
@@ -686,6 +757,30 @@ describe("media groups (albums)", () => {
 });
 
 describe("turn footer", () => {
+  test("does not append a final-turn footer to a pre-tool segment without usage", async () => {
+    const USER = freshUser();
+    const { fake, adapter } = startAdapter({ userId: USER, footer: true });
+    const chatId = freshChat();
+    try {
+      await mapChat(fake, chatId, room("intermediate-footer-room"));
+      const topic = getTopicByNameForUser(room("intermediate-footer-room"), USER)!;
+      const message = aiMessage(topic.id, "checking the repository", {
+        queryId: "intermediate-footer-query",
+        agentType: "codex",
+        model: "gpt-5.6-luna",
+      });
+
+      runtimeBus().broadcastMessage(topic.id, message);
+      await waitFor(() => fake.callsFor(chatId).some((call) => call.text === message.text));
+
+      expect(fake.callsFor(chatId).filter((call) => call.text.includes(message.text))).toEqual([
+        expect.objectContaining({ text: message.text }),
+      ]);
+    } finally {
+      adapter.stop();
+    }
+  });
+
   test("footer: true appends core's agent · model · tokens line as italic HTML", async () => {
     const USER = freshUser();
     const { fake, adapter } = startAdapter({ userId: USER, footer: true });
@@ -721,6 +816,127 @@ describe("turn footer", () => {
         aiMessage(topic.id, "plain answer", { agentType: "claude", model: "sonnet" }),
       );
       await waitFor(() => fake.callsFor(chatId).some((c) => c.text === "plain answer"));
+    } finally {
+      adapter.stop();
+    }
+  });
+
+  test("late tool-only usage edits the existing answer with its footer", async () => {
+    const USER = freshUser();
+    const { fake, adapter } = startAdapter({ userId: USER, footer: true });
+    const chatId = freshChat();
+    try {
+      await mapChat(fake, chatId, room("late-footer-room"));
+      const topic = getTopicByNameForUser(room("late-footer-room"), USER)!;
+      const message = aiMessage(topic.id, "status before final tool", {
+        queryId: "late-footer-query",
+        agentType: "codex",
+        model: "gpt-5.6-luna",
+      });
+      runtimeBus().broadcastMessage(topic.id, message);
+      await waitFor(() => fake.callsFor(chatId).some((call) => call.text.startsWith(message.text)));
+
+      runtimeBus().broadcastMessageUpdated(topic.id, message.id, {
+        usage: { input: 12, output: 3 },
+      });
+
+      await waitFor(() => fake.editCalls.length === 1);
+      expect(fake.editCalls[0]).toEqual({
+        text: "status before final tool\n\n<i>codex · gpt-5.6-luna · ↑12 ↓3 tok</i>",
+        opts: {
+          chat_id: chatId,
+          message_id: expect.any(Number),
+          parse_mode: "HTML",
+        },
+      });
+    } finally {
+      adapter.stop();
+    }
+  });
+
+  test("retries a transient footer edit without sending a duplicate footer message", async () => {
+    const USER = freshUser();
+    const { fake, adapter } = startAdapter({ userId: USER, footer: true });
+    const chatId = freshChat();
+    try {
+      await mapChat(fake, chatId, room("footer-edit-retry-room"));
+      const topic = getTopicByNameForUser(room("footer-edit-retry-room"), USER)!;
+      const message = aiMessage(topic.id, "answer before usage", {
+        queryId: "footer-edit-retry-query",
+        agentType: "codex",
+        model: "gpt-5.6-luna",
+      });
+      runtimeBus().broadcastMessage(topic.id, message);
+      await waitFor(() => fake.callsFor(chatId).some((call) => call.text === message.text));
+      const sendsBeforePatch = fake.callsFor(chatId).length;
+      const timeout = Object.assign(new Error("edit timed out"), { code: "ETIMEDOUT" });
+      fake.failNextEdits = { count: 1, error: timeout };
+
+      runtimeBus().broadcastMessageUpdated(topic.id, message.id, {
+        usage: { input: 12, output: 3 },
+      });
+
+      await waitFor(() => fake.editCalls.length === 2);
+      expect(fake.callsFor(chatId)).toHaveLength(sendsBeforePatch);
+      expect(fake.editCalls[1]?.text).toBe(
+        "answer before usage\n\n<i>codex · gpt-5.6-luna · ↑12 ↓3 tok</i>",
+      );
+    } finally {
+      adapter.stop();
+    }
+  });
+
+  test("drops delivery state when its topic is deleted", async () => {
+    const USER = freshUser();
+    const { fake, adapter } = startAdapter({ userId: USER, footer: true });
+    const chatId = freshChat();
+    try {
+      await mapChat(fake, chatId, room("footer-deleted-topic-room"));
+      const topic = getTopicByNameForUser(room("footer-deleted-topic-room"), USER)!;
+      const message = aiMessage(topic.id, "answer before deletion", {
+        queryId: "footer-deleted-topic-query",
+        agentType: "codex",
+        model: "gpt-5.6-luna",
+      });
+      runtimeBus().broadcastMessage(topic.id, message);
+      await waitFor(() => fake.callsFor(chatId).some((call) => call.text === message.text));
+
+      runtimeBus().broadcastTopicDeleted(topic.id);
+      await waitFor(() => fake.deletedMessageCalls.length === 1);
+      runtimeBus().broadcastMessageUpdated(topic.id, message.id, {
+        usage: { input: 5, output: 2 },
+      });
+      await Bun.sleep(20);
+
+      expect(fake.editCalls).toEqual([]);
+    } finally {
+      adapter.stop();
+    }
+  });
+
+  test("a supersede tombstone deletes the already-sent Telegram message", async () => {
+    const USER = freshUser();
+    const { fake, adapter } = startAdapter({ userId: USER });
+    const chatId = freshChat();
+    try {
+      await mapChat(fake, chatId, room("supersede-delete-room"));
+      const topic = getTopicByNameForUser(room("supersede-delete-room"), USER)!;
+      const message = aiMessage(topic.id, "obsolete status", {
+        queryId: "superseded-query",
+      });
+      runtimeBus().broadcastMessage(topic.id, message);
+      await waitFor(() => fake.callsFor(chatId).some((call) => call.text === message.text));
+
+      runtimeBus().broadcastMessageUpdated(topic.id, message.id, {
+        deleted: true,
+        text: "",
+      });
+
+      await waitFor(() => fake.deletedMessageCalls.length === 1);
+      expect(fake.deletedMessageCalls[0]).toEqual({
+        chatId,
+        messageId: expect.any(Number),
+      });
     } finally {
       adapter.stop();
     }

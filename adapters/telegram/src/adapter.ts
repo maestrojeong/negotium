@@ -158,6 +158,30 @@ interface ChatMapping {
 interface OutboundPayload {
   text: string;
   files: string[];
+  runtimeMessageId?: string;
+}
+
+interface DeliveredMessageRef {
+  chatId: number;
+  threadId?: number;
+  messageId: number;
+  kind: "text" | "media";
+  text?: string;
+  html?: boolean;
+  footer?: string;
+}
+
+interface DeliveredTextRef {
+  messageId: number;
+  kind: "text";
+  text: string;
+  html: boolean;
+  footer?: string;
+}
+
+interface DeliveredMediaRef {
+  messageId: number;
+  kind: "media";
 }
 
 /** Telegram caps forum topic names at 128 characters. */
@@ -301,6 +325,11 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   const byTopic = new Map<string, Set<ChatMapping>>();
   const targetByQueryId = new Map<string, ChatMapping>();
   const typingHeartbeatByQueryId = new Map<string, ReturnType<typeof setInterval>>();
+  const runtimeMessages = new Map<string, MessageDto>();
+  const deliveredByRuntimeMessageId = new Map<string, DeliveredMessageRef[]>();
+  const deletedRuntimeMessageIds = new Set<string>();
+  const activeRuntimeDeliveries = new Map<string, number>();
+  const completedRuntimeMessageCleanup = new Set<string>();
   const ownerDmChatIds = new Set<number>(
     [...allowed]
       .map((value) => Number.parseInt(value, 10))
@@ -309,6 +338,23 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   let stopped = false;
   let botIdentity: Awaited<ReturnType<NonNullable<TelegramClientLike["getMe"]>>> | undefined;
   let botIdentityPromise: Promise<typeof botIdentity> | undefined;
+
+  function beginRuntimeDelivery(messageId: string | undefined): void {
+    if (!messageId) return;
+    activeRuntimeDeliveries.set(messageId, (activeRuntimeDeliveries.get(messageId) ?? 0) + 1);
+  }
+
+  function endRuntimeDelivery(messageId: string | undefined): void {
+    if (!messageId) return;
+    const remaining = (activeRuntimeDeliveries.get(messageId) ?? 1) - 1;
+    if (remaining > 0) activeRuntimeDeliveries.set(messageId, remaining);
+    else {
+      activeRuntimeDeliveries.delete(messageId);
+      if (completedRuntimeMessageCleanup.delete(messageId)) {
+        deletedRuntimeMessageIds.delete(messageId);
+      }
+    }
+  }
 
   function typingTargets(topicId: string, queryId?: string): ChatMapping[] {
     const target = queryId ? targetByQueryId.get(queryId) : undefined;
@@ -532,6 +578,8 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     html: string,
     plain: string,
     info: TelegramErrorInfo,
+    runtimeMessageId?: string,
+    footer?: string,
   ): void {
     if (stopped) return;
     // A 429's retry_after is server truth — schedule the first retry there.
@@ -542,6 +590,8 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     store.outboxEnqueue({
       chatId,
       threadId,
+      runtimeMessageId,
+      footer,
       html,
       plain,
       nextTryAt: Date.now() + initialDelay,
@@ -557,13 +607,30 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   async function flushOutbox(): Promise<void> {
     if (stopped || outboxFlushing) return;
     outboxFlushing = true;
+    let entries: ReturnType<typeof store.outboxDue> = [];
+    const releasedEntryIds = new Set<number>();
+    const releaseEntry = (entry: (typeof entries)[number]): void => {
+      if (releasedEntryIds.has(entry.id)) return;
+      releasedEntryIds.add(entry.id);
+      endRuntimeDelivery(entry.runtimeMessageId);
+    };
     try {
-      for (const entry of store.outboxDue(Date.now())) {
+      entries = store.outboxDue(Date.now());
+      for (const entry of entries) beginRuntimeDelivery(entry.runtimeMessageId);
+      for (const entry of entries) {
         if (stopped) return;
+        if (entry.runtimeMessageId && deletedRuntimeMessageIds.has(entry.runtimeMessageId)) {
+          store.outboxDelete(entry.id);
+          releaseEntry(entry);
+          continue;
+        }
         let sendErr: unknown;
         let sent = false;
+        let sentValue: unknown;
+        let sentText = entry.html;
+        let sentAsHtml = true;
         try {
-          await client.sendMessage(entry.chatId, entry.html, {
+          sentValue = await client.sendMessage(entry.chatId, entry.html, {
             ...threadOpts(entry.threadId),
             parse_mode: "HTML",
           });
@@ -572,16 +639,43 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
           sendErr = err;
           if (isHtmlParseError(telegramErrorInfo(err))) {
             try {
-              await client.sendMessage(entry.chatId, entry.plain, threadOpts(entry.threadId));
+              sentValue = await client.sendMessage(
+                entry.chatId,
+                entry.plain,
+                threadOpts(entry.threadId),
+              );
+              sentText = entry.plain;
+              sentAsHtml = false;
               sent = true;
             } catch (plainErr) {
               sendErr = plainErr;
             }
           }
         }
-        if (stopped) return; // store is (about to be) closed — leave the row for restart
+        if (stopped) {
+          releaseEntry(entry);
+          return; // store is (about to be) closed — leave the row for restart
+        }
         if (sent) {
           store.outboxDelete(entry.id);
+          const telegramMessageId = sentMessageId(sentValue);
+          if (entry.runtimeMessageId && telegramMessageId !== null) {
+            const ref: DeliveredMessageRef = {
+              chatId: entry.chatId,
+              threadId: entry.threadId,
+              messageId: telegramMessageId,
+              kind: "text",
+              text: sentText,
+              html: sentAsHtml,
+              ...(entry.footer ? { footer: entry.footer } : {}),
+            };
+            if (deletedRuntimeMessageIds.has(entry.runtimeMessageId)) {
+              await deleteDeliveredRefs(entry.runtimeMessageId, [ref]);
+            } else {
+              rememberDeliveredRefs(entry.runtimeMessageId, [ref]);
+            }
+          }
+          releaseEntry(entry);
           continue;
         }
         const info = telegramErrorInfo(sendErr);
@@ -601,11 +695,13 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
             error,
           );
         }
+        releaseEntry(entry);
       }
     } catch (err) {
       // Post-stop db access or unexpected store failure must not crash the host.
       if (!stopped) logger.warn({ err }, "telegram adapter: outbox flush failed");
     } finally {
+      for (const entry of entries) releaseEntry(entry);
       outboxFlushing = false;
       if (!stopped && store.outboxAll().some((e) => !e.dead)) scheduleOutboxFlush();
     }
@@ -624,27 +720,97 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
    *    - anything else → log and drop the chunk (don't misclassify e.g. a
    *      403 "bot was blocked" as a formatting problem).
    */
+  function sentMessageId(value: unknown): number | null {
+    if (!value || typeof value !== "object" || !("message_id" in value)) return null;
+    const id = (value as { message_id?: unknown }).message_id;
+    return typeof id === "number" && Number.isSafeInteger(id) ? id : null;
+  }
+
+  function rememberDeliveredRefs(messageId: string, refs: DeliveredMessageRef[]): void {
+    if (refs.length === 0) return;
+    const current = deliveredByRuntimeMessageId.get(messageId) ?? [];
+    current.push(...refs);
+    deliveredByRuntimeMessageId.set(messageId, current);
+  }
+
+  async function deleteDeliveredRefs(
+    runtimeMessageId: string,
+    refs: DeliveredMessageRef[],
+    topicId?: string,
+  ): Promise<void> {
+    if (typeof client.deleteMessage !== "function") return;
+    for (const ref of refs) {
+      await client
+        .deleteMessage(ref.chatId, ref.messageId)
+        .catch((err) =>
+          logger.warn(
+            { err, topicId, messageId: runtimeMessageId, telegramMessageId: ref.messageId },
+            "telegram adapter: superseded message cleanup failed",
+          ),
+        );
+    }
+  }
+
+  function isDeliveredTextRef(
+    ref: DeliveredMessageRef,
+  ): ref is DeliveredMessageRef & { kind: "text"; text: string; html: boolean } {
+    return ref.kind === "text" && typeof ref.text === "string" && typeof ref.html === "boolean";
+  }
+
   async function deliver(
     chatId: number,
     threadId: number | undefined,
     text: string,
-  ): Promise<void> {
+    runtimeMessageId?: string,
+    footer?: string,
+  ): Promise<DeliveredTextRef[]> {
     const base = threadOpts(threadId);
     const htmlOpts = { ...base, parse_mode: "HTML" };
-    for (const chunk of renderOutbound(text)) {
+    const delivered: DeliveredTextRef[] = [];
+    const chunks = renderOutbound(text);
+    for (const [index, chunk] of chunks.entries()) {
+      const chunkFooter = footer && index === chunks.length - 1 ? footer : undefined;
       try {
-        await client.sendMessage(chatId, chunk.html, htmlOpts);
+        const sent = await client.sendMessage(chatId, chunk.html, htmlOpts);
+        const messageId = sentMessageId(sent);
+        if (messageId !== null) {
+          delivered.push({
+            messageId,
+            kind: "text",
+            text: chunk.html,
+            html: true,
+            ...(chunkFooter ? { footer: chunkFooter } : {}),
+          });
+        }
       } catch (err) {
         const info = telegramErrorInfo(err);
         if (isHtmlParseError(info)) {
           // Telegram rejected the HTML (e.g. markdown cut mid-chunk produced
           // invalid tags) — clawgram's fallback: resend the chunk as plain text.
           try {
-            await client.sendMessage(chatId, chunk.plain, base);
+            const sent = await client.sendMessage(chatId, chunk.plain, base);
+            const messageId = sentMessageId(sent);
+            if (messageId !== null) {
+              delivered.push({
+                messageId,
+                kind: "text",
+                text: chunk.plain,
+                html: false,
+                ...(chunkFooter ? { footer: chunkFooter } : {}),
+              });
+            }
           } catch (fallbackErr) {
             const fallbackInfo = telegramErrorInfo(fallbackErr);
             if (isRetryableSendError(fallbackInfo)) {
-              enqueueOutbox(chatId, threadId, chunk.plain, chunk.plain, fallbackInfo);
+              enqueueOutbox(
+                chatId,
+                threadId,
+                chunk.plain,
+                chunk.plain,
+                fallbackInfo,
+                runtimeMessageId,
+                chunkFooter,
+              );
             } else {
               logger.warn({ err: fallbackErr, chatId }, "telegram adapter: plain fallback failed");
             }
@@ -652,12 +818,21 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
           continue;
         }
         if (isRetryableSendError(info)) {
-          enqueueOutbox(chatId, threadId, chunk.html, chunk.plain, info);
+          enqueueOutbox(
+            chatId,
+            threadId,
+            chunk.html,
+            chunk.plain,
+            info,
+            runtimeMessageId,
+            chunkFooter,
+          );
           continue;
         }
         logger.warn({ err, chatId }, "telegram adapter: send failed — dropping chunk");
       }
     }
+    return delivered;
   }
 
   /** Send one produced file (from a [FILE:] tag): photos by extension via
@@ -667,28 +842,33 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     chatId: number,
     threadId: number | undefined,
     path: string,
-  ): Promise<void> {
+  ): Promise<DeliveredMediaRef | null> {
     const base = threadOpts(threadId);
     if (isSensitivePath(path)) {
       logger.warn({ path, chatId }, "telegram adapter: blocked sensitive file path");
-      return;
+      return null;
     }
     if (!existsSync(path)) {
-      await client.sendMessage(chatId, `File: ${path}`, base).catch(() => {});
-      return;
+      const sent = await client.sendMessage(chatId, `File: ${path}`, base).catch(() => null);
+      const messageId = sentMessageId(sent);
+      return messageId === null ? null : { messageId, kind: "media" };
     }
     const ext = path.split(".").pop()?.toLowerCase() ?? "";
     try {
+      let sent: unknown;
       if (PHOTO_EXTS.has(ext) && typeof client.sendPhoto === "function") {
-        await client.sendPhoto(chatId, path, base);
+        sent = await client.sendPhoto(chatId, path, base);
       } else if (typeof client.sendDocument === "function") {
-        await client.sendDocument(chatId, path, base);
+        sent = await client.sendDocument(chatId, path, base);
       } else {
         // Client has no file surface — at least point the user at the path.
-        await client.sendMessage(chatId, `File: ${path}`, base);
+        sent = await client.sendMessage(chatId, `File: ${path}`, base);
       }
+      const messageId = sentMessageId(sent);
+      return messageId === null ? null : { messageId, kind: "media" };
     } catch (err) {
       logger.warn({ err, path, chatId }, "telegram adapter: file send failed");
+      return null;
     }
   }
 
@@ -697,8 +877,56 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     threadId: number | undefined,
     payload: OutboundPayload,
   ): Promise<void> {
-    if (payload.text) await deliver(chatId, threadId, payload.text);
-    for (const path of payload.files) await sendFile(chatId, threadId, path);
+    if (payload.runtimeMessageId && deletedRuntimeMessageIds.has(payload.runtimeMessageId)) return;
+    beginRuntimeDelivery(payload.runtimeMessageId);
+    const deliveredRefs: DeliveredMessageRef[] = [];
+    try {
+      let text = payload.text;
+      let footer: string | null = null;
+      if (payload.runtimeMessageId && footerEnabled) {
+        const message = runtimeMessages.get(payload.runtimeMessageId);
+        // Query-scoped segments before tools are not final replies. Their usage
+        // patch (or the final text segment's usage) identifies the one message
+        // that should carry the turn footer.
+        const shouldRenderFooter = message && (!message.queryId || message.usage);
+        footer = shouldRenderFooter ? renderTurnFooter(message) : null;
+        if (footer) {
+          text = text ? `${text}\n\n*${footer}*` : `*${footer}*`;
+        }
+      }
+      if (text) {
+        const delivered = await deliver(
+          chatId,
+          threadId,
+          text,
+          payload.runtimeMessageId,
+          footer ?? undefined,
+        );
+        deliveredRefs.push(
+          ...delivered.map((item) => ({
+            ...item,
+            chatId,
+            threadId,
+          })),
+        );
+      }
+      for (const path of payload.files) {
+        if (payload.runtimeMessageId && deletedRuntimeMessageIds.has(payload.runtimeMessageId)) {
+          break;
+        }
+        const delivered = await sendFile(chatId, threadId, path);
+        if (delivered) deliveredRefs.push({ ...delivered, chatId, threadId });
+      }
+      if (payload.runtimeMessageId && deliveredRefs.length > 0) {
+        if (deletedRuntimeMessageIds.has(payload.runtimeMessageId)) {
+          await deleteDeliveredRefs(payload.runtimeMessageId, deliveredRefs);
+        } else {
+          rememberDeliveredRefs(payload.runtimeMessageId, deliveredRefs);
+        }
+      }
+    } finally {
+      endRuntimeDelivery(payload.runtimeMessageId);
+    }
   }
 
   // Per-topic send chains keep messages ordered even when materialization
@@ -777,6 +1005,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     return deliverPayload(forumChat, undefined, {
       text: payload.text ? `[${title}] ${payload.text}` : "",
       files: payload.files,
+      runtimeMessageId: payload.runtimeMessageId,
     });
   }
 
@@ -877,6 +1106,9 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     if (materializeTombstones.delete(topicId)) store.deleteTombstone(topicId);
     const pending = pendingByTopic.get(topicId);
     if (pending) pending.cancelled = true; // in-flight creation — its continuation cleans up
+    for (const [messageId, message] of runtimeMessages) {
+      if (message.topicId === topicId) deleteDeliveredRuntimeMessage(topicId, messageId);
+    }
     const set = byTopic.get(topicId);
     if (!set) return;
     const mappings = [...set];
@@ -964,8 +1196,145 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       enqueueFanout(topicId, ancestorMappings, {
         text: payload.text ? `[${topic.title}] ${payload.text}` : "",
         files: payload.files,
+        runtimeMessageId: payload.runtimeMessageId,
       });
     }
+  }
+
+  function deleteDeliveredRuntimeMessage(topicId: string, messageId: string): void {
+    deletedRuntimeMessageIds.add(messageId);
+    completedRuntimeMessageCleanup.delete(messageId);
+    runtimeMessages.delete(messageId);
+    const pending = pendingByTopic.get(topicId);
+    if (pending) {
+      pending.buffer = pending.buffer.filter((payload) => payload.runtimeMessageId !== messageId);
+    }
+    store.outboxDeleteByRuntimeMessageId(messageId);
+    enqueueSend(topicId, async () => {
+      const refs = deliveredByRuntimeMessageId.get(messageId) ?? [];
+      deliveredByRuntimeMessageId.delete(messageId);
+      await deleteDeliveredRefs(messageId, refs, topicId);
+      if ((activeRuntimeDeliveries.get(messageId) ?? 0) > 0) {
+        completedRuntimeMessageCleanup.add(messageId);
+      } else {
+        completedRuntimeMessageCleanup.delete(messageId);
+        deletedRuntimeMessageIds.delete(messageId);
+      }
+    });
+  }
+
+  function attachUpdatedFooter(topicId: string, messageId: string, footer: string): void {
+    enqueueSend(topicId, async () => {
+      if (deletedRuntimeMessageIds.has(messageId)) return;
+      const refs = deliveredByRuntimeMessageId.get(messageId) ?? [];
+      type StoredTextRef = DeliveredMessageRef & {
+        kind: "text";
+        text: string;
+        html: boolean;
+      };
+      const refsByTarget = new Map<string, StoredTextRef[]>();
+      for (const ref of refs) {
+        if (!isDeliveredTextRef(ref)) continue;
+        const key = `${ref.chatId}:${ref.threadId ?? "root"}`;
+        const targetRefs = refsByTarget.get(key) ?? [];
+        targetRefs.push(ref);
+        refsByTarget.set(key, targetRefs);
+      }
+      const footerChunk = renderOutbound(`*${footer}*`)[0];
+      if (!footerChunk) return;
+      for (const targetRefs of refsByTarget.values()) {
+        const ref =
+          targetRefs.findLast((candidate) => candidate.footer !== undefined) ?? targetRefs.at(-1);
+        if (!ref) continue;
+        if (ref.footer === footer) continue;
+        if (typeof client.editMessageText === "function") {
+          const suffix = ref.html ? footerChunk.html : footerChunk.plain;
+          const previousFooterChunk = ref.footer ? renderOutbound(`*${ref.footer}*`)[0] : undefined;
+          const previousSuffix = previousFooterChunk
+            ? ref.html
+              ? previousFooterChunk.html
+              : previousFooterChunk.plain
+            : "";
+          const previousTrailer = previousSuffix ? `\n\n${previousSuffix}` : "";
+          const baseText =
+            previousTrailer && ref.text.endsWith(previousTrailer)
+              ? ref.text.slice(0, -previousTrailer.length)
+              : ref.text;
+          const text = `${baseText}\n\n${suffix}`;
+          const editOptions = {
+            chat_id: ref.chatId,
+            message_id: ref.messageId,
+            ...(ref.html ? { parse_mode: "HTML" } : {}),
+          };
+          try {
+            await client.editMessageText(text, editOptions);
+            ref.text = text;
+            ref.footer = footer;
+            continue;
+          } catch (err) {
+            let editError = err;
+            const info = telegramErrorInfo(err);
+            if (isRetryableSendError(info)) {
+              const retryDelayMs = Math.max(0, (info.retryAfterSec ?? 0) * 1000);
+              // Keep this topic's queue bounded. For a long rate limit, leave
+              // the existing message untouched rather than risk a duplicate
+              // footer from an ambiguous edit result.
+              if (retryDelayMs > 30_000) {
+                logger.warn(
+                  { err, topicId, messageId, retryDelayMs },
+                  "telegram adapter: footer edit rate-limited; leaving footer unchanged",
+                );
+                continue;
+              }
+              if (retryDelayMs > 0) {
+                await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs));
+              }
+              try {
+                await client.editMessageText(text, editOptions);
+                ref.text = text;
+                ref.footer = footer;
+                continue;
+              } catch (retryErr) {
+                if (isRetryableSendError(telegramErrorInfo(retryErr))) {
+                  logger.warn(
+                    { err: retryErr, topicId, messageId, telegramMessageId: ref.messageId },
+                    "telegram adapter: footer edit retry failed; leaving footer unchanged",
+                  );
+                  continue;
+                }
+                editError = retryErr;
+              }
+            }
+            logger.warn(
+              { err: editError, topicId, messageId, telegramMessageId: ref.messageId },
+              "telegram adapter: footer edit failed permanently; sending footer separately",
+            );
+          }
+        }
+        const delivered = await deliver(ref.chatId, ref.threadId, `*${footer}*`, messageId, footer);
+        refs.push(
+          ...delivered.map((item) => ({
+            ...item,
+            chatId: ref.chatId,
+            threadId: ref.threadId,
+            footer,
+          })),
+        );
+      }
+      deliveredByRuntimeMessageId.set(messageId, refs);
+    });
+  }
+
+  function clearQueryDeliveryState(queryId: string): void {
+    const timer = setTimeout(() => {
+      for (const [messageId, message] of runtimeMessages) {
+        if (message.queryId !== queryId) continue;
+        runtimeMessages.delete(messageId);
+        deliveredByRuntimeMessageId.delete(messageId);
+        deletedRuntimeMessageIds.delete(messageId);
+      }
+    }, 5 * 60_000);
+    timer.unref?.();
   }
 
   // ── inbound: Telegram → runtime ─────────────────────────────────────
@@ -1758,6 +2127,26 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       handleTopicDeleted(event.topicId);
       return;
     }
+    if (event.type === "message-updated") {
+      const payload = event.payload as {
+        messageId?: string;
+        patch?: Partial<MessageDto>;
+      };
+      if (!payload.messageId || !payload.patch) return;
+      if (payload.patch.deleted) {
+        deleteDeliveredRuntimeMessage(event.topicId, payload.messageId);
+        return;
+      }
+      const current = runtimeMessages.get(payload.messageId);
+      if (!current) return;
+      const updated = { ...current, ...payload.patch };
+      runtimeMessages.set(payload.messageId, updated);
+      if (footerEnabled && payload.patch.usage && updated.authorId === "ai") {
+        const footer = renderTurnFooter(updated);
+        if (footer) attachUpdatedFooter(event.topicId, payload.messageId, footer);
+      }
+      return;
+    }
     if (event.type === "ai-status") {
       // Telegram typing actions expire after a few seconds. Keep refreshing
       // while the turn is active so long tool/model waits still look alive.
@@ -1772,6 +2161,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       ) {
         stopTypingHeartbeat(status.queryId);
         targetByQueryId.delete(status.queryId);
+        clearQueryDeliveryState(status.queryId);
       }
       return;
     }
@@ -1780,16 +2170,22 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     if (msg.authorId === userId) return; // echo of the user's own inbound message
     if (msg.kind === "tool") return; // tool chatter stays off the chat
     if (!msg.text) return;
+    const runtimeMessageId = msg.authorId === "ai" ? msg.id : undefined;
+    if (runtimeMessageId) {
+      runtimeMessages.set(runtimeMessageId, msg);
+      if (!msg.queryId) {
+        const timer = setTimeout(() => {
+          runtimeMessages.delete(runtimeMessageId);
+          deliveredByRuntimeMessageId.delete(runtimeMessageId);
+        }, 5 * 60_000);
+        timer.unref?.();
+      }
+    }
     // Produced files ride as real attachments; the raw [FILE:] tags are noise.
     const files = extractFileTagPaths(msg.text);
-    let text = files.length > 0 ? stripFileTags(msg.text) : msg.text;
-    if (footerEnabled && msg.authorId === "ai") {
-      const footer = renderTurnFooter(msg);
-      // Single-asterisk markdown renders as <i> — Telegram's "dim" line.
-      if (footer) text = text ? `${text}\n\n*${footer}*` : `*${footer}*`;
-    }
+    const text = files.length > 0 ? stripFileTags(msg.text) : msg.text;
     if (!text && files.length === 0) return;
-    routeMessage(event.topicId, { text, files }, msg.queryId);
+    routeMessage(event.topicId, { text, files, runtimeMessageId }, msg.queryId);
   });
 
   return {

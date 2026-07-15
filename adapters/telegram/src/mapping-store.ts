@@ -41,6 +41,10 @@ export interface OutboxEntry {
   id: number;
   chatId: number;
   threadId?: number;
+  /** Runtime source message, used to cancel superseded retries. */
+  runtimeMessageId?: string;
+  /** Footer already embedded in this chunk, if any. */
+  footer?: string;
   html: string;
   plain: string;
   attempts: number;
@@ -70,6 +74,8 @@ export interface TelegramMappingStore {
   outboxEnqueue(entry: {
     chatId: number;
     threadId?: number;
+    runtimeMessageId?: string;
+    footer?: string;
     html: string;
     plain: string;
     nextTryAt: number;
@@ -82,6 +88,7 @@ export interface TelegramMappingStore {
   outboxMarkDead(id: number, attempts: number, lastError: string): void;
   outboxDelete(id: number): void;
   outboxDeleteByChat(chatId: number): void;
+  outboxDeleteByRuntimeMessageId(runtimeMessageId: string): void;
   /** All entries (tests/operator inspection). */
   outboxAll(): OutboxEntry[];
   close(): void;
@@ -107,6 +114,8 @@ interface OutboxRow {
   id: number;
   chat_id: number;
   thread_id: number;
+  runtime_message_id: string | null;
+  footer: string | null;
   html: string;
   plain: string;
   attempts: number;
@@ -120,6 +129,8 @@ function outboxRowToEntry(row: OutboxRow): OutboxEntry {
     id: row.id,
     chatId: row.chat_id,
     ...(row.thread_id !== NO_THREAD ? { threadId: row.thread_id } : {}),
+    ...(row.runtime_message_id !== null ? { runtimeMessageId: row.runtime_message_id } : {}),
+    ...(row.footer !== null ? { footer: row.footer } : {}),
     html: row.html,
     plain: row.plain,
     attempts: row.attempts,
@@ -167,6 +178,8 @@ function createTables(db: Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       chat_id INTEGER NOT NULL,
       thread_id INTEGER NOT NULL DEFAULT ${NO_THREAD},
+      runtime_message_id TEXT,
+      footer TEXT,
       html TEXT NOT NULL,
       plain TEXT NOT NULL,
       attempts INTEGER NOT NULL DEFAULT 0,
@@ -183,6 +196,22 @@ function createTables(db: Database): void {
   );
 }
 
+function migrateOutboxSchema(db: Database): void {
+  try {
+    db.run("ALTER TABLE outbox ADD COLUMN runtime_message_id TEXT");
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.run("ALTER TABLE outbox ADD COLUMN footer TEXT");
+  } catch {
+    // Column already exists.
+  }
+  db.run(
+    "CREATE INDEX IF NOT EXISTS idx_telegram_outbox_runtime_message ON outbox(runtime_message_id)",
+  );
+}
+
 /** Open (creating if needed) the mapping database. `path` is injectable for
  *  tests; production uses the node's data dir. */
 export function openMappingStore(path?: string): TelegramMappingStore {
@@ -191,6 +220,7 @@ export function openMappingStore(path?: string): TelegramMappingStore {
   const db = new Database(dbPath);
   migrateLegacySchema(db);
   createTables(db);
+  migrateOutboxSchema(db);
   return {
     load(): PersistedMapping[] {
       const rows = db
@@ -252,11 +282,14 @@ export function openMappingStore(path?: string): TelegramMappingStore {
     },
     outboxEnqueue(entry): void {
       db.run(
-        `INSERT INTO outbox (chat_id, thread_id, html, plain, attempts, next_try_at, last_error)
-         VALUES (?, ?, ?, ?, 0, ?, ?)`,
+        `INSERT INTO outbox
+           (chat_id, thread_id, runtime_message_id, footer, html, plain, attempts, next_try_at, last_error)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
         [
           entry.chatId,
           entry.threadId ?? NO_THREAD,
+          entry.runtimeMessageId ?? null,
+          entry.footer ?? null,
           entry.html,
           entry.plain,
           entry.nextTryAt,
@@ -290,6 +323,9 @@ export function openMappingStore(path?: string): TelegramMappingStore {
     },
     outboxDeleteByChat(chatId: number): void {
       db.run("DELETE FROM outbox WHERE chat_id = ?", [chatId]);
+    },
+    outboxDeleteByRuntimeMessageId(runtimeMessageId: string): void {
+      db.run("DELETE FROM outbox WHERE runtime_message_id = ?", [runtimeMessageId]);
     },
     outboxAll(): OutboxEntry[] {
       const rows = db.query("SELECT * FROM outbox ORDER BY id ASC").all() as OutboxRow[];

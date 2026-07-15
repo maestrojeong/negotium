@@ -11,6 +11,14 @@
 export interface TelegramClientLike {
   /** Send a text message. `opts` carries `parse_mode`, `message_thread_id`, … */
   sendMessage(chatId: number, text: string, opts?: Record<string, unknown>): Promise<unknown>;
+  /** Edit an already-sent text message. Used to attach terminal turn usage. */
+  editMessageText?(text: string, opts: Record<string, unknown>): Promise<unknown>;
+  /** Delete a previously-sent message when its runtime source is superseded. */
+  deleteMessage?(
+    chatId: number,
+    messageId: number,
+    opts?: Record<string, unknown>,
+  ): Promise<unknown>;
   /** Subscribe to incoming messages (long polling or webhook — adapter doesn't care). */
   on(event: "message", handler: (msg: TelegramIncomingMessage) => void): void;
   /** Bot membership changes, used to auto-connect when it is promoted in a forum group. */
