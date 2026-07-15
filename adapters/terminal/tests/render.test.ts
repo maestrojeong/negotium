@@ -139,32 +139,72 @@ describe("terminal renderer", () => {
     expect(output).toContain("Terminal  ·  codex  ·  gpt");
   });
 
-  test("shows model-only choices in the model picker", () => {
+  test("separates General from other rooms in the topic picker", () => {
+    const general = { ...topic(), id: "general", title: "General", kind: "manager" as const };
+    const work = { ...topic(), id: "work", title: "Work" };
+    const state = {
+      ...setTopics(createInitialState("local"), [work, general]),
+      overlay: "topics" as const,
+    };
+
+    const output = stripAnsi(renderApp(state, 120, 30));
+    expect(output).toContain("  General");
+    expect(output).toContain("  Other topics");
+    expect(output.indexOf("○ General")).toBeLessThan(output.indexOf("Other topics"));
+    expect(output.indexOf("Other topics")).toBeLessThan(output.indexOf("○ Work"));
+  });
+
+  test("keeps the selected topic visible in a short grouped picker", () => {
+    const topics = [
+      { ...topic(), id: "general", title: "General", kind: "manager" as const },
+      ...Array.from({ length: 9 }, (_, index) => ({
+        ...topic(),
+        id: `topic-${index}`,
+        title: `Topic ${index}`,
+      })),
+    ];
+    const state = {
+      ...setTopics(createInitialState("local"), topics),
+      overlay: "topics" as const,
+      topicPickerIndex: 9,
+    };
+
+    const output = stripAnsi(renderApp(state, 80, 14));
+    expect(output).toContain("› ○ Topic 8");
+  });
+
+  test("shows descriptions alongside model-only choices in the model picker", () => {
     const state = {
       ...setTopics(createInitialState("local"), [
         { ...topic(), defaultModel: "gpt-5.6-luna", effectiveModel: "gpt-5.6-luna" },
       ]),
       overlay: "models" as const,
-      modelPickerIndex: 4,
+      modelPickerIndex: 0,
     };
 
     const output = stripAnsi(renderApp(state, 120, 30));
     expect(output).toContain("Models");
-    expect(output).toContain("gpt-5.6-luna  ·  current");
+    expect(output).toContain("gpt-5.6-luna (current)");
     const selected = output.split("\n").find((line) => line.includes("gpt-5.6-sol"));
     expect(selected).toContain("› gpt-5.6-sol");
+    expect(selected).toContain("Latest frontier agentic coding model.");
     expect(selected).not.toContain("codex");
+    expect(output).toContain(
+      "Sonnet 5 · Efficient for routine tasks · $2/$10 per Mtok · promo through Aug 31",
+    );
+    const flash = output.split("\n").find((line) => line.includes("deepseek-flash"));
+    expect(flash).toContain("DeepSeek V4 Flash · Fast and low-cost for lightweight everyday tasks");
   });
 
   test("keeps the selected model visible in a short terminal", () => {
     const state = {
       ...setTopics(createInitialState("local"), [topic()]),
       overlay: "models" as const,
-      modelPickerIndex: 7,
+      modelPickerIndex: 8,
     };
 
     const output = stripAnsi(renderApp(state, 80, 14));
-    expect(output).toContain("› fable");
+    expect(output).toContain("› deepseek-flash");
   });
 
   test("indents subagent topics with a child arrow in the topic picker", () => {

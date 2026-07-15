@@ -112,8 +112,9 @@ Inside terminal chat:
 /quit                 close the terminal host
 ```
 
-Use `Ctrl-O` to choose topics. Press `N`, enter a topic name, and press `Enter` to create and open
-it. Deleting a topic returns to the topic picker.
+Terminal opens on the topic picker, with personal `General` separated from other topics. Press `N`,
+enter a topic name, and press `Enter` to create and open it. Use `Ctrl-O` to return to the picker;
+deleting a topic returns there automatically.
 
 ### Run the node and Terminal clients
 
@@ -254,7 +255,7 @@ The core invariants are intentionally small:
 4. Hosts own channel identity and rendering; core owns execution and local state.
 5. Optional features enter through explicit node modules, not product-specific branches.
 
-For the detailed design, read [Architecture (한국어)](./docs/ARCHITECTURE.ko.md).
+For the detailed design, read [Architecture](./docs/ARCHITECTURE.md).
 
 ## Embed the runtime
 
@@ -392,14 +393,17 @@ New app and adapter packages use package-local `@/` source aliases. The build re
 aliases into portable JavaScript and declaration paths; cross-package code goes through each
 package's public export.
 
-## Design documents
+## Documentation
 
-- [Architecture and invariants (한국어)](./docs/ARCHITECTURE.ko.md)
-- [npm release guide (한국어)](./docs/RELEASING.ko.md)
-- [Adapter packaging, composition, and topic loading (한국어)](./docs/ADAPTERS.ko.md)
-- [Clawgram · Negotium · Otium product boundaries (한국어)](./docs/PRODUCT-TOPOLOGY.ko.md)
-- [Otium worker-node coupling contract](./docs/OTIUM-COUPLING.md)
-- [Feature-by-feature review guide (한국어)](./docs/NEGOTIUM-FEATURE-REVIEW.ko.md)
+Start with the [documentation index](./docs/README.md). Each document owns one concern so runtime
+architecture, adapter behavior, Otium protocol details, review criteria, and release steps are not
+maintained in several places.
+
+- [Architecture and invariants](./docs/ARCHITECTURE.md)
+- [Adapter lifecycle and projection](./docs/ADAPTERS.md)
+- [Otium worker coupling contract](./docs/OTIUM-COUPLING.md)
+- [Feature review guide](./docs/FEATURE-REVIEW.md)
+- [npm release guide](./docs/RELEASING.md)
 
 ## Contributing
 

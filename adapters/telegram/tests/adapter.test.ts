@@ -275,7 +275,7 @@ describe("outbound", () => {
       startTurn: () => null,
     });
     await waitFor(() => fake.callsFor(chat(7)).length > before);
-    expect(fake.callsFor(chat(7)).at(-1)?.text).toBe("written from terminal");
+    expect(fake.callsFor(chat(7)).at(-1)?.text).toBe("[From: User] written from terminal");
   });
 
   test("falls back to plain text when Telegram rejects the HTML", async () => {

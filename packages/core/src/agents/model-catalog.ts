@@ -24,6 +24,7 @@ export const MODEL_OWNER: Record<string, AgentKind> = {
   "gpt-5.6-luna": "codex",
   "gpt-5.6-terra": "codex",
   "gpt-5.6-sol": "codex",
+  "gpt-5.5": "codex",
   deepseek: "maestro",
   "deepseek-pro": "maestro",
   "deepseek-flash": "maestro",
@@ -34,6 +35,8 @@ export interface SelectableModel {
   model: string;
   /** Runtime owner kept internal so channel UIs only need to show `model`. */
   agent: AgentKind;
+  /** Short comparison copy shown alongside the model in picker UIs. */
+  description: string;
 }
 
 /**
@@ -42,14 +45,52 @@ export interface SelectableModel {
  * user-facing completion should only promise models we intentionally support.
  */
 export const SELECTABLE_MODELS: readonly SelectableModel[] = [
-  { model: "deepseek-pro", agent: "maestro" },
-  { model: "deepseek-flash", agent: "maestro" },
-  { model: "gpt-5.6-luna", agent: "codex" },
-  { model: "gpt-5.6-terra", agent: "codex" },
-  { model: "gpt-5.6-sol", agent: "codex" },
-  { model: "sonnet", agent: "claude" },
-  { model: "opus", agent: "claude" },
-  { model: "fable", agent: "claude" },
+  {
+    model: "gpt-5.6-sol",
+    agent: "codex",
+    description: "Latest frontier agentic coding model.",
+  },
+  {
+    model: "gpt-5.6-terra",
+    agent: "codex",
+    description: "Balanced agentic coding model for everyday work.",
+  },
+  {
+    model: "gpt-5.6-luna",
+    agent: "codex",
+    description: "Fast and affordable agentic coding model.",
+  },
+  {
+    model: "gpt-5.5",
+    agent: "codex",
+    description: "Frontier model for complex coding, research, and real-world work.",
+  },
+  {
+    model: "fable",
+    agent: "claude",
+    description:
+      "Fable 5 · Most capable for your hardest and longest-running tasks · $10/$50 per Mtok",
+  },
+  {
+    model: "opus",
+    agent: "claude",
+    description: "Opus 4.8 with 1M context · Best for everyday, complex tasks · $5/$25 per Mtok",
+  },
+  {
+    model: "sonnet",
+    agent: "claude",
+    description: "Sonnet 5 · Efficient for routine tasks · $2/$10 per Mtok · promo through Aug 31",
+  },
+  {
+    model: "deepseek-pro",
+    agent: "maestro",
+    description: "Sonnet-level performance at lower cost · Best for everyday tasks over coding",
+  },
+  {
+    model: "deepseek-flash",
+    agent: "maestro",
+    description: "DeepSeek V4 Flash · Fast and low-cost for lightweight everyday tasks",
+  },
 ];
 
 export function selectableModel(value: string): SelectableModel | undefined {

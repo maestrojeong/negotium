@@ -517,29 +517,78 @@ export function plainTranscript(state: AppState): string {
   return rows.join("\n");
 }
 
-function topicOverlayLines(state: AppState, animationFrame = 0): UiLine[] {
+type TopicOverlayEntry =
+  | { kind: "heading"; label: string }
+  | { kind: "topic"; topic: TopicDto; topicIndex: number };
+
+function topicOverlayLines(state: AppState, height: number, animationFrame = 0): UiLine[] {
+  const indexedTopics = state.topics.map((topic, topicIndex) => ({ topic, topicIndex }));
+  const general = indexedTopics.filter(({ topic }) => topic.title.toLowerCase() === "general");
+  const otherTopics = indexedTopics.filter(({ topic }) => topic.title.toLowerCase() !== "general");
+  const entries: TopicOverlayEntry[] = [];
+  if (general.length > 0) {
+    entries.push(
+      { kind: "heading", label: "General" },
+      ...general.map(({ topic, topicIndex }) => ({ kind: "topic" as const, topic, topicIndex })),
+    );
+  }
+  if (otherTopics.length > 0) {
+    entries.push(
+      { kind: "heading", label: general.length > 0 ? "Other topics" : "Topics" },
+      ...otherTopics.map(({ topic, topicIndex }) => ({
+        kind: "topic" as const,
+        topic,
+        topicIndex,
+      })),
+    );
+  }
+  const visibleCount = Math.max(1, height - 3);
+  const selectedEntryIndex = entries.findIndex(
+    (entry) => entry.kind === "topic" && entry.topicIndex === state.topicPickerIndex,
+  );
+  let start = Math.min(
+    Math.max(0, entries.length - visibleCount),
+    Math.max(0, selectedEntryIndex - visibleCount + 1),
+  );
+  if (
+    start > 0 &&
+    entries[start - 1]?.kind === "heading" &&
+    selectedEntryIndex - (start - 1) < visibleCount
+  ) {
+    start -= 1;
+  }
+
   return [
     line("  Topics", { fg: theme.accent, bold: true }),
     line("  ↑↓ select · Enter open · N new · D/Del delete · Esc close", { fg: theme.muted }),
     line(""),
-    ...state.topics.map((topic, index) => {
-      const selected = index === state.topicPickerIndex;
-      const running = state.activity[topic.id]?.running;
-      const childPrefix = topic.isSubagent ? "  ↳ " : "";
-      return line(
-        `  ${selected ? "›" : " "} ${childPrefix}${running ? workingFrame(animationFrame) : "○"} ${topic.title}  ·  ${topic.agent ?? "no agent"}  ·  ${effectiveTopicModel(topic)}`,
-        {
-          fg: selected ? theme.text : running ? theme.green : theme.muted,
-          bg: selected ? theme.selected : theme.canvas,
-          bold: selected,
-        },
-      );
-    }),
+    ...(entries.length === 0
+      ? [line("  No topics yet · Press N to create one", { fg: theme.muted })]
+      : entries.slice(start, start + visibleCount).map((entry) => {
+          if (entry.kind === "heading") {
+            return line(`  ${entry.label}`, { fg: theme.cyan, bold: true });
+          }
+          const { topic, topicIndex } = entry;
+          const selected = topicIndex === state.topicPickerIndex;
+          const running = state.activity[topic.id]?.running;
+          const childPrefix = topic.isSubagent ? "  ↳ " : "";
+          return line(
+            `  ${selected ? "›" : " "} ${childPrefix}${running ? workingFrame(animationFrame) : "○"} ${topic.title}  ·  ${topic.agent ?? "no agent"}  ·  ${effectiveTopicModel(topic)}`,
+            {
+              fg: selected ? theme.text : running ? theme.green : theme.muted,
+              bg: selected ? theme.selected : theme.canvas,
+              bold: selected,
+            },
+          );
+        })),
   ];
 }
 
 function modelOverlayLines(state: AppState, height: number): UiLine[] {
   const currentModel = effectiveTopicModel(activeTopic(state));
+  const modelColumnWidth = Math.max(
+    ...SELECTABLE_MODELS.map(({ model }) => `${model} (current)`.length),
+  );
   const visibleCount = Math.max(1, height - 3);
   const start = Math.min(
     Math.max(0, SELECTABLE_MODELS.length - visibleCount),
@@ -549,16 +598,19 @@ function modelOverlayLines(state: AppState, height: number): UiLine[] {
     line("  Models", { fg: theme.accent, bold: true }),
     line("  ↑↓ select · Enter apply · Esc close", { fg: theme.muted }),
     line(""),
-    ...SELECTABLE_MODELS.slice(start, start + visibleCount).map(({ model }, visibleIndex) => {
-      const index = start + visibleIndex;
-      const selected = index === state.modelPickerIndex;
-      const current = model === currentModel;
-      return line(`  ${selected ? "›" : " "} ${model}${current ? "  ·  current" : ""}`, {
-        fg: selected ? theme.text : current ? theme.green : theme.muted,
-        bg: selected ? theme.selected : theme.canvas,
-        bold: selected,
-      });
-    }),
+    ...SELECTABLE_MODELS.slice(start, start + visibleCount).map(
+      ({ model, description }, visibleIndex) => {
+        const index = start + visibleIndex;
+        const selected = index === state.modelPickerIndex;
+        const current = model === currentModel;
+        const label = `${model}${current ? " (current)" : ""}`.padEnd(modelColumnWidth);
+        return line(`  ${selected ? "›" : " "} ${label}  ${description}`, {
+          fg: selected ? theme.text : current ? theme.green : theme.muted,
+          bg: selected ? theme.selected : theme.canvas,
+          bold: selected,
+        });
+      },
+    ),
   ];
 }
 
@@ -594,7 +646,8 @@ function conversationLines(
 ): UiLine[] {
   if (state.overlay === "help") return helpLines().slice(0, height);
   if (state.overlay === "status") return statusLines(state).slice(0, height);
-  if (state.overlay === "topics") return topicOverlayLines(state, animationFrame).slice(0, height);
+  if (state.overlay === "topics")
+    return topicOverlayLines(state, height, animationFrame).slice(0, height);
   if (state.overlay === "models") return modelOverlayLines(state, height).slice(0, height);
   if (state.creatingTopic) {
     return [

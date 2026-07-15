@@ -40,18 +40,25 @@ afterEach(() => {
 });
 
 describe("topic model picker", () => {
-  test("publishes the same model-only choices as Otium", () => {
+  test("publishes the supported model choices and descriptions", () => {
     expect(SELECTABLE_MODELS.map(({ model }) => model)).toEqual([
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.5",
+      "fable",
+      "opus",
+      "sonnet",
       "deepseek-pro",
       "deepseek-flash",
-      "gpt-5.6-luna",
-      "gpt-5.6-terra",
-      "gpt-5.6-sol",
-      "sonnet",
-      "opus",
-      "fable",
     ]);
     expect(selectableModel("GPT-5.6-SOL")?.model).toBe("gpt-5.6-sol");
+    expect(selectableModel("gpt-5.5")?.description).toBe(
+      "Frontier model for complex coding, research, and real-world work.",
+    );
+    expect(selectableModel("deepseek-flash")?.description).toBe(
+      "DeepSeek V4 Flash · Fast and low-cost for lightweight everyday tasks",
+    );
   });
 
   test("persists and locks a selected model without exposing its agent", () => {

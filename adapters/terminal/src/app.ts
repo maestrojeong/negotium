@@ -158,6 +158,9 @@ export class TerminalApp {
         }
       }
       await this.#loadActiveMessages();
+      if (!this.#options.preferredTopic) {
+        this.#state = openTopicPicker(this.#state);
+      }
       this.#running = true;
 
       process.stdout.write(ENTER_ALT_SCREEN);

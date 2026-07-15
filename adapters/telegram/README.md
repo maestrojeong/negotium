@@ -1,7 +1,6 @@
 # @negotium/adapter-telegram
 
-Turn a [negotium](https://github.com/maestrojeong/negotium) node into a Telegram bot —
-the clawgram successor, as a library.
+Turn a [Negotium](https://github.com/maestrojeong/negotium) node into a Telegram bot.
 
 Single-operator by design: one human owner (one negotium `userId`), no multi-user scoping.
 
@@ -20,7 +19,7 @@ Single-operator by design: one human owner (one negotium `userId`), no multi-use
   combined turn; voice notes transcribe via core's local pipeline (or a custom `transcribe`
   hook); produced `[FILE:/abs/path]` outputs are sent back as photo/document (sensitive paths
   blocked)
-- Clawgram-ported delivery: markdown → Telegram HTML subset, 4096-char splitting, per-chunk
+- **Durable delivery**: markdown → Telegram HTML subset, 4096-char splitting, per-chunk
   plain-text fallback, typing indicator, durable SQLite retry outbox for 429/5xx/network failures,
   optional `footer: true` turn footer
 

@@ -2179,7 +2179,8 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     }
     // Produced files ride as real attachments; the raw [FILE:] tags are noise.
     const files = extractFileTagPaths(msg.text);
-    const text = files.length > 0 ? stripFileTags(msg.text) : msg.text;
+    const rawText = files.length > 0 ? stripFileTags(msg.text) : msg.text;
+    const text = msg.authorId === userId && rawText ? `[From: User] ${rawText}` : rawText;
     if (!text && files.length === 0) return;
     routeMessage(event.topicId, { text, files, runtimeMessageId }, msg.queryId);
   });
