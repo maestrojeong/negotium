@@ -17,7 +17,7 @@
     }
   },
   "bin": {
-    "negotium-otium": "./dist/cli.js"
+    "negotium-otium": "dist/cli.js"
   },
   "files": [
     "dist",

@@ -5,7 +5,7 @@
   "description": "negotium CLI \u2014 init a node, manage its MCPs, and chat with the multi-agent runtime from the terminal",
   "license": "Apache-2.0",
   "bin": {
-    "negotium": "./dist/main.js"
+    "negotium": "dist/main.js"
   },
   "files": [
     "dist",

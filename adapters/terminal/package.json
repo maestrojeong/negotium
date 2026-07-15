@@ -17,7 +17,7 @@
     }
   },
   "bin": {
-    "negotium-terminal": "./dist/cli.js"
+    "negotium-terminal": "dist/cli.js"
   },
   "files": [
     "dist",
