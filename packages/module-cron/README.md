@@ -4,6 +4,10 @@ Optional persistent scheduler for Negotium nodes. Jobs belong to topics, share t
 provider-neutral Cron context, wait behind active human turns, and survive process restarts in
 the shared SQLite state.
 
+```bash
+bun add @negotium/module-cron
+```
+
 ```ts
 import { createCronModule } from "@negotium/module-cron";
 

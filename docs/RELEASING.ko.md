@@ -74,20 +74,11 @@ bun run release:publish --confirm
 중간에 인증이나 registry 반영 문제로 멈춰도 같은 명령을 다시 실행하면 게시된 version은
 건너뛰고 나머지부터 계속한다. 필요한 경우 `--from=<package>`로 재개 지점을 지정한다.
 
-## GitHub trusted publishing
+## 배포 방식
 
-최초 게시 후 npmjs.com에서 각 패키지의 trusted publisher를 다음 값으로 설정한다.
-
-| 항목 | 값 |
-|---|---|
-| Provider | GitHub Actions |
-| Organization/User | `maestrojeong` |
-| Repository | `negotium` |
-| Workflow filename | `release.yml` |
-
-그다음 GitHub의 **Actions → Publish npm packages → Run workflow**를 실행한다. Workflow는
-장기 npm token을 사용하지 않는다. `id-token: write`로 OIDC 인증을 받고, Bun으로
-`workspace:*`가 실제 version으로 치환된 tarball을 만든 뒤 최신 npm CLI로 게시한다.
+현재 릴리스는 로컬에서만 실행한다. 저장소에는 npm publish용 GitHub Actions workflow나
+장기 npm token을 두지 않는다. 게시 전 `npm whoami`로 계정을 확인하고, 위 검증 명령을 모두
+통과한 깨끗한 worktree에서 `bun run release:publish --confirm`을 실행한다.
 
 새 version을 배포할 때는 12개 package manifest의 version을 함께 변경하고 lockfile을
-갱신한 뒤 check, test, dry-run, commit 순서로 진행한다.
+갱신한 뒤 check, test, dry-run, smoke, commit 순서로 진행한다.

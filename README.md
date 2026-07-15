@@ -19,9 +19,8 @@ Negotium is a host-agnostic runtime for long-lived AI agents. A node owns its to
 provider sessions, MCP tools, workspace, memory, queues, and encrypted secrets. A terminal,
 Telegram bot, or workspace app is only a thin host around that same runtime.
 
-The project is source-first and early-stage. Its CLI, node host, adapter SDK, and first-party
-adapters build as publishable npm packages, but no registry release has been made yet and public
-APIs may still change.
+The project is early-stage. Its CLI, node host, adapter SDK, and first-party adapters ship as 12
+lockstep-versioned npm packages. Public APIs may change while the project is in the `0.x` series.
 
 ## Why Negotium?
 
@@ -50,9 +49,7 @@ Requirements:
 - credentials for at least one supported agent
 
 ```bash
-git clone git@github.com:maestrojeong/negotium.git
-cd negotium
-bun install
+npm install --global negotium
 ```
 
 ### 2. Authenticate an agent
@@ -65,34 +62,22 @@ Choose at least one:
 | Codex | Run `codex login` |
 | Maestro | Set `DEEPSEEK_API_KEY`; `GEMINI_API_KEY` is optional for image QA |
 
-For environment-based credentials and node settings:
+For environment-based credentials and node settings, create a `.env` in the directory where you
+run Negotium or export the variables in your shell. Bun loads `.env` automatically.
 
 ```bash
-cp .env.example .env
+DEEPSEEK_API_KEY=your-key
+# FALLBACK_AGENT=maestro
 ```
-
-Bun loads the repository's `.env` automatically.
 
 ### 3. Start chatting
 
 ```bash
-bun run apps/cli/src/main.ts init
-bun run apps/cli/src/main.ts chat work --agent=codex
+negotium init
+negotium chat work --agent=codex
 ```
 
 Pick `claude`, `codex`, or `maestro` according to the auth check printed by `init`.
-
-Until the CLI is published, the rest of this document uses `negotium` as shorthand for:
-
-```bash
-bun run apps/cli/src/main.ts
-```
-
-After the first registry release, one global install provides the node and all three adapters:
-
-```bash
-npm install --global negotium
-```
 
 The canonical scoped package remains available as `@negotium/cli`; the unscoped package is a
 functional convenience entrypoint rather than a name-only placeholder.
@@ -231,6 +216,10 @@ agents a shared collaboration surface:
 User turns take priority: a new user message supersedes a running turn, while agent-to-agent
 injections wait in the target room's queue.
 
+Negotium does not preload a fixed skill catalog. Agents and users create or update reusable skills
+through `skill_save`, and the wiki archiver compounds them under the node's shared `wiki/skills/`
+directory over time.
+
 ## Architecture
 
 ```text
@@ -342,6 +331,7 @@ The default state root is `~/.negotium`; override it with `NEGOTIUM_STATE_DIR`.
 ├── workspace/  topic workspaces, shared wiki, skills, browser profiles, Cron scripts
 ├── logs/       rotating activity and token-usage JSONL
 ├── runtime-mcp-secret
+├── node-control-token
 └── vault-master-key
 ```
 
@@ -387,6 +377,10 @@ nodes.
 ## Development
 
 ```bash
+git clone git@github.com:maestrojeong/negotium.git
+cd negotium
+bun install
+
 bun test          # all core, MCP, host, adapter, and Cron tests
 bun run build     # build publishable packages and check every workspace
 bun run lint      # Biome formatter/linter checks
@@ -406,6 +400,14 @@ package's public export.
 - [Clawgram · Negotium · Otium product boundaries (한국어)](./docs/PRODUCT-TOPOLOGY.ko.md)
 - [Otium worker-node coupling contract](./docs/OTIUM-COUPLING.md)
 - [Feature-by-feature review guide (한국어)](./docs/NEGOTIUM-FEATURE-REVIEW.ko.md)
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the development workflow and pull-request checks.
+
+## Security
+
+Please report vulnerabilities privately as described in [SECURITY.md](./SECURITY.md).
 
 ## License
 

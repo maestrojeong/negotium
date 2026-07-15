@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-type ReleaseMode = "check" | "dry-run" | "smoke" | "publish" | "ci" | "status";
+type ReleaseMode = "check" | "dry-run" | "smoke" | "publish" | "status";
 
 type PackageManifest = {
   name?: string;
@@ -42,14 +42,7 @@ const releasePackages: ReleasePackage[] = [
 
 const mode = (process.argv[2] ?? "check") as ReleaseMode;
 const args = new Set(process.argv.slice(3));
-const supportedModes = new Set<ReleaseMode>([
-  "check",
-  "dry-run",
-  "smoke",
-  "publish",
-  "ci",
-  "status",
-]);
+const supportedModes = new Set<ReleaseMode>(["check", "dry-run", "smoke", "publish", "status"]);
 
 function fail(message: string): never {
   throw new Error(message);
@@ -255,7 +248,6 @@ for (const path of [
   runtimeConfig.PLAYWRIGHT_MCP_BIN,
   runtimeConfig.SESSION_COMM_SERVER,
   runtimeConfig.TASK_SERVER,
-  runtimeConfig.META_DIR,
 ]) {
   if (!existsSync(path)) throw new Error(\`packed core runtime resource is missing: \${path}\`);
 }
@@ -289,31 +281,6 @@ async function localPublish(packages: ReleasePackage[]): Promise<void> {
   }
 }
 
-async function ciPublish(packages: ReleasePackage[]): Promise<void> {
-  if (process.env.GITHUB_ACTIONS !== "true") {
-    fail("ci mode is reserved for the trusted-publishing GitHub Actions workflow");
-  }
-  await ensureCleanWorktree();
-
-  for (const pkg of packages) {
-    if (await isPublished(pkg)) {
-      console.log(`skip ${pkg.name}@${pkg.manifest?.version}: already published`);
-      continue;
-    }
-
-    const safeName = pkg.name.replaceAll(/[^a-zA-Z0-9.-]/g, "-");
-    const tarball = join(tmpdir(), `${safeName}-${pkg.manifest?.version}-${randomUUID()}.tgz`);
-    console.log(`\n==> trusted publish ${pkg.name}@${pkg.manifest?.version}`);
-    try {
-      await run("bun", ["pm", "pack", "--filename", tarball], resolve(root, pkg.directory));
-      await run("npm", ["publish", tarball, "--access", "public", "--provenance"]);
-      await waitUntilPublished(pkg);
-    } finally {
-      await rm(tarball, { force: true });
-    }
-  }
-}
-
 async function printStatus(packages: ReleasePackage[]): Promise<void> {
   for (const pkg of packages) {
     const published = await isPublished(pkg);
@@ -342,9 +309,6 @@ switch (mode) {
     break;
   case "publish":
     await localPublish(packages);
-    break;
-  case "ci":
-    await ciPublish(packages);
     break;
   case "status":
     await printStatus(packages);

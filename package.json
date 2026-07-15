@@ -21,7 +21,6 @@
     "release:dry-run": "bun scripts/release-packages.ts dry-run",
     "release:smoke": "bun scripts/release-packages.ts smoke",
     "release:publish": "bun scripts/release-packages.ts publish",
-    "release:ci": "bun scripts/release-packages.ts ci",
     "experiment:otium:setup": "bun scripts/otium-experiment/hub-setup.ts",
     "experiment:otium:e2e": "bun scripts/otium-experiment/run-e2e.ts"
   },

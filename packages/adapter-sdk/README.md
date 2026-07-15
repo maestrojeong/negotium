@@ -4,6 +4,10 @@ Versioned lifecycle contract shared by Negotium channel adapters. An API v2 adap
 a stable name, transcript projection capabilities, `start(options)`, and an idempotent `stop()`
 handle.
 
+```bash
+bun add @negotium/adapter-sdk
+```
+
 ```ts
 import { defineNegotiumAdapter } from "@negotium/adapter-sdk";
 

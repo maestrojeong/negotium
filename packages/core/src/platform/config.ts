@@ -145,8 +145,6 @@ export const VAULT_SERVER = resolve(PROJECT_ROOT, "src/mcp/vault-server.ts");
 export const BG_BASH_BASE_PORT = parsePortEnv(process.env.BG_BASH_BASE_PORT, 9700);
 export const BG_BASH_MAX_PORT = parsePortEnv(process.env.BG_BASH_MAX_PORT, 9799);
 
-export const META_DIR = resolve(PROJECT_ROOT, "meta");
-
 function safeWorkspaceSegment(value: string, fallback: string): string {
   const cleaned = value
     .trim()

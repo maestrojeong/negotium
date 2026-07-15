@@ -15,7 +15,6 @@
   },
   "files": [
     "src",
-    "meta",
     "scripts",
     "tsconfig.json",
     "README.md",

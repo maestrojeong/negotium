@@ -237,4 +237,3 @@ export type {
   TopicKind,
   TopicVisibility,
 } from "#types/api";
-export { syncMetaSkills } from "#workspace/sync";

@@ -2,6 +2,8 @@
 
 Installable CLI for Negotium and its Terminal, Telegram, and Otium adapters.
 
+Requires Bun 1.2.15 or newer on macOS or Linux, plus credentials for Claude, Codex, or Maestro.
+
 ```bash
 npm install --global @negotium/cli
 
@@ -15,6 +17,9 @@ negotium start terminal
 negotium start telegram
 negotium start otium
 ```
+
+Run `claude` to authenticate Claude, `codex login` for Codex, or set `DEEPSEEK_API_KEY` for
+Maestro. `negotium init` reports which providers are ready.
 
 For the shortest install command, `npm install --global negotium` provides this same CLI through
 the functional unscoped entry package.

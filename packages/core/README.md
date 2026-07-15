@@ -4,6 +4,10 @@ The local-first Negotium runtime shared by every host and channel adapter. It pr
 Codex, and Maestro providers, durable topics and sessions, a provider-neutral event stream,
 wiki/skills, MCP tool definitions, encrypted vault access, and local storage.
 
+```bash
+bun add @negotium/core
+```
+
 ```ts
 import { registerTopic, runtimeBus, startAiTurn } from "@negotium/core";
 
@@ -21,5 +25,6 @@ startAiTurn({
 ```
 
 The package intentionally ships its Bun-executed TypeScript and runtime resources together so
-that built-in stdio MCP servers, prompts, browser launcher, and provider fixtures remain
-addressable at runtime. Requires Bun 1.2.15 or newer.
+that stdio MCP servers, prompts, browser launcher, and provider fixtures remain addressable at
+runtime. It does not ship a fixed skill catalog: agents and users accumulate skills in the shared
+wiki through `skill_save` and the wiki archiver. Requires Bun 1.2.15 or newer.
