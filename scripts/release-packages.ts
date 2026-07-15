@@ -276,7 +276,7 @@ async function localPublish(packages: ReleasePackage[]): Promise<void> {
       continue;
     }
     console.log(`\n==> publish ${pkg.name}@${pkg.manifest?.version}`);
-    await run("bun", ["publish", "--access", "public"], resolve(root, pkg.directory));
+    await run("npm", ["publish", "--access", "public"], resolve(root, pkg.directory));
     await waitUntilPublished(pkg);
   }
 }
