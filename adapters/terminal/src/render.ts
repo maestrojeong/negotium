@@ -638,24 +638,27 @@ function composerPane(state: AppState, width: number): string[] {
   return state.input.startsWith("/new ") ? [hint, ...input] : [...input, hint];
 }
 
-function headerLines(state: AppState, width: number, animationFrame = 0): string[] {
+function footerLines(state: AppState, width: number, animationFrame = 0): string[] {
   const topic = activeTopic(state);
   const activity = topic ? state.activity[topic.id] : undefined;
   const status = activity?.running ? `${workingFrame(animationFrame)} Working` : "○ ready";
   return [
-    paint(joinSides("  NEGOTIUM", `${status}  `, width), {
-      fg: activity?.running ? theme.green : theme.accent,
-      bg: theme.surfaceRaised,
-      bold: true,
-    }),
     paint(
       joinSides(
         `  ${topic?.title ?? "no topic"} · ${topic?.agent ?? "-"} · ${effectiveTopicModel(topic)}`,
-        state.notice ? `! ${state.notice}  ` : "Ctrl-C twice to quit  ",
+        `${status}  `,
         width,
       ),
-      { fg: state.notice ? theme.amber : theme.muted, bg: theme.canvas },
+      {
+        fg: activity?.running ? theme.green : theme.accent,
+        bg: theme.surfaceRaised,
+        bold: true,
+      },
     ),
+    paint(joinSides("", state.notice ? `! ${state.notice}  ` : "Ctrl-C twice to quit  ", width), {
+      fg: state.notice ? theme.amber : theme.muted,
+      bg: theme.canvas,
+    }),
   ];
 }
 
@@ -679,16 +682,16 @@ export function renderApp(
 ): string {
   const width = Math.max(32, columns);
   const height = Math.max(14, rows);
-  const header = headerLines(state, width, animationFrame);
+  const footer = footerLines(state, width, animationFrame);
   const decision = decisionPane(state, width);
   const composer = composerPane(state, width);
-  const bodyHeight = Math.max(3, height - header.length - decision.length - composer.length);
+  const bodyHeight = Math.max(3, height - footer.length - decision.length - composer.length);
   const body = renderBody(
     conversationLines(state, width, bodyHeight, animationFrame),
     width,
     bodyHeight,
   );
-  return [...header, ...body, ...decision, ...composer].slice(0, height).join("\n");
+  return [...body, ...decision, ...composer, ...footer].slice(0, height).join("\n");
 }
 
 export function maxConversationScrollOffset(
@@ -702,7 +705,7 @@ export function maxConversationScrollOffset(
   const bodyHeight = Math.max(
     3,
     height -
-      headerLines(state, width).length -
+      footerLines(state, width).length -
       decisionPane(state, width).length -
       composerPane(state, width).length,
   );

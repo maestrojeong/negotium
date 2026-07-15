@@ -50,6 +50,18 @@ describe("terminal renderer", () => {
     expect(lines[labelIndex - 1]?.trim()).toBe("");
   });
 
+  test("places terminal status below the composer without a product wordmark", () => {
+    const state = setTopics(createInitialState("local"), [topic()]);
+    const output = stripAnsi(renderApp(state, 120, 30));
+    const lines = output.split("\n");
+    const composerIndex = lines.findIndex((line) => line.includes("Type a message"));
+    const statusIndex = lines.findIndex((line) => line.includes("Terminal · codex · gpt"));
+
+    expect(statusIndex).toBeGreaterThan(composerIndex);
+    expect(lines[statusIndex]).toContain("○ ready");
+    expect(output).not.toContain("NEGOTIUM");
+  });
+
   test("does not display a stale Maestro model after switching the topic to Codex", () => {
     const stale = { ...topic(), defaultModel: "deepseek-pro" };
     expect(effectiveTopicModel(stale)).toBe("gpt-5.6-luna");

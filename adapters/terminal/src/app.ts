@@ -6,9 +6,16 @@ import {
   maxConversationScrollOffset,
   plainTranscript,
   renderApp,
+  stripAnsi,
   WORKING_FRAME_INTERVAL_MS,
 } from "@/render";
 import { TerminalScreenRenderer } from "@/screen-renderer";
+import {
+  highlightScreenSelection,
+  type ScreenPoint,
+  type ScreenSelection,
+  screenSelectionText,
+} from "@/selection";
 import {
   type AppState,
   activeMessages,
@@ -23,26 +30,50 @@ import {
 } from "@/state";
 import { InputHistory, TextBuffer } from "@/text-buffer";
 
-const ENTER_ALT_SCREEN = "\u001b[?1049h\u001b[?25l\u001b[?2004h\u001b[?1000h\u001b[?1006h";
-const EXIT_ALT_SCREEN = "\u001b[?1006l\u001b[?1000l\u001b[?2004l\u001b[?25h\u001b[?1049l";
+const ENTER_ALT_SCREEN = "\u001b[?1049h\u001b[?25l\u001b[?2004h\u001b[?1002h\u001b[?1006h";
+const EXIT_ALT_SCREEN = "\u001b[?1006l\u001b[?1002l\u001b[?2004l\u001b[?25h\u001b[?1049l";
 const AGENTS = new Set<AgentKind>(["claude", "codex", "maestro"]);
 const NEW_TOPIC_KEYS = new Set(["n", "ㅜ"]);
 const DELETE_TOPIC_KEYS = new Set(["d", "ㅇ", "\u007f", "\b", "\u001b[3~"]);
 const CONFIRM_KEYS = new Set(["y", "ㅛ"]);
 const CANCEL_KEYS = new Set(["n", "ㅜ"]);
 // biome-ignore lint/complexity/useRegexLiterals: avoids a literal terminal control byte in source.
-const SGR_MOUSE_PATTERN = new RegExp("\\u001b\\[<(\\d+);\\d+;\\d+[mM]", "g");
+const SGR_MOUSE_PATTERN = new RegExp("\\u001b\\[<(\\d+);(\\d+);(\\d+)([mM])", "g");
 
-export function consumeMouseInput(raw: string): { input: string; scrollDelta: number } {
+export interface TerminalMouseEvent extends ScreenPoint {
+  button: number;
+  kind: "press" | "drag" | "release";
+}
+
+export function consumeMouseInput(raw: string): {
+  input: string;
+  scrollDelta: number;
+  events: TerminalMouseEvent[];
+} {
   let scrollDelta = 0;
-  const input = raw.replace(SGR_MOUSE_PATTERN, (_sequence, rawButton: string) => {
-    const button = Number.parseInt(rawButton, 10);
-    if (Number.isFinite(button) && (button & 64) !== 0) {
-      scrollDelta += (button & 1) === 0 ? 3 : -3;
-    }
-    return "";
-  });
-  return { input, scrollDelta };
+  const events: TerminalMouseEvent[] = [];
+  const input = raw.replace(
+    SGR_MOUSE_PATTERN,
+    (_sequence, rawButton: string, rawX: string, rawY: string, suffix: string) => {
+      const button = Number.parseInt(rawButton, 10);
+      if (Number.isFinite(button) && (button & 64) !== 0) {
+        scrollDelta += (button & 1) === 0 ? 3 : -3;
+      } else {
+        const x = Number.parseInt(rawX, 10);
+        const y = Number.parseInt(rawY, 10);
+        if (Number.isFinite(button) && Number.isFinite(x) && Number.isFinite(y)) {
+          events.push({
+            button,
+            x,
+            y,
+            kind: suffix === "m" ? "release" : (button & 32) !== 0 ? "drag" : "press",
+          });
+        }
+      }
+      return "";
+    },
+  );
+  return { input, scrollDelta, events };
 }
 
 export interface TerminalAppOptions {
@@ -70,12 +101,15 @@ export class TerminalApp {
     { cursor?: string; hasMore: boolean; loading: boolean }
   >();
   readonly #queuedRuntimeEvents = new Map<string, RuntimeBusEvent[]>();
+  #selection: ScreenSelection | null = null;
+  #plainFrameLines: string[] = [];
   #lastInterruptAt = 0;
   #running = false;
   #stopRequested = false;
   #finishRun: (() => void) | null = null;
   #onData = (chunk: Buffer | string) => this.#handleInput(String(chunk));
   #onResize = () => {
+    this.#selection = null;
     this.#screen.invalidate();
     this.#queueRender();
   };
@@ -148,6 +182,7 @@ export class TerminalApp {
   }
 
   #handleRuntimeEvent(event: RuntimeBusEvent): void {
+    this.#selection = null;
     if (
       this.#messageLoadGeneration.has(event.topicId) &&
       (event.type === "message" || event.type === "message-updated" || event.type === "ai-status")
@@ -287,7 +322,12 @@ export class TerminalApp {
   #render(): void {
     const columns = process.stdout.columns ?? 100;
     const rows = process.stdout.rows ?? 30;
-    const patch = this.#screen.update(renderApp(this.#state, columns, rows, this.#animationFrame));
+    const baseFrame = renderApp(this.#state, columns, rows, this.#animationFrame);
+    this.#plainFrameLines = stripAnsi(baseFrame).split("\n");
+    const frame = this.#selection
+      ? highlightScreenSelection(baseFrame, this.#selection)
+      : baseFrame;
+    const patch = this.#screen.update(frame);
     if (patch) process.stdout.write(patch);
   }
 
@@ -313,9 +353,14 @@ export class TerminalApp {
   #handleInput(raw: string): void {
     if (!this.#running) return;
     const mouse = consumeMouseInput(raw);
-    if (mouse.scrollDelta !== 0) this.#scroll(mouse.scrollDelta);
+    if (mouse.scrollDelta !== 0) {
+      this.#selection = null;
+      this.#scroll(mouse.scrollDelta);
+    }
+    for (const event of mouse.events) this.#handleMouseSelection(event);
     let chunk = mouse.input;
     if (!chunk) return;
+    this.#selection = null;
     const pasteStart = "\u001b[200~";
     const pasteEnd = "\u001b[201~";
     if (this.#pasting) {
@@ -889,6 +934,53 @@ export class TerminalApp {
       this.#state = {
         ...this.#state,
         notice: `${all ? "Transcript" : "Last response"} copied via ${result.method}${result.truncated ? " (truncated)" : ""}`,
+      };
+    } catch (error) {
+      this.#state = {
+        ...this.#state,
+        notice: `Copy failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    this.#queueRender();
+  }
+
+  #handleMouseSelection(event: TerminalMouseEvent): void {
+    if ((event.button & 3) !== 0 && event.kind !== "release") return;
+    const point: ScreenPoint = { x: event.x, y: event.y };
+    if (event.kind === "press") {
+      this.#selection = { anchor: point, focus: point };
+      this.#queueRender();
+      return;
+    }
+    if (!this.#selection) return;
+    this.#selection = { ...this.#selection, focus: point };
+    if (event.kind === "drag") {
+      this.#queueRender();
+      return;
+    }
+
+    const selection = this.#selection;
+    if (selection.anchor.x === selection.focus.x && selection.anchor.y === selection.focus.y) {
+      this.#selection = null;
+      this.#queueRender();
+      return;
+    }
+    const text = screenSelectionText(this.#plainFrameLines, selection);
+    if (!text) {
+      this.#selection = null;
+      this.#queueRender();
+      return;
+    }
+    void this.#copySelection(text);
+    this.#queueRender();
+  }
+
+  async #copySelection(text: string): Promise<void> {
+    try {
+      const result = await copyToClipboard(text);
+      this.#state = {
+        ...this.#state,
+        notice: `Selection copied via ${result.method}${result.truncated ? " (truncated)" : ""}`,
       };
     } catch (error) {
       this.#state = {

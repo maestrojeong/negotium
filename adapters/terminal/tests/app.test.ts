@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { consumeMouseInput, TerminalApp } from "@/app";
 import type { NegotiumClient } from "@/client";
+import { stripAnsi } from "@/render";
+import { highlightScreenSelection, screenSelectionText } from "@/selection";
 
 function setTty(stream: NodeJS.ReadStream | NodeJS.WriteStream, value: boolean): () => void {
   const descriptor = Object.getOwnPropertyDescriptor(stream, "isTTY");
@@ -15,7 +17,30 @@ test("translates SGR mouse wheel events into conversation scrolling", () => {
   expect(consumeMouseInput("\u001b[<64;10;5M\u001b[<64;10;5M\u001b[<65;10;5Mtext")).toEqual({
     input: "text",
     scrollDelta: 3,
+    events: [],
   });
+});
+
+test("parses left-button drag selection events", () => {
+  expect(consumeMouseInput("\u001b[<0;3;4M\u001b[<32;8;4M\u001b[<0;8;4m")).toEqual({
+    input: "",
+    scrollDelta: 0,
+    events: [
+      { button: 0, x: 3, y: 4, kind: "press" },
+      { button: 32, x: 8, y: 4, kind: "drag" },
+      { button: 0, x: 8, y: 4, kind: "release" },
+    ],
+  });
+});
+
+test("extracts and highlights screen-column selections with wide glyphs", () => {
+  const selection = { anchor: { x: 2, y: 1 }, focus: { x: 4, y: 1 } };
+  expect(screenSelectionText(["a한bc"], selection)).toBe("한b");
+
+  const highlighted = highlightScreenSelection("\u001b[31ma한bc\u001b[0m", selection);
+  expect(stripAnsi(highlighted)).toBe("a한bc");
+  expect(highlighted).toContain("\u001b[7m");
+  expect(highlighted).toContain("\u001b[27m");
 });
 
 test("stops a started client when terminal initialization fails", async () => {

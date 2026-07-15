@@ -52,17 +52,16 @@ default) selects an available loopback port. `--connect` uses
 ## Layout
 
 ```text
-┌ research · codex · model ──────────────────────────────────────────────────┐
-│ › You                                                                      │
-│   investigate the failure                                                  │
-│                                                                            │
-│ ✦ Otium                                                                    │
-│   I found the cause…                                                        │
-│   ✓ Bash(test)                                                             │
-│   ⠋ Working                                                               │
-│                                                                            │
-│ message…                                              Enter send · Ctrl-O   │
-└────────────────────────────────────────────────────────────────────────────┘
+  › You
+    investigate the failure
+
+  ✦ Otium
+    I found the cause…
+    ✓ Bash(test)
+
+  › Type a message or /command…
+  Ctrl-O topics
+  research · codex · model                                  ⠋ Working
 ```
 
 Markdown, fenced code, tool calls, shared tasks, and approval choices render
@@ -80,7 +79,7 @@ indicator. Topics and transcript use temporary overlays.
 | `Up` / `Down` | edit multiline input, history, suggestions, or ask choices |
 | `PageUp` / `PageDown` | scroll conversation |
 | Mouse wheel / trackpad | scroll conversation history |
-| `Ctrl-X` | abort the active turn |
+| Mouse drag | select screen text and copy it on release |
 | `Ctrl-O` | toggle topic overlay |
 | `Ctrl-T` | toggle the plain transcript overlay |
 | `Ctrl-Y` | copy the latest agent response |
@@ -88,13 +87,19 @@ indicator. Topics and transcript use temporary overlays.
 | `Esc` | close overlay or clear composer |
 | `Ctrl-C` | abort/cancel; press twice on an idle screen to quit this TUI |
 
-Commands: `/new` (reset the current non-General context), `/new <name> [agent]` (create topic),
-`/topic <name>`, `/topics`, `/delete [name]`,
+Commands: `/compact` (summarize and shrink provider context), `/status` (separate latest context
+occupancy from aggregate turn usage), `/new` (reset the current non-General context),
+`/new <name> [agent]` (create topic), `/topic <name>`, `/topics`, `/delete [name]`,
 `/copy [all]`, `/abort`, `/help`, `/quit`.
 
 A reset keeps the visible transcript, cancels active and queued work accepted before the reset,
 and lets later requests start with a fresh provider context. The personal `General` manager cannot
 be reset.
+
+Compaction also preserves the visible transcript, but replaces provider-native and provider-neutral
+context with a standalone summary so the next turn can continue with a smaller context. Reopening a
+topic initially loads the latest 50 messages; scrolling to the top fetches older pages until the full
+persisted history is available.
 
 The picker reads every `visibility: visible` topic, including both private and
 shared topics. Internal Otium execution mirrors remain hidden and do not appear
