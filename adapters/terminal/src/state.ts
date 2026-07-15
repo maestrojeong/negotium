@@ -47,6 +47,7 @@ export interface AppState {
   scrollOffset: number;
   askChoiceIndex: number;
   overlay: Overlay;
+  topicPickerRoot: boolean;
   notice?: string;
 }
 
@@ -68,6 +69,7 @@ export function createInitialState(userId: string): AppState {
     scrollOffset: 0,
     askChoiceIndex: 0,
     overlay: null,
+    topicPickerRoot: false,
   };
 }
 
@@ -143,21 +145,26 @@ function orderTopicsByParent(topics: TopicDto[]): TopicDto[] {
 export function setTopics(state: AppState, topics: TopicDto[], preferredTitle?: string): AppState {
   const orderedTopics = orderTopicsByParent(topics);
   const stillVisible = orderedTopics.some((topic) => topic.id === state.activeTopicId);
+  const pickedTopicId = state.topics[state.topicPickerIndex]?.id;
+  const pickedTopicIndex = orderedTopics.findIndex((topic) => topic.id === pickedTopicId);
   const preferred = preferredTitle
     ? orderedTopics.find((topic) => topic.title.toLowerCase() === preferredTitle.toLowerCase())
     : undefined;
-  const nextActive =
-    preferred?.id ?? (stillVisible ? state.activeTopicId : orderedTopics[0]?.id) ?? null;
+  const nextActive = state.topicPickerRoot
+    ? null
+    : (preferred?.id ?? (stillVisible ? state.activeTopicId : orderedTopics[0]?.id) ?? null);
   return {
     ...state,
     topics: orderedTopics,
     activeTopicId: nextActive,
     scrollOffset: nextActive === state.activeTopicId ? state.scrollOffset : 0,
     askChoiceIndex: nextActive === state.activeTopicId ? state.askChoiceIndex : 0,
-    topicPickerIndex: Math.max(
-      0,
-      orderedTopics.findIndex((topic) => topic.id === nextActive),
-    ),
+    topicPickerIndex: state.topicPickerRoot
+      ? Math.max(0, pickedTopicIndex)
+      : Math.max(
+          0,
+          orderedTopics.findIndex((topic) => topic.id === nextActive),
+        ),
   };
 }
 
@@ -169,6 +176,7 @@ export function selectTopic(state: AppState, topicId: string): AppState {
     scrollOffset: 0,
     askChoiceIndex: 0,
     overlay: null,
+    topicPickerRoot: false,
     creatingTopic: false,
     topicPickerIndex: state.topics.findIndex((topic) => topic.id === topicId),
     notice: undefined,
@@ -183,15 +191,19 @@ export function focusCreatedTopic(state: AppState, topic: TopicDto): AppState {
   return selectTopic(setTopics(state, topics), topic.id);
 }
 
-export function openTopicPicker(state: AppState, notice = state.notice): AppState {
+export function openTopicPicker(
+  state: AppState,
+  notice = state.notice,
+  topicPickerRoot = false,
+): AppState {
+  const activeIndex = state.topics.findIndex((topic) => topic.id === state.activeTopicId);
   return {
     ...state,
+    activeTopicId: topicPickerRoot ? null : state.activeTopicId,
     overlay: "topics",
+    topicPickerRoot,
     creatingTopic: false,
-    topicPickerIndex: Math.max(
-      0,
-      state.topics.findIndex((topic) => topic.id === state.activeTopicId),
-    ),
+    topicPickerIndex: Math.max(0, activeIndex >= 0 ? activeIndex : state.topicPickerIndex),
     notice,
   };
 }

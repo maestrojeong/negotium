@@ -139,7 +139,7 @@ describe("terminal renderer", () => {
     expect(output).toContain("Terminal  ·  codex  ·  gpt");
   });
 
-  test("separates General from other rooms in the topic picker", () => {
+  test("separates the Manager room from other topics with a rule", () => {
     const general = { ...topic(), id: "general", title: "General", kind: "manager" as const };
     const work = { ...topic(), id: "work", title: "Work" };
     const state = {
@@ -148,10 +148,24 @@ describe("terminal renderer", () => {
     };
 
     const output = stripAnsi(renderApp(state, 120, 30));
-    expect(output).toContain("  General");
-    expect(output).toContain("  Other topics");
-    expect(output.indexOf("○ General")).toBeLessThan(output.indexOf("Other topics"));
-    expect(output.indexOf("Other topics")).toBeLessThan(output.indexOf("○ Work"));
+    expect(output).toContain("  Manager");
+    expect(output).not.toContain("Other topics");
+    expect(output.indexOf("Manager")).toBeLessThan(output.indexOf("○ General"));
+    expect(output.indexOf("○ General")).toBeLessThan(output.indexOf("────"));
+    expect(output.indexOf("────")).toBeLessThan(output.indexOf("○ Work"));
+  });
+
+  test("labels the startup topic picker as an exit screen instead of a closable overlay", () => {
+    const state = {
+      ...setTopics(createInitialState("local"), [topic()]),
+      activeTopicId: null,
+      overlay: "topics" as const,
+      topicPickerRoot: true,
+    };
+
+    const output = stripAnsi(renderApp(state, 120, 30));
+    expect(output).toContain("Esc/Ctrl-C exit");
+    expect(output).not.toContain("Esc close");
   });
 
   test("keeps the selected topic visible in a short grouped picker", () => {

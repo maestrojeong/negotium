@@ -6,6 +6,7 @@ import {
   createInitialState,
   focusCreatedTopic,
   openTopicPicker,
+  selectTopic,
   setMessages,
   setTopics,
   startTopicCreation,
@@ -78,6 +79,22 @@ describe("terminal adapter state", () => {
     expect(state.overlay).toBe("topics");
     expect(state.topicPickerIndex).toBe(1);
     expect(state.notice).toBe("Deleted A");
+  });
+
+  test("keeps the startup topic picker independent from an active General conversation", () => {
+    let state = setTopics(createInitialState("local"), [
+      topic("general", "General"),
+      topic("a", "A"),
+    ]);
+    state = openTopicPicker(state, undefined, true);
+
+    expect(state.overlay).toBe("topics");
+    expect(state.topicPickerRoot).toBe(true);
+    expect(state.activeTopicId).toBeNull();
+
+    state = selectTopic(state, "a");
+    expect(state.topicPickerRoot).toBe(false);
+    expect(state.activeTopicId).toBe("a");
   });
 
   test("starts topic creation without exposing an internal slash command", () => {

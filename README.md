@@ -114,7 +114,8 @@ Inside terminal chat:
 
 Terminal opens on the topic picker, with personal `General` separated from other topics. Press `N`,
 enter a topic name, and press `Enter` to create and open it. Use `Ctrl-O` to return to the picker;
-deleting a topic returns there automatically.
+deleting a topic returns there automatically. On the startup picker, `Ctrl-C` or `Esc` exits
+immediately instead of opening `General` underneath it.
 
 ### Run the node and Terminal clients
 

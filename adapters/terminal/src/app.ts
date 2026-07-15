@@ -157,9 +157,10 @@ export class TerminalApp {
           this.#state = selectTopic(this.#state, created.id);
         }
       }
-      await this.#loadActiveMessages();
       if (!this.#options.preferredTopic) {
-        this.#state = openTopicPicker(this.#state);
+        this.#state = openTopicPicker(this.#state, this.#state.notice, true);
+      } else {
+        await this.#loadActiveMessages();
       }
       this.#running = true;
 
@@ -438,6 +439,11 @@ export class TerminalApp {
       this.#handleInterrupt(); // Ctrl-C
       return;
     }
+    if (this.#state.overlay === "topics" && this.#state.topicPickerRoot) {
+      this.#lastInterruptAt = 0;
+      this.#handleTopicPickerInput(chunk);
+      return;
+    }
     this.#lastInterruptAt = 0;
     if (chunk === "\u0018") {
       void this.#abort(); // Ctrl-X
@@ -548,24 +554,16 @@ export class TerminalApp {
       const key = chunk.toLowerCase();
       if (CONFIRM_KEYS.has(key)) void this.#confirmTopicDelete();
       else if (CANCEL_KEYS.has(key) || chunk === "\u001b") {
-        this.#state = { ...this.#state, overlay: null, pendingDeleteTopicId: undefined };
+        const cancelled = { ...this.#state, overlay: null, pendingDeleteTopicId: undefined };
+        this.#state = this.#state.topicPickerRoot
+          ? openTopicPicker(cancelled, undefined, true)
+          : cancelled;
         this.#queueRender();
       }
       return;
     }
     if (this.#state.overlay === "topics") {
-      const key = chunk.toLowerCase();
-      if (chunk === "\u001b[A") this.#moveTopicPicker(-1);
-      else if (chunk === "\u001b[B") this.#moveTopicPicker(1);
-      else if (chunk === "\r") this.#selectPickedTopic();
-      else if (NEW_TOPIC_KEYS.has(key)) {
-        this.#openNewTopicComposer();
-      } else if (DELETE_TOPIC_KEYS.has(key)) {
-        this.#requestTopicDelete(this.#state.topics[this.#state.topicPickerIndex]);
-      } else if (chunk === "\u001b") {
-        this.#state = { ...this.#state, overlay: null };
-        this.#queueRender();
-      }
+      this.#handleTopicPickerInput(chunk);
       return;
     }
     if (this.#state.overlay === "models") {
@@ -629,7 +627,10 @@ export class TerminalApp {
       this.#input.setText("");
       this.#history.reset();
       this.#syncInput();
-      this.#state = { ...this.#state, overlay: null, creatingTopic: false };
+      const cancelled = { ...this.#state, overlay: null, creatingTopic: false };
+      this.#state = this.#state.topicPickerRoot
+        ? openTopicPicker(cancelled, undefined, true)
+        : cancelled;
       this.#queueRender();
       return;
     }
@@ -889,12 +890,31 @@ export class TerminalApp {
     this.#queueRender();
   }
 
+  #handleTopicPickerInput(chunk: string): void {
+    const key = chunk.toLowerCase();
+    if (chunk === "\u001b[A") this.#moveTopicPicker(-1);
+    else if (chunk === "\u001b[B") this.#moveTopicPicker(1);
+    else if (chunk === "\r") this.#selectPickedTopic();
+    else if (NEW_TOPIC_KEYS.has(key)) {
+      this.#openNewTopicComposer();
+    } else if (DELETE_TOPIC_KEYS.has(key)) {
+      this.#requestTopicDelete(this.#state.topics[this.#state.topicPickerIndex]);
+    } else if (chunk === "\u001b") {
+      if (this.#state.topicPickerRoot) this.#requestExit();
+      else {
+        this.#state = { ...this.#state, overlay: null };
+        this.#queueRender();
+      }
+    }
+  }
+
   #openNewTopicComposer(): void {
     this.#state = startTopicCreation(this.#state);
     this.#replaceInput("");
   }
 
   async #createTopic(title: string): Promise<void> {
+    const topicPickerRoot = this.#state.topicPickerRoot;
     try {
       const created = await this.#client.createTopic(title, this.#options.defaultAgent);
       this.#state = focusCreatedTopic(this.#state, created);
@@ -903,10 +923,11 @@ export class TerminalApp {
       await this.#loadActiveMessages();
       this.#state = { ...this.#state, notice: `Created ${created.title}` };
     } catch (error) {
-      this.#state = {
+      const failed = {
         ...this.#state,
         notice: error instanceof Error ? error.message : String(error),
       };
+      this.#state = topicPickerRoot ? openTopicPicker(failed, failed.notice, true) : failed;
     }
     this.#queueRender();
   }
@@ -967,7 +988,10 @@ export class TerminalApp {
   #requestTopicDelete(topic: AppState["topics"][number] | undefined): void {
     if (!topic) return;
     if (topic.kind === "manager") {
-      this.#state = { ...this.#state, overlay: null, notice: "Manager topics cannot be deleted" };
+      const notice = "Manager topics cannot be deleted";
+      this.#state = this.#state.topicPickerRoot
+        ? openTopicPicker(this.#state, notice, true)
+        : { ...this.#state, overlay: null, notice };
       this.#queueRender();
       return;
     }
@@ -980,11 +1004,13 @@ export class TerminalApp {
   }
 
   async #confirmTopicDelete(): Promise<void> {
+    const topicPickerRoot = this.#state.topicPickerRoot;
     const topic = this.#state.topics.find(
       (candidate) => candidate.id === this.#state.pendingDeleteTopicId,
     );
     if (!topic) {
-      this.#state = { ...this.#state, overlay: null, pendingDeleteTopicId: undefined };
+      const missing = { ...this.#state, overlay: null, pendingDeleteTopicId: undefined };
+      this.#state = topicPickerRoot ? openTopicPicker(missing, undefined, true) : missing;
       this.#queueRender();
       return;
     }
@@ -998,13 +1024,14 @@ export class TerminalApp {
     try {
       await this.#client.deleteTopic(topic);
       await this.#refreshTopics();
-      this.#state = openTopicPicker(this.#state, `Deleted ${topic.title}`);
-      await this.#loadActiveMessages();
+      this.#state = openTopicPicker(this.#state, `Deleted ${topic.title}`, topicPickerRoot);
+      if (!topicPickerRoot) await this.#loadActiveMessages();
     } catch (error) {
-      this.#state = {
+      const failed = {
         ...this.#state,
         notice: error instanceof Error ? error.message : String(error),
       };
+      this.#state = topicPickerRoot ? openTopicPicker(failed, failed.notice, true) : failed;
     }
     this.#queueRender();
   }
@@ -1149,6 +1176,19 @@ export class TerminalApp {
   }
 
   #handleInterrupt(): void {
+    if (this.#state.overlay === "topics" && this.#state.topicPickerRoot) {
+      this.#requestExit();
+      return;
+    }
+    if (this.#state.topicPickerRoot && this.#state.creatingTopic) {
+      this.#lastInterruptAt = 0;
+      this.#input.setText("");
+      this.#history.reset();
+      this.#syncInput();
+      this.#state = openTopicPicker(this.#state, undefined, true);
+      this.#queueRender();
+      return;
+    }
     const topic = activeTopic(this.#state);
     if (topic && this.#state.activity[topic.id]?.running) {
       this.#lastInterruptAt = 0;

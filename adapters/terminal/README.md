@@ -33,8 +33,10 @@ negotium start terminal  # shell 1
 negotium start terminal  # shell 2
 ```
 
-Terminal opens on the topic picker. The personal `General` room is shown in its own section above
-the other topics; passing `--topic=<name>` opens that topic directly instead.
+Terminal opens on the topic picker. The personal `General` room appears under `Manager`, with a rule
+separating it from the remaining topics; passing `--topic=<name>` opens that topic directly instead.
+The startup picker is a root screen rather than an overlay on `General`; `Ctrl-C` or `Esc` exits it
+immediately.
 
 Closing one TUI does not stop another. A custom embedding host can still inject
 a `NegotiumClient` without changing the TUI. Node lifecycle commands and recovery
