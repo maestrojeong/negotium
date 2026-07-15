@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { consumeMouseInput, TerminalApp } from "@/app";
+import {
+  consumeMouseInput,
+  ctrlCExitsTopicPicker,
+  escapeStopsActiveTurn,
+  TerminalApp,
+} from "@/app";
 import {
   INITIAL_MESSAGE_HISTORY_LIMIT,
   INITIAL_MESSAGE_HISTORY_PAGE_COUNT,
@@ -8,6 +13,19 @@ import {
 } from "@/client";
 import { stripAnsi } from "@/render";
 import { highlightScreenSelection, screenSelectionText } from "@/selection";
+import { applyRuntimeEvent, createInitialState, setTopics, startTopicCreation } from "@/state";
+
+const TOPIC = {
+  id: "topic",
+  title: "Terminal",
+  kind: "agent" as const,
+  agent: "codex" as const,
+  defaultModel: "gpt",
+  defaultEffort: "medium" as const,
+  participants: [{ userId: "local", role: "owner" as const }],
+  createdAt: "2026-01-01T00:00:00.000Z",
+  lastMessageAt: "2026-01-01T00:00:00.000Z",
+};
 
 function setTty(stream: NodeJS.ReadStream | NodeJS.WriteStream, value: boolean): () => void {
   const descriptor = Object.getOwnPropertyDescriptor(stream, "isTTY");
@@ -52,6 +70,23 @@ test("extracts and highlights screen-column selections with wide glyphs", () => 
   expect(stripAnsi(highlighted)).toBe("a한bc");
   expect(highlighted).toContain("\u001b[7m");
   expect(highlighted).toContain("\u001b[27m");
+});
+
+test("Esc stops a running turn only from the active conversation", () => {
+  const idle = setTopics(createInitialState("local"), [TOPIC]);
+  const running = applyRuntimeEvent(idle, {
+    type: "ai-status",
+    topicId: TOPIC.id,
+    payload: { kind: "ai_active", queryId: "running-query" },
+  });
+
+  expect(escapeStopsActiveTurn(idle)).toBe(false);
+  expect(escapeStopsActiveTurn(running)).toBe(true);
+  const topicPicker = { ...running, overlay: "topics" as const };
+  expect(escapeStopsActiveTurn(topicPicker)).toBe(false);
+  expect(ctrlCExitsTopicPicker(topicPicker)).toBe(true);
+  expect(ctrlCExitsTopicPicker(running)).toBe(false);
+  expect(escapeStopsActiveTurn(startTopicCreation(running))).toBe(false);
 });
 
 test("stops a started client when terminal initialization fails", async () => {

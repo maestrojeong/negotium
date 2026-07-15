@@ -446,7 +446,8 @@ function helpLines(): UiLine[] {
     line("  ← → move · Ctrl/Alt-← → move by word · ↑ ↓ history"),
     line("  Ctrl-W delete word · Ctrl-U/K clear before/after cursor"),
     line("  Mouse wheel / PgUp/PgDn scroll · Ctrl-E load older · Ctrl-T transcript"),
-    line("  Ctrl-O topics · Ctrl-P/N previous/next topic · Ctrl-C twice to quit"),
+    line("  Ctrl-O topics · Ctrl-P/N previous/next topic"),
+    line("  Esc/Ctrl-C stop active turn · Ctrl-C twice when idle to quit"),
     line(""),
     line("  Commands", { fg: theme.cyan, bold: true }),
     line("  /new  /model  /topics  /del  /copy"),
@@ -569,7 +570,7 @@ function topicOverlayLines(
     line(
       state.topicPickerRoot
         ? "  ↑↓ select · Enter open · N new · D/Del delete · Esc/Ctrl-C exit"
-        : "  ↑↓ select · Enter open · N new · D/Del delete · Esc close",
+        : "  ↑↓ select · Enter open · N new · D/Del delete · Esc close · Ctrl-C exit; work continues",
       { fg: theme.muted },
     ),
     line(""),
@@ -884,6 +885,7 @@ function footerLines(state: AppState, width: number): string[] {
     ];
   }
   const topic = activeTopic(state);
+  const running = Boolean(topic && state.activity[topic.id]?.running);
   return [
     paint(
       joinSides(
@@ -897,10 +899,25 @@ function footerLines(state: AppState, width: number): string[] {
         bold: true,
       },
     ),
-    paint(joinSides("", state.notice ? `! ${state.notice}  ` : "Ctrl-C twice to quit  ", width), {
-      fg: state.notice ? theme.amber : theme.muted,
-      bg: theme.canvas,
-    }),
+    paint(
+      joinSides(
+        "",
+        state.notice
+          ? `! ${state.notice}  `
+          : state.overlay === "topics"
+            ? state.topicPickerRoot
+              ? "Esc/Ctrl-C exit  "
+              : "Esc close · Ctrl-C exit; work continues  "
+            : running
+              ? "Esc/Ctrl-C stop  "
+              : "Ctrl-C twice to quit  ",
+        width,
+      ),
+      {
+        fg: state.notice ? theme.amber : theme.muted,
+        bg: theme.canvas,
+      },
+    ),
   ];
 }
 

@@ -137,6 +137,7 @@ describe("terminal renderer", () => {
 
     const output = stripAnsi(renderApp(state, 120, 30));
     expect(output).toContain("Terminal  ·  codex  ·  gpt");
+    expect(output).toContain("Ctrl-C exit; work continues");
   });
 
   test("separates the Manager room from other topics with a rule", () => {

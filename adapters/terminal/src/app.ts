@@ -92,6 +92,16 @@ export interface TerminalAppOptions {
   defaultAgent?: AgentKind;
 }
 
+export function escapeStopsActiveTurn(state: AppState): boolean {
+  if (state.overlay || state.creatingTopic) return false;
+  const topic = activeTopic(state);
+  return Boolean(topic && state.activity[topic.id]?.running);
+}
+
+export function ctrlCExitsTopicPicker(state: AppState): boolean {
+  return state.overlay === "topics";
+}
+
 export class TerminalApp {
   readonly #client: NegotiumClient;
   readonly #options: TerminalAppOptions;
@@ -624,6 +634,10 @@ export class TerminalApp {
       return;
     }
     if (chunk === "\u001b") {
+      if (escapeStopsActiveTurn(this.#state)) {
+        void this.#abort();
+        return;
+      }
       this.#input.setText("");
       this.#history.reset();
       this.#syncInput();
@@ -1176,7 +1190,7 @@ export class TerminalApp {
   }
 
   #handleInterrupt(): void {
-    if (this.#state.overlay === "topics" && this.#state.topicPickerRoot) {
+    if (ctrlCExitsTopicPicker(this.#state)) {
       this.#requestExit();
       return;
     }

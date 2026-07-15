@@ -36,11 +36,12 @@ negotium start terminal  # shell 2
 Terminal opens on the topic picker. The personal `General` room appears under `Manager`, with a rule
 separating it from the remaining topics; passing `--topic=<name>` opens that topic directly instead.
 The startup picker is a root screen rather than an overlay on `General`; `Ctrl-C` or `Esc` exits it
-immediately.
+immediately. In the in-conversation topic overlay, `Esc` returns to the conversation while `Ctrl-C`
+closes the TUI without aborting work owned by the shared node.
 
-Closing one TUI does not stop another. A custom embedding host can still inject
-a `NegotiumClient` without changing the TUI. Node lifecycle commands and recovery
-paths are explicit:
+Closing one TUI does not stop another TUI or an active turn on the shared node. A custom embedding
+host can still inject a `NegotiumClient` without changing the TUI. Node lifecycle commands and
+recovery paths are explicit:
 
 ```bash
 negotium status                         # inspect the shared node
@@ -86,12 +87,12 @@ indicator. Topics and transcript use temporary overlays.
 | Mouse wheel / trackpad | scroll conversation history |
 | `Ctrl-E` | load one older 50-message page |
 | Mouse drag | select screen text and copy it on release |
-| `Ctrl-O` | toggle topic overlay |
+| `Ctrl-O` | toggle topic overlay; `Ctrl-C` there exits the TUI while work continues |
 | `Ctrl-T` | toggle the plain transcript overlay |
 | `Ctrl-Y` | copy the latest agent response |
 | `Ctrl-L` | redraw |
-| `Esc` | close overlay or clear composer |
-| `Ctrl-C` | abort/cancel; press twice on an idle screen to quit this TUI |
+| `Esc` | abort the active turn; otherwise close overlay or clear composer |
+| `Ctrl-C` | abort in a conversation; exit without aborting from Topics; press twice on an idle screen to quit |
 
 Commands: `/compact` (summarize and shrink provider context), `/status` (separate latest context
 occupancy from aggregate turn usage), `/model` (open the model picker), `/new` (reset the current
