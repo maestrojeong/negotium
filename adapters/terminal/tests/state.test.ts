@@ -30,6 +30,24 @@ describe("terminal adapter state", () => {
     expect(state.activeTopicId).toBe("b");
   });
 
+  test("keeps one local start time when the same active event is replayed", () => {
+    let state = setTopics(createInitialState("local"), [topic("a", "A")]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: { kind: "ai_active", queryId: "q" },
+    });
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      createdAt: "2026-01-01T00:00:05.000Z",
+      payload: { kind: "ai_active", queryId: "q" },
+    });
+
+    expect(state.activity.a?.startedAtMs).toBe(Date.parse("2026-01-01T00:00:00.000Z"));
+  });
+
   test("tracks blocking ask cards and clears them after selection", () => {
     const ask: MessageDto = {
       id: "ask-1",

@@ -4,6 +4,7 @@ import {
   type RuntimeBusEvent,
   type TopicDto,
 } from "@negotium/core";
+import { terminalNowMs } from "@/clock";
 
 type Overlay = "help" | "status" | "topics" | "transcript" | "confirm-delete" | null;
 
@@ -17,6 +18,7 @@ interface ToolActivity {
 interface TopicActivity {
   running: boolean;
   queryId?: string;
+  startedAtMs?: number;
   status?: string;
   error?: string;
   tools: ToolActivity[];
@@ -187,6 +189,11 @@ function setActivity(state: AppState, topicId: string, activity: TopicActivity):
   return { ...state, activity: { ...state.activity, [topicId]: activity } };
 }
 
+function activityStartMs(createdAt?: string): number {
+  const parsed = createdAt ? Date.parse(createdAt) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : terminalNowMs();
+}
+
 function compactPath(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) return "file";
   const normalized = value.trim().replaceAll("\\", "/");
@@ -236,9 +243,14 @@ function applyAiStatus(
   const kind = String(status.kind ?? "");
   const current = activityFor(state, topicId);
   if (kind === "ai_active") {
+    const queryId = String(status.queryId ?? "");
     return setActivity(state, topicId, {
       running: true,
-      queryId: String(status.queryId ?? ""),
+      queryId,
+      startedAtMs:
+        current.running && current.queryId === queryId && current.startedAtMs !== undefined
+          ? current.startedAtMs
+          : activityStartMs(createdAt),
       status: "Thinking…",
       tools: [],
     });
@@ -266,14 +278,20 @@ function applyAiStatus(
     });
   }
   if (kind === "tool_call") {
+    const queryId = String(status.queryId ?? "");
     const tool: ToolActivity = {
-      id: String(status.toolUseId ?? `${status.queryId ?? "query"}:tool`),
+      id: String(status.toolUseId ?? `${queryId || "query"}:tool`),
       label: String(status.label ?? status.name ?? "tool"),
       status: "running",
     };
     const withActivity = setActivity(state, topicId, {
       ...current,
       running: true,
+      queryId: queryId || current.queryId,
+      startedAtMs:
+        current.queryId === queryId && current.startedAtMs !== undefined
+          ? current.startedAtMs
+          : activityStartMs(createdAt),
       status: tool.label,
       tools: [...current.tools.filter((item) => item.id !== tool.id), tool].slice(-8),
     });

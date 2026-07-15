@@ -193,6 +193,35 @@ describe("terminal renderer", () => {
     expect(first).not.toBe(second);
   });
 
+  test("advances working time from the terminal clock instead of provider heartbeats", () => {
+    const startedAt = Date.parse("2026-01-01T00:00:00.000Z");
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: { kind: "ai_active", queryId: "query" },
+    });
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: {
+        kind: "tool_status",
+        queryId: "query",
+        statusKind: "progress",
+        content: "Working… 111s",
+        toolName: "working",
+        elapsed: 111,
+      },
+    });
+
+    const at106 = stripAnsi(renderApp(state, 100, 30, 0, startedAt + 106_000));
+    const at107 = stripAnsi(renderApp(state, 100, 30, 1, startedAt + 107_000));
+    expect(at106).toContain("Working · 106s");
+    expect(at107).toContain("Working · 107s");
+    expect(at106).not.toContain("111s");
+  });
+
   test("uses the workspace-wide AI name instead of the provider name", () => {
     const message: MessageDto = {
       id: "ai-message",

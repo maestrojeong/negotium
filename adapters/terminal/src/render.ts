@@ -1,4 +1,5 @@
 import { getRegistry, type MessageDto, resolveModelForAgent, type TopicDto } from "@negotium/core";
+import { terminalNowMs } from "@/clock";
 import { commandSuggestions } from "@/commands";
 import {
   type AppState,
@@ -35,6 +36,14 @@ export const WORKING_FRAME_INTERVAL_MS = 16;
 export function workingFrame(frame: number): string {
   const index = Math.abs(Math.trunc(frame)) % WORKING_FRAMES.length;
   return WORKING_FRAMES[index] ?? WORKING_FRAMES[0];
+}
+
+export function workingElapsedSeconds(
+  startedAtMs: number | undefined,
+  nowMs = terminalNowMs(),
+): number {
+  if (startedAtMs === undefined || !Number.isFinite(startedAtMs)) return 0;
+  return Math.max(0, Math.floor((nowMs - startedAtMs) / 1_000));
 }
 
 /** Hide legacy cross-agent defaults such as codex + deepseek-pro. */
@@ -353,21 +362,28 @@ function messageLines(
   return [line(header, { fg: color, bold: !system }), ...body, line("")];
 }
 
-function activityLines(state: AppState, animationFrame = 0): UiLine[] {
+function activityDetail(value: string | undefined): string | undefined {
+  const raw = value?.trim();
+  if (!raw) return undefined;
+  if (raw.startsWith("Working…")) return undefined;
+  if (raw.startsWith("Thinking…")) return "Thinking";
+  const running = raw.match(/^(.*?) running \d+s$/u);
+  return running?.[1]?.trim() || raw;
+}
+
+function activityLines(state: AppState, animationFrame = 0, nowMs = terminalNowMs()): UiLine[] {
   const topic = activeTopic(state);
   if (!topic) return [];
   const activity = state.activity[topic.id];
   if (!activity) return [];
   const result: UiLine[] = [];
   if (activity.running) {
-    const rawDetail = activity.status?.trim();
-    const detail = rawDetail?.startsWith("Working…")
-      ? rawDetail.slice("Working…".length).trim()
-      : rawDetail;
+    const detail = activityDetail(activity.status);
     const lastToolLabel = activity.tools.at(-1)?.label;
+    const elapsed = workingElapsedSeconds(activity.startedAtMs, nowMs);
     result.push(
       line(
-        `  ${workingFrame(animationFrame)} Working${detail && detail !== "Thinking…" && detail !== lastToolLabel ? ` · ${detail}` : ""}`,
+        `  ${workingFrame(animationFrame)} Working · ${elapsed}s${detail && detail !== lastToolLabel ? ` · ${detail}` : ""}`,
         { fg: theme.amber, bold: true },
       ),
     );
@@ -494,14 +510,19 @@ function topicOverlayLines(state: AppState, animationFrame = 0): UiLine[] {
   ];
 }
 
-function conversationContentLines(state: AppState, width: number, animationFrame = 0): UiLine[] {
+function conversationContentLines(
+  state: AppState,
+  width: number,
+  animationFrame = 0,
+  nowMs = terminalNowMs(),
+): UiLine[] {
   const all: UiLine[] = [];
   for (const message of activeMessages(state).filter(
     (item) => !item.id.startsWith("tasks-") && item.kind !== "system" && item.authorId !== "system",
   )) {
     all.push(...messageLines(message, width, state.userId, state.aiName));
   }
-  all.push(...activityLines(state, animationFrame), ...taskLines(state, width));
+  all.push(...activityLines(state, animationFrame, nowMs), ...taskLines(state, width));
   if (all.length === 0) {
     all.push(
       line(""),
@@ -517,6 +538,7 @@ function conversationLines(
   width: number,
   height: number,
   animationFrame = 0,
+  nowMs = terminalNowMs(),
 ): UiLine[] {
   if (state.overlay === "help") return helpLines().slice(0, height);
   if (state.overlay === "status") return statusLines(state).slice(0, height);
@@ -541,7 +563,7 @@ function conversationLines(
     ].slice(0, height);
   }
 
-  const all = conversationContentLines(state, width, animationFrame);
+  const all = conversationContentLines(state, width, animationFrame, nowMs);
   const { contentHeight, maxOffset, offset } = conversationViewport(
     all.length,
     height,
@@ -667,10 +689,17 @@ function composerPane(state: AppState, width: number): string[] {
   return state.input.startsWith("/new ") ? [hint, ...input] : [...input, hint];
 }
 
-function footerLines(state: AppState, width: number, animationFrame = 0): string[] {
+function footerLines(
+  state: AppState,
+  width: number,
+  animationFrame = 0,
+  nowMs = terminalNowMs(),
+): string[] {
   const topic = activeTopic(state);
   const activity = topic ? state.activity[topic.id] : undefined;
-  const status = activity?.running ? `${workingFrame(animationFrame)} Working` : "○ ready";
+  const status = activity?.running
+    ? `${workingFrame(animationFrame)} Working · ${workingElapsedSeconds(activity.startedAtMs, nowMs)}s`
+    : "○ ready";
   return [
     paint(
       joinSides(
@@ -708,15 +737,16 @@ export function renderApp(
   columns: number,
   rows: number,
   animationFrame = 0,
+  nowMs = terminalNowMs(),
 ): string {
   const width = Math.max(32, columns);
   const height = Math.max(14, rows);
-  const footer = footerLines(state, width, animationFrame);
+  const footer = footerLines(state, width, animationFrame, nowMs);
   const decision = decisionPane(state, width);
   const composer = composerPane(state, width);
   const bodyHeight = Math.max(3, height - footer.length - decision.length - composer.length);
   const body = renderBody(
-    conversationLines(state, width, bodyHeight, animationFrame),
+    conversationLines(state, width, bodyHeight, animationFrame, nowMs),
     width,
     bodyHeight,
   );
