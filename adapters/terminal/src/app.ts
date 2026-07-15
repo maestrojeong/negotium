@@ -2,7 +2,12 @@ import type { AgentKind, MessageDto, RuntimeBusEvent } from "@negotium/core";
 import type { NegotiumClient } from "@/client";
 import { copyToClipboard } from "@/clipboard";
 import { commandSuggestions, completeCommand } from "@/commands";
-import { maxConversationScrollOffset, plainTranscript, renderApp } from "@/render";
+import {
+  maxConversationScrollOffset,
+  plainTranscript,
+  renderApp,
+  WORKING_FRAME_INTERVAL_MS,
+} from "@/render";
 import { TerminalScreenRenderer } from "@/screen-renderer";
 import {
   type AppState,
@@ -120,7 +125,7 @@ export class TerminalApp {
         if (!topic || !this.#state.activity[topic.id]?.running) return;
         this.#animationFrame += 1;
         this.#queueRender();
-      }, 80);
+      }, WORKING_FRAME_INTERVAL_MS);
       this.#animationTimer.unref?.();
 
       await new Promise<void>((resolve) => {

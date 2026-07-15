@@ -5,6 +5,7 @@ import {
   effectiveTopicModel,
   renderApp,
   stripAnsi,
+  WORKING_FRAME_INTERVAL_MS,
   workingFrame,
   wrapText,
 } from "@/render";
@@ -96,6 +97,7 @@ describe("terminal renderer", () => {
   });
 
   test("animates the working indicator without requiring another runtime event", () => {
+    expect(WORKING_FRAME_INTERVAL_MS).toBe(16);
     let state = setTopics(createInitialState("local"), [topic()]);
     state = applyRuntimeEvent(state, {
       type: "ai-status",
