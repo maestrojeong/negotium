@@ -293,12 +293,6 @@ export function renderMarkdown(value: string, width: number): UiLine[] {
   return result;
 }
 
-function timestamp(message: MessageDto): string {
-  const date = new Date(message.createdAt);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
 function subagentLines(message: MessageDto, width: number): UiLine[] {
   const card = message.subagentCard;
   if (!card) return [];
@@ -315,12 +309,7 @@ function subagentLines(message: MessageDto, width: number): UiLine[] {
   ];
 }
 
-function messageLines(
-  message: MessageDto,
-  width: number,
-  userId: string,
-  aiName: string,
-): UiLine[] {
+function messageLines(message: MessageDto, width: number, userId: string): UiLine[] {
   if (message.kind === "system" || message.authorId === "system") return [];
   if (message.kind === "subagent" && message.subagentCard) return subagentLines(message, width);
   if (message.kind === "tool") {
@@ -350,16 +339,25 @@ function messageLines(
   const own = message.authorId === userId;
   const ai = message.authorId === "ai";
   const system = !own && !ai;
-  const name = own ? "You" : ai ? aiName : "System";
-  const color = own ? theme.cyan : ai ? theme.accent : theme.muted;
-  const icon = own ? "›" : ai ? "✦" : "•";
-  const header = joinSides(`  ${icon} ${name}`, timestamp(message), Math.max(1, width - 2));
+  const icon = own ? "›" : ai ? "●" : "•";
   const body = ai
-    ? renderMarkdown(message.text, Math.max(4, width - 2))
-    : wrapText(message.text, Math.max(4, width - 6)).map((text) =>
-        line(`    ${text}`, { fg: system ? theme.muted : theme.text }),
+    ? renderMarkdown(message.text, Math.max(4, width - 6))
+    : wrapText(message.text, Math.max(4, width - 6)).map((text, index) =>
+        line(`${index === 0 ? `  ${icon} ` : "    "}${text}`, {
+          fg: system ? theme.muted : theme.text,
+        }),
       );
-  return [line(header, { fg: color, bold: !system }), ...body, line("")];
+  if (ai) {
+    const firstContent = body.findIndex((item) => item.text.trim().length > 0);
+    if (firstContent >= 0) {
+      const first = body[firstContent];
+      body[firstContent] = {
+        ...first,
+        text: `  ${icon} ${first.text.trimStart()}`,
+      };
+    }
+  }
+  return [...body, line("")];
 }
 
 function activityDetail(value: string | undefined): string | undefined {
@@ -520,7 +518,7 @@ function conversationContentLines(
   for (const message of activeMessages(state).filter(
     (item) => !item.id.startsWith("tasks-") && item.kind !== "system" && item.authorId !== "system",
   )) {
-    all.push(...messageLines(message, width, state.userId, state.aiName));
+    all.push(...messageLines(message, width, state.userId));
   }
   all.push(...activityLines(state, animationFrame, nowMs), ...taskLines(state, width));
   if (all.length === 0) {

@@ -222,22 +222,35 @@ describe("terminal renderer", () => {
     expect(at106).not.toContain("111s");
   });
 
-  test("uses the workspace-wide AI name instead of the provider name", () => {
-    const message: MessageDto = {
-      id: "ai-message",
-      topicId: "topic",
-      authorId: "ai",
-      agentType: "codex",
-      text: "hello",
-      createdAt: "2026-01-01T00:00:00.000Z",
-    };
+  test("shows compact speaker marks without names or timestamps", () => {
+    const messages: MessageDto[] = [
+      {
+        id: "user-message",
+        topicId: "topic",
+        authorId: "local",
+        text: "question",
+        createdAt: "2026-01-01T18:39:00.000Z",
+      },
+      {
+        id: "ai-message",
+        topicId: "topic",
+        authorId: "ai",
+        agentType: "codex",
+        text: "answer",
+        createdAt: "2026-01-01T18:40:00.000Z",
+      },
+    ];
     let state = setTopics(createInitialState("local"), [topic()]);
     state = { ...state, aiName: "Nova" };
-    state = setMessages(state, "topic", [message]);
+    state = setMessages(state, "topic", messages);
 
     const output = stripAnsi(renderApp(state, 100, 30));
-    expect(output).toContain("✦ Nova");
-    expect(output).not.toContain("✦ codex");
+    expect(output).toContain("› question");
+    expect(output).toContain("● answer");
+    expect(output).not.toContain("You");
+    expect(output).not.toContain("Nova");
+    expect(output).not.toContain("06:39");
+    expect(output).not.toContain("06:40");
   });
 
   test("clamps at the loaded history boundary and exposes explicit older loading", () => {
