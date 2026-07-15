@@ -40,7 +40,11 @@ export function workingFrame(frame: number): string {
 /** Hide legacy cross-agent defaults such as codex + deepseek-pro. */
 export function effectiveTopicModel(topic: TopicDto | null): string {
   if (!topic?.agent) return topic?.defaultModel ?? "-";
-  return resolveModelForAgent(topic.agent, topic.defaultModel, getRegistry(topic.agent));
+  return resolveModelForAgent(
+    topic.agent,
+    topic.effectiveModel ?? topic.defaultModel,
+    getRegistry(topic.agent),
+  );
 }
 
 interface UiLine {

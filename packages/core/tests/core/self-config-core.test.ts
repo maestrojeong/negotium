@@ -8,6 +8,7 @@ import {
   setSelfConfigModel,
 } from "#agents/self-config-core";
 import { purgeTopicLogs } from "#agents/topic-cleanup";
+import { runtimeBus } from "#bus";
 import { resolveTopicWorkspaceDir } from "#platform/config";
 import { readJsonlLines } from "#platform/jsonl";
 import { scheduledSessionInboxPath, sessionInboxPath } from "#query/session-inbox-path";
@@ -25,6 +26,7 @@ import {
   upsertTopic,
 } from "#storage/api-topics";
 import { appendConversationEvent, readConversation } from "#storage/conversations";
+import { getVisibleTopics } from "#topics/derive";
 
 const USER = "self-config-core-test-user";
 const createdTopicIds: string[] = [];
@@ -70,12 +72,21 @@ describe("self-config core", () => {
   test("set_model writes to api_topic_config for the current agent", () => {
     const topicId = seedTopic("codex");
     setTopicSessionId(topicId, "existing-codex-thread", { reason: "test" });
+    const events: string[] = [];
+    const unsubscribe = runtimeBus().subscribe((event) => {
+      if (event.topicId === topicId) events.push(event.type);
+    });
 
-    const result = setSelfConfigModel({ topicId, userId: USER }, "gpt-5.6-luna");
+    const result = setSelfConfigModel({ topicId, userId: USER }, "gpt-5.6-sol");
+    unsubscribe();
 
     expect(result.isError).toBeUndefined();
-    expect(getApiTopicConfig(topicId)?.model).toBe("gpt-5.6-luna");
+    expect(getApiTopicConfig(topicId)?.model).toBe("gpt-5.6-sol");
+    expect(getVisibleTopics().find((topic) => topic.id === topicId)?.effectiveModel).toBe(
+      "gpt-5.6-sol",
+    );
     expect(getTopicSessionId(topicId)).toBe("existing-codex-thread");
+    expect(events).toContain("topic-updated");
   });
 
   test("get_model ignores topic default model when it belongs to another agent", () => {

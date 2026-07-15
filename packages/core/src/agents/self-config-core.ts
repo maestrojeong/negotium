@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { switchApiTopicAgent } from "#agents/api-topic-agent-switch";
 import { resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
+import { WsHub } from "#bus";
 import { resolveTopicWorkspaceDir } from "#platform/config";
 import { FROM_SELF_SCHEDULE } from "#platform/constants";
 import { appendJsonlEntry } from "#platform/jsonl";
@@ -125,6 +126,7 @@ export function setSelfConfigModel(ctx: SelfConfigContext, model: string): SelfC
   setApiTopicConfig(topic.id, { ...cfg, model });
   // Keep the provider conversation. Codex and Claude both support changing
   // the model for a later turn while resuming the same thread/session.
+  WsHub.get().broadcastTopicUpdated(topic.id);
   ctx.onConfigChanged?.("model");
   return ok(`Model for this topic set to '${model}' (agent=${agent}). Applies from the next turn.`);
 }
@@ -177,6 +179,7 @@ export function setSelfConfigAgent(ctx: SelfConfigContext, agent: AgentKind): Se
   });
   if (!switched.ok) return err(switched.error);
 
+  WsHub.get().broadcastTopicUpdated(topic.id);
   ctx.onConfigChanged?.("agent");
   const sessionNote =
     switched.outcome.kind === "bridged"
@@ -213,6 +216,7 @@ export function setSelfConfigEffort(ctx: SelfConfigContext, effort: EffortLevel)
   }
 
   setApiTopicConfig(topic.id, { ...cfg, effort });
+  WsHub.get().broadcastTopicUpdated(topic.id);
   ctx.onConfigChanged?.("effort");
   return ok(
     `Effort for this topic set to '${effort}' (agent=${agent}). Applies from the next turn.`,

@@ -72,6 +72,15 @@ describe("terminal renderer", () => {
     expect(output).not.toContain("Terminal · codex · deepseek-pro");
   });
 
+  test("shows the persisted per-topic model override in the footer", () => {
+    const configured = { ...topic(), effectiveModel: "gpt-5.6-sol" };
+    expect(effectiveTopicModel(configured)).toBe("gpt-5.6-sol");
+
+    const state = setTopics(createInitialState("local"), [configured]);
+    const output = stripAnsi(renderApp(state, 120, 30));
+    expect(output).toContain("Terminal · codex · gpt-5.6-sol");
+  });
+
   test("shows both the agent and effective model in the topic picker", () => {
     const state = {
       ...setTopics(createInitialState("local"), [topic()]),

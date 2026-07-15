@@ -79,6 +79,10 @@ export interface TopicDto {
   defaultModel: string;
   /** Base/fallback effort used when no topic config override exists. */
   defaultEffort: EffortLevel;
+  /** Resolved per-topic model after applying the persisted self-config override. */
+  effectiveModel?: string;
+  /** Resolved per-topic effort after applying the persisted self-config override. */
+  effectiveEffort?: EffortLevel;
   /**
    * Response policy stored as `response_policy`.
    * - manager rooms are system-managed and always `always`.

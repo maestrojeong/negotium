@@ -44,7 +44,26 @@ export function getTopics(): TopicDto[] {
 
 /** Topics adapters may show in lists and selection UIs. */
 export function getVisibleTopics(): TopicDto[] {
-  return getTopics().filter(isTopicVisible);
+  return getTopics()
+    .filter(isTopicVisible)
+    .map((topic) => {
+      if (!topic.agent) return topic;
+      const registry = getRegistry(topic.agent);
+      const config = getApiTopicConfig(topic.id);
+      const requestedEffort = config?.effort ?? topic.defaultEffort;
+      return {
+        ...topic,
+        effectiveModel: resolveModelForAgent(
+          topic.agent,
+          config?.model ?? topic.defaultModel,
+          registry,
+        ),
+        effectiveEffort:
+          requestedEffort && registry.validateEffort(requestedEffort)
+            ? requestedEffort
+            : registry.defaultEffort,
+      };
+    });
 }
 
 export function updateTopic(topicId: string, patch: Partial<TopicDto>): boolean {
