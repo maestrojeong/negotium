@@ -216,8 +216,12 @@ export {
   TopicTurnStillActiveError,
 } from "#topics/lifecycle";
 export { ensurePersonalGeneral } from "#topics/personal-general";
-export type { RestartTopicSessionResult } from "#topics/session";
-export { restartTopicSession } from "#topics/session";
+export type {
+  CompactSummaryRequest,
+  CompactTopicSessionOptions,
+  RestartTopicSessionResult,
+} from "#topics/session";
+export { compactTopicSession, restartTopicSession } from "#topics/session";
 // ── Types ───────────────────────────────────────────────────────────
 export * from "#types";
 export type {

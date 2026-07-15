@@ -107,6 +107,11 @@ async function cleanupSessionRollouts(
   return !cleanupFailed;
 }
 
+/** Remove every provider rollout currently manifested by a topic log. */
+export async function cleanupTopicRollouts(opts: PurgeTopicLogsOptions): Promise<boolean> {
+  return cleanupSessionRollouts(opts, readConversation(opts.userId, opts.topicName));
+}
+
 export interface RotateTopicLogsOptions extends PurgeTopicLogsOptions {
   /** Number of complete user turns carried into the replacement session. */
   retainTurns: number;

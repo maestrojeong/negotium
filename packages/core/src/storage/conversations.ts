@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { DATA_DIR } from "#platform/config";
 import { appendJsonlLine } from "#platform/jsonl";
@@ -155,6 +162,30 @@ export function readConversation(userId: number | string, topicName: string): Co
     }
   }
   return out;
+}
+
+/** Atomically replace a provider-neutral topic log with an explicit event set. */
+export function replaceConversationStrict(
+  userId: number | string,
+  topicName: string,
+  entries: ConversationEntry[],
+): void {
+  const path = getConversationPath(userId, topicName);
+  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  mkdirSync(dirname(path), { recursive: true });
+  try {
+    writeFileSync(
+      tempPath,
+      entries.length > 0 ? `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n` : "",
+      { flag: "wx" },
+    );
+    renameSync(tempPath, path);
+  } catch (error) {
+    try {
+      unlinkSync(tempPath);
+    } catch {}
+    throw error;
+  }
 }
 
 /**

@@ -173,6 +173,33 @@ test("message history pages backward from the latest messages", async () => {
   expect(olderBody.hasMore).toBe(true);
 });
 
+test("POST compact delegates session rotation for an owned topic", async () => {
+  const calls: Array<{ topicId: string; userId: string }> = [];
+  const localHandler = createNodeControlHandler({
+    port: () => 43210,
+    startedAt: "2026-07-14T00:00:00.000Z",
+    requestShutdown() {},
+    compactSession: async (topicId, compactUserId) => {
+      calls.push({ topicId, userId: compactUserId });
+      return { text: "compacted" };
+    },
+  });
+  const topic = registerTopic({
+    title: `Compact ${randomUUID()}`,
+    userId,
+    agent: "codex",
+  });
+
+  const response = await localHandler(
+    request(`/topics/${encodeURIComponent(topic.id)}/session/compact`, {
+      method: "POST",
+      body: JSON.stringify({ userId }),
+    }),
+  );
+  expect(response?.status).toBe(200);
+  expect(calls).toEqual([{ topicId: topic.id, userId }]);
+});
+
 test("an open SSE stream stops exposing a topic after participant removal", async () => {
   const member = `revoked-${randomUUID()}`;
   const topic = registerTopic({ title: `Revoked ${randomUUID()}`, userId: member, agent: "codex" });

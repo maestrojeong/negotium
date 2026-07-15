@@ -14,6 +14,7 @@ import {
   abortRoom,
   answerPendingAskUserQuestion,
   appendApiMessage,
+  compactTopicSession,
   deleteTopicCascade,
   ensurePersonalGeneral,
   getTopic,
@@ -69,6 +70,7 @@ interface ControlHandlerOptions {
   startedAt: string;
   requestShutdown: () => void;
   startTurn?: typeof startAiTurn;
+  compactSession?: typeof compactTopicSession;
 }
 
 function jsonError(status: number, error: string): Response {
@@ -359,6 +361,21 @@ export function createNodeControlHandler(
         const userId = requiredText(body.userId, "userId");
         if (!topicForUser(topicId, userId)) return jsonError(404, "Topic not found");
         const result = await restartTopicSession(topicId, userId, "node-control-session-reset");
+        if (result.isError) return jsonError(409, result.text);
+        return Response.json({ ok: true, result: result.text });
+      }
+
+      const compactMatch = path.match(/^\/topics\/([^/]+)\/session\/compact$/);
+      if (compactMatch && req.method === "POST") {
+        const topicId = decodeURIComponent(compactMatch[1]);
+        const body = await bodyRecord(req);
+        const userId = requiredText(body.userId, "userId");
+        if (!topicForUser(topicId, userId)) return jsonError(404, "Topic not found");
+        const result = await (options.compactSession ?? compactTopicSession)(
+          topicId,
+          userId,
+          "node-control-session-compact",
+        );
         if (result.isError) return jsonError(409, result.text);
         return Response.json({ ok: true, result: result.text });
       }

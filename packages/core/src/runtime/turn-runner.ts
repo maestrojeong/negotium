@@ -482,9 +482,8 @@ async function streamAgentEvents(
                 : undefined,
               { agent: agentType, model },
             );
-            // Session-bloat notice: warn once per 1M-token step so the owner can
-            // /new before context bloat hurts quality/cost. Skip General (cannot
-            // be reset) and subagent rooms (transient).
+            // Session-bloat notice: warn once when the provider reports at
+            // least 80% context occupancy. Skip subagent rooms (transient).
             const finishedTopic = getTopic(topicId);
             if (event.usage && finishedTopic?.kind !== "manager" && !finishedTopic?.isSubagent) {
               const usageAlert = nextUsageAlert(userId, topicId, topicTitle, event.usage);

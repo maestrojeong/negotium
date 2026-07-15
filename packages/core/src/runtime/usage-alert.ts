@@ -50,10 +50,9 @@ function buildUsageAlertText(topicTitle: string, usage: TokenUsage): string {
   return (
     `⚠️ "${topicTitle}" context가 ${Math.round(ratio * 100)}% 찼어요 ` +
     `(${fmt(used)} / ${fmt(window)} 토큰)\n\n` +
-    `세션이 비대해지면 응답 품질이 떨어지고 비용이 늘어나요. 이 토픽에서 /new 를 입력하면 ` +
-    `AI가 새 맥락으로 다시 시작합니다.\n\n` +
-    `지금까지 주고받은 대화는 그대로 남아 있어요. 지워지는 건 AI가 내부적으로 기억하던 ` +
-    `맥락뿐이라, 대화 내역이 사라질까 걱정하지 않아도 됩니다.`
+    `이 토픽에서 /compact 를 입력하면 핵심 맥락을 요약해 이어가면서 context를 줄입니다. ` +
+    `완전히 새로 시작하려면 /new 를 사용하세요.\n\n` +
+    `두 명령 모두 지금까지 주고받은 보이는 대화 내역은 그대로 유지합니다.`
   );
 }
 

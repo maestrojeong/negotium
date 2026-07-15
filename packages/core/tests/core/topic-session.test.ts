@@ -1,14 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { nextUsageAlert } from "#runtime/usage-alert";
+import { appendApiMessage, getAllMessagesForTopic } from "#storage/api-messages";
 import { deleteTopic, getTopic, getTopicSessionId, setTopicSessionId } from "#storage/api-topics";
+import { appendConversationEventStrict, readConversation } from "#storage/conversations";
 import { claimRuntimeTurnLease, releaseRuntimeTurnLease } from "#storage/runtime-leases";
 import {
   enqueueRuntimeUserTurnRequest,
   getRuntimeUserTurnRequest,
 } from "#storage/runtime-turn-requests";
 import { registerTopic } from "#topics/create";
-import { restartTopicSession } from "#topics/session";
+import { compactTopicSession, restartTopicSession } from "#topics/session";
 
 const createdTopicIds = new Set<string>();
 
@@ -124,5 +126,100 @@ describe("restartTopicSession", () => {
 
     expect(result.isError).toBe(true);
     expect(result.text).toContain("General");
+  });
+});
+
+describe("compactTopicSession", () => {
+  test("replaces provider context with a summary while preserving visible messages", async () => {
+    const { owner, topic } = createTopic();
+    const oldSessionId = "01940000-0000-7000-8000-000000000001";
+    setTopicSessionId(topic.id, oldSessionId, { reason: "test", agent: "codex" });
+    appendApiMessage({
+      id: randomUUID(),
+      topicId: topic.id,
+      authorId: owner,
+      text: "keep the visible user request",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    appendApiMessage({
+      id: randomUUID(),
+      topicId: topic.id,
+      authorId: "ai",
+      text: "keep the visible assistant reply",
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+    appendConversationEventStrict(owner, topic.title, "codex", {
+      type: "user_message",
+      content: "original provider request",
+    });
+    appendConversationEventStrict(owner, topic.title, "codex", {
+      type: "result",
+      content: "original provider reply",
+      stopReason: "end_turn",
+    });
+    appendConversationEventStrict(owner, topic.title, "codex", {
+      type: "session",
+      sessionId: oldSessionId,
+    });
+
+    let source = "";
+    const result = await compactTopicSession(topic.id, owner, "test-compact", {
+      summarize: async (request) => {
+        source = request.source;
+        return "Standalone compact summary with decisions and next steps.";
+      },
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(source).toContain("keep the visible user request");
+    expect(source).toContain("keep the visible assistant reply");
+    expect(getAllMessagesForTopic(topic.id).map((message) => message.text)).toEqual([
+      "keep the visible user request",
+      "keep the visible assistant reply",
+    ]);
+    const compacted = readConversation(owner, topic.title);
+    expect(compacted.map((entry) => entry.event.type)).toEqual([
+      "user_message",
+      "result",
+      "session",
+    ]);
+    expect(compacted[1]?.event).toMatchObject({
+      type: "result",
+      content: "Standalone compact summary with decisions and next steps.",
+    });
+    expect(getTopicSessionId(topic.id)).not.toBe(oldSessionId);
+
+    await restartTopicSession(topic.id, owner, "test-compact-cleanup");
+  });
+
+  test("keeps the existing provider context when summarization fails", async () => {
+    const { owner, topic } = createTopic();
+    const oldSessionId = "01940000-0000-7000-8000-000000000002";
+    setTopicSessionId(topic.id, oldSessionId, { reason: "test", agent: "codex" });
+    appendApiMessage({
+      id: randomUUID(),
+      topicId: topic.id,
+      authorId: owner,
+      text: "do not lose this",
+      createdAt: new Date().toISOString(),
+    });
+    appendConversationEventStrict(owner, topic.title, "codex", {
+      type: "user_message",
+      content: "do not lose provider context",
+    });
+
+    const before = readConversation(owner, topic.title);
+    const result = await compactTopicSession(topic.id, owner, "test-compact-failure", {
+      summarize: async () => {
+        throw new Error("summary unavailable");
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("summary unavailable");
+    expect(getTopicSessionId(topic.id)).toBe(oldSessionId);
+    expect(readConversation(owner, topic.title)).toEqual(before);
+
+    await restartTopicSession(topic.id, owner, "test-compact-failure-cleanup");
   });
 });
