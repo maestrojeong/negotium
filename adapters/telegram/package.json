@@ -29,12 +29,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/maestrojeong/Negotium.git",
+    "url": "git+https://github.com/maestrojeong/negotium.git",
     "directory": "adapters/telegram"
   },
-  "homepage": "https://github.com/maestrojeong/Negotium#readme",
+  "homepage": "https://github.com/maestrojeong/negotium#readme",
   "bugs": {
-    "url": "https://github.com/maestrojeong/Negotium/issues"
+    "url": "https://github.com/maestrojeong/negotium/issues"
   },
   "publishConfig": {
     "access": "public"

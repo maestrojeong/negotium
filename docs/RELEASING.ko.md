@@ -82,7 +82,7 @@ bun run release:publish --confirm
 |---|---|
 | Provider | GitHub Actions |
 | Organization/User | `maestrojeong` |
-| Repository | `Negotium` |
+| Repository | `negotium` |
 | Workflow filename | `release.yml` |
 
 그다음 GitHub의 **Actions → Publish npm packages → Run workflow**를 실행한다. Workflow는

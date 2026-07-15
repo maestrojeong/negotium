@@ -29,5 +29,5 @@ node, `negotium status`/`negotium stop` for lifecycle control, and
 host lifecycle and singleton rules while they migrate to the same client boundary. All processes
 share durable SQLite state.
 See the repository's
-[adapter guide](https://github.com/maestrojeong/Negotium/blob/main/docs/ADAPTERS.ko.md) for state
+[adapter guide](https://github.com/maestrojeong/negotium/blob/main/docs/ADAPTERS.ko.md) for state
 ownership and topic loading semantics.

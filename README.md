@@ -50,8 +50,8 @@ Requirements:
 - credentials for at least one supported agent
 
 ```bash
-git clone git@github.com:maestrojeong/Negotium.git
-cd Negotium
+git clone git@github.com:maestrojeong/negotium.git
+cd negotium
 bun install
 ```
 

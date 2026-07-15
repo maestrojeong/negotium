@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   publish:
-    if: github.repository == 'maestrojeong/Negotium'
+    if: github.repository == 'maestrojeong/negotium'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository

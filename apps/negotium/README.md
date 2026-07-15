@@ -18,4 +18,4 @@ negotium start otium     # separate shell
 ```
 
 Negotium requires Bun 1.2.15 or newer. See the
-[main repository](https://github.com/maestrojeong/Negotium) for configuration and architecture.
+[main repository](https://github.com/maestrojeong/negotium) for configuration and architecture.
