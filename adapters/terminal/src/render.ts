@@ -1,4 +1,10 @@
-import { getRegistry, type MessageDto, resolveModelForAgent, type TopicDto } from "@negotium/core";
+import {
+  getRegistry,
+  type MessageDto,
+  resolveModelForAgent,
+  SELECTABLE_MODELS,
+  type TopicDto,
+} from "@negotium/core";
 import { terminalNowMs } from "@/clock";
 import { commandSuggestions } from "@/commands";
 import {
@@ -76,6 +82,11 @@ interface UiLine {
   bg?: Rgb;
   bold?: boolean;
   dim?: boolean;
+}
+
+export interface RenderedTerminalApp {
+  frame: string;
+  cursor: { x: number; y: number } | null;
 }
 
 const ESC = "\u001b[";
@@ -438,7 +449,7 @@ function helpLines(): UiLine[] {
     line("  Ctrl-O topics · Ctrl-P/N previous/next topic · Ctrl-C twice to quit"),
     line(""),
     line("  Commands", { fg: theme.cyan, bold: true }),
-    line("  /new  /topics  /del  /copy"),
+    line("  /new  /model  /topics  /del  /copy"),
     line("  /abort  /help  /quit", { fg: theme.muted }),
   ];
 }
@@ -527,6 +538,30 @@ function topicOverlayLines(state: AppState, animationFrame = 0): UiLine[] {
   ];
 }
 
+function modelOverlayLines(state: AppState, height: number): UiLine[] {
+  const currentModel = effectiveTopicModel(activeTopic(state));
+  const visibleCount = Math.max(1, height - 3);
+  const start = Math.min(
+    Math.max(0, SELECTABLE_MODELS.length - visibleCount),
+    Math.max(0, state.modelPickerIndex - visibleCount + 1),
+  );
+  return [
+    line("  Models", { fg: theme.accent, bold: true }),
+    line("  ↑↓ select · Enter apply · Esc close", { fg: theme.muted }),
+    line(""),
+    ...SELECTABLE_MODELS.slice(start, start + visibleCount).map(({ model }, visibleIndex) => {
+      const index = start + visibleIndex;
+      const selected = index === state.modelPickerIndex;
+      const current = model === currentModel;
+      return line(`  ${selected ? "›" : " "} ${model}${current ? "  ·  current" : ""}`, {
+        fg: selected ? theme.text : current ? theme.green : theme.muted,
+        bg: selected ? theme.selected : theme.canvas,
+        bold: selected,
+      });
+    }),
+  ];
+}
+
 function conversationContentLines(
   state: AppState,
   width: number,
@@ -560,6 +595,7 @@ function conversationLines(
   if (state.overlay === "help") return helpLines().slice(0, height);
   if (state.overlay === "status") return statusLines(state).slice(0, height);
   if (state.overlay === "topics") return topicOverlayLines(state, animationFrame).slice(0, height);
+  if (state.overlay === "models") return modelOverlayLines(state, height).slice(0, height);
   if (state.creatingTopic) {
     return [
       line(""),
@@ -660,24 +696,58 @@ function decisionPane(state: AppState, width: number): string[] {
   );
 }
 
-function inputVisualLines(state: AppState, width: number): UiLine[] {
+interface InputVisual {
+  lines: UiLine[];
+  cursorLine: number;
+  cursorColumn: number;
+}
+
+function wrappedCursorPosition(
+  value: string,
+  codePointColumn: number,
+  width: number,
+): { line: number; column: number } {
+  let line = 0;
+  let column = 0;
+  for (const character of Array.from(value).slice(0, Math.max(0, codePointColumn))) {
+    const characterWidth = runeWidth(character);
+    if (column + characterWidth > width && column > 0) {
+      line += 1;
+      column = 0;
+    }
+    column += characterWidth;
+  }
+  return { line, column };
+}
+
+function inputVisualLines(state: AppState, width: number): InputVisual {
   if (!state.input) {
-    return [
-      line(`  › █ ${state.creatingTopic ? "Type a topic name…" : "Type a message or /command…"}`, {
-        fg: theme.subtle,
-        bg: theme.surfaceRaised,
-      }),
-    ];
+    return {
+      lines: [
+        line(
+          `  ›   ${state.creatingTopic ? "Type a topic name…" : "Type a message or /command…"}`,
+          {
+            fg: theme.subtle,
+            bg: theme.surfaceRaised,
+          },
+        ),
+      ],
+      cursorLine: 0,
+      cursorColumn: 5,
+    };
   }
   const contentWidth = Math.max(4, width - 5);
   const result: UiLine[] = [];
+  let cursorLine = 0;
+  let cursorColumn = 5;
   for (const [row, inputLine] of state.input.split("\n").entries()) {
-    const points = Array.from(inputLine);
-    const marked =
-      row === state.inputCursor.row
-        ? `${points.slice(0, state.inputCursor.col).join("")}█${points.slice(state.inputCursor.col).join("")}`
-        : inputLine;
-    for (const [visualIndex, wrapped] of wrapText(marked, contentWidth).entries()) {
+    const firstVisualLine = result.length;
+    if (row === state.inputCursor.row) {
+      const cursor = wrappedCursorPosition(inputLine, state.inputCursor.col, contentWidth);
+      cursorLine = firstVisualLine + cursor.line;
+      cursorColumn = 5 + cursor.column;
+    }
+    for (const [visualIndex, wrapped] of wrapText(inputLine, contentWidth).entries()) {
       result.push(
         line(`${row === 0 && visualIndex === 0 ? "  › " : "    "}${wrapped}`, {
           bg: theme.surfaceRaised,
@@ -685,12 +755,22 @@ function inputVisualLines(state: AppState, width: number): UiLine[] {
       );
     }
   }
-  return result;
+  return { lines: result, cursorLine, cursorColumn };
 }
 
-function composerPane(state: AppState, width: number): string[] {
+interface ComposerPane {
+  lines: string[];
+  cursor: { x: number; y: number };
+}
+
+function composerPane(state: AppState, width: number): ComposerPane {
   const title = state.creatingTopic ? "new topic · type a name · Enter create" : "Ctrl-O topics";
-  const inputLines = inputVisualLines(state, width).slice(-5);
+  const visual = inputVisualLines(state, width);
+  let inputStart = Math.max(0, visual.lines.length - 5);
+  if (visual.cursorLine < inputStart) inputStart = visual.cursorLine;
+  else if (visual.cursorLine >= inputStart + 5) inputStart = visual.cursorLine - 4;
+  const inputLines = visual.lines.slice(inputStart, inputStart + 5);
+  const visibleCursorLine = visual.cursorLine - inputStart;
   const suggestions = state.creatingTopic ? [] : commandSuggestions(state.input);
   const suggestionLines = suggestions
     .slice(0, Math.max(0, 6 - inputLines.length))
@@ -713,7 +793,13 @@ function composerPane(state: AppState, width: number): string[] {
     }),
   );
   const hint = paint(fit(`  ${title}`, width), { fg: theme.muted, bg: theme.canvas });
-  return state.creatingTopic ? [hint, ...input] : [...input, hint];
+  return {
+    lines: state.creatingTopic ? [hint, ...input] : [...input, hint],
+    cursor: {
+      x: visual.cursorColumn,
+      y: 2 + visibleCursorLine + (state.creatingTopic ? 1 : 0),
+    },
+  };
 }
 
 function footerLines(state: AppState, width: number): string[] {
@@ -770,18 +856,32 @@ export function renderApp(
   animationFrame = 0,
   nowMs = terminalNowMs(),
 ): string {
+  return renderAppFrame(state, columns, rows, animationFrame, nowMs).frame;
+}
+
+export function renderAppFrame(
+  state: AppState,
+  columns: number,
+  rows: number,
+  animationFrame = 0,
+  nowMs = terminalNowMs(),
+): RenderedTerminalApp {
   const width = Math.max(32, columns);
   const height = Math.max(14, rows);
   const footer = footerLines(state, width);
   const decision = decisionPane(state, width);
   const composer = composerPane(state, width);
-  const bodyHeight = Math.max(3, height - footer.length - decision.length - composer.length);
+  const bodyHeight = Math.max(3, height - footer.length - decision.length - composer.lines.length);
   const body = renderBody(
     conversationLines(state, width, bodyHeight, animationFrame, nowMs),
     width,
     bodyHeight,
   );
-  return [...body, ...decision, ...composer, ...footer].slice(0, height).join("\n");
+  const cursorY = body.length + decision.length + composer.cursor.y;
+  return {
+    frame: [...body, ...decision, ...composer.lines, ...footer].slice(0, height).join("\n"),
+    cursor: cursorY <= height ? { x: composer.cursor.x, y: cursorY } : null,
+  };
 }
 
 export function maxConversationScrollOffset(
@@ -797,7 +897,7 @@ export function maxConversationScrollOffset(
     height -
       footerLines(state, width).length -
       decisionPane(state, width).length -
-      composerPane(state, width).length,
+      composerPane(state, width).lines.length,
   );
   const lineCount = conversationContentLines(state, width).length;
   return conversationViewport(lineCount, bodyHeight, state.scrollOffset).maxOffset;

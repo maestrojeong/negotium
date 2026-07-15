@@ -20,6 +20,8 @@ describe("terminal slash command completion", () => {
   test("suggests context parity commands", () => {
     expect(commandSuggestions("/comp").map((command) => command.name)).toEqual(["compact"]);
     expect(commandSuggestions("/stat").map((command) => command.name)).toEqual(["status"]);
+    expect(commandSuggestions("/mo").map((command) => command.name)).toEqual(["model"]);
+    expect(completeCommand("/mo", 0)).toBe("/model");
   });
 
   test("uses only the short delete command", () => {

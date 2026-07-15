@@ -89,8 +89,8 @@ indicator. Topics and transcript use temporary overlays.
 | `Ctrl-C` | abort/cancel; press twice on an idle screen to quit this TUI |
 
 Commands: `/compact` (summarize and shrink provider context), `/status` (separate latest context
-occupancy from aggregate turn usage), `/new` (reset the current context), `/topics` (open the
-topic picker), `/del` (delete the current topic),
+occupancy from aggregate turn usage), `/model` (open the model picker), `/new` (reset the current
+context), `/topics` (open the topic picker), `/del` (delete the current topic),
 `/copy [all]`, `/abort`, `/help`, `/quit`.
 
 A reset keeps the visible transcript, cancels active and queued work accepted before the reset,

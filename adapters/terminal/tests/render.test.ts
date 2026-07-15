@@ -5,6 +5,7 @@ import {
   effectiveTopicModel,
   formatElapsedDuration,
   renderApp,
+  renderAppFrame,
   stripAnsi,
   WORKING_FRAME_INTERVAL_MS,
   workingFrame,
@@ -38,6 +39,21 @@ describe("terminal renderer", () => {
   test("counts Korean glyphs as wide characters", () => {
     expect(displayWidth("a한")).toBe(3);
     expect(wrapText("가나다", 4)).toEqual(["가나", "다"]);
+  });
+
+  test("positions the hardware cursor after wide Korean glyphs", () => {
+    const state = {
+      ...createInitialState("local"),
+      input: "가나다",
+      inputCursor: { row: 0, col: 1 },
+    };
+    const rendered = renderAppFrame(state, 80, 24);
+    const cursor = rendered.cursor;
+
+    expect(cursor).not.toBeNull();
+    expect(cursor?.x).toBe(7);
+    expect(stripAnsi(rendered.frame).split("\n")[Number(cursor?.y) - 1]).toContain("  › 가나다");
+    expect(rendered.frame).not.toContain("█");
   });
 
   test("fills exactly the requested terminal height", () => {
@@ -121,6 +137,34 @@ describe("terminal renderer", () => {
 
     const output = stripAnsi(renderApp(state, 120, 30));
     expect(output).toContain("Terminal  ·  codex  ·  gpt");
+  });
+
+  test("shows model-only choices in the model picker", () => {
+    const state = {
+      ...setTopics(createInitialState("local"), [
+        { ...topic(), defaultModel: "gpt-5.6-luna", effectiveModel: "gpt-5.6-luna" },
+      ]),
+      overlay: "models" as const,
+      modelPickerIndex: 4,
+    };
+
+    const output = stripAnsi(renderApp(state, 120, 30));
+    expect(output).toContain("Models");
+    expect(output).toContain("gpt-5.6-luna  ·  current");
+    const selected = output.split("\n").find((line) => line.includes("gpt-5.6-sol"));
+    expect(selected).toContain("› gpt-5.6-sol");
+    expect(selected).not.toContain("codex");
+  });
+
+  test("keeps the selected model visible in a short terminal", () => {
+    const state = {
+      ...setTopics(createInitialState("local"), [topic()]),
+      overlay: "models" as const,
+      modelPickerIndex: 7,
+    };
+
+    const output = stripAnsi(renderApp(state, 80, 14));
+    expect(output).toContain("› fable");
   });
 
   test("indents subagent topics with a child arrow in the topic picker", () => {

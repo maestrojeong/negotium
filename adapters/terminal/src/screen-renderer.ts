@@ -1,5 +1,11 @@
 const ESC = "\u001b[";
 
+export function placeTerminalCursor(cursor: { x: number; y: number }): string {
+  const x = Math.max(1, Math.trunc(cursor.x));
+  const y = Math.max(1, Math.trunc(cursor.y));
+  return `${ESC}${y};${x}H${ESC}?25h`;
+}
+
 /**
  * Produces small ANSI patches instead of clearing and repainting the terminal.
  *

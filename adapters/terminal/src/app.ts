@@ -1,4 +1,4 @@
-import type { AgentKind, RuntimeBusEvent } from "@negotium/core";
+import { type AgentKind, type RuntimeBusEvent, SELECTABLE_MODELS } from "@negotium/core";
 import {
   INITIAL_MESSAGE_HISTORY_LIMIT,
   MESSAGE_HISTORY_PAGE_SIZE,
@@ -10,11 +10,11 @@ import { commandSuggestions, completeCommand } from "@/commands";
 import {
   maxConversationScrollOffset,
   plainTranscript,
-  renderApp,
+  renderAppFrame,
   stripAnsi,
   WORKING_FRAME_INTERVAL_MS,
 } from "@/render";
-import { TerminalScreenRenderer } from "@/screen-renderer";
+import { placeTerminalCursor, TerminalScreenRenderer } from "@/screen-renderer";
 import {
   highlightScreenSelection,
   type ScreenPoint,
@@ -362,13 +362,16 @@ export class TerminalApp {
   #render(): void {
     const columns = process.stdout.columns ?? 100;
     const rows = process.stdout.rows ?? 30;
-    const baseFrame = renderApp(this.#state, columns, rows, this.#animationFrame);
+    const rendered = renderAppFrame(this.#state, columns, rows, this.#animationFrame);
+    const baseFrame = rendered.frame;
     this.#plainFrameLines = stripAnsi(baseFrame).split("\n");
     const frame = this.#selection
       ? highlightScreenSelection(baseFrame, this.#selection)
       : baseFrame;
     const patch = this.#screen.update(frame);
-    if (patch) process.stdout.write(patch);
+    // Terminal emulators anchor IME preedit text to the hardware cursor.
+    const cursor = rendered.cursor ? placeTerminalCursor(rendered.cursor) : "";
+    if (patch || cursor) process.stdout.write(`${patch}${cursor}`);
   }
 
   #syncInput(): void {
@@ -562,6 +565,16 @@ export class TerminalApp {
       }
       return;
     }
+    if (this.#state.overlay === "models") {
+      if (chunk === "\u001b[A") this.#moveModelPicker(-1);
+      else if (chunk === "\u001b[B") this.#moveModelPicker(1);
+      else if (chunk === "\r") void this.#selectPickedModel();
+      else if (chunk === "\u001b") {
+        this.#state = { ...this.#state, overlay: null };
+        this.#queueRender();
+      }
+      return;
+    }
     if (chunk === "\u001b[A") {
       if (activeQuestion(this.#state)) this.#moveAskChoice(-1);
       else if (commandSuggestions(this.#input.text).length > 0) this.#moveSuggestion(-1);
@@ -728,6 +741,30 @@ export class TerminalApp {
       this.#queueRender();
       return;
     }
+    if (command === "model") {
+      if (args.length > 0) {
+        this.#state = { ...this.#state, notice: "Usage: /model" };
+        this.#queueRender();
+        return;
+      }
+      const topic = activeTopic(this.#state);
+      if (!topic) {
+        this.#state = { ...this.#state, notice: "No topic selected" };
+        this.#queueRender();
+        return;
+      }
+      const currentModel = topic.effectiveModel ?? topic.defaultModel;
+      const currentIndex = SELECTABLE_MODELS.findIndex(
+        (candidate) => candidate.model === currentModel,
+      );
+      this.#state = {
+        ...this.#state,
+        overlay: "models",
+        modelPickerIndex: Math.max(0, currentIndex),
+      };
+      this.#queueRender();
+      return;
+    }
     if (command === "compact") {
       const topic = activeTopic(this.#state);
       if (!topic) {
@@ -883,6 +920,35 @@ export class TerminalApp {
   #selectPickedTopic(): void {
     const topic = this.#state.topics[this.#state.topicPickerIndex];
     if (topic) void this.#activateTopic(topic.id);
+  }
+
+  #moveModelPicker(delta: number): void {
+    const count = SELECTABLE_MODELS.length;
+    if (count === 0) return;
+    this.#state = {
+      ...this.#state,
+      modelPickerIndex: (this.#state.modelPickerIndex + delta + count) % count,
+    };
+    this.#queueRender();
+  }
+
+  async #selectPickedModel(): Promise<void> {
+    const topic = activeTopic(this.#state);
+    const selected = SELECTABLE_MODELS[this.#state.modelPickerIndex];
+    if (!topic || !selected) return;
+    this.#state = { ...this.#state, overlay: null, notice: `Switching to ${selected.model}…` };
+    this.#queueRender();
+    try {
+      const notice = await this.#client.setModel(topic, selected.model);
+      await this.#refreshTopics(topic.title);
+      this.#state = { ...this.#state, notice };
+    } catch (error) {
+      this.#state = {
+        ...this.#state,
+        notice: error instanceof Error ? error.message : String(error),
+      };
+    }
+    this.#queueRender();
   }
 
   #moveSuggestion(delta: number): void {

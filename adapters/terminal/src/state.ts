@@ -6,7 +6,7 @@ import {
 } from "@negotium/core";
 import { terminalNowMs } from "@/clock";
 
-type Overlay = "help" | "status" | "topics" | "transcript" | "confirm-delete" | null;
+type Overlay = "help" | "status" | "topics" | "models" | "transcript" | "confirm-delete" | null;
 
 interface ToolActivity {
   id: string;
@@ -41,6 +41,7 @@ export interface AppState {
   inputCursor: { row: number; col: number };
   suggestionIndex: number;
   topicPickerIndex: number;
+  modelPickerIndex: number;
   pendingDeleteTopicId?: string;
   creatingTopic: boolean;
   scrollOffset: number;
@@ -62,6 +63,7 @@ export function createInitialState(userId: string): AppState {
     inputCursor: { row: 0, col: 0 },
     suggestionIndex: 0,
     topicPickerIndex: 0,
+    modelPickerIndex: 0,
     creatingTopic: false,
     scrollOffset: 0,
     askChoiceIndex: 0,
