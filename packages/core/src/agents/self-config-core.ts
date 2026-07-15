@@ -7,7 +7,7 @@ import { FROM_SELF_SCHEDULE } from "#platform/constants";
 import { appendJsonlEntry } from "#platform/jsonl";
 import { scheduledSessionInboxPath } from "#query/session-inbox-path";
 import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
-import { clearTopicSessionId, getTopic } from "#storage/api-topics";
+import { getTopic } from "#storage/api-topics";
 import { createDerivedTopic, TopicTitleConflictError } from "#topics/derive";
 import { topicMarkdownLink } from "#topics/links";
 import type { AgentKind, EffortLevel } from "#types";
@@ -123,9 +123,8 @@ export function setSelfConfigModel(ctx: SelfConfigContext, model: string): SelfC
   }
 
   setApiTopicConfig(topic.id, { ...cfg, model });
-  // Provider sessions, notably Codex threads, are bound to their creation
-  // model and cannot safely be resumed after a model change.
-  clearTopicSessionId(topic.id, "self-config-model-changed");
+  // Keep the provider conversation. Codex and Claude both support changing
+  // the model for a later turn while resuming the same thread/session.
   ctx.onConfigChanged?.("model");
   return ok(`Model for this topic set to '${model}' (agent=${agent}). Applies from the next turn.`);
 }

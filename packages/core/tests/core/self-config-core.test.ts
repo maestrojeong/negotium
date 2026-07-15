@@ -69,11 +69,13 @@ afterEach(async () => {
 describe("self-config core", () => {
   test("set_model writes to api_topic_config for the current agent", () => {
     const topicId = seedTopic("codex");
+    setTopicSessionId(topicId, "existing-codex-thread", { reason: "test" });
 
     const result = setSelfConfigModel({ topicId, userId: USER }, "gpt-5.6-luna");
 
     expect(result.isError).toBeUndefined();
     expect(getApiTopicConfig(topicId)?.model).toBe("gpt-5.6-luna");
+    expect(getTopicSessionId(topicId)).toBe("existing-codex-thread");
   });
 
   test("get_model ignores topic default model when it belongs to another agent", () => {
