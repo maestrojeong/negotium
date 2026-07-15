@@ -42,13 +42,16 @@ is scoped to an active peer turn. The adapter therefore declares
 `transcript: full`, `historyBackfill: false`, and `externalAuthors: relayed` in
 the adapter SDK v2 contract.
 
-To expose the same node through Otium, Telegram, and Terminal together:
+Otium, Telegram, and Terminal share SQLite state but run independently:
 
 ```bash
-negotium start terminal telegram otium
+negotium start otium
+negotium start telegram  # another shell
+negotium start terminal  # another shell; may be repeated
 ```
 
-The integration mounts through negotium's plugin chain
+Otium holds a state-directory singleton lease and owns an ephemeral loopback node. The integration
+mounts through negotium's plugin chain
 (`registerNodeRequestHandler`) — negotium core knows nothing about otium.
 
 ## Local experiment (no cloud)

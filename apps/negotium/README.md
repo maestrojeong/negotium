@@ -8,9 +8,13 @@ npm install --global negotium
 
 negotium init
 negotium terminal
+negotium status
+negotium stop
 negotium telegram
 negotium otium join <invite-code>
-negotium start terminal telegram otium
+negotium start terminal
+negotium start telegram  # separate shell
+negotium start otium     # separate shell
 ```
 
 Negotium requires Bun 1.2.15 or newer. See the

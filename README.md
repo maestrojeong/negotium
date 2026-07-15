@@ -103,11 +103,13 @@ functional convenience entrypoint rather than a name-only placeholder.
 negotium init
 negotium chat [topic] [--agent=claude|codex|maestro]
 negotium serve
+negotium status
+negotium stop
 negotium topics
 negotium terminal
 negotium telegram
 negotium otium join|serve|bindings|share|private
-negotium start [terminal telegram otium|all]
+negotium start <terminal|telegram|otium>
 
 negotium mcp list|add|remove|enable|disable
 negotium vault list|set|get|del
@@ -117,31 +119,53 @@ negotium cron list|create|inspect|logs|run|pause|resume|restart|kill|reset|delet
 Inside terminal chat:
 
 ```text
-/switch <topic>    create or enter another topic
-/abort             stop the current turn
-/quit              close the terminal host
+/new                  reset the current non-General topic's AI context
+/new <topic> [agent]  create and enter a topic
+/topic <topic>        enter an existing topic
+/topics               open the topic picker
+/delete [topic]       archive and delete a topic
+/copy [all]           copy the last answer or transcript
+/abort                stop the current turn
+/quit                 close the terminal host
 ```
 
-### Run a headless node
+### Run the node and Terminal clients
 
 ```bash
 negotium serve
 ```
 
-The node binds to `127.0.0.1:7777` by default and serves the runtime MCP endpoint, durable
-inbox worker, configured MCP processes, and enabled modules. Keep it alive with a process
-supervisor such as `launchd`, systemd, or pm2.
+The foreground node binds to `127.0.0.1:7777` by default and serves the runtime MCP endpoint,
+durable inbox worker, configured MCP processes, enabled modules, and authenticated control API.
+Keep it alive with a process supervisor such as `launchd`, systemd, or pm2.
 
-One state directory must have **one long-lived runtime process**. To expose that runtime through
-several channels, let the combined host start the node once:
+`negotium terminal` needs no separate setup: it discovers or auto-starts one long-lived local
+node for the current state directory, then connects over REST and a cursor-based SSE event stream.
+Closing or crashing the TUI only disconnects that client; active agent turns and the node continue.
 
 ```bash
-negotium start terminal telegram otium
+negotium status
+negotium stop
+negotium terminal --embedded   # explicit in-process recovery/development mode
 ```
 
-Do not start separate standalone adapter processes against the same state directory. The combined
-host owns one MCP endpoint, scheduler, task store, topic store, and shutdown lifecycle; adapters
-only own channel-specific identities and mappings.
+Channel processes share durable SQLite state and do not need a common parent process. Terminal
+clients may be opened more than once and share the long-lived node; Telegram and Otium currently
+retain independent host processes and enforce one live process each for the same state directory:
+
+```bash
+negotium start terminal    # shell 1 (repeat in more shells if useful)
+negotium start telegram    # shell 2
+negotium start otium       # shell 3
+```
+
+The Terminal node publishes an ephemeral authenticated loopback control endpoint and holds a
+state-directory singleton lease. Topics, messages, runtime events, pending turn requests, leases,
+and input history are coordinated through the state database. The cron module also uses a
+cross-process lease so only one process schedules jobs.
+
+Resetting a topic preserves its visible message history, but cancels every active or queued turn
+accepted before the reset. Requests accepted afterward start against a fresh provider context.
 
 ## Scheduled agent turns
 
@@ -196,7 +220,7 @@ agents a shared collaboration surface:
 
 | Tool | Behavior |
 |---|---|
-| `send_message` / `tell_session` | Queue fire-and-forget work for another topic |
+| `tell_session` | Queue fire-and-forget work for another topic |
 | `ask_session` | Fork another topic's session read-only and route the answer back |
 | `spawn_subagent` | Create a child room with its own session and report completion to the parent |
 | `task_*` | Maintain shared durable tasks |

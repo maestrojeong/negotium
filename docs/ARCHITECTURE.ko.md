@@ -61,8 +61,8 @@ negotium의 파일 대부분은 runtime-api에서 이식됐다 (`api/`·`peer/` 
 
 왜 파일 큐인가: MCP 서버(session-comm)는 **별도 프로세스**라 런타임 메모리에 직접 못 닿는다.
 파일 append + `.processing` rename 클레임이 크래시에도 살아남는 가장 단순한 at-least-once다.
-(negotium MCP의 send_message는 임베디드 HTTP라 직접 호출할 수도 있지만, 내구성을 위해
-같은 큐에 쓴다 — 입구가 하나면 시맨틱도 하나다.)
+토픽 간 메시지 입구는 session-comm의 `tell_session`/`ask_session`으로 일원화한다. 임베디드
+HTTP runtime MCP는 토픽 생성·목록·중단·삭제 같은 관리 작업만 담당한다.
 
 ## 5. MCP 세 층
 
