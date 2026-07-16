@@ -59,6 +59,17 @@ export function getTopicBrief(topicId: string): TopicBrief | null {
   return rowToBrief(row);
 }
 
+/** Resolve current id-keyed briefs while retaining legacy title-keyed wiki memory. */
+export function resolveTopicBrief(
+  topicId: string,
+  legacyTitle: string,
+): { brief: TopicBrief; storageKey: string } | null {
+  const current = getTopicBrief(topicId);
+  if (current) return { brief: current, storageKey: topicId };
+  const legacy = getTopicBrief(legacyTitle);
+  return legacy ? { brief: legacy, storageKey: legacyTitle } : null;
+}
+
 /**
  * Upsert the topic brief. `briefMd` and `latestSummaryMd` are
  * independently optional — callers can update just one field without

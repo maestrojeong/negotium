@@ -100,7 +100,7 @@ import {
   softDeleteApiMessage,
   updateApiMessageUsage,
 } from "#storage/api-messages";
-import { getTopicBrief } from "#storage/api-topic-brief";
+import { resolveTopicBrief } from "#storage/api-topic-brief";
 import {
   clearTopicSessionId,
   getTopic,
@@ -128,6 +128,7 @@ import {
 } from "#storage/runtime-turn-requests";
 import type { PendingAskUserId } from "#storage/session-asks";
 import { getSharedWikiDir } from "#storage/wiki";
+import { wikiSummaryFilename } from "#storage/wiki-summary-names";
 import { getTopics } from "#topics/derive";
 import type { AgentKind, EffortLevel, PeerRuntimeBridgeContext, UnifiedEvent } from "#types";
 import type { MessageDto, TopicDto } from "#types/api";
@@ -1833,18 +1834,23 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     isMentionOnlyChannel || isManager ? topic : (getTopicMemoryOrigin(topicId) ?? topic);
   if (!isMentionOnlyChannel) {
     try {
-      const brief = getTopicBrief(memoryTopic.id);
-      if (brief) {
+      const resolvedBrief = resolveTopicBrief(memoryTopic.id, memoryTopic.title);
+      if (resolvedBrief) {
+        const { brief, storageKey } = resolvedBrief;
         // #General is the workspace memory hub: its brief is the rolling digest the
         // archiver accumulates across ALL archived topics, and its files live in the
         // SHARED wiki root (getSharedWikiDir), not this topic's per-room workspace.
         const wikiDir = getSharedWikiDir();
         systemPrompt += buildMemoryPromptSection({
-          topicId: memoryTopic.id,
+          topicId: storageKey,
           wikiDir,
           hasFiles: true,
           latestSummaryFile: brief.summaryDate
-            ? `${wikiDir}/summaries/${brief.summaryDate}-${memoryTopic.id}.md`
+            ? `${wikiDir}/summaries/${wikiSummaryFilename(
+                brief.summaryDate,
+                memoryTopic.title,
+                storageKey,
+              )}`
             : null,
           hasArchive: Boolean(brief.latestSummaryMd),
           isManager,
