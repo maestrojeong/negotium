@@ -89,4 +89,22 @@ describe("formatToolUse", () => {
       choices: [{ label: "Yes", description: "Ship the current version" }, { label: "No" }],
     });
   });
+
+  test("keeps bounded session communication details for client timelines", () => {
+    expect(
+      summarizeToolInput("mcp__session-comm__ask_session", {
+        to: "review",
+        message: "Check the current diff for regressions.",
+      }),
+    ).toEqual({
+      to: "review",
+      message: "Check the current diff for regressions.",
+    });
+
+    const summary = summarizeToolInput("mcp__session-comm__tell_session", {
+      to: "research",
+      message: "Investigate this independently. ".repeat(10),
+    });
+    expect(String(summary?.message).length).toBeLessThanOrEqual(90);
+  });
 });

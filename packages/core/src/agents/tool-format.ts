@@ -300,6 +300,11 @@ export function summarizeToolInput(
     if (value !== undefined) summary[key] = value;
   }
 
+  if (shortName === "ask_session" || shortName === "tell_session") {
+    const message = summarizePrimitive(input.message);
+    if (typeof message === "string") summary.message = message;
+  }
+
   if (shortName === "edit") {
     const before = summarizePrimitive(input.old_string);
     const after = summarizePrimitive(input.new_string);

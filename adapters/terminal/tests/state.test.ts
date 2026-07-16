@@ -413,6 +413,48 @@ describe("terminal adapter state", () => {
     expect(state.messages.a?.[0]?.editedAt).toBeDefined();
   });
 
+  test("shows session communication target and transferred message", () => {
+    let state = setTopics(createInitialState("local"), [topic("a", "A")]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      payload: {
+        kind: "tool_call",
+        queryId: "q",
+        toolUseId: "ask",
+        name: "mcp__session-comm__ask_session",
+        label: "mcp__session-comm__ask_session(review)",
+        input: {
+          to: "review",
+          message: "Check the current diff for regressions.",
+        },
+      },
+    });
+
+    expect(state.messages.a?.[0]?.text).toBe(
+      "Ask session · review\nCheck the current diff for regressions.",
+    );
+
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      payload: {
+        kind: "tool_call",
+        queryId: "q",
+        toolUseId: "tell",
+        name: "mcp__session-comm__tell_session",
+        label: "mcp__session-comm__tell_session(research)",
+        input: {
+          to: "research",
+          message: "Investigate this independently.",
+        },
+      },
+    });
+    expect(state.messages.a?.[1]?.text).toBe(
+      "Tell session · research\nInvestigate this independently.",
+    );
+  });
+
   test("keeps tool calls inline before the agent message that follows", () => {
     let state = setTopics(createInitialState("local"), [topic("a", "A")]);
     state = applyRuntimeEvent(state, {

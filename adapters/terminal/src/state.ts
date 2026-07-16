@@ -412,6 +412,12 @@ function toolTimelineText(status: Record<string, unknown>): string {
       ? (status.input as Record<string, unknown>)
       : {};
   const path = compactPath(input.file_path ?? input.path ?? input.file_id);
+  if (shortName === "ask_session" || shortName === "tell_session") {
+    const target = typeof input.to === "string" && input.to.trim() ? input.to.trim() : "session";
+    const message = typeof input.message === "string" ? input.message.trim() : "";
+    const action = shortName === "ask_session" ? "Ask session" : "Tell session";
+    return [`${action} · ${target}`, message].filter(Boolean).join("\n");
+  }
   if (shortName === "edit") {
     const before = typeof input.before === "string" ? input.before : "";
     const after = typeof input.after === "string" ? input.after : "";

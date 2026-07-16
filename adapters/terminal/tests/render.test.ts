@@ -391,6 +391,26 @@ describe("terminal renderer", () => {
     expect(output).toContain("Working");
   });
 
+  test("shows what an ask session sends and where", () => {
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: {
+        kind: "tool_call",
+        queryId: "query",
+        toolUseId: "tool",
+        name: "mcp__session-comm__ask_session",
+        label: "mcp__session-comm__ask_session(review)",
+        input: { to: "review", message: "Check the current diff." },
+      },
+    });
+
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("Ask session · review");
+    expect(output).toContain("Check the current diff.");
+  });
+
   test("labels the task panel as Tasks like Telegram", () => {
     let state = setTopics(createInitialState("local"), [topic()]);
     state = setMessages(state, "topic", [
