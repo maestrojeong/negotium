@@ -42,11 +42,11 @@ bun scripts/release-packages.ts status --from=@negotium/node
 The release scripts enforce:
 
 - one version across all publishable packages;
-- dependency order for internal packages;
+- dependency order and exact release versions for internal packages;
 - an explicit `files` allowlist and public publish configuration;
 - a clean Git worktree for an actual publish;
 - idempotent skipping when a version already exists on npm; and
-- installation of all tarballs into an empty project during `release:smoke`.
+- npm packing plus npm installation of all tarballs into an empty project during `release:smoke`.
 
 ## Publish order
 

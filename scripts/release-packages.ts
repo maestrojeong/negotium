@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -124,6 +124,11 @@ async function loadAndValidatePackages(): Promise<void> {
       if (dependencyIndex !== undefined && dependencyIndex >= index) {
         fail(`${pkg.name}: internal dependency ${dependency} must appear earlier in release order`);
       }
+      if (dependencyIndex !== undefined && productionDependencies[dependency] !== manifest.version) {
+        fail(
+          `${pkg.name}: internal dependency ${dependency} must use the release version ${manifest.version}, found ${productionDependencies[dependency]}`,
+        );
+      }
     }
   }
 
@@ -180,10 +185,14 @@ async function ensureCleanWorktree(): Promise<void> {
 async function dryRun(packages: ReleasePackage[]): Promise<void> {
   for (const pkg of packages) {
     console.log(`\n==> dry-run ${pkg.name}@${pkg.manifest?.version}`);
-    const safeName = pkg.name.replaceAll(/[^a-zA-Z0-9.-]/g, "-");
-    const tarball = join(tmpdir(), `${safeName}-${pkg.manifest?.version}-${randomUUID()}.tgz`);
+    const packRoot = await mkdtemp(join(tmpdir(), `negotium-npm-pack-${randomUUID()}-`));
     try {
-      await run("bun", ["pm", "pack", "--filename", tarball], resolve(root, pkg.directory));
+      await run("npm", ["pack", "--pack-destination", packRoot], resolve(root, pkg.directory));
+      const packedFiles = (await readdir(packRoot)).filter((entry) => entry.endsWith(".tgz"));
+      if (packedFiles.length !== 1) {
+        fail(`${pkg.name}: expected one npm tarball, found ${packedFiles.length}`);
+      }
+      const tarball = join(packRoot, packedFiles[0] ?? fail(`${pkg.name}: npm tarball missing`));
       const packedManifestText = await run(
         "tar",
         ["-xOf", tarball, "package/package.json"],
@@ -212,7 +221,7 @@ async function dryRun(packages: ReleasePackage[]): Promise<void> {
       if (!entries.includes("package/package.json")) fail(`${pkg.name}: tarball has no manifest`);
       console.log(`verified ${entries.trim().split("\n").length} packed files`);
     } finally {
-      await rm(tarball, { force: true });
+      await rm(packRoot, { recursive: true, force: true });
     }
   }
 }
@@ -227,8 +236,19 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
     const dependencies: Record<string, string> = {};
     for (const pkg of packages) {
       const safeName = pkg.name.replaceAll(/[^a-zA-Z0-9.-]/g, "-");
-      const tarball = join(smokeRoot, `${safeName}-${pkg.manifest?.version}.tgz`);
-      await run("bun", ["pm", "pack", "--filename", tarball], resolve(root, pkg.directory), false);
+      const packRoot = join(smokeRoot, "packs", safeName);
+      await mkdir(packRoot, { recursive: true });
+      await run(
+        "npm",
+        ["pack", "--pack-destination", packRoot],
+        resolve(root, pkg.directory),
+        false,
+      );
+      const packedFiles = (await readdir(packRoot)).filter((entry) => entry.endsWith(".tgz"));
+      if (packedFiles.length !== 1) {
+        fail(`${pkg.name}: expected one npm tarball, found ${packedFiles.length}`);
+      }
+      const tarball = join(packRoot, packedFiles[0] ?? fail(`${pkg.name}: npm tarball missing`));
       dependencies[pkg.name] = `file:${tarball}`;
     }
 
@@ -247,7 +267,7 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
       NEGOTIUM_STATE_DIR: join(smokeRoot, "state"),
       TMPDIR: installTmp,
     };
-    await run("bun", ["install"], smokeRoot, true, smokeEnv);
+    await run("npm", ["install", "--ignore-scripts=false"], smokeRoot, true, smokeEnv);
 
     const importTargets = packages
       .map((pkg) => pkg.name)
