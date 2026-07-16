@@ -180,6 +180,17 @@ interface DeliveredMediaRef {
   kind: "media";
 }
 
+interface ToolStatusRef {
+  mapping: ChatMapping;
+  messageId: number;
+}
+
+interface ToolStatusState {
+  closed: boolean;
+  refs: Map<string, ToolStatusRef>;
+  queue: Promise<void>;
+}
+
 /** Telegram caps forum topic names at 128 characters. */
 const FORUM_TOPIC_NAME_MAX = 128;
 /** DM fallback: how far up the parentTopicId chain to look for a mapped
@@ -321,6 +332,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   const byTopic = new Map<string, Set<ChatMapping>>();
   const targetByQueryId = new Map<string, ChatMapping>();
   const typingHeartbeatByQueryId = new Map<string, ReturnType<typeof setInterval>>();
+  const toolStatusByQueryId = new Map<string, ToolStatusState>();
   const runtimeMessages = new Map<string, MessageDto>();
   const deliveredByRuntimeMessageId = new Map<string, DeliveredMessageRef[]>();
   const deletedRuntimeMessageIds = new Set<string>();
@@ -422,6 +434,74 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
 
   const threadOpts = (threadId?: number): Record<string, unknown> =>
     threadId === undefined ? {} : { message_thread_id: threadId };
+
+  function showToolStatus(topicId: string, queryId: string, label: string): void {
+    // A status message is only safe when it can be removed at turn end.
+    const deleteMessage = client.deleteMessage?.bind(client);
+    if (!deleteMessage) return;
+    let state = toolStatusByQueryId.get(queryId);
+    if (!state) {
+      state = { closed: false, refs: new Map(), queue: Promise.resolve() };
+      toolStatusByQueryId.set(queryId, state);
+    }
+    const current = state;
+    const text = `🔧 ${label}`.slice(0, 512);
+    current.queue = current.queue.then(async () => {
+      if (stopped || current.closed) return;
+      for (const mapping of typingTargets(topicId, queryId)) {
+        if (stopped || current.closed) return;
+        const key = mappingKey(mapping.chatId, mapping.threadId);
+        const existing = current.refs.get(key);
+        if (existing && typeof client.editMessageText === "function") {
+          try {
+            await client.editMessageText(text, {
+              chat_id: mapping.chatId,
+              message_id: existing.messageId,
+            });
+            continue;
+          } catch (err) {
+            if (/message is not modified/i.test(telegramErrorInfo(err).description)) continue;
+            current.refs.delete(key);
+            await deleteMessage(mapping.chatId, existing.messageId).catch(() => {});
+          }
+        } else if (existing) {
+          current.refs.delete(key);
+          await deleteMessage(mapping.chatId, existing.messageId).catch(() => {});
+        }
+        try {
+          const sent = await client.sendMessage(mapping.chatId, text, threadOpts(mapping.threadId));
+          const messageId = sentMessageId(sent);
+          if (messageId === null) continue;
+          if (stopped || current.closed) {
+            await deleteMessage(mapping.chatId, messageId).catch(() => {});
+          } else {
+            current.refs.set(key, { mapping, messageId });
+          }
+        } catch (err) {
+          logger.warn(
+            { err, topicId, queryId, chatId: mapping.chatId },
+            "telegram adapter: tool status send failed",
+          );
+        }
+      }
+      if (!current.closed) sendTyping(topicId, queryId);
+    });
+  }
+
+  function closeToolStatus(queryId: string): void {
+    const state = toolStatusByQueryId.get(queryId);
+    if (!state) return;
+    state.closed = true;
+    state.queue = state.queue.then(async () => {
+      if (typeof client.deleteMessage === "function") {
+        for (const { mapping, messageId } of state.refs.values()) {
+          await client.deleteMessage(mapping.chatId, messageId).catch(() => {});
+        }
+      }
+      state.refs.clear();
+      if (toolStatusByQueryId.get(queryId) === state) toolStatusByQueryId.delete(queryId);
+    });
+  }
 
   /** Remove one mapping from the byTopic fan-out set (byKey untouched). */
   function detachFromTopic(mapping: ChatMapping): void {
@@ -2146,7 +2226,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     if (event.type === "ai-status") {
       // Telegram typing actions expire after a few seconds. Keep refreshing
       // while the turn is active so long tool/model waits still look alive.
-      const status = event.payload as { kind?: string; queryId?: string } | null;
+      const status = event.payload as { kind?: string; queryId?: string; label?: string } | null;
       if (status?.kind === "ai_active" && typeof client.sendChatAction === "function") {
         if (status.queryId) startTypingHeartbeat(event.topicId, status.queryId);
         else sendTyping(event.topicId);
@@ -2155,9 +2235,13 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
         status?.queryId &&
         (status.kind === "ai_done" || status.kind === "ai_error" || status.kind === "ai_aborted")
       ) {
+        closeToolStatus(status.queryId);
         stopTypingHeartbeat(status.queryId);
         targetByQueryId.delete(status.queryId);
         clearQueryDeliveryState(status.queryId);
+      }
+      if (status?.kind === "tool_call" && status.queryId && status.label) {
+        showToolStatus(event.topicId, status.queryId, status.label);
       }
       return;
     }
@@ -2198,6 +2282,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       }
       for (const timer of typingHeartbeatByQueryId.values()) clearInterval(timer);
       typingHeartbeatByQueryId.clear();
+      for (const queryId of toolStatusByQueryId.keys()) closeToolStatus(queryId);
       // Clawgram's clearMediaGroupBuffer behavior: cancel timers and DROP
       // buffered album items — a flush must not fire into a stopped adapter.
       for (const entry of mediaGroups.values()) {

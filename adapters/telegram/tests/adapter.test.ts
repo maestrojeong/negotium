@@ -264,6 +264,59 @@ describe("outbound", () => {
     expect(fake.callsFor(chat(7))).toHaveLength(before);
   });
 
+  test("shows tool calls in one temporary message and deletes it when the turn ends", async () => {
+    const topic = getTopicByNameForUser(room("outbound-room"), USER)!;
+    const queryId = room("tool-status");
+    const before = fake.callsFor(chat(7)).length;
+    const progressMessageId = fake.nextMessageId;
+
+    runtimeBus().broadcastToolCall(
+      topic.id,
+      queryId,
+      "Bash",
+      { command: "git status --short" },
+      "Bash(git status --short)",
+      "tool-1",
+    );
+    await waitFor(() => fake.callsFor(chat(7)).length > before);
+    expect(fake.callsFor(chat(7)).at(-1)?.text).toBe("🔧 Bash(git status --short)");
+
+    runtimeBus().broadcastToolCall(
+      topic.id,
+      queryId,
+      "Read",
+      { file_path: "/tmp/example.ts" },
+      "Read(/tmp/example.ts)",
+      "tool-2",
+    );
+    await waitFor(() => fake.editCalls.some((call) => call.text === "🔧 Read(/tmp/example.ts)"));
+    expect(fake.editCalls.at(-1)?.opts.message_id).toBe(progressMessageId);
+
+    fake.failNextEdits = { count: 1, error: new Error("message cannot be edited") };
+    const replacementMessageId = fake.nextMessageId;
+    runtimeBus().broadcastToolCall(
+      topic.id,
+      queryId,
+      "Grep",
+      { pattern: "TODO" },
+      "Grep(TODO)",
+      "tool-3",
+    );
+    await waitFor(() =>
+      fake.deletedMessageCalls.some(
+        (call) => call.chatId === chat(7) && call.messageId === progressMessageId,
+      ),
+    );
+    await waitFor(() => fake.callsFor(chat(7)).some((call) => call.text === "🔧 Grep(TODO)"));
+
+    runtimeBus().broadcastDone(topic.id, queryId);
+    await waitFor(() =>
+      fake.deletedMessageCalls.some(
+        (call) => call.chatId === chat(7) && call.messageId === replacementMessageId,
+      ),
+    );
+  });
+
   test("relays the same user's Terminal message into a mapped Telegram chat", async () => {
     const topic = getTopicByNameForUser(room("outbound-room"), USER)!;
     const before = fake.callsFor(chat(7)).length;
