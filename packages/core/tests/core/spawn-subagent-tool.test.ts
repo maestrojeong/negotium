@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
   createSpawnSubagentToolDefinition,
+  createSubagentManagementToolDefinitions,
   sweepStaleSubagentCards,
 } from "#agents/mcp-tools/spawn-subagent";
 import {
@@ -122,6 +123,60 @@ describe("spawn_subagent guards", () => {
     const result = await tool.handler({ task: "do something", model: "deepseek-pro" });
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toContain("not valid for agent 'claude'");
+  });
+});
+
+describe("subagent management tools", () => {
+  test("lists only direct subagents owned by the current user", async () => {
+    const parent = makeTopic("user-1");
+    const owned = makeTopic("user-1", {
+      title: `owned-${randomUUID()}`,
+      parentTopicId: parent.id,
+      isSubagent: true,
+    });
+    makeTopic("user-2", {
+      title: `foreign-${randomUUID()}`,
+      parentTopicId: parent.id,
+      isSubagent: true,
+      participants: [
+        { userId: "user-1", role: "member" },
+        { userId: "user-2", role: "owner" },
+      ],
+    });
+
+    const listTool = createSubagentManagementToolDefinitions({
+      userId: "user-1",
+      topicId: parent.id,
+    }).find((tool) => tool.name === "list_subagents");
+    expect(listTool).toBeDefined();
+    const result = await listTool?.handler({});
+    const payload = JSON.parse(result?.content[0]?.text ?? "{}") as {
+      subagents?: Array<{ topic_id: string }>;
+    };
+    expect(payload.subagents?.map((child) => child.topic_id)).toEqual([owned.id]);
+  });
+
+  test("deletes an owned direct subagent and rejects unrelated topics", async () => {
+    const parent = makeTopic("user-1");
+    const child = makeTopic("user-1", {
+      title: `child-${randomUUID()}`,
+      parentTopicId: parent.id,
+      isSubagent: true,
+    });
+    const unrelated = makeTopic("user-1", { title: `unrelated-${randomUUID()}` });
+    const deleteTool = createSubagentManagementToolDefinitions({
+      userId: "user-1",
+      topicId: parent.id,
+    }).find((tool) => tool.name === "delete_subagent");
+    expect(deleteTool).toBeDefined();
+
+    const rejected = await deleteTool?.handler({ topic_id: unrelated.id });
+    expect(rejected?.isError).toBe(true);
+    expect(getTopic(unrelated.id)).not.toBeNull();
+
+    const deleted = await deleteTool?.handler({ topic_id: child.id });
+    expect(deleted?.isError).toBeUndefined();
+    expect(getTopic(child.id)).toBeNull();
   });
 });
 

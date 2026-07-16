@@ -17,7 +17,7 @@ import {
   listApiMessagesByKind,
   updateApiMessageSubagentCard,
 } from "#storage/api-messages";
-import { getTopic } from "#storage/api-topics";
+import { getTopic, listTopics } from "#storage/api-topics";
 import { type AgentKind, isAgentKind } from "#types";
 import type { MessageDto, SubagentCardDto } from "#types/api";
 
@@ -33,6 +33,8 @@ export interface SpawnSubagentToolContext {
   agent: AgentKind;
   model?: string;
 }
+
+export type SubagentToolContext = Pick<SpawnSubagentToolContext, "userId" | "topicId">;
 
 export interface SubagentWatch {
   parentTopicId: string;
@@ -394,6 +396,102 @@ async function spawnSubagent(
       "Do NOT wait or poll — finish your current turn normally.",
     ].join("\n"),
   );
+}
+
+function ownedDirectSubagents(ctx: SubagentToolContext) {
+  const parent = getTopic(ctx.topicId);
+  if (!parent) return { ok: false, error: `Error: topic '${ctx.topicId}' not found.` } as const;
+  if (!parent.participants.some((participant) => participant.userId === ctx.userId)) {
+    return { ok: false, error: "Error: user is not a member of this topic." } as const;
+  }
+  if (parent.kind !== "agent" || parent.isSubagent) {
+    return {
+      ok: false,
+      error: "Error: subagent management is only available in top-level agent rooms.",
+    } as const;
+  }
+  return {
+    ok: true,
+    parent,
+    children: listTopics().filter(
+      (topic) =>
+        topic.parentTopicId === ctx.topicId &&
+        topic.isSubagent &&
+        topic.participants.some(
+          (participant) => participant.userId === ctx.userId && participant.role === "owner",
+        ),
+    ),
+  } as const;
+}
+
+function subagentStatus(
+  parentTopicId: string,
+  childTopicId: string,
+): SubagentCardDto["status"] | "unknown" {
+  const watch = watchesByChild.get(childTopicId);
+  if (watch?.running) return "running";
+  const card = listApiMessagesByKind("subagent")
+    .filter(
+      (message) =>
+        message.topicId === parentTopicId && message.subagentCard?.subagentTopicId === childTopicId,
+    )
+    .at(-1)?.subagentCard;
+  return card?.status ?? "unknown";
+}
+
+export function createSubagentManagementToolDefinitions(ctx: SubagentToolContext): SharedMcpTool[] {
+  return [
+    {
+      name: "list_subagents",
+      description:
+        "List the direct subagent rooms created by this user from the current parent room. " +
+        "Use this to decide whether a completed subagent should be retained for follow-up work or deleted.",
+      schema: {},
+      async handler() {
+        const result = ownedDirectSubagents(ctx);
+        if (!result.ok) return errorResult(result.error);
+        const children = result.children.map((child) => ({
+          topic_id: child.id,
+          name: child.title,
+          status: subagentStatus(ctx.topicId, child.id),
+          agent: child.agent ?? null,
+          model: child.defaultModel ?? null,
+          created_at: child.createdAt,
+        }));
+        return textResult(JSON.stringify({ subagents: children }, null, 2));
+      },
+    },
+    {
+      name: "delete_subagent",
+      description:
+        "Permanently delete one direct subagent room created by this user from the current parent room. " +
+        "This removes its conversation, workspace, runtime state, and topic. Keep it when follow-up work is likely.",
+      schema: {
+        topic_id: z
+          .string()
+          .describe("Exact subagent room id returned by list_subagents; names are not accepted."),
+      },
+      async handler(input) {
+        const result = ownedDirectSubagents(ctx);
+        if (!result.ok) return errorResult(result.error);
+        const topicId = typeof input.topic_id === "string" ? input.topic_id.trim() : "";
+        const child = result.children.find((candidate) => candidate.id === topicId);
+        if (!child) {
+          return errorResult(
+            "Error: no owned direct subagent with that topic_id exists under this room.",
+          );
+        }
+        try {
+          const { deleteTopicCascade } = await import("#topics/lifecycle");
+          await deleteTopicCascade(child, ctx.userId);
+          return textResult(`Subagent deleted: ${child.title} (${child.id})`);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return errorResult(`Error: failed to delete subagent '${child.title}': ${message}`);
+        }
+      },
+    },
+  ];
 }
 
 export function createSpawnSubagentToolDefinition(ctx: SpawnSubagentToolContext): SharedMcpTool {

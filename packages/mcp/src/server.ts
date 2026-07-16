@@ -24,6 +24,7 @@ import {
   createAskUserToolDefinition,
   createSelfConfigToolDefinitions,
   createSpawnSubagentToolDefinition,
+  createSubagentManagementToolDefinitions,
   dispatchPeerRuntimeFile,
   dispatchPeerRuntimeSpawn,
   errorResult,
@@ -268,6 +269,14 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
       spawnTool.schema as any,
       spawnHandler as any,
     );
+    if (!peerBridge) {
+      for (const def of createSubagentManagementToolDefinitions({
+        userId: ctx.userId,
+        topicId: ctx.topicId,
+      })) {
+        server.tool(def.name, def.description, def.schema as any, def.handler as any);
+      }
+    }
   }
 
   server.tool(

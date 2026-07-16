@@ -177,8 +177,8 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
 
   server.tool(
     "delete_topic",
-    "Delete a topic on this node after archiving its conversation history. Deletion is blocked when " +
-      "the archive cannot be written; pass force: true only as an explicit escape hatch that accepts losing history.",
+    "Delete a topic owned by the calling user after archiving its conversation history. Deletion is blocked " +
+      "when the archive cannot be written; pass force: true only as an explicit escape hatch that accepts losing history.",
     {
       topic: z.string().describe("Target topic title or id."),
       force: z
@@ -195,6 +195,12 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
       }
       if (target.kind === "manager") {
         return errorResult("Error: manager rooms are system-managed and cannot be deleted.");
+      }
+      const isOwner = target.participants.some(
+        (participant) => participant.userId === ctx.userId && participant.role === "owner",
+      );
+      if (!isOwner) {
+        return errorResult("Error: only the topic owner can delete it.");
       }
 
       try {

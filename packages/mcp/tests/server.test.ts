@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
   getTopicByNameForUser,
+  getTopic,
   getTopicSessionId,
   issueRuntimeMcpToken,
   type RuntimeMcpContext,
@@ -13,6 +15,7 @@ import {
   registerTopic,
   sessionInboxPath,
   setTopicSessionId,
+  upsertTopic,
 } from "@negotium/core";
 import { handleNegotiumMcpRequest } from "../src/index";
 
@@ -91,6 +94,8 @@ describe("negotium MCP endpoint", () => {
       "delete_topic",
       "ask_user_question",
       "spawn_subagent",
+      "list_subagents",
+      "delete_subagent",
       "send_file",
       "send_files",
       "show_html",
@@ -219,6 +224,60 @@ describe("negotium MCP endpoint", () => {
     });
     expect(result.isError).toBe(true);
     expect(resultText(result)).toContain("current topic");
+  });
+
+  test("delete_topic rejects a shared topic member without cascading into owner subagents", async () => {
+    const suffix = randomUUID();
+    const ownerId = `delete-owner-${suffix}`;
+    const memberId = `delete-member-${suffix}`;
+    const parent = registerTopic({
+      title: `shared-delete-parent-${suffix}`,
+      userId: ownerId,
+      agent: "codex",
+      accessMode: "shared",
+    });
+    parent.participants.push({ userId: memberId, role: "member" });
+    upsertTopic(parent);
+
+    const child = registerTopic({
+      title: `shared-delete-child-${suffix}`,
+      userId: ownerId,
+      agent: "codex",
+    });
+    child.parentTopicId = parent.id;
+    child.isSubagent = true;
+    upsertTopic(child);
+
+    const caller = registerTopic({
+      title: `shared-delete-caller-${suffix}`,
+      userId: memberId,
+      agent: "codex",
+    });
+    const memberCtx: RuntimeMcpContext = {
+      ...ctx,
+      userId: memberId,
+      topicId: caller.id,
+      topicTitle: caller.title,
+    };
+    const memberClient = new Client({ name: "negotium-member-delete-test", version: "1.0.0" });
+    const token = issueRuntimeMcpToken(memberCtx);
+    const url = new URL(
+      `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+    );
+
+    try {
+      await memberClient.connect(new StreamableHTTPClientTransport(url));
+      const result = await memberClient.callTool({
+        name: "delete_topic",
+        arguments: { topic: parent.id, force: true },
+      });
+      expect(result.isError).toBe(true);
+      expect(resultText(result)).toContain("only the topic owner");
+      expect(getTopic(parent.id)).toBeDefined();
+      expect(getTopic(child.id)).toBeDefined();
+    } finally {
+      await memberClient.close();
+    }
   });
 
   test("restart_topic clears AI context but preserves the topic", async () => {
