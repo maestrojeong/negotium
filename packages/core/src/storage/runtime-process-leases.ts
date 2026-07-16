@@ -16,6 +16,20 @@ export interface RuntimeProcessLeaseHandle extends RuntimeProcessLease {
   stop(): void;
 }
 
+export interface AcquireRuntimeProcessLeaseOptions {
+  ownerId?: string;
+  pid?: number;
+  now?: number;
+  staleMs?: number;
+  heartbeatMs?: number;
+  onLost?: () => void;
+}
+
+export interface WaitForRuntimeProcessLeaseOptions extends AcquireRuntimeProcessLeaseOptions {
+  waitMs?: number;
+  retryMs?: number;
+}
+
 interface RuntimeProcessLeaseRow {
   role: string;
   owner_id: string;
@@ -45,6 +59,29 @@ function rowToLease(row: RuntimeProcessLeaseRow): RuntimeProcessLease {
     startedAt: Number(row.started_at),
     heartbeatAt: Number(row.heartbeat_at),
   };
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+function removeDeadRuntimeProcessLease(role: string): void {
+  const row = db
+    .query<RuntimeProcessLeaseRow, [string]>("SELECT * FROM runtime_process_leases WHERE role = ?")
+    .get(role);
+  if (!row) return;
+  const lease = rowToLease(row);
+  if (isProcessAlive(lease.pid)) return;
+  db.query(
+    `DELETE FROM runtime_process_leases
+     WHERE role = ? AND owner_id = ? AND pid = ? AND heartbeat_at = ?`,
+  ).run(lease.role, lease.ownerId, lease.pid, lease.heartbeatAt);
 }
 
 export function getRuntimeProcessLease(
@@ -88,17 +125,11 @@ export function releaseRuntimeProcessLease(role: string, ownerId: string): boole
  */
 export function acquireRuntimeProcessLease(
   role: string,
-  options: {
-    ownerId?: string;
-    pid?: number;
-    now?: number;
-    staleMs?: number;
-    heartbeatMs?: number;
-    onLost?: () => void;
-  } = {},
+  options: AcquireRuntimeProcessLeaseOptions = {},
 ): RuntimeProcessLeaseHandle | null {
   const normalizedRole = role.trim();
   if (!normalizedRole) throw new Error("runtime process lease role must not be empty");
+  removeDeadRuntimeProcessLease(normalizedRole);
   const ownerId = options.ownerId ?? `${RUNTIME_INSTANCE_ID}:${normalizedRole}`;
   const pid = options.pid ?? process.pid;
   const now = options.now ?? Date.now();
@@ -141,4 +172,28 @@ export function acquireRuntimeProcessLease(
       releaseRuntimeProcessLease(normalizedRole, ownerId);
     },
   };
+}
+
+/**
+ * Wait through a graceful handoff or stale-heartbeat window instead of making
+ * process supervisors burn through their restart budget on a transient clash.
+ */
+export async function waitForRuntimeProcessLease(
+  role: string,
+  options: WaitForRuntimeProcessLeaseOptions = {},
+): Promise<RuntimeProcessLeaseHandle | null> {
+  const {
+    waitMs = PROCESS_LEASE_STALE_MS + PROCESS_LEASE_HEARTBEAT_MS,
+    retryMs = 100,
+    ...acquireOptions
+  } = options;
+  const deadline = Date.now() + Math.max(0, waitMs);
+  const interval = Math.max(1, retryMs);
+  while (true) {
+    const lease = acquireRuntimeProcessLease(role, acquireOptions);
+    if (lease) return lease;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return null;
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(interval, remaining)));
+  }
 }

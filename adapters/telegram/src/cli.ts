@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import type { NegotiumAdapterHandle } from "@negotium/adapter-sdk";
-import { acquireRuntimeProcessLease, getRuntimeProcessLease, isAgentKind } from "@negotium/core";
+import { getRuntimeProcessLease, isAgentKind, waitForRuntimeProcessLease } from "@negotium/core";
 import { startDefaultNode } from "@negotium/node";
 import TelegramBot from "node-telegram-bot-api";
 import { startTelegramAdapter, type TelegramAdapterHandle } from "@/index";
@@ -49,7 +49,7 @@ export async function runTelegramCli(): Promise<void> {
   }
   let leaseLost = false;
   let stopForLeaseLoss: (() => void) | undefined;
-  const singleton = acquireRuntimeProcessLease("adapter:telegram", {
+  const singleton = await waitForRuntimeProcessLease("adapter:telegram", {
     onLost: () => {
       leaseLost = true;
       process.stderr.write("negotium-telegram: singleton lease lost; shutting down\n");

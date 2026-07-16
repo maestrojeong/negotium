@@ -3,6 +3,7 @@ import {
   acquireRuntimeProcessLease,
   getRuntimeProcessLease,
   PROCESS_LEASE_STALE_MS,
+  waitForRuntimeProcessLease,
 } from "#storage/runtime-process-leases";
 
 const handles: Array<{ stop(): void }> = [];
@@ -51,6 +52,54 @@ describe("runtime process leases", () => {
     expect(lease).not.toBeNull();
     lease?.stop();
     expect(getRuntimeProcessLease(role)).toBeNull();
+  });
+
+  test("immediately reclaims a fresh lease whose owner process has exited", async () => {
+    const role = `adapter:test:${crypto.randomUUID()}`;
+    const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 60_000)"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    const first = acquireRuntimeProcessLease(role, {
+      ownerId: "owner-crashed",
+      pid: child.pid,
+      heartbeatMs: 60_000,
+    });
+    if (first) handles.push(first);
+    expect(first).not.toBeNull();
+
+    child.kill("SIGKILL");
+    await child.exited;
+    const replacement = acquireRuntimeProcessLease(role, {
+      ownerId: "owner-restarted",
+      heartbeatMs: 60_000,
+    });
+    if (replacement) handles.push(replacement);
+
+    expect(replacement).not.toBeNull();
+    expect(getRuntimeProcessLease(role)?.ownerId).toBe("owner-restarted");
+  });
+
+  test("waits for a fresh lease to become stale before acquiring it", async () => {
+    const role = `adapter:test:${crypto.randomUUID()}`;
+    const first = acquireRuntimeProcessLease(role, {
+      ownerId: "owner-stopping",
+      staleMs: 30,
+      heartbeatMs: 60_000,
+    });
+    if (first) handles.push(first);
+
+    const replacement = await waitForRuntimeProcessLease(role, {
+      ownerId: "owner-restarted",
+      staleMs: 30,
+      heartbeatMs: 60_000,
+      waitMs: 100,
+      retryMs: 5,
+    });
+    if (replacement) handles.push(replacement);
+
+    expect(replacement).not.toBeNull();
+    expect(getRuntimeProcessLease(role)?.ownerId).toBe("owner-restarted");
   });
 
   test("notifies the old workload after a stale lease is replaced", async () => {

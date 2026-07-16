@@ -238,14 +238,17 @@ export {
   releaseRuntimeTurnLease,
 } from "#storage/runtime-leases";
 export type {
+  AcquireRuntimeProcessLeaseOptions,
   RuntimeProcessLease,
   RuntimeProcessLeaseHandle,
+  WaitForRuntimeProcessLeaseOptions,
 } from "#storage/runtime-process-leases";
 export {
   acquireRuntimeProcessLease,
   getRuntimeProcessLease,
   PROCESS_LEASE_HEARTBEAT_MS,
   PROCESS_LEASE_STALE_MS,
+  waitForRuntimeProcessLease,
 } from "#storage/runtime-process-leases";
 export { clearPendingAsk } from "#storage/session-asks";
 export type { VaultEntry, VaultEntryWithValue } from "#storage/vault";

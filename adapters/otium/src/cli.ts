@@ -82,12 +82,12 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
     }
     case "serve": {
       const {
-        acquireRuntimeProcessLease,
         getRuntimeProcessLease,
         NEGOTIUM_PORT,
         onShutdown,
         registerNodeRequestHandler,
         unregisterNodeRequestHandler,
+        waitForRuntimeProcessLease,
       } = await import("@negotium/core");
       const [{ startDefaultNode }, otium] = await Promise.all([
         import("@negotium/node"),
@@ -96,7 +96,7 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
       const port = parseOtiumServePort(commandArgs, NEGOTIUM_PORT);
       let leaseLost = false;
       let stopForLeaseLoss: (() => void) | undefined;
-      const singleton = acquireRuntimeProcessLease("adapter:otium", {
+      const singleton = await waitForRuntimeProcessLease("adapter:otium", {
         onLost: () => {
           leaseLost = true;
           console.error("negotium otium: singleton lease lost; shutting down");
