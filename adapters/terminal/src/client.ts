@@ -1,6 +1,7 @@
 import {
   type AgentKind,
   type BackgroundSessionDto,
+  createDerivedTopic,
   ensurePersonalGeneral,
   getAllMessagesForTopic,
   getApiMessage,
@@ -8,6 +9,7 @@ import {
   listApiMessages,
   listBackgroundSessionsForUser,
   listRecentRuntimeEventsForTopic,
+  listRunningTopicQueries,
   type MessageDto,
   type RuntimeBusEvent,
   runtimeBus,
@@ -50,6 +52,7 @@ export interface NegotiumClient {
     limit?: number,
   ): ClientResult<MessageHistoryPage>;
   createTopic(title: string, agent?: AgentKind): ClientResult<TopicDto>;
+  deriveTopic(topic: TopicDto, copyHistory: boolean, name?: string): Promise<TopicDto>;
   resetTopic(topic: TopicDto): Promise<string>;
   compactTopic(topic: TopicDto): Promise<string>;
   setModel(topic: TopicDto, model: string): ClientResult<string>;
@@ -116,9 +119,15 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
   }
 
   listTopics(): TopicDto[] {
-    return getVisibleTopics().filter((topic) =>
-      topic.participants.some((participant) => participant.userId === this.#userId),
-    );
+    const runningTopics = listRunningTopicQueries();
+    return getVisibleTopics()
+      .filter((topic) =>
+        topic.participants.some((participant) => participant.userId === this.#userId),
+      )
+      .map((topic) => {
+        const runningQueryId = runningTopics.get(topic.id);
+        return { ...topic, running: Boolean(runningQueryId), runningQueryId };
+      });
   }
 
   listBackgroundSessions(): BackgroundSessionDto[] {
@@ -158,6 +167,17 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
       kind: "agent",
       ...(agent ? { agent } : {}),
     });
+  }
+
+  async deriveTopic(topic: TopicDto, copyHistory: boolean, name?: string): Promise<TopicDto> {
+    const derived = await createDerivedTopic(
+      topic.id,
+      this.#userId,
+      copyHistory,
+      name ? { name } : undefined,
+    );
+    if (!derived) throw new Error(`Failed to ${copyHistory ? "fork" : "spawn"} "${topic.title}"`);
+    return derived;
   }
 
   async resetTopic(topic: TopicDto): Promise<string> {
@@ -325,6 +345,14 @@ export class RemoteNegotiumClient implements NegotiumClient {
     const result = await this.#request("/topics", {
       method: "POST",
       body: JSON.stringify({ userId: this.#userId, title, agent }),
+    });
+    return result.topic as TopicDto;
+  }
+
+  async deriveTopic(topic: TopicDto, copyHistory: boolean, name?: string): Promise<TopicDto> {
+    const result = await this.#request(`/topics/${encodeURIComponent(topic.id)}/derive`, {
+      method: "POST",
+      body: JSON.stringify({ userId: this.#userId, copyHistory, ...(name ? { name } : {}) }),
     });
     return result.topic as TopicDto;
   }

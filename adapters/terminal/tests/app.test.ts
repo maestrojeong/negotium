@@ -105,6 +105,9 @@ test("stops a started client when terminal initialization fails", async () => {
     createTopic() {
       throw new Error("not reached");
     },
+    async deriveTopic() {
+      throw new Error("not reached");
+    },
     async resetTopic() {
       throw new Error("not reached");
     },

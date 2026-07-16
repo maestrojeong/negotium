@@ -1,4 +1,9 @@
-import { type AgentKind, type RuntimeBusEvent, SELECTABLE_MODELS } from "@negotium/core";
+import {
+  type AgentKind,
+  type RuntimeBusEvent,
+  SELECTABLE_MODELS,
+  type TopicDto,
+} from "@negotium/core";
 import {
   INITIAL_MESSAGE_HISTORY_LIMIT,
   MESSAGE_HISTORY_PAGE_SIZE,
@@ -192,12 +197,13 @@ export class TerminalApp {
       process.once("SIGTERM", this.#onSignal);
       this.#render();
       this.#animationTimer = setInterval(() => {
-        const topic = activeTopic(this.#state);
-        if (
-          (!topic || !this.#state.activity[topic.id]?.running) &&
-          this.#state.backgroundSessions.length === 0
-        )
-          return;
+        const activeRunning = Boolean(
+          this.#state.activeTopicId && this.#state.activity[this.#state.activeTopicId]?.running,
+        );
+        const pickerRunning =
+          this.#state.overlay === "topics" &&
+          this.#state.topics.some((topic) => this.#state.activity[topic.id]?.running);
+        if (!activeRunning && !pickerRunning && this.#state.backgroundSessions.length === 0) return;
         this.#animationFrame += 1;
         this.#queueRender();
       }, WORKING_FRAME_INTERVAL_MS);
@@ -889,6 +895,16 @@ export class TerminalApp {
       this.#queueRender();
       return;
     }
+    if (command === "fork" || command === "spawn") {
+      const topic = activeTopic(this.#state);
+      if (!topic) {
+        this.#state = { ...this.#state, notice: "No topic selected" };
+        this.#queueRender();
+        return;
+      }
+      await this.#deriveTopic(topic, command === "fork", args.join(" ") || undefined);
+      return;
+    }
     if (command === "del") {
       if (args.length > 0) {
         this.#state = { ...this.#state, notice: "Usage: /del" };
@@ -984,6 +1000,26 @@ export class TerminalApp {
         notice: error instanceof Error ? error.message : String(error),
       };
       this.#state = topicPickerRoot ? openTopicPicker(failed, failed.notice, true) : failed;
+    }
+    this.#queueRender();
+  }
+
+  async #deriveTopic(topic: TopicDto, copyHistory: boolean, name?: string): Promise<void> {
+    try {
+      const derived = await this.#client.deriveTopic(topic, copyHistory, name);
+      this.#state = focusCreatedTopic(this.#state, derived);
+      await this.#refreshTopics(derived.title);
+      this.#state = selectTopic(this.#state, derived.id);
+      await this.#loadActiveMessages();
+      this.#state = {
+        ...this.#state,
+        notice: copyHistory ? `forked into "${derived.title}"` : `spawned "${derived.title}"`,
+      };
+    } catch (error) {
+      this.#state = {
+        ...this.#state,
+        notice: error instanceof Error ? error.message : String(error),
+      };
     }
     this.#queueRender();
   }

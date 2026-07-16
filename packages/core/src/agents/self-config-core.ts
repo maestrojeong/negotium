@@ -379,7 +379,10 @@ export async function spawnSelfConfigTopic(
 
   let derived: TopicDto | null;
   try {
-    derived = await createDerivedTopic(topic.id, ctx.userId, false, { name });
+    derived = await createDerivedTopic(topic.id, ctx.userId, false, {
+      name,
+      allowActiveSource: true,
+    });
   } catch (e) {
     if (e instanceof TopicTitleConflictError) return err(`${e.message} — pick a different name.`);
     throw e;
@@ -397,7 +400,10 @@ export async function forkSelfConfigTopic(
 
   let derived: TopicDto | null;
   try {
-    derived = await createDerivedTopic(topic.id, ctx.userId, true, { name });
+    derived = await createDerivedTopic(topic.id, ctx.userId, true, {
+      name,
+      allowActiveSource: true,
+    });
   } catch (e) {
     if (e instanceof TopicTitleConflictError) return err(`${e.message} — pick a different name.`);
     throw e;

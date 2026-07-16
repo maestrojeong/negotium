@@ -16,6 +16,7 @@ import { WsHub } from "#bus";
 import { resolveTopicWorkspaceDir } from "#platform/config";
 import { logger } from "#platform/logger";
 import { cloneProfileForChild } from "#platform/playwright/manager";
+import { isTopicRunning } from "#query/active-rooms";
 import { copyMessagesForTopic } from "#storage/api-messages";
 import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
 import {
@@ -34,6 +35,7 @@ import {
   readConversation,
 } from "#storage/conversations";
 import { db } from "#storage/forum-db";
+import { beginRuntimeTopicMaintenance } from "#storage/runtime-topic-state";
 import { isLegacySharedGeneral } from "#topics/personal-general";
 import type { AgentKind } from "#types";
 import type { TopicDto } from "#types/api";
@@ -116,6 +118,19 @@ export class TopicTitleConflictError extends Error {
   }
 }
 
+export class TopicDeriveBusyError extends Error {
+  constructor(message = "Topic is busy; try again when the current operation finishes") {
+    super(message);
+    this.name = "TopicDeriveBusyError";
+  }
+}
+
+interface DerivedTopicOptions {
+  name?: string;
+  subagent?: { agent?: AgentKind; model?: string };
+  allowActiveSource?: boolean;
+}
+
 /**
  * Shared helper for spawn (config-only copy) and fork (config+history copy).
  *
@@ -131,19 +146,47 @@ export class TopicTitleConflictError extends Error {
  * @param copyHistory - true for fork, false for spawn
  * @param opts - optional custom name and subagent overrides
  * @returns the newly created TopicDto or null on error
+ * @throws TopicDeriveBusyError when user-triggered derivation races active work or maintenance
  * @throws TopicTitleConflictError when the requested name is already taken
  */
 export async function createDerivedTopic(
   sourceTopicId: string,
   userId: string,
   copyHistory: boolean,
-  opts?: { name?: string; subagent?: { agent?: AgentKind; model?: string } },
+  opts?: DerivedTopicOptions,
 ): Promise<TopicDto | null> {
   const topic = getTopic(sourceTopicId);
   if (!topic) return null;
   if (topic.kind === "manager") return null;
   if (!isParticipant(topic, userId)) return null;
 
+  const subagent = copyHistory ? undefined : opts?.subagent;
+  let maintenance: ReturnType<typeof beginRuntimeTopicMaintenance> = null;
+  if (!subagent && !opts?.allowActiveSource) {
+    if (isTopicRunning(sourceTopicId)) throw new TopicDeriveBusyError();
+    maintenance = beginRuntimeTopicMaintenance(sourceTopicId);
+    if (!maintenance) throw new TopicDeriveBusyError();
+    if (isTopicRunning(sourceTopicId)) {
+      maintenance.finish();
+      maintenance = null;
+      throw new TopicDeriveBusyError();
+    }
+  }
+
+  try {
+    return await createDerivedTopicUnderFence(topic, sourceTopicId, userId, copyHistory, opts);
+  } finally {
+    maintenance?.finish();
+  }
+}
+
+async function createDerivedTopicUnderFence(
+  topic: TopicDto,
+  sourceTopicId: string,
+  userId: string,
+  copyHistory: boolean,
+  opts?: DerivedTopicOptions,
+): Promise<TopicDto | null> {
   const now = new Date().toISOString();
   const subagent = copyHistory ? undefined : opts?.subagent;
   const suffix = copyHistory ? "fork" : subagent ? "agent" : "spawn";
@@ -262,6 +305,16 @@ export async function createDerivedTopic(
 
     const created = db
       .transaction(() => {
+        const currentSource = getTopic(sourceTopicId);
+        if (
+          !currentSource ||
+          currentSource.kind === "manager" ||
+          !isParticipant(currentSource, userId)
+        ) {
+          throw new TopicDeriveBusyError("Source topic changed while deriving; try again");
+        }
+        const transactionalConflict = findTopicTitleConflict(title, kind);
+        if (transactionalConflict) throw new TopicTitleConflictError(title);
         upsertTopic(derived);
         if (subagent) {
           // Subagent worker rooms do NOT cascade the parent's optional MCP
@@ -335,6 +388,7 @@ export async function createDerivedTopic(
     return created;
   } catch (err) {
     if (rollbackHandle) cleanupAgentFork(rollbackHandle);
+    if (err instanceof TopicDeriveBusyError || err instanceof TopicTitleConflictError) throw err;
     logger.warn(
       { err, sourceTopicId, derivedTopicId: derived.id, copyHistory },
       "createDerivedTopic: failed to create derived topic",

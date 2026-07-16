@@ -10,6 +10,16 @@ export const TERMINAL_COMMANDS: readonly TerminalCommand[] = [
   { name: "status", usage: "/status", description: "show model and token usage" },
   { name: "model", usage: "/model", description: "choose the model" },
   { name: "topics", usage: "/topics", description: "open topic picker" },
+  {
+    name: "fork",
+    usage: "/fork [name]",
+    description: "fork this topic (config + history) into a new one",
+  },
+  {
+    name: "spawn",
+    usage: "/spawn [name]",
+    description: "spawn a new topic from this one's config (fresh session)",
+  },
   { name: "del", usage: "/del", description: "delete the current topic" },
   { name: "copy", usage: "/copy [all]", description: "copy answer or transcript" },
   { name: "abort", usage: "/abort", description: "stop the active turn" },

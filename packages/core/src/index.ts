@@ -265,6 +265,7 @@ export {
   getTopics,
   getVisibleTopics,
   isParticipant,
+  TopicDeriveBusyError,
   TopicTitleConflictError,
   updateTopic,
 } from "#topics/derive";

@@ -273,6 +273,72 @@ test("POST compact delegates session rotation for an owned topic", async () => {
   expect(calls).toEqual([{ topicId: topic.id, userId }]);
 });
 
+test("POST derive spawns a config-only copy without the source history", async () => {
+  const topic = registerTopic({ title: `Derive ${randomUUID()}`, userId });
+  const name = `Derive spawn ${randomUUID()}`;
+
+  const response = await handler(
+    request(`/topics/${encodeURIComponent(topic.id)}/derive`, {
+      method: "POST",
+      body: JSON.stringify({ userId, copyHistory: false, name }),
+    }),
+  );
+  expect(response?.status).toBe(201);
+  const body = (await response?.json()) as {
+    topic: { id: string; title: string; isFork: boolean };
+  };
+  expect(body.topic.title).toBe(name);
+  expect(body.topic.isFork).toBe(false);
+});
+
+test("POST derive rejects a name that collides with an existing topic", async () => {
+  const topic = registerTopic({ title: `Derive conflict ${randomUUID()}`, userId });
+  const conflictingTitle = `Derive taken ${randomUUID()}`;
+  registerTopic({ title: conflictingTitle, userId });
+
+  const response = await handler(
+    request(`/topics/${encodeURIComponent(topic.id)}/derive`, {
+      method: "POST",
+      body: JSON.stringify({ userId, copyHistory: true, name: conflictingTitle }),
+    }),
+  );
+  expect(response?.status).toBe(409);
+});
+
+test("POST derive validates mode, membership, and active source state", async () => {
+  const topic = registerTopic({ title: `Derive guarded ${randomUUID()}`, userId });
+
+  const malformed = await handler(
+    request(`/topics/${encodeURIComponent(topic.id)}/derive`, {
+      method: "POST",
+      body: JSON.stringify({ userId, copyHistory: "yes" }),
+    }),
+  );
+  expect(malformed?.status).toBe(400);
+
+  const forbidden = await handler(
+    request(`/topics/${encodeURIComponent(topic.id)}/derive`, {
+      method: "POST",
+      body: JSON.stringify({ userId: `other-${randomUUID()}`, copyHistory: false }),
+    }),
+  );
+  expect(forbidden?.status).toBe(404);
+
+  const queryId = randomUUID();
+  claimRuntimeTurnLease({ topicId: topic.id, queryId, origin: "user" });
+  try {
+    const busy = await handler(
+      request(`/topics/${encodeURIComponent(topic.id)}/derive`, {
+        method: "POST",
+        body: JSON.stringify({ userId, copyHistory: true }),
+      }),
+    );
+    expect(busy?.status).toBe(409);
+  } finally {
+    releaseRuntimeTurnLease(topic.id, queryId);
+  }
+});
+
 test("an open SSE stream stops exposing a topic after participant removal", async () => {
   const member = `revoked-${randomUUID()}`;
   const topic = registerTopic({ title: `Revoked ${randomUUID()}`, userId: member, agent: "codex" });

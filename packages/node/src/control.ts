@@ -12,6 +12,7 @@ import { dirname, resolve } from "node:path";
 import {
   type AgentKind,
   type compactTopicSession,
+  createDerivedTopic,
   ensurePersonalGeneral,
   getTopic,
   getVisibleTopics,
@@ -20,6 +21,7 @@ import {
   listApiMessages,
   listBackgroundSessionsForUser,
   listRecentRuntimeEventsForTopic,
+  listRunningTopicQueries,
   listRuntimeEventsAfter,
   NODE_CONTROL_TOKEN,
   RUN_DIR,
@@ -29,8 +31,10 @@ import {
   type startAiTurn,
   submitUserMessage,
   switchTopicModel,
+  TopicDeriveBusyError,
   type TopicDto,
   TopicServiceError,
+  TopicTitleConflictError,
   topicService,
 } from "@negotium/core";
 
@@ -109,7 +113,13 @@ function requiredText(value: unknown, name: string): string {
 }
 
 function topicsForUser(userId: string): TopicDto[] {
-  return getVisibleTopics().filter((topic) => isParticipant(topic, userId));
+  const runningTopics = listRunningTopicQueries();
+  return getVisibleTopics()
+    .filter((topic) => isParticipant(topic, userId))
+    .map((topic) => {
+      const runningQueryId = runningTopics.get(topic.id);
+      return { ...topic, running: Boolean(runningQueryId), runningQueryId };
+    });
 }
 
 function topicForUser(topicId: string, userId: string): TopicDto | null {
@@ -387,6 +397,32 @@ export function createNodeControlHandler(
         return Response.json({ ok: true, result: result.text });
       }
 
+      const deriveMatch = path.match(/^\/topics\/([^/]+)\/derive$/);
+      if (deriveMatch && req.method === "POST") {
+        const topicId = decodeURIComponent(deriveMatch[1]);
+        const body = await bodyRecord(req);
+        const userId = requiredText(body.userId, "userId");
+        if (typeof body.copyHistory !== "boolean") {
+          return jsonError(400, "copyHistory must be a boolean");
+        }
+        const copyHistory = body.copyHistory;
+        const source = topicForUser(topicId, userId);
+        if (!source || source.kind === "manager") return jsonError(404, "Topic not found");
+        if (body.name !== undefined && typeof body.name !== "string") {
+          return jsonError(400, "name must be a string");
+        }
+        const name =
+          typeof body.name === "string" && body.name.trim() ? body.name.trim() : undefined;
+        const derived = await createDerivedTopic(
+          topicId,
+          userId,
+          copyHistory,
+          name ? { name } : undefined,
+        );
+        if (!derived) return jsonError(500, "Failed to derive topic");
+        return Response.json({ ok: true, topic: derived }, { status: 201 });
+      }
+
       const answerMatch = path.match(/^\/questions\/([^/]+)\/answer$/);
       if (answerMatch && req.method === "POST") {
         const messageId = decodeURIComponent(answerMatch[1]);
@@ -401,6 +437,8 @@ export function createNodeControlHandler(
       return jsonError(404, "Control route not found");
     } catch (error) {
       if (error instanceof TopicServiceError) return topicServiceError(error);
+      if (error instanceof TopicDeriveBusyError) return jsonError(409, error.message);
+      if (error instanceof TopicTitleConflictError) return jsonError(409, error.message);
       return jsonError(400, error instanceof Error ? error.message : String(error));
     }
   };

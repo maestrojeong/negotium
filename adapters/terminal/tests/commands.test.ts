@@ -29,4 +29,11 @@ describe("terminal slash command completion", () => {
     expect(commandSuggestions("/de")[0]?.usage).toBe("/del");
     expect(commandSuggestions("/delete")).toEqual([]);
   });
+
+  test("suggests fork and spawn commands", () => {
+    expect(commandSuggestions("/fo").map((command) => command.name)).toEqual(["fork"]);
+    expect(commandSuggestions("/sp").map((command) => command.name)).toEqual(["spawn"]);
+    expect(completeCommand("/fo", 0)).toBe("/fork ");
+    expect(completeCommand("/sp", 0)).toBe("/spawn ");
+  });
 });
