@@ -16,6 +16,7 @@ import {
   type MessageDto,
   registerTopic,
   runtimeBus,
+  topicService,
   updateTopic,
 } from "@negotium/core";
 import { openMappingStore, startTelegramAdapter } from "@/index";
@@ -230,7 +231,7 @@ describe("in-flight createForumTopic races (findings 4 & 5)", () => {
 
     expect(fake.attempts.length).toBe(attemptsBefore); // buffered message never sent
     const check = openMappingStore(dbPath);
-    expect(check.load()).toHaveLength(0); // nothing persisted after the store closed
+    expect(check.load().filter((mapping) => mapping.threadId !== undefined)).toHaveLength(0);
     expect(check.loadTombstones()).toHaveLength(0); // not misclassified as creation failure
     check.close();
   });
@@ -284,10 +285,59 @@ describe("in-flight createForumTopic races (findings 4 & 5)", () => {
 
       expect(fake.calls.some((c) => c.text.includes("into the void"))).toBe(false);
       const check = openMappingStore(dbPath);
-      expect(check.load()).toHaveLength(0);
+      expect(check.load().filter((mapping) => mapping.threadId !== undefined)).toHaveLength(0);
       check.close();
     } finally {
       adapter.stop();
+    }
+  });
+
+  test("failed orphan cleanup remains durable and is retried after restart", async () => {
+    const USER = `orphan-retry-user-${RUN}`;
+    const FORUM = freshChat();
+    const dbPath = freshDb();
+    const fake = new FakeTelegramClient();
+    fake.createMode = "manual";
+    fake.deleteFailWith = new Error("503 Service Unavailable");
+    const adapter = startTelegramAdapter({
+      startTurn: () => null,
+      client: fake,
+      userId: USER,
+      forumChatId: FORUM,
+      mappingDbPath: dbPath,
+    });
+    const expectedThreadId = fake.nextThreadId;
+    const topic = registerTopic({ title: room("orphan-retry"), userId: USER });
+    await waitFor(() => fake.forumCalls.length === 1);
+    await topicService.delete({ topicId: topic.id, userId: USER, skipArchive: true });
+    fake.resolvePendingCreates();
+    await waitFor(() => fake.deleteCalls.some((call) => call.threadId === expectedThreadId));
+    await Bun.sleep(10);
+    const pending = openMappingStore(dbPath);
+    expect(pending.load().some((mapping) => mapping.topicId === topic.id)).toBe(true);
+    pending.close();
+    adapter.stop();
+
+    const retryClient = new FakeTelegramClient();
+    const retryAdapter = startTelegramAdapter({
+      startTurn: () => null,
+      client: retryClient,
+      userId: USER,
+      forumChatId: FORUM,
+      mappingDbPath: dbPath,
+    });
+    try {
+      await waitFor(() =>
+        retryClient.deleteCalls.some((call) => call.threadId === expectedThreadId),
+      );
+      await waitFor(() => {
+        const check = openMappingStore(dbPath);
+        const remains = check.load().some((mapping) => mapping.topicId === topic.id);
+        check.close();
+        return !remains;
+      });
+    } finally {
+      retryAdapter.stop();
     }
   });
 });

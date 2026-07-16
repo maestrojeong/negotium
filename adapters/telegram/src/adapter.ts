@@ -69,7 +69,7 @@ import {
   topicService,
   transcribeAudio,
 } from "@negotium/core";
-import { openMappingStore } from "@/mapping-store";
+import { openMappingStore, type PersistedMapping } from "@/mapping-store";
 import { renderOutbound } from "@/render";
 import type {
   TelegramChatMember,
@@ -285,6 +285,11 @@ function isHtmlParseError(info: TelegramErrorInfo): boolean {
   return /can't parse entities/i.test(info.description);
 }
 
+function isForumTopicAlreadyGone(info: TelegramErrorInfo): boolean {
+  if (info.status !== undefined && info.status !== 400) return false;
+  return /(?:message thread|forum topic).*not found|topic_id_invalid/i.test(info.description);
+}
+
 /** Transient failures worth a durable retry: rate limits, server errors, and
  *  network-level failures. Everything else (403 blocked, 400 bad request…)
  *  would fail identically on retry. */
@@ -338,6 +343,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   const deletedRuntimeMessageIds = new Set<string>();
   const activeRuntimeDeliveries = new Map<string, number>();
   const completedRuntimeMessageCleanup = new Set<string>();
+  const forumCleanupInFlight = new Set<string>();
   const ownerDmChatIds = new Set<number>(
     [...allowed]
       .map((value) => Number.parseInt(value, 10))
@@ -547,13 +553,38 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   }
 
   /** Drop every binding of a topic (topic deleted / vanished). */
-  function unbindTopic(topicId: string): void {
+  function unbindTopic(topicId: string, { persist = true } = {}): void {
     const set = byTopic.get(topicId);
     if (set) {
       for (const mapping of set) byKey.delete(mappingKey(mapping.chatId, mapping.threadId));
       byTopic.delete(topicId);
     }
-    store.deleteByTopic(topicId);
+    if (persist) store.deleteByTopic(topicId);
+  }
+
+  /** Keep a stale forum mapping durable until Telegram confirms deletion. If
+   *  the request fails or the process stops, startup reconciliation retries it. */
+  function cleanupPersistedMapping(mapping: PersistedMapping, logMessage: string): void {
+    if (mapping.threadId !== undefined && typeof client.deleteForumTopic === "function") {
+      const key = mappingKey(mapping.chatId, mapping.threadId);
+      if (forumCleanupInFlight.has(key)) return;
+      forumCleanupInFlight.add(key);
+      void client
+        .deleteForumTopic(mapping.chatId, mapping.threadId)
+        .then(() => {
+          if (!stopped) store.deleteByChat(mapping.chatId, mapping.threadId);
+        })
+        .catch((err) => {
+          if (isForumTopicAlreadyGone(telegramErrorInfo(err))) {
+            if (!stopped) store.deleteByChat(mapping.chatId, mapping.threadId);
+            return;
+          }
+          logger.warn({ err, topicId: mapping.topicId, threadId: mapping.threadId }, logMessage);
+        })
+        .finally(() => forumCleanupInFlight.delete(key));
+      return;
+    }
+    store.deleteByChat(mapping.chatId, mapping.threadId);
   }
 
   function unloadMapping(chatId: number, threadId?: number): boolean {
@@ -576,9 +607,25 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   }
 
   // Restore persisted routing so a restart keeps delivering into existing
-  // chats/threads instead of materializing duplicates.
+  // chats/threads instead of materializing duplicates. Prune mappings whose
+  // runtime topic disappeared while this adapter was offline; otherwise a
+  // deleted topic leaves an orphan Telegram thread forever.
   for (const persisted of store.load()) {
-    bindMapping(persisted.chatId, persisted.threadId, persisted.topicId, { persist: false });
+    const topic = getTopic(persisted.topicId);
+    if (topic?.participants.some((participant) => participant.userId === userId)) {
+      bindMapping(persisted.chatId, persisted.threadId, persisted.topicId, { persist: false });
+      continue;
+    }
+    cleanupPersistedMapping(persisted, "telegram adapter: stale forum thread cleanup failed");
+  }
+
+  function reconcileStaleMappings(): void {
+    for (const persisted of store.load()) {
+      const topic = getTopic(persisted.topicId);
+      if (!topic?.participants.some((participant) => participant.userId === userId)) {
+        cleanupPersistedMapping(persisted, "telegram adapter: stale forum thread cleanup failed");
+      }
+    }
   }
 
   // ── topic creation (adapter-initiated) ──────────────────────────────
@@ -1157,17 +1204,13 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       const threadId = created.message_thread_id;
       if (stopped || pending.cancelled) {
         // Cancelled = the topic was deleted while creation was in flight:
-        // drop the just-created orphan thread (best-effort) and bind nothing.
+        // persist cleanup intent before deleting the just-created orphan so a
+        // failed request can be retried after restart. Bind nothing in memory.
         // Stopped = abandon silently (no post-stop sends, no closed-DB save).
         if (pending.cancelled && typeof client.deleteForumTopic === "function") {
-          void client
-            .deleteForumTopic(materializationChat, threadId)
-            .catch((err) =>
-              logger.warn(
-                { err, topicId: topic.id, threadId },
-                "telegram adapter: orphan thread cleanup failed",
-              ),
-            );
+          const orphan = { chatId: materializationChat, threadId, topicId: topic.id };
+          store.save(orphan);
+          cleanupPersistedMapping(orphan, "telegram adapter: orphan thread cleanup failed");
         }
         return;
       }
@@ -1188,23 +1231,11 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     const set = byTopic.get(topicId);
     if (!set) return;
     const mappings = [...set];
-    unbindTopic(topicId);
+    // Stop routing immediately, but keep forum mappings durable until the
+    // Telegram API confirms deletion so failures can be retried on restart.
+    unbindTopic(topicId, { persist: false });
     for (const mapping of mappings) {
-      if (
-        forumMode &&
-        mapping.chatId === forumChat &&
-        mapping.threadId !== undefined &&
-        typeof client.deleteForumTopic === "function"
-      ) {
-        void client
-          .deleteForumTopic(mapping.chatId, mapping.threadId)
-          .catch((err) =>
-            logger.warn(
-              { err, topicId, threadId: mapping.threadId },
-              "telegram adapter: deleteForumTopic failed",
-            ),
-          );
-      }
+      cleanupPersistedMapping(mapping, "telegram adapter: deleteForumTopic failed");
     }
   }
 
@@ -1448,6 +1479,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       materializeTombstones.clear();
       store.clearTombstones();
     }
+    reconcileStaleMappings();
     materializeVisibleTopics();
   }
 
@@ -1968,12 +2000,24 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
           return;
         }
         try {
-          const topic = registerTopicLocal({
+          const createOptions: RegisterTopicOptions = {
             title: arg,
             userId,
             kind: "agent",
             ...(opts.defaultAgent ? { agent: opts.defaultAgent } : {}),
-          });
+          };
+          const fromForumGeneral = forumMode && chatId === forumChat && threadId === undefined;
+          // General is the forum's control surface. Keep it bound to Personal
+          // General and let topic-created materialize a real Telegram thread.
+          // DM chats and existing forum threads retain their switch-in-place
+          // behavior.
+          const topic = fromForumGeneral
+            ? topicService.create(createOptions)
+            : registerTopicLocal(createOptions);
+          if (fromForumGeneral) {
+            reply(chatId, threadId, `creating new topic "${topic.title}"`);
+            return;
+          }
           bindMapping(chatId, threadId, topic.id);
           reply(chatId, threadId, `switched to new topic "${topic.title}"`);
         } catch (err) {
@@ -2268,6 +2312,14 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     if (!text && files.length === 0) return;
     routeMessage(event.topicId, { text, files, runtimeMessageId }, msg.queryId);
   });
+
+  if (forumMode) {
+    // The configured forum's General topic is always the control surface.
+    // Reconcile after subscribing so topics created while the adapter was
+    // offline (or between startup reads) are materialized without an event gap.
+    bindMapping(forumChat, undefined, personalGeneral.id);
+    materializeVisibleTopics();
+  }
 
   return {
     name: "telegram",

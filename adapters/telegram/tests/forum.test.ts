@@ -8,6 +8,7 @@ import {
   type MessageDto,
   registerTopic,
   runtimeBus,
+  topicService,
   updateTopic,
 } from "@negotium/core";
 import type { TelegramAdapterHandle } from "@/index";
@@ -53,6 +54,114 @@ afterAll(() => {
 });
 
 describe("forum mode", () => {
+  test("startup reconciles topics created while the adapter was offline", async () => {
+    const user = `tg-startup-reconcile-${RUN}`;
+    const title = room("offline-created");
+    const topic = registerTopic({ title, userId: user });
+    const client = new FakeTelegramClient();
+    const handle = startTelegramAdapter({
+      startTurn: () => null,
+      client,
+      userId: user,
+      forumChatId: FORUM_CHAT + 70,
+      mappingDbPath: join(TMP, "startup-reconcile.db"),
+    });
+    try {
+      await waitFor(() => client.forumCalls.some((call) => call.name === title));
+      const check = openMappingStore(join(TMP, "startup-reconcile.db"));
+      expect(check.load().some((mapping) => mapping.topicId === topic.id)).toBe(true);
+      check.close();
+    } finally {
+      handle.stop();
+    }
+  });
+
+  test("startup removes forum mappings for topics deleted while the adapter was offline", async () => {
+    const user = `tg-startup-delete-${RUN}`;
+    const dbPath = join(TMP, "startup-delete.db");
+    const chatId = FORUM_CHAT + 71;
+    const staleTopicId = randomUUID();
+    const seed = openMappingStore(dbPath);
+    seed.save({ chatId, threadId: 987, topicId: staleTopicId });
+    seed.close();
+
+    const client = new FakeTelegramClient();
+    const handle = startTelegramAdapter({
+      startTurn: () => null,
+      client,
+      userId: user,
+      forumChatId: chatId,
+      mappingDbPath: dbPath,
+    });
+    try {
+      await waitFor(() => client.deleteCalls.some((call) => call.threadId === 987));
+      const check = openMappingStore(dbPath);
+      expect(check.load().some((mapping) => mapping.topicId === staleTopicId)).toBe(false);
+      check.close();
+    } finally {
+      handle.stop();
+    }
+  });
+
+  test("failed forum deletion keeps a durable mapping and startup retries it", async () => {
+    const user = `tg-delete-retry-${RUN}`;
+    const dbPath = join(TMP, "delete-retry.db");
+    const chatId = FORUM_CHAT + 72;
+    const first = new FakeTelegramClient();
+    first.deleteFailWith = new Error("503 Service Unavailable");
+    const firstHandle = startTelegramAdapter({
+      startTurn: () => null,
+      client: first,
+      userId: user,
+      forumChatId: chatId,
+      mappingDbPath: dbPath,
+    });
+    const topic = registerTopic({ title: room("delete-retry"), userId: user });
+    await waitFor(() => first.forumCalls.some((call) => call.name === topic.title));
+    const mapped = openMappingStore(dbPath);
+    const threadId = mapped.load().find((mapping) => mapping.topicId === topic.id)?.threadId;
+    mapped.close();
+    expect(threadId).toBeGreaterThan(0);
+
+    await topicService.delete({ topicId: topic.id, userId: user, skipArchive: true });
+    await waitFor(() => first.deleteCalls.some((call) => call.threadId === threadId));
+    await Bun.sleep(10);
+    const afterFailure = openMappingStore(dbPath);
+    expect(afterFailure.load().some((mapping) => mapping.topicId === topic.id)).toBe(true);
+    afterFailure.close();
+    firstHandle.stop();
+
+    const second = new FakeTelegramClient();
+    const alreadyGone = new Error(
+      "ETELEGRAM: 400 Bad Request: message thread not found",
+    ) as Error & {
+      response: unknown;
+    };
+    alreadyGone.response = {
+      statusCode: 400,
+      body: { description: "Bad Request: message thread not found" },
+    };
+    second.deleteFailWith = alreadyGone;
+    const secondHandle = startTelegramAdapter({
+      startTurn: () => null,
+      client: second,
+      userId: user,
+      forumChatId: chatId,
+      mappingDbPath: dbPath,
+    });
+    try {
+      await waitFor(() => second.deleteCalls.some((call) => call.threadId === threadId));
+      await waitFor(() => {
+        const check = openMappingStore(dbPath);
+        const remains = check.load().some((mapping) => mapping.topicId === topic.id);
+        check.close();
+        return !remains;
+      });
+    } finally {
+      secondHandle.stop();
+    }
+  });
+
   test("runtime topic-created materializes a forum thread, persists the mapping, and routes messages into it", async () => {
     const title = room("spawned");
     const topic = registerTopic({ title, userId: USER, agent: "codex" });
@@ -79,11 +188,24 @@ describe("forum mode", () => {
     expect(call.opts?.parse_mode).toBe("HTML");
   });
 
-  test("adapter-created topics (/new, inbound auto-create) do not double-materialize", async () => {
+  test("/new from forum General creates one forum thread and keeps General as the control surface", async () => {
     const before = fake.forumCalls.length;
-    fake.emit({ chat: { id: FORUM_CHAT }, from: { id: 1 }, text: `/new ${room("via-cmd")}` });
-    await waitFor(() => fake.calls.some((c) => c.text.includes(room("via-cmd"))));
-    expect(fake.forumCalls).toHaveLength(before); // no forum thread created for it
+    const title = room("via-cmd");
+    fake.emit({
+      chat: { id: FORUM_CHAT, type: "supergroup", is_forum: true },
+      from: { id: 1 },
+      text: `/new ${title}`,
+    });
+    await waitFor(() => fake.forumCalls.some((call) => call.name === title));
+    expect(fake.forumCalls.filter((call) => call.name === title)).toHaveLength(1);
+    expect(fake.forumCalls.length).toBe(before + 1);
+
+    fake.emit({
+      chat: { id: FORUM_CHAT, type: "supergroup", is_forum: true },
+      from: { id: 1 },
+      text: "/topics",
+    });
+    await waitFor(() => fake.calls.some((call) => call.text.includes(`- ${title}`)));
   });
 
   test("messages published while thread creation is in flight are buffered and flushed in order", async () => {

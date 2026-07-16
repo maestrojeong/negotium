@@ -55,6 +55,7 @@ export class FakeTelegramClient implements TelegramClientLike {
   sendMode: "auto" | "hang" = "auto";
   createMode: "auto" | "manual" | "reject" = "auto";
   createRejectError: unknown = new Error("400 Bad Request: not enough rights to manage topics");
+  deleteFailWith: unknown = null;
   nextThreadId = 100;
   nextMessageId = 1;
   private pendingCreates: Array<{ resolve: () => void; reject: (err: unknown) => void }> = [];
@@ -159,6 +160,7 @@ export class FakeTelegramClient implements TelegramClientLike {
 
   async deleteForumTopic(chatId: number, threadId: number): Promise<unknown> {
     this.deleteCalls.push({ chatId, threadId });
+    if (this.deleteFailWith) throw this.deleteFailWith;
     return true;
   }
 
