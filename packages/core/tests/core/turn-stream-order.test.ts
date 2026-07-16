@@ -585,4 +585,55 @@ describe("turn stream ordering", () => {
       patch: { deleted: true, text: "" },
     });
   });
+
+  test("preserves intermediate assistant messages when the user explicitly aborts", async () => {
+    const topicId = seedTopic();
+    const queryId = randomUUID();
+    const control: RoomQueryControl = {
+      topicId,
+      queryId,
+      origin: "user",
+      prompt: "test",
+      abortController: new AbortController(),
+      abortReason: AbortReason.None,
+    };
+    const after = latestRuntimeEventSeq();
+    async function* explicitlyAbortedStream(): AsyncGenerator<UnifiedEvent> {
+      yield { type: "text_delta", content: "kept status" };
+      yield { type: "text", content: "kept status" };
+      yield {
+        type: "tool_use",
+        name: "Bash",
+        input: { command: "pwd" },
+        toolUseId: "tool-1",
+      };
+      yield { type: "tool_result", toolUseId: "tool-1", content: "/tmp" };
+      yield { type: "text_delta", content: "kept tail" };
+      control.abortReason = AbortReason.External;
+      control.abortController.abort();
+      yield { type: "text", content: "ignored after abort" };
+    }
+
+    await streamAgentEvents(
+      topicId,
+      "stream order",
+      queryId,
+      explicitlyAbortedStream(),
+      control,
+      "codex",
+      "gpt-5.6-luna",
+      "medium",
+      "owner",
+    );
+
+    expect(listApiMessages(topicId).page.map((message) => message.text)).toEqual([
+      "kept status",
+      "kept tail",
+    ]);
+    expect(
+      listRuntimeEventsAfter(after)
+        .filter((event) => event.topicId === topicId && event.type === "message-updated")
+        .some((event) => (event.payload as { patch?: { deleted?: boolean } }).patch?.deleted),
+    ).toBe(false);
+  });
 });

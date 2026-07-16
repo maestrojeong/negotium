@@ -31,7 +31,13 @@ import { ensureBgBash } from "#platform/background-bash/manager";
 import { FROM_AUTO_CONTINUE } from "#platform/constants";
 import { logger } from "#platform/logger";
 import { consumePlaywrightUnavailable, markPlaywrightUnavailable } from "#platform/mcp-config";
-import { ensurePlaywright } from "#platform/playwright/manager";
+import {
+  ensurePlaywright,
+  getPlaywrightCapability,
+  makeInstanceKey,
+  pinPlaywrightInstance,
+  unpinPlaywrightInstance,
+} from "#platform/playwright/manager";
 import {
   buildChannelSystemPrompt,
   buildManagerSystemPrompt,
@@ -103,6 +109,7 @@ import {
   setTopicSessionId,
 } from "#storage/api-topics";
 import { getGlobalAiName } from "#storage/app-settings";
+import { isTopicBrowserProfileOwner } from "#storage/browser-profiles";
 import { appendConversationEvent, readConversation } from "#storage/conversations";
 import {
   getRuntimeTurnLease,
@@ -1897,7 +1904,12 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   // the port before building MCP config. Gated on the opt-in whitelist
   // so topics that don't use playwright never spawn a Chromium. Non-fatal.
   const enabledMcp = override?.mcp ?? [];
-  const wantsPlaywright = !isManager && enabledMcp.includes("playwright");
+  const playwrightRequested = !isManager && enabledMcp.includes("playwright");
+  const browserProfileOwner = isTopicBrowserProfileOwner(topic.id, userId);
+  const wantsPlaywright = playwrightRequested && browserProfileOwner;
+  const turnMcpEnabled = browserProfileOwner
+    ? enabledMcp
+    : enabledMcp.filter((name) => name !== "playwright");
   const wantsBgBash = !isManager && enabledMcp.includes("background-bash");
   async function* runWithPlaywright(): AsyncGenerator<UnifiedEvent> {
     if (prepareSession && !sessionId) {
@@ -1917,10 +1929,20 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       if (abortController.signal.aborted) return;
     }
     let playwrightPort: number | undefined;
+    let playwrightCapability: string | undefined;
+    let playwrightInstanceKey: string | undefined;
     let bgBashPort: number | undefined;
     if (wantsPlaywright) {
       try {
+        playwrightInstanceKey = makeInstanceKey(userId, topic.id);
+        // Pin before ensurePlaywright's asynchronous health check so an idle
+        // sweep cannot evict the instance between validation and turn setup.
+        pinPlaywrightInstance(playwrightInstanceKey);
         playwrightPort = await ensurePlaywright(userId, topic.id);
+        playwrightCapability = getPlaywrightCapability(playwrightInstanceKey);
+        if (!playwrightCapability) {
+          throw new Error("browser MCP capability was not registered");
+        }
       } catch (err) {
         logger.warn(
           { topicId, err },
@@ -1945,40 +1967,50 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       }
     }
     let effectiveSystemPrompt = systemPrompt;
+    if (playwrightRequested && !browserProfileOwner) {
+      const ownerOnlyNote =
+        "<system-reminder>Browser tools are unavailable in this turn because browser profiles are private to the topic owner. Do not attempt browser calls or ask to reuse the owner's login state.</system-reminder>";
+      effectiveSystemPrompt = `${effectiveSystemPrompt}\n\n${ownerOnlyNote}`;
+    }
     if (consumePlaywrightUnavailable(userId, topic.title)) {
       const playwrightNote =
         "<system-reminder>Playwright browser tools are UNAVAILABLE this turn. The `mcp__playwright__*` tools have been removed from this turn's catalog because the long-lived browser MCP could not be prepared. Do not attempt to call browser tools. If browser interaction is required, ask the user to retry shortly or use a non-browser alternative.</system-reminder>";
       effectiveSystemPrompt = `${effectiveSystemPrompt}\n\n${playwrightNote}`;
     }
 
-    yield* runAgent({
-      agent: agentKind,
-      prompt: agentPrompt,
-      attachments: promptAttachments,
-      cwd: workspaceCwd,
-      systemPrompt: effectiveSystemPrompt,
-      sessionId,
-      userId,
-      session: sessionName,
-      sessionType: sessionType ?? (isManager ? "manager" : "forum"),
-      abortController,
-      model: resolvedModel,
-      effort: resolvedEffort,
-      depth,
-      silent,
-      // Default OFF: with no override a topic loads only the REQUIRED servers (no
-      // optional ones). Optional servers are opt-in per topic via the settings UI
-      // / #General set_topic_mcp. `[]` = required-only; getForumMcpServers reserves
-      // `null`/`undefined` for "all optional", which Otium no longer defaults to.
-      mcpEnabled: enabledMcp,
-      playwrightPort,
-      bgBashPort,
-      topicId,
-      queryId,
-      wikiTopicId: memoryTopic.id,
-      autoContinue: allowAutoContinue && !silent,
-      peerBridge,
-    });
+    try {
+      yield* runAgent({
+        agent: agentKind,
+        prompt: agentPrompt,
+        attachments: promptAttachments,
+        cwd: workspaceCwd,
+        systemPrompt: effectiveSystemPrompt,
+        sessionId,
+        userId,
+        session: sessionName,
+        sessionType: sessionType ?? (isManager ? "manager" : "forum"),
+        abortController,
+        model: resolvedModel,
+        effort: resolvedEffort,
+        depth,
+        silent,
+        // Default OFF: with no override a topic loads only the REQUIRED servers (no
+        // optional ones). Optional servers are opt-in per topic via the settings UI
+        // / #General set_topic_mcp. `[]` = required-only; getForumMcpServers reserves
+        // `null`/`undefined` for "all optional", which Otium no longer defaults to.
+        mcpEnabled: turnMcpEnabled,
+        playwrightPort,
+        playwrightCapability,
+        bgBashPort,
+        topicId,
+        queryId,
+        wikiTopicId: memoryTopic.id,
+        autoContinue: allowAutoContinue && !silent,
+        peerBridge,
+      });
+    } finally {
+      if (playwrightInstanceKey) unpinPlaywrightInstance(playwrightInstanceKey);
+    }
   }
   // Provider streams can stay silent while reasoning, starting MCPs, or
   // waiting on a long tool. Otium covers Claude thinking signals; this

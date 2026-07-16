@@ -48,6 +48,14 @@ mock.module("@openai/codex-sdk", () => ({
 }));
 
 mock.module("#platform/mcp-config", () => ({
+  browserOwnerCapability: (capability: string, owner: string) => `${capability}:${owner}`,
+  browserOwnerForContext: (context: { userId?: string; session?: string; topicId?: string }) =>
+    context.topicId
+      ? `topic:${context.topicId}`
+      : context.userId && context.session
+        ? `user:${context.userId}:${context.session}`
+        : undefined,
+  CODEX_BROWSER_CAPABILITY_ENV: "NEGOTIUM_BROWSER_CAPABILITY",
   getMcpServersForQuery: () => ({}),
 }));
 
@@ -182,6 +190,23 @@ describe("codexProvider stale rollout recovery", () => {
 });
 
 describe("codexProvider MCP config", () => {
+  test("passes the browser capability only through the Codex child environment", async () => {
+    const events = [];
+    for await (const event of codexProvider(
+      opts({ sessionId: null, playwrightCapability: "secret-capability" }),
+    )) {
+      events.push(event);
+    }
+
+    expect(codexConstructor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: expect.objectContaining({
+          NEGOTIUM_BROWSER_CAPABILITY: "secret-capability:user:1:dev",
+        }),
+      }),
+    );
+  });
+
   test("renames playwright to avoid merging with a global Codex stdio server", () => {
     const servers = toCodexMcpServers({
       playwright: { url: "http://127.0.0.1:39001/mcp" },
@@ -203,5 +228,21 @@ describe("codexProvider MCP config", () => {
       env: { A: "B" },
     });
     expect(servers.sseOnly).toBeUndefined();
+  });
+
+  test("preserves header configuration for streamable HTTP servers", () => {
+    const servers = toCodexMcpServers({
+      playwright: {
+        url: "http://127.0.0.1:39001/mcp",
+        http_headers: { "X-Browser-Owner": "topic:one" },
+        env_http_headers: { "X-Browser-Capability": "NEGOTIUM_BROWSER_CAPABILITY" },
+      },
+    });
+
+    expect(servers.otium_playwright).toMatchObject({
+      url: "http://127.0.0.1:39001/mcp",
+      http_headers: { "X-Browser-Owner": "topic:one" },
+      env_http_headers: { "X-Browser-Capability": "NEGOTIUM_BROWSER_CAPABILITY" },
+    });
   });
 });

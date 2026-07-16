@@ -303,10 +303,9 @@ export async function createDerivedTopic(
       })
       .immediate();
 
-    // Every derived room inherits the parent's browser login state. Await the
-    // best-effort copy before announcing the child so an immediate first turn
-    // cannot race profile cloning (the same ordering clawgram uses for
-    // fork/spawn/subagent topic creation).
+    // Derived rooms inherit the browser profile only when the creator already
+    // owns the source. Crossing an owner boundary always starts with a fresh
+    // profile so cookies and login state cannot be transferred by a member.
     try {
       const profileClone = await cloneProfileForChild({
         userId,

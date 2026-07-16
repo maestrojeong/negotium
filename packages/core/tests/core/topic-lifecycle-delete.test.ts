@@ -250,7 +250,9 @@ describe("deleteTopicCascade archive policy", () => {
     await deleteTopicCascade(topic, "owner-user");
 
     expect(existsSync(workspace)).toBe(false);
-    expect(existsSync(profile)).toBe(false);
+    // Browser profiles may be shared by other topics; hard delete removes only
+    // this topic's owner-scoped tabs and preserves the profile on disk.
+    expect(existsSync(profile)).toBe(true);
     expect(deletedUploadTopics).toEqual([topic.id]);
     expect(getTopicArchiveState(topic.id)).toBeNull();
     expect(getPendingSelfSchedule(topic.id)).toBeNull();

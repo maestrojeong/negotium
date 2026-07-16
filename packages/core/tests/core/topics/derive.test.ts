@@ -53,7 +53,7 @@ describe("createDerivedTopic", () => {
     }
   });
 
-  test("fork, spawn, and subagent children clone the parent Playwright profile", async () => {
+  test("fork, spawn, and subagent children share the parent browser profile", async () => {
     const sourceTopicId = randomUUID();
     const sourceTitle = `profile-source-${randomUUID()}`;
     const userId = `profile-user-${randomUUID()}`;
@@ -100,10 +100,11 @@ describe("createDerivedTopic", () => {
         if (!child) continue;
         children.push(child.id);
         const childProfileDir = resolveTopicProfileDir(userId, child.id);
+        expect(childProfileDir).toBe(sourceProfileDir);
         expect(readFileSync(join(childProfileDir, "Default", "Cookies"), "utf8")).toBe(
           "signed-in-cookie",
         );
-        expect(existsSync(join(childProfileDir, "SingletonLock"))).toBe(false);
+        expect(existsSync(join(childProfileDir, "SingletonLock"))).toBe(true);
       }
     } finally {
       for (const childId of children) {

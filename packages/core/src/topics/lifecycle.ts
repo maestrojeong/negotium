@@ -16,7 +16,7 @@ import { resolveTopicWorkspaceDir } from "#platform/config";
 import { GENERAL_TOPIC_ID } from "#platform/constants";
 import { delay } from "#platform/delay";
 import { logger } from "#platform/logger";
-import { deleteTopicProfileDir } from "#platform/playwright/manager";
+import { closeBrowserOwnerTabs, deleteTopicProfileDir } from "#platform/playwright/manager";
 import { abortRoom, getRoomQuery, interSessionQueue } from "#query/active-rooms";
 import { cleanupSessionInboxFiles } from "#query/session-inbox-cleanup";
 import { clearQueryState } from "#query/state";
@@ -34,6 +34,7 @@ import {
   listTopics,
   reparentTopicChildren,
 } from "#storage/api-topics";
+import { getBrowserProfileOwner, getTopicBrowserProfile } from "#storage/browser-profiles";
 import { getRuntimeTurnLease } from "#storage/runtime-leases";
 import { beginRuntimeTopicMaintenance } from "#storage/runtime-topic-state";
 import {
@@ -255,10 +256,16 @@ async function deleteTopicCascadeImpl(
       new Set([userId, ...topic.participants.map((participant) => participant.userId)]),
     );
 
-    // Topic ids are the ownership keys for these processes/directories. Unlike
-    // Clawgram's title-keyed regular profiles, none can be reused after a hard
-    // delete because a recreated topic receives a fresh id.
+    // Background shells remain topic-owned. Browser profiles are shared, so
+    // deletion closes this topic's tabs without deleting login state.
     killBgBash(userId, topicId);
+    const browserProfileOwner = getBrowserProfileOwner(topicId, userId);
+    const browserProfile = getTopicBrowserProfile(topicId);
+    try {
+      await closeBrowserOwnerTabs(browserProfileOwner, browserProfile, `topic:${topicId}`);
+    } catch (err) {
+      logger.warn({ err, topicId }, "deleteTopicCascade: browser owner cleanup failed");
+    }
     deleteTopicProfileDir(userId, topicId);
     cancelAskCallbacksForTopic(topicId);
     deleteSelfSchedulesForTopic(topicId);

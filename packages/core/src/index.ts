@@ -25,6 +25,7 @@ export type { SelfConfigContext } from "#agents/mcp-tools/self-config";
 export { createSelfConfigToolDefinitions } from "#agents/mcp-tools/self-config";
 export {
   createSpawnSubagentToolDefinition,
+  createSubagentManagementToolDefinitions,
   sweepStaleSubagentCards,
 } from "#agents/mcp-tools/spawn-subagent";
 export { visualToolDefinitions } from "#agents/mcp-tools/visuals";
@@ -177,6 +178,7 @@ export {
   composeAttachmentPrompt,
   ingestAttachment,
 } from "#runtime/attachments";
+export { listBackgroundSessionsForUser } from "#runtime/background-sessions";
 export type { FileHooks } from "#runtime/file-hooks";
 export {
   fileHooks,
@@ -227,6 +229,11 @@ export {
   listRecentRuntimeEventsForTopic,
   listRuntimeEventsAfter,
 } from "#storage/runtime-events";
+export {
+  claimRuntimeTurnLease,
+  listRuntimeTurnLeases,
+  releaseRuntimeTurnLease,
+} from "#storage/runtime-leases";
 export type {
   RuntimeProcessLease,
   RuntimeProcessLeaseHandle,
@@ -276,6 +283,7 @@ export * from "#types";
 export type {
   AiMode,
   AttachmentDto,
+  BackgroundSessionDto,
   MessageDto,
   ResponsePolicy,
   SubagentCardDto,

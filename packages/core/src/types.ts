@@ -157,6 +157,7 @@ export interface AgentQueryOptions {
   userId?: string;
   session?: string;
   playwrightPort?: number;
+  playwrightCapability?: string;
   bgBashPort?: number;
   sessionType?: "dm" | "forum" | "ephemeral" | "manager" | "cron";
   /** API topic id (REST/WS world). Carries per-query topic context for MCP servers. */

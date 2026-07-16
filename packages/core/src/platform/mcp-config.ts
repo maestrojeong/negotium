@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { buildRuntimeMcpSpec, RUNTIME_MCP_KEY } from "#mcp/runtime-spec";
 import {
   AGENT_HEALTH_SERVER,
@@ -173,6 +174,7 @@ export interface RuntimeMcpBuildContext {
   currentUserPrompt?: string;
   depth?: number;
   playwrightPort?: number;
+  playwrightCapability?: string;
   bgBashPort?: number;
   autoContinue?: boolean;
   silent?: boolean;
@@ -194,29 +196,36 @@ export interface RuntimeMcpCatalogEntry {
 
 // --- Playwright transport builders ---
 
-function playwrightSSE(port: number) {
-  return {
-    type: "sse" as const,
-    url: `http://127.0.0.1:${port}/sse`,
-  };
+export const CODEX_BROWSER_CAPABILITY_ENV = "NEGOTIUM_BROWSER_CAPABILITY";
+
+export function browserOwnerCapability(capability: string, owner: string): string {
+  return createHmac("sha256", capability).update(owner).digest("hex");
 }
 
-/**
- * Streamable HTTP transport for Codex.
- *
- * `mcp-patchright` HTTP mode exposes both `/sse` (SSE transport, used by
- * claude/maestro) and `/mcp` (streamable HTTP, what Codex speaks). Both
- * endpoints front the same Chromium / userDataDir, so all three agents
- * share login state, cookies, and storage when they target the same
- * browser instance on a given port.
- *
- * Codex's config.mcp_servers entry shape (verified via `codex mcp add --url`):
- *   [mcp_servers.<name>]
- *   url = "http://host:port/mcp"
- */
-function playwrightHttp(port: number) {
+export function browserOwnerForContext(ctx: {
+  userId?: string;
+  session?: string;
+  topicId?: string;
+}): string | undefined {
+  if (ctx.topicId) return `topic:${ctx.topicId}`;
+  if (ctx.userId && ctx.session) return `user:${ctx.userId}:${ctx.session}`;
+  return undefined;
+}
+
+function playwrightHttp(port: number, owner: string, capability: string, agent?: AgentKind) {
+  const url = `http://127.0.0.1:${port}/mcp`;
+  const ownerCapability = browserOwnerCapability(capability, owner);
+  if (agent === "codex") {
+    return {
+      url,
+      http_headers: { "X-Browser-Owner": owner },
+      env_http_headers: { "X-Browser-Capability": CODEX_BROWSER_CAPABILITY_ENV },
+    };
+  }
   return {
-    url: `http://127.0.0.1:${port}/mcp`,
+    type: "http" as const,
+    url,
+    headers: { "X-Browser-Owner": owner, "X-Browser-Capability": ownerCapability },
   };
 }
 
@@ -231,14 +240,13 @@ function longLivedHttpMcp(agent: AgentKind | undefined, port: number) {
 const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   playwright: {
     scopes: ["dm", "forum", "fork", "cron"],
-    build({ userId, session, playwrightPort, agent }) {
-      // When a long-lived playwright instance is running on `playwrightPort`,
-      // claude/maestro connect via `/sse` (SSE transport) and codex connects via
-      // `/mcp` (streamable HTTP). Both endpoints front the *same* Chromium
-      // process and userDataDir, so all three agents share login state /
-      // cookies / storage on a per-topic basis.
-      if (playwrightPort) {
-        return agent === "codex" ? playwrightHttp(playwrightPort) : playwrightSSE(playwrightPort);
+    build({ userId, session, topicId, playwrightPort, playwrightCapability, agent }) {
+      // Every agent uses owner-scoped streamable HTTP. Multiple topics may
+      // share the Chromium/profile while each connection sees only its tabs.
+      if (playwrightPort && playwrightCapability) {
+        const owner = browserOwnerForContext({ userId, session, topicId });
+        if (!owner) return null;
+        return playwrightHttp(playwrightPort, owner, playwrightCapability, agent);
       }
       // No port available — the playwright manager could not allocate one
       // for this turn. The previous behavior was to fall back to a per-turn
@@ -565,12 +573,14 @@ export function getDmMcpServers(opts: {
   userId: string;
   agent?: AgentKind;
   playwrightPort?: number;
+  playwrightCapability?: string;
 }) {
   return buildScope("dm", {
     userId: opts.userId,
     session: "dm",
     agent: opts.agent,
     playwrightPort: opts.playwrightPort,
+    playwrightCapability: opts.playwrightCapability,
   });
 }
 
@@ -592,6 +602,7 @@ export function getManagerMcpServers(opts: {
   model?: string;
   currentUserPrompt?: string;
   playwrightPort?: number;
+  playwrightCapability?: string;
   autoContinue?: boolean;
 }) {
   if (!opts.topicId) {
@@ -609,6 +620,7 @@ export function getManagerMcpServers(opts: {
     model: opts.model,
     currentUserPrompt: opts.currentUserPrompt,
     playwrightPort: opts.playwrightPort,
+    playwrightCapability: opts.playwrightCapability,
     autoContinue: opts.autoContinue,
   });
 }
@@ -630,6 +642,7 @@ export function getForumMcpServers(opts: {
   model?: string;
   currentUserPrompt?: string;
   playwrightPort?: number;
+  playwrightCapability?: string;
   bgBashPort?: number;
   autoContinue?: boolean;
   depth?: number;
@@ -649,6 +662,7 @@ export function getForumMcpServers(opts: {
     model,
     currentUserPrompt,
     playwrightPort,
+    playwrightCapability,
     depth = 0,
     enabled = null,
     extra = {},
@@ -680,6 +694,7 @@ export function getForumMcpServers(opts: {
       currentUserPrompt,
       depth,
       playwrightPort,
+      playwrightCapability,
       bgBashPort,
       autoContinue,
       silent,
@@ -707,6 +722,7 @@ export function getCronMcpServers(opts: {
   model?: string;
   currentUserPrompt?: string;
   playwrightPort?: number;
+  playwrightCapability?: string;
 }) {
   return buildScope("cron", {
     userId: opts.userId,
@@ -719,6 +735,7 @@ export function getCronMcpServers(opts: {
     model: opts.model,
     currentUserPrompt: opts.currentUserPrompt,
     playwrightPort: opts.playwrightPort,
+    playwrightCapability: opts.playwrightCapability,
     autoContinue: false,
   });
 }
@@ -743,6 +760,7 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
       model: opts.model,
       currentUserPrompt: opts.prompt,
       playwrightPort: opts.playwrightPort,
+      playwrightCapability: opts.playwrightCapability,
     });
   }
   if (opts.sessionType === "dm" || opts.sessionType === "ephemeral") {
@@ -750,6 +768,7 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
       userId: opts.userId || "default",
       agent: opts.agent,
       playwrightPort: opts.playwrightPort,
+      playwrightCapability: opts.playwrightCapability,
     });
   }
   if (opts.sessionType === "manager") {
@@ -764,6 +783,7 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
       model: opts.model,
       currentUserPrompt: opts.prompt,
       playwrightPort: opts.playwrightPort,
+      playwrightCapability: opts.playwrightCapability,
       autoContinue: opts.autoContinue,
     });
   }
@@ -778,6 +798,7 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
     model: opts.model,
     currentUserPrompt: opts.prompt,
     playwrightPort: opts.playwrightPort,
+    playwrightCapability: opts.playwrightCapability,
     bgBashPort: opts.bgBashPort,
     autoContinue: opts.autoContinue,
     depth: opts.depth,

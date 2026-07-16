@@ -11,7 +11,15 @@ import {
   OPTIONAL_FORUM_MCP_SERVERS,
   REQUIRED_FORUM_MCP_SERVERS,
 } from "#platform/mcp-config";
+import { closeBrowserOwnerTabs } from "#platform/playwright/manager";
 import { getTopic } from "#storage/api-topics";
+import {
+  assignTopicBrowserProfile,
+  getBrowserProfileOwner,
+  getTopicBrowserProfile,
+  isTopicBrowserProfileOwner,
+  listBrowserProfiles,
+} from "#storage/browser-profiles";
 import {
   clearPendingAsk,
   createPendingAsk,
@@ -31,7 +39,12 @@ import {
   peerHostQueryId,
   userId,
 } from "./runtime";
-import { getMcpConfig, setCurrentTopicDescription, setMcpConfig } from "./topic-config";
+import {
+  currentApiTopicId,
+  getMcpConfig,
+  setCurrentTopicDescription,
+  setMcpConfig,
+} from "./topic-config";
 import { buildInboxPath, getTopicsForUser, type QueryState, validateTarget } from "./topics";
 
 /** Addressing: "<nodeName>/<topicTitle>". Node names never contain "/", so
@@ -205,6 +218,63 @@ server.tool(
     const config = getMcpConfig();
     const lines = [`현재 토픽: ${currentTopic}`, ``, ...formatMcpStatus(config)];
     return mcpOk(lines.join("\n"));
+  },
+);
+
+server.tool(
+  "get_browser_profile",
+  "Get this topic's browser profile and the other owned topics assigned to each profile.",
+  {},
+  async () => {
+    const topicId = currentApiTopicId();
+    if (!topicId || !userId) return mcpError("Error: No current API topic.");
+    if (!isTopicBrowserProfileOwner(topicId, userId)) {
+      return mcpError("Error: Only the topic owner can inspect its browser profiles.");
+    }
+    const ownerId = getBrowserProfileOwner(topicId, userId);
+    return mcpOk(
+      JSON.stringify(
+        {
+          current: getTopicBrowserProfile(topicId),
+          profiles: listBrowserProfiles(ownerId),
+        },
+        null,
+        2,
+      ),
+    );
+  },
+);
+
+server.tool(
+  "set_browser_profile",
+  "Assign this topic to a named shared browser profile. Topics with the same owner and profile share login state but keep owner-isolated tabs. Takes effect next turn.",
+  {
+    profile: z
+      .string()
+      .describe("1-48 lowercase letters, numbers, '-' or '_'; use default for the default profile"),
+  },
+  async ({ profile }) => {
+    const topicId = currentApiTopicId();
+    if (!topicId || !userId) return mcpError("Error: No current API topic.");
+    try {
+      if (!isTopicBrowserProfileOwner(topicId, userId)) {
+        return mcpError("Error: Only the topic owner can change its browser profile.");
+      }
+      const result = assignTopicBrowserProfile({ topicId, actorUserId: userId, profile });
+      let cleanupWarning = "";
+      if (result.previous !== result.profile) {
+        try {
+          await closeBrowserOwnerTabs(userId, result.previous, `topic:${topicId}`);
+        } catch (err) {
+          cleanupWarning = ` Previous-profile tab cleanup failed: ${errMsg(err)}`;
+        }
+      }
+      return mcpOk(
+        `Browser profile changed: ${result.previous} -> ${result.profile}. It takes effect next turn.${cleanupWarning}`,
+      );
+    } catch (err) {
+      return mcpError(`Error: ${errMsg(err)}`);
+    }
   },
 );
 

@@ -1,11 +1,10 @@
 #!/usr/bin/env node
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
@@ -54,7 +53,7 @@ const [{ BrowserManager }, { handleTool }, { tools }] = await Promise.all([
   import(pathToFileURL(resolve(packageRoot, "dist/tools/registry.js")).href),
 ]);
 
-function createMcpServer(defaultStartOptions, sharedManager) {
+function createMcpServer(defaultStartOptions, sharedManager, owner) {
   const server = new Server(
     { name: "mcp-patchright", version: "0.1.0" },
     { capabilities: { tools: {} } },
@@ -63,7 +62,9 @@ function createMcpServer(defaultStartOptions, sharedManager) {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
-      return await handleTool(manager, request.params.name, request.params.arguments ?? {});
+      return await manager.runAsOwner(owner, () =>
+        handleTool(manager, request.params.name, request.params.arguments ?? {}),
+      );
     } catch (error) {
       return {
         content: [
@@ -77,6 +78,44 @@ function createMcpServer(defaultStartOptions, sharedManager) {
     }
   });
   return server;
+}
+
+function requestOwner(req) {
+  const owner = req.header("x-browser-owner");
+  if (!owner || owner.length > 256) return undefined;
+  return owner;
+}
+
+const expectedCapability = process.env.NEGOTIUM_BROWSER_CAPABILITY;
+if (!expectedCapability) throw new Error("NEGOTIUM_BROWSER_CAPABILITY is required");
+
+function safeCapabilityEqual(provided, expectedValue) {
+  if (!provided) return false;
+  const actual = Buffer.from(provided);
+  const expected = Buffer.from(expectedValue);
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+function hasCapability(req) {
+  const provided = req.header("x-browser-capability");
+  return safeCapabilityEqual(provided, expectedCapability);
+}
+
+function hasOwnerCapability(req, owner) {
+  const expected = createHmac("sha256", expectedCapability).update(owner).digest("hex");
+  return safeCapabilityEqual(req.header("x-browser-capability"), expected);
+}
+
+function requireCapability(req, res) {
+  if (hasCapability(req)) return true;
+  res.status(401).json({ ok: false, error: "invalid browser capability" });
+  return false;
+}
+
+function requireOwnerCapability(req, res, owner) {
+  if (hasOwnerCapability(req, owner)) return true;
+  res.status(401).json({ ok: false, error: "invalid browser owner capability" });
+  return false;
 }
 
 // Egress proxy is passed via env (not argv) so credentials stay out of `ps`.
@@ -106,19 +145,28 @@ const app = createMcpExpressApp({ host: options.host });
 
 const transports = {};
 const servers = {};
+const sessionOwners = {};
 let httpServer;
 
-app.get("/health", async (_req, res) => {
+app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     name: "mcp-patchright",
-    transports: Object.keys(transports).length,
-    browser: await sharedManager.status().catch(() => undefined),
   });
 });
 
 app.all("/mcp", async (req, res) => {
   try {
+    const owner = requestOwner(req);
+    if (!owner) {
+      res.status(400).json({
+        jsonrpc: "2.0",
+        error: { code: -32600, message: "browser owner is required in HTTP mode" },
+        id: null,
+      });
+      return;
+    }
+    if (!requireOwnerCapability(req, res, owner)) return;
     const sessionId = req.headers["mcp-session-id"];
     const normalizedSessionId = Array.isArray(sessionId)
       ? sessionId[0]
@@ -136,6 +184,14 @@ app.all("/mcp", async (req, res) => {
         });
         return;
       }
+      if (sessionOwners[normalizedSessionId] !== owner) {
+        res.status(403).json({
+          jsonrpc: "2.0",
+          error: { code: -32001, message: "Browser owner does not match this session" },
+          id: null,
+        });
+        return;
+      }
       transport = existingTransport;
     } else if (!normalizedSessionId && req.method === "POST" && isInitializeRequest(req.body)) {
       let server;
@@ -145,13 +201,15 @@ app.all("/mcp", async (req, res) => {
           if (!transport || !server) return;
           transports[newSessionId] = transport;
           servers[newSessionId] = server;
+          sessionOwners[newSessionId] = owner;
         },
       });
-      server = createMcpServer(defaultStartOptions, sharedManager);
+      server = createMcpServer(defaultStartOptions, sharedManager, owner);
       transport.onclose = () => {
         const sid = transport?.sessionId;
         if (sid) {
           delete transports[sid];
+          delete sessionOwners[sid];
           const managedServer = servers[sid];
           delete servers[sid];
           void managedServer?.close().catch(() => undefined);
@@ -179,40 +237,22 @@ app.all("/mcp", async (req, res) => {
   }
 });
 
-app.get("/sse", async (_req, res) => {
-  const transport = new SSEServerTransport("/messages", res);
-  const server = createMcpServer(defaultStartOptions, sharedManager);
-  transports[transport.sessionId] = transport;
-  servers[transport.sessionId] = server;
-  res.on("close", () => {
-    const sid = transport.sessionId;
-    delete transports[sid];
-    delete servers[sid];
-    void server.close().catch(() => undefined);
-  });
-  await server.connect(transport);
-});
-
-app.post("/messages", async (req, res) => {
-  const sessionId = req.query.sessionId;
-  const normalizedSessionId =
-    typeof sessionId === "string"
-      ? sessionId
-      : Array.isArray(sessionId) && typeof sessionId[0] === "string"
-        ? sessionId[0]
-        : undefined;
-  const existingTransport = normalizedSessionId ? transports[normalizedSessionId] : undefined;
-  if (!(existingTransport instanceof SSEServerTransport)) {
-    res.status(400).send("No SSE transport found for sessionId");
+app.delete("/owners", async (req, res) => {
+  if (!requireCapability(req, res)) return;
+  const owner = requestOwner(req);
+  if (!owner) {
+    res.status(400).json({ ok: false, error: "owner is required" });
     return;
   }
-  await existingTransport.handlePostMessage(req, res, req.body);
+  const closed = await sharedManager.closeOwnerPages(owner);
+  res.json({ ok: true, owner, closed });
 });
 
 async function shutdown() {
   for (const [sessionId, transport] of Object.entries(transports)) {
     await transport.close().catch(() => undefined);
     delete transports[sessionId];
+    delete sessionOwners[sessionId];
   }
   for (const [sessionId, server] of Object.entries(servers)) {
     await server.close().catch(() => undefined);
@@ -225,7 +265,6 @@ async function shutdown() {
 
 httpServer = app.listen(options.port, options.host, () => {
   console.error(`mcp-patchright listening on http://${options.host}:${options.port}`);
-  console.error(`  SSE:        http://${options.host}:${options.port}/sse`);
   console.error(`  Streamable: http://${options.host}:${options.port}/mcp`);
 });
 httpServer.on("error", (error) => {

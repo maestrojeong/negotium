@@ -17,7 +17,7 @@ import {
   withDb,
 } from "./runtime";
 
-function currentApiTopicId(): string | null {
+export function currentApiTopicId(): string | null {
   if (!userId) return null;
   if (currentTopicId) {
     try {

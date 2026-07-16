@@ -60,12 +60,22 @@ export const DM_WORKSPACE_DIR = resolve(WORKSPACE_DIR, "dm");
 export const SESSION_WORKSPACE_DIR = resolve(WORKSPACE_DIR, "sessions");
 export const CLAUDE_EXECUTABLE = resolve(HOME, ".local/bin/claude");
 
-// Browser-automation MCP launcher. We use `mcp-patchright` (Patchright-powered,
-// stealth-by-default) as a drop-in replacement for `@playwright/mcp`. It speaks
-// the same /sse + /mcp transports and the same --port/--host/--user-data-dir
-// flags. The local wrapper keeps HTTP mode alive for mcp-patchright versions
-// whose entrypoint returns immediately after binding the server.
-export const PLAYWRIGHT_MCP_BIN = resolve(PROJECT_ROOT, "scripts/mcp-patchright-http.mjs");
+// Browser automation uses the authenticated local Patchright HTTP wrapper.
+export function resolveBrowserMcpBin(envValue?: string): string {
+  const override = envValue?.trim();
+  if (override) {
+    if (!/(^|\/)(mcp-patchright|mcp-patchright-http\.mjs)$/.test(override)) {
+      throw new Error(
+        "NEGOTIUM_BROWSER_MCP_BIN must point to the authenticated mcp-patchright wrapper.",
+      );
+    }
+    return override;
+  }
+  return PATCHRIGHT_MCP_BIN;
+}
+
+export const PATCHRIGHT_MCP_BIN = resolve(PROJECT_ROOT, "scripts/mcp-patchright-http.mjs");
+export const PLAYWRIGHT_MCP_BIN = resolveBrowserMcpBin(envText("NEGOTIUM_BROWSER_MCP_BIN"));
 
 // --- Browser egress proxy ---
 //

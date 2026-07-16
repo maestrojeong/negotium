@@ -215,6 +215,8 @@ function createCanonicalTopicsTable(name: string): void {
       is_subagent INTEGER NOT NULL DEFAULT 0 CHECK (is_subagent IN (0,1)),
       visibility TEXT NOT NULL DEFAULT 'visible' CHECK (visibility IN ('visible','hidden')),
       access_mode TEXT NOT NULL DEFAULT 'private' CHECK (access_mode IN ('private','shared')),
+      browser_profile TEXT NOT NULL DEFAULT 'default',
+      browser_profile_owner TEXT,
       session_id TEXT,
       CHECK (
         (kind = 'channel' AND response_policy = 'off' AND agent IS NULL) OR
@@ -350,6 +352,22 @@ if (!tableColumns("api_topics").has("visibility")) {
 if (!tableColumns("api_topics").has("access_mode")) {
   db.exec("ALTER TABLE api_topics ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'private'");
 }
+if (!tableColumns("api_topics").has("browser_profile")) {
+  db.exec("ALTER TABLE api_topics ADD COLUMN browser_profile TEXT NOT NULL DEFAULT 'default'");
+}
+if (!tableColumns("api_topics").has("browser_profile_owner")) {
+  db.exec("ALTER TABLE api_topics ADD COLUMN browser_profile_owner TEXT");
+}
+db.exec(`
+  UPDATE api_topics
+  SET browser_profile_owner = (
+    SELECT m.user_id FROM topic_members m
+    WHERE m.topic_id = api_topics.id AND m.role = 'owner'
+    ORDER BY m.rowid
+    LIMIT 1
+  )
+  WHERE browser_profile_owner IS NULL
+`);
 
 interface TopicRow {
   id: string;
@@ -367,6 +385,7 @@ interface TopicRow {
   is_subagent: number;
   visibility: string | null;
   access_mode: string | null;
+  browser_profile_owner: string | null;
   session_id: string | null;
 }
 
@@ -587,6 +606,16 @@ export function upsertTopic(t: TopicDto): void {
         participant.userId,
         participant.role,
       );
+    }
+    const initialBrowserProfileOwner = t.participants.find(
+      (participant) => participant.role === "owner",
+    )?.userId;
+    if (initialBrowserProfileOwner) {
+      db.query(
+        `UPDATE api_topics
+         SET browser_profile_owner = COALESCE(browser_profile_owner, ?)
+         WHERE id = ?`,
+      ).run(initialBrowserProfileOwner, t.id);
     }
   })();
 }

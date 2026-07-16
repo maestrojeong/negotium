@@ -20,7 +20,12 @@ import { extractFileEvents } from "#media/file-events";
 import { codexAuthFilePath } from "#platform/config";
 import { errMsg } from "#platform/error";
 import { logger } from "#platform/logger";
-import { getMcpServersForQuery } from "#platform/mcp-config";
+import {
+  browserOwnerCapability,
+  browserOwnerForContext,
+  CODEX_BROWSER_CAPABILITY_ENV,
+  getMcpServersForQuery,
+} from "#platform/mcp-config";
 import type { AgentQueryOptions, EffortLevel, UnifiedEvent } from "#types";
 
 /**
@@ -60,7 +65,11 @@ type CodexStdioServer = {
   args?: string[];
   env?: Record<string, string>;
 } & CodexMcpTimeouts;
-type CodexHttpServer = { url: string } & CodexMcpTimeouts;
+type CodexHttpServer = {
+  url: string;
+  http_headers?: Record<string, string>;
+  env_http_headers?: Record<string, string>;
+} & CodexMcpTimeouts;
 type CodexMcpServer = CodexStdioServer | CodexHttpServer;
 
 const CODEX_MCP_SERVER_NAME_OVERRIDES: Record<string, string> = {
@@ -116,7 +125,15 @@ export function toCodexMcpServers(
       continue;
     }
     if (typeof s.url === "string" && s.type !== "sse") {
-      out[codexName] = withCodexMcpServerOverrides(name, { url: s.url });
+      out[codexName] = withCodexMcpServerOverrides(name, {
+        url: s.url,
+        ...(s.http_headers && typeof s.http_headers === "object"
+          ? { http_headers: s.http_headers as Record<string, string> }
+          : {}),
+        ...(s.env_http_headers && typeof s.env_http_headers === "object"
+          ? { env_http_headers: s.env_http_headers as Record<string, string> }
+          : {}),
+      });
     }
   }
   return out;
@@ -353,6 +370,11 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
   }
 
   const codexMcpServers = toCodexMcpServers(getMcpServersForQuery(opts));
+  const browserOwner = browserOwnerForContext(opts);
+  const scopedBrowserCapability =
+    opts.playwrightCapability && browserOwner
+      ? browserOwnerCapability(opts.playwrightCapability, browserOwner)
+      : undefined;
 
   // Startup trace: codexProvider was otherwise silent until its first error or
   // heartbeat (8 min), so a stuck turn left "0 lines of codex" in the logs and
@@ -372,6 +394,18 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
   );
 
   const codex = new Codex({
+    ...(scopedBrowserCapability
+      ? {
+          env: {
+            ...Object.fromEntries(
+              Object.entries(process.env).filter(
+                (entry): entry is [string, string] => typeof entry[1] === "string",
+              ),
+            ),
+            [CODEX_BROWSER_CAPABILITY_ENV]: scopedBrowserCapability,
+          },
+        }
+      : {}),
     config: {
       // Otium exposes delegation through runtime.spawn_subagent so child work
       // gets its own room/card and its result is routed back to the parent.

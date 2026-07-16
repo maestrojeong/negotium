@@ -1,8 +1,15 @@
 import { describe, expect, it } from "bun:test";
+import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import {
+  browserProcessMatchesExpectedProfile,
   extractUserDataDirArg,
   makeInstanceKey,
+  selectIdleEvictionKey,
   selectOrphanBrowserPids,
+  selectReusablePort,
+  waitForChildProcessExit,
+  withPlaywrightInstanceMaintenance,
 } from "#platform/playwright/manager";
 
 describe("extractUserDataDirArg", () => {
@@ -38,13 +45,40 @@ describe("extractUserDataDirArg", () => {
 });
 
 describe("makeInstanceKey", () => {
-  it("uses only the Otium topic/profile identity", () => {
-    expect(makeInstanceKey("alice", "topic-123")).toBe("topic:topic-123");
-    expect(makeInstanceKey("bob", "topic-123")).toBe("topic:topic-123");
+  it("falls back to the caller's default profile for unknown synthetic topics", () => {
+    expect(makeInstanceKey("alice", "topic-123")).toBe("profile:alice:default");
+    expect(makeInstanceKey("bob", "topic-123")).toBe("profile:bob:default");
   });
 
-  it("falls back to the shared dm profile when no topic is provided", () => {
-    expect(makeInstanceKey("alice", undefined)).toBe("dm");
+  it("uses a user-scoped default profile for dm", () => {
+    expect(makeInstanceKey("alice", undefined)).toBe("profile:alice:default");
+  });
+});
+
+describe("withPlaywrightInstanceMaintenance", () => {
+  it("serializes operations that overlap on any profile key", async () => {
+    const events: string[] = [];
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    const first = withPlaywrightInstanceMaintenance(["profile:a", "profile:b"], async () => {
+      events.push("first:start");
+      await firstBlocked;
+      events.push("first:end");
+    });
+    await Bun.sleep(0);
+
+    const second = withPlaywrightInstanceMaintenance(["profile:b"], async () => {
+      events.push("second:start");
+    });
+    await Bun.sleep(10);
+    expect(events).toEqual(["first:start"]);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(events).toEqual(["first:start", "first:end", "second:start"]);
   });
 });
 
@@ -71,5 +105,71 @@ describe("selectOrphanBrowserPids", () => {
       { pid: 500, userDataDir: "/profiles/./research" }, // == live after resolve → keep
     ];
     expect(selectOrphanBrowserPids(procs, ["/profiles/research"], root, 1)).toEqual([]);
+  });
+});
+
+describe("selectIdleEvictionKey", () => {
+  it("does not evict pinned instances or instances with lifecycle work in progress", () => {
+    const now = 10_000;
+    const candidates: Array<[string, { lastUsedAt: number }]> = [
+      ["busy", { lastUsedAt: 0 }],
+      ["pinned", { lastUsedAt: 100 }],
+      ["available", { lastUsedAt: 200 }],
+    ];
+
+    expect(selectIdleEvictionKey(candidates, ["pinned"], ["busy"], now, 1000)).toBe("available");
+  });
+});
+
+describe("selectReusablePort", () => {
+  it("does not reuse an evicted port while the old process still owns it", () => {
+    expect(selectReusablePort(9000, 9002, new Set([9001]), (port) => port === 9000)).toBe(9002);
+  });
+});
+
+describe("browserProcessMatchesExpectedProfile", () => {
+  it("requires an exact user-data-dir before killing a stale browser process", () => {
+    expect(
+      browserProcessMatchesExpectedProfile(
+        "node mcp-patchright --port 9000 --user-data-dir /profiles/alice",
+        "/profiles/alice",
+      ),
+    ).toBe(true);
+    expect(
+      browserProcessMatchesExpectedProfile("node mcp-patchright --port 9000", "/profiles/alice"),
+    ).toBe(false);
+    expect(
+      browserProcessMatchesExpectedProfile(
+        "node mcp-patchright --port 9000 --user-data-dir /profiles/bob",
+        "/profiles/alice",
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("waitForChildProcessExit", () => {
+  it("does not treat killed=true as process termination", async () => {
+    const emitter = new EventEmitter() as EventEmitter & {
+      exitCode: number | null;
+      signalCode: NodeJS.Signals | null;
+      killed: boolean;
+    };
+    emitter.exitCode = null;
+    emitter.signalCode = null;
+    emitter.killed = true;
+    let resolved = false;
+
+    const waiting = waitForChildProcessExit(emitter as unknown as ChildProcess, 100).then(
+      (result) => {
+        resolved = true;
+        return result;
+      },
+    );
+    await Bun.sleep(5);
+    expect(resolved).toBe(false);
+
+    emitter.signalCode = "SIGTERM";
+    emitter.emit("exit", null, "SIGTERM");
+    expect(await waiting).toBe(true);
   });
 });

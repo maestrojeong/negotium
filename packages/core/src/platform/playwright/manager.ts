@@ -1,9 +1,12 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import {
   cpSync,
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
+  renameSync,
   rmSync,
   unlinkSync,
   writeFileSync,
@@ -11,6 +14,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import {
   BROWSER_PROFILES_DIR,
+  PATCHRIGHT_MCP_BIN,
   PLAYWRIGHT_BASE_PORT,
   PLAYWRIGHT_MAX_PORT,
   PLAYWRIGHT_MCP_BIN,
@@ -21,39 +25,64 @@ import { delay } from "#platform/delay";
 
 import { logger } from "#platform/logger";
 import { sanitizeTopicName } from "#security/sanitize";
+import {
+  assignTopicBrowserProfile,
+  getBrowserProfileOwner,
+  getTopicBrowserProfile,
+  hasBrowserProfileTopic,
+  normalizeBrowserProfileName,
+} from "#storage/browser-profiles";
 
 export { PLAYWRIGHT_PORTS_DIR };
 
-/**
- * Build an instanceKey from the Otium topic identity. Browser state is topic
- * scoped, not user/group scoped; everyone in the same topic sees the same
- * browser profile.
- *
- * Forms:
- *   - `dm`              — no topic
- *   - `topic:${topic}`  — API topic id / synthetic cron profile id
- */
-export function makeInstanceKey(_userId: string, topic: string | undefined): string {
-  if (!topic) return "dm";
-  return `topic:${topic}`;
+/** Multiple topics assigned to one profile reuse one browser process. */
+export function makeInstanceKey(userId: string, topic: string | undefined): string {
+  if (!topic) return makeBrowserProfileInstanceKey(userId, "default");
+  const ownerId = getBrowserProfileOwner(topic, userId);
+  const profile = migrateLegacyTopicProfile(ownerId, topic);
+  return makeBrowserProfileInstanceKey(ownerId, profile);
+}
+
+export function makeBrowserProfileInstanceKey(ownerId: string, rawProfile: string): string {
+  return `profile:${encodeURIComponent(ownerId)}:${normalizeBrowserProfileName(rawProfile)}`;
+}
+
+export function legacyBrowserProfileName(topic: string): string {
+  return `legacy_${createHash("sha256").update(topic).digest("hex").slice(0, 12)}`;
+}
+
+function migrateLegacyTopicProfile(ownerId: string, topic: string): string {
+  const current = getTopicBrowserProfile(topic);
+  if (current !== "default" || !hasBrowserProfileTopic(topic)) return current;
+
+  const legacyDir = resolve(BROWSER_PROFILES_DIR, sanitizeTopicName(topic));
+  if (!existsSync(legacyDir)) return current;
+
+  const profile = legacyBrowserProfileName(topic);
+  const profileDir = resolveProfileDir(ownerId, profile);
+  mkdirSync(dirname(profileDir), { recursive: true });
+  if (!existsSync(profileDir)) renameSync(legacyDir, profileDir);
+  assignTopicBrowserProfile({ topicId: topic, actorUserId: ownerId, profile });
+  logger.info({ ownerId, topic, profile }, "Adopted legacy topic browser profile");
+  return profile;
 }
 
 interface InstanceKeyParts {
-  topic: string | undefined;
+  ownerId: string;
+  profile: string;
 }
 
 function parseInstanceKey(instanceKey: string): InstanceKeyParts {
-  if (instanceKey === "dm") return { topic: undefined };
-  if (instanceKey.startsWith("topic:")) {
-    return { topic: instanceKey.slice("topic:".length) };
-  }
-  return { topic: undefined };
+  const match = /^profile:([^:]+):(.+)$/.exec(instanceKey);
+  if (!match) return { ownerId: "legacy", profile: sanitizeTopicName(instanceKey) };
+  return {
+    ownerId: decodeURIComponent(match[1]!),
+    profile: normalizeBrowserProfileName(match[2]!),
+  };
 }
 
 function portFileName(instanceKey: string): string {
-  const { topic } = parseInstanceKey(instanceKey);
-  if (!topic) return "dm";
-  return sanitizeTopicName(topic);
+  return createHash("sha256").update(instanceKey).digest("hex").slice(0, 24);
 }
 
 function writePortFile(instanceKey: string, port: number) {
@@ -73,6 +102,18 @@ function deletePortFile(instanceKey: string) {
   }
 }
 
+function readPortFile(instanceKey: string): number | null {
+  try {
+    const port = Number.parseInt(
+      readFileSync(join(PLAYWRIGHT_PORTS_DIR, portFileName(instanceKey)), "utf8").trim(),
+      10,
+    );
+    return Number.isInteger(port) ? port : null;
+  } catch {
+    return null;
+  }
+}
+
 const BASE_PORT = PLAYWRIGHT_BASE_PORT;
 const MAX_PORT = PLAYWRIGHT_MAX_PORT;
 const MAX_IDLE_MS = 2 * 60 * 60 * 1000; // 2 hours idle → eligible for eviction
@@ -83,6 +124,7 @@ interface PlaywrightInstance {
   userId: string;
   startedAt: number;
   lastUsedAt: number;
+  capability: string;
 }
 
 const instances = new Map<string, PlaywrightInstance>();
@@ -92,6 +134,59 @@ const usedPorts = new Set<number>();
 
 // Prevent concurrent spawns for the same key
 const spawning = new Map<string, Promise<number | null>>();
+
+/** Serialize destructive profile maintenance with normal browser startup. */
+export async function withPlaywrightInstanceMaintenance<T>(
+  rawKeys: string[],
+  operation: () => Promise<T>,
+): Promise<T> {
+  const keys = [...new Set(rawKeys)].sort();
+  for (;;) {
+    const pending = keys
+      .map((key) => spawning.get(key))
+      .filter((promise): promise is Promise<number | null> => promise !== undefined);
+    if (pending.length > 0) {
+      await Promise.allSettled(pending);
+      continue;
+    }
+
+    let releaseBarrier!: () => void;
+    const barrier = new Promise<number | null>((resolveBarrier) => {
+      releaseBarrier = () => resolveBarrier(null);
+    });
+    // No await occurs between the registry check and registration, so another
+    // event-loop task cannot acquire any of these keys concurrently.
+    for (const key of keys) spawning.set(key, barrier);
+
+    try {
+      return await operation();
+    } finally {
+      for (const key of keys) {
+        if (spawning.get(key) === barrier) spawning.delete(key);
+      }
+      releaseBarrier();
+    }
+  }
+}
+
+// A shared profile may have several concurrent turns. Reference counts keep an
+// idle sweep from evicting the process until every borrower has finished.
+const pinnedInstances = new Map<string, number>();
+
+export function pinPlaywrightInstance(instanceKey: string): void {
+  pinnedInstances.set(instanceKey, (pinnedInstances.get(instanceKey) ?? 0) + 1);
+}
+
+export function unpinPlaywrightInstance(instanceKey: string): void {
+  const count = pinnedInstances.get(instanceKey);
+  if (count === undefined) return;
+  if (count <= 1) pinnedInstances.delete(instanceKey);
+  else pinnedInstances.set(instanceKey, count - 1);
+}
+
+export function getPlaywrightCapability(instanceKey: string): string | undefined {
+  return instances.get(instanceKey)?.capability;
+}
 
 // --- Abnormal exit notification callback ---
 // Fired when a Playwright MCP child process exits with a non-zero / non-null
@@ -107,24 +202,47 @@ export function onPlaywrightExit(handler: PlaywrightExitHandler) {
 
 /**
  * Evict the oldest idle instance to free a port.
- * Returns true if an instance was evicted.
+ * Returns the evicted port, or null when no instance was eligible.
  */
-function evictIdleInstance(): boolean {
-  let oldest: { key: string; lastUsedAt: number } | null = null;
+function evictIdleInstance(): number | null {
   const now = Date.now();
-  for (const [key, inst] of instances) {
-    if (now - inst.lastUsedAt < MAX_IDLE_MS) continue;
-    if (!oldest || inst.lastUsedAt < oldest.lastUsedAt) {
-      oldest = { key, lastUsedAt: inst.lastUsedAt };
+  const oldestKey = selectIdleEvictionKey(
+    instances,
+    pinnedInstances.keys(),
+    spawning.keys(),
+    now,
+    MAX_IDLE_MS,
+  );
+  if (oldestKey) {
+    const instance = instances.get(oldestKey);
+    if (!instance) return null;
+    const idleMin = ((now - instance.lastUsedAt) / 60000).toFixed(0);
+    logger.info({ key: oldestKey, idleMin }, "Evicting idle playwright instance");
+    killInstance(oldestKey);
+    return instance.port;
+  }
+  return null;
+}
+
+/** Select an idle instance while excluding active borrowers and lifecycle work. */
+export function selectIdleEvictionKey(
+  candidates: Iterable<[string, { lastUsedAt: number }]>,
+  pinnedKeys: Iterable<string>,
+  busyKeys: Iterable<string>,
+  now: number,
+  maxIdleMs: number,
+): string | null {
+  const pinned = new Set(pinnedKeys);
+  const busy = new Set(busyKeys);
+  let oldest: { key: string; lastUsedAt: number } | null = null;
+  for (const [key, instance] of candidates) {
+    if (pinned.has(key) || busy.has(key)) continue;
+    if (now - instance.lastUsedAt < maxIdleMs) continue;
+    if (!oldest || instance.lastUsedAt < oldest.lastUsedAt) {
+      oldest = { key, lastUsedAt: instance.lastUsedAt };
     }
   }
-  if (oldest) {
-    const idleMin = ((now - oldest.lastUsedAt) / 60000).toFixed(0);
-    logger.info({ key: oldest.key, idleMin }, "Evicting idle playwright instance");
-    killInstance(oldest.key);
-    return true;
-  }
-  return false;
+  return oldest?.key ?? null;
 }
 
 /**
@@ -155,18 +273,36 @@ async function allocatePort(expectedUserDataDir?: string): Promise<number> {
   }
 
   // All ports used — try evicting an idle instance
-  if (evictIdleInstance()) {
-    // Retry once after eviction
-    for (let port = BASE_PORT; port <= MAX_PORT; port++) {
-      if (usedPorts.has(port)) continue;
-      usedPorts.add(port);
-      return port;
+  const evictedPort = evictIdleInstance();
+  if (evictedPort !== null) {
+    // SIGTERM only requests shutdown. Do not hand the port to a replacement
+    // until the old listener is actually gone, and recheck every candidate in
+    // case another allocator claimed a different port while we were waiting.
+    await waitForPortRelease(evictedPort);
+    const reusablePort = selectReusablePort(BASE_PORT, MAX_PORT, usedPorts, isPortInUse);
+    if (reusablePort !== null) {
+      usedPorts.add(reusablePort);
+      return reusablePort;
     }
   }
 
   throw new Error(
     `No available ports for Playwright MCP (${instances.size} active instances, range ${BASE_PORT}-${MAX_PORT})`,
   );
+}
+
+/** Select a currently unreserved and unoccupied port without mutating state. */
+export function selectReusablePort(
+  minPort: number,
+  maxPort: number,
+  reservedPorts: ReadonlySet<number>,
+  isOccupied: (port: number) => boolean,
+): number | null {
+  for (let port = minPort; port <= maxPort; port++) {
+    if (reservedPorts.has(port) || isOccupied(port)) continue;
+    return port;
+  }
+  return null;
 }
 
 function releasePort(port: number) {
@@ -221,7 +357,7 @@ async function killPlaywrightOnPort(port: number, expectedUserDataDir?: string) 
         // killed.
         if (expectedUserDataDir) {
           const otherDataDir = extractUserDataDirArg(cmdline);
-          if (otherDataDir && otherDataDir !== expectedUserDataDir) {
+          if (!browserProcessMatchesExpectedProfile(cmdline, expectedUserDataDir)) {
             logger.warn(
               {
                 port,
@@ -258,15 +394,25 @@ async function killPlaywrightOnPort(port: number, expectedUserDataDir?: string) 
   }
 }
 
+/** Require positive command-line proof before killing a profile-scoped process. */
+export function browserProcessMatchesExpectedProfile(
+  cmdline: string,
+  expectedUserDataDir: string,
+): boolean {
+  const actualUserDataDir = extractUserDataDirArg(cmdline);
+  return actualUserDataDir !== null && resolve(actualUserDataDir) === resolve(expectedUserDataDir);
+}
+
 /**
  * Kill all leftover browser-MCP processes from previous bot runs.
- * Call once at bot startup. Matches both `mcp-patchright` (current binary)
- * and `playwright-mcp` so restarts reap orphaned servers + their Chrome
- * children holding ports.
+ * Call once at startup. Matches mcp-patchright and the legacy playwright-mcp
+ * so upgrades reap orphaned servers holding ports.
  */
 export function cleanupZombiePlaywright(): void {
   try {
-    const pids = execFileSync("pgrep", ["-f", "mcp-patchright|playwright-mcp"], { stdio: "pipe" })
+    const pids = execFileSync("pgrep", ["-f", "mcp-patchright|playwright-mcp"], {
+      stdio: "pipe",
+    })
       .toString()
       .trim();
     if (pids) {
@@ -418,15 +564,18 @@ function reapOrphanBrowsers(): void {
  * Health check — can we reach the SSE endpoint?
  */
 async function isHealthy(port: number): Promise<boolean> {
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/sse`, {
-      signal: AbortSignal.timeout(2000),
-    });
-    res.body?.cancel();
-    return res.ok;
-  } catch {
-    return false;
+  for (const path of ["/health", "/sse?owner=__negotium_health__"]) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      await res.body?.cancel();
+      if (res.ok) return true;
+    } catch {
+      // Try the transport endpoint when this runtime has no /health route.
+    }
   }
+  return false;
 }
 
 /**
@@ -488,11 +637,19 @@ function killProcessTreeChildren(pid: number): void {
   }
 }
 
-/** Resolve the topic-scoped userDataDir for an instanceKey. */
+function ownerDirectory(ownerId: string): string {
+  const digest = createHash("sha256").update(ownerId).digest("hex").slice(0, 16);
+  return `${sanitizeTopicName(ownerId).slice(0, 24)}_${digest}`;
+}
+
+function resolveProfileDir(ownerId: string, profile: string): string {
+  return resolve(BROWSER_PROFILES_DIR, "profiles", ownerDirectory(ownerId), profile);
+}
+
+/** Resolve the shared profile userDataDir for an instanceKey. */
 function resolveUserDataDir(instanceKey: string): string {
-  const { topic } = parseInstanceKey(instanceKey);
-  const subDir = topic ? sanitizeTopicName(topic) : "dm";
-  return resolve(BROWSER_PROFILES_DIR, subDir);
+  const { ownerId, profile } = parseInstanceKey(instanceKey);
+  return resolveProfileDir(ownerId, profile);
 }
 
 /**
@@ -535,9 +692,8 @@ function killInstance(instanceKey: string, opts?: { keepPort?: boolean }) {
 }
 
 /**
- * Spawn a new Playwright MCP SSE server for a specific topic/profile. The
- * topic identity is encoded in `instanceKey` and decoded inside
- * `resolveUserDataDir`.
+ * Spawn a browser MCP HTTP server for a shared named profile. The profile
+ * identity is encoded in `instanceKey` and decoded inside `resolveUserDataDir`.
  */
 /**
  * Spawn a Playwright MCP process for the given instanceKey.
@@ -550,6 +706,8 @@ async function spawnPlaywright(
   instanceKey: string,
   userId: string,
   reservedPort?: number,
+  browserBin = PLAYWRIGHT_MCP_BIN,
+  allowFallback = true,
 ): Promise<number> {
   const userDataDir = resolveUserDataDir(instanceKey);
   // Forward userDataDir to allocatePort so the in-port zombie scan can
@@ -585,20 +743,26 @@ async function spawnPlaywright(
   // launcher (scripts/mcp-patchright-http.mjs) reads these NEGOTIUM_BROWSER_PROXY_*
   // vars and hands them to Playwright's per-context proxy option.
   const proxy = resolveBrowserProxy();
-  const childEnv = proxy
-    ? {
-        ...process.env,
-        NEGOTIUM_BROWSER_PROXY_SERVER: proxy.server,
-        ...(proxy.username ? { NEGOTIUM_BROWSER_PROXY_USERNAME: proxy.username } : {}),
-        ...(proxy.password ? { NEGOTIUM_BROWSER_PROXY_PASSWORD: proxy.password } : {}),
-        ...(proxy.bypass ? { NEGOTIUM_BROWSER_PROXY_BYPASS: proxy.bypass } : {}),
-      }
-    : process.env;
+  const capability = randomBytes(32).toString("hex");
+  const childEnv = {
+    ...process.env,
+    NEGOTIUM_BROWSER_CAPABILITY: capability,
+    ...(proxy
+      ? {
+          NEGOTIUM_BROWSER_PROXY_SERVER: proxy.server,
+          ...(proxy.username ? { NEGOTIUM_BROWSER_PROXY_USERNAME: proxy.username } : {}),
+          ...(proxy.password ? { NEGOTIUM_BROWSER_PROXY_PASSWORD: proxy.password } : {}),
+          ...(proxy.bypass ? { NEGOTIUM_BROWSER_PROXY_BYPASS: proxy.bypass } : {}),
+        }
+      : {}),
+  };
   if (proxy) {
     logger.info({ instanceKey, proxyServer: proxy.server }, "Browser egress proxy enabled");
   }
 
-  const proc = spawn("node", [PLAYWRIGHT_MCP_BIN, ...mcpArgs], {
+  const command = browserBin.endsWith(".mjs") ? process.execPath : browserBin;
+  const args = browserBin.endsWith(".mjs") ? [browserBin, ...mcpArgs] : mcpArgs;
+  const proc = spawn(command, args, {
     stdio: "ignore",
     detached: false,
     env: childEnv,
@@ -647,12 +811,21 @@ async function spawnPlaywright(
     userId,
     startedAt: now,
     lastUsedAt: now,
+    capability,
   });
 
-  const ready = await waitForServer(port, 10_000);
+  const ready =
+    (await waitForServer(port, 10_000)) && (await supportsOwnerCleanup(port, capability));
   if (!ready) {
     const exitCode = proc.exitCode;
     killInstance(instanceKey);
+    if (allowFallback && browserBin !== PATCHRIGHT_MCP_BIN) {
+      logger.warn(
+        { instanceKey, browserBin, fallback: PATCHRIGHT_MCP_BIN },
+        "Preferred browser MCP unavailable or lacks owner isolation; using Patchright fallback",
+      );
+      return spawnPlaywright(instanceKey, userId, undefined, PATCHRIGHT_MCP_BIN, false);
+    }
     throw new Error(
       `Playwright MCP failed health check after spawn on port ${port}` +
         (exitCode === null ? "" : ` (exitCode=${exitCode})`),
@@ -663,9 +836,26 @@ async function spawnPlaywright(
   return port;
 }
 
+async function supportsOwnerCleanup(port: number, capability: string): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/owners`, {
+      method: "DELETE",
+      headers: {
+        "X-Browser-Owner": "__negotium_capability_probe__",
+        "X-Browser-Capability": capability,
+      },
+      signal: AbortSignal.timeout(2000),
+    });
+    await response.body?.cancel();
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Ensure a healthy Playwright MCP SSE server is running for this session.
- * Each topic/profile gets its own browser process with an isolated data dir.
+ * Ensure a healthy browser MCP server is running for this topic's profile.
+ * Topics assigned to the same profile reuse one process and data directory.
  * - If running and healthy → reuse
  * - If running but unhealthy → kill and respawn
  * - If not running → spawn
@@ -700,16 +890,103 @@ export async function ensurePlaywright(userId: string, topic?: string): Promise<
         return existing.port;
       }
       logger.warn({ instanceKey }, "Playwright MCP unresponsive, restarting");
+      const oldPort = existing.port;
       killInstance(instanceKey);
+      await waitForPortRelease(oldPort);
+      cleanSingletonFiles(resolveUserDataDir(instanceKey));
     } else if (existing) {
       releasePort(existing.port);
       instances.delete(instanceKey);
+      cleanSingletonFiles(resolveUserDataDir(instanceKey));
     }
 
     return spawnPlaywright(instanceKey, userId);
   })().finally(() => spawning.delete(instanceKey));
   spawning.set(instanceKey, promise);
   return promise;
+}
+
+async function waitForPortRelease(port: number, timeoutMs = 3000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (!isPortInUse(port)) return;
+    await delay(200);
+  }
+}
+
+/** Start or reuse a named shared profile before assigning more topics to it. */
+export async function ensureBrowserProfile(ownerId: string, rawProfile: string): Promise<number> {
+  const instanceKey = makeBrowserProfileInstanceKey(ownerId, rawProfile);
+  const inProgress = spawning.get(instanceKey);
+  if (inProgress) {
+    const port = await inProgress;
+    if (port !== null && (await isHealthy(port))) return port;
+    if (port === null) return ensureBrowserProfile(ownerId, rawProfile);
+    throw new Error(`Browser profile "${rawProfile}" failed to start.`);
+  }
+
+  const promise = (async (): Promise<number> => {
+    const publishedPort = readPortFile(instanceKey);
+    const existing = instances.get(instanceKey);
+    if (publishedPort !== null && !existing) {
+      // A port file without an in-memory instance belongs to a previous runtime.
+      // Its per-process capability and ChildProcess handle cannot be recovered,
+      // so adopting it would bypass owner cleanup and lifecycle tracking. Reap
+      // only the browser serving this exact profile, then spawn a tracked one.
+      logger.warn(
+        { instanceKey, publishedPort },
+        "Recycling untracked browser profile process from stale port file",
+      );
+      await killPlaywrightOnPort(publishedPort, resolveUserDataDir(instanceKey));
+      await waitForPortRelease(publishedPort);
+      deletePortFile(instanceKey);
+    }
+
+    if (existing && !existing.process.killed && existing.process.exitCode === null) {
+      if (await isHealthy(existing.port)) {
+        existing.lastUsedAt = Date.now();
+        return existing.port;
+      }
+      const oldPort = existing.port;
+      killInstance(instanceKey);
+      await waitForPortRelease(oldPort);
+      cleanSingletonFiles(resolveUserDataDir(instanceKey));
+    }
+    const port = await spawnPlaywright(instanceKey, ownerId);
+    if (!(await isHealthy(port))) {
+      killInstance(instanceKey);
+      throw new Error(`Browser profile "${rawProfile}" did not pass its health check.`);
+    }
+    return port;
+  })().finally(() => spawning.delete(instanceKey));
+  spawning.set(instanceKey, promise);
+  return promise;
+}
+
+/** Close only one topic/job's tabs while preserving the shared profile. */
+export async function closeBrowserOwnerTabs(
+  ownerId: string,
+  rawProfile: string,
+  owner: string,
+): Promise<number> {
+  const instanceKey = makeBrowserProfileInstanceKey(ownerId, rawProfile);
+  const inProgress = spawning.get(instanceKey);
+  if (inProgress) await inProgress;
+  const instance = instances.get(instanceKey);
+  if (!instance) return 0;
+  const port = instance.port;
+
+  const response = await fetch(`http://127.0.0.1:${port}/owners`, {
+    method: "DELETE",
+    headers: {
+      "X-Browser-Owner": owner,
+      "X-Browser-Capability": instance.capability,
+    },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error(`browser MCP owner cleanup failed (${response.status})`);
+  const result = (await response.json()) as { closed?: number };
+  return typeof result.closed === "number" ? result.closed : 0;
 }
 
 /**
@@ -734,62 +1011,14 @@ export function killPlaywrightForUser(userId: string): void {
 }
 
 /**
- * Force-restart Playwright for a topic/profile.
- * Kills the existing instance (with Chrome cleanup + Singleton removal)
- * and immediately respawns on the SAME port so the next query gets a
- * fresh browser without waiting for the idle-eviction cycle.
- * Returns the new port, or null if no instance was running.
- */
-export async function restartPlaywright(userId: string, topic?: string): Promise<number | null> {
-  const instanceKey = makeInstanceKey(userId, topic);
-
-  // If a spawn is already in progress, wait for it instead of double-spawning
-  const inProgress = spawning.get(instanceKey);
-  if (inProgress) return inProgress;
-
-  const inst = instances.get(instanceKey);
-  if (!inst) return null;
-
-  const oldPort = inst.port;
-  logger.info({ instanceKey, oldPort }, "Force-restarting Playwright MCP (browser crash recovery)");
-
-  const promise = (async (): Promise<number | null> => {
-    // Kill but keep port reserved — we'll reuse it for respawn
-    killInstance(instanceKey, { keepPort: true });
-
-    // Wait for old process to release the port
-    const start = Date.now();
-    while (Date.now() - start < 3000) {
-      if (!isPortInUse(oldPort)) break;
-      await delay(200);
-    }
-
-    // Re-clean Singleton files after process is fully dead —
-    // graceful SIGTERM shutdown may have re-created them.
-    const userDataDir = resolveUserDataDir(instanceKey);
-    cleanSingletonFiles(userDataDir);
-
-    // Respawn on the same port — delegate to spawnPlaywright to avoid duplication
-    try {
-      return await spawnPlaywright(instanceKey, userId, oldPort);
-    } catch (e) {
-      logger.error({ err: e, instanceKey }, "Failed to respawn Playwright MCP");
-      releasePort(oldPort);
-      return null;
-    }
-  })().finally(() => spawning.delete(instanceKey));
-
-  spawning.set(instanceKey, promise);
-  return promise;
-}
-
-/**
- * Kill a specific topic's Playwright instance.
- * Browser data directory is preserved so login state (cookies) persists across
- * topic restarts.
+ * Legacy API retained for callers that still request topic-scoped shutdown.
+ * Shared profiles cannot be killed through a single topic.
  */
 export function killPlaywrightForTopic(userId: string, topic: string): void {
-  killInstance(makeInstanceKey(userId, topic));
+  logger.info(
+    { userId, topic },
+    "killPlaywrightForTopic skipped: topic uses a shared browser profile",
+  );
 }
 
 /**
@@ -810,8 +1039,8 @@ export interface CloneProfileResult {
 }
 
 /**
- * Clone a parent topic's Playwright profile to a fresh child topic so that
- * cookies / localStorage / login state are inherited. Used by /fork and /spawn.
+ * Assign a child to its parent's shared profile when owners match. Browser
+ * credentials never cross an owner boundary.
  *
  * Safety: if the parent instance is currently running, we kill it first to flush
  * SQLite WAL state to disk, then copy. The parent is NOT respawned here — the
@@ -827,6 +1056,29 @@ export async function cloneProfileForChild(opts: {
   srcTopic: string;
   dstTopic: string;
 }): Promise<CloneProfileResult> {
+  const srcOwner = getBrowserProfileOwner(opts.srcTopic, opts.userId);
+  const dstOwner = getBrowserProfileOwner(opts.dstTopic, opts.userId);
+  if (srcOwner !== dstOwner) {
+    const dstDir = resolveProfileDir(dstOwner, getTopicBrowserProfile(opts.dstTopic));
+    return {
+      copied: false,
+      srcDir: resolveProfileDir(srcOwner, getTopicBrowserProfile(opts.srcTopic)),
+      dstDir,
+      reason: "cross-owner-fresh-profile",
+    };
+  }
+  if (srcOwner === dstOwner && hasBrowserProfileTopic(opts.dstTopic)) {
+    const profile = getTopicBrowserProfile(opts.srcTopic);
+    assignTopicBrowserProfile({ topicId: opts.dstTopic, actorUserId: dstOwner, profile });
+    const sharedDir = resolveProfileDir(srcOwner, profile);
+    return {
+      copied: false,
+      srcDir: sharedDir,
+      dstDir: sharedDir,
+      reason: "shared-profile-assignment",
+    };
+  }
+
   const srcKey = makeInstanceKey(opts.userId, opts.srcTopic);
   const dstKey = makeInstanceKey(opts.userId, opts.dstTopic);
   const srcDir = resolveUserDataDir(srcKey);
@@ -836,88 +1088,80 @@ export async function cloneProfileForChild(opts: {
     return { copied: false, srcDir, dstDir, reason: "same-dir" };
   }
 
-  // Quiesce parent if running so Chrome flushes SQLite (Cookies, Login Data)
-  // before we read the bytes. Without this, an in-flight COMMIT could leave the
-  // clone with a torn WAL and the child would start logged-out.
-  //
-  // killInstance() sends SIGTERM and removes the instance map entry synchronously,
-  // but Chrome's subprocess exit + on-disk flush is async. Empirically 1.0–1.5s
-  // is enough for the cookie store to settle; we wait 1.5s to be safe.
-  const parentWasLive = instances.has(srcKey);
-  if (parentWasLive) {
-    logger.info({ srcKey }, "Quiescing parent Playwright before profile clone");
-    killInstance(srcKey);
-    await delay(1500);
-  }
-
-  // Defensive: dst should be brand-new but kill any stray instance just in case
-  if (instances.has(dstKey)) {
-    killInstance(dstKey);
-    await delay(500);
-  }
-
-  if (!existsSync(srcDir)) {
-    return { copied: false, srcDir, dstDir, reason: "src-missing" };
-  }
-
-  try {
-    if (existsSync(dstDir)) {
-      rmSync(dstDir, { recursive: true, force: true });
+  return withPlaywrightInstanceMaintenance([srcKey, dstKey], async () => {
+    // Quiesce parent if running so Chrome flushes SQLite (Cookies, Login Data)
+    // before we read the bytes. The maintenance barrier prevents a concurrent
+    // ensurePlaywright() from reopening either profile until copying finishes.
+    //
+    // killInstance() sends SIGTERM and removes the instance map entry synchronously,
+    // but Chrome's subprocess exit + on-disk flush is async. Empirically 1.0–1.5s
+    // is enough for the cookie store to settle; we wait 1.5s to be safe.
+    const parentWasLive = instances.has(srcKey);
+    if (parentWasLive) {
+      logger.info({ srcKey }, "Quiescing parent Playwright before profile clone");
+      killInstance(srcKey);
+      await delay(1500);
     }
-    mkdirSync(dirname(dstDir), { recursive: true });
-    if (process.platform === "darwin") {
-      try {
-        // `-c` requests clonefile() on APFS for a fast copy-on-write clone.
-        execFileSync("cp", ["-cR", srcDir, dstDir], { stdio: "pipe" });
-      } catch {
+
+    // Defensive: dst should be brand-new but kill any stray instance just in case
+    if (instances.has(dstKey)) {
+      killInstance(dstKey);
+      await delay(500);
+    }
+
+    if (!existsSync(srcDir)) {
+      return { copied: false, srcDir, dstDir, reason: "src-missing" };
+    }
+
+    try {
+      if (existsSync(dstDir)) {
+        rmSync(dstDir, { recursive: true, force: true });
+      }
+      mkdirSync(dirname(dstDir), { recursive: true });
+      if (process.platform === "darwin") {
+        try {
+          // `-c` requests clonefile() on APFS for a fast copy-on-write clone.
+          execFileSync("cp", ["-cR", srcDir, dstDir], { stdio: "pipe" });
+        } catch {
+          cpSync(srcDir, dstDir, { recursive: true });
+        }
+      } else {
         cpSync(srcDir, dstDir, { recursive: true });
       }
-    } else {
-      cpSync(srcDir, dstDir, { recursive: true });
+    } catch (e) {
+      const reason = `copy-failed: ${e instanceof Error ? e.message : String(e)}`;
+      logger.warn({ srcDir, dstDir, err: e }, "Playwright profile clone failed");
+      return { copied: false, srcDir, dstDir, reason };
     }
-  } catch (e) {
-    const reason = `copy-failed: ${e instanceof Error ? e.message : String(e)}`;
-    logger.warn({ srcDir, dstDir, err: e }, "Playwright profile clone failed");
-    return { copied: false, srcDir, dstDir, reason };
-  }
 
-  // Strip per-process locks copied from the parent so the child Chrome can
-  // launch on its fresh dir without a fake "another instance is running" error.
-  cleanSingletonFiles(dstDir);
-  for (const f of ["DevToolsActivePort", "LOCK"]) {
-    try {
-      unlinkSync(resolve(dstDir, f));
-    } catch {
-      // Not all profiles have these — ignore.
+    // Strip per-process locks copied from the parent so the child Chrome can
+    // launch on its fresh dir without a fake "another instance is running" error.
+    cleanSingletonFiles(dstDir);
+    for (const f of ["DevToolsActivePort", "LOCK"]) {
+      try {
+        unlinkSync(resolve(dstDir, f));
+      } catch {
+        // Not all profiles have these — ignore.
+      }
     }
-  }
 
-  logger.info({ srcKey, dstKey, srcDir, dstDir }, "Cloned Playwright profile for child topic");
-  return { copied: true, srcDir, dstDir };
+    logger.info({ srcKey, dstKey, srcDir, dstDir }, "Cloned Playwright profile for child topic");
+    return { copied: true, srcDir, dstDir };
+  });
 }
 
 /**
- * Kill the topic's Playwright instance and remove its user-data-dir from disk.
- * Negotium profiles are keyed by canonical topic id, so every hard delete must
- * remove the directory: a recreated topic receives a new id and could never
- * reuse the old profile.
+ * Compatibility API for hard-delete callers. Shared profile directories are
+ * preserved; lifecycle cleanup closes only the deleted topic's owner tabs.
  */
 export function deleteTopicProfileDir(
   userId: string,
   topic: string,
 ): { deleted: boolean; dir: string } {
   const key = makeInstanceKey(userId, topic);
-  if (instances.has(key)) killInstance(key);
   const dir = resolveUserDataDir(key);
-  if (!existsSync(dir)) return { deleted: false, dir };
-  try {
-    rmSync(dir, { recursive: true, force: true });
-    logger.info({ dir, userId, topic }, "Deleted topic Playwright profile dir");
-    return { deleted: true, dir };
-  } catch (e) {
-    logger.warn({ err: e, dir, userId, topic }, "Failed to delete topic Playwright profile dir");
-    return { deleted: false, dir };
-  }
+  logger.info({ dir, userId, topic }, "Preserved shared browser profile on topic deletion");
+  return { deleted: false, dir };
 }
 
 /**
@@ -928,22 +1172,45 @@ export async function killAllPlaywright(): Promise<void> {
   const procs = [...instances.entries()].map(([key, inst]) => ({ key, proc: inst.process }));
   for (const { key } of procs) killInstance(key);
 
-  const deadline = Date.now() + 3000;
-  const waits = procs.map(
-    ({ proc }) =>
-      new Promise<void>((resolve) => {
-        if (proc.exitCode !== null || proc.killed) {
-          resolve();
-          return;
-        }
-        proc.once("exit", () => resolve());
-        proc.once("error", () => resolve());
-        // Fallback: don't block shutdown forever
-        const t = setTimeout(resolve, Math.max(0, deadline - Date.now()));
-        if (typeof t === "object") t.unref?.();
-      }),
+  await Promise.all(
+    procs.map(async ({ key, proc }) => {
+      if (await waitForChildProcessExit(proc, 3000)) return;
+      logger.warn({ instanceKey: key, pid: proc.pid }, "Playwright MCP ignored SIGTERM");
+      try {
+        proc.kill("SIGKILL");
+      } catch (err) {
+        logger.warn({ err, instanceKey: key, pid: proc.pid }, "Failed to SIGKILL Playwright MCP");
+      }
+      if (!(await waitForChildProcessExit(proc, 1000))) {
+        logger.warn({ instanceKey: key, pid: proc.pid }, "Playwright MCP did not report exit");
+      }
+    }),
   );
-  await Promise.all(waits);
+}
+
+/** Wait for an actual process exit; ChildProcess.killed only means a signal was sent. */
+export function waitForChildProcessExit(proc: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve(true);
+
+  return new Promise<boolean>((resolveWait) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      proc.off("exit", onExit);
+      resolveWait(exited);
+    };
+    const onExit = () => finish(true);
+
+    proc.once("exit", onExit);
+    timer = setTimeout(() => finish(proc.exitCode !== null || proc.signalCode !== null), timeoutMs);
+    if (typeof timer === "object") timer.unref?.();
+
+    // Close the gap between the initial state check and listener registration.
+    if (proc.exitCode !== null || proc.signalCode !== null) finish(true);
+  });
 }
 
 // Proactively evict all idle instances every 30 minutes
@@ -955,7 +1222,7 @@ export async function killAllPlaywright(): Promise<void> {
 // browser is running, a few `ps` calls only while automation is active.
 setInterval(
   () => {
-    while (evictIdleInstance()) {}
+    while (evictIdleInstance() !== null) {}
     try {
       reapOrphanBrowsers();
     } catch (e) {
