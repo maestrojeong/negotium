@@ -14,7 +14,10 @@ import {
   getRoomQueryStatus,
   InterSessionQueue,
   interSessionQueue,
+  isTopicRunning,
   isUserOrigin,
+  listRunningTopicIds,
+  listRunningTopicQueries,
   type RoomQueryControl,
   setRoomQuery,
   takeDeferredInject,
@@ -267,6 +270,19 @@ describe("wsAbortReason", () => {
     expect(wsAbortReason(AbortReason.Internal)).toBe("superseded");
     expect(wsAbortReason(AbortReason.External)).toBe("stopped");
     expect(wsAbortReason(AbortReason.None)).toBe("stopped");
+  });
+});
+
+describe("listRunningTopicIds", () => {
+  test("reports a claimed room and clears once released", () => {
+    setRoomQuery(makeControl("r1", "q1", "user"));
+    expect(listRunningTopicIds().has("r1")).toBe(true);
+    expect(listRunningTopicQueries().get("r1")).toBe("q1");
+    expect(isTopicRunning("r1")).toBe(true);
+
+    clearRoomQuery("r1", "q1");
+    expect(listRunningTopicIds().has("r1")).toBe(false);
+    expect(isTopicRunning("r1")).toBe(false);
   });
 });
 

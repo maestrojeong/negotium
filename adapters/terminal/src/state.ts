@@ -27,6 +27,7 @@ interface ToolActivity {
 interface TopicActivity {
   running: boolean;
   queryId?: string;
+  snapshot?: true;
   startedAtMs?: number;
   status?: string;
   error?: string;
@@ -210,6 +211,35 @@ export function moveTopicPickerSelection(state: AppState, delta: number): AppSta
 export function setTopics(state: AppState, topics: TopicDto[], preferredTitle?: string): AppState {
   const orderedTopics = orderTopicsByParent(topics);
   const stillVisible = orderedTopics.some((topic) => topic.id === state.activeTopicId);
+  // Seed an initial "busy" snapshot for topics the server reports as running
+  // but that this client has no live activity entry for yet (e.g. right after
+  // opening the picker, before the next ai-status event arrives). Entries with
+  // a query id came from live events and remain authoritative; snapshot-only
+  // entries are reconciled on the next topic refresh.
+  let activity = state.activity;
+  for (const topic of orderedTopics) {
+    const current = activity[topic.id];
+    const snapshotIsNewer =
+      topic.runningQueryId &&
+      current?.running === false &&
+      current.queryId !== topic.runningQueryId;
+    if (topic.running && (!current || current.snapshot || snapshotIsNewer)) {
+      if (activity === state.activity) activity = { ...state.activity };
+      activity[topic.id] = {
+        running: true,
+        queryId: topic.runningQueryId,
+        snapshot: true,
+        tools: [],
+        startedAtMs:
+          current?.snapshot && current.queryId === topic.runningQueryId
+            ? current.startedAtMs
+            : Date.now(),
+      };
+    } else if (!topic.running && current?.snapshot) {
+      if (activity === state.activity) activity = { ...state.activity };
+      delete activity[topic.id];
+    }
+  }
   const pickedTopicId = state.topics[state.topicPickerIndex]?.id;
   const pickedTopicIndex = orderedTopics.findIndex((topic) => topic.id === pickedTopicId);
   const preferred = preferredTitle
@@ -221,6 +251,7 @@ export function setTopics(state: AppState, topics: TopicDto[], preferredTitle?: 
   return {
     ...state,
     topics: orderedTopics,
+    activity,
     activeTopicId: nextActive,
     scrollOffset: nextActive === state.activeTopicId ? state.scrollOffset : 0,
     askChoiceIndex: nextActive === state.activeTopicId ? state.askChoiceIndex : 0,
@@ -409,6 +440,8 @@ function applyAiStatus(
   const status = (raw ?? {}) as Record<string, unknown>;
   const kind = String(status.kind ?? "");
   const current = activityFor(state, topicId);
+  const liveCurrent = { ...current };
+  delete liveCurrent.snapshot;
   if (kind === "ai_active") {
     const queryId = String(status.queryId ?? "");
     return setActivity(state, topicId, {
@@ -428,7 +461,7 @@ function applyAiStatus(
     // replacement's spinner or overwrite its status.
     if (isStaleTerminalStatus(current, status)) return state;
     return setActivity(state, topicId, {
-      ...current,
+      ...liveCurrent,
       running: false,
       status: "Done",
     });
@@ -436,7 +469,7 @@ function applyAiStatus(
   if (kind === "ai_aborted") {
     if (isStaleTerminalStatus(current, status)) return state;
     return setActivity(state, topicId, {
-      ...current,
+      ...liveCurrent,
       running: false,
       status: "Aborted",
     });
@@ -444,7 +477,7 @@ function applyAiStatus(
   if (kind === "ai_error") {
     if (isStaleTerminalStatus(current, status)) return state;
     return setActivity(state, topicId, {
-      ...current,
+      ...liveCurrent,
       running: false,
       status: "Error",
       error: String(status.error ?? "Unknown error"),
@@ -459,7 +492,7 @@ function applyAiStatus(
       status: "running",
     };
     const withActivity = setActivity(state, topicId, {
-      ...current,
+      ...liveCurrent,
       running: true,
       queryId: queryId || current.queryId,
       startedAtMs:
@@ -485,7 +518,7 @@ function applyAiStatus(
     const tools = current.tools.map((tool) =>
       tool.id === id ? { ...tool, output: String(status.content ?? ""), status: "done" } : tool,
     );
-    const withActivity = setActivity(state, topicId, { ...current, tools });
+    const withActivity = setActivity(state, topicId, { ...liveCurrent, tools });
     return patchMessage(withActivity, topicId, toolMessageId(status, id), {
       editedAt: createdAt ?? new Date().toISOString(),
     });
@@ -493,7 +526,7 @@ function applyAiStatus(
   if (kind === "tool_status") {
     if (isStaleTerminalStatus(current, status)) return state;
     return setActivity(state, topicId, {
-      ...current,
+      ...liveCurrent,
       status: String(status.content ?? current.status ?? "Working…"),
     });
   }

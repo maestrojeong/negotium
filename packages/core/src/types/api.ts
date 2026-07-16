@@ -116,6 +116,10 @@ export interface TopicDto {
     nodeId: string;
     nodeName: string;
   };
+  /** True when an AI turn is currently in flight for this topic (snapshot at list time). */
+  running?: boolean;
+  /** Query id associated with the list-time running snapshot. */
+  runningQueryId?: string;
 }
 
 /** Read-only internal work shown by operational clients while it is active. */

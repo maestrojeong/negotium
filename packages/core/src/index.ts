@@ -162,6 +162,9 @@ export {
   cancelDeferredInject,
   getRoomQuery,
   interSessionQueue,
+  isTopicRunning,
+  listRunningTopicIds,
+  listRunningTopicQueries,
 } from "#query/active-rooms";
 export { sessionInboxPath } from "#query/session-inbox-path";
 export { AbortReason } from "#query/types";

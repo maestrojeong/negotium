@@ -36,6 +36,76 @@ describe("terminal adapter state", () => {
     expect(state.activeTopicId).toBe("b");
   });
 
+  test("seeds activity for a topic the server reports as running with no existing entry", () => {
+    const running = { ...topic("a", "A"), running: true };
+    const state = setTopics(createInitialState("local"), [running, topic("b", "B")]);
+
+    expect(state.activity.a).toMatchObject({ running: true, tools: [] });
+    expect(typeof state.activity.a?.startedAtMs).toBe("number");
+    expect(state.activity.b).toBeUndefined();
+  });
+
+  test("does not overwrite an existing activity entry when refreshing topics", () => {
+    let state = setTopics(createInitialState("local"), [{ ...topic("a", "A"), running: true }]);
+    const seeded = state.activity.a;
+    expect(seeded).toBeDefined();
+
+    // Live events are authoritative once an entry exists — a done/error
+    // status must survive even though the server DTO still says running.
+    state = { ...state, activity: { ...state.activity, a: { running: false, tools: [] } } };
+    state = setTopics(state, [{ ...topic("a", "A"), running: true }]);
+
+    expect(state.activity.a).toEqual({ running: false, tools: [] });
+  });
+
+  test("clears a stale list snapshot without overwriting live event activity", () => {
+    const candidate = topic("a", "A");
+    const seeded = setTopics(createInitialState("local"), [{ ...candidate, running: true }]);
+    expect(setTopics(seeded, [{ ...candidate, running: false }]).activity.a).toBeUndefined();
+
+    const live = {
+      ...seeded,
+      activity: {
+        a: { running: true, queryId: "live-query", tools: [], startedAtMs: 1 },
+      },
+    };
+    expect(setTopics(live, [{ ...candidate, running: false }]).activity.a?.queryId).toBe(
+      "live-query",
+    );
+  });
+
+  test("starts a newer snapshot after a prior live query became idle", () => {
+    const candidate = topic("a", "A");
+    const idle = {
+      ...createInitialState("local"),
+      activity: {
+        a: { running: false, queryId: "old-query", tools: [] },
+      },
+    };
+    const next = setTopics(idle, [{ ...candidate, running: true, runningQueryId: "new-query" }]);
+
+    expect(next.activity.a).toMatchObject({
+      running: true,
+      queryId: "new-query",
+      snapshot: true,
+    });
+  });
+
+  test("does not revive a snapshot after its live completion event", () => {
+    const candidate = topic("a", "A");
+    const runningTopic = { ...candidate, running: true, runningQueryId: "query-1" };
+    const seeded = setTopics(createInitialState("local"), [runningTopic]);
+    const completed = applyRuntimeEvent(seeded, {
+      type: "ai-status",
+      topicId: candidate.id,
+      payload: { kind: "ai_done", queryId: "query-1" },
+    });
+    const refreshed = setTopics(completed, [runningTopic]);
+
+    expect(refreshed.activity.a?.running).toBe(false);
+    expect(refreshed.activity.a?.snapshot).toBeUndefined();
+  });
+
   test("places subagent topics directly after their visible parent", () => {
     const parent = topic("parent", "Parent");
     const child = {

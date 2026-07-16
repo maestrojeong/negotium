@@ -19,6 +19,7 @@ import {
   claimRuntimeTurnLease,
   getRuntimeTurnLease,
   heartbeatRuntimeTurnLease,
+  listRuntimeTurnLeases,
   RUNTIME_INSTANCE_ID,
   type RuntimeTurnLease,
   releaseRuntimeTurnLease,
@@ -125,6 +126,26 @@ const leaseMonitors = new Map<string, ReturnType<typeof setInterval>>();
 
 export function getRoomQuery(topicId: string): RoomQueryControl | undefined {
   return activeByRoom.get(topicId);
+}
+
+/** Topic ids and query ids with an in-flight turn in this or another runtime process. */
+export function listRunningTopicQueries(): Map<string, string> {
+  const queries = new Map(
+    [...activeByRoom.values()].map((control) => [control.topicId, control.queryId]),
+  );
+  for (const lease of listRuntimeTurnLeases()) {
+    if (!queries.has(lease.topicId)) queries.set(lease.topicId, lease.queryId);
+  }
+  return queries;
+}
+
+export function listRunningTopicIds(): Set<string> {
+  return new Set(listRunningTopicQueries().keys());
+}
+
+/** Single-topic status check for callers that do not need a list snapshot. */
+export function isTopicRunning(topicId: string): boolean {
+  return activeByRoom.has(topicId) || getRuntimeTurnLease(topicId) !== null;
 }
 
 export function getRoomQueryStatus(topicId: string, queryId: string): "running" | "not_found" {
