@@ -331,6 +331,24 @@ describe("outbound", () => {
     expect(fake.callsFor(chat(7)).at(-1)?.text).toBe("[From: User] written from terminal");
   });
 
+  test("relays tell_session messages received from another topic", async () => {
+    const topic = getTopicByNameForUser(room("outbound-room"), USER)!;
+    const before = fake.callsFor(chat(7)).length;
+
+    runtimeBus().broadcastMessage(topic.id, {
+      id: randomUUID(),
+      topicId: topic.id,
+      authorId: "system",
+      sourceAdapter: "session-comm",
+      text: "[Tell from **research**]\n\nReview the deployment result.",
+      createdAt: new Date().toISOString(),
+    });
+
+    await waitFor(() => fake.callsFor(chat(7)).length > before);
+    expect(fake.callsFor(chat(7)).at(-1)?.text).toContain("Tell from <b>research</b>");
+    expect(fake.callsFor(chat(7)).at(-1)?.text).toContain("Review the deployment result.");
+  });
+
   test("falls back to plain text when Telegram rejects the HTML", async () => {
     const topic = getTopicByNameForUser(room("outbound-room"), USER)!;
     const before = fake.callsFor(chat(7)).length;

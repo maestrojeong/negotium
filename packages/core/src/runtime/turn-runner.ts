@@ -1242,6 +1242,8 @@ export interface TriggerTopicAiTurnOptions extends AiTurnExecutionOptions {
   hideInjectMessage?: boolean;
   /** Visible injected-message author. Execution still runs as `userId`. */
   injectAuthorId?: string;
+  /** Identifies the subsystem that created the visible injected message. */
+  injectSourceAdapter?: string;
 }
 
 export interface ResolvedTopicTurnExecution {
@@ -2234,6 +2236,7 @@ export function triggerTopicAiTurn(
       id: `tell-${randomUUID()}`,
       topicId,
       authorId: opts?.injectAuthorId ?? userId,
+      sourceAdapter: opts?.injectSourceAdapter,
       authorName: execution.agent,
       text: prompt,
       agentType: execution.agent,

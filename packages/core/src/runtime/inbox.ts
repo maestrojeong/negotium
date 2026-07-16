@@ -655,6 +655,7 @@ async function handleTellEntry(
         from: fromLabel,
         hideInjectMessage: isHiddenContinue,
         injectAuthorId: "system",
+        injectSourceAdapter: "session-comm",
       },
     );
   }

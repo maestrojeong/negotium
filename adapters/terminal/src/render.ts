@@ -335,8 +335,17 @@ function subagentLines(message: MessageDto, width: number): UiLine[] {
   ];
 }
 
+function isVisibleSystemMessage(message: MessageDto): boolean {
+  return message.sourceAdapter === "session-comm" || message.id.startsWith("tell-");
+}
+
 function messageLines(message: MessageDto, width: number, userId: string): UiLine[] {
-  if (message.kind === "system" || message.authorId === "system") return [];
+  if (
+    message.kind === "system" ||
+    (message.authorId === "system" && !isVisibleSystemMessage(message))
+  ) {
+    return [];
+  }
   if (message.kind === "subagent" && message.subagentCard) return subagentLines(message, width);
   if (message.kind === "tool") {
     const [title = "Tool", ...details] = safeText(message.text).split("\n");
@@ -506,7 +515,7 @@ export function plainTranscript(state: AppState): string {
       !item.id.startsWith("tasks-") &&
       item.kind !== "tool" &&
       item.kind !== "system" &&
-      item.authorId !== "system",
+      (item.authorId !== "system" || isVisibleSystemMessage(item)),
   )) {
     const author =
       message.authorId === state.userId
@@ -699,7 +708,10 @@ function conversationContentLines(
 ): UiLine[] {
   const all: UiLine[] = [];
   for (const message of activeMessages(state).filter(
-    (item) => !item.id.startsWith("tasks-") && item.kind !== "system" && item.authorId !== "system",
+    (item) =>
+      !item.id.startsWith("tasks-") &&
+      item.kind !== "system" &&
+      (item.authorId !== "system" || isVisibleSystemMessage(item)),
   )) {
     all.push(...messageLines(message, width, state.userId));
   }

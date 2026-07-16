@@ -368,6 +368,23 @@ describe("terminal renderer", () => {
     expect(stripAnsi(renderApp(state, 100, 30))).not.toContain("internal orchestration detail");
   });
 
+  test("shows tell_session messages received from another topic", () => {
+    const tellMessage: MessageDto = {
+      id: "tell-message",
+      topicId: "topic",
+      authorId: "system",
+      text: "[Tell from **research**]\n\nReview the deployment result.",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const state = setMessages(setTopics(createInitialState("local"), [topic()]), "topic", [
+      tellMessage,
+    ]);
+
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("Tell from **research**");
+    expect(output).toContain("Review the deployment result.");
+  });
+
   test("shows compact tool status without verbose output", () => {
     let state = setTopics(createInitialState("local"), [topic()]);
     state = applyRuntimeEvent(state, {
