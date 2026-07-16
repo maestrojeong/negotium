@@ -63,7 +63,7 @@ import {
 } from "@/store";
 import { abortHostedPeerTurn, provisionMirrorTopic, runPeerTurn } from "@/turn-bridge";
 
-const RUNTIME_VERSION = "0.1.1";
+const RUNTIME_VERSION = "0.1.2";
 
 function jsonError(error: string, status: number): Response {
   return Response.json({ ok: false, error }, { status });
