@@ -29,8 +29,12 @@ import {
   applyRuntimeEvent,
   createInitialState,
   focusCreatedTopic,
+  moveTopicPickerSelection,
   openTopicPicker,
+  pickedBackgroundSession,
+  pickedTopic,
   selectTopic,
+  setBackgroundSessions,
   setMessageHistoryStatus,
   setMessages,
   setTopics,
@@ -113,6 +117,8 @@ export class TerminalApp {
   #renderQueued = false;
   #renderTimer: ReturnType<typeof setTimeout> | undefined;
   #animationTimer: ReturnType<typeof setInterval> | undefined;
+  #backgroundRefreshTimer: ReturnType<typeof setInterval> | undefined;
+  #backgroundRefreshRunning = false;
   #animationFrame = 0;
   #topicsRefreshGeneration = 0;
   readonly #messageLoadGeneration = new Map<string, number>();
@@ -153,6 +159,7 @@ export class TerminalApp {
       this.#history = new InputHistory(this.#client.listInputHistory?.() ?? []);
       if (this.#stopRequested) return;
       await this.#refreshTopics(this.#options.preferredTopic ?? "General");
+      await this.#refreshBackgroundSessions();
       if (this.#options.preferredTopic) {
         const preferred = this.#state.topics.find(
           (topic) => topic.title.toLowerCase() === this.#options.preferredTopic?.toLowerCase(),
@@ -186,11 +193,19 @@ export class TerminalApp {
       this.#render();
       this.#animationTimer = setInterval(() => {
         const topic = activeTopic(this.#state);
-        if (!topic || !this.#state.activity[topic.id]?.running) return;
+        if (
+          (!topic || !this.#state.activity[topic.id]?.running) &&
+          this.#state.backgroundSessions.length === 0
+        )
+          return;
         this.#animationFrame += 1;
         this.#queueRender();
       }, WORKING_FRAME_INTERVAL_MS);
       this.#animationTimer.unref?.();
+      this.#backgroundRefreshTimer = setInterval(() => {
+        void this.#refreshBackgroundSessions();
+      }, 1_000);
+      this.#backgroundRefreshTimer.unref?.();
 
       await new Promise<void>((resolve) => {
         this.#finishRun = resolve;
@@ -250,6 +265,21 @@ export class TerminalApp {
     const topics = await this.#client.listTopics();
     if (generation !== this.#topicsRefreshGeneration) return;
     this.#state = setTopics(this.#state, topics, preferredTitle);
+  }
+
+  async #refreshBackgroundSessions(): Promise<void> {
+    if (!this.#client.listBackgroundSessions || this.#backgroundRefreshRunning) return;
+    this.#backgroundRefreshRunning = true;
+    try {
+      const sessions = await this.#client.listBackgroundSessions();
+      const before = JSON.stringify(this.#state.backgroundSessions);
+      this.#state = setBackgroundSessions(this.#state, sessions);
+      if (JSON.stringify(this.#state.backgroundSessions) !== before) this.#queueRender();
+    } catch {
+      // Topic conversations remain usable while the optional operational view reconnects.
+    } finally {
+      this.#backgroundRefreshRunning = false;
+    }
   }
 
   async #loadActiveMessages(): Promise<void> {
@@ -568,6 +598,13 @@ export class TerminalApp {
         this.#state = this.#state.topicPickerRoot
           ? openTopicPicker(cancelled, undefined, true)
           : cancelled;
+        this.#queueRender();
+      }
+      return;
+    }
+    if (this.#state.overlay === "background-session") {
+      if (chunk === "\u001b") {
+        this.#state = { ...this.#state, overlay: "topics" };
         this.#queueRender();
       }
       return;
@@ -912,7 +949,12 @@ export class TerminalApp {
     else if (NEW_TOPIC_KEYS.has(key)) {
       this.#openNewTopicComposer();
     } else if (DELETE_TOPIC_KEYS.has(key)) {
-      this.#requestTopicDelete(this.#state.topics[this.#state.topicPickerIndex]);
+      const topic = pickedTopic(this.#state);
+      if (topic) this.#requestTopicDelete(topic);
+      else {
+        this.#state = { ...this.#state, notice: "Background sessions are read-only" };
+        this.#queueRender();
+      }
     } else if (chunk === "\u001b") {
       if (this.#state.topicPickerRoot) this.#requestExit();
       else {
@@ -947,16 +989,18 @@ export class TerminalApp {
   }
 
   #moveTopicPicker(delta: number): void {
-    if (this.#state.topics.length === 0) return;
-    const index =
-      (this.#state.topicPickerIndex + delta + this.#state.topics.length) %
-      this.#state.topics.length;
-    this.#state = { ...this.#state, topicPickerIndex: index };
+    this.#state = moveTopicPickerSelection(this.#state, delta);
     this.#queueRender();
   }
 
   #selectPickedTopic(): void {
-    const topic = this.#state.topics[this.#state.topicPickerIndex];
+    const background = pickedBackgroundSession(this.#state);
+    if (background) {
+      this.#state = { ...this.#state, overlay: "background-session", notice: undefined };
+      this.#queueRender();
+      return;
+    }
+    const topic = pickedTopic(this.#state);
     if (topic) void this.#activateTopic(topic.id);
   }
 
@@ -1245,8 +1289,10 @@ export class TerminalApp {
   async #cleanup(clientStartAttempted: boolean, uiActive: boolean): Promise<void> {
     if (this.#renderTimer) clearTimeout(this.#renderTimer);
     if (this.#animationTimer) clearInterval(this.#animationTimer);
+    if (this.#backgroundRefreshTimer) clearInterval(this.#backgroundRefreshTimer);
     this.#renderTimer = undefined;
     this.#animationTimer = undefined;
+    this.#backgroundRefreshTimer = undefined;
     this.#renderQueued = false;
     this.#screen.reset();
     if (uiActive) {

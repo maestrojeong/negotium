@@ -156,6 +156,65 @@ describe("terminal renderer", () => {
     expect(output.indexOf("────")).toBeLessThan(output.indexOf("○ Work"));
   });
 
+  test("shows active Memory and Cron sessions in read-only groups", () => {
+    const state = {
+      ...setTopics(createInitialState("local"), [topic()]),
+      backgroundSessions: [
+        {
+          id: "memory-1",
+          kind: "memory" as const,
+          title: "Archive Research",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          status: "Tool: wiki_save",
+          steps: ["Preparing archived conversation"],
+        },
+        {
+          id: "cron-1",
+          kind: "cron" as const,
+          title: "Daily digest",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          status: "Running",
+          steps: [],
+        },
+      ],
+      overlay: "topics" as const,
+    };
+
+    const output = stripAnsi(renderApp(state, 120, 30));
+    expect(output).toContain("Memory");
+    expect(output).toContain("Archive Research  ·  Tool: wiki_save");
+    expect(output).toContain("Cron");
+    expect(output).toContain("Daily digest  ·  Running");
+    expect(output.indexOf("Archive Research")).toBeLessThan(output.indexOf("Daily digest"));
+  });
+
+  test("renders a background session without an interactive composer", () => {
+    const state = {
+      ...setTopics(createInitialState("local"), [topic()]),
+      backgroundSessions: [
+        {
+          id: "memory-1",
+          kind: "memory" as const,
+          title: "Archive Research",
+          startedAt: new Date().toISOString(),
+          status: "Writing topic brief",
+          agent: "claude" as const,
+          model: "sonnet",
+          steps: ["Tool: wiki_save"],
+        },
+      ],
+      topicPickerBackgroundId: "memory-1",
+      overlay: "background-session" as const,
+    };
+
+    const rendered = renderAppFrame(state, 120, 30);
+    const output = stripAnsi(rendered.frame);
+    expect(output).toContain("Memory · read-only");
+    expect(output).toContain("Tool: wiki_save");
+    expect(output).not.toContain("Ctrl-O topics");
+    expect(rendered.cursor).toBeNull();
+  });
+
   test("labels the startup topic picker as an exit screen instead of a closable overlay", () => {
     const state = {
       ...setTopics(createInitialState("local"), [topic()]),

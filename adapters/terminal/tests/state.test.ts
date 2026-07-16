@@ -5,8 +5,10 @@ import {
   applyRuntimeEvent,
   createInitialState,
   focusCreatedTopic,
+  moveTopicPickerSelection,
   openTopicPicker,
   selectTopic,
+  setBackgroundSessions,
   setMessages,
   setTopics,
   startTopicCreation,
@@ -46,6 +48,53 @@ describe("terminal adapter state", () => {
     const state = setTopics(createInitialState("local"), [child, parent, other]);
 
     expect(state.topics.map((candidate) => candidate.id)).toEqual(["parent", "child", "other"]);
+  });
+
+  test("uses the same Manager-first order for rendering and keyboard navigation", () => {
+    const work = topic("work", "Work");
+    const general = { ...topic("general", "General"), kind: "manager" as const };
+    let state = setTopics(createInitialState("local"), [work, general]);
+    state = openTopicPicker(state, undefined, true);
+
+    expect(state.topics.map((candidate) => candidate.id)).toEqual(["general", "work"]);
+    expect(state.topics[state.topicPickerIndex]?.id).toBe("general");
+    state = moveTopicPickerSelection(state, 1);
+    expect(state.topics[state.topicPickerIndex]?.id).toBe("work");
+
+    state = setTopics(state, [general, topic("new", "New"), work]);
+    expect(state.topics[state.topicPickerIndex]?.id).toBe("work");
+  });
+
+  test("navigates grouped background sessions after topics and drops finished selections", () => {
+    let state = setTopics(createInitialState("local"), [topic("general", "General")]);
+    state = setBackgroundSessions(state, [
+      {
+        id: "cron-1",
+        kind: "cron",
+        title: "Cron work",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        status: "Running",
+        steps: [],
+      },
+      {
+        id: "memory-1",
+        kind: "memory",
+        title: "Archive work",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        status: "Writing",
+        steps: ["Tool: wiki_save"],
+      },
+    ]);
+
+    state = moveTopicPickerSelection(state, 1);
+    expect(state.topicPickerBackgroundId).toBe("memory-1");
+    state = moveTopicPickerSelection(state, 1);
+    expect(state.topicPickerBackgroundId).toBe("cron-1");
+
+    state = { ...state, overlay: "background-session" };
+    state = setBackgroundSessions(state, []);
+    expect(state.overlay).toBe("topics");
+    expect(state.topicPickerBackgroundId).toBeUndefined();
   });
 
   test("keeps an orphaned subagent visible in its original position", () => {

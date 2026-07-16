@@ -1,10 +1,12 @@
 import {
   type AgentKind,
+  type BackgroundSessionDto,
   ensurePersonalGeneral,
   getAllMessagesForTopic,
   getApiMessage,
   getVisibleTopics,
   listApiMessages,
+  listBackgroundSessionsForUser,
   listRecentRuntimeEventsForTopic,
   type MessageDto,
   type RuntimeBusEvent,
@@ -40,6 +42,7 @@ export interface NegotiumClient {
   start(onEvent: (event: RuntimeBusEvent) => void): Promise<void>;
   stop(): Promise<void>;
   listTopics(): ClientResult<TopicDto[]>;
+  listBackgroundSessions?(): ClientResult<BackgroundSessionDto[]>;
   listMessages(topicId: string): ClientResult<MessageDto[]>;
   listMessagePage?(
     topicId: string,
@@ -116,6 +119,10 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
     return getVisibleTopics().filter((topic) =>
       topic.participants.some((participant) => participant.userId === this.#userId),
     );
+  }
+
+  listBackgroundSessions(): BackgroundSessionDto[] {
+    return listBackgroundSessionsForUser(this.#userId);
   }
 
   listMessages(topicId: string): MessageDto[] {
@@ -274,6 +281,13 @@ export class RemoteNegotiumClient implements NegotiumClient {
   async listTopics(): Promise<TopicDto[]> {
     const result = await this.#request(`/topics?user=${encodeURIComponent(this.#userId)}`);
     return (result.topics ?? []) as TopicDto[];
+  }
+
+  async listBackgroundSessions(): Promise<BackgroundSessionDto[]> {
+    const result = await this.#request(
+      `/background-sessions?user=${encodeURIComponent(this.#userId)}`,
+    );
+    return (result.sessions ?? []) as BackgroundSessionDto[];
   }
 
   async listMessages(topicId: string): Promise<MessageDto[]> {

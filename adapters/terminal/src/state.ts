@@ -1,4 +1,5 @@
 import {
+  type BackgroundSessionDto,
   getGlobalAiName,
   type MessageDto,
   type RuntimeBusEvent,
@@ -6,7 +7,15 @@ import {
 } from "@negotium/core";
 import { terminalNowMs } from "@/clock";
 
-type Overlay = "help" | "status" | "topics" | "models" | "transcript" | "confirm-delete" | null;
+type Overlay =
+  | "help"
+  | "status"
+  | "topics"
+  | "background-session"
+  | "models"
+  | "transcript"
+  | "confirm-delete"
+  | null;
 
 interface ToolActivity {
   id: string;
@@ -33,6 +42,7 @@ export interface AppState {
   userId: string;
   aiName: string;
   topics: TopicDto[];
+  backgroundSessions: BackgroundSessionDto[];
   activeTopicId: string | null;
   messages: Record<string, MessageDto[]>;
   messageHistory: Record<string, MessageHistoryStatus>;
@@ -41,6 +51,7 @@ export interface AppState {
   inputCursor: { row: number; col: number };
   suggestionIndex: number;
   topicPickerIndex: number;
+  topicPickerBackgroundId?: string;
   modelPickerIndex: number;
   pendingDeleteTopicId?: string;
   creatingTopic: boolean;
@@ -56,6 +67,7 @@ export function createInitialState(userId: string): AppState {
     userId,
     aiName: getGlobalAiName(),
     topics: [],
+    backgroundSessions: [],
     activeTopicId: null,
     messages: {},
     messageHistory: {},
@@ -134,12 +146,65 @@ function orderTopicsByParent(topics: TopicDto[]): TopicDto[] {
     for (const child of childrenByParent.get(topic.id) ?? []) appendTopic(child);
   };
 
-  for (const topic of topics) {
+  const roots = topics.filter((topic) => !attachedChildIds.has(topic.id));
+  const orderedRoots = [
+    ...roots.filter((topic) => topic.title.toLowerCase() === "general"),
+    ...roots.filter((topic) => topic.title.toLowerCase() !== "general"),
+  ];
+  for (const topic of orderedRoots) {
     if (!attachedChildIds.has(topic.id)) appendTopic(topic);
   }
   // Keep malformed/cyclic relationships discoverable instead of dropping them.
   for (const topic of topics) appendTopic(topic);
   return ordered;
+}
+
+export function setBackgroundSessions(
+  state: AppState,
+  backgroundSessions: BackgroundSessionDto[],
+): AppState {
+  const orderedSessions = [
+    ...backgroundSessions.filter((session) => session.kind === "memory"),
+    ...backgroundSessions.filter((session) => session.kind === "cron"),
+  ];
+  const selectedStillExists = orderedSessions.some(
+    (session) => session.id === state.topicPickerBackgroundId,
+  );
+  return {
+    ...state,
+    backgroundSessions: orderedSessions,
+    topicPickerBackgroundId: selectedStillExists ? state.topicPickerBackgroundId : undefined,
+    overlay:
+      state.overlay === "background-session" && !selectedStillExists ? "topics" : state.overlay,
+  };
+}
+
+export function pickedBackgroundSession(state: AppState): BackgroundSessionDto | undefined {
+  return state.backgroundSessions.find((session) => session.id === state.topicPickerBackgroundId);
+}
+
+export function pickedTopic(state: AppState): TopicDto | undefined {
+  return state.topicPickerBackgroundId ? undefined : state.topics[state.topicPickerIndex];
+}
+
+export function moveTopicPickerSelection(state: AppState, delta: number): AppState {
+  const items = [
+    ...state.topics.map((topic, index) => ({ kind: "topic" as const, id: topic.id, index })),
+    ...state.backgroundSessions.map((session) => ({
+      kind: "background" as const,
+      id: session.id,
+    })),
+  ];
+  if (items.length === 0) return state;
+  const currentId = state.topicPickerBackgroundId ?? state.topics[state.topicPickerIndex]?.id;
+  const current = Math.max(
+    0,
+    items.findIndex((item) => item.id === currentId),
+  );
+  const next = items[(current + delta + items.length) % items.length];
+  return next.kind === "topic"
+    ? { ...state, topicPickerIndex: next.index, topicPickerBackgroundId: undefined }
+    : { ...state, topicPickerBackgroundId: next.id };
 }
 
 export function setTopics(state: AppState, topics: TopicDto[], preferredTitle?: string): AppState {
@@ -159,12 +224,14 @@ export function setTopics(state: AppState, topics: TopicDto[], preferredTitle?: 
     activeTopicId: nextActive,
     scrollOffset: nextActive === state.activeTopicId ? state.scrollOffset : 0,
     askChoiceIndex: nextActive === state.activeTopicId ? state.askChoiceIndex : 0,
-    topicPickerIndex: state.topicPickerRoot
-      ? Math.max(0, pickedTopicIndex)
-      : Math.max(
-          0,
-          orderedTopics.findIndex((topic) => topic.id === nextActive),
-        ),
+    topicPickerIndex:
+      state.overlay === "topics"
+        ? Math.max(0, pickedTopicIndex)
+        : Math.max(
+            0,
+            orderedTopics.findIndex((topic) => topic.id === nextActive),
+          ),
+    topicPickerBackgroundId: state.topicPickerBackgroundId,
   };
 }
 
@@ -179,6 +246,7 @@ export function selectTopic(state: AppState, topicId: string): AppState {
     topicPickerRoot: false,
     creatingTopic: false,
     topicPickerIndex: state.topics.findIndex((topic) => topic.id === topicId),
+    topicPickerBackgroundId: undefined,
     notice: undefined,
   };
 }
@@ -204,6 +272,7 @@ export function openTopicPicker(
     topicPickerRoot,
     creatingTopic: false,
     topicPickerIndex: Math.max(0, activeIndex >= 0 ? activeIndex : state.topicPickerIndex),
+    topicPickerBackgroundId: undefined,
     notice,
   };
 }

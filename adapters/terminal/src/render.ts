@@ -13,6 +13,7 @@ import {
   activeQuestion,
   activeTaskPanel,
   activeTopic,
+  pickedBackgroundSession,
 } from "@/state";
 
 type Rgb = readonly [number, number, number];
@@ -520,8 +521,10 @@ export function plainTranscript(state: AppState): string {
 
 type TopicOverlayEntry =
   | { kind: "manager" }
+  | { kind: "heading"; label: string }
   | { kind: "separator" }
-  | { kind: "topic"; topic: TopicDto; topicIndex: number };
+  | { kind: "topic"; topic: TopicDto; topicIndex: number }
+  | { kind: "background"; sessionId: string; label: string; status: string };
 
 function topicOverlayLines(
   state: AppState,
@@ -541,6 +544,7 @@ function topicOverlayLines(
   }
   if (otherTopics.length > 0) {
     if (general.length > 0) entries.push({ kind: "separator" });
+    entries.push({ kind: "heading", label: "Worker" });
     entries.push(
       ...otherTopics.map(({ topic, topicIndex }) => ({
         kind: "topic" as const,
@@ -549,9 +553,27 @@ function topicOverlayLines(
       })),
     );
   }
+  for (const kind of ["memory", "cron"] as const) {
+    const sessions = state.backgroundSessions.filter((session) => session.kind === kind);
+    if (sessions.length === 0) continue;
+    if (entries.length > 0) entries.push({ kind: "separator" });
+    entries.push({ kind: "heading", label: kind === "memory" ? "Memory" : "Cron" });
+    entries.push(
+      ...sessions.map((session) => ({
+        kind: "background" as const,
+        sessionId: session.id,
+        label: session.title,
+        status: session.status,
+      })),
+    );
+  }
   const visibleCount = Math.max(1, height - 3);
   const selectedEntryIndex = entries.findIndex(
-    (entry) => entry.kind === "topic" && entry.topicIndex === state.topicPickerIndex,
+    (entry) =>
+      (entry.kind === "topic" &&
+        !state.topicPickerBackgroundId &&
+        entry.topicIndex === state.topicPickerIndex) ||
+      (entry.kind === "background" && entry.sessionId === state.topicPickerBackgroundId),
   );
   let start = Math.min(
     Math.max(0, entries.length - visibleCount),
@@ -580,8 +602,22 @@ function topicOverlayLines(
           if (entry.kind === "manager") {
             return line("  Manager", { fg: theme.cyan, bold: true });
           }
+          if (entry.kind === "heading") {
+            return line(`  ${entry.label}`, { fg: theme.cyan, bold: true });
+          }
           if (entry.kind === "separator") {
             return line(`  ${"─".repeat(Math.max(1, width - 4))}`, { fg: theme.border });
+          }
+          if (entry.kind === "background") {
+            const selected = entry.sessionId === state.topicPickerBackgroundId;
+            return line(
+              `  ${selected ? "›" : " "} ${workingFrame(animationFrame)} ${entry.label}  ·  ${entry.status}`,
+              {
+                fg: selected ? theme.text : theme.green,
+                bg: selected ? theme.selected : theme.canvas,
+                bold: selected,
+              },
+            );
           }
           const { topic, topicIndex } = entry;
           const selected = topicIndex === state.topicPickerIndex;
@@ -596,6 +632,32 @@ function topicOverlayLines(
             },
           );
         })),
+  ];
+}
+
+function backgroundSessionLines(state: AppState, nowMs = terminalNowMs()): UiLine[] {
+  const session = pickedBackgroundSession(state);
+  if (!session) return [line("  This background session has finished.", { fg: theme.muted })];
+  const elapsed = formatElapsedDuration(
+    Math.max(0, Math.floor((nowMs - Date.parse(session.startedAt)) / 1_000)),
+  );
+  return [
+    line(`  ${session.kind === "memory" ? "Memory" : "Cron"} · read-only`, {
+      fg: theme.accent,
+      bold: true,
+    }),
+    line("  Esc back · this entry disappears when the run finishes", { fg: theme.muted }),
+    line(""),
+    line(`  ${session.title}`, { bold: true }),
+    line(`  ${session.status} · ${elapsed}`, { fg: theme.green }),
+    ...(session.agent || session.model
+      ? [line(`  ${session.agent ?? "-"} · ${session.model ?? "default"}`, { fg: theme.muted })]
+      : []),
+    line(""),
+    line("  Activity", { fg: theme.cyan, bold: true }),
+    ...(session.steps.length > 0
+      ? session.steps.map((step) => line(`  ○ ${safeText(step)}`, { fg: theme.muted }))
+      : [line("  ○ Waiting for runtime activity", { fg: theme.muted })]),
   ];
 }
 
@@ -663,6 +725,8 @@ function conversationLines(
   if (state.overlay === "status") return statusLines(state).slice(0, height);
   if (state.overlay === "topics")
     return topicOverlayLines(state, width, height, animationFrame).slice(0, height);
+  if (state.overlay === "background-session")
+    return backgroundSessionLines(state, nowMs).slice(0, height);
   if (state.overlay === "models") return modelOverlayLines(state, height).slice(0, height);
   if (state.creatingTopic) {
     return [
@@ -908,9 +972,11 @@ function footerLines(state: AppState, width: number): string[] {
             ? state.topicPickerRoot
               ? "Esc/Ctrl-C exit  "
               : "Esc close · Ctrl-C exit; work continues  "
-            : running
-              ? "Esc/Ctrl-C stop  "
-              : "Ctrl-C twice to quit  ",
+            : state.overlay === "background-session"
+              ? "Esc back · read-only  "
+              : running
+                ? "Esc/Ctrl-C stop  "
+                : "Ctrl-C twice to quit  ",
         width,
       ),
       {
@@ -954,17 +1020,20 @@ export function renderAppFrame(
   const height = Math.max(14, rows);
   const footer = footerLines(state, width);
   const decision = decisionPane(state, width);
-  const composer = composerPane(state, width);
+  const readOnlyBackground = state.overlay === "background-session";
+  const composer = readOnlyBackground ? { lines: [], cursor: null } : composerPane(state, width);
   const bodyHeight = Math.max(3, height - footer.length - decision.length - composer.lines.length);
   const body = renderBody(
     conversationLines(state, width, bodyHeight, animationFrame, nowMs),
     width,
     bodyHeight,
   );
-  const cursorY = body.length + decision.length + composer.cursor.y;
+  const cursorY = composer.cursor
+    ? body.length + decision.length + composer.cursor.y
+    : Number.POSITIVE_INFINITY;
   return {
     frame: [...body, ...decision, ...composer.lines, ...footer].slice(0, height).join("\n"),
-    cursor: cursorY <= height ? { x: composer.cursor.x, y: cursorY } : null,
+    cursor: composer.cursor && cursorY <= height ? { x: composer.cursor.x, y: cursorY } : null,
   };
 }
 
