@@ -8,6 +8,7 @@ instead of copying the explanation.
 | [Architecture](./ARCHITECTURE.md) | Runtime concepts, invariants, state ownership, turn lifecycle, and recovery |
 | [Adapters](./ADAPTERS.md) | Adapter lifecycle, channel mappings, topic access, and transcript projection |
 | [Otium coupling](./OTIUM-COUPLING.md) | The versioned protocol between an Otium hub and a Negotium worker |
+| [Otium enrollment and sharing](./OTIUM-ENROLLMENT-AND-SHARING.md) | Node invitation, enrollment security, topic-sharing product model, UX, and delivery plan |
 | [Feature review](./FEATURE-REVIEW.md) | Review order, acceptance questions, source areas, and regression coverage |
 | [Releasing](./RELEASING.md) | Package validation and npm publication |
 
@@ -22,6 +23,8 @@ the package README beside the code it describes.
   package README.
 - Put Otium endpoint, authentication, idempotency, and event-order details only in
   `OTIUM-COUPLING.md`.
+- Put planned Otium enrollment, sharing UX, and rollout decisions in
+  `OTIUM-ENROLLMENT-AND-SHARING.md` and label them as target behavior.
 - Use `FEATURE-REVIEW.md` as a checklist, not as a second architecture document.
 - Prefer repository-relative links and source paths that a contributor can open from this checkout.
 - Mark incomplete behavior explicitly with an owner and an acceptance condition.

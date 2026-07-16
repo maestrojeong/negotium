@@ -223,6 +223,10 @@ contract.
 
 ## Join flow
 
+The product and authorization design for enrollment, including invite lifecycle and topic-sharing
+UX, is owned by [Otium enrollment and topic sharing](./OTIUM-ENROLLMENT-AND-SHARING.md). This section
+records only the worker-coupling target.
+
 The production target is a one-time node invite created by a workspace administrator:
 
 1. The administrator creates a short-lived, hashed, single-use code.
