@@ -18,6 +18,7 @@ import {
   isParticipant,
   latestRuntimeEventSeq,
   listApiMessages,
+  listBackgroundSessionsForUser,
   listRecentRuntimeEventsForTopic,
   listRuntimeEventsAfter,
   NODE_CONTROL_TOKEN,
@@ -255,6 +256,11 @@ export function createNodeControlHandler(
       if (req.method === "GET" && path === "/topics") {
         const userId = requiredText(url.searchParams.get("user"), "user");
         return Response.json({ ok: true, topics: topicsForUser(userId) });
+      }
+
+      if (req.method === "GET" && path === "/background-sessions") {
+        const userId = requiredText(url.searchParams.get("user"), "user");
+        return Response.json({ ok: true, sessions: listBackgroundSessionsForUser(userId) });
       }
 
       if (req.method === "POST" && path === "/topics") {

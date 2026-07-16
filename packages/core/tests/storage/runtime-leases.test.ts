@@ -3,6 +3,7 @@ import {
   claimRuntimeTurnLease,
   getRuntimeTurnLease,
   heartbeatRuntimeTurnLease,
+  listRuntimeTurnLeases,
   releaseRuntimeTurnLease,
   requestRuntimeTurnAbort,
   TURN_LEASE_STALE_MS,
@@ -68,5 +69,20 @@ describe("runtime turn leases", () => {
     claimRuntimeTurnLease({ topicId: topic, queryId: "new", origin: "user", ownerId: "owner" });
     expect(releaseRuntimeTurnLease(topic, "old", "owner")).toBe(false);
     expect(getRuntimeTurnLease(topic)?.queryId).toBe("new");
+  });
+
+  test("lists only active leases", () => {
+    const active = topicId();
+    const stale = topicId();
+    const now = Date.now();
+    claimRuntimeTurnLease({ topicId: active, queryId: "active", origin: "cron:job:run" }, now);
+    claimRuntimeTurnLease(
+      { topicId: stale, queryId: "stale", origin: "cron:old:run" },
+      now - TURN_LEASE_STALE_MS - 1,
+    );
+
+    expect(listRuntimeTurnLeases(now).map((lease) => lease.topicId)).toContain(active);
+    expect(listRuntimeTurnLeases(now).map((lease) => lease.topicId)).not.toContain(stale);
+    releaseRuntimeTurnLease(stale, "stale");
   });
 });

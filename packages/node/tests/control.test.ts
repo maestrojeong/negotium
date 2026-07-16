@@ -2,11 +2,13 @@ import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
   appendApiMessage,
+  claimRuntimeTurnLease,
   getApiTopicConfig,
   getTopicSessionId,
   latestRuntimeEventSeq,
   NODE_CONTROL_TOKEN,
   registerTopic,
+  releaseRuntimeTurnLease,
   runtimeBus,
   setTopicSessionId,
   upsertTopic,
@@ -92,6 +94,43 @@ test("node control session, topic routes, and SSE use one versioned boundary", a
   const first = await reader?.read();
   expect(new TextDecoder().decode(first?.value)).toContain("event: ready");
   await reader?.cancel();
+});
+
+test("background session route exposes only the requesting user's active Cron turns", async () => {
+  const topic = registerTopic({ title: `Cron ${randomUUID()}`, userId, agent: "codex" });
+  const hidden = registerTopic({
+    title: `Other Cron ${randomUUID()}`,
+    userId: `other-${randomUUID()}`,
+    agent: "codex",
+  });
+  const queryId = randomUUID();
+  const hiddenQueryId = randomUUID();
+  claimRuntimeTurnLease({
+    topicId: topic.id,
+    queryId,
+    origin: `cron:job:${randomUUID()}`,
+  });
+  claimRuntimeTurnLease({
+    topicId: hidden.id,
+    queryId: hiddenQueryId,
+    origin: `cron:job:${randomUUID()}`,
+  });
+  try {
+    const response = await handler(
+      request(`/background-sessions?user=${encodeURIComponent(userId)}`),
+    );
+    const body = (await response?.json()) as {
+      sessions: Array<{ id: string; topicId?: string; kind: string }>;
+    };
+    expect(response?.status).toBe(200);
+    expect(body.sessions).toContainEqual(
+      expect.objectContaining({ id: `cron:${queryId}`, topicId: topic.id, kind: "cron" }),
+    );
+    expect(body.sessions.some((session) => session.topicId === hidden.id)).toBe(false);
+  } finally {
+    releaseRuntimeTurnLease(topic.id, queryId);
+    releaseRuntimeTurnLease(hidden.id, hiddenQueryId);
+  }
 });
 
 test("POST message broadcasts the persisted user message to peer Terminal clients", async () => {

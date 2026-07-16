@@ -117,6 +117,20 @@ export interface TopicDto {
     nodeName: string;
   };
 }
+
+/** Read-only internal work shown by operational clients while it is active. */
+export interface BackgroundSessionDto {
+  id: string;
+  kind: "memory" | "cron";
+  title: string;
+  startedAt: string;
+  topicId?: string;
+  status: string;
+  agent?: AgentKind;
+  model?: string;
+  steps: string[];
+}
+
 export interface ParticipantDto {
   userId: string;
   role: "owner" | "member";

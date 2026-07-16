@@ -13,6 +13,7 @@ import { getSharedWikiDir } from "#storage/wiki";
 import { wikiSummaryFilename } from "#storage/wiki-summary-names";
 import { ensurePersonalGeneral } from "#topics/personal-general";
 import type { AgentKind } from "#types";
+import type { BackgroundSessionDto } from "#types/api";
 
 /**
  * Rolling cap on the #General digest. The General-brief injection embeds
@@ -27,6 +28,36 @@ const MAX_BRIEF_ENTRIES = 8;
  * `MIN_EXCHANGE_COUNT` gate.
  */
 const MIN_ARCHIVE_MESSAGES = 4;
+const MAX_SESSION_STEPS = 20;
+
+interface ActiveArchiverSession extends BackgroundSessionDto {
+  userId: string;
+}
+
+const activeArchiverSessions = new Map<string, ActiveArchiverSession>();
+
+function boundedSessionText(value: string): string {
+  return value.replace(/\s+/g, " ").trim().slice(0, 160);
+}
+
+function updateArchiverSession(id: string, status: string, step?: string): void {
+  const session = activeArchiverSessions.get(id);
+  if (!session) return;
+  session.status = boundedSessionText(status) || session.status;
+  if (step) {
+    const text = boundedSessionText(step);
+    if (text && session.steps.at(-1) !== text) {
+      session.steps.push(text);
+      if (session.steps.length > MAX_SESSION_STEPS) session.steps.shift();
+    }
+  }
+}
+
+export function listActiveMemoryArchiverSessions(userId: string): BackgroundSessionDto[] {
+  return [...activeArchiverSessions.values()]
+    .filter((session) => session.userId === userId)
+    .map(({ userId: _userId, ...session }) => ({ ...session, steps: [...session.steps] }));
+}
 
 // The wiki-archiver prompt is loaded once and cached — a missing/!malformed
 // file must not crash the delete path, so loading is wrapped at call sites.
@@ -139,6 +170,20 @@ export function runArchiverTurn(params: RunArchiverTurnParams): void {
     silent: true,
   });
 
+  const activeSessionId = `memory:${randomUUID()}`;
+  activeArchiverSessions.set(activeSessionId, {
+    id: activeSessionId,
+    kind: "memory",
+    title: `Archive ${topicTitle}`,
+    topicId,
+    userId,
+    startedAt: new Date().toISOString(),
+    status: "Starting",
+    agent,
+    model: model ?? archiverDef.model,
+    steps: ["Preparing archived conversation"],
+  });
+
   logger.info(
     { userId, topicTitle, archivePath, agent, model },
     "archiver: starting background turn",
@@ -159,6 +204,24 @@ export function runArchiverTurn(params: RunArchiverTurnParams): void {
       // only the final assistant text is surfaced to #General for deleted topics.
       for await (const event of events) {
         switch (event.type) {
+          case "tool_use":
+            updateArchiverSession(activeSessionId, `Running ${event.name}`, `Tool: ${event.name}`);
+            break;
+          case "tool_progress":
+            updateArchiverSession(
+              activeSessionId,
+              `${event.toolName} · ${Math.max(0, Math.floor(event.elapsed))}s`,
+            );
+            break;
+          case "tool_use_summary":
+            updateArchiverSession(activeSessionId, event.summary, event.summary);
+            break;
+          case "status":
+            updateArchiverSession(activeSessionId, event.content, event.content);
+            break;
+          case "tool_result":
+            updateArchiverSession(activeSessionId, "Processing tool result");
+            break;
           case "text_delta":
             sawDelta = true;
             accumulatedText += event.content;
@@ -167,6 +230,7 @@ export function runArchiverTurn(params: RunArchiverTurnParams): void {
             if (!sawDelta) accumulatedText += event.content;
             break;
           case "result":
+            updateArchiverSession(activeSessionId, "Finalizing memory");
             resultText = event.content;
             usage = event.usage
               ? { input: event.usage.inputTokens, output: event.usage.outputTokens }
@@ -179,7 +243,10 @@ export function runArchiverTurn(params: RunArchiverTurnParams): void {
       ok = true;
       logger.info({ userId, topicTitle }, "archiver: background turn completed");
     } catch (err) {
+      updateArchiverSession(activeSessionId, "Failed", "Memory archive failed");
       logger.warn({ err, userId, topicTitle }, "archiver: background turn failed");
+    } finally {
+      activeArchiverSessions.delete(activeSessionId);
     }
     if (mode === "deleted-topic") {
       // Roll the deleted topic into the #General memory hub regardless of LLM

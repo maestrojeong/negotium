@@ -69,6 +69,14 @@ export function getRuntimeTurnLease(topicId: string, now = Date.now()): RuntimeT
   return now - lease.heartbeatAt <= TURN_LEASE_STALE_MS ? lease : null;
 }
 
+export function listRuntimeTurnLeases(now = Date.now()): RuntimeTurnLease[] {
+  return db
+    .query<RuntimeTurnLeaseRow, []>("SELECT * FROM runtime_turn_leases ORDER BY started_at ASC")
+    .all()
+    .map(rowToLease)
+    .filter((lease) => now - lease.heartbeatAt <= TURN_LEASE_STALE_MS);
+}
+
 export function claimRuntimeTurnLease(
   input: {
     topicId: string;
