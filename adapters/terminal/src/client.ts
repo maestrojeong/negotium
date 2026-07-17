@@ -257,12 +257,18 @@ interface ApiEnvelope {
   [key: string]: unknown;
 }
 
-function isSecureVaultTransport(baseUrl: string): boolean {
+function isSecureControlTransport(baseUrl: string): boolean {
   const url = new URL(baseUrl);
   if (url.protocol === "https:") return true;
   if (url.protocol !== "http:") return false;
   const hostname = url.hostname.toLowerCase();
-  return hostname === "localhost" || hostname === "::1" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+  if (hostname === "localhost" || hostname === "::1" || hostname === "[::1]") return true;
+  const octets = hostname.split(".");
+  return (
+    octets.length === 4 &&
+    octets[0] === "127" &&
+    octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)
+  );
 }
 
 /** REST/SSE client. Stopping it only disconnects the UI; it never stops the node. */
@@ -278,6 +284,9 @@ export class RemoteNegotiumClient implements NegotiumClient {
   constructor(options: RemoteClientOptions) {
     this.#userId = options.userId;
     this.#baseUrl = options.baseUrl.replace(/\/+$/, "");
+    if (!isSecureControlTransport(this.#baseUrl)) {
+      throw new Error("Remote node control requires HTTPS or loopback HTTP");
+    }
     this.#token = options.token;
   }
 
@@ -439,9 +448,6 @@ export class RemoteNegotiumClient implements NegotiumClient {
   }
 
   async runVaultCommand(commandLine: string): Promise<string | null> {
-    if (!isSecureVaultTransport(this.#baseUrl)) {
-      throw new Error("Vault commands require HTTPS or loopback HTTP");
-    }
     const result = await this.#request("/vault/command", {
       method: "POST",
       body: JSON.stringify({ userId: this.#userId, commandLine }),

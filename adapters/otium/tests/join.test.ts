@@ -62,6 +62,25 @@ describe("parseInviteCode", () => {
     expect(() => parseInviteCode(encode({ central: "http://x", secret: "s" }))).toThrow("cellId");
     expect(() => parseInviteCode(encode({ central: "http://x", cellId: "c" }))).toThrow("secret");
   });
+
+  test("rejects plaintext remote central and relay credential transports", () => {
+    const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    expect(() =>
+      parseInviteCode(
+        encode({ central: "http://central.example", cellId: "cell_1", secret: "rcs_secret" }),
+      ),
+    ).toThrow("Otium central requires HTTPS or loopback HTTP");
+    expect(() =>
+      parseInviteCode(
+        encode({
+          central: "https://central.example",
+          relay: "ws://relay.example",
+          cellId: "cell_1",
+          secret: "rcs_secret",
+        }),
+      ),
+    ).toThrow("Otium relay requires HTTPS/WSS or loopback HTTP/WS");
+  });
 });
 
 describe("saveJoin / loadJoin", () => {
@@ -137,12 +156,12 @@ describe("saveJoin / loadJoin", () => {
   });
 
   test("full env triple overrides the file; a partial triple is ignored", () => {
-    saveJoin({ central: "http://file.example", cellId: "cell_file", secret: "rcs_file" });
-    process.env.OTIUM_CENTRAL_URL = "http://env.example";
+    saveJoin({ central: "https://file.example", cellId: "cell_file", secret: "rcs_file" });
+    process.env.OTIUM_CENTRAL_URL = "https://env.example";
     process.env.OTIUM_CELL_ID = "cell_env";
     process.env.OTIUM_CELL_SECRET = "rcs_env";
     expect(loadJoin()).toEqual({
-      central: "http://env.example",
+      central: "https://env.example",
       cellId: "cell_env",
       secret: "rcs_env",
     });
@@ -152,7 +171,7 @@ describe("saveJoin / loadJoin", () => {
   });
 
   test("loads an optional relay URL from the environment", () => {
-    process.env.OTIUM_CENTRAL_URL = "http://env.example";
+    process.env.OTIUM_CENTRAL_URL = "https://env.example";
     process.env.OTIUM_CELL_ID = "cell_env";
     process.env.OTIUM_CELL_SECRET = "rcs_env";
     process.env.OTIUM_RELAY_URL = "https://relay.example/";

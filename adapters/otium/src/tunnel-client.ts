@@ -25,6 +25,7 @@ import {
   sanitizeCloseCode,
   toB64,
 } from "./relay-protocol";
+import { assertSecureRelayUrl } from "./secure-transport";
 
 type LogFn = (obj: Record<string, unknown>, msg: string) => void;
 
@@ -128,6 +129,7 @@ export class TunnelClient {
   private readonly bridgedSockets = new Map<string, BridgedSocket>();
 
   constructor(options: TunnelClientOptions) {
+    assertSecureRelayUrl(options.relayUrl);
     this.opts = options;
     this.log = options.logger ?? silentLogger;
     this.reconnectDelayMs = options.minReconnectDelayMs ?? DEFAULT_MIN_RECONNECT_MS;

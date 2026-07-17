@@ -160,10 +160,27 @@ afterAll(() => {
 });
 
 describe("Otium relay tunnel client", () => {
+  test("rejects plaintext remote relay transport before opening a socket", () => {
+    let opened = false;
+    expect(
+      () =>
+        new TunnelClient({
+          relayUrl: "ws://relay.example",
+          token: "rcs_secret",
+          targetOrigin: "http://127.0.0.1:4000",
+          webSocketFactory: () => {
+            opened = true;
+            return new HalfOpenWebSocket() as unknown as WebSocket;
+          },
+        }),
+    ).toThrow("Otium relay requires HTTPS/WSS or loopback HTTP/WS");
+    expect(opened).toBe(false);
+  });
+
   test("invalidates and reconnects a half-open tunnel without duplicate reconnects", async () => {
     const sockets: HalfOpenWebSocket[] = [];
     const halfOpenClient = new TunnelClient({
-      relayUrl: "http://relay.invalid",
+      relayUrl: "wss://relay.invalid",
       token: "rcs_half_open",
       targetOrigin: "http://127.0.0.1:1",
       minReconnectDelayMs: 1,

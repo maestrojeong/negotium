@@ -41,21 +41,33 @@ test("remote Vault commands use the authenticated node control boundary", async 
   });
 });
 
-test("remote Vault commands reject plaintext transport to non-loopback hosts", async () => {
+test("remote control rejects plaintext transport to non-loopback hosts before any request", () => {
   let requested = false;
   globalThis.fetch = (async () => {
     requested = true;
     return Response.json({ ok: true });
   }) as typeof fetch;
 
-  const client = new RemoteNegotiumClient({
-    userId: "remote-user",
-    baseUrl: "http://node.example.test:43210",
-    token: "node-token",
-  });
-
-  await expect(client.runVaultCommand("/vault set REMOTE_TOKEN secret-value")).rejects.toThrow(
-    "Vault commands require HTTPS or loopback HTTP",
-  );
+  expect(
+    () =>
+      new RemoteNegotiumClient({
+        userId: "remote-user",
+        baseUrl: "http://node.example.test:43210",
+        token: "node-token",
+      }),
+  ).toThrow("Remote node control requires HTTPS or loopback HTTP");
   expect(requested).toBe(false);
+});
+
+test("remote control permits HTTPS and loopback HTTP origins", () => {
+  for (const baseUrl of [
+    "https://node.example.test",
+    "http://localhost:43210",
+    "http://127.0.0.2:43210",
+    "http://[::1]:43210",
+  ]) {
+    expect(
+      () => new RemoteNegotiumClient({ userId: "remote-user", baseUrl, token: "node-token" }),
+    ).not.toThrow();
+  }
 });

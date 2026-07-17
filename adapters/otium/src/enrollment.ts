@@ -30,6 +30,7 @@ import {
   saveJoinWhileLocked,
   withJoinCredentialLock,
 } from "@/join";
+import { assertSecureCentralUrl, assertSecureRelayUrl } from "@/secure-transport";
 
 const INFO = Buffer.from("otium-node-enrollment-v1", "utf8");
 
@@ -94,9 +95,10 @@ export function parseEnrollmentInvite(code: string): EnrollmentInvite {
   const raw = parsed as Record<string, unknown>;
   const central = typeof raw.central === "string" ? raw.central.trim().replace(/\/+$/, "") : "";
   const token = typeof raw.token === "string" ? raw.token.trim() : "";
-  if (raw.v !== 2 || !/^https?:\/\//.test(central) || !token.startsWith("nei_")) {
+  if (raw.v !== 2 || !central || !token.startsWith("nei_")) {
     throw new Error("production invite requires {v:2, central:http(s), token:nei_…}");
   }
+  assertSecureCentralUrl(central);
   return { v: 2, central, token };
 }
 
@@ -292,6 +294,7 @@ export async function claimEnrollment(
   if (!join.relay || !join.cellId || join.cellId === "undefined") {
     throw new Error("central returned an incomplete enrollment response");
   }
+  assertSecureRelayUrl(join.relay);
   recordClaimedCredential(pending, join);
   return join;
 }

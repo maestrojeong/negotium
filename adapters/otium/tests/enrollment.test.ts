@@ -69,6 +69,46 @@ describe("production enrollment client", () => {
     ).toThrow("v:2");
   });
 
+  test("rejects production enrollment over plaintext non-loopback transport", () => {
+    const remoteHttp = Buffer.from(
+      JSON.stringify({ v: 2, central: "http://central.example", token: "nei_token" }),
+    ).toString("base64url");
+    expect(() => parseEnrollmentInvite(remoteHttp)).toThrow(
+      "Otium central requires HTTPS or loopback HTTP",
+    );
+
+    const loopbackHttp = Buffer.from(
+      JSON.stringify({ v: 2, central: "http://127.0.0.2:4600", token: "nei_token" }),
+    ).toString("base64url");
+    expect(parseEnrollmentInvite(loopbackHttp).central).toBe("http://127.0.0.2:4600");
+  });
+
+  test("rejects a plaintext non-loopback relay returned by central", async () => {
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const body = (await req.json()) as Record<string, string>;
+        return Response.json({
+          ok: true,
+          relayUrl: "ws://relay.example",
+          cell: { id: "cell_insecure", baseUrl: "https://relay.example/n/cell_insecure" },
+          credential: seal("rcs_insecure-secret", body.credentialPublicKey!),
+        });
+      },
+    });
+    try {
+      await expect(
+        claimEnrollment({
+          v: 2,
+          central: `http://127.0.0.1:${server.port}`,
+          token: "nei_insecure",
+        }),
+      ).rejects.toThrow("Otium relay requires HTTPS/WSS or loopback HTTP/WS");
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("previews, claims, decrypts, and removes retry state only after commit", async () => {
     const secret = "rcs_encrypted-test-secret";
     let idempotencyKey = "";

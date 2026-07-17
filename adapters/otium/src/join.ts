@@ -25,6 +25,7 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DATA_DIR, logger } from "@negotium/core";
+import { assertSecureCentralUrl, assertSecureRelayUrl } from "@/secure-transport";
 
 export interface OtiumJoin {
   /** Invite code format version (v0 bundles carry 1). */
@@ -62,6 +63,8 @@ function normalizeJoin(raw: Record<string, unknown>): OtiumJoin {
   if (relay && !isRelayUrl(relay)) throw new Error("invite code has an invalid relay URL");
   if (!cellId) throw new Error("invite code is missing cellId");
   if (!secret) throw new Error("invite code is missing secret");
+  assertSecureCentralUrl(central);
+  if (relay) assertSecureRelayUrl(relay);
   return {
     ...(typeof raw.v === "number" ? { v: raw.v } : {}),
     central,

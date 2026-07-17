@@ -7,7 +7,10 @@ import type {
   ThreadOptions,
 } from "@openai/codex-sdk";
 import { Codex } from "@openai/codex-sdk";
-import { writeCodexCatalogWithNativeMultiAgentDisabled } from "#agents/codex-native-multi-agent";
+import {
+  ensureCodexModelCache,
+  writeCodexCatalogWithNativeMultiAgentDisabled,
+} from "#agents/codex-native-multi-agent";
 import {
   acquireCodexSpawnLock,
   findNewCodexChildren,
@@ -390,6 +393,7 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
 
   let codexModelCatalogPath: string;
   try {
+    await ensureCodexModelCache(codexAuthPath);
     codexModelCatalogPath = writeCodexCatalogWithNativeMultiAgentDisabled(codexAuthPath);
     if (opts.sessionId) migrateCodexRolloutNativeMultiAgentMetadata(opts.sessionId);
   } catch (err) {
