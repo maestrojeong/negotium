@@ -41,8 +41,11 @@ function parseArgs(args: string[]): { positional: string[]; options: Map<string,
 
 export function parseOtiumServePort(args: string[], fallback: number): number {
   const parsed = parseArgs(args);
-  if (parsed.positional.length > 0 || [...parsed.options.keys()].some((key) => key !== "port")) {
-    throw new Error("usage: negotium otium serve [--port <1-65535>]");
+  if (
+    parsed.positional.length > 0 ||
+    [...parsed.options.keys()].some((key) => key !== "port" && key !== "relay")
+  ) {
+    throw new Error("usage: negotium otium serve [--port <1-65535>] [--relay <url>]");
   }
   const raw = parsed.options.get("port");
   const port = raw === undefined ? fallback : Number(raw);
@@ -50,6 +53,22 @@ export function parseOtiumServePort(args: string[], fallback: number): number {
     throw new Error("serve port must be an integer between 1 and 65535");
   }
   return port;
+}
+
+export function parseOtiumServeRelayUrl(args: string[]): string | undefined {
+  const parsed = parseArgs(args);
+  if (
+    parsed.positional.length > 0 ||
+    [...parsed.options.keys()].some((key) => key !== "port" && key !== "relay")
+  ) {
+    throw new Error("usage: negotium otium serve [--port <1-65535>] [--relay <url>]");
+  }
+  const raw = parsed.options.get("relay")?.trim();
+  if (!raw) return undefined;
+  if (!/^(?:https?|wss?):\/\//.test(raw)) {
+    throw new Error("relay URL must use http(s) or ws(s)");
+  }
+  return raw.replace(/\/+$/, "");
 }
 
 async function resolveHostNodeId(explicit?: string): Promise<string> {
@@ -94,6 +113,7 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
         import("@/index"),
       ]);
       const port = parseOtiumServePort(commandArgs, NEGOTIUM_PORT);
+      const relayUrl = parseOtiumServeRelayUrl(commandArgs);
       let leaseLost = false;
       let stopForLeaseLoss: (() => void) | undefined;
       const singleton = await waitForRuntimeProcessLease("adapter:otium", {
@@ -141,6 +161,7 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
       console.log(
         `negotium node (otium worker) listening on 127.0.0.1:${node.port} (ctrl-c to stop)`,
       );
+      worker.startTunnel({ targetOrigin: `http://127.0.0.1:${node.port}`, relayUrl });
       await new Promise<void>((resolve) => {
         const stop = () => void node.stop().finally(resolve);
         stopForLeaseLoss = stop;
@@ -209,8 +230,8 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
           "usage: negotium otium <join|serve|bindings|share|private> [args]",
           "",
           "  join <code>   store credentials from an Otium invite code",
-          "  serve [--port <port>]",
-          "                 run peer routes on a stable port (default: NEGOTIUM_PORT or 7777)",
+          "  serve [--port <port>] [--relay <url>]",
+          "                 run peer routes and an outbound relay tunnel",
           "  bindings      list internal mirrors and shared topic bindings",
           "  share <host-topic> <local-topic> --user <id> [--host-node <cell>]",
           "                 publish one private local topic to Otium as shared",

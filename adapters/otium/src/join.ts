@@ -15,6 +15,8 @@ export interface OtiumJoin {
   v?: number;
   /** central-api origin, e.g. "http://127.0.0.1:4600". */
   central: string;
+  /** Optional relay origin used for outbound NAT traversal. */
+  relay?: string;
   /** This node's runtime cell id (cell_…). */
   cellId: string;
   /** This node's runtime cell secret (rcs_…) — never leaves this process. */
@@ -29,18 +31,25 @@ function isHttpUrl(value: string): boolean {
   return /^https?:\/\//.test(value);
 }
 
+function isRelayUrl(value: string): boolean {
+  return /^(?:https?|wss?):\/\//.test(value);
+}
+
 function normalizeJoin(raw: Record<string, unknown>): OtiumJoin {
   const central = typeof raw.central === "string" ? raw.central.trim().replace(/\/+$/, "") : "";
+  const relay = typeof raw.relay === "string" ? raw.relay.trim().replace(/\/+$/, "") : "";
   const cellId = typeof raw.cellId === "string" ? raw.cellId.trim() : "";
   const secret = typeof raw.secret === "string" ? raw.secret.trim() : "";
   if (!central || !isHttpUrl(central)) {
     throw new Error("invite code is missing a valid http(s) central URL");
   }
+  if (relay && !isRelayUrl(relay)) throw new Error("invite code has an invalid relay URL");
   if (!cellId) throw new Error("invite code is missing cellId");
   if (!secret) throw new Error("invite code is missing secret");
   return {
     ...(typeof raw.v === "number" ? { v: raw.v } : {}),
     central,
+    ...(relay ? { relay } : {}),
     cellId,
     secret,
   };
@@ -87,9 +96,10 @@ export function loadJoin(): OtiumJoin | null {
   const central = process.env.OTIUM_CENTRAL_URL?.trim();
   const cellId = process.env.OTIUM_CELL_ID?.trim();
   const secret = process.env.OTIUM_CELL_SECRET?.trim();
+  const relay = process.env.OTIUM_RELAY_URL?.trim();
   if (central && cellId && secret) {
     try {
-      return normalizeJoin({ central, cellId, secret });
+      return normalizeJoin({ central, relay, cellId, secret });
     } catch (err) {
       logger.warn({ err }, "otium: invalid OTIUM_CENTRAL_URL/OTIUM_CELL_ID/OTIUM_CELL_SECRET env");
       return null;

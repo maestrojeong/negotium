@@ -24,6 +24,7 @@ import { installPeerFileHooks } from "@/peer-files";
 import { otiumPeerRuntimeBridge } from "@/runtime-bridge";
 import { otiumPeerSessionBridge, startPeerReplyOutboxWorker } from "@/session-bridge";
 import { cleanupPeerStateForLocalTopic, failInterruptedPeerTurnRequestsOnStartup } from "@/store";
+import { TunnelClient, type TunnelClientOptions } from "@/tunnel-client";
 
 export {
   bindOtiumTopic,
@@ -49,6 +50,14 @@ export {
   verifyPeerToken,
 } from "@/central";
 export {
+  claimEnrollment,
+  type EnrollmentCredentialEnvelope,
+  type EnrollmentInvite,
+  parseEnrollmentInvite,
+  pendingEnrollmentPath,
+  previewEnrollment,
+} from "@/enrollment";
+export {
   createTurnForwarder,
   getActiveForwarder,
   hubEventSender,
@@ -68,8 +77,18 @@ export {
   type PeerTurnRequest,
   type PlacedTopicExecutionSpec,
 } from "@/protocol";
+export {
+  type HeaderPairs as RelayHeaderPairs,
+  PROTOCOL_VERSION as RELAY_PROTOCOL_VERSION,
+} from "@/relay-protocol";
 export { otiumPeerRuntimeBridge } from "@/runtime-bridge";
 export { cleanupPeerStateForLocalTopic, failInterruptedPeerTurnRequestsOnStartup } from "@/store";
+export {
+  TunnelClient,
+  type TunnelClientOptions,
+  type TunnelLogger,
+  type TunnelStatus,
+} from "@/tunnel-client";
 export {
   abortHostedPeerTurn,
   provisionMirrorTopic,
@@ -83,6 +102,7 @@ export interface OtiumAdapterOptions {
 
 export interface OtiumWorkerHandle extends NegotiumAdapterHandle<"otium"> {
   join: OtiumJoin;
+  startTunnel(options: Pick<TunnelClientOptions, "targetOrigin"> & { relayUrl?: string }): void;
 }
 
 /** Start the configured Otium channel adapter. */
@@ -114,6 +134,7 @@ export function startOtiumAdapter(options: OtiumAdapterOptions): OtiumWorkerHand
     }
   });
   let stopped = false;
+  let tunnel: TunnelClient | null = null;
   logger.info({ central: join.central, cellId: join.cellId }, "otium: worker mode enabled");
   void selfPeerNode()
     .then((self) => {
@@ -130,9 +151,27 @@ export function startOtiumAdapter(options: OtiumAdapterOptions): OtiumWorkerHand
   return {
     name: "otium",
     join,
+    startTunnel: ({ targetOrigin, relayUrl }) => {
+      if (stopped || tunnel) return;
+      const selectedRelay = relayUrl?.trim() || join.relay || process.env.OTIUM_RELAY_URL?.trim();
+      if (!selectedRelay) {
+        logger.info({}, "otium: relay tunnel disabled (no relay URL configured)");
+        return;
+      }
+      tunnel = new TunnelClient({
+        relayUrl: selectedRelay,
+        token: join.secret,
+        targetOrigin,
+        nodeVersion: "@negotium/adapter-otium@0.1.4",
+        logger,
+      });
+      tunnel.start();
+    },
     stop: () => {
       if (stopped) return;
       stopped = true;
+      tunnel?.stop();
+      tunnel = null;
       unsubscribeTopicCleanup();
       unregisterRuntimeBridge();
       unregisterSessionBridge();

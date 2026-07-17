@@ -9,7 +9,7 @@ flow back into the workspace UI.
 ```bash
 npm install --global @negotium/cli
 negotium otium join <invite-code>   # store credentials (…/otium-join.json, 0600)
-negotium otium serve --port 7777    # must match the worker cell's direct baseUrl
+negotium otium serve --port 7777    # direct mode; add --relay <url> for NAT workers
 negotium otium bindings             # inspect internal/shared transports
 negotium otium share <host-topic-id> <local-topic-id> --user <user-id>
 negotium otium private <local-topic-id> --user <user-id>
@@ -54,6 +54,11 @@ Otium holds a state-directory singleton lease and owns a stable loopback node po
 (`NEGOTIUM_PORT`, default 7777, or `--port`). The integration
 mounts through negotium's plugin chain
 (`registerNodeRequestHandler`) — negotium core knows nothing about otium.
+
+Relay mode uses the optional `relay` field in join credentials, or
+`OTIUM_RELAY_URL`, with `serve --relay <http(s)/ws(s) URL>` taking precedence.
+The worker dials the relay outbound with the cell secret and forwards the local
+node's HTTP and WebSocket endpoints through relay protocol v1.
 
 ## Local experiment (no cloud)
 

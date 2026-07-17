@@ -14,6 +14,10 @@
     "./cli": {
       "types": "./dist/cli.d.ts",
       "default": "./dist/cli.js"
+    },
+    "./relay": {
+      "types": "./dist/relay.d.ts",
+      "default": "./dist/relay.js"
     }
   },
   "bin": {
@@ -41,7 +45,7 @@
   },
   "scripts": {
     "serve": "bun src/cli.ts serve",
-    "build": "bun ../../scripts/build-package.ts src/index.ts src/cli.ts",
+    "build": "bun ../../scripts/build-package.ts src/index.ts src/cli.ts src/relay.ts",
     "check": "bunx tsc --noEmit",
     "lint": "biome check",
     "test": "bun test",

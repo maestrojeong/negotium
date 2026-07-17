@@ -11,6 +11,7 @@ afterEach(() => {
   delete process.env.OTIUM_CENTRAL_URL;
   delete process.env.OTIUM_CELL_ID;
   delete process.env.OTIUM_CELL_SECRET;
+  delete process.env.OTIUM_RELAY_URL;
 });
 
 describe("parseInviteCode", () => {
@@ -28,6 +29,16 @@ describe("parseInviteCode", () => {
       cellId: "cell_abc",
       secret: "rcs_xyz",
     });
+  });
+
+  test("preserves an optional relay origin", () => {
+    const code = encode({
+      central: "https://central.example",
+      relay: "wss://relay.example/",
+      cellId: "cell_abc",
+      secret: "rcs_xyz",
+    });
+    expect(parseInviteCode(code).relay).toBe("wss://relay.example");
   });
 
   test("tolerates surrounding whitespace", () => {
@@ -82,5 +93,13 @@ describe("saveJoin / loadJoin", () => {
 
     delete process.env.OTIUM_CELL_SECRET;
     expect(loadJoin()?.cellId).toBe("cell_file");
+  });
+
+  test("loads an optional relay URL from the environment", () => {
+    process.env.OTIUM_CENTRAL_URL = "http://env.example";
+    process.env.OTIUM_CELL_ID = "cell_env";
+    process.env.OTIUM_CELL_SECRET = "rcs_env";
+    process.env.OTIUM_RELAY_URL = "https://relay.example/";
+    expect(loadJoin()?.relay).toBe("https://relay.example");
   });
 });

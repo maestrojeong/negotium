@@ -1,30 +1,72 @@
 /**
  * `negotium-otium join <code>` — attach this node to an otium workspace as a
- * worker. The code is the v0 invite bundle (base64url JSON
- * {v, central, cellId, secret}) printed by the hub operator's
- * experiment/hub-setup.ts. Credentials persist under
+ * worker. Production codes carry only `{v:2, central, token}`; the node
+ * previews the workspace, creates an X25519 enrollment key, atomically claims
+ * the invite, and decrypts the returned credential envelope. Credentials persist under
  * `${DATA_DIR}/otium-join.json` (0600); `negotium-otium serve` mounts the otium
  * peer routes whenever that file exists.
  */
 
 import { configureOtiumCentral, selfPeerNode } from "@/central";
+import { claimEnrollment, parseEnrollmentInvite, previewEnrollment } from "@/enrollment";
 import { parseInviteCode, saveJoin } from "@/join";
+
+function option(args: string[], name: string): string | undefined {
+  const index = args.indexOf(`--${name}`);
+  return index >= 0 ? args[index + 1]?.trim() : undefined;
+}
+
+async function confirmEnrollment(message: string): Promise<boolean> {
+  if (!process.stdin.isTTY) return false;
+  const { createInterface } = await import("node:readline/promises");
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return /^(?:y|yes)$/i.test((await prompt.question(`${message} [y/N] `)).trim());
+  } finally {
+    prompt.close();
+  }
+}
 
 export async function joinCommand(args: string[]): Promise<void> {
   const code = args[0]?.trim();
   if (!code) {
-    console.error("usage: negotium-otium join <invite-code>");
+    console.error(
+      "usage: negotium-otium join <invite-code> [--yes] [--name <node-name>] [--legacy]",
+    );
     process.exitCode = 1;
     return;
   }
 
   let join: ReturnType<typeof parseInviteCode>;
-  try {
-    join = parseInviteCode(code);
-  } catch (err) {
-    console.error(`invalid invite code: ${err instanceof Error ? err.message : err}`);
-    process.exitCode = 1;
-    return;
+  if (args.includes("--legacy")) {
+    try {
+      join = parseInviteCode(code);
+    } catch (err) {
+      console.error(`invalid legacy invite code: ${err instanceof Error ? err.message : err}`);
+      process.exitCode = 1;
+      return;
+    }
+  } else {
+    try {
+      const invite = parseEnrollmentInvite(code);
+      const preview = await previewEnrollment(invite);
+      const workspace = preview.preview?.workspace;
+      const nodeName = option(args, "name") || preview.preview?.suggestedNodeName || undefined;
+      console.log(`Otium workspace: ${workspace?.name ?? workspace?.slug ?? workspace?.id}`);
+      console.log(`  central:   ${invite.central}`);
+      console.log(`  transport: ${preview.preview?.transport ?? "relay"}`);
+      console.log(`  access:    ${preview.preview?.topics ?? "explicitly shared topics only"}`);
+      const accepted = args.includes("--yes") || (await confirmEnrollment("Join this workspace?"));
+      if (!accepted) {
+        console.log("enrollment cancelled");
+        return;
+      }
+      join = await claimEnrollment(invite, nodeName);
+    } catch (err) {
+      console.error(`enrollment failed: ${err instanceof Error ? err.message : err}`);
+      process.exitCode = 1;
+      return;
+    }
   }
 
   const path = saveJoin(join);
