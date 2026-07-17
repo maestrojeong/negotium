@@ -631,6 +631,7 @@ async function handleTellEntry(
         id: msgId,
         topicId: topic.id,
         authorId: "system",
+        sourceAdapter: "session-comm",
         text,
         createdAt: now,
       });

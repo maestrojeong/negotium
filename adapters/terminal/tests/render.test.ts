@@ -370,9 +370,10 @@ describe("terminal renderer", () => {
 
   test("shows tell_session messages received from another topic", () => {
     const tellMessage: MessageDto = {
-      id: "tell-message",
+      id: "runtime-message",
       topicId: "topic",
       authorId: "system",
+      sourceAdapter: "session-comm",
       text: "[Tell from **research**]\n\nReview the deployment result.",
       createdAt: "2026-01-01T00:00:00.000Z",
     };
@@ -383,6 +384,21 @@ describe("terminal renderer", () => {
     const output = stripAnsi(renderApp(state, 100, 30));
     expect(output).toContain("Tell from **research**");
     expect(output).toContain("Review the deployment result.");
+  });
+
+  test("shows legacy tell_session history saved before source metadata existed", () => {
+    const legacyTell: MessageDto = {
+      id: "tell-legacy-request",
+      topicId: "topic",
+      authorId: "system",
+      text: "[from research]\nLegacy handoff.",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const state = setMessages(setTopics(createInitialState("local"), [topic()]), "topic", [
+      legacyTell,
+    ]);
+
+    expect(stripAnsi(renderApp(state, 100, 30))).toContain("Legacy handoff.");
   });
 
   test("shows compact tool status without verbose output", () => {
