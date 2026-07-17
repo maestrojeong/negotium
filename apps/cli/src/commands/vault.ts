@@ -8,6 +8,9 @@
 
 import {
   normalizeVaultKey,
+  VAULT_DESCRIPTION_MAX_LENGTH,
+  VAULT_VALUE_MAX_BYTES,
+  VAULT_VALUE_MIN_BYTES,
   validateVaultKey,
   vaultDel,
   vaultListWithValues,
@@ -44,7 +47,21 @@ export function vaultCommand(args: string[]): void {
         process.exitCode = 1;
         return;
       }
-      vaultSet(DEFAULT_USER, normalized, value, descParts.join(" "));
+      const valueBytes = Buffer.byteLength(value, "utf8");
+      if (valueBytes < VAULT_VALUE_MIN_BYTES || valueBytes > VAULT_VALUE_MAX_BYTES) {
+        console.error(
+          `value must be between ${VAULT_VALUE_MIN_BYTES} and ${VAULT_VALUE_MAX_BYTES} bytes`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const description = descParts.join(" ");
+      if (description.length > VAULT_DESCRIPTION_MAX_LENGTH) {
+        console.error(`description must be at most ${VAULT_DESCRIPTION_MAX_LENGTH} characters`);
+        process.exitCode = 1;
+        return;
+      }
+      vaultSet(DEFAULT_USER, normalized, value, description);
       console.log(`stored ${normalized}`);
       return;
     }

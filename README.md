@@ -101,6 +101,13 @@ negotium vault list|set|get|del
 negotium cron list|create|inspect|logs|run|pause|resume|restart|kill|reset|delete
 ```
 
+Inside the Terminal or Telegram adapter, use `/vault list`,
+`/vault set KEY VALUE [description]`, and `/vault del KEY`. For a value containing
+spaces, separate the optional description with ` | `. Vault commands are handled
+by the adapter and never enter the agent conversation or Terminal input history.
+Telegram still transports the original command to the bot, so prefer a private DM
+or Terminal for high-value credentials.
+
 Inside terminal chat:
 
 ```text

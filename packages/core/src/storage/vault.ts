@@ -111,7 +111,7 @@ export function vaultHasKey(userId: string, key: string): boolean {
   const row = vaultDb
     .prepare("SELECT 1 FROM vault WHERE user_id = ? AND key = ?")
     .get(userId, normalizeVaultKey(key));
-  return row !== undefined;
+  return row != null;
 }
 
 export function vaultDel(userId: string, key: string): boolean {

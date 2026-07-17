@@ -1,6 +1,6 @@
 {
   "name": "@negotium/node",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
   "description": "Composable Negotium node host used by CLIs and channel adapters",
   "license": "Apache-2.0",
@@ -40,10 +40,10 @@
     "prepack": "bun run build"
   },
   "dependencies": {
-    "@negotium/core": "0.1.5",
-    "@negotium/mcp": "0.1.5",
-    "@negotium/mcp-host": "0.1.5",
-    "@negotium/module-cron": "0.1.5"
+    "@negotium/core": "0.1.6",
+    "@negotium/mcp": "0.1.6",
+    "@negotium/mcp-host": "0.1.6",
+    "@negotium/module-cron": "0.1.6"
   },
   "devDependencies": {
     "@types/node": "^20",

@@ -12,7 +12,7 @@
  *     one topic; a topic may fan out to several chats/threads), persisted in
  *     SQLite so restarts keep routing established threads,
  *   - inbound text/media → whitelist check → slash commands (/new /topics
- *     /agent /fork /spawn /del /del! /abort) → attachment download into the
+ *     /agent /fork /spawn /del /del! /abort /vault) → attachment download into the
  *     topic workspace (core `ingestAttachment`) → persisted user message +
  *     AI turn; `/load` binds a topic created by another simultaneous adapter;
  *     voice notes are transcribed via core's local pipeline (or a
@@ -44,6 +44,7 @@ import {
   createDerivedTopic,
   ensurePersonalGeneral,
   errMsg,
+  executeVaultCommand,
   extractFileTagPaths,
   getTopic,
   getTopicByNameForUser,
@@ -53,6 +54,7 @@ import {
   isSensitivePath,
   isTopicVisible,
   isTranscriptionConfigured,
+  isVaultCommandLine,
   listTopics,
   logger,
   type MessageDto,
@@ -84,6 +86,13 @@ export interface TelegramAdapterOptions {
   userId?: string;
   /** Telegram user-id whitelist; empty/absent = allow all. */
   allowedUsers?: string[];
+  /**
+   * Telegram user id allowed to manage the shared node Vault. The owner must
+   * also appear in `allowedUsers`. A sole allowlisted user is inferred for
+   * backwards compatibility; multiple users require this option explicitly.
+   * Vault commands are disabled when the allowlist is empty.
+   */
+  vaultOwnerTelegramUserId?: string;
   /** Agent for auto-created topics; unset = registerTopic's default (maestro). */
   defaultAgent?: "claude" | "codex" | "maestro";
   /** Turn dispatcher override for remote hosts and deterministic tests. */
@@ -304,8 +313,16 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   const { client, forumChatId } = opts;
   const userId = opts.userId ?? "local";
   const allowed = new Set((opts.allowedUsers ?? []).map((s) => s.trim()).filter(Boolean));
+  const configuredVaultOwner = opts.vaultOwnerTelegramUserId?.trim();
+  if (configuredVaultOwner && !allowed.has(configuredVaultOwner)) {
+    throw new Error("vaultOwnerTelegramUserId must appear in allowedUsers");
+  }
+  const vaultOwnerTelegramUserId =
+    configuredVaultOwner || (allowed.size === 1 ? allowed.values().next().value : undefined);
   const isAllowed = (telegramUserId: number | undefined): boolean =>
     allowed.size === 0 || allowed.has(String(telegramUserId));
+  const isVaultOwner = (telegramUserId: number | undefined): boolean =>
+    vaultOwnerTelegramUserId !== undefined && String(telegramUserId) === vaultOwnerTelegramUserId;
   const titleFor = opts.topicTitleFor ?? defaultTopicTitle;
   const sendTimeoutMs = opts.sendTimeoutMs ?? DEFAULT_SEND_TIMEOUT_MS;
   const typingHeartbeatMs = Math.max(250, opts.typingHeartbeatMs ?? 4_000);
@@ -1930,8 +1947,25 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
 
   // ── commands ────────────────────────────────────────────────────────
   /** Handle a leading-slash command. Commands never start an AI turn. */
-  async function handleCommand(text: string, chatId: number, threadId?: number): Promise<void> {
+  async function handleCommand(
+    text: string,
+    chatId: number,
+    threadId?: number,
+    telegramUserId?: number,
+  ): Promise<void> {
     const [rawCmd = ""] = text.split(/\s+/);
+    const addressedUsername = rawCmd.match(/@(\w+)$/)?.[1];
+    if (addressedUsername) {
+      const bot = await resolveBotIdentity();
+      if (!bot?.username || bot.username.toLowerCase() !== addressedUsername.toLowerCase()) return;
+    }
+
+    if (isVaultCommandLine(text)) {
+      if (!isVaultOwner(telegramUserId)) return;
+      const vaultResponse = executeVaultCommand(userId, text);
+      if (vaultResponse !== null) reply(chatId, threadId, vaultResponse);
+      return;
+    }
     const cmd = rawCmd.replace(/@\w+$/, ""); // tolerate "/abort@MyBot" in groups
     const arg = extractCommandArg(text);
     switch (cmd) {
@@ -2130,7 +2164,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
           threadId,
           "commands: /new [name], /topics, /agent <claude|codex|maestro>, " +
             "/load <topic>, /unload, /fork [name], /spawn [name], " +
-            "/del [name], /del! [name], /abort",
+            "/del [name], /del! [name], /abort, /vault <list|set|del>",
         );
     }
   }
@@ -2162,9 +2196,9 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       // can change the chat's topic mapping.
       const command = text.split(/\s+/, 1)[0]?.replace(/@\w+$/, "");
       if (command === "/abort") {
-        void handleCommand(text, chatId, threadId);
+        void handleCommand(text, chatId, threadId, msg.from?.id);
       } else {
-        enqueueInbound(chatId, threadId, () => handleCommand(text, chatId, threadId));
+        enqueueInbound(chatId, threadId, () => handleCommand(text, chatId, threadId, msg.from?.id));
       }
       return;
     }

@@ -176,7 +176,7 @@ export function startOtiumAdapter(options: OtiumAdapterOptions): OtiumWorkerHand
         relayUrl: selectedRelay,
         token: join.secret,
         targetOrigin,
-        nodeVersion: "@negotium/adapter-otium@0.1.5",
+        nodeVersion: "@negotium/adapter-otium@0.1.6",
         logger,
       });
       tunnel.start();

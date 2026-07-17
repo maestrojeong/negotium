@@ -25,6 +25,9 @@ export function startTelegramFromEnv(): TelegramEnvironmentHandle {
       .split(",")
       .map((value) => value.trim())
       .filter(Boolean),
+    ...(process.env.TELEGRAM_VAULT_OWNER_USER_ID?.trim()
+      ? { vaultOwnerTelegramUserId: process.env.TELEGRAM_VAULT_OWNER_USER_ID.trim() }
+      : {}),
     ...(isAgentKind(requestedAgent) ? { defaultAgent: requestedAgent } : {}),
     ...(Number.isFinite(forumChatId) ? { forumChatId } : {}),
   });

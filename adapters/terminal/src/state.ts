@@ -13,6 +13,7 @@ type Overlay =
   | "topics"
   | "background-session"
   | "models"
+  | "vault"
   | "transcript"
   | "confirm-delete"
   | null;
@@ -61,6 +62,7 @@ export interface AppState {
   overlay: Overlay;
   topicPickerRoot: boolean;
   notice?: string;
+  vaultOutput?: string;
 }
 
 export function createInitialState(userId: string): AppState {

@@ -64,6 +64,11 @@ export type {
   TopicSessionParams,
 } from "#application/topic-service";
 export { TopicServiceError, topicService } from "#application/topic-service";
+export {
+  executeVaultCommand,
+  isVaultCommandLine,
+  VAULT_COMMAND_HELP,
+} from "#application/vault-command";
 // ── Host boundary ───────────────────────────────────────────────────
 export type { RuntimeBus, RuntimeBusEvent, RuntimeBusListener } from "#bus";
 export { runtimeBus, setRuntimeBus, WsHub } from "#bus";

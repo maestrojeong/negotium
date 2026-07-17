@@ -13,6 +13,8 @@ import {
   submitUserMessage,
   type TopicDto,
   upsertTopic,
+  vaultDel,
+  vaultListWithValues,
 } from "@negotium/core";
 import type { TelegramAdapterHandle } from "@/index";
 import { startTelegramAdapter } from "@/index";
@@ -147,6 +149,168 @@ describe("inbound", () => {
 });
 
 describe("commands", () => {
+  test("ignores commands addressed to another bot and accepts its own username", async () => {
+    const key = `WRONG_BOT_${CHAT_BASE}`;
+    const chatId = chat(32);
+
+    try {
+      inbound(chatId, `/vault@some_other_bot set ${key} secret-value`);
+      inbound(chatId, "/vault@negotium_test_bot list");
+      await waitFor(() => fake.callsFor(chatId).some((call) => call.text.startsWith("Vault")));
+
+      expect(vaultListWithValues(USER).some((entry) => entry.key === key)).toBe(false);
+      expect(fake.callsFor(chatId).some((call) => call.text === `Stored ${key}.`)).toBe(false);
+      expect(getTopicByNameForUser(`tg-${chatId}`, USER)).toBeNull();
+    } finally {
+      vaultDel(USER, key);
+    }
+  });
+
+  test("/vault manages secrets without persisting or echoing their values", async () => {
+    const key = `TOKEN_${CHAT_BASE}`;
+    const secret = `secret-${randomUUID()}`;
+    const chatId = chat(30);
+
+    try {
+      inbound(chatId, `/vault set ${key} ${secret} test credential`);
+      await waitFor(() => fake.callsFor(chatId).some((call) => call.text === `Stored ${key}.`));
+
+      expect(vaultListWithValues(USER).find((entry) => entry.key === key)).toEqual({
+        key,
+        value: secret,
+        description: "test credential",
+      });
+
+      inbound(chatId, "/vault list");
+      await waitFor(() =>
+        fake.callsFor(chatId).some((call) => call.text.includes(`${key}: test credential`)),
+      );
+      expect(fake.callsFor(chatId).every((call) => !call.text.includes(secret))).toBe(true);
+
+      const topic = getTopicByNameForUser(`tg-${chatId}`, USER);
+      expect(topic).toBeNull();
+    } finally {
+      vaultDel(USER, key);
+    }
+  });
+
+  test("/vault is disabled without an allowlist", async () => {
+    const isolatedFake = new FakeTelegramClient();
+    const isolatedAdapter = startTelegramAdapter({
+      client: isolatedFake,
+      startTurn: () => null,
+      userId: USER,
+      mappingDbPath: join(TMP, "vault-open-allowlist.db"),
+    });
+    const key = `OPEN_VAULT_${CHAT_BASE}`;
+    const chatId = chat(33);
+
+    try {
+      isolatedFake.emit({
+        chat: { id: chatId },
+        from: { id: ALLOWED_TG_ID },
+        text: `/vault set ${key} dummy-value`,
+      });
+      isolatedFake.emit({
+        chat: { id: chatId },
+        from: { id: ALLOWED_TG_ID },
+        text: "/agent invalid",
+      });
+      await waitFor(() =>
+        isolatedFake
+          .callsFor(chatId)
+          .some((call) => call.text === "usage: /agent <claude|codex|maestro>"),
+      );
+
+      expect(vaultListWithValues(USER).some((entry) => entry.key === key)).toBe(false);
+      expect(isolatedFake.callsFor(chatId).some((call) => call.text === `Stored ${key}.`)).toBe(
+        false,
+      );
+    } finally {
+      await isolatedAdapter.stop();
+      vaultDel(USER, key);
+    }
+  });
+
+  test("multiple allowlisted users require one explicit Vault owner", async () => {
+    const ownerTelegramId = ALLOWED_TG_ID;
+    const otherTelegramId = ALLOWED_TG_ID + 1;
+    const keyWithoutOwner = `MULTI_NO_OWNER_${CHAT_BASE}`;
+    const ownerKey = `MULTI_OWNER_${CHAT_BASE}`;
+    const otherKey = `MULTI_OTHER_${CHAT_BASE}`;
+    const noOwnerFake = new FakeTelegramClient();
+    const noOwnerAdapter = startTelegramAdapter({
+      client: noOwnerFake,
+      startTurn: () => null,
+      userId: USER,
+      allowedUsers: [String(ownerTelegramId), String(otherTelegramId)],
+      mappingDbPath: join(TMP, "vault-multi-no-owner.db"),
+    });
+    const ownedFake = new FakeTelegramClient();
+    const ownedAdapter = startTelegramAdapter({
+      client: ownedFake,
+      startTurn: () => null,
+      userId: USER,
+      allowedUsers: [String(ownerTelegramId), String(otherTelegramId)],
+      vaultOwnerTelegramUserId: String(ownerTelegramId),
+      mappingDbPath: join(TMP, "vault-multi-owner.db"),
+    });
+    const noOwnerChatId = chat(34);
+    const ownedChatId = chat(35);
+
+    try {
+      noOwnerFake.emit({
+        chat: { id: noOwnerChatId },
+        from: { id: ownerTelegramId },
+        text: `/vault set ${keyWithoutOwner} dummy-value`,
+      });
+      noOwnerFake.emit({
+        chat: { id: noOwnerChatId },
+        from: { id: ownerTelegramId },
+        text: "/agent invalid",
+      });
+      await waitFor(() =>
+        noOwnerFake
+          .callsFor(noOwnerChatId)
+          .some((call) => call.text === "usage: /agent <claude|codex|maestro>"),
+      );
+
+      ownedFake.emit({
+        chat: { id: ownedChatId },
+        from: { id: otherTelegramId },
+        text: `/vault set ${otherKey} dummy-value`,
+      });
+      ownedFake.emit({
+        chat: { id: ownedChatId },
+        from: { id: ownerTelegramId },
+        text: `/vault set ${ownerKey} dummy-value`,
+      });
+      await waitFor(() =>
+        ownedFake.callsFor(ownedChatId).some((call) => call.text === `Stored ${ownerKey}.`),
+      );
+
+      expect(vaultListWithValues(USER).some((entry) => entry.key === keyWithoutOwner)).toBe(false);
+      expect(vaultListWithValues(USER).some((entry) => entry.key === otherKey)).toBe(false);
+      expect(vaultListWithValues(USER).some((entry) => entry.key === ownerKey)).toBe(true);
+    } finally {
+      await Promise.all([noOwnerAdapter.stop(), ownedAdapter.stop()]);
+      vaultDel(USER, keyWithoutOwner);
+      vaultDel(USER, ownerKey);
+      vaultDel(USER, otherKey);
+    }
+  });
+
+  test("rejects a configured Vault owner outside the allowlist", () => {
+    expect(() =>
+      startTelegramAdapter({
+        client: new FakeTelegramClient(),
+        allowedUsers: [String(ALLOWED_TG_ID)],
+        vaultOwnerTelegramUserId: String(ALLOWED_TG_ID + 1),
+        mappingDbPath: join(TMP, "vault-invalid-owner.db"),
+      }),
+    ).toThrow("vaultOwnerTelegramUserId must appear in allowedUsers");
+  });
+
   test("/new creates and switches to a fresh topic", async () => {
     const topic = await mapChatToFreshTopic(chat(3), room("my-room"));
     expect(topic.kind).toBe("agent");

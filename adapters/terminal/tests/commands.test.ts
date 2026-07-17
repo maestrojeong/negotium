@@ -24,6 +24,11 @@ describe("terminal slash command completion", () => {
     expect(completeCommand("/mo", 0)).toBe("/model");
   });
 
+  test("suggests the Vault command with arguments", () => {
+    expect(commandSuggestions("/va").map((command) => command.name)).toEqual(["vault"]);
+    expect(completeCommand("/va", 0)).toBe("/vault ");
+  });
+
   test("uses only the short delete command", () => {
     expect(commandSuggestions("/de").map((command) => command.name)).toEqual(["del"]);
     expect(commandSuggestions("/de")[0]?.usage).toBe("/del");

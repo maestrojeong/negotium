@@ -67,6 +67,19 @@ describe("terminal renderer", () => {
     expect(output.split("\n")).toHaveLength(30);
   });
 
+  test("shows multiline Vault results in a readable overlay", () => {
+    const state = {
+      ...createInitialState("local"),
+      overlay: "vault" as const,
+      vaultOutput: "Vault keys (2):\n- API_TOKEN: primary\n- SIGNING_KEY: release",
+    };
+    const output = stripAnsi(renderApp(state, 80, 18));
+
+    expect(output).toContain("Vault · Esc close");
+    expect(output).toContain("API_TOKEN: primary");
+    expect(output).toContain("SIGNING_KEY: release");
+  });
+
   test("keeps the always-active message composer flat and borderless", () => {
     const output = stripAnsi(renderApp(createInitialState("local"), 120, 30));
     const lines = output.split("\n");

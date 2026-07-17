@@ -22,6 +22,11 @@ export const TERMINAL_COMMANDS: readonly TerminalCommand[] = [
   },
   { name: "del", usage: "/del", description: "delete the current topic" },
   { name: "copy", usage: "/copy [all]", description: "copy answer or transcript" },
+  {
+    name: "vault",
+    usage: "/vault <list|set|del>",
+    description: "manage encrypted secrets",
+  },
   { name: "abort", usage: "/abort", description: "stop the active turn" },
   { name: "help", usage: "/help", description: "show keyboard help" },
   { name: "quit", usage: "/quit", description: "exit Terminal" },

@@ -34,7 +34,10 @@ TELEGRAM_BOT_TOKEN=... TELEGRAM_ALLOWED_USERS=123456 negotium telegram
 
 `TELEGRAM_ALLOWED_USERS` is a comma-separated Telegram user-ID allowlist. An empty value allows
 everyone who can reach the bot to act as the same local Negotium owner, so set it for any
-non-isolated bot.
+non-isolated bot. Vault commands are disabled unless this allowlist is non-empty. With one
+allowlisted user that user owns the Vault; with multiple users, set
+`TELEGRAM_VAULT_OWNER_USER_ID` to exactly one id from the allowlist. Other users' `/vault`
+commands are silently ignored.
 
 Telegram and other channels share SQLite state while running as separate processes:
 

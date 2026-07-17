@@ -12,6 +12,8 @@ import {
   runtimeBus,
   setTopicSessionId,
   upsertTopic,
+  vaultDel,
+  vaultListWithValues,
 } from "@negotium/core";
 import {
   createNodeControlHandler,
@@ -44,11 +46,50 @@ test("node control API rejects missing bearer authentication", async () => {
   expect(response?.status).toBe(401);
 });
 
+test("node control executes Vault commands for the requested user without returning secrets", async () => {
+  const vaultUser = `node-control-vault-${randomUUID()}`;
+  const otherUser = `node-control-vault-other-${randomUUID()}`;
+  const key = "REMOTE_TOKEN";
+  const secret = `secret-${randomUUID()}`;
+
+  try {
+    const stored = await handler(
+      request("/vault/command", {
+        method: "POST",
+        body: JSON.stringify({
+          userId: vaultUser,
+          commandLine: `/vault set ${key} ${secret} remote credential`,
+        }),
+      }),
+    );
+    expect(stored?.status).toBe(200);
+    const storedText = await stored!.text();
+    expect(storedText).toContain(`Stored ${key}.`);
+    expect(storedText).not.toContain(secret);
+    expect(vaultListWithValues(vaultUser).find((entry) => entry.key === key)?.value).toBe(secret);
+    expect(vaultListWithValues(otherUser).find((entry) => entry.key === key)).toBeUndefined();
+
+    const listed = await handler(
+      request("/vault/command", {
+        method: "POST",
+        body: JSON.stringify({ userId: vaultUser, commandLine: "/vault list" }),
+      }),
+    );
+    const listedText = await listed!.text();
+    expect(listedText).toContain(`${key}: remote credential`);
+    expect(listedText).not.toContain(secret);
+  } finally {
+    vaultDel(vaultUser, key);
+    vaultDel(otherUser, key);
+  }
+});
+
 test("node control session, topic routes, and SSE use one versioned boundary", async () => {
   const status = await handler(request("/status"));
   expect(status?.status).toBe(200);
-  const statusBody = (await status?.json()) as { protocolVersion: number };
+  const statusBody = (await status?.json()) as { protocolVersion: number; nodeVersion: string };
   expect(statusBody.protocolVersion).toBe(NODE_CONTROL_PROTOCOL_VERSION);
+  expect(statusBody.nodeVersion).toBe("0.1.6");
 
   const session = await handler(request(`/session?user=${encodeURIComponent(userId)}`));
   const sessionBody = (await session?.json()) as {

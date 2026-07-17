@@ -14,8 +14,10 @@ import {
   abortRoom,
   answerPendingAskUserQuestion,
   appendApiMessage,
+  executeVaultCommand,
   getTopicByNameForUser,
   isAgentKind,
+  isVaultCommandLine,
   type MessageDto,
   registerTopic,
   runtimeBus,
@@ -27,6 +29,21 @@ import { renderBusEvent } from "@/render";
 
 const DEFAULT_USER = "local";
 const DEFAULT_TOPIC = "chat";
+const VAULT_SET_COMMAND_PATTERN = /^\/vault(?:@\w+)?\s+set(?:\s|$)/i;
+
+/**
+ * Remove secret-bearing Vault writes from readline's in-memory history.
+ *
+ * Node records a line before emitting the `line` event, so this must run at
+ * the beginning of the handler rather than after executing the command.
+ */
+export function scrubVaultSetCommandsFromHistory(history: string[]): void {
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    if (VAULT_SET_COMMAND_PATTERN.test(history[index]?.trim() ?? "")) {
+      history.splice(index, 1);
+    }
+  }
+}
 
 function ensureTopic(title: string, agent?: string): TopicDto {
   const existing = getTopicByNameForUser(title, DEFAULT_USER);
@@ -47,9 +64,13 @@ export async function chatCommand(args: string[]): Promise<void> {
   let topic = ensureTopic(topicArg ?? DEFAULT_TOPIC, agentArg);
 
   console.log(`negotium node on :${node.port} — topic "${topic.title}" (agent: ${topic.agent})`);
-  console.log("commands: /switch <topic>, /abort, /quit\n");
+  console.log("commands: /vault, /switch <topic>, /abort, /quit\n");
 
-  const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "> " });
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: "> ",
+  }) as ReturnType<typeof createInterface> & { history: string[] };
   let pendingAsk: {
     messageId: string;
     choices: NonNullable<MessageDto["askUserQuestion"]>["choices"];
@@ -80,6 +101,9 @@ export async function chatCommand(args: string[]): Promise<void> {
 
   rl.on("line", (line) => {
     const text = line.trim();
+    if (VAULT_SET_COMMAND_PATTERN.test(text)) {
+      scrubVaultSetCommandsFromHistory(rl.history);
+    }
     if (!text) {
       rl.prompt();
       return;
@@ -98,6 +122,12 @@ export async function chatCommand(args: string[]): Promise<void> {
       topic = ensureTopic(text.slice("/switch ".length).trim(), agentArg);
       pendingAsk = null;
       console.log(`→ topic "${topic.title}" (agent: ${topic.agent})`);
+      rl.prompt();
+      return;
+    }
+    if (isVaultCommandLine(text)) {
+      const result = executeVaultCommand(DEFAULT_USER, text);
+      if (result) console.log(result);
       rl.prompt();
       return;
     }

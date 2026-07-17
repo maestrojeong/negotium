@@ -14,6 +14,7 @@ import {
   type compactTopicSession,
   createDerivedTopic,
   ensurePersonalGeneral,
+  executeVaultCommand,
   getTopic,
   getVisibleTopics,
   isParticipant,
@@ -42,7 +43,7 @@ export const NODE_CONTROL_PROTOCOL_VERSION = 1;
 export const NODE_CONTROL_BASE_PATH = "/api/v1/control";
 export const NODE_DAEMON_ROLE = "node-daemon";
 export const NODE_DAEMON_INFO_PATH = resolve(RUN_DIR, "node-daemon.json");
-const NODE_VERSION = "0.1.0";
+const NODE_VERSION = "0.1.6";
 
 export interface NodeDaemonInfo {
   schemaVersion: 1;
@@ -271,6 +272,15 @@ export function createNodeControlHandler(
       if (req.method === "GET" && path === "/background-sessions") {
         const userId = requiredText(url.searchParams.get("user"), "user");
         return Response.json({ ok: true, sessions: listBackgroundSessionsForUser(userId) });
+      }
+
+      if (req.method === "POST" && path === "/vault/command") {
+        const body = await bodyRecord(req);
+        const userId = requiredText(body.userId, "userId");
+        const commandLine = requiredText(body.commandLine, "commandLine");
+        const result = executeVaultCommand(userId, commandLine);
+        if (result === null) return jsonError(400, "Invalid Vault command");
+        return Response.json({ ok: true, result });
       }
 
       if (req.method === "POST" && path === "/topics") {

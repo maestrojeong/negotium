@@ -160,6 +160,9 @@ test("stops a started client when terminal initialization fails", async () => {
     abort() {
       return false;
     },
+    runVaultCommand() {
+      return null;
+    },
   };
   const restoreStdin = setTty(process.stdin, true);
   const restoreStdout = setTty(process.stdout, true);

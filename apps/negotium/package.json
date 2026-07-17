@@ -1,6 +1,6 @@
 {
   "name": "negotium",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
   "description": "Install the Negotium multi-agent runtime and CLI with one package",
   "license": "Apache-2.0",
@@ -34,7 +34,7 @@
     "prepack": "bun run build"
   },
   "dependencies": {
-    "@negotium/cli": "0.1.5"
+    "@negotium/cli": "0.1.6"
   },
   "devDependencies": {
     "@types/node": "^20",

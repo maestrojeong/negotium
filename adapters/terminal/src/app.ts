@@ -1,5 +1,6 @@
 import {
   type AgentKind,
+  isVaultCommandLine,
   type RuntimeBusEvent,
   SELECTABLE_MODELS,
   type TopicDto,
@@ -750,8 +751,12 @@ export class TerminalApp {
       await this.#createTopic(text);
       return;
     }
-    this.#history.record(text);
-    this.#client.appendInputHistory?.(text);
+    // Vault commands may contain plaintext credentials. Never persist them in
+    // the terminal input history, including malformed commands that show help.
+    if (!isVaultCommandLine(text)) {
+      this.#history.record(text);
+      this.#client.appendInputHistory?.(text);
+    }
     this.#input.setText("");
     this.#syncInput();
     this.#state = {
@@ -803,6 +808,20 @@ export class TerminalApp {
   }
 
   async #runCommand(commandLine: string): Promise<void> {
+    if (isVaultCommandLine(commandLine)) {
+      if (!this.#client.runVaultCommand) {
+        this.#state = { ...this.#state, notice: "Vault commands are unavailable for this client." };
+        this.#queueRender();
+        return;
+      }
+      const vaultResponse = await this.#client.runVaultCommand(commandLine);
+      if (vaultResponse === null) return;
+      this.#state = vaultResponse.includes("\n")
+        ? { ...this.#state, overlay: "vault", notice: undefined, vaultOutput: vaultResponse }
+        : { ...this.#state, notice: vaultResponse, vaultOutput: undefined };
+      this.#queueRender();
+      return;
+    }
     const [command = "", ...args] = commandLine.slice(1).trim().split(/\s+/);
     if (command === "quit" || command === "exit") {
       this.#requestExit();

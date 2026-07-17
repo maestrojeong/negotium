@@ -740,6 +740,15 @@ function conversationLines(
   if (state.overlay === "background-session")
     return backgroundSessionLines(state, nowMs).slice(0, height);
   if (state.overlay === "models") return modelOverlayLines(state, height).slice(0, height);
+  if (state.overlay === "vault") {
+    return [
+      line("  Vault · Esc close", { fg: theme.accent, bold: true }),
+      line(""),
+      ...(state.vaultOutput ?? "Vault is empty.")
+        .split("\n")
+        .flatMap((text) => wrapText(text, Math.max(4, width - 4)).map((part) => line(`  ${part}`))),
+    ].slice(0, height);
+  }
   if (state.creatingTopic) {
     return [
       line(""),
@@ -986,9 +995,11 @@ function footerLines(state: AppState, width: number): string[] {
               : "Esc close · Ctrl-C exit; work continues  "
             : state.overlay === "background-session"
               ? "Esc back · read-only  "
-              : running
-                ? "Esc/Ctrl-C stop  "
-                : "Ctrl-C twice to quit  ",
+              : state.overlay === "vault"
+                ? "Esc close  "
+                : running
+                  ? "Esc/Ctrl-C stop  "
+                  : "Ctrl-C twice to quit  ",
         width,
       ),
       {

@@ -3,6 +3,7 @@ import {
   type BackgroundSessionDto,
   createDerivedTopic,
   ensurePersonalGeneral,
+  executeVaultCommand,
   getAllMessagesForTopic,
   getApiMessage,
   getVisibleTopics,
@@ -64,6 +65,7 @@ export interface NegotiumClient {
     label: string,
   ): ClientResult<{ ok: boolean; error?: string }>;
   abort(topicId: string): ClientResult<boolean>;
+  runVaultCommand?(commandLine: string): ClientResult<string | null>;
   listInputHistory?(): string[];
   appendInputHistory?(text: string): void;
   listRecentEvents?(topicId: string): ClientResult<RuntimeBusEvent[]>;
@@ -232,6 +234,10 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
     return topicService.abortTurn(topicId, this.#userId);
   }
 
+  runVaultCommand(commandLine: string): string | null {
+    return executeVaultCommand(this.#userId, commandLine);
+  }
+
   listInputHistory(): string[] {
     return loadTerminalInputHistory(this.#userId);
   }
@@ -249,6 +255,14 @@ interface ApiEnvelope {
   ok?: boolean;
   error?: string;
   [key: string]: unknown;
+}
+
+function isSecureVaultTransport(baseUrl: string): boolean {
+  const url = new URL(baseUrl);
+  if (url.protocol === "https:") return true;
+  if (url.protocol !== "http:") return false;
+  const hostname = url.hostname.toLowerCase();
+  return hostname === "localhost" || hostname === "::1" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
 }
 
 /** REST/SSE client. Stopping it only disconnects the UI; it never stops the node. */
@@ -422,6 +436,17 @@ export class RemoteNegotiumClient implements NegotiumClient {
       body: JSON.stringify({ userId: this.#userId }),
     });
     return result.aborted === true;
+  }
+
+  async runVaultCommand(commandLine: string): Promise<string | null> {
+    if (!isSecureVaultTransport(this.#baseUrl)) {
+      throw new Error("Vault commands require HTTPS or loopback HTTP");
+    }
+    const result = await this.#request("/vault/command", {
+      method: "POST",
+      body: JSON.stringify({ userId: this.#userId, commandLine }),
+    });
+    return typeof result.result === "string" ? result.result : null;
   }
 
   listInputHistory(): string[] {
