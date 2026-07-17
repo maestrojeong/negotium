@@ -40,7 +40,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@negotium/core": "0.1.8",
+    "@negotium/core": "workspace:*",
     "zod": "^4.3.6"
   },
   "devDependencies": {

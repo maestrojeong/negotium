@@ -38,7 +38,7 @@
     "prepack": "bun run build"
   },
   "dependencies": {
-    "@negotium/adapter-sdk": "0.1.8"
+    "@negotium/adapter-sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20",

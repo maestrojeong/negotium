@@ -45,9 +45,9 @@
     "prepack": "bun run build"
   },
   "dependencies": {
-    "@negotium/adapter-sdk": "0.1.8",
-    "@negotium/core": "0.1.8",
-    "@negotium/node": "0.1.8",
+    "@negotium/adapter-sdk": "workspace:*",
+    "@negotium/core": "workspace:*",
+    "@negotium/node": "workspace:*",
     "node-telegram-bot-api": "^1.1.2"
   },
   "devDependencies": {
