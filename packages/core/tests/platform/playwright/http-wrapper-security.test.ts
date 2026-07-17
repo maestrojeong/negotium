@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { createServer } from "node:net";
 import { resolve } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 
 const capability = "wrapper-security-test-capability";
 let port = 0;
@@ -53,24 +55,49 @@ describe("authenticated browser HTTP wrapper", () => {
     await processHandle?.exited;
   });
 
-  test("does not expose the deprecated SSE message injection surface", async () => {
+  test("exposes SSE only with owner-scoped header authentication", async () => {
     const baseUrl = `http://127.0.0.1:${port}`;
-    const sse = await fetch(
-      `${baseUrl}/sse?owner=topic%3Avictim&capability=${encodeURIComponent(capability)}`,
-    );
-    expect(sse.status).toBe(404);
-    await sse.body?.cancel();
+    const ownerCapability = createHmac("sha256", capability).update("topic:victim").digest("hex");
 
-    const messages = await fetch(
-      `${baseUrl}/messages?sessionId=victim&capability=${encodeURIComponent(capability)}`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", method: "ping" }),
+    const unauthenticated = await fetch(`${baseUrl}/sse`, {
+      headers: { "X-Browser-Owner": "topic:victim" },
+    });
+    expect(unauthenticated.status).toBe(401);
+    await unauthenticated.body?.cancel();
+
+    const controller = new AbortController();
+    const sse = await fetch(`${baseUrl}/sse`, {
+      headers: {
+        "X-Browser-Owner": "topic:victim",
+        "X-Browser-Capability": ownerCapability,
       },
-    );
+      signal: controller.signal,
+    });
+    expect(sse.status).toBe(200);
+    expect(sse.headers.get("content-type")).toContain("text/event-stream");
+    controller.abort();
+    await sse.body?.cancel().catch(() => undefined);
+
+    const messages = await fetch(`${baseUrl}/message?sessionId=victim&token=wrong`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "ping" }),
+    });
     expect(messages.status).toBe(404);
     await messages.body?.cancel();
+  });
+
+  test("completes the Maestro-style SSE handshake with signed query auth", async () => {
+    const owner = "topic:maestro";
+    const ownerCapability = createHmac("sha256", capability).update(owner).digest("hex");
+    const query = new URLSearchParams({ owner, capability: ownerCapability });
+    const client = new Client({ name: "sse-wrapper-test", version: "1.0.0" });
+    const transport = new SSEClientTransport(new URL(`http://127.0.0.1:${port}/sse?${query}`));
+
+    await client.connect(transport);
+    const result = await client.listTools();
+    expect(result.tools.length).toBeGreaterThan(0);
+    await client.close();
   });
 
   test("rejects capabilities and owners supplied through URL queries", async () => {

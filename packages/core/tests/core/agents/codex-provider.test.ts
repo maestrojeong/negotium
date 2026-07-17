@@ -96,7 +96,11 @@ describe("codexProvider stale rollout recovery", () => {
     expect(codexConstructor).toHaveBeenCalledWith({
       config: {
         features: { multi_agent: false, multi_agent_v2: false, enable_fanout: false },
-        mcp_servers: {},
+        mcp_servers: {
+          playwright: expect.objectContaining({ enabled: false }),
+          "browser-rs": expect.objectContaining({ enabled: false }),
+          patchright: expect.objectContaining({ enabled: false }),
+        },
       },
     });
     expect(resumeRunStreamed.mock.calls[0]?.[0]).toBe("[System Instructions]\nsystem\n\nhello");
@@ -215,7 +219,9 @@ describe("codexProvider MCP config", () => {
       sseOnly: { type: "sse", url: "http://127.0.0.1:39003/sse" },
     });
 
-    expect(servers.playwright).toBeUndefined();
+    expect(servers.playwright).toMatchObject({ enabled: false });
+    expect(servers["browser-rs"]).toMatchObject({ enabled: false });
+    expect(servers.patchright).toMatchObject({ enabled: false });
     expect(servers.otium_playwright).toMatchObject({
       url: "http://127.0.0.1:39001/mcp",
     });

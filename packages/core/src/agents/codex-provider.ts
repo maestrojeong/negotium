@@ -59,7 +59,11 @@ function mapEffort(effort?: EffortLevel): ModelReasoningEffort | undefined {
  * for codex by passing `agent: "codex"` into the `playwright.build()` arm
  * in `mcp-config.ts` (which switches `/sse` → `/mcp`).
  */
-type CodexMcpTimeouts = { startup_timeout_sec?: number; tool_timeout_sec?: number };
+type CodexMcpTimeouts = {
+  enabled?: boolean;
+  startup_timeout_sec?: number;
+  tool_timeout_sec?: number;
+};
 type CodexStdioServer = {
   command: string;
   args?: string[];
@@ -111,7 +115,19 @@ function withCodexMcpServerOverrides(name: string, server: CodexMcpServer): Code
 export function toCodexMcpServers(
   claudeShape: Record<string, unknown>,
 ): Record<string, CodexMcpServer> {
-  const out: Record<string, CodexMcpServer> = {};
+  // Codex merges turn config with ~/.codex/config.toml instead of replacing it.
+  // Disable common global browser stdio servers so browser state can only flow
+  // through Negotium's long-lived, owner-scoped HTTP server.
+  const disabledBrowserStdio = (): CodexStdioServer => ({
+    command: process.execPath,
+    args: ["-e", "process.exit(0)"],
+    enabled: false,
+  });
+  const out: Record<string, CodexMcpServer> = {
+    playwright: disabledBrowserStdio(),
+    "browser-rs": disabledBrowserStdio(),
+    patchright: disabledBrowserStdio(),
+  };
   for (const [name, srv] of Object.entries(claudeShape)) {
     if (!srv || typeof srv !== "object") continue;
     const s = srv as Record<string, unknown>;

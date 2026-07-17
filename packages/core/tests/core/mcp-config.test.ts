@@ -14,8 +14,8 @@ import {
 /**
  * Playwright MCP transport selection.
  *
- * All agents use owner-scoped streamable HTTP. Topics assigned to one profile
- * share Chromium/login state while each connection sees only its own tabs.
+ * Claude and Maestro use SSE; Codex uses streamable HTTP. Both connect to the
+ * same long-lived Chromium/profile server with owner-scoped tabs.
  *
  * Fallback (no port allocated): playwright is omitted. This avoids spawning
  * a per-turn Chromium child that dies with the agent process tree; the host
@@ -27,7 +27,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
   const playwrightCapability = "test-capability";
   const capabilityFor = (owner: string) => browserOwnerCapability(playwrightCapability, owner);
 
-  test("forum/claude with port → owner-scoped HTTP", () => {
+  test("forum/claude with port → owner-scoped SSE", () => {
     const servers = getForumMcpServers({
       userId,
       session: "coding",
@@ -36,8 +36,8 @@ describe("mcp-config: playwright transport selection per agent", () => {
       playwrightCapability,
     });
     expect(servers.playwright).toEqual({
-      type: "http",
-      url: `http://127.0.0.1:${playwrightPort}/mcp`,
+      type: "sse",
+      url: `http://127.0.0.1:${playwrightPort}/sse`,
       headers: {
         "X-Browser-Owner": "user:9999:coding",
         "X-Browser-Capability": capabilityFor("user:9999:coding"),
@@ -45,7 +45,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
     });
   });
 
-  test("forum/maestro with port → owner-scoped HTTP", () => {
+  test("forum/maestro with port → owner-scoped SSE", () => {
     const servers = getForumMcpServers({
       userId,
       session: "coding",
@@ -53,13 +53,13 @@ describe("mcp-config: playwright transport selection per agent", () => {
       playwrightPort,
       playwrightCapability,
     });
+    const query = new URLSearchParams({
+      owner: "user:9999:coding",
+      capability: capabilityFor("user:9999:coding"),
+    });
     expect(servers.playwright).toEqual({
-      type: "http",
-      url: `http://127.0.0.1:${playwrightPort}/mcp`,
-      headers: {
-        "X-Browser-Owner": "user:9999:coding",
-        "X-Browser-Capability": capabilityFor("user:9999:coding"),
-      },
+      type: "sse",
+      url: `http://127.0.0.1:${playwrightPort}/sse?${query}`,
     });
   });
 
@@ -92,7 +92,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
     });
   });
 
-  test("dm/claude with port → owner-scoped HTTP", () => {
+  test("dm/claude with port → owner-scoped SSE", () => {
     const servers = getDmMcpServers({
       userId,
       agent: "claude",
@@ -100,8 +100,8 @@ describe("mcp-config: playwright transport selection per agent", () => {
       playwrightCapability,
     });
     expect(servers.playwright).toEqual({
-      type: "http",
-      url: `http://127.0.0.1:${playwrightPort}/mcp`,
+      type: "sse",
+      url: `http://127.0.0.1:${playwrightPort}/sse`,
       headers: {
         "X-Browser-Owner": "user:9999:dm",
         "X-Browser-Capability": capabilityFor("user:9999:dm"),

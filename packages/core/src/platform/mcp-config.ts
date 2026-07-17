@@ -212,19 +212,25 @@ export function browserOwnerForContext(ctx: {
   return undefined;
 }
 
-function playwrightHttp(port: number, owner: string, capability: string, agent?: AgentKind) {
-  const url = `http://127.0.0.1:${port}/mcp`;
+function playwrightTransport(port: number, owner: string, capability: string, agent?: AgentKind) {
   const ownerCapability = browserOwnerCapability(capability, owner);
   if (agent === "codex") {
     return {
-      url,
+      url: `http://127.0.0.1:${port}/mcp`,
       http_headers: { "X-Browser-Owner": owner },
       env_http_headers: { "X-Browser-Capability": CODEX_BROWSER_CAPABILITY_ENV },
     };
   }
+  if (agent === "maestro") {
+    const query = new URLSearchParams({ owner, capability: ownerCapability });
+    return {
+      type: "sse" as const,
+      url: `http://127.0.0.1:${port}/sse?${query}`,
+    };
+  }
   return {
-    type: "http" as const,
-    url,
+    type: "sse" as const,
+    url: `http://127.0.0.1:${port}/sse`,
     headers: { "X-Browser-Owner": owner, "X-Browser-Capability": ownerCapability },
   };
 }
@@ -241,12 +247,12 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   playwright: {
     scopes: ["dm", "forum", "fork", "cron"],
     build({ userId, session, topicId, playwrightPort, playwrightCapability, agent }) {
-      // Every agent uses owner-scoped streamable HTTP. Multiple topics may
-      // share the Chromium/profile while each connection sees only its tabs.
+      // Codex uses streamable HTTP while Claude and Maestro use SSE. Both
+      // transports terminate at the same long-lived browser/profile server.
       if (playwrightPort && playwrightCapability) {
         const owner = browserOwnerForContext({ userId, session, topicId });
         if (!owner) return null;
-        return playwrightHttp(playwrightPort, owner, playwrightCapability, agent);
+        return playwrightTransport(playwrightPort, owner, playwrightCapability, agent);
       }
       // No port available — the playwright manager could not allocate one
       // for this turn. The previous behavior was to fall back to a per-turn

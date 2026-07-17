@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
@@ -86,6 +87,12 @@ function requestOwner(req) {
   return owner;
 }
 
+function sseRequestOwner(req) {
+  const owner = requestOwner(req) ?? (typeof req.query.owner === "string" ? req.query.owner : "");
+  if (!owner || owner.length > 256) return undefined;
+  return owner;
+}
+
 const expectedCapability = process.env.NEGOTIUM_BROWSER_CAPABILITY;
 if (!expectedCapability) throw new Error("NEGOTIUM_BROWSER_CAPABILITY is required");
 
@@ -113,7 +120,12 @@ function requireCapability(req, res) {
 }
 
 function requireOwnerCapability(req, res, owner) {
-  if (hasOwnerCapability(req, owner)) return true;
+  const queryCapability =
+    req.path === "/sse" && typeof req.query.capability === "string"
+      ? req.query.capability
+      : undefined;
+  const expected = createHmac("sha256", expectedCapability).update(owner).digest("hex");
+  if (hasOwnerCapability(req, owner) || safeCapabilityEqual(queryCapability, expected)) return true;
   res.status(401).json({ ok: false, error: "invalid browser owner capability" });
   return false;
 }
@@ -146,6 +158,9 @@ const app = createMcpExpressApp({ host: options.host });
 const transports = {};
 const servers = {};
 const sessionOwners = {};
+const sseTransports = {};
+const sseServers = {};
+const sseMessageTokens = {};
 let httpServer;
 
 app.get("/health", (_req, res) => {
@@ -153,6 +168,54 @@ app.get("/health", (_req, res) => {
     ok: true,
     name: "mcp-patchright",
   });
+});
+
+// Claude Code and Maestro use the legacy two-endpoint SSE transport. The
+// initial connection is authenticated with the owner capability. A fresh,
+// per-session token embedded in the advertised message endpoint prevents
+// another loopback process from injecting JSON-RPC messages by session ID.
+app.get("/sse", async (req, res) => {
+  const owner = sseRequestOwner(req);
+  if (!owner) {
+    res.status(400).json({ ok: false, error: "browser owner is required in SSE mode" });
+    return;
+  }
+  if (!requireOwnerCapability(req, res, owner)) return;
+
+  const messageToken = randomBytes(32).toString("hex");
+  const transport = new SSEServerTransport(
+    `/message?token=${encodeURIComponent(messageToken)}`,
+    res,
+  );
+  const server = createMcpServer(defaultStartOptions, sharedManager, owner);
+  sseTransports[transport.sessionId] = transport;
+  sseServers[transport.sessionId] = server;
+  sseMessageTokens[transport.sessionId] = messageToken;
+  transport.onclose = () => {
+    const sessionId = transport.sessionId;
+    delete sseTransports[sessionId];
+    delete sseMessageTokens[sessionId];
+    const managedServer = sseServers[sessionId];
+    delete sseServers[sessionId];
+    void managedServer?.close().catch(() => undefined);
+  };
+  await server.connect(transport);
+});
+
+app.post("/message", async (req, res) => {
+  const sessionId = typeof req.query.sessionId === "string" ? req.query.sessionId : "";
+  const messageToken = typeof req.query.token === "string" ? req.query.token : "";
+  const transport = sseTransports[sessionId];
+  const expectedMessageToken = sseMessageTokens[sessionId];
+  if (!transport) {
+    res.status(404).send("SSE session not found");
+    return;
+  }
+  if (!expectedMessageToken || !safeCapabilityEqual(messageToken, expectedMessageToken)) {
+    res.status(401).send("invalid SSE message token");
+    return;
+  }
+  await transport.handlePostMessage(req, res, req.body);
 });
 
 app.all("/mcp", async (req, res) => {
@@ -249,6 +312,15 @@ app.delete("/owners", async (req, res) => {
 });
 
 async function shutdown() {
+  for (const [sessionId, transport] of Object.entries(sseTransports)) {
+    await transport.close().catch(() => undefined);
+    delete sseTransports[sessionId];
+    delete sseMessageTokens[sessionId];
+  }
+  for (const [sessionId, server] of Object.entries(sseServers)) {
+    await server.close().catch(() => undefined);
+    delete sseServers[sessionId];
+  }
   for (const [sessionId, transport] of Object.entries(transports)) {
     await transport.close().catch(() => undefined);
     delete transports[sessionId];
@@ -265,6 +337,7 @@ async function shutdown() {
 
 httpServer = app.listen(options.port, options.host, () => {
   console.error(`mcp-patchright listening on http://${options.host}:${options.port}`);
+  console.error(`  SSE:        http://${options.host}:${options.port}/sse`);
   console.error(`  Streamable: http://${options.host}:${options.port}/mcp`);
 });
 httpServer.on("error", (error) => {
