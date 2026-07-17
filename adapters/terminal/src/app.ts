@@ -56,12 +56,23 @@ const NEW_TOPIC_KEYS = new Set(["n", "ㅜ"]);
 const DELETE_TOPIC_KEYS = new Set(["d", "ㅇ", "\u007f", "\b", "\u001b[3~"]);
 const CONFIRM_KEYS = new Set(["y", "ㅛ"]);
 const CANCEL_KEYS = new Set(["n", "ㅜ"]);
+// ai-status kinds that mutate the messages array (tool timeline entries) and
+// must therefore wait for an in-flight history load to finish, so they don't
+// get clobbered when the load's setMessages() replaces the messages array.
+const MESSAGE_MUTATING_AI_STATUS_KINDS = new Set(["tool_call", "tool_output"]);
 // biome-ignore lint/complexity/useRegexLiterals: avoids a literal terminal control byte in source.
 const SGR_MOUSE_PATTERN = new RegExp("\\u001b\\[<(\\d+);(\\d+);(\\d+)([mM])", "g");
 
 export interface TerminalMouseEvent extends ScreenPoint {
   button: number;
   kind: "press" | "drag" | "release";
+}
+
+export function runtimeEventWaitsForMessageLoad(event: RuntimeBusEvent): boolean {
+  if (event.type === "message" || event.type === "message-updated") return true;
+  if (event.type !== "ai-status") return false;
+  const payload = event.payload as { kind?: unknown } | null;
+  return typeof payload?.kind === "string" && MESSAGE_MUTATING_AI_STATUS_KINDS.has(payload.kind);
 }
 
 export function consumeMouseInput(raw: string): {
@@ -230,10 +241,10 @@ export class TerminalApp {
 
   #handleRuntimeEvent(event: RuntimeBusEvent): void {
     this.#selection = null;
-    if (
-      this.#messageLoadGeneration.has(event.topicId) &&
-      (event.type === "message" || event.type === "message-updated" || event.type === "ai-status")
-    ) {
+    // Only message-order-sensitive events wait for the in-flight history load to
+    // finish; ai-status (running/done) is safe to apply immediately so the
+    // "is it running" indicator never lags behind a topic switch's network round-trip.
+    if (this.#messageLoadGeneration.has(event.topicId) && runtimeEventWaitsForMessageLoad(event)) {
       const queued = this.#queuedRuntimeEvents.get(event.topicId) ?? [];
       queued.push(event);
       this.#queuedRuntimeEvents.set(event.topicId, queued);
@@ -930,6 +941,9 @@ export class TerminalApp {
 
   async #activateTopic(topicId: string): Promise<void> {
     this.#state = selectTopic(this.#state, topicId);
+    // Paint the switch (title, spinner from already-known state.activity, etc.)
+    // immediately instead of waiting on the message-history network round-trip.
+    this.#queueRender();
     try {
       await this.#loadActiveMessages();
     } catch (error) {

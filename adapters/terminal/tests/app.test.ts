@@ -3,6 +3,7 @@ import {
   consumeMouseInput,
   ctrlCExitsTopicPicker,
   escapeStopsActiveTurn,
+  runtimeEventWaitsForMessageLoad,
   TerminalApp,
 } from "@/app";
 import {
@@ -48,6 +49,28 @@ test("preloads three message pages before requiring explicit older-history loadi
   expect(MESSAGE_HISTORY_PAGE_SIZE).toBe(50);
   expect(INITIAL_MESSAGE_HISTORY_PAGE_COUNT).toBe(3);
   expect(INITIAL_MESSAGE_HISTORY_LIMIT).toBe(150);
+});
+
+test("applies spinner status immediately while message history is loading", () => {
+  const statusEvent = (kind: string) => ({
+    type: "ai-status" as const,
+    topicId: TOPIC.id,
+    payload: { kind, queryId: "query" },
+  });
+
+  expect(runtimeEventWaitsForMessageLoad(statusEvent("ai_active"))).toBe(false);
+  expect(runtimeEventWaitsForMessageLoad(statusEvent("ai_done"))).toBe(false);
+  expect(runtimeEventWaitsForMessageLoad(statusEvent("ai_aborted"))).toBe(false);
+  expect(runtimeEventWaitsForMessageLoad(statusEvent("tool_status"))).toBe(false);
+  expect(runtimeEventWaitsForMessageLoad(statusEvent("tool_call"))).toBe(true);
+  expect(runtimeEventWaitsForMessageLoad(statusEvent("tool_output"))).toBe(true);
+  expect(
+    runtimeEventWaitsForMessageLoad({
+      type: "message",
+      topicId: TOPIC.id,
+      payload: { id: "message" },
+    }),
+  ).toBe(true);
 });
 
 test("parses left-button drag selection events", () => {
