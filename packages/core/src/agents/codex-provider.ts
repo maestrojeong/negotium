@@ -7,6 +7,7 @@ import type {
   ThreadOptions,
 } from "@openai/codex-sdk";
 import { Codex } from "@openai/codex-sdk";
+import { writeCodexCatalogWithNativeMultiAgentDisabled } from "#agents/codex-native-multi-agent";
 import {
   acquireCodexSpawnLock,
   findNewCodexChildren,
@@ -16,7 +17,10 @@ import {
   unregisterOwnedCodexPids,
 } from "#agents/codex-tree-kill";
 import { hostedCodexAuthFilePath, hostedMcpServers } from "#agents/execution-host";
-import { readLatestCodexContextUsage } from "#agents/rollout/codex";
+import {
+  migrateCodexRolloutNativeMultiAgentMetadata,
+  readLatestCodexContextUsage,
+} from "#agents/rollout/codex";
 import { extractFileEvents } from "#media/file-events";
 import { errMsg } from "#platform/error";
 import { logger } from "#platform/logger";
@@ -384,6 +388,18 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
     return;
   }
 
+  let codexModelCatalogPath: string;
+  try {
+    codexModelCatalogPath = writeCodexCatalogWithNativeMultiAgentDisabled(codexAuthPath);
+    if (opts.sessionId) migrateCodexRolloutNativeMultiAgentMetadata(opts.sessionId);
+  } catch (err) {
+    yield {
+      type: "error",
+      content: `Failed to enforce the Codex native multi-agent policy: ${errMsg(err)}`,
+    };
+    return;
+  }
+
   const codexMcpServers = toCodexMcpServers(hostedMcpServers(opts));
   const browserOwner = browserOwnerForContext(opts);
   const scopedBrowserCapability =
@@ -428,11 +444,11 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
       // global config by default; explicitly turn that feature off so tools
       // such as spawn_agent/send_message cannot bypass Otium's orchestration
       // and so subagent rooms cannot recursively fan out through Codex.
-      // The native stack is TWO generations: gpt-5.6 models select it via
-      // multi_agent_v2 (model metadata multi_agent_version=v2), so disabling
-      // only multi_agent left spawn_agent alive there. enable_fanout rides
-      // the same stack — off for the same reason.
+      // Codex 0.144 lets model metadata override these flags. The authoritative
+      // catalog above sets multi_agent_version=disabled as the hard stop; keep
+      // all feature switches off as a second layer and for future CLI versions.
       features: { multi_agent: false, multi_agent_v2: false, enable_fanout: false },
+      model_catalog_json: codexModelCatalogPath,
       mcp_servers: codexMcpServers,
     },
   });
@@ -455,8 +471,8 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
   // Codex SDK has no systemPrompt option. A resumed thread may have been
   // synthesized from a captured shell, so always refresh the current runtime
   // instructions instead of trusting historical developer/environment data.
-  let thread = opts.sessionId
-    ? codex.resumeThread(opts.sessionId, threadOptions)
+  let thread = currentSessionId
+    ? codex.resumeThread(currentSessionId, threadOptions)
     : codex.startThread(threadOptions);
   let prompt = promptForThread(opts, true);
 

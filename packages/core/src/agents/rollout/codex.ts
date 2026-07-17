@@ -209,6 +209,66 @@ export function readLatestCodexContextUsage(threadId: string): CodexContextUsage
 }
 
 /**
+ * Old and metadata-free Codex rollouts resume as native multi-agent v1 even
+ * when the feature flag is false. Rewrite their runtime metadata in place so
+ * the same thread can resume without losing provider conversation history.
+ */
+export function migrateCodexRolloutNativeMultiAgentMetadata(threadId: string): boolean {
+  const path = latestCodexRolloutPath(threadId);
+  if (!path) return false;
+  try {
+    const entries = parseJsonlText<{
+      type?: string;
+      payload?: Record<string, unknown>;
+    }>(readFileSync(path, "utf8"));
+    let changed = false;
+    for (const entry of entries) {
+      if (entry.type !== "session_meta" && entry.type !== "turn_context") continue;
+      if (!entry.payload) entry.payload = {};
+      if (entry.payload.multi_agent_version !== "disabled") {
+        entry.payload.multi_agent_version = "disabled";
+        changed = true;
+      }
+    }
+    if (changed) {
+      writeJsonlFile(path, entries);
+      logger.info({ threadId, path }, "codex rollout native multi-agent metadata disabled");
+    }
+    return changed;
+  } catch (error) {
+    logger.error({ error, threadId, path }, "codex rollout native multi-agent migration failed");
+    throw new Error(`Failed to migrate Codex rollout '${threadId}'`, { cause: error });
+  }
+}
+
+function latestCodexRolloutPath(threadId: string): string | undefined {
+  const sessionsDir = codexSessionsDir();
+  const candidates: string[] = [];
+  const buckets = candidateDateBuckets(threadId);
+  try {
+    if (buckets) {
+      for (const bucket of buckets) {
+        const dir = join(sessionsDir, bucket);
+        if (!existsSync(dir)) continue;
+        const glob = new Bun.Glob(`rollout-*-${threadId}.jsonl`);
+        for (const rel of glob.scanSync({ cwd: dir, onlyFiles: true })) {
+          candidates.push(join(dir, rel));
+        }
+      }
+    } else {
+      const glob = new Bun.Glob(`**/rollout-*-${threadId}.jsonl`);
+      for (const rel of glob.scanSync({ cwd: sessionsDir, onlyFiles: true })) {
+        candidates.push(join(sessionsDir, rel));
+      }
+    }
+    return candidates.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+  } catch (error) {
+    logger.debug({ error, threadId }, "codex rollout lookup failed");
+    return undefined;
+  }
+}
+
+/**
  * Materialize a Codex rollout JSONL with the provided dialogue and place it
  * at `~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-<ts>-<threadId>.jsonl` so a
  * subsequent `codex.resumeThread(threadId)` continues the conversation.
@@ -235,6 +295,7 @@ export function writeCodexRollout(opts: CodexRolloutOptions): CodexRolloutResult
   (sessionMeta.payload as Record<string, unknown>).id = threadId;
   (sessionMeta.payload as Record<string, unknown>).timestamp = tsIso;
   (sessionMeta.payload as Record<string, unknown>).cwd = opts.cwd;
+  (sessionMeta.payload as Record<string, unknown>).multi_agent_version = "disabled";
   (sessionMeta as Record<string, unknown>).timestamp = tsIso;
 
   const taskStarted = clone(shell.taskStarted);
@@ -256,6 +317,7 @@ export function writeCodexRollout(opts: CodexRolloutOptions): CodexRolloutResult
   turnPayload.timezone = timezone;
   turnPayload.approval_policy = "never";
   turnPayload.sandbox_policy = { type: "danger-full-access" };
+  turnPayload.multi_agent_version = "disabled";
   delete turnPayload.permission_profile;
   if (opts.model) turnPayload.model = opts.model;
   const collaborationMode = turnPayload.collaboration_mode as Record<string, unknown> | undefined;

@@ -282,6 +282,40 @@ describe("repairPoisonedRollout", () => {
 });
 
 describe("writeCodexRollout", () => {
+  test("records native multi-agent as disabled for future resumes", async () => {
+    const { migrateCodexRolloutNativeMultiAgentMetadata, writeCodexRollout } = await import(
+      "#agents/rollout/codex"
+    );
+    const result = writeCodexRollout({ cwd: TMP_CWD, pairs: [] });
+    writtenPaths.push(result.rolloutPath);
+    let lines = readFileSync(result.rolloutPath, "utf8")
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+
+    expect(lines[0]?.payload?.multi_agent_version).toBe("disabled");
+    expect(lines.find((line) => line.type === "turn_context")?.payload?.multi_agent_version).toBe(
+      "disabled",
+    );
+    expect(migrateCodexRolloutNativeMultiAgentMetadata(result.threadId)).toBe(false);
+
+    lines = lines.map((line) => {
+      if (line.type === "session_meta" || line.type === "turn_context") {
+        line.payload.multi_agent_version = "v1";
+      }
+      return line;
+    });
+    writeFileSync(result.rolloutPath, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+
+    expect(migrateCodexRolloutNativeMultiAgentMetadata(result.threadId)).toBe(true);
+    const migrated = readFileSync(result.rolloutPath, "utf8")
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((line) => line.type === "session_meta" || line.type === "turn_context");
+    expect(migrated.every((line) => line.payload.multi_agent_version === "disabled")).toBe(true);
+  });
+
   test("extracts the latest per-request context usage from token-count events", async () => {
     const { extractLatestCodexContextUsage } = await import("#agents/rollout/codex");
     const jsonl = [
