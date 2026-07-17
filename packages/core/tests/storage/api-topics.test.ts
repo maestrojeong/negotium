@@ -43,6 +43,9 @@ describe("api topic storage", () => {
     const memberColumns = (
       db.query("PRAGMA table_info(topic_members)").all() as Array<{ name: string }>
     ).map((row) => row.name);
+    const topicIndexes = (
+      db.query("PRAGMA index_list(api_topics)").all() as Array<{ name: string }>
+    ).map((row) => row.name);
 
     expect(topicColumns).toContain("agent");
     expect(topicColumns).toContain("response_policy");
@@ -53,6 +56,7 @@ describe("api topic storage", () => {
     expect(topicColumns).not.toContain("participants");
     expect(topicColumns).not.toContain("ai_mention");
     expect(topicColumns).not.toContain("is_archived");
+    expect(topicIndexes).toContain("idx_api_topics_last_message");
     expect(memberColumns).toEqual(["topic_id", "user_id", "role"]);
     expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
   });

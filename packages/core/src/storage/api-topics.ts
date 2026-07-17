@@ -370,6 +370,9 @@ function initializeApiTopicsSchema(): void {
   )
   WHERE browser_profile_owner IS NULL
 `);
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_api_topics_last_message ON api_topics(last_message_at DESC)",
+  );
 }
 
 registerStorageSchemaInitializer(initializeApiTopicsSchema, 20);
