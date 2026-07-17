@@ -1,6 +1,10 @@
 import { answerPendingAskUserQuestion } from "#agents/mcp-tools/ask-user";
-import { abortRoom } from "#query/active-rooms";
+import { WsHub } from "#bus";
+import { abortRoom, getRoomQuery } from "#query/active-rooms";
 import { getTopic } from "#storage/api-topics";
+import { getRuntimeTurnLease } from "#storage/runtime-leases";
+import { beginRuntimeTopicMaintenance } from "#storage/runtime-topic-state";
+import { cancelRuntimeUserTurnRequestsBeforeEpoch } from "#storage/runtime-turn-requests";
 import { type RegisterTopicOptions, registerTopic } from "#topics/create";
 import { type DeleteTopicCascadeOptions, deleteTopicCascade } from "#topics/lifecycle";
 import {
@@ -95,6 +99,24 @@ export const topicService = {
 
   abortTurn(topicId: string, userId: string): boolean {
     participantTopic(topicId, userId);
-    return abortRoom(topicId);
+    const maintenance = beginRuntimeTopicMaintenance(topicId);
+    if (!maintenance) return abortRoom(topicId);
+
+    try {
+      const activeQueryId = getRoomQuery(topicId)?.queryId ?? getRuntimeTurnLease(topicId)?.queryId;
+      const cancelledQueryIds = cancelRuntimeUserTurnRequestsBeforeEpoch(
+        topicId,
+        maintenance.epoch,
+      );
+      const aborted = abortRoom(topicId);
+      const terminalQueryIds = new Set(cancelledQueryIds);
+      if (aborted && activeQueryId) terminalQueryIds.add(activeQueryId);
+      for (const queryId of terminalQueryIds) {
+        WsHub.get().broadcastAborted(topicId, queryId, "stopped");
+      }
+      return aborted || cancelledQueryIds.length > 0;
+    } finally {
+      maintenance.finish();
+    }
   },
 };
