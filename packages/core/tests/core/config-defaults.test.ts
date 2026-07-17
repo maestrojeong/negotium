@@ -74,3 +74,30 @@ describe("role default models", () => {
     }
   });
 });
+
+describe("session communication defaults", () => {
+  test("allows tell chains up to depth 20 while preserving the environment override", async () => {
+    const snapshot = snapshotEnv(["MAX_TELL_DEPTH"]);
+    try {
+      delete process.env.MAX_TELL_DEPTH;
+      const defaults = await import(
+        `../../src/platform/config.ts?tell-depth-default-${Date.now()}-${Math.random()}`
+      );
+      expect(defaults.MAX_TELL_DEPTH).toBe(20);
+
+      process.env.MAX_TELL_DEPTH = "7";
+      const overridden = await import(
+        `../../src/platform/config.ts?tell-depth-override-${Date.now()}-${Math.random()}`
+      );
+      expect(overridden.MAX_TELL_DEPTH).toBe(7);
+
+      process.env.MAX_TELL_DEPTH = "invalid";
+      const invalid = await import(
+        `../../src/platform/config.ts?tell-depth-invalid-${Date.now()}-${Math.random()}`
+      );
+      expect(invalid.MAX_TELL_DEPTH).toBe(20);
+    } finally {
+      restoreEnv(snapshot);
+    }
+  });
+});

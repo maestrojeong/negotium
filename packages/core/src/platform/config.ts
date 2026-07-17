@@ -353,10 +353,10 @@ export const PDFTOTEXT_BIN = envText("PDFTOTEXT_BIN") ?? "pdftotext";
 
 // Max tell_session relay depth from origin user. ask_session forks reset to
 // depth=0, so this only caps tell_session chains. Override via MAX_TELL_DEPTH
-// (positive int); defaults to 3 when unset or invalid.
+// (positive int); defaults to 20 when unset or invalid.
 const _envMaxTellDepth = Number.parseInt(process.env.MAX_TELL_DEPTH ?? "", 10);
 export const MAX_TELL_DEPTH =
-  Number.isInteger(_envMaxTellDepth) && _envMaxTellDepth > 0 ? _envMaxTellDepth : 3;
+  Number.isInteger(_envMaxTellDepth) && _envMaxTellDepth > 0 ? _envMaxTellDepth : 20;
 
 /** Codex CLI auth file. 호출 시점에 env를 읽는다 — 테스트가 런타임에
  *  NEGOTIUM_CODEX_AUTH_FILE을 바꾸므로 모듈 로드 상수로 만들면 안 된다. */
