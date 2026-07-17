@@ -68,6 +68,8 @@ const restoreStorageHost = configureStorageHost({
   logDir: "/srv/otium/logs",
   sessionAsksDir: "/srv/otium/state/run/session-asks",
   workspaceDir: "/srv/otium/state/workspace",
+  sharedWikiDir: "/srv/otium/state/workspace/wiki",
+  usersLogDir: "/srv/otium/state/data/users",
 });
 
 getTopic("topic-id");
@@ -80,8 +82,15 @@ database.close();
 
 Configuration and schema setup are lazy. An injected database is borrowed: Negotium initializes
 the required tables on first access but never closes that connection. Omitted fields use the same
-`NEGOTIUM_*` paths as the standalone runtime, and the returned disposer restores the previous host
-for nested tests or embeddings. `workspaceDir` owns the shared `wiki/` subtree.
+`NEGOTIUM_*` paths as the standalone runtime. Injected paths are resolved to absolute paths when
+configured, `undefined` fields leave earlier layers unchanged, and `resetStorageHost()` explicitly
+returns every field to standalone fallbacks. Disposers are idempotent and safe even when called out
+of order. `workspaceDir` owns the default shared `wiki/` subtree; `sharedWikiDir` and `usersLogDir`
+can override those exact roots. `sessionAsksDir` is the root above per-user directories.
+The `database` option is structural and accepts both `bun:sqlite.Database` and the Node-compatible
+SQLite shim surface (`query`/`prepare`/`exec`/`run`/`transaction`) through
+`StorageDatabaseInput`; ownership remains with the host. `StorageDatabase` describes the stable,
+typed facade returned as `db`.
 
 The facade exposes both direct functions and collision-safe module namespaces such as
 `apiTopics.getTopicByName` and `forum.getTopicByName`; the direct forum alias is

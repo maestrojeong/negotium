@@ -149,4 +149,37 @@ describe("pending ask storage", () => {
     ]);
     expect(clearPendingAsk({ userId: unsafeUserId, from: longFrom, to: longTo })).toBe(true);
   });
+
+  test("hashes dot-dot user ids even when they contain no path separator", () => {
+    const userId = "tenant..escape";
+    expect(createPendingAsk({ ...key, userId, requestId: "dot-dot" }).ok).toBe(true);
+    const userHash = createHash("sha256").update(userId).digest("hex");
+    expect(readdirSync(join(sessionAsksDir, `sha256-${userHash}`))).toHaveLength(1);
+  });
+
+  test("does not migrate a compatibility record with a mismatched identity", () => {
+    const mismatchedKey = { userId: "expected-user", from: "caller", to: "target" };
+    const dir = join(sessionAsksDir, mismatchedKey.userId);
+    const encoded = Buffer.from(
+      JSON.stringify([mismatchedKey.from, mismatchedKey.to]),
+      "utf8",
+    ).toString("base64url");
+    const v2Path = join(dir, `v2-${encoded}.pending`);
+    const now = new Date().toISOString();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      v2Path,
+      `${JSON.stringify({
+        ...mismatchedKey,
+        userId: "other-user",
+        requestId: "foreign-request",
+        state: "requested",
+        createdAt: now,
+        updatedAt: now,
+      })}\n`,
+    );
+
+    expect(createPendingAsk({ ...mismatchedKey, requestId: "expected-request" }).ok).toBe(true);
+    expect(existsSync(v2Path)).toBe(true);
+  });
 });

@@ -137,7 +137,30 @@ interface TableColumnRow {
 
 let schemaReady = false;
 
-export type CronDatabase = Pick<typeof defaultDb, "exec" | "query" | "transaction">;
+export interface CronDatabaseStatement {
+  get(...params: any[]): unknown;
+  all(...params: any[]): unknown[];
+  run(...params: any[]): CronDatabaseRunResult;
+}
+
+export interface CronDatabaseRunResult {
+  changes: number | bigint;
+  lastInsertRowid?: number | bigint;
+}
+
+export interface CronDatabaseTransaction<Result> {
+  (): Result;
+  deferred?: () => Result;
+  immediate?: () => Result;
+  exclusive?: () => Result;
+}
+
+/** Structural SQLite surface accepted from Bun, Node, or an embedding host. */
+export interface CronDatabase {
+  exec(sql: string): unknown;
+  query(sql: string): CronDatabaseStatement;
+  transaction<Result>(fn: () => Result): CronDatabaseTransaction<Result>;
+}
 
 let db: CronDatabase = defaultDb;
 

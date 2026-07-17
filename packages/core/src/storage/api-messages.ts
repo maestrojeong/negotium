@@ -118,7 +118,7 @@ export interface ApiMessageRow {
   rowid?: number;
 }
 
-type ApiMessageAppendHook = (msg: MessageDto) => void | Promise<void>;
+export type ApiMessageAppendHook = (msg: MessageDto) => void | Promise<void>;
 const appendHooks = new Set<ApiMessageAppendHook>();
 
 export interface AppendApiMessageOptions {
@@ -366,6 +366,11 @@ export interface MessagePage {
   hasMore: boolean;
 }
 
+export interface ListApiMessagesOptions {
+  cursor?: string | null;
+  limit?: number;
+}
+
 /**
  * List messages for a topic, NEWEST-FIRST by default (bug G).
  *
@@ -378,10 +383,7 @@ export interface MessagePage {
  * (the oldest id currently loaded) to fetch the page of messages *older* than
  * it. `hasMore` therefore means "there are older messages above this page".
  */
-export function listApiMessages(
-  topicId: string,
-  options?: { cursor?: string | null; limit?: number },
-): MessagePage {
+export function listApiMessages(topicId: string, options?: ListApiMessagesOptions): MessagePage {
   const limit = Math.max(1, Math.min(options?.limit ?? 50, 200));
 
   let anchorRowid: number | null = null;

@@ -374,7 +374,7 @@ function initializeApiTopicsSchema(): void {
 
 registerStorageSchemaInitializer(initializeApiTopicsSchema, 20);
 
-interface TopicRow {
+export interface TopicRow {
   id: string;
   title: string;
   kind: string | null;
@@ -394,7 +394,7 @@ interface TopicRow {
   session_id: string | null;
 }
 
-interface TopicSessionLogContext {
+export interface TopicSessionLogContext {
   reason?: string;
   queryId?: string;
   agent?: AgentKind;

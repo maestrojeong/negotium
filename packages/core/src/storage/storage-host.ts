@@ -2,34 +2,40 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Database } from "#storage/sqlite";
+import type { StorageDatabase, StorageHostConfig } from "#storage/storage-contract";
 
-export type StorageDatabase = InstanceType<typeof Database>;
+export type {
+  StorageDatabase,
+  StorageDatabaseAdapter,
+  StorageDatabaseInput,
+  StorageHostConfig,
+  StorageHostOptions,
+  StorageStatement,
+  StorageTransaction,
+} from "#storage/storage-contract";
 
-export interface StorageHostOptions {
-  /** Borrowed SQLite connection. Negotium never closes an injected database. */
-  database?: StorageDatabase;
-  /** Persistent JSON/JSONL state root. */
-  dataDir?: string;
-  /** Activity and token-usage log root. */
-  logDir?: string;
-  /** Durable ask edge root. Defaults to Negotium's runtime ask directory. */
-  sessionAsksDir?: string;
-  /** Shared topic workspace root used by wiki/archive helpers. */
-  workspaceDir?: string;
+let configuredHost: Readonly<StorageHostConfig> = {};
+type InternalStorageDatabase = InstanceType<typeof Database>;
+type OwnedStorageDatabase = InternalStorageDatabase & { close(): void };
+let fallbackDatabase: OwnedStorageDatabase | null = null;
+let fallbackDatabasePath: string | null = null;
+
+interface StorageHostFrame {
+  active: boolean;
+  patch: Readonly<StorageHostConfig>;
 }
 
-let configuredHost: Readonly<StorageHostOptions> = {};
-let fallbackDatabase: StorageDatabase | null = null;
+const storageHostFrames: StorageHostFrame[] = [];
 
-type StorageSchemaInitializer = (database: StorageDatabase) => void;
+type StorageSchemaInitializer = (database: InternalStorageDatabase) => void;
 interface RegisteredSchemaInitializer {
   initialize: StorageSchemaInitializer;
   priority: number;
 }
 
 const schemaInitializers: RegisteredSchemaInitializer[] = [];
-const initializedSchemas = new WeakMap<StorageDatabase, Set<StorageSchemaInitializer>>();
-const initializingDatabases = new WeakSet<StorageDatabase>();
+const initializedSchemas = new WeakMap<InternalStorageDatabase, Set<StorageSchemaInitializer>>();
+const initializingDatabases = new WeakSet<InternalStorageDatabase>();
 
 function envPath(name: string, fallback: string): string {
   const value = process.env[name]?.trim();
@@ -58,10 +64,10 @@ function defaultSessionAsksDir(): string {
 }
 
 function defaultSessionsDatabasePath(): string {
-  return envPath("SESSIONS_DB_PATH", join(defaultDataDir(), "sessions.db"));
+  return envPath("SESSIONS_DB_PATH", join(resolveStorageDataDir(), "sessions.db"));
 }
 
-function initializeDatabase(database: StorageDatabase): void {
+function initializeDatabase(database: InternalStorageDatabase): void {
   database.exec("PRAGMA journal_mode = WAL");
   database.exec("PRAGMA foreign_keys = ON");
   database.exec("PRAGMA busy_timeout = 5000");
@@ -73,17 +79,19 @@ function initializeDatabase(database: StorageDatabase): void {
   }
 }
 
-function defaultDatabase(): StorageDatabase {
-  if (fallbackDatabase) return fallbackDatabase;
+function defaultDatabase(): InternalStorageDatabase {
   const path = defaultSessionsDatabasePath();
+  if (fallbackDatabase && fallbackDatabasePath === path) return fallbackDatabase;
+  if (fallbackDatabase) fallbackDatabase.close();
   mkdirSync(dirname(path), { recursive: true });
-  fallbackDatabase = new Database(path, { create: true });
+  fallbackDatabase = new Database(path, { create: true }) as unknown as OwnedStorageDatabase;
+  fallbackDatabasePath = path;
   initializeDatabase(fallbackDatabase);
   return fallbackDatabase;
 }
 
-export function resolveStorageDatabase(): StorageDatabase {
-  return configuredHost.database ?? defaultDatabase();
+export function resolveStorageDatabase(): InternalStorageDatabase {
+  return (configuredHost.database ?? defaultDatabase()) as InternalStorageDatabase;
 }
 
 export function resolveStorageDataDir(): string {
@@ -103,11 +111,41 @@ export function resolveStorageWorkspaceDir(): string {
 }
 
 export function resolveStorageSharedWikiDir(): string {
-  return join(resolveStorageWorkspaceDir(), "wiki");
+  return configuredHost.sharedWikiDir ?? join(resolveStorageWorkspaceDir(), "wiki");
 }
 
 export function resolveStorageUsersLogDir(): string {
-  return join(resolveStorageDataDir(), "users");
+  return configuredHost.usersLogDir ?? join(resolveStorageDataDir(), "users");
+}
+
+const STORAGE_PATH_KEYS = [
+  "dataDir",
+  "logDir",
+  "sessionAsksDir",
+  "workspaceDir",
+  "sharedWikiDir",
+  "usersLogDir",
+] as const;
+
+function normalizeStorageHostPatch(options: StorageHostConfig): Readonly<StorageHostConfig> {
+  const patch: StorageHostConfig = {};
+  if (options.database !== undefined) patch.database = options.database;
+  for (const key of STORAGE_PATH_KEYS) {
+    const value = options[key];
+    if (value === undefined) continue;
+    if (!value.trim()) throw new TypeError(`${key} must not be empty`);
+    patch[key] = resolve(value);
+  }
+  return Object.freeze(patch);
+}
+
+function refreshConfiguredHost(): void {
+  configuredHost = Object.freeze(
+    Object.assign(
+      {},
+      ...storageHostFrames.filter((frame) => frame.active).map((frame) => frame.patch),
+    ),
+  );
 }
 
 /**
@@ -117,22 +155,32 @@ export function resolveStorageUsersLogDir(): string {
  * touches a filesystem path. The returned disposer restores the exact prior
  * host, which keeps tests and nested embeddings isolated.
  */
-export function configureStorageHost(options: StorageHostOptions): () => void {
-  const previous = configuredHost;
-  configuredHost = Object.freeze({ ...previous, ...options });
-  let restored = false;
+export function configureStorageHost(options: StorageHostConfig): () => void {
+  const frame: StorageHostFrame = { active: true, patch: normalizeStorageHostPatch(options) };
+  storageHostFrames.push(frame);
+  refreshConfiguredHost();
   return () => {
-    if (restored) return;
-    restored = true;
-    configuredHost = previous;
+    if (!frame.active) return;
+    frame.active = false;
+    const index = storageHostFrames.indexOf(frame);
+    if (index >= 0) storageHostFrames.splice(index, 1);
+    refreshConfiguredHost();
   };
+}
+
+/** Remove every configured host layer and restore standalone fallbacks. */
+export function resetStorageHost(): void {
+  for (const frame of storageHostFrames) frame.active = false;
+  storageHostFrames.length = 0;
+  refreshConfiguredHost();
 }
 
 /** Close only Negotium's fallback connection. Injected connections are borrowed. */
 export function closeStorageDatabase(): void {
-  if (configuredHost.database || !fallbackDatabase) return;
+  if (!fallbackDatabase) return;
   fallbackDatabase.close();
   fallbackDatabase = null;
+  fallbackDatabasePath = null;
 }
 
 export function registerStorageSchemaInitializer(
@@ -143,7 +191,9 @@ export function registerStorageSchemaInitializer(
   schemaInitializers.sort((a, b) => a.priority - b.priority);
 }
 
-export function ensureStorageSchemas(database = resolveStorageDatabase()): void {
+export function ensureStorageSchemas(
+  database: InternalStorageDatabase = resolveStorageDatabase(),
+): void {
   if (initializingDatabases.has(database)) return;
   let initialized = initializedSchemas.get(database);
   if (!initialized) {
@@ -170,7 +220,7 @@ export function ensureStorageSchemas(database = resolveStorageDatabase()): void 
 }
 
 /** Stable proxy identity used by legacy imports and embedding hosts. */
-export const storageDatabase = new Proxy({} as StorageDatabase, {
+export const internalStorageDatabase = new Proxy({} as InternalStorageDatabase, {
   get(_target, property) {
     const database = resolveStorageDatabase();
     ensureStorageSchemas(database);
@@ -183,3 +233,6 @@ export const storageDatabase = new Proxy({} as StorageDatabase, {
     return Reflect.set(database as object, property, value, database);
   },
 });
+
+/** Structurally typed view intended for embedding hosts. */
+export const storageDatabase = internalStorageDatabase as unknown as StorageDatabase;

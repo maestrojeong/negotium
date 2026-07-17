@@ -57,11 +57,16 @@ export {
 } from "#storage/forum/index";
 export * as sessionAsks from "#storage/session-asks";
 export * from "#storage/session-asks";
-export type { StorageDatabase, StorageHostOptions } from "#storage/storage-host";
-export {
-  configureStorageHost,
-  storageDatabase as db,
-} from "#storage/storage-host";
+export type {
+  StorageDatabase,
+  StorageDatabaseAdapter,
+  StorageDatabaseInput,
+  StorageHostConfig,
+  StorageHostOptions,
+  StorageStatement,
+  StorageTransaction,
+} from "#storage/storage-contract";
+export { configureStorageHost, db, resetStorageHost } from "#storage/storage-public-host";
 export * as tasks from "#storage/tasks";
 export * from "#storage/tasks";
 export * as tokenStats from "#storage/token-stats";
@@ -78,3 +83,14 @@ export * as wiki from "#storage/wiki";
 export * from "#storage/wiki";
 export * as wikiSummaryNames from "#storage/wiki-summary-names";
 export * from "#storage/wiki-summary-names";
+export type { AgentKind, EffortLevel } from "#types";
+export type {
+  AiMode,
+  MessageDto,
+  ParticipantDto,
+  ResponsePolicy,
+  TopicAccessMode,
+  TopicDto,
+  TopicKind,
+  TopicVisibility,
+} from "#types/api";

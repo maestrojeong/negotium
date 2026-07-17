@@ -1,6 +1,6 @@
 {
   "name": "@negotium/adapter-terminal",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "private": true,
   "type": "module",
   "description": "Responsive local TUI channel adapter for Negotium",

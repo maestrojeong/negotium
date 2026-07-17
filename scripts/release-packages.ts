@@ -287,7 +287,11 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
           name: "negotium-release-smoke",
           private: true,
           dependencies,
-          devDependencies: { "bun-types": "^1.3.11", typescript: "^5" },
+          devDependencies: {
+            "@types/node": "^20",
+            "bun-types": "^1.3.11",
+            typescript: "^5",
+          },
           overrides: dependencies,
         },
         null,
@@ -324,7 +328,12 @@ import type { ChatPair, CodexContextUsage } from "negotium/rollout";
 import type { VaultStorageOptions } from "negotium/vault";
 import type { SessionSystemPromptOpts } from "negotium/prompts";
 import type { MermaidTheme } from "negotium/runtime-helpers";
-import type { StorageHostOptions } from "negotium/storage";
+import type {
+  StorageDatabase,
+  StorageDatabaseInput,
+  StorageHostConfig,
+  StorageHostOptions,
+} from "negotium/storage";
 const hostedAgent = await import("negotium/hosted-agent");
 const canonicalBridge = await import("negotium/canonical-mcp-bridge");
 const cron = await import("negotium/cron");
@@ -380,6 +389,7 @@ if (typeof runtimeHelpers.buildMermaidHtml !== "function" || typeof runtimeHelpe
 }
 if (
   typeof storage.configureStorageHost !== "function" ||
+  typeof storage.resetStorageHost !== "function" ||
   typeof storage.getTopic !== "function" ||
   typeof storage.forum?.getTopicByName !== "function" ||
   typeof storage.sessionAsks?.createPendingAsk !== "function"
@@ -387,12 +397,15 @@ if (
   throw new Error("packed storage facade export is missing");
 }
 const storageDatabase = new Database(":memory:");
-const storageHost: StorageHostOptions = {
-  database: storageDatabase,
+const structuralDatabase: StorageDatabaseInput = storageDatabase;
+const storageHost: StorageHostConfig = {
+  database: structuralDatabase,
   dataDir: join(process.cwd(), "storage-data"),
   logDir: join(process.cwd(), "storage-logs"),
   sessionAsksDir: join(process.cwd(), "storage-asks"),
   workspaceDir: join(process.cwd(), "storage-workspace"),
+  sharedWikiDir: join(process.cwd(), "storage-shared-wiki"),
+  usersLogDir: join(process.cwd(), "storage-user-logs"),
 };
 const restoreStorageHost = storage.configureStorageHost(storageHost);
 try {
@@ -423,6 +436,9 @@ const publicTypes = {} as {
   promptOptions: SessionSystemPromptOpts;
   mermaidTheme: MermaidTheme;
   storageHost: StorageHostOptions;
+  storageConfig: StorageHostConfig;
+  storageDatabase: StorageDatabase;
+  storageDatabaseInput: StorageDatabaseInput;
 };
 void publicTypes;
 
@@ -514,6 +530,37 @@ for (const subpath of [
 }
 `,
     );
+    await Bun.write(
+      join(smokeRoot, "storage-node-types.ts"),
+      `import {
+  configureStorageHost,
+  type StorageDatabase,
+  type StorageHostConfig,
+} from "negotium/storage";
+
+const statement = {
+  get: (..._params: any[]) => undefined,
+  all: (..._params: any[]) => [],
+  run: (..._params: any[]) => ({ changes: 0, lastInsertRowid: 0 }),
+};
+const database: StorageDatabase = {
+  query: () => statement,
+  prepare: () => statement,
+  exec: () => undefined,
+  run: () => ({ changes: 0, lastInsertRowid: 0 }),
+  transaction: (fn: (...args: any[]) => any) =>
+    Object.assign(fn, { deferred: fn, immediate: fn, exclusive: fn }),
+};
+const config: StorageHostConfig = {
+  database,
+  dataDir: "./data",
+  sharedWikiDir: "./workspace/wiki",
+  usersLogDir: "./data/users",
+};
+const dispose = configureStorageHost(config);
+dispose();
+`,
+    );
     await run(
       "npx",
       [
@@ -536,6 +583,48 @@ for (const subpath of [
       smokeEnv,
     );
     await run("bun", ["imports.ts"], smokeRoot, true, smokeEnv);
+    await run(
+      "npx",
+      [
+        "tsc",
+        "--noEmit",
+        "--strict",
+        "--moduleResolution",
+        "bundler",
+        "--module",
+        "esnext",
+        "--target",
+        "es2022",
+        "--types",
+        "node",
+        "storage-node-types.ts",
+      ],
+      smokeRoot,
+      true,
+      smokeEnv,
+    );
+    await run(
+      "node",
+      [
+        "--input-type=module",
+        "-e",
+        `const storage = await import("negotium/storage");
+const restore = storage.configureStorageHost({
+  dataDir: "./node-storage-data",
+  logDir: "./node-storage-logs",
+  sessionAsksDir: "./node-storage-asks",
+  workspaceDir: "./node-storage-workspace",
+});
+try {
+  if (!Array.isArray(storage.listTopics())) throw new Error("Node storage facade failed");
+} finally {
+  restore();
+}`,
+      ],
+      smokeRoot,
+      true,
+      smokeEnv,
+    );
 
     const bin = join(smokeRoot, "node_modules", ".bin", "negotium");
     const help = await run("bun", [bin, "--help"], smokeRoot, false, smokeEnv);

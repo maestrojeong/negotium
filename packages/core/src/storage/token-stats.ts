@@ -36,7 +36,7 @@ export function tokenStatsFileId(userId: number | string): string {
   const rawUserId = String(userId);
   // Preserve existing filenames for ordinary IDs, but never let an external
   // identity introduce path separators or unbounded filename length.
-  return /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,255}$/.test(rawUserId)
+  return /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,255}$/.test(rawUserId) && !rawUserId.includes("..")
     ? rawUserId
     : `sha256-${createHash("sha256").update(rawUserId).digest("hex")}`;
 }

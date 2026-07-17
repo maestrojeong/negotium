@@ -39,21 +39,25 @@ export interface AskReplySource {
   contextId?: string;
 }
 
-interface AskKey {
+export interface PendingAskKey {
   userId: PendingAskUserId;
   from: string;
   to: string;
 }
 
-interface AskIdentity extends AskKey {
+export interface PendingAskIdentity extends PendingAskKey {
   requestId?: string;
 }
 
+type AskKey = PendingAskKey;
+type AskIdentity = PendingAskIdentity;
+
 function pendingAskDir(userId: PendingAskUserId): string {
   const rawUserId = String(userId);
-  const safeUserId = /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,255}$/.test(rawUserId)
-    ? rawUserId
-    : `sha256-${createHash("sha256").update(rawUserId).digest("hex")}`;
+  const safeUserId =
+    /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,255}$/.test(rawUserId) && !rawUserId.includes("..")
+      ? rawUserId
+      : `sha256-${createHash("sha256").update(rawUserId).digest("hex")}`;
   return join(resolveStorageSessionAsksDir(), safeUserId);
 }
 
@@ -135,6 +139,10 @@ function readPendingAskFile(path: string, fallback: AskKey): PendingAskRecord | 
     }
     const parsed = JSON.parse(raw) as Partial<PendingAskRecord>;
     if (!parsed.requestId || !parsed.from || !parsed.to) return null;
+    if (parsed.userId !== undefined && String(parsed.userId) !== String(fallback.userId))
+      return null;
+    if (fallback.from && parsed.from !== fallback.from) return null;
+    if (fallback.to && parsed.to !== fallback.to) return null;
     const now = new Date().toISOString();
     return {
       // The directory selected by the caller is authoritative. Never let a

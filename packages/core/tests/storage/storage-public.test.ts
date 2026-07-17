@@ -8,6 +8,7 @@ import * as storage from "#storage/storage-public";
 describe("public storage facade", () => {
   test("exports direct APIs and collision-safe module namespaces", () => {
     expect(storage.configureStorageHost).toBeFunction();
+    expect(storage.resetStorageHost).toBeFunction();
     expect(storage.db).toBeDefined();
     expect(storage.getTopic).toBeFunction();
     expect(storage.getForumTopicByName).toBeFunction();
