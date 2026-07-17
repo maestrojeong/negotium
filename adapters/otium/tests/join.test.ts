@@ -111,8 +111,11 @@ describe("saveJoin / loadJoin", () => {
       { env: { ...process.env }, stdout: "pipe", stderr: "pipe" },
     );
     const lockPath = resolve(DATA_DIR, ".otium-join.lock");
-    for (let attempt = 0; attempt < 100 && !existsSync(lockPath); attempt += 1) {
-      await Bun.sleep(5);
+    // Fresh CI hosts can take well over 500 ms to start the child runtime.
+    // Keep polling long enough to observe its 300 ms critical section without
+    // turning process-startup latency into a false lock failure.
+    for (let attempt = 0; attempt < 400 && !existsSync(lockPath); attempt += 1) {
+      await Bun.sleep(10);
     }
     expect(existsSync(lockPath)).toBe(true);
     expect(() => saveJoin(replacement, { replaceExisting: true })).toThrow("in progress");
