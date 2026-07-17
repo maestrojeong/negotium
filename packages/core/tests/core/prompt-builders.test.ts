@@ -24,6 +24,7 @@ describe("session system prompt builders", () => {
       topicTitle: "Research",
       workspaceCwd: "/otium/workspace/topics/research",
       agentKind: "claude",
+      visualTools: true,
     });
 
     expect(prompt).toContain('named "Otium"');
@@ -67,6 +68,7 @@ describe("session system prompt builders", () => {
       topicTitle: "General",
       workspaceCwd: "/otium/workspace/topics/general",
       agentKind: "codex",
+      visualTools: true,
     });
 
     expect(prompt).toContain("## Manager Role");
@@ -95,6 +97,7 @@ describe("session system prompt builders", () => {
       topicTitle: "Design",
       workspaceCwd: "/otium/workspace/topics/design",
       agentKind: "maestro",
+      visualTools: true,
     });
 
     expect(prompt).toContain("mcp__runtime__show_html");
@@ -118,6 +121,7 @@ describe("session system prompt builders", () => {
       topicTitle: "Design",
       workspaceCwd: "/otium/workspace/topics/channel-design",
       agentKind: "claude",
+      visualTools: true,
     });
 
     expect(prompt).toContain('Your name is "Otium"');
@@ -131,6 +135,22 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain("mcp__runtime__set_model");
     expect(prompt).not.toContain("## Memory");
     expect(prompt).not.toContain("{{");
+  });
+
+  test("omits Otium visual tools when the adapter does not grant them", () => {
+    const prompt = buildTopicSystemPrompt({
+      aiLabel: "Otium",
+      topicTitle: "Terminal",
+      workspaceCwd: "/negotium/workspace/topics/terminal",
+      agentKind: "codex",
+    });
+
+    expect(prompt).not.toContain("show_html");
+    expect(prompt).not.toContain("show_mermaid");
+    expect(prompt).not.toContain("show_image");
+    expect(prompt).not.toContain("show_video");
+    expect(prompt).not.toContain("Visual Design System");
+    expect(prompt).toContain("ask_user_question");
   });
 
   test("builds memory prompt section", () => {

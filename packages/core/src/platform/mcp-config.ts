@@ -185,6 +185,7 @@ export interface RuntimeMcpBuildContext {
   playwrightCapability?: string;
   bgBashPort?: number;
   autoContinue?: boolean;
+  visualTools?: boolean;
   silent?: boolean;
   peerBridge?: PeerRuntimeBridgeContext;
 }
@@ -296,6 +297,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
       model,
       currentUserPrompt,
       autoContinue,
+      visualTools,
       peerBridge,
     }) {
       if (!topicId || !agent) return null;
@@ -309,6 +311,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
         model,
         currentUserPrompt,
         autoContinue,
+        visualTools,
         peerBridge,
       });
     },
@@ -659,6 +662,7 @@ export function getManagerMcpServers(opts: {
   playwrightPort?: number;
   playwrightCapability?: string;
   autoContinue?: boolean;
+  visualTools?: boolean;
 }) {
   if (!opts.topicId) {
     throw new Error("getManagerMcpServers: private General topicId is required");
@@ -677,6 +681,7 @@ export function getManagerMcpServers(opts: {
     playwrightPort: opts.playwrightPort,
     playwrightCapability: opts.playwrightCapability,
     autoContinue: opts.autoContinue,
+    visualTools: opts.visualTools,
   });
 }
 
@@ -700,6 +705,7 @@ export function getForumMcpServers(opts: {
   playwrightCapability?: string;
   bgBashPort?: number;
   autoContinue?: boolean;
+  visualTools?: boolean;
   depth?: number;
   enabled?: string[] | null;
   extra?: Record<string, unknown>;
@@ -724,6 +730,7 @@ export function getForumMcpServers(opts: {
     silent = false,
     bgBashPort,
     autoContinue,
+    visualTools,
     peerBridge,
   } = opts;
 
@@ -752,6 +759,7 @@ export function getForumMcpServers(opts: {
       playwrightCapability,
       bgBashPort,
       autoContinue,
+      visualTools,
       silent,
       peerBridge,
     },
@@ -778,6 +786,7 @@ export function getCronMcpServers(opts: {
   currentUserPrompt?: string;
   playwrightPort?: number;
   playwrightCapability?: string;
+  visualTools?: boolean;
 }) {
   return buildScope("cron", {
     userId: opts.userId,
@@ -792,6 +801,7 @@ export function getCronMcpServers(opts: {
     playwrightPort: opts.playwrightPort,
     playwrightCapability: opts.playwrightCapability,
     autoContinue: false,
+    visualTools: opts.visualTools,
   });
 }
 
@@ -816,6 +826,7 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
       currentUserPrompt: opts.prompt,
       playwrightPort: opts.playwrightPort,
       playwrightCapability: opts.playwrightCapability,
+      visualTools: opts.visualTools,
     });
   }
   if (opts.sessionType === "dm" || opts.sessionType === "ephemeral") {
@@ -840,6 +851,7 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
       playwrightPort: opts.playwrightPort,
       playwrightCapability: opts.playwrightCapability,
       autoContinue: opts.autoContinue,
+      visualTools: opts.visualTools,
     });
   }
   return getForumMcpServers({
@@ -856,6 +868,7 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
     playwrightCapability: opts.playwrightCapability,
     bgBashPort: opts.bgBashPort,
     autoContinue: opts.autoContinue,
+    visualTools: opts.visualTools,
     depth: opts.depth,
     enabled: opts.mcpEnabled,
     extra: opts.mcpExtra,

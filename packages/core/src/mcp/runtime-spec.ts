@@ -28,6 +28,8 @@ export interface RuntimeMcpContext {
   model?: string;
   currentUserPrompt?: string;
   autoContinue?: boolean;
+  /** Capability minted by the adapter. Visual tools are absent unless true. */
+  visualTools?: boolean;
   peerBridge?: PeerRuntimeBridgeContext;
 }
 
@@ -80,6 +82,7 @@ function isRuntimeMcpContext(value: unknown): value is RuntimeMcpContext {
     (ctx.model === undefined || typeof ctx.model === "string") &&
     (ctx.currentUserPrompt === undefined || typeof ctx.currentUserPrompt === "string") &&
     (ctx.autoContinue === undefined || typeof ctx.autoContinue === "boolean") &&
+    (ctx.visualTools === undefined || typeof ctx.visualTools === "boolean") &&
     (ctx.peerBridge === undefined ||
       (typeof ctx.peerBridge.hubCellId === "string" &&
         typeof ctx.peerBridge.hostTopicId === "string" &&

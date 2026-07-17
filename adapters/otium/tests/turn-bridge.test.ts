@@ -258,6 +258,7 @@ describe("runPeerTurn", () => {
     expect(call.opts?.origin).toBe("user");
     expect(call.opts?.requestId).toBe("pt-turn-1");
     expect(call.opts?.injectAuthorId).toBe(USER);
+    expect(call.opts?.visualTools).toBe(true);
     expect(call.opts?.peerBridge).toEqual({
       hubCellId: HUB_CELL_ID,
       hostTopicId: "host-turn-1",

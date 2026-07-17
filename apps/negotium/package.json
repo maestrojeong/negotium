@@ -1,11 +1,23 @@
 {
   "name": "negotium",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "type": "module",
   "description": "Install the Negotium multi-agent runtime and CLI with one package",
   "license": "Apache-2.0",
   "bin": {
     "negotium": "dist/main.js"
+  },
+  "exports": {
+    "./hosted-agent": {
+      "types": "./dist/runtime/src/agents/hosted-agent.ts",
+      "import": "./dist/hosted-agent.js",
+      "default": "./dist/hosted-agent.js"
+    },
+    "./canonical-mcp-bridge": {
+      "types": "./dist/runtime/src/mcp/canonical-bridge-config.ts",
+      "import": "./dist/canonical-mcp-bridge.js",
+      "default": "./dist/canonical-mcp-bridge.js"
+    }
   },
   "files": [
     "dist",

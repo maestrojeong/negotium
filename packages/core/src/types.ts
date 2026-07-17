@@ -180,6 +180,8 @@ export interface AgentQueryOptions {
   wikiTopicId?: string;
   /** Whether self-config MCP may enqueue an automatic continue turn after set_* changes. */
   autoContinue?: boolean;
+  /** Expose Otium-only visual panel tools for this turn. Default-deny. */
+  visualTools?: boolean;
   abortController?: AbortController;
   model?: string;
   /** Provider-side hard budget when the selected SDK supports one. */

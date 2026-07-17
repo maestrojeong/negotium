@@ -182,12 +182,14 @@ function appendAutoContinue(ctx: RuntimeMcpContext, field: "agent" | "model" | "
 export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
   const server = new McpServer({ name: RUNTIME_MCP_KEY, version: "1.0.0" });
 
-  for (const def of visualToolDefinitions) {
-    const handler =
-      ctx.peerBridge && (def.name === "show_html" || def.name === "show_mermaid")
-        ? async () => textResult("Visual queued for ordered display on the canonical hub.")
-        : def.handler;
-    server.tool(def.name, def.description, def.schema as any, handler as any);
+  if (ctx.visualTools === true) {
+    for (const def of visualToolDefinitions) {
+      const handler =
+        ctx.peerBridge && (def.name === "show_html" || def.name === "show_mermaid")
+          ? async () => textResult("Visual queued for ordered display on the canonical hub.")
+          : def.handler;
+      server.tool(def.name, def.description, def.schema as any, handler as any);
+    }
   }
 
   const selfConfigCtx: SelfConfigContext = {

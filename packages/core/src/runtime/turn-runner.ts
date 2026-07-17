@@ -942,6 +942,7 @@ function redispatchInject(inject: DeferredInject): void {
     cwd: inject.cwd,
     sessionName: inject.sessionName,
     sessionType: inject.sessionType,
+    visualTools: inject.visualTools,
     onSessionId: inject.onSessionId,
     onSessionReset: inject.onSessionReset,
     bridgeSessionFromHistory: inject.bridgeSessionFromHistory,
@@ -1213,6 +1214,8 @@ export interface AiTurnExecutionOptions {
   sessionName?: string;
   /** Tool/catalog scope. Defaults to manager or forum based on topic kind. */
   sessionType?: "dm" | "forum" | "ephemeral" | "manager" | "cron";
+  /** Adapter-granted access to Otium's visual panel tools. Default-deny. */
+  visualTools?: boolean;
   /** Own this turn's provider session without replacing the topic's main session. */
   onSessionId?: (sessionId: string) => void;
   /** Clear the externally-owned provider session after recovery fails. */
@@ -1357,6 +1360,7 @@ function serializableUserTurnExecution(params: StartAiTurnParams): RuntimeUserTu
     cwd: params.cwd,
     sessionName: params.sessionName,
     sessionType: params.sessionType,
+    visualTools: params.visualTools,
     bridgeSessionFromHistory: params.bridgeSessionFromHistory,
     peerBridge: params.peerBridge,
     from: params.from,
@@ -1441,6 +1445,7 @@ async function drainOneDurableUserTurn(): Promise<void> {
       cwd: execution?.cwd,
       sessionName: execution?.sessionName,
       sessionType: execution?.sessionType,
+      visualTools: execution?.visualTools,
       bridgeSessionFromHistory: execution?.bridgeSessionFromHistory,
       peerBridge: execution?.peerBridge,
       from: execution?.from,
@@ -1543,6 +1548,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   const cwd = params.cwd;
   const sessionName = params.sessionName ?? topic.title;
   const sessionType = params.sessionType;
+  const visualTools = params.visualTools === true;
   const onSessionId = params.onSessionId;
   const onSessionReset = params.onSessionReset;
   const bridgeSessionFromHistory = params.bridgeSessionFromHistory === true;
@@ -1591,6 +1597,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       cwd,
       sessionName,
       sessionType,
+      visualTools,
       onSessionId,
       onSessionReset,
       bridgeSessionFromHistory,
@@ -1705,6 +1712,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           cwd,
           sessionName,
           sessionType,
+          visualTools,
           onSessionId,
           onSessionReset,
           bridgeSessionFromHistory,
@@ -1828,6 +1836,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     description: topic.description,
     canSpawnSubagents:
       peerBridge?.canSpawnSubagents ?? (topicRecord?.kind === "agent" && !topicRecord.isSubagent),
+    visualTools,
   };
   const isManager = topicRecord?.kind === "manager";
   const isMentionOnlyChannel = topic.aiMode === "mention" && !isManager;
@@ -1867,7 +1876,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       logger.warn({ topicId, err }, "ai: failed to inject topic brief");
     }
   }
-  const activeVisual = getActiveVisualForPrompt(topicId, userId);
+  const activeVisual = visualTools ? getActiveVisualForPrompt(topicId, userId) : null;
   if (activeVisual) {
     const label = activeVisual.title ? `"${activeVisual.title}"` : `#${activeVisual.index}`;
     const promptVisual = activeVisualHtmlForPrompt(activeVisual.content);
@@ -2018,6 +2027,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         queryId,
         wikiTopicId: memoryTopic.id,
         autoContinue: allowAutoContinue && !silent,
+        visualTools,
         peerBridge,
       });
     } finally {
@@ -2108,6 +2118,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           cwd,
           sessionName,
           sessionType,
+          visualTools,
           onSessionId,
           onSessionReset,
           bridgeSessionFromHistory,
@@ -2275,6 +2286,7 @@ export function triggerTopicAiTurn(
     cwd: opts?.cwd,
     sessionName: opts?.sessionName,
     sessionType: opts?.sessionType,
+    visualTools: opts?.visualTools,
     onSessionId: opts?.onSessionId,
     onSessionReset: opts?.onSessionReset,
     bridgeSessionFromHistory: opts?.bridgeSessionFromHistory,

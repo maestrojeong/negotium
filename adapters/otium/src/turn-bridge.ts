@@ -252,6 +252,7 @@ export function runPeerTurn(
         requestId: payload.requestId,
         injectAuthorId: payload.userId,
         attachments: payload.attachments,
+        visualTools: true,
         // Provider session recovery dispatches a fresh queryId. Keep the
         // forwarder on that retry so its messages and terminal are not filtered
         // as stale events from the superseded provider attempt.

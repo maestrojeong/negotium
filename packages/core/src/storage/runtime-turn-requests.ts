@@ -19,6 +19,7 @@ export interface RuntimeUserTurnExecution {
   cwd?: string;
   sessionName?: string;
   sessionType?: "dm" | "forum" | "ephemeral" | "manager" | "cron";
+  visualTools?: boolean;
   bridgeSessionFromHistory?: boolean;
   peerBridge?: PeerRuntimeBridgeContext;
   from?: string;

@@ -9,6 +9,7 @@ import { maestroProvider } from "#agents/maestro-provider";
 import { revokeCanonicalMcpBridgeTurn } from "#mcp/canonical-bridge-config";
 import type { AgentQueryOptions, UnifiedEvent } from "#types";
 
+export type { AgentQueryOptions, UnifiedEvent };
 export { type AgentExecutionHost, configureAgentExecutionHost };
 
 /**

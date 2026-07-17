@@ -238,6 +238,7 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
       userId: this.#userId,
       text,
       sourceAdapter: "terminal",
+      visualTools: false,
     }).message;
   }
 

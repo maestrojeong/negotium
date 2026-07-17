@@ -22,3 +22,27 @@ negotium start otium     # separate shell
 Authenticate Claude with `claude`, Codex with `codex login`, or Maestro with
 `DEEPSEEK_API_KEY`. See the [main repository](https://github.com/maestrojeong/negotium) for
 configuration, security guidance, and architecture.
+
+## Hosted execution API
+
+Embedding control planes can configure and invoke Negotium's provider execution layer without
+importing package internals:
+
+```ts
+import {
+  configureAgentExecutionHost,
+  runHostedAgent,
+  type AgentExecutionHost,
+  type AgentQueryOptions,
+  type UnifiedEvent,
+} from "negotium/hosted-agent";
+
+import {
+  canonicalMcpBridgeEnv,
+  registerCanonicalMcpBridgeEnvProvider,
+  revokeCanonicalMcpBridgeTurn,
+} from "negotium/canonical-mcp-bridge";
+```
+
+These subpaths are the stable public boundary. Paths under `negotium/dist/` are package internals
+and may change between releases.

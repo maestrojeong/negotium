@@ -10,6 +10,8 @@ export interface SubmitUserMessageParams {
   text: string;
   sourceAdapter?: string;
   allowAutoContinue?: boolean;
+  /** Adapter capability: only Otium should enable visual panel tools. */
+  visualTools?: boolean;
   onDispatched?: (queryId: string) => void;
   /** Override used by remote hosts and deterministic tests. */
   startTurn?: (params: StartAiTurnParams) => string | null;
@@ -41,6 +43,7 @@ export function submitUserMessage(params: SubmitUserMessageParams): SubmitUserMe
     userId: params.userId,
     prompt: params.text,
     allowAutoContinue: params.allowAutoContinue ?? true,
+    visualTools: params.visualTools === true,
     onDispatched: params.onDispatched,
   });
   return { message, queryId };

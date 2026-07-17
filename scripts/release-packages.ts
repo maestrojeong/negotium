@@ -283,7 +283,13 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
     await Bun.write(
       join(smokeRoot, "package.json"),
       `${JSON.stringify(
-        { name: "negotium-release-smoke", private: true, dependencies, overrides: dependencies },
+        {
+          name: "negotium-release-smoke",
+          private: true,
+          dependencies,
+          devDependencies: { "bun-types": "^1.3.11", typescript: "^5" },
+          overrides: dependencies,
+        },
         null,
         2,
       )}\n`,
@@ -302,6 +308,87 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
       `await import("@negotium/adapter-sdk");
 await import("@negotium/adapter-sdk/outbox");
 await import("@negotium/adapter-sdk/testkit");
+import type {
+  AgentExecutionHost,
+  AgentQueryOptions,
+  UnifiedEvent,
+} from "negotium/hosted-agent";
+import type { CanonicalMcpBridgeScope } from "negotium/canonical-mcp-bridge";
+const hostedAgent = await import("negotium/hosted-agent");
+const canonicalBridge = await import("negotium/canonical-mcp-bridge");
+if (typeof hostedAgent.configureAgentExecutionHost !== "function") {
+  throw new Error("packed hosted-agent export is missing");
+}
+if (typeof hostedAgent.runHostedAgent !== "function") {
+  throw new Error("packed hosted-agent runner is missing");
+}
+if (typeof canonicalBridge.registerCanonicalMcpBridgeEnvProvider !== "function") {
+  throw new Error("packed canonical MCP bridge export is missing");
+}
+if (typeof canonicalBridge.canonicalMcpBridgeEnv !== "function") {
+  throw new Error("packed canonical MCP bridge env helper is missing");
+}
+if (typeof canonicalBridge.revokeCanonicalMcpBridgeTurn !== "function") {
+  throw new Error("packed canonical MCP bridge revoker is missing");
+}
+const publicTypes = {} as {
+  host: Partial<AgentExecutionHost>;
+  options: AgentQueryOptions;
+  event: UnifiedEvent;
+  bridgeScope: CanonicalMcpBridgeScope;
+};
+void publicTypes;
+
+// The two public subpaths must share the same canonical bridge module state.
+// Independently bundling them makes registration succeed here while hosted
+// execution sees a different, empty registry and cannot revoke its leases.
+const bridgeScope: CanonicalMcpBridgeScope = {
+  surface: "task",
+  userId: "smoke-user",
+  topicId: "smoke-topic",
+  queryId: "smoke-query",
+  peerBridge: {
+    hubCellId: "smoke-hub",
+    hostTopicId: "smoke-host-topic",
+    hostQueryId: "smoke-host-query",
+    canSpawnSubagents: false,
+  },
+};
+let revokedBridgeLeases = 0;
+const disposeBridge = canonicalBridge.registerCanonicalMcpBridgeEnvProvider(() => ({
+  env: { NEGOTIUM_RELEASE_SMOKE_BRIDGE: "1" },
+  revoke: () => {
+    revokedBridgeLeases += 1;
+  },
+}));
+const issuedEnv = canonicalBridge.canonicalMcpBridgeEnv(bridgeScope);
+if (issuedEnv?.NEGOTIUM_RELEASE_SMOKE_BRIDGE !== "1") {
+  throw new Error("packed canonical MCP bridge provider was not invoked");
+}
+const disposeHost = hostedAgent.configureAgentExecutionHost({
+  claudeCodeExecutablePath: () => "/definitely/missing/negotium-release-smoke-claude",
+});
+try {
+  for await (const _event of hostedAgent.runHostedAgent({
+    agent: "claude",
+    prompt: "release smoke",
+    cwd: process.cwd(),
+    systemPrompt: "release smoke",
+    userId: bridgeScope.userId,
+    topicId: bridgeScope.topicId,
+    queryId: bridgeScope.queryId,
+    peerBridge: bridgeScope.peerBridge,
+  })) {
+    // The deliberately missing executable makes this path deterministic and
+    // avoids contacting a provider; runHostedAgent's finally still revokes.
+  }
+} finally {
+  disposeHost();
+  disposeBridge();
+}
+if (revokedBridgeLeases !== 1) {
+  throw new Error("packed hosted-agent and canonical MCP bridge do not share lease state");
+}
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 const packageRoot = resolve("node_modules/negotium");
@@ -315,6 +402,27 @@ for (const path of [
   if (!existsSync(path)) throw new Error(\`packed runtime resource is missing: \${path}\`);
 }
 `,
+    );
+    await run(
+      "npx",
+      [
+        "tsc",
+        "--noEmit",
+        "--strict",
+        "--skipLibCheck",
+        "--moduleResolution",
+        "bundler",
+        "--module",
+        "esnext",
+        "--target",
+        "es2022",
+        "--types",
+        "bun-types",
+        "imports.ts",
+      ],
+      smokeRoot,
+      true,
+      smokeEnv,
     );
     await run("bun", ["imports.ts"], smokeRoot, true, smokeEnv);
 

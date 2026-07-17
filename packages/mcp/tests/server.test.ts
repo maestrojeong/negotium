@@ -98,7 +98,6 @@ describe("negotium MCP endpoint", () => {
       "delete_subagent",
       "send_file",
       "send_files",
-      "show_html",
       "set_model",
       "set_agent",
       "schedule_self",
@@ -108,7 +107,28 @@ describe("negotium MCP endpoint", () => {
     ]) {
       expect(names).toContain(expected);
     }
+    for (const visual of ["show_html", "show_mermaid", "show_image", "show_video"]) {
+      expect(names).not.toContain(visual);
+    }
     expect(names).not.toContain("send_message");
+  });
+
+  test("exposes visual tools only when the adapter grants the capability", async () => {
+    const visualClient = new Client({ name: "negotium-visual-mcp-test", version: "1.0.0" });
+    const token = issueRuntimeMcpToken({ ...ctx, visualTools: true });
+    const url = new URL(
+      `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+    );
+
+    try {
+      await visualClient.connect(new StreamableHTTPClientTransport(url));
+      const names = (await visualClient.listTools()).tools.map((tool) => tool.name);
+      for (const visual of ["show_html", "show_mermaid", "show_image", "show_video"]) {
+        expect(names).toContain(visual);
+      }
+    } finally {
+      await visualClient.close();
+    }
   });
 
   test("send_file uses the canonical hub bridge during a peer turn", async () => {
@@ -129,6 +149,7 @@ describe("negotium MCP endpoint", () => {
     });
     const peerCtx: RuntimeMcpContext = {
       ...ctx,
+      visualTools: true,
       peerBridge: {
         hubCellId: "hub-cell",
         hostTopicId: "host-topic",

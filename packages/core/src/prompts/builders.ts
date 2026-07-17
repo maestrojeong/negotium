@@ -154,9 +154,15 @@ interface SessionSystemPromptOpts {
   description?: string | null;
   /** True only for top-level agent rooms — the runtime spawn_subagent tool is registered there. */
   canSpawnSubagents?: boolean;
+  /** True only when the current adapter renders Otium visual cards. */
+  visualTools?: boolean;
 }
 
-function buildRuntimeToolSection(agentKind: AgentKind, canSpawnSubagents = false): string {
+function buildRuntimeToolSection(
+  agentKind: AgentKind,
+  canSpawnSubagents = false,
+  visualTools = false,
+): string {
   const runtimeNamespace = "mcp__runtime";
   const taskNamespace = "mcp__task";
   const visualToolLine =
@@ -207,20 +213,25 @@ function buildRuntimeToolSection(agentKind: AgentKind, canSpawnSubagents = false
       : agentKind === "maestro"
         ? `Do not use provider-native task-store tools such as "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput", or "TaskStop"; they are disabled or not shared across agents. Do not use the Maestro "Agent" sub-agent tool either; it is disabled.${canSpawnSubagents ? " Use the runtime spawn_subagent tool for delegation so work is visible in its own room and the result returns here automatically." : " Delegation is unavailable in this room."}`
         : 'Do not use provider-native todo/plan surfaces such as "todo_list" or "update_plan"; they are ignored or not shared across agents.';
+  const visualSection = visualTools
+    ? [
+        visualToolLine,
+        mermaidToolLine,
+        mediaToolLine,
+        'Do not call a bare "show_html"; use the exposed visuals MCP tool. A successful call means the card was shown in the user chat.',
+        "Visual HTML runs in a sandbox. Use inline CSS/JS only; local buttons, tabs, filters, forms with preventDefault, canvas, and SVG interactions are supported. External navigation, scripts, network fetches, form posts, popups, and parent-window access are blocked.",
+      ]
+    : [];
 
   const shared = [
     "",
     "",
     "## Runtime Tools",
-    visualToolLine,
-    mermaidToolLine,
-    mediaToolLine,
-    'Do not call a bare "show_html"; use the exposed visuals MCP tool. A successful call means the card was shown in the user chat.',
-    "Visual HTML runs in a sandbox. Use inline CSS/JS only; local buttons, tabs, filters, forms with preventDefault, canvas, and SVG interactions are supported. External navigation, scripts, network fetches, form posts, popups, and parent-window access are blocked.",
+    ...visualSection,
     askUserToolLine,
     'Do not use provider built-in "AskUserQuestion"; it is disabled or unsupported in this headless chat runtime. Use the runtime ask_user_question tool instead.',
     scheduleSelfToolLine,
-    ...(visualDesignGuide() ? ["", visualDesignGuide()] : []),
+    ...(visualTools ? ["", visualDesignGuide()] : []),
     "",
     "## Shared Tasks",
     taskToolLine,
@@ -281,7 +292,7 @@ export function buildTopicSystemPrompt(opts: SessionSystemPromptOpts): string {
       TOPIC_TITLE: opts.topicTitle,
       WORKSPACE_CWD: opts.workspaceCwd,
       UPLOADS_DIR: uploadsDir,
-    }) + buildRuntimeToolSection(opts.agentKind, opts.canSpawnSubagents);
+    }) + buildRuntimeToolSection(opts.agentKind, opts.canSpawnSubagents, opts.visualTools);
   if (opts.description?.trim()) {
     prompt += `\n\n## Topic-Specific Instructions\n${opts.description.trim()}`;
   }
@@ -296,7 +307,7 @@ export function buildChannelSystemPrompt(opts: SessionSystemPromptOpts): string 
       TOPIC_TITLE: opts.topicTitle,
       WORKSPACE_CWD: opts.workspaceCwd,
       UPLOADS_DIR: uploadsDir,
-    }) + buildRuntimeToolSection(opts.agentKind)
+    }) + buildRuntimeToolSection(opts.agentKind, false, opts.visualTools)
   );
 }
 

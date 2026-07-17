@@ -70,40 +70,54 @@ function resolvePackageImport(specifier: string, importer: string): string {
   return resolveTypeScriptSource(resolve(sourceRoot, specifier.slice(1)));
 }
 
-await rm(outdir, { recursive: true, force: true });
-
-const build = await Bun.build({
-  entrypoints: [resolve(root, "apps/cli/src/main.ts")],
-  outdir,
-  target: "bun",
-  packages: "external",
-  splitting: true,
-  sourcemap: "external",
-  minify: false,
-  plugins: [
-    {
-      name: "bundle-negotium-workspaces",
-      setup(builder) {
-        builder.onResolve({ filter: /^@negotium\// }, ({ path }) => {
-          const entrypoint = packageEntrypoints.get(path);
-          if (!entrypoint) throw new Error(`unmapped internal package import: ${path}`);
-          return { path: resolve(root, entrypoint) };
-        });
-        builder.onResolve({ filter: /^@\// }, ({ path, importer }) => ({
-          path: resolveLocalAlias(path, importer),
-        }));
-        builder.onResolve({ filter: /^#/ }, ({ path, importer }) => ({
-          path: resolvePackageImport(path, importer),
-        }));
-      },
+async function bundle(entrypoints: string[]): Promise<void> {
+  const build = await Bun.build({
+    // Keep every public entrypoint in one build graph. Stateful core modules
+    // (for example canonical MCP bridge registrations) must be emitted once
+    // into a shared chunk rather than copied into independently-built bundles.
+    entrypoints: entrypoints.map((entrypoint) => resolve(root, entrypoint)),
+    outdir,
+    target: "bun",
+    packages: "external",
+    splitting: true,
+    naming: {
+      entry: "[name].[ext]",
+      chunk: "chunk-[hash].[ext]",
     },
-  ],
-});
+    sourcemap: "external",
+    minify: false,
+    plugins: [
+      {
+        name: "bundle-negotium-workspaces",
+        setup(builder) {
+          builder.onResolve({ filter: /^@negotium\// }, ({ path }) => {
+            const mappedEntrypoint = packageEntrypoints.get(path);
+            if (!mappedEntrypoint) throw new Error(`unmapped internal package import: ${path}`);
+            return { path: resolve(root, mappedEntrypoint) };
+          });
+          builder.onResolve({ filter: /^@\// }, ({ path, importer }) => ({
+            path: resolveLocalAlias(path, importer),
+          }));
+          builder.onResolve({ filter: /^#/ }, ({ path, importer }) => ({
+            path: resolvePackageImport(path, importer),
+          }));
+        },
+      },
+    ],
+  });
 
-if (!build.success) {
-  for (const log of build.logs) console.error(log);
-  process.exit(1);
+  if (!build.success) {
+    for (const log of build.logs) console.error(log);
+    process.exit(1);
+  }
 }
+
+await rm(outdir, { recursive: true, force: true });
+await bundle([
+  "apps/cli/src/main.ts",
+  "apps/negotium/src/hosted-agent.ts",
+  "apps/negotium/src/canonical-mcp-bridge.ts",
+]);
 
 const runtimeRoot = resolve(outdir, "runtime");
 await mkdir(runtimeRoot, { recursive: true });
@@ -131,4 +145,10 @@ await Bun.write(
 const main = resolve(outdir, "main.js");
 if (!(await Bun.file(main).exists())) {
   throw new Error(`bundled CLI entrypoint missing: ${main}`);
+}
+for (const publicEntrypoint of ["hosted-agent.js", "canonical-mcp-bridge.js"]) {
+  const path = resolve(outdir, publicEntrypoint);
+  if (!(await Bun.file(path).exists())) {
+    throw new Error(`bundled public entrypoint missing: ${path}`);
+  }
 }

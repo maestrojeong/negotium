@@ -69,6 +69,8 @@ export interface DeferredInject {
   sessionName?: string;
   /** MCP/tool scope override for a specialized internal turn. */
   sessionType?: "dm" | "forum" | "ephemeral" | "manager" | "cron";
+  /** Adapter-granted access to Otium's visual panel tools. */
+  visualTools?: boolean;
   /** Optional session owner; when present the topic's main session is not replaced. */
   onSessionId?: (sessionId: string) => void;
   /** Clear an externally-owned session after an unrecoverable expiry. */

@@ -24,11 +24,13 @@ test("submitUserMessage persists and publishes before starting the AI turn", () 
       userId,
       text: "one shared submission flow",
       sourceAdapter: "terminal",
-      startTurn: ({ prompt }) => {
+      visualTools: false,
+      startTurn: ({ prompt, visualTools }) => {
         expect(publishedMessageId).toBeString();
         expect(getApiMessage(topic.id, publishedMessageId!)).not.toBeNull();
         expect(observed).toEqual(["published"]);
         expect(prompt).toBe("one shared submission flow");
+        expect(visualTools).toBe(false);
         return "query-shared";
       },
     });

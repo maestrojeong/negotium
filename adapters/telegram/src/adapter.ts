@@ -1671,6 +1671,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       userId,
       text: prompt,
       sourceAdapter: "telegram",
+      visualTools: false,
       onDispatched: rememberTarget,
       startTurn: dispatchTurn,
     });
