@@ -114,7 +114,7 @@ server.tool(
   async () => {
     const topics = getTopicsForUser();
     const entries = Object.entries(topics)
-      .filter(([name]) => name !== currentTopic)
+      .filter(([name, topic]) => name !== currentTopic && Boolean(topic.agent))
       .map(([name, t]) => {
         const status = !t.agent
           ? "no AI invited"
@@ -139,11 +139,13 @@ server.tool(
           remoteSections.push(`\nNode ${node.node}: (unreachable: ${node.error})`);
           continue;
         }
-        const lines = (node.sessions ?? []).map((s) => {
-          const status = !s.agent ? "no AI invited" : s.hasSession ? "active" : "fresh-start ready";
-          const desc = s.description ? ` — ${s.description.slice(0, 60)}` : "";
-          return `- ${node.node}/${s.name}: ${status}${desc}`;
-        });
+        const lines = (node.sessions ?? [])
+          .filter((session) => Boolean(session.agent))
+          .map((s) => {
+            const status = s.hasSession ? "active" : "fresh-start ready";
+            const desc = s.description ? ` — ${s.description.slice(0, 60)}` : "";
+            return `- ${node.node}/${s.name}: ${status}${desc}`;
+          });
         remoteSections.push(
           `\nNode ${node.node}:\n${lines.join("\n") || "  (no rooms for this user)"}`,
         );

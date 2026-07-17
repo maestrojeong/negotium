@@ -4,6 +4,7 @@ import {
   EFFORT_VALUES,
   type EffortLevel,
   getRegistry,
+  getTopic,
   getTopicByNameForUser,
   isAgentKind,
 } from "@negotium/core";
@@ -16,16 +17,22 @@ import {
   getCronJobByOwnerAndName,
   listCronJobs,
   listCronRuns,
+  queueCronPromptSummary,
   requestCronCancel,
   requestCronRun,
   resetCronTopicContext,
   setCronJobEnabled,
+  updateCronJobWithContextReset,
 } from "@negotium/module-cron";
 
 const USER_ID = "local";
 
 function flag(args: string[], name: string): string | undefined {
   return args.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3);
+}
+
+function hasFlag(args: string[], name: string): boolean {
+  return args.some((value) => value.startsWith(`--${name}=`));
 }
 
 function positional(args: string[]): string[] {
@@ -52,6 +59,7 @@ function usage(): void {
       "  list",
       "  create <topic> <name> '<schedule>' <prompt...> [--timezone=IANA] [--agent=...] [--model=...] [--effort=...]",
       "  create <topic> <name> '<schedule>' --script=job.py [--timezone=IANA] [--agent=...]",
+      "  edit <name|id> [prompt...] [--name=...] [--topic=...] [--schedule=...] [--script=job.py]",
       "  inspect|logs <name|id>",
       "  run|pause|resume|restart|kill|reset|delete <name|id>",
       "",
@@ -124,7 +132,75 @@ export async function cronCommand(args: string[]): Promise<void> {
           model,
           effort,
         });
+        if (job.prompt) queueCronPromptSummary(job.id, job.prompt);
         printJob(job);
+        return;
+      }
+      case "edit": {
+        const values = positional(rest);
+        const [ref, ...promptParts] = values;
+        if (!ref) throw new Error("provide a cron name or id");
+        const job = resolveJob(ref);
+        if (!job || job.ownerUserId !== USER_ID) throw new Error(`cron job not found: ${ref}`);
+        const topicName = flag(rest, "topic");
+        const topic = topicName ? getTopicByNameForUser(topicName, USER_ID) : null;
+        if (topicName && !topic?.agent)
+          throw new Error(`topic not found or has no agent: ${topicName}`);
+        const scriptTouched = hasFlag(rest, "script");
+        const script = flag(rest, "script")?.trim() || undefined;
+        if (script && !cronScriptExists(script))
+          throw new Error(`cron script not found: ${script}`);
+        if (script && promptParts.length > 0)
+          throw new Error("provide a prompt or --script, not both");
+        const sourceTouched = scriptTouched || promptParts.length > 0;
+        const nextPrompt =
+          promptParts.length > 0 ? promptParts.join(" ") : sourceTouched ? undefined : job.prompt;
+        const nextScript = scriptTouched ? script : promptParts.length > 0 ? undefined : job.script;
+        if (sourceTouched && Boolean(nextPrompt) === Boolean(nextScript)) {
+          throw new Error("cron job requires exactly one of prompt or script");
+        }
+
+        const agentRaw = flag(rest, "agent");
+        const agent = agentRaw === "default" ? undefined : agentRaw;
+        if (agent && !isAgentKind(agent)) throw new Error(`invalid agent: ${agent}`);
+        const effectiveAgent =
+          (isAgentKind(agent) ? agent : hasFlag(rest, "agent") ? undefined : job.agent) ??
+          topic?.agent ??
+          getTopic(job.topicId)?.agent;
+        const modelRaw = flag(rest, "model");
+        const model = modelRaw === "default" ? undefined : modelRaw?.trim() || undefined;
+        const effortRaw = flag(rest, "effort");
+        const effort = effortRaw === "default" ? undefined : effortRaw;
+        if (effort && !(EFFORT_VALUES as readonly string[]).includes(effort)) {
+          throw new Error(`invalid effort: ${effort}`);
+        }
+        if (effectiveAgent) {
+          const registry = getRegistry(effectiveAgent);
+          if (model && !registry.validateModel(model)) {
+            throw new Error(`model '${model}' is invalid for ${effectiveAgent}`);
+          }
+          if (effort && !registry.validateEffort(effort as EffortLevel)) {
+            throw new Error(`effort '${effort}' is invalid for ${effectiveAgent}`);
+          }
+        }
+
+        const updated = await updateCronJobWithContextReset(job.id, {
+          name: flag(rest, "name"),
+          topicId: topic?.id,
+          prompt: sourceTouched ? (nextPrompt ?? null) : undefined,
+          script: sourceTouched ? (nextScript ?? null) : undefined,
+          summary: sourceTouched ? null : undefined,
+          schedule: flag(rest, "schedule"),
+          timezone: hasFlag(rest, "timezone") ? flag(rest, "timezone") || null : undefined,
+          agent: hasFlag(rest, "agent") ? (isAgentKind(agent) ? agent : null) : undefined,
+          model: hasFlag(rest, "model") ? (model ?? null) : undefined,
+          effort: hasFlag(rest, "effort")
+            ? ((effort as EffortLevel | undefined) ?? null)
+            : undefined,
+        });
+        if (!updated) throw new Error(`cron job not found: ${ref}`);
+        if (sourceTouched && updated.prompt) queueCronPromptSummary(updated.id, updated.prompt);
+        printJob(updated);
         return;
       }
       case "inspect":
@@ -147,7 +223,10 @@ export async function cronCommand(args: string[]): Promise<void> {
         if (!ref) throw new Error("provide a cron name or id");
         const job = resolveJob(ref);
         if (!job || job.ownerUserId !== USER_ID) throw new Error(`cron job not found: ${ref}`);
-        if (sub === "run") console.log(`queued ${requestCronRun(job.id)}`);
+        if (sub === "run") {
+          if (!job.enabled) throw new Error("job is disabled; resume it first");
+          console.log(`queued ${requestCronRun(job.id)}`);
+        }
         if (sub === "pause") printJob(setCronJobEnabled(job.id, false)!);
         if (sub === "resume") printJob(setCronJobEnabled(job.id, true)!);
         if (sub === "restart") printJob(setCronJobEnabled(job.id, true)!);

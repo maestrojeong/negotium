@@ -255,7 +255,13 @@ function latestCodexRolloutPath(threadId: string): string | undefined {
           candidates.push(join(dir, rel));
         }
       }
-    } else {
+    }
+    // The UUIDv7 timestamp is UTC, but Codex names session directories by the
+    // local date, so a session opened in the evening of a negative-offset
+    // timezone lands in the previous day's bucket. When the date-derived
+    // buckets miss (or none were computed), fall back to a whole-tree scan so
+    // that skew never silently drops the rollout.
+    if (candidates.length === 0) {
       const glob = new Bun.Glob(`**/rollout-*-${threadId}.jsonl`);
       for (const rel of glob.scanSync({ cwd: sessionsDir, onlyFiles: true })) {
         candidates.push(join(sessionsDir, rel));
@@ -502,6 +508,7 @@ function sweepPriorRolloutsFullTree(threadId: string, sessionsDir: string): void
  */
 const MAX_DAY_SPAN = 30;
 const DAY_MS = 86_400_000;
+const LOCAL_DATE_SKEW_DAYS = 1;
 
 function candidateDateBuckets(threadId: string): Set<string> | null {
   const tidMs = decodeUuidV7Timestamp(threadId);
@@ -515,7 +522,11 @@ function candidateDateBuckets(threadId: string): Set<string> | null {
   const span = maxDay - minDay;
   if (span > MAX_DAY_SPAN) return null;
   const buckets = new Set<string>();
-  for (let d = minDay; d <= maxDay; d++) {
+  // Codex buckets sessions by local calendar date while UUIDv7 timestamps are
+  // UTC. Include one day on each edge so every date-bucketed caller (context
+  // usage, migration, and prior-rollout cleanup) covers timezone skew without
+  // falling back to a whole-tree scan.
+  for (let d = minDay - LOCAL_DATE_SKEW_DAYS; d <= maxDay + LOCAL_DATE_SKEW_DAYS; d++) {
     buckets.add(formatDateBucket(new Date(d * DAY_MS)));
   }
   return buckets;

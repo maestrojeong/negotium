@@ -165,6 +165,8 @@ describe("capabilities / health", () => {
       inputFiles: true,
       outputFiles: true,
       visualBridge: true,
+      askUserBridge: true,
+      selfConfigBridge: true,
     });
     const agents = body.agents as Array<Record<string, unknown>>;
     expect(agents.map((a) => a.kind).sort()).toEqual(["claude", "codex", "maestro"]);

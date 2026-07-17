@@ -179,8 +179,11 @@ export function runArchiverTurn(params: RunArchiverTurnParams): void {
     userId,
     startedAt: new Date().toISOString(),
     status: "Starting",
+    active: true,
     agent,
     model: model ?? archiverDef.model,
+    prompt,
+    promptTitle: "Prompt",
     steps: ["Preparing archived conversation"],
   });
 
@@ -208,10 +211,13 @@ export function runArchiverTurn(params: RunArchiverTurnParams): void {
             updateArchiverSession(activeSessionId, `Running ${event.name}`, `Tool: ${event.name}`);
             break;
           case "tool_progress":
-            updateArchiverSession(
-              activeSessionId,
-              `${event.toolName} · ${Math.max(0, Math.floor(event.elapsed))}s`,
-            );
+            {
+              const progress = `${event.toolName === "thinking" ? "Thinking" : event.toolName} · ${Math.max(0, Math.floor(event.elapsed))}s`;
+              updateArchiverSession(activeSessionId, progress, progress);
+            }
+            break;
+          case "reasoning":
+            updateArchiverSession(activeSessionId, "Reasoning", `Reasoning: ${event.content}`);
             break;
           case "tool_use_summary":
             updateArchiverSession(activeSessionId, event.summary, event.summary);

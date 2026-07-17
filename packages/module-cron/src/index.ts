@@ -1,9 +1,11 @@
+export { listCronBackgroundSessions } from "#background-sessions";
 export type { CronTopicRotationResult } from "#context";
 export {
   CRON_CONTEXT_RETAIN_TURNS,
   CRON_CONTEXT_ROTATE_EVERY,
   resetCronTopicContext,
   rotateCronTopicContext,
+  updateCronJobWithContextReset,
 } from "#context";
 export { createCronModule } from "#module";
 export {
@@ -29,6 +31,7 @@ export {
   validateCronScriptName,
 } from "#scripts";
 export type {
+  CronJobPatch,
   CronJobRecord,
   CronRunRecord,
   CronRunStatus,
@@ -39,7 +42,9 @@ export {
   claimCronCancellations,
   claimCronRuns,
   clearCronTopicSession,
+  countCronRuns,
   createCronJob,
+  cronJobPatchChangesContext,
   cronTopicSessionName,
   deleteCronJob,
   ensureCronSchema,
@@ -49,10 +54,13 @@ export {
   getCronJobByOwnerAndName,
   getCronTopicContext,
   getCronTopicSession,
+  getLastCronRun,
   listCronJobs,
   listCronJobsForTopic,
+  listCronJobsForTopicOwner,
   listCronRuns,
   listCronTopicSessions,
+  listEnabledCronJobs,
   listOrphanedCronTopicSessions,
   markCronRunStarted,
   markCronTopicContextRotated,
@@ -64,4 +72,13 @@ export {
   setCronJobEnabled,
   setCronJobSessionId,
   setCronTopicSession,
+  setCronTopicSessionIfJobUpdatedAt,
+  updateCronJob,
+  updateCronJobSummaryIfPromptMatches,
 } from "#store";
+export type { CronPromptSummarizer } from "#summarize";
+export {
+  cleanCronPromptSummary,
+  queueCronPromptSummary,
+  summarizeCronPrompt,
+} from "#summarize";

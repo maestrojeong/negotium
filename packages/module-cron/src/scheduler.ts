@@ -25,7 +25,7 @@ import {
   markCronRunStarted,
   recoverPendingCronRuns,
   setCronJobEnabled,
-  setCronTopicSession,
+  setCronTopicSessionIfJobUpdatedAt,
 } from "#store";
 
 export interface CronDispatchHooks {
@@ -246,11 +246,21 @@ export class CronScheduler {
       onDispatched: (queryId) => this.#markDispatched(active, queryId),
       onSessionId: (sessionId) => {
         if (this.#isActive(active)) {
-          setCronTopicSession(job.topicId, agent, job.ownerUserId, sessionId, this.#now());
+          setCronTopicSessionIfJobUpdatedAt(
+            job.id,
+            job.updatedAt,
+            job.topicId,
+            agent,
+            job.ownerUserId,
+            sessionId,
+            this.#now(),
+          );
         }
       },
       onSessionReset: () => {
-        if (this.#isActive(active)) clearCronTopicSession(job.topicId, agent);
+        if (this.#isActive(active) && getCronJob(job.id)?.updatedAt === job.updatedAt) {
+          clearCronTopicSession(job.topicId, agent);
+        }
       },
       onSettled: (result) => this.#settle(active, result),
     };

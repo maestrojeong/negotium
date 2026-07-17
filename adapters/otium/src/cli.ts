@@ -101,12 +101,11 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
     }
     case "serve": {
       const {
-        getRuntimeProcessLease,
         NEGOTIUM_PORT,
         onShutdown,
         registerNodeRequestHandler,
         unregisterNodeRequestHandler,
-        waitForRuntimeProcessLease,
+        waitForRequiredRuntimeProcessLease,
       } = await import("@negotium/core");
       const [{ startDefaultNode }, otium] = await Promise.all([
         import("@negotium/node"),
@@ -114,21 +113,14 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
       ]);
       const port = parseOtiumServePort(commandArgs, NEGOTIUM_PORT);
       const relayUrl = parseOtiumServeRelayUrl(commandArgs);
-      let leaseLost = false;
-      let stopForLeaseLoss: (() => void) | undefined;
-      const singleton = await waitForRuntimeProcessLease("adapter:otium", {
+      let node: Awaited<ReturnType<typeof startDefaultNode>> | undefined;
+      const singleton = await waitForRequiredRuntimeProcessLease("adapter:otium", {
+        workloadName: "Otium adapter",
         onLost: () => {
-          leaseLost = true;
           console.error("negotium otium: singleton lease lost; shutting down");
-          stopForLeaseLoss?.();
+          void node?.stop();
         },
       });
-      if (!singleton) {
-        const current = getRuntimeProcessLease("adapter:otium");
-        throw new Error(
-          `Otium adapter is already running${current ? ` (pid ${current.pid})` : ""}`,
-        );
-      }
       const { handleOtiumPeerRequest, startOtiumWorker } = otium;
       const worker = startOtiumWorker();
       if (!worker) {
@@ -147,7 +139,6 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
       };
       onShutdown("otium-worker", 100, stopWorker);
       onShutdown("otium-singleton", 90, () => singleton.stop());
-      let node: Awaited<ReturnType<typeof startDefaultNode>>;
       try {
         node = await startDefaultNode({
           port,
@@ -162,13 +153,7 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
         `negotium node (otium worker) listening on 127.0.0.1:${node.port} (ctrl-c to stop)`,
       );
       worker.startTunnel({ targetOrigin: `http://127.0.0.1:${node.port}`, relayUrl });
-      await new Promise<void>((resolve) => {
-        const stop = () => void node.stop().finally(resolve);
-        stopForLeaseLoss = stop;
-        if (leaseLost) stop();
-        process.once("SIGINT", stop);
-        process.once("SIGTERM", stop);
-      });
+      await node.completed;
       break;
     }
     case "bindings": {

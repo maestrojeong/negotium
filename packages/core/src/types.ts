@@ -109,6 +109,10 @@ export type UnifiedEvent =
     }
   | { type: "tool_progress"; toolName: string; elapsed: number }
   | { type: "tool_use_summary"; summary: string }
+  // Provider reasoning/thinking summary text (Codex `reasoning` items; Claude
+  // extended-thinking). Surfaced so background runs (cron/archiver) show the
+  // agent's thought process, not just tool calls.
+  | { type: "reasoning"; content: string }
   // Full task-list snapshot (replace, not delta) from Otium's shared task
   // store. Provider-native task/todo stores are not authoritative.
   | { type: "tasks"; tasks: TaskSnapshot[] }

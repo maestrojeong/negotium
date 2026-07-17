@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { LOG_DIR } from "#platform/config";
@@ -34,7 +35,13 @@ function emptyBucket(): Bucket {
 }
 
 function queriesPath(userId: number | string): string {
-  return join(LOG_DIR, `token-queries-${userId}.jsonl`);
+  const rawUserId = String(userId);
+  // Preserve existing filenames for ordinary IDs, but never let an external
+  // identity introduce path separators or unbounded filename length.
+  const fileId = /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,255}$/.test(rawUserId)
+    ? rawUserId
+    : `sha256-${createHash("sha256").update(rawUserId).digest("hex")}`;
+  return join(LOG_DIR, `token-queries-${fileId}.jsonl`);
 }
 
 function loadRecords(userId: number | string): QueryRecord[] {

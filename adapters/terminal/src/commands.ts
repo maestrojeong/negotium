@@ -9,6 +9,7 @@ export const TERMINAL_COMMANDS: readonly TerminalCommand[] = [
   { name: "compact", usage: "/compact", description: "summarize and shrink context" },
   { name: "status", usage: "/status", description: "show model and token usage" },
   { name: "model", usage: "/model", description: "choose the model" },
+  { name: "effort", usage: "/effort", description: "choose reasoning effort" },
   { name: "topics", usage: "/topics", description: "open topic picker" },
   {
     name: "fork",
@@ -24,7 +25,7 @@ export const TERMINAL_COMMANDS: readonly TerminalCommand[] = [
   { name: "copy", usage: "/copy [all]", description: "copy answer or transcript" },
   {
     name: "vault",
-    usage: "/vault <list|set|del>",
+    usage: "/vault",
     description: "manage encrypted secrets",
   },
   { name: "abort", usage: "/abort", description: "stop the active turn" },

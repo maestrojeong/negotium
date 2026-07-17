@@ -3,7 +3,14 @@ import { type AgentKind, db, type EffortLevel } from "@negotium/core";
 import { computeNextCronRun, normalizeCronTimezone, parseCronExpression } from "#schedule";
 import { validateCronScriptName } from "#scripts";
 
-export type CronRunStatus = "pending" | "running" | "succeeded" | "failed" | "aborted" | "skipped";
+export type CronRunStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "aborted"
+  | "skipped"
+  | "interrupted";
 
 export interface CronJobRecord {
   id: string;
@@ -12,6 +19,8 @@ export interface CronJobRecord {
   topicId: string;
   prompt?: string;
   script?: string;
+  /** Short human label for a prompt job, generated asynchronously. */
+  summary?: string;
   schedule: string;
   timezone?: string;
   enabled: boolean;
@@ -23,6 +32,20 @@ export interface CronJobRecord {
   nextRunAt: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CronJobPatch {
+  name?: string;
+  topicId?: string;
+  prompt?: string | null;
+  script?: string | null;
+  summary?: string | null;
+  schedule?: string;
+  timezone?: string | null;
+  enabled?: boolean;
+  agent?: AgentKind | null;
+  model?: string | null;
+  effort?: EffortLevel | null;
 }
 
 export interface CronTopicSessionRecord {
@@ -53,6 +76,7 @@ export interface CronRunRecord {
   durationMs?: number;
   outputPreview?: string;
   error?: string;
+  exitCode?: number;
 }
 
 interface JobRow {
@@ -62,6 +86,7 @@ interface JobRow {
   topic_id: string;
   prompt: string;
   script: string | null;
+  summary: string | null;
   schedule: string;
   timezone: string | null;
   enabled: number;
@@ -86,6 +111,8 @@ interface RunRow {
   duration_ms: number | null;
   output_preview: string | null;
   error: string | null;
+  exit_code: number | null;
+  topic_id: string | null;
 }
 
 interface TopicSessionRow {
@@ -120,6 +147,7 @@ export function ensureCronSchema(): void {
       topic_id TEXT NOT NULL REFERENCES api_topics(id) ON DELETE CASCADE,
       prompt TEXT NOT NULL,
       script TEXT,
+      summary TEXT,
       schedule TEXT NOT NULL,
       timezone TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
@@ -146,7 +174,9 @@ export function ensureCronSchema(): void {
       query_id TEXT,
       duration_ms INTEGER,
       output_preview TEXT,
-      error TEXT
+      error TEXT,
+      exit_code INTEGER,
+      topic_id TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_negotium_cron_runs_job
       ON negotium_cron_runs(job_id, scheduled_at DESC);
@@ -185,6 +215,20 @@ export function ensureCronSchema(): void {
   );
   if (!jobColumns.has("script")) {
     db.exec("ALTER TABLE negotium_cron_jobs ADD COLUMN script TEXT");
+  }
+  if (!jobColumns.has("summary")) {
+    db.exec("ALTER TABLE negotium_cron_jobs ADD COLUMN summary TEXT");
+  }
+  const runColumns = new Set(
+    (db.query("PRAGMA table_info(negotium_cron_runs)").all() as TableColumnRow[]).map(
+      (column) => column.name,
+    ),
+  );
+  if (!runColumns.has("exit_code")) {
+    db.exec("ALTER TABLE negotium_cron_runs ADD COLUMN exit_code INTEGER");
+  }
+  if (!runColumns.has("topic_id")) {
+    db.exec("ALTER TABLE negotium_cron_runs ADD COLUMN topic_id TEXT");
   }
 
   // One-time best-effort promotion from the old job-owned session model.
@@ -246,6 +290,7 @@ function toJob(row: JobRow): CronJobRecord {
     topicId: row.topic_id,
     prompt: row.prompt.trim() || undefined,
     script: row.script?.trim() || undefined,
+    summary: row.summary?.trim() || undefined,
     schedule: row.schedule,
     timezone: row.timezone ?? undefined,
     enabled: row.enabled !== 0,
@@ -296,6 +341,7 @@ function toRun(row: RunRow): CronRunRecord {
     durationMs: row.duration_ms ?? undefined,
     outputPreview: row.output_preview ?? undefined,
     error: row.error ?? undefined,
+    exitCode: row.exit_code ?? undefined,
   };
 }
 
@@ -310,6 +356,7 @@ export function createCronJob(input: {
   agent?: AgentKind;
   model?: string;
   effort?: EffortLevel;
+  summary?: string;
   now?: Date;
 }): CronJobRecord {
   ensureCronSchema();
@@ -348,6 +395,7 @@ export function createCronJob(input: {
     topicId: input.topicId,
     prompt,
     script,
+    summary: input.summary?.trim() || undefined,
     schedule: input.schedule.trim(),
     timezone,
     enabled: true,
@@ -360,8 +408,8 @@ export function createCronJob(input: {
   };
   db.query(
     `INSERT INTO negotium_cron_jobs
-      (id,name,owner_user_id,topic_id,prompt,script,schedule,timezone,enabled,agent,model,effort,session_id,next_run_at,created_at,updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      (id,name,owner_user_id,topic_id,prompt,script,summary,schedule,timezone,enabled,agent,model,effort,session_id,next_run_at,created_at,updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     job.id,
     job.name,
@@ -369,6 +417,7 @@ export function createCronJob(input: {
     job.topicId,
     job.prompt ?? "",
     job.script ?? null,
+    job.summary ?? null,
     job.schedule,
     job.timezone ?? null,
     1,
@@ -393,12 +442,32 @@ export function listCronJobs(ownerUserId?: string): CronJobRecord[] {
   return (rows as JobRow[]).map(toJob);
 }
 
+export function listEnabledCronJobs(): CronJobRecord[] {
+  ensureCronSchema();
+  return (
+    db
+      .query("SELECT * FROM negotium_cron_jobs WHERE enabled = 1 ORDER BY created_at DESC")
+      .all() as JobRow[]
+  ).map(toJob);
+}
+
 export function listCronJobsForTopic(topicId: string): CronJobRecord[] {
   ensureCronSchema();
   return (
     db
       .query("SELECT * FROM negotium_cron_jobs WHERE topic_id = ? ORDER BY created_at DESC")
       .all(topicId) as JobRow[]
+  ).map(toJob);
+}
+
+export function listCronJobsForTopicOwner(topicId: string, ownerUserId: string): CronJobRecord[] {
+  ensureCronSchema();
+  return (
+    db
+      .query(
+        "SELECT * FROM negotium_cron_jobs WHERE topic_id = ? AND owner_user_id = ? ORDER BY created_at DESC",
+      )
+      .all(topicId, ownerUserId) as JobRow[]
   ).map(toJob);
 }
 
@@ -416,6 +485,118 @@ export function getCronJobByOwnerAndName(ownerUserId: string, name: string): Cro
     .query("SELECT * FROM negotium_cron_jobs WHERE owner_user_id = ? AND name = ?")
     .get(ownerUserId, name) as JobRow | undefined;
   return row ? toJob(row) : null;
+}
+
+export function cronJobPatchChangesContext(job: CronJobRecord, patch: CronJobPatch): boolean {
+  return (
+    (patch.topicId !== undefined && patch.topicId !== job.topicId) ||
+    (patch.prompt !== undefined && (patch.prompt?.trim() || undefined) !== job.prompt) ||
+    (patch.script !== undefined && (patch.script?.trim() || undefined) !== job.script) ||
+    (patch.agent !== undefined && (patch.agent ?? undefined) !== job.agent) ||
+    (patch.model !== undefined && (patch.model?.trim() || undefined) !== job.model) ||
+    (patch.effort !== undefined && (patch.effort ?? undefined) !== job.effort)
+  );
+}
+
+export function updateCronJob(
+  id: string,
+  patch: CronJobPatch,
+  now = new Date(),
+): CronJobRecord | null {
+  ensureCronSchema();
+  const job = getCronJob(id);
+  if (!job) return null;
+  if (Object.values(patch).every((value) => value === undefined)) return job;
+
+  const nextName = patch.name !== undefined ? patch.name.trim() : job.name;
+  if (!/^[A-Za-z0-9_-]+$/.test(nextName)) {
+    throw new Error("name must use only letters, numbers, dashes, and underscores");
+  }
+
+  const nextPrompt = patch.prompt !== undefined ? patch.prompt?.trim() || undefined : job.prompt;
+  const nextScript = patch.script !== undefined ? patch.script?.trim() || undefined : job.script;
+  if (Boolean(nextPrompt) === Boolean(nextScript)) {
+    throw new Error("cron job requires exactly one of prompt or script");
+  }
+  if (nextScript) {
+    const valid = validateCronScriptName(nextScript);
+    if (!valid.ok) throw new Error(valid.error);
+  }
+  const nextSchedule = patch.schedule?.trim() ?? job.schedule;
+  parseCronExpression(nextSchedule);
+  const rawTimezone =
+    patch.timezone !== undefined ? patch.timezone?.trim() || undefined : job.timezone;
+  const nextTimezone = rawTimezone ? normalizeCronTimezone(rawTimezone) : undefined;
+  if (rawTimezone && !nextTimezone) throw new Error(`invalid timezone: ${rawTimezone}`);
+  const nextTopicId = patch.topicId?.trim() || job.topicId;
+  const otherOwner = db
+    .query(
+      `SELECT owner_user_id FROM negotium_cron_jobs
+       WHERE topic_id = ? AND owner_user_id <> ? AND id <> ? LIMIT 1`,
+    )
+    .get(nextTopicId, job.ownerUserId, id) as { owner_user_id: string } | undefined;
+  if (otherOwner) {
+    throw new Error(
+      `topic cron context is already owned by ${otherOwner.owner_user_id}; ` +
+        "all cron jobs in one topic must share one owner",
+    );
+  }
+
+  const enabled = patch.enabled ?? job.enabled;
+  const scheduleChanged = nextSchedule !== job.schedule || nextTimezone !== job.timezone;
+  const nextRunAt =
+    enabled && (scheduleChanged || (!job.enabled && enabled))
+      ? computeNextCronRun(nextSchedule, now, nextTimezone).toISOString()
+      : job.nextRunAt;
+  const timestamp = now.toISOString();
+  const sessionSensitiveChanged = cronJobPatchChangesContext(job, patch);
+  if (sessionSensitiveChanged) {
+    const active = db
+      .query(
+        "SELECT 1 FROM negotium_cron_runs WHERE job_id = ? AND status IN ('pending','running') LIMIT 1",
+      )
+      .get(id);
+    if (active) {
+      throw new Error("cannot change Cron context while a run is active; cancel it first");
+    }
+  }
+
+  db.transaction(() => {
+    db.query(
+      `UPDATE negotium_cron_jobs SET
+         name = ?, topic_id = ?, prompt = ?, script = ?, summary = ?, schedule = ?, timezone = ?,
+         enabled = ?, agent = ?, model = ?, effort = ?, next_run_at = ?, updated_at = ?
+       WHERE id = ?`,
+    ).run(
+      nextName,
+      nextTopicId,
+      nextPrompt ?? "",
+      nextScript ?? null,
+      patch.summary !== undefined ? patch.summary?.trim() || null : (job.summary ?? null),
+      nextSchedule,
+      nextTimezone ?? null,
+      enabled ? 1 : 0,
+      patch.agent !== undefined ? patch.agent : (job.agent ?? null),
+      patch.model !== undefined ? patch.model?.trim() || null : (job.model ?? null),
+      patch.effort !== undefined ? patch.effort : (job.effort ?? null),
+      nextRunAt,
+      timestamp,
+      id,
+    );
+  })();
+  return getCronJob(id);
+}
+
+export function updateCronJobSummaryIfPromptMatches(
+  id: string,
+  expectedPrompt: string,
+  summary: string,
+): boolean {
+  ensureCronSchema();
+  const result = db
+    .query("UPDATE negotium_cron_jobs SET summary = ? WHERE id = ? AND prompt = ?")
+    .run(summary.trim(), id, expectedPrompt.trim());
+  return Number(result.changes) > 0;
 }
 
 export function setCronJobEnabled(
@@ -486,6 +667,29 @@ export function setCronTopicSession(
        updated_at = excluded.updated_at`,
   ).run(topicId, agent, ownerUserId, sessionId, timestamp, timestamp);
   return getCronTopicSession(topicId, agent)!;
+}
+
+export function setCronTopicSessionIfJobUpdatedAt(
+  jobId: string,
+  expectedJobUpdatedAt: string,
+  topicId: string,
+  agent: AgentKind,
+  ownerUserId: string,
+  sessionId: string,
+  now = new Date(),
+): CronTopicSessionRecord | null {
+  ensureCronSchema();
+  let updated = false;
+  db.transaction(() => {
+    const current = db
+      .query("SELECT topic_id, updated_at FROM negotium_cron_jobs WHERE id = ?")
+      .get(jobId) as { topic_id: string; updated_at: string } | undefined;
+    if (!current || current.topic_id !== topicId || current.updated_at !== expectedJobUpdatedAt)
+      return;
+    setCronTopicSession(topicId, agent, ownerUserId, sessionId, now);
+    updated = true;
+  })();
+  return updated ? getCronTopicSession(topicId, agent) : null;
 }
 
 export function clearCronTopicSession(topicId: string, agent: AgentKind): boolean {
@@ -608,6 +812,7 @@ export function claimCronCancellations(limit = 100): string[] {
 
 function insertRun(
   jobId: string,
+  topicId: string,
   source: "schedule" | "manual",
   scheduledAt: string,
 ): CronRunRecord {
@@ -619,8 +824,8 @@ function insertRun(
     status: "pending",
   };
   db.query(
-    "INSERT INTO negotium_cron_runs (id,job_id,source,scheduled_at,status) VALUES (?,?,?,?,?)",
-  ).run(run.id, run.jobId, run.source, run.scheduledAt, run.status);
+    "INSERT INTO negotium_cron_runs (id,job_id,topic_id,source,scheduled_at,status) VALUES (?,?,?,?,?,?)",
+  ).run(run.id, run.jobId, topicId, run.source, run.scheduledAt, run.status);
   return run;
 }
 
@@ -640,7 +845,10 @@ export function claimCronRuns(
       .all(limit) as Array<JobRow & { request_id: string; requested_at: string }>;
     for (const row of requests) {
       db.query("DELETE FROM negotium_cron_requests WHERE id = ?").run(row.request_id);
-      claimed.push({ job: toJob(row), run: insertRun(row.id, "manual", row.requested_at) });
+      claimed.push({
+        job: toJob(row),
+        run: insertRun(row.id, row.topic_id, "manual", row.requested_at),
+      });
     }
 
     const remaining = Math.max(0, limit - claimed.length);
@@ -653,13 +861,9 @@ export function claimCronRuns(
       .all(now.toISOString(), remaining) as JobRow[];
     for (const row of due) {
       const job = toJob(row);
-      const run = insertRun(job.id, "schedule", job.nextRunAt);
+      const run = insertRun(job.id, job.topicId, "schedule", job.nextRunAt);
       const nextRunAt = computeNextCronRun(job.schedule, now, job.timezone).toISOString();
-      db.query("UPDATE negotium_cron_jobs SET next_run_at = ?, updated_at = ? WHERE id = ?").run(
-        nextRunAt,
-        now.toISOString(),
-        job.id,
-      );
+      db.query("UPDATE negotium_cron_jobs SET next_run_at = ? WHERE id = ?").run(nextRunAt, job.id);
       claimed.push({ job: { ...job, nextRunAt }, run });
     }
   })();
@@ -681,13 +885,14 @@ export function finishCronRun(
     status: Exclude<CronRunStatus, "pending" | "running">;
     outputPreview?: string;
     error?: string;
+    exitCode?: number;
   },
   now = new Date(),
 ): number | null {
   ensureCronSchema();
   const row = db
     .query(
-      `SELECT r.started_at, r.status, j.topic_id
+      `SELECT r.started_at, r.status, COALESCE(r.topic_id, j.topic_id) AS topic_id
        FROM negotium_cron_runs r
        JOIN negotium_cron_jobs j ON j.id = r.job_id
        WHERE r.id = ?`,
@@ -701,10 +906,15 @@ export function finishCronRun(
     : null;
   let successfulRunsSinceRotation: number | null = null;
   db.transaction(() => {
+    const exitCode =
+      result.exitCode ??
+      ({ succeeded: 0, skipped: 0, failed: 1, aborted: 130, interrupted: 137 } as const)[
+        result.status
+      ];
     const updated = db
       .query(
         `UPDATE negotium_cron_runs
-       SET status = ?, finished_at = ?, duration_ms = ?, output_preview = ?, error = ?
+       SET status = ?, finished_at = ?, duration_ms = ?, output_preview = ?, error = ?, exit_code = ?
        WHERE id = ? AND status IN ('pending','running')`,
       )
       .run(
@@ -713,6 +923,7 @@ export function finishCronRun(
         durationMs,
         result.outputPreview?.slice(0, 500) ?? null,
         result.error ?? null,
+        exitCode,
         runId,
       );
     if (Number(updated.changes) > 0 && result.status === "succeeded") {
@@ -731,6 +942,18 @@ export function listCronRuns(jobId: string, limit = 20): CronRunRecord[] {
   ).map(toRun);
 }
 
+export function getLastCronRun(jobId: string): CronRunRecord | null {
+  return listCronRuns(jobId, 1)[0] ?? null;
+}
+
+export function countCronRuns(jobId: string): number {
+  ensureCronSchema();
+  const row = db
+    .query("SELECT COUNT(*) AS count FROM negotium_cron_runs WHERE job_id = ?")
+    .get(jobId) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
 export function recoverPendingCronRuns(
   limit = 100,
 ): Array<{ job: CronJobRecord; run: CronRunRecord }> {
@@ -742,6 +965,8 @@ export function recoverPendingCronRuns(
               r.finished_at AS run_finished_at, r.status AS run_status,
               r.query_id AS run_query_id, r.duration_ms AS run_duration_ms,
               r.output_preview AS run_output_preview, r.error AS run_error,
+              r.exit_code AS run_exit_code,
+              r.topic_id AS run_topic_id,
               j.*
        FROM negotium_cron_runs r
        JOIN negotium_cron_jobs j ON j.id = r.job_id
@@ -762,6 +987,8 @@ export function recoverPendingCronRuns(
       run_duration_ms: number | null;
       run_output_preview: string | null;
       run_error: string | null;
+      run_exit_code: number | null;
+      run_topic_id: string | null;
     }
   >;
   return rows.map((row) => ({
@@ -778,6 +1005,8 @@ export function recoverPendingCronRuns(
       duration_ms: row.run_duration_ms,
       output_preview: row.run_output_preview,
       error: row.run_error,
+      exit_code: row.run_exit_code,
+      topic_id: row.run_topic_id,
     }),
   }));
 }
@@ -787,7 +1016,7 @@ export function finalizeOrphanedCronRuns(now = new Date()): number {
   const result = db
     .query(
       `UPDATE negotium_cron_runs
-       SET status = 'failed', finished_at = ?,
+       SET status = 'interrupted', finished_at = ?, exit_code = 137,
            error = 'node restarted after dispatch; final outcome is unknown'
        WHERE status = 'running'`,
     )

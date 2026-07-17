@@ -6,12 +6,23 @@ import { isParticipant } from "#topics/derive";
 import type { BackgroundSessionDto } from "#types/api";
 
 const MAX_STEPS = 20;
+export type BackgroundSessionProvider = (userId: string) => BackgroundSessionDto[];
+
+const providers = new Set<BackgroundSessionProvider>();
+
+export function registerBackgroundSessionProvider(provider: BackgroundSessionProvider): () => void {
+  providers.add(provider);
+  return () => providers.delete(provider);
+}
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 160) : "";
 }
 
-function cronSessionSteps(topicId: string, queryId: string): { status: string; steps: string[] } {
+export function backgroundSessionProgress(
+  topicId: string,
+  queryId: string,
+): { status: string; steps: string[] } {
   let status = "Running";
   const steps: string[] = [];
   for (const event of listRecentRuntimeEventsForTopic(topicId)) {
@@ -21,6 +32,7 @@ function cronSessionSteps(topicId: string, queryId: string): { status: string; s
     const kind = payload.kind;
     let step = "";
     if (kind === "ai_active") step = "Started scheduled turn";
+    else if (kind === "reasoning") step = `Reasoning: ${text(payload.content)}`;
     else if (kind === "tool_call") step = text(payload.label) || `Tool: ${text(payload.name)}`;
     else if (kind === "tool_status") step = text(payload.content);
     else if (kind === "tool_output") step = "Tool completed";
@@ -34,12 +46,21 @@ function cronSessionSteps(topicId: string, queryId: string): { status: string; s
 
 export function listBackgroundSessionsForUser(userId: string): BackgroundSessionDto[] {
   const memory = listActiveMemoryArchiverSessions(userId);
+  const provided = [...providers].flatMap((provider) => provider(userId));
+  const providedCronTopicIds = new Set(
+    provided
+      .filter((session) => session.kind === "cron")
+      .map((session) => session.topicId)
+      .filter((topicId): topicId is string => Boolean(topicId)),
+  );
   const cron = listRuntimeTurnLeases()
     .filter((lease) => lease.origin.startsWith("cron:"))
     .flatMap((lease): BackgroundSessionDto[] => {
       const topic = getTopic(lease.topicId);
-      if (!topic || !isParticipant(topic, userId)) return [];
-      const progress = cronSessionSteps(lease.topicId, lease.queryId);
+      if (!topic || !isParticipant(topic, userId) || providedCronTopicIds.has(lease.topicId)) {
+        return [];
+      }
+      const progress = backgroundSessionProgress(lease.topicId, lease.queryId);
       return [
         {
           id: `cron:${lease.queryId}`,
@@ -48,11 +69,15 @@ export function listBackgroundSessionsForUser(userId: string): BackgroundSession
           topicId: topic.id,
           startedAt: new Date(lease.startedAt).toISOString(),
           status: lease.abortRequested ? "Stopping" : progress.status,
+          active: true,
           agent: topic.agent,
           model: topic.effectiveModel ?? topic.defaultModel,
+          effort: topic.effectiveEffort ?? topic.defaultEffort,
           steps: progress.steps,
         },
       ];
     });
-  return [...memory, ...cron].sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+  return [...memory, ...provided, ...cron].sort((left, right) =>
+    left.startedAt.localeCompare(right.startedAt),
+  );
 }

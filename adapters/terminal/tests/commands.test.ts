@@ -22,11 +22,13 @@ describe("terminal slash command completion", () => {
     expect(commandSuggestions("/stat").map((command) => command.name)).toEqual(["status"]);
     expect(commandSuggestions("/mo").map((command) => command.name)).toEqual(["model"]);
     expect(completeCommand("/mo", 0)).toBe("/model");
+    expect(commandSuggestions("/ef").map((command) => command.name)).toEqual(["effort"]);
+    expect(completeCommand("/ef", 0)).toBe("/effort");
   });
 
-  test("suggests the Vault command with arguments", () => {
+  test("suggests the Vault settings screen command", () => {
     expect(commandSuggestions("/va").map((command) => command.name)).toEqual(["vault"]);
-    expect(completeCommand("/va", 0)).toBe("/vault ");
+    expect(completeCommand("/va", 0)).toBe("/vault");
   });
 
   test("uses only the short delete command", () => {

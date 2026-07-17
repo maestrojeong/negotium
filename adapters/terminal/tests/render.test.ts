@@ -67,17 +67,41 @@ describe("terminal renderer", () => {
     expect(output.split("\n")).toHaveLength(30);
   });
 
-  test("shows multiline Vault results in a readable overlay", () => {
+  test("shows Vault entries as a selectable settings view", () => {
     const state = {
       ...createInitialState("local"),
       overlay: "vault" as const,
-      vaultOutput: "Vault keys (2):\n- API_TOKEN: primary\n- SIGNING_KEY: release",
+      vaultEntries: [
+        { key: "API_TOKEN", description: "primary" },
+        { key: "SIGNING_KEY", description: "release" },
+      ],
+      vaultPickerIndex: 1,
     };
     const output = stripAnsi(renderApp(state, 80, 18));
 
-    expect(output).toContain("Vault · Esc close");
-    expect(output).toContain("API_TOKEN: primary");
-    expect(output).toContain("SIGNING_KEY: release");
+    expect(output).toContain("Encrypted locally");
+    expect(output).toContain("API_TOKEN  primary");
+    expect(output).toContain("› SIGNING_KEY  release");
+    expect(output).toContain("Enter edit · N add · D delete");
+    expect(output).not.toContain("Type a message");
+  });
+
+  test("masks Vault secret input while preserving the cursor position", () => {
+    const state = {
+      ...createInitialState("local"),
+      overlay: "vault" as const,
+      vaultMode: "value" as const,
+      vaultDraftKey: "API_TOKEN",
+      input: "super-secret",
+      inputCursor: { row: 0, col: 12 },
+    };
+    const rendered = renderAppFrame(state, 80, 18);
+    const output = stripAnsi(rendered.frame);
+
+    expect(output).toContain("************");
+    expect(output).not.toContain("super-secret");
+    expect(output).toContain("secret value · Enter continue · Esc cancel");
+    expect(rendered.cursor?.x).toBe(17);
   });
 
   test("keeps the always-active message composer flat and borderless", () => {
@@ -121,7 +145,7 @@ describe("terminal renderer", () => {
     const output = stripAnsi(renderApp(state, 120, 30));
     const lines = output.split("\n");
     const composerIndex = lines.findIndex((line) => line.includes("Type a message"));
-    const statusIndex = lines.findIndex((line) => line.includes("Terminal · codex · gpt"));
+    const statusIndex = lines.findIndex((line) => line.includes("codex · gpt · medium"));
 
     expect(statusIndex).toBeGreaterThan(composerIndex);
     expect(lines[statusIndex]).not.toContain("ready");
@@ -135,8 +159,8 @@ describe("terminal renderer", () => {
 
     const state = setTopics(createInitialState("local"), [stale]);
     const output = stripAnsi(renderApp(state, 120, 30));
-    expect(output).toContain("Terminal · codex · gpt-5.6-luna");
-    expect(output).not.toContain("Terminal · codex · deepseek-pro");
+    expect(output).toContain("codex · gpt-5.6-luna · medium");
+    expect(output).not.toContain("codex · deepseek-pro");
   });
 
   test("shows the persisted per-topic model override in the footer", () => {
@@ -145,7 +169,7 @@ describe("terminal renderer", () => {
 
     const state = setTopics(createInitialState("local"), [configured]);
     const output = stripAnsi(renderApp(state, 120, 30));
-    expect(output).toContain("Terminal · codex · gpt-5.6-sol");
+    expect(output).toContain("codex · gpt-5.6-sol · medium");
   });
 
   test("shows both the agent and effective model in the topic picker", () => {
@@ -155,7 +179,7 @@ describe("terminal renderer", () => {
     };
 
     const output = stripAnsi(renderApp(state, 120, 30));
-    expect(output).toContain("Terminal  ·  codex  ·  gpt");
+    expect(output).toContain("Terminal  ·  codex  ·  gpt  ·  medium");
     expect(output).toContain("Ctrl-C exit; work continues");
   });
 
@@ -234,6 +258,38 @@ describe("terminal renderer", () => {
     expect(rendered.cursor).toBeNull();
   });
 
+  test("keeps an idle Cron session readable with its prompt and execution config", () => {
+    const state = {
+      ...setTopics(createInitialState("local"), [topic()]),
+      backgroundSessions: [
+        {
+          id: "cron-topic-1",
+          kind: "cron" as const,
+          title: "Daily digest",
+          startedAt: new Date().toISOString(),
+          status: "Scheduled",
+          active: false,
+          agent: "codex" as const,
+          model: "gpt",
+          effort: "high" as const,
+          prompt: "Summarize today's operational changes.",
+          promptTitle: "Prompt · daily-digest",
+          steps: ["Reasoning: selecting relevant changes", "Tool: wiki_query"],
+        },
+      ],
+      topicPickerBackgroundId: "cron-topic-1",
+      overlay: "background-session" as const,
+    };
+
+    const output = stripAnsi(renderAppFrame(state, 120, 30).frame);
+    expect(output).toContain("session stays available between runs");
+    expect(output).toContain("codex · gpt · high");
+    expect(output).toContain("Prompt · daily-digest");
+    expect(output).toContain("Summarize today's operational changes.");
+    expect(output).toContain("Reasoning: selecting relevant changes");
+    expect(output).not.toContain("Scheduled · 0s");
+  });
+
   test("labels the startup topic picker as an exit screen instead of a closable overlay", () => {
     const state = {
       ...setTopics(createInitialState("local"), [topic()]),
@@ -298,6 +354,23 @@ describe("terminal renderer", () => {
 
     const output = stripAnsi(renderApp(state, 80, 14));
     expect(output).toContain("› deepseek-flash");
+  });
+
+  test("shows all reasoning effort choices and marks the current value", () => {
+    const state = {
+      ...setTopics(createInitialState("local"), [
+        { ...topic(), defaultEffort: "medium" as const, effectiveEffort: "high" as const },
+      ]),
+      overlay: "effort" as const,
+      effortPickerIndex: 1,
+    };
+
+    const output = stripAnsi(renderApp(state, 80, 20));
+    expect(output).toContain("Reasoning effort");
+    expect(output).toContain("› medium");
+    expect(output).toContain("high (current)");
+    expect(output).toContain("xhigh");
+    expect(output).toContain("max");
   });
 
   test("indents subagent topics with a child arrow in the topic picker", () => {

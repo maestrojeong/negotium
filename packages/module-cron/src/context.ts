@@ -1,22 +1,50 @@
 import { logger, purgeTopicLogs, resolveTopicWorkspaceDir, rotateTopicLogs } from "@negotium/core";
 import {
+  type CronJobPatch,
+  type CronJobRecord,
+  cronJobPatchChangesContext,
   cronTopicSessionName,
+  getCronJob,
   listCronJobsForTopic,
   listCronTopicSessions,
   markCronTopicContextRotated,
   resetCronTopicContextState,
   resetCronTopicSessions,
+  updateCronJob,
 } from "#store";
 
 export const CRON_CONTEXT_ROTATE_EVERY = 5;
 export const CRON_CONTEXT_RETAIN_TURNS = 5;
 
+/** Update one job and fully discard shared history affected by runtime/source changes. */
+export async function updateCronJobWithContextReset(
+  id: string,
+  patch: CronJobPatch,
+  now = new Date(),
+): Promise<CronJobRecord | null> {
+  const previous = getCronJob(id);
+  if (!previous) return null;
+  const resetRequired = cronJobPatchChangesContext(previous, patch);
+  const updated = updateCronJob(id, patch, now);
+  if (!updated || !resetRequired) return updated;
+
+  await resetCronTopicContext(previous.topicId, [previous.ownerUserId]);
+  if (updated.topicId !== previous.topicId) {
+    await resetCronTopicContext(updated.topicId, [updated.ownerUserId]);
+  }
+  return getCronJob(id);
+}
+
 /** Purge the shared Cron log and every provider rollout owned by one topic. */
-export async function resetCronTopicContext(topicId: string): Promise<number> {
+export async function resetCronTopicContext(
+  topicId: string,
+  extraOwnerUserIds: Iterable<string> = [],
+): Promise<number> {
   const sessions = listCronTopicSessions(topicId);
   const owners = new Set([
     ...sessions.map((session) => session.ownerUserId),
     ...listCronJobsForTopic(topicId).map((job) => job.ownerUserId),
+    ...extraOwnerUserIds,
   ]);
   for (const ownerUserId of owners) {
     await purgeTopicLogs({

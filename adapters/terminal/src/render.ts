@@ -1,4 +1,5 @@
 import {
+  EFFORT_VALUES,
   getRegistry,
   type MessageDto,
   resolveModelForAgent,
@@ -7,6 +8,7 @@ import {
 } from "@negotium/core";
 import { terminalNowMs } from "@/clock";
 import { commandSuggestions } from "@/commands";
+import { pathSuggestions } from "@/path-suggest";
 import {
   type AppState,
   activeMessages,
@@ -75,6 +77,10 @@ export function effectiveTopicModel(topic: TopicDto | null): string {
     topic.effectiveModel ?? topic.defaultModel,
     getRegistry(topic.agent),
   );
+}
+
+function effectiveTopicEffort(topic: TopicDto | null): string {
+  return topic?.effectiveEffort ?? topic?.defaultEffort ?? "-";
 }
 
 interface UiLine {
@@ -460,7 +466,7 @@ function helpLines(): UiLine[] {
     line("  Esc/Ctrl-C stop active turn · Ctrl-C twice when idle to quit"),
     line(""),
     line("  Commands", { fg: theme.cyan, bold: true }),
-    line("  /new  /model  /topics  /fork  /spawn  /del  /copy"),
+    line("  /new  /model  /effort  /topics  /fork  /spawn  /del  /copy"),
     line("  /abort  /help  /quit", { fg: theme.muted }),
   ];
 }
@@ -489,6 +495,7 @@ function statusLines(state: AppState): UiLine[] {
     line(`  Topic       ${topic?.title ?? "none"}`),
     line(`  Agent       ${topic?.agent ?? "none"}`),
     line(`  Model       ${effectiveTopicModel(topic)}`),
+    line(`  Effort      ${topic?.effectiveEffort ?? topic?.defaultEffort ?? "-"}`),
     line(""),
     line(
       `  Context     ${tokenCount(usage?.context)} / ${tokenCount(usage?.contextWindow)}${ratio === undefined ? "" : ` (${ratio}%)`}`,
@@ -533,7 +540,13 @@ type TopicOverlayEntry =
   | { kind: "heading"; label: string }
   | { kind: "separator" }
   | { kind: "topic"; topic: TopicDto; topicIndex: number }
-  | { kind: "background"; sessionId: string; label: string; status: string };
+  | {
+      kind: "background";
+      sessionId: string;
+      label: string;
+      status: string;
+      active: boolean;
+    };
 
 function topicOverlayLines(
   state: AppState,
@@ -573,6 +586,7 @@ function topicOverlayLines(
         sessionId: session.id,
         label: session.title,
         status: session.status,
+        active: session.active ?? true,
       })),
     );
   }
@@ -620,9 +634,9 @@ function topicOverlayLines(
           if (entry.kind === "background") {
             const selected = entry.sessionId === state.topicPickerBackgroundId;
             return line(
-              `  ${selected ? "›" : " "} ${workingFrame(animationFrame)} ${entry.label}  ·  ${entry.status}`,
+              `  ${selected ? "›" : " "} ${entry.active ? workingFrame(animationFrame) : "○"} ${entry.label}  ·  ${entry.status}`,
               {
-                fg: selected ? theme.text : theme.green,
+                fg: selected ? theme.text : entry.active ? theme.green : theme.muted,
                 bg: selected ? theme.selected : theme.canvas,
                 bold: selected,
               },
@@ -633,7 +647,7 @@ function topicOverlayLines(
           const running = state.activity[topic.id]?.running;
           const childPrefix = topic.isSubagent ? "  ↳ " : "";
           return line(
-            `  ${selected ? "›" : " "} ${childPrefix}${running ? workingFrame(animationFrame) : "○"} ${topic.title}  ·  ${topic.agent ?? "no agent"}  ·  ${effectiveTopicModel(topic)}`,
+            `  ${selected ? "›" : " "} ${childPrefix}${running ? workingFrame(animationFrame) : "○"} ${topic.title}  ·  ${topic.agent ?? "no agent"}  ·  ${effectiveTopicModel(topic)}  ·  ${effectiveTopicEffort(topic)}`,
             {
               fg: selected ? theme.text : running ? theme.green : theme.muted,
               bg: selected ? theme.selected : theme.canvas,
@@ -644,7 +658,7 @@ function topicOverlayLines(
   ];
 }
 
-function backgroundSessionLines(state: AppState, nowMs = terminalNowMs()): UiLine[] {
+function backgroundSessionLines(state: AppState, width: number, nowMs = terminalNowMs()): UiLine[] {
   const session = pickedBackgroundSession(state);
   if (!session) return [line("  This background session has finished.", { fg: theme.muted })];
   const elapsed = formatElapsedDuration(
@@ -655,12 +669,34 @@ function backgroundSessionLines(state: AppState, nowMs = terminalNowMs()): UiLin
       fg: theme.accent,
       bold: true,
     }),
-    line("  Esc back · this entry disappears when the run finishes", { fg: theme.muted }),
+    line(
+      session.kind === "cron"
+        ? "  Esc back · session stays available between runs"
+        : "  Esc back · this entry disappears when archiving finishes",
+      { fg: theme.muted },
+    ),
     line(""),
     line(`  ${session.title}`, { bold: true }),
-    line(`  ${session.status} · ${elapsed}`, { fg: theme.green }),
-    ...(session.agent || session.model
-      ? [line(`  ${session.agent ?? "-"} · ${session.model ?? "default"}`, { fg: theme.muted })]
+    line(`  ${session.status}${session.active === false ? "" : ` · ${elapsed}`}`, {
+      fg: session.active === false ? theme.muted : theme.green,
+    }),
+    ...(session.agent || session.model || session.effort
+      ? [
+          line(
+            `  ${session.agent ?? "-"} · ${session.model ?? "default"} · ${session.effort ?? "default"}`,
+            { fg: theme.muted },
+          ),
+        ]
+      : []),
+    ...(session.prompt
+      ? [
+          line(""),
+          line(`  ${session.promptTitle ?? "Prompt"}`, { fg: theme.cyan, bold: true }),
+          ...session.prompt
+            .split("\n")
+            .flatMap((part) => wrapText(part || " ", Math.max(4, width - 4)))
+            .map((part) => line(`  ${safeText(part)}`, { fg: theme.text })),
+        ]
       : []),
     line(""),
     line("  Activity", { fg: theme.cyan, bold: true }),
@@ -697,6 +733,91 @@ function modelOverlayLines(state: AppState, height: number): UiLine[] {
         });
       },
     ),
+  ];
+}
+
+function vaultOverlayLines(state: AppState, width: number, height: number): UiLine[] {
+  const header = [
+    line("  Vault", { fg: theme.accent, bold: true }),
+    line("  Encrypted locally · secret values are never displayed", { fg: theme.muted }),
+    line(""),
+  ];
+
+  if (state.vaultMode === "confirm-delete") {
+    const selected = state.vaultEntries[state.vaultPickerIndex];
+    return [
+      ...header,
+      line(`  Delete ${selected?.key ?? "this key"}?`, { fg: theme.red, bold: true }),
+      line(""),
+      line("  This cannot be undone. The secret value will be removed.", { fg: theme.muted }),
+      line("  Press y to delete or n to cancel.", { fg: theme.amber }),
+    ].slice(0, height);
+  }
+
+  if (state.vaultMode !== "list") {
+    const step = state.vaultMode === "key" ? 1 : state.vaultMode === "value" ? 2 : 3;
+    const action = state.vaultEditing ? "Update secret" : "Add secret";
+    const guidance =
+      state.vaultMode === "key"
+        ? "Choose a recognizable key, for example GITHUB_TOKEN."
+        : state.vaultMode === "value"
+          ? "Enter the secret value. Input is hidden and is never saved to history."
+          : "Add an optional description so the agent knows when to use this key.";
+    return [
+      ...header,
+      line(`  ${action} · ${step}/3`, { bold: true }),
+      ...(state.vaultDraftKey ? [line(`  Key  ${state.vaultDraftKey}`, { fg: theme.muted })] : []),
+      line(""),
+      ...wrapText(guidance, Math.max(4, width - 4)).map((text) => line(`  ${text}`)),
+      ...(state.vaultNotice
+        ? [line(""), line(`  ! ${state.vaultNotice}`, { fg: theme.amber })]
+        : []),
+    ].slice(0, height);
+  }
+
+  const entries = state.vaultEntries;
+  const visibleCount = Math.max(1, height - 7);
+  const start = Math.min(
+    Math.max(0, entries.length - visibleCount),
+    Math.max(0, state.vaultPickerIndex - visibleCount + 1),
+  );
+  return [
+    ...header,
+    ...(entries.length === 0
+      ? [
+          line("  No secrets stored", { bold: true }),
+          line("  Press N to add your first key.", { fg: theme.muted }),
+        ]
+      : entries.slice(start, start + visibleCount).map((entry, visibleIndex) => {
+          const selected = start + visibleIndex === state.vaultPickerIndex;
+          const description = entry.description || "No description";
+          return line(`  ${selected ? "›" : " "} ${entry.key}  ${description}`, {
+            fg: selected ? theme.text : theme.muted,
+            bg: selected ? theme.selected : theme.canvas,
+            bold: selected,
+          });
+        })),
+    ...(state.vaultNotice ? [line(""), line(`  ${state.vaultNotice}`, { fg: theme.green })] : []),
+  ].slice(0, height);
+}
+
+function effortOverlayLines(state: AppState): UiLine[] {
+  const topic = activeTopic(state);
+  const currentEffort = topic?.effectiveEffort ?? topic?.defaultEffort;
+  const efforts = topic?.agent ? getRegistry(topic.agent).validEfforts : EFFORT_VALUES;
+  return [
+    line("  Reasoning effort", { fg: theme.accent, bold: true }),
+    line("  ↑↓ select · Enter apply · Esc close", { fg: theme.muted }),
+    line(""),
+    ...efforts.map((effort, index) => {
+      const selected = index === state.effortPickerIndex;
+      const current = effort === currentEffort;
+      return line(`  ${selected ? "›" : " "} ${effort}${current ? " (current)" : ""}`, {
+        fg: selected ? theme.text : current ? theme.green : theme.muted,
+        bg: selected ? theme.selected : theme.canvas,
+        bold: selected,
+      });
+    }),
   ];
 }
 
@@ -738,17 +859,10 @@ function conversationLines(
   if (state.overlay === "topics")
     return topicOverlayLines(state, width, height, animationFrame).slice(0, height);
   if (state.overlay === "background-session")
-    return backgroundSessionLines(state, nowMs).slice(0, height);
+    return backgroundSessionLines(state, width, nowMs).slice(0, height);
   if (state.overlay === "models") return modelOverlayLines(state, height).slice(0, height);
-  if (state.overlay === "vault") {
-    return [
-      line("  Vault · Esc close", { fg: theme.accent, bold: true }),
-      line(""),
-      ...(state.vaultOutput ?? "Vault is empty.")
-        .split("\n")
-        .flatMap((text) => wrapText(text, Math.max(4, width - 4)).map((part) => line(`  ${part}`))),
-    ].slice(0, height);
-  }
+  if (state.overlay === "effort") return effortOverlayLines(state).slice(0, height);
+  if (state.overlay === "vault") return vaultOverlayLines(state, width, height);
   if (state.creatingTopic) {
     return [
       line(""),
@@ -874,17 +988,26 @@ function wrappedCursorPosition(
 }
 
 function inputVisualLines(state: AppState, width: number): InputVisual {
-  if (!state.input) {
+  const secretInput = state.overlay === "vault" && state.vaultMode === "value";
+  const displayInput = secretInput
+    ? state.input
+        .split("\n")
+        .map((row) => "*".repeat(Array.from(row).length))
+        .join("\n")
+    : state.input;
+  if (!displayInput) {
+    const placeholder =
+      state.overlay === "vault"
+        ? state.vaultMode === "key"
+          ? "Type a key name…"
+          : state.vaultMode === "value"
+            ? "Type the secret value…"
+            : "Optional description…"
+        : state.creatingTopic
+          ? "Type a topic name…"
+          : "Type a message or /command…";
     return {
-      lines: [
-        line(
-          `  ›   ${state.creatingTopic ? "Type a topic name…" : "Type a message or /command…"}`,
-          {
-            fg: theme.subtle,
-            bg: theme.surfaceRaised,
-          },
-        ),
-      ],
+      lines: [line(`  ›   ${placeholder}`, { fg: theme.subtle, bg: theme.surfaceRaised })],
       cursorLine: 0,
       cursorColumn: 5,
     };
@@ -893,7 +1016,7 @@ function inputVisualLines(state: AppState, width: number): InputVisual {
   const result: UiLine[] = [];
   let cursorLine = 0;
   let cursorColumn = 5;
-  for (const [row, inputLine] of state.input.split("\n").entries()) {
+  for (const [row, inputLine] of displayInput.split("\n").entries()) {
     const firstVisualLine = result.length;
     if (row === state.inputCursor.row) {
       const cursor = wrappedCursorPosition(inputLine, state.inputCursor.col, contentWidth);
@@ -917,17 +1040,23 @@ interface ComposerPane {
 }
 
 function composerPane(state: AppState, width: number): ComposerPane {
-  const title = state.creatingTopic ? "new topic · type a name · Enter create" : "Ctrl-O topics";
+  const title = state.creatingTopic
+    ? "new topic · type a name · Enter create"
+    : state.overlay === "vault"
+      ? `${state.vaultMode === "key" ? "key" : state.vaultMode === "value" ? "secret value" : "description"} · Enter continue · Esc cancel`
+      : "Ctrl-O topics";
   const visual = inputVisualLines(state, width);
   let inputStart = Math.max(0, visual.lines.length - 5);
   if (visual.cursorLine < inputStart) inputStart = visual.cursorLine;
   else if (visual.cursorLine >= inputStart + 5) inputStart = visual.cursorLine - 4;
   const inputLines = visual.lines.slice(inputStart, inputStart + 5);
   const visibleCursorLine = visual.cursorLine - inputStart;
-  const suggestions = state.creatingTopic ? [] : commandSuggestions(state.input);
-  const suggestionLines = suggestions
-    .slice(0, Math.max(0, 6 - inputLines.length))
-    .map((command, index) =>
+  const suggestionsDisabled = state.creatingTopic || state.overlay === "vault";
+  const commands = suggestionsDisabled ? [] : commandSuggestions(state.input);
+  const cap = Math.max(0, 6 - inputLines.length);
+  let suggestionLines: ReturnType<typeof line>[];
+  if (commands.length > 0) {
+    suggestionLines = commands.slice(0, cap).map((command, index) =>
       line(
         `    ${index === state.suggestionIndex ? "›" : " "} ${command.usage}  ${command.description}`,
         {
@@ -936,6 +1065,25 @@ function composerPane(state: AppState, width: number): ComposerPane {
         },
       ),
     );
+  } else if (!suggestionsDisabled) {
+    // `@`-path completion: suggestions drawn from the real filesystem.
+    const cursor = state.inputCursor;
+    const lineText = state.input.split("\n")[cursor.row] ?? "";
+    const paths = pathSuggestions(lineText, cursor.col);
+    const items = paths?.items ?? [];
+    suggestionLines = items.slice(0, cap).map((item, index) =>
+      line(`    ${index === state.suggestionIndex ? "›" : " "} ${item.value.slice(1)}`, {
+        fg: index === state.suggestionIndex ? theme.text : theme.muted,
+        bg: index === state.suggestionIndex ? theme.selected : theme.surface,
+      }),
+    );
+    const hidden = (paths?.truncated ?? 0) + Math.max(0, items.length - suggestionLines.length);
+    if (hidden > 0 && suggestionLines.length < cap) {
+      suggestionLines.push(line(`      … +${hidden} more`, { fg: theme.muted, dim: true }));
+    }
+  } else {
+    suggestionLines = [];
+  }
   const content = [line(""), ...inputLines, line(""), ...suggestionLines].slice(0, 8);
   const input = content.map((item) =>
     paint(fit(item.text, width), {
@@ -974,7 +1122,7 @@ function footerLines(state: AppState, width: number): string[] {
   return [
     paint(
       joinSides(
-        `  ${topic?.title ?? "no topic"} · ${topic?.agent ?? "-"} · ${effectiveTopicModel(topic)}`,
+        `  ${topic?.agent ?? "-"} · ${effectiveTopicModel(topic)} · ${effectiveTopicEffort(topic)}`,
         "",
         width,
       ),
@@ -996,7 +1144,13 @@ function footerLines(state: AppState, width: number): string[] {
             : state.overlay === "background-session"
               ? "Esc back · read-only  "
               : state.overlay === "vault"
-                ? "Esc close  "
+                ? state.vaultMode === "list"
+                  ? state.vaultEntries.length > 0
+                    ? "↑↓ select · Enter edit · N add · D delete · Esc close  "
+                    : "N add · Esc close  "
+                  : state.vaultMode === "confirm-delete"
+                    ? "Y delete · N cancel  "
+                    : "Enter continue · Esc cancel  "
                 : running
                   ? "Esc/Ctrl-C stop  "
                   : "Ctrl-C twice to quit  ",
@@ -1043,8 +1197,11 @@ export function renderAppFrame(
   const height = Math.max(14, rows);
   const footer = footerLines(state, width);
   const decision = decisionPane(state, width);
-  const readOnlyBackground = state.overlay === "background-session";
-  const composer = readOnlyBackground ? { lines: [], cursor: null } : composerPane(state, width);
+  const hideComposer =
+    state.overlay === "background-session" ||
+    (state.overlay === "vault" &&
+      (state.vaultMode === "list" || state.vaultMode === "confirm-delete"));
+  const composer = hideComposer ? { lines: [], cursor: null } : composerPane(state, width);
   const bodyHeight = Math.max(3, height - footer.length - decision.length - composer.lines.length);
   const body = renderBody(
     conversationLines(state, width, bodyHeight, animationFrame, nowMs),

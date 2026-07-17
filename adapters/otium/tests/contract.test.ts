@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   assertAdapterStopIsIdempotent,
   assertNegotiumAdapterCapability,
@@ -17,6 +19,18 @@ import {
   peerInboxPayloadHash,
 } from "@/store";
 import { startFakeCentral } from "./helpers";
+
+test("otium worker package has no Otium runtime dependency", () => {
+  const manifest = JSON.parse(
+    readFileSync(resolve(import.meta.dir, "../package.json"), "utf8"),
+  ) as {
+    dependencies?: Record<string, string>;
+  };
+  const dependencies = Object.keys(manifest.dependencies ?? {});
+
+  expect(dependencies.length).toBeGreaterThan(0);
+  expect(dependencies.every((name) => name.startsWith("@negotium/"))).toBe(true);
+});
 
 test("otium implements the shared adapter lifecycle", async () => {
   assertNegotiumAdapterDefinition(otiumAdapter, "otium");

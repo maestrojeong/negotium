@@ -1,15 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { db, type TopicDto, upsertTopic } from "@negotium/core";
+import { updateCronJobWithContextReset } from "../src/context";
 import { CronScheduler } from "../src/scheduler";
 import {
   claimCronRuns,
+  countCronRuns,
   createCronJob,
   finalizeOrphanedCronRuns,
   finishCronRun,
   getCronJob,
   getCronTopicContext,
   getCronTopicSession,
+  getLastCronRun,
   listCronRuns,
   listCronTopicSessions,
   markCronRunStarted,
@@ -17,6 +20,9 @@ import {
   requestCronCancel,
   requestCronRun,
   setCronTopicSession,
+  setCronTopicSessionIfJobUpdatedAt,
+  updateCronJob,
+  updateCronJobSummaryIfPromptMatches,
 } from "../src/store";
 
 const topicIds: string[] = [];
@@ -151,12 +157,113 @@ describe("cron store", () => {
     expect(finalizeOrphanedCronRuns(new Date("2026-07-14T12:03:00Z"))).toBe(1);
     expect(recoverPendingCronRuns().map((entry) => entry.job.id)).toEqual([pendingJob.id]);
     expect(listCronRuns(runningJob.id, 1)[0]).toMatchObject({
-      status: "failed",
+      status: "interrupted",
+      exitCode: 137,
       error: "node restarted after dispatch; final outcome is unknown",
     });
     finishCronRun(claimed.find((entry) => entry.job.id === pendingJob.id)!.run.id, {
       status: "succeeded",
     });
+  });
+
+  test("updates every mutable field, recomputes scheduling, and resets stale context", async () => {
+    const topic = createTopic();
+    const nextTopic = createTopic();
+    const job = createJob(topic);
+    setCronTopicSession(topic.id, "claude", job.ownerUserId, "old-session");
+
+    const updated = await updateCronJobWithContextReset(
+      job.id,
+      {
+        name: `edited-${randomUUID()}`,
+        topicId: nextTopic.id,
+        prompt: "Edited task",
+        summary: "Edited summary",
+        schedule: "*/15 * * * *",
+        timezone: "America/Los_Angeles",
+        agent: "codex",
+        model: "gpt-5.6-luna",
+        effort: "high",
+      },
+      new Date("2026-07-14T12:03:00Z"),
+    );
+
+    expect(updated).toMatchObject({
+      topicId: nextTopic.id,
+      prompt: "Edited task",
+      script: undefined,
+      summary: "Edited summary",
+      schedule: "*/15 * * * *",
+      timezone: "America/Los_Angeles",
+      agent: "codex",
+      model: "gpt-5.6-luna",
+      effort: "high",
+      nextRunAt: "2026-07-14T12:15:00.000Z",
+    });
+    expect(listCronTopicSessions(topic.id)).toHaveLength(0);
+    expect(listCronTopicSessions(nextTopic.id)).toHaveLength(0);
+  });
+
+  test("does not let a stale in-flight run restore a session after job edits", () => {
+    const topic = createTopic();
+    const job = createJob(topic);
+    updateCronJob(job.id, { prompt: "New instructions" }, new Date("2026-07-14T12:05:00Z"));
+
+    expect(
+      setCronTopicSessionIfJobUpdatedAt(
+        job.id,
+        job.updatedAt,
+        topic.id,
+        "claude",
+        job.ownerUserId,
+        "stale-session",
+      ),
+    ).toBeNull();
+    expect(getCronTopicSession(topic.id, "claude")).toBeNull();
+  });
+
+  test("rejects context-changing edits while a run is pending", () => {
+    const topic = createTopic();
+    const job = createJob(topic);
+    requestCronRun(job.id);
+    const claimed = claimCronRuns()[0]!;
+
+    expect(() => updateCronJob(job.id, { prompt: "Changed while running" })).toThrow(
+      "cancel it first",
+    );
+    finishCronRun(claimed.run.id, { status: "aborted" });
+  });
+
+  test("attributes a completed run to the topic captured when it was claimed", () => {
+    const topic = createTopic();
+    const nextTopic = createTopic();
+    const job = createJob(topic);
+    requestCronRun(job.id);
+    const claimed = claimCronRuns()[0]!;
+
+    // Simulate an external writer moving the job after this process claimed it.
+    db.query("UPDATE negotium_cron_jobs SET topic_id = ? WHERE id = ?").run(nextTopic.id, job.id);
+    finishCronRun(claimed.run.id, { status: "succeeded" });
+
+    expect(getCronTopicContext(topic.id)?.successfulRunsSinceRotation).toBe(1);
+    expect(getCronTopicContext(nextTopic.id)).toBeNull();
+  });
+
+  test("persists guarded summaries and run aggregates with exit codes", () => {
+    const topic = createTopic();
+    const job = createJob(topic);
+    expect(updateCronJobSummaryIfPromptMatches(job.id, "wrong prompt", "Wrong")).toBe(false);
+    expect(updateCronJobSummaryIfPromptMatches(job.id, job.prompt!, "Project status")).toBe(true);
+    expect(getCronJob(job.id)?.summary).toBe("Project status");
+
+    updateCronJob(job.id, { enabled: false });
+    requestCronRun(job.id);
+    const claimed = claimCronRuns()[0]!;
+    markCronRunStarted(claimed.run.id, "failed-query");
+    finishCronRun(claimed.run.id, { status: "failed", exitCode: 9, error: "failed" });
+
+    expect(countCronRuns(job.id)).toBe(1);
+    expect(getLastCronRun(job.id)).toMatchObject({ status: "failed", exitCode: 9 });
   });
 });
 

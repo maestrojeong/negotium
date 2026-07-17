@@ -5,10 +5,12 @@ import {
   getTopic,
   logger,
   type NegotiumNodeModule,
+  registerBackgroundSessionProvider,
   registerRuntimeMcpServer,
   resolveTopicWorkspaceDir,
   triggerTopicAiTurn,
 } from "@negotium/core";
+import { listCronBackgroundSessions } from "#background-sessions";
 import { resetCronTopicContext } from "#context";
 import { CronScheduler, type CronSchedulerOptions } from "#scheduler";
 import { runCronPromptScript } from "#scripts";
@@ -63,6 +65,9 @@ export function createCronModule(options: CronModuleOptions = {}): NegotiumNodeM
           return buildStdioMcpServer(agent, MCP_SERVER_FILE, args);
         },
       });
+      const unregisterBackgroundSessions = registerBackgroundSessionProvider(
+        listCronBackgroundSessions,
+      );
 
       const schedulerOptions: CronSchedulerOptions = {
         bus: context.bus,
@@ -132,6 +137,7 @@ export function createCronModule(options: CronModuleOptions = {}): NegotiumNodeM
         async stop() {
           scheduler.stop();
           unsubscribeTopicCleanup();
+          unregisterBackgroundSessions();
           unregisterMcp();
           await Promise.allSettled(cleanupTasks);
         },

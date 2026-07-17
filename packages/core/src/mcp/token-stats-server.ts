@@ -16,7 +16,7 @@ const server = new McpServer({ name: "token-stats", version: "1.0.0" });
 server.tool(
   "get_usage_stats",
   [
-    "Claude 사용량 통계를 조회합니다. 쿼리마다 세션/시간 정보가 기록되어 있습니다.",
+    "Claude 사용량 통계를 조회합니다. 완료된 쿼리마다 세션/시간 정보가 기록됩니다. 현재 실행 중인 turn은 완료 후 집계됩니다.",
     "",
     "from/to 생략 시 전체 기간. 자연어 시간 표현을 ISO 형식으로 변환해서 넘겨주세요.",
     "  예: '지난 3시간' → from = 현재 -3h",

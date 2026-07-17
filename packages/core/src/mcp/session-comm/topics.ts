@@ -64,7 +64,9 @@ export function validateTarget(to: string): ValidateTargetResult {
   const topics = getTopicsForUser();
   const target = topics[to];
   if (!target) {
-    const available = Object.keys(topics).filter((n) => n !== currentTopic);
+    const available = Object.entries(topics)
+      .filter(([name, topic]) => name !== currentTopic && Boolean(topic.agent))
+      .map(([name]) => name);
     return {
       ok: false,
       error: {

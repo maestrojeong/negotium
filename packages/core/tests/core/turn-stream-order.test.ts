@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { registerPeerRuntimeBridge } from "#mcp/peer-bridge";
-import { resolveTopicWorkspaceDir } from "#platform/config";
+import { LOG_DIR, resolveTopicWorkspaceDir } from "#platform/config";
 import type { RoomQueryControl } from "#query/active-rooms";
 import { AbortReason } from "#query/types";
 import { fileHooks, setFileHooks } from "#runtime/file-hooks";
@@ -11,6 +11,7 @@ import { streamAgentEvents, wasLocallyRequeuedAfterUserPreemption } from "#runti
 import { listApiMessages } from "#storage/api-messages";
 import { deleteTopic, upsertTopic } from "#storage/api-topics";
 import { latestRuntimeEventSeq, listRuntimeEventsAfter } from "#storage/runtime-events";
+import { getStats, recordUsage } from "#storage/token-stats";
 import type { UnifiedEvent } from "#types";
 
 const topicIds = new Set<string>();
@@ -68,6 +69,73 @@ afterEach(() => {
 });
 
 describe("turn stream ordering", () => {
+  test("keeps external user IDs inside the token-stats directory", () => {
+    const outsideName = `token-stats-escape-${randomUUID()}.jsonl`;
+    const outsidePath = join(dirname(LOG_DIR), outsideName);
+    const userId = `nested/../../${outsideName.slice(0, -".jsonl".length)}`;
+
+    expect(existsSync(outsidePath)).toBe(false);
+    recordUsage(userId, "path-safe", { inputTokens: 3, outputTokens: 2 });
+
+    expect(existsSync(outsidePath)).toBe(false);
+    expect(getStats(userId).bySession["path-safe"]).toMatchObject({
+      inputTokens: 3,
+      outputTokens: 2,
+      queries: 1,
+    });
+  });
+
+  test("records provider usage for silent worker turns", async () => {
+    const topicId = seedTopic();
+    const queryId = randomUUID();
+    const userId = randomUUID();
+    const topicTitle = `worker-usage-${randomUUID()}`;
+    const control: RoomQueryControl = {
+      topicId,
+      queryId,
+      origin: "user",
+      prompt: "test",
+      abortController: new AbortController(),
+      abortReason: AbortReason.None,
+    };
+    async function* usageEvents(): AsyncGenerator<UnifiedEvent> {
+      yield {
+        type: "result",
+        content: "done",
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 101,
+          outputTokens: 17,
+          cacheCreationInputTokens: 13,
+          cacheReadInputTokens: 29,
+        },
+      };
+    }
+
+    await streamAgentEvents(
+      topicId,
+      topicTitle,
+      queryId,
+      usageEvents(),
+      control,
+      "codex",
+      "gpt-5.6-luna",
+      "medium",
+      userId,
+      true,
+      undefined,
+      { silent: true },
+    );
+
+    expect(getStats(userId).bySession[topicTitle]).toEqual({
+      inputTokens: 101,
+      outputTokens: 17,
+      cacheCreationInputTokens: 13,
+      cacheReadInputTokens: 29,
+      queries: 1,
+    });
+  });
+
   test("only suppresses settlement after a replay was actually queued locally", () => {
     const injectParams = {
       topicId: "topic",

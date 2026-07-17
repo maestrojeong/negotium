@@ -316,6 +316,57 @@ describe("writeCodexRollout", () => {
     expect(migrated.every((line) => line.payload.multi_agent_version === "disabled")).toBe(true);
   });
 
+  test("migrates a rollout stored in a local-date bucket that skews from the UUID's UTC day", async () => {
+    const { migrateCodexRolloutNativeMultiAgentMetadata, readLatestCodexContextUsage } =
+      await import("#agents/rollout/codex");
+    // UUIDv7 timestamps are UTC, but Codex names session dirs by the local date.
+    // Pick an early-UTC-day timestamp and file it under the *previous* day's
+    // bucket, exactly as a negative-offset timezone would in the evening.
+    const utcMs = Date.UTC(2026, 6, 17, 2, 0, 0);
+    const hex = utcMs.toString(16).padStart(12, "0");
+    const threadId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-7abc-8abc-abcdef012345`;
+
+    const codexHome = mkdtempSync(join(WORKSPACE_DIR, "test-codex-home-"));
+    const previousEnv = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexHome;
+    try {
+      const bucketDir = join(codexHome, "sessions", "2026", "07", "16");
+      mkdirSync(bucketDir, { recursive: true });
+      const rolloutPath = join(bucketDir, `rollout-2026-07-16T19-00-00-${threadId}.jsonl`);
+      const lines = [
+        { type: "session_meta", payload: { id: threadId, multi_agent_version: "v1" } },
+        { type: "turn_context", payload: { turn_id: "t1", multi_agent_version: "v2" } },
+        {
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              last_token_usage: { total_tokens: 321 },
+              model_context_window: 128_000,
+            },
+          },
+        },
+      ];
+      writeFileSync(rolloutPath, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+
+      expect(readLatestCodexContextUsage(threadId)).toEqual({
+        contextTokens: 321,
+        contextWindow: 128_000,
+      });
+      expect(migrateCodexRolloutNativeMultiAgentMetadata(threadId)).toBe(true);
+      const migrated = readFileSync(rolloutPath, "utf8")
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .filter((line) => line.type === "session_meta" || line.type === "turn_context");
+      expect(migrated.every((line) => line.payload.multi_agent_version === "disabled")).toBe(true);
+    } finally {
+      if (previousEnv === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousEnv;
+      rmSync(codexHome, { recursive: true, force: true });
+    }
+  });
+
   test("extracts the latest per-request context usage from token-count events", async () => {
     const { extractLatestCodexContextUsage } = await import("#agents/rollout/codex");
     const jsonl = [

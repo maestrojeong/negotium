@@ -88,6 +88,114 @@ describe("otium runtime peer bridge", () => {
     });
   });
 
+  test("ask_user_question starts and polls the canonical hub card", async () => {
+    const received: Array<{ path: string; auth: string | null; body: Record<string, unknown> }> =
+      [];
+    let polls = 0;
+    const hub = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        const path = new URL(req.url).pathname;
+        const body = (await req.json()) as Record<string, unknown>;
+        received.push({ path, auth: req.headers.get("authorization"), body });
+        if (path.endsWith("/ask/start")) return Response.json({ ok: true, pending: true });
+        polls++;
+        if (polls === 1) return Response.json({ ok: true, pending: true });
+        return Response.json({
+          ok: true,
+          pending: false,
+          result: { content: [{ type: "text", text: "Answered on hub" }] },
+        });
+      },
+    });
+    running.push(hub);
+    const central = startFakeCentral();
+    running.push(central);
+    central.setHubBaseUrl(`http://127.0.0.1:${hub.port}`);
+    configureOtiumCentral(central.join);
+
+    const result = await otiumPeerRuntimeBridge.askUser({
+      bridge: {
+        hubCellId: HUB_CELL_ID,
+        hostTopicId: "host-parent",
+        hostQueryId: "host-query",
+        canSpawnSubagents: true,
+      },
+      userId: "central-user",
+      agent: "claude",
+      model: "sonnet",
+      input: { question: "Continue?", choices: [{ label: "Yes" }] },
+    });
+
+    expect(result).toEqual({ content: [{ type: "text", text: "Answered on hub" }] });
+    expect(received.map((entry) => entry.path)).toEqual([
+      "/api/v1/peer/bridge/ask/start",
+      "/api/v1/peer/bridge/ask/result",
+      "/api/v1/peer/bridge/ask/result",
+    ]);
+    expect(received.every((entry) => entry.auth === `Bearer ${MINTED_TOKEN}`)).toBe(true);
+    const bridgeRequestId = received[0]?.body.bridgeRequestId;
+    expect(typeof bridgeRequestId).toBe("string");
+    expect(received[0]?.body).toEqual({
+      hostQueryId: "host-query",
+      bridgeRequestId,
+      userId: "central-user",
+      agent: "claude",
+      model: "sonnet",
+      input: { question: "Continue?", choices: [{ label: "Yes" }] },
+    });
+    expect(received[1]?.body).toEqual({ hostQueryId: "host-query", bridgeRequestId });
+  });
+
+  test("self-config tools execute against the canonical hub topic", async () => {
+    let received: { auth: string | null; body: Record<string, unknown> } | undefined;
+    const hub = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        received = {
+          auth: req.headers.get("authorization"),
+          body: (await req.json()) as Record<string, unknown>,
+        };
+        return Response.json({
+          ok: true,
+          result: { content: [{ type: "text", text: "Hub model updated" }] },
+        });
+      },
+    });
+    running.push(hub);
+    const central = startFakeCentral();
+    running.push(central);
+    central.setHubBaseUrl(`http://127.0.0.1:${hub.port}`);
+    configureOtiumCentral(central.join);
+
+    const result = await otiumPeerRuntimeBridge.selfConfig({
+      bridge: {
+        hubCellId: HUB_CELL_ID,
+        hostTopicId: "host-parent",
+        hostQueryId: "host-query",
+        canSpawnSubagents: true,
+      },
+      userId: "central-user",
+      tool: "set_model",
+      input: { model: "opus" },
+      currentUserPrompt: "switch to opus",
+    });
+
+    expect(result).toEqual({ content: [{ type: "text", text: "Hub model updated" }] });
+    expect(received).toEqual({
+      auth: `Bearer ${MINTED_TOKEN}`,
+      body: {
+        hostQueryId: "host-query",
+        userId: "central-user",
+        tool: "set_model",
+        input: { model: "opus" },
+        currentUserPrompt: "switch to opus",
+      },
+    });
+  });
+
   test("show_html returns the hub-owned visual URL", async () => {
     let received: Record<string, unknown> | undefined;
     const hub = Bun.serve({

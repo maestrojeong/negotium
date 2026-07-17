@@ -127,6 +127,7 @@ import {
   releaseRuntimeUserTurnClaim,
 } from "#storage/runtime-turn-requests";
 import type { PendingAskUserId } from "#storage/session-asks";
+import { recordUsage } from "#storage/token-stats";
 import { getSharedWikiDir } from "#storage/wiki";
 import { wikiSummaryFilename } from "#storage/wiki-summary-names";
 import { getTopics } from "#topics/derive";
@@ -654,6 +655,7 @@ export async function streamAgentEvents(
           }
           break;
         case "result":
+          if (event.usage) recordUsage(userId, topicTitle, event.usage);
           {
             const usage: MessageDto["usage"] = event.usage
               ? {
@@ -760,6 +762,9 @@ export async function streamAgentEvents(
           break;
         case "tool_use_summary":
           if (!silent) hub.broadcastToolStatus(topicId, queryId, "summary", event.summary);
+          break;
+        case "reasoning":
+          if (!silent) hub.broadcastReasoning(topicId, queryId, event.content);
           break;
         case "tasks":
           if (!silent) {

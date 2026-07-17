@@ -6,6 +6,7 @@ import {
   escapeStopsActiveTurn,
   runtimeEventWaitsForMessageLoad,
   TerminalApp,
+  vaultFormBlocksOverlaySwitch,
 } from "@/app";
 import {
   INITIAL_MESSAGE_HISTORY_LIMIT,
@@ -120,6 +121,15 @@ test("Esc stops a running turn only from the active conversation", () => {
   expect(escapeStopsActiveTurn(startTopicCreation(running))).toBe(false);
 });
 
+test("Vault secret entry keeps global shortcuts inside the masking overlay", () => {
+  const state = { ...createInitialState("local"), overlay: "vault" as const };
+
+  expect(vaultFormBlocksOverlaySwitch({ ...state, vaultMode: "key" })).toBe(false);
+  expect(vaultFormBlocksOverlaySwitch({ ...state, vaultMode: "value" })).toBe(true);
+  expect(vaultFormBlocksOverlaySwitch({ ...state, vaultMode: "description" })).toBe(true);
+  expect(vaultFormBlocksOverlaySwitch({ ...state, vaultMode: "list" })).toBe(false);
+});
+
 test("stops a started client when terminal initialization fails", async () => {
   let stopped = 0;
   const client: NegotiumClient = {
@@ -146,6 +156,9 @@ test("stops a started client when terminal initialization fails", async () => {
       throw new Error("not reached");
     },
     setModel() {
+      throw new Error("not reached");
+    },
+    setEffort() {
       throw new Error("not reached");
     },
     async deleteTopic() {

@@ -1,6 +1,6 @@
 {
   "name": "@negotium/module-cron",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "type": "module",
   "description": "Optional in-process Cron scheduler for negotium nodes",
   "license": "Apache-2.0",
@@ -42,7 +42,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@negotium/core": "0.1.6",
+    "@negotium/core": "0.1.7",
     "zod": "^4.3.6"
   },
   "devDependencies": {

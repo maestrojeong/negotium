@@ -13,6 +13,7 @@ import {
   type AgentKind,
   type compactTopicSession,
   createDerivedTopic,
+  deleteVaultEntry,
   ensurePersonalGeneral,
   executeVaultCommand,
   getTopic,
@@ -24,13 +25,16 @@ import {
   listRecentRuntimeEventsForTopic,
   listRunningTopicQueries,
   listRuntimeEventsAfter,
+  listVaultEntries,
   NODE_CONTROL_TOKEN,
   RUN_DIR,
   type RuntimeBusEvent,
   STATE_DIR,
   type StoredRuntimeEvent,
+  saveVaultEntry,
   type startAiTurn,
   submitUserMessage,
+  switchTopicEffort,
   switchTopicModel,
   TopicDeriveBusyError,
   type TopicDto,
@@ -38,6 +42,7 @@ import {
   TopicTitleConflictError,
   topicService,
 } from "@negotium/core";
+import { nodeFileStore } from "./files";
 
 export const NODE_CONTROL_PROTOCOL_VERSION = 1;
 export const NODE_CONTROL_BASE_PATH = "/api/v1/control";
@@ -274,6 +279,12 @@ export function createNodeControlHandler(
         return Response.json({ ok: true, sessions: listBackgroundSessionsForUser(userId) });
       }
 
+      const fileMatch = path.match(/^\/files\/([0-9a-f-]+)$/i);
+      if (fileMatch && req.method === "GET") {
+        const userId = requiredText(url.searchParams.get("user"), "user");
+        return nodeFileStore.response(fileMatch[1], userId) ?? jsonError(404, "File not found");
+      }
+
       if (req.method === "POST" && path === "/vault/command") {
         const body = await bodyRecord(req);
         const userId = requiredText(body.userId, "userId");
@@ -281,6 +292,29 @@ export function createNodeControlHandler(
         const result = executeVaultCommand(userId, commandLine);
         if (result === null) return jsonError(400, "Invalid Vault command");
         return Response.json({ ok: true, result });
+      }
+
+      if (req.method === "GET" && path === "/vault") {
+        const userId = requiredText(url.searchParams.get("user"), "user");
+        return Response.json({ ok: true, entries: listVaultEntries(userId) });
+      }
+
+      if (req.method === "POST" && path === "/vault") {
+        const body = await bodyRecord(req);
+        const userId = requiredText(body.userId, "userId");
+        const key = requiredText(body.key, "key");
+        if (typeof body.value !== "string") throw new Error("value is required");
+        const description = body.description === undefined ? "" : String(body.description);
+        return Response.json({
+          ok: true,
+          result: saveVaultEntry(userId, key, body.value, description),
+        });
+      }
+
+      if (req.method === "DELETE" && path === "/vault") {
+        const userId = requiredText(url.searchParams.get("user"), "user");
+        const key = requiredText(url.searchParams.get("key"), "key");
+        return Response.json({ ok: true, deleted: deleteVaultEntry(userId, key) });
       }
 
       if (req.method === "POST" && path === "/topics") {
@@ -360,6 +394,18 @@ export function createNodeControlHandler(
         const result = switchTopicModel({ topicId, userId, model });
         if (!result.ok) return jsonError(400, result.error);
         return Response.json({ ok: true, model: result.model, result: result.text });
+      }
+
+      const effortMatch = path.match(/^\/topics\/([^/]+)\/effort$/);
+      if (effortMatch && req.method === "POST") {
+        const topicId = decodeURIComponent(effortMatch[1]);
+        const body = await bodyRecord(req);
+        const userId = requiredText(body.userId, "userId");
+        const effort = requiredText(body.effort, "effort");
+        if (!topicForUser(topicId, userId)) return jsonError(404, "Topic not found");
+        const result = switchTopicEffort({ topicId, userId, effort });
+        if (!result.ok) return jsonError(400, result.error);
+        return Response.json({ ok: true, effort: result.effort, result: result.text });
       }
 
       const deleteMatch = path.match(/^\/topics\/([^/]+)$/);

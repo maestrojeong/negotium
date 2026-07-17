@@ -25,7 +25,9 @@ import {
   createSelfConfigToolDefinitions,
   createSpawnSubagentToolDefinition,
   createSubagentManagementToolDefinitions,
+  dispatchPeerRuntimeAskUser,
   dispatchPeerRuntimeFile,
+  dispatchPeerRuntimeSelfConfig,
   dispatchPeerRuntimeSpawn,
   errorResult,
   FROM_AUTO_CONTINUE,
@@ -196,27 +198,22 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
     onConfigChanged: (field) => appendAutoContinue(ctx, field),
   };
   for (const def of createSelfConfigToolDefinitions(selfConfigCtx)) {
-    if (
-      ctx.peerBridge &&
-      [
-        "schedule_self",
-        "get_self_schedule",
-        "update_self_schedule",
-        "cancel_self_schedule",
-      ].includes(def.name)
-    ) {
-      server.tool(def.name, def.description, def.schema as any, async () =>
-        errorResult(
-          "Error: self-schedules for placed topics must be created on the canonical hub; the peer schedule bridge is not available yet.",
-        ),
-      );
-      continue;
-    }
-    // A placed room is canonical on the hub. Until these mutations have a
-    // peer bridge, creating worker-local topics would leak mirror state into
-    // local pickers and diverge from the hub transcript.
-    if (ctx.peerBridge && (def.name === "spawn_topic" || def.name === "fork_topic")) continue;
-    server.tool(def.name, def.description, def.schema as any, def.handler as any);
+    const handler = ctx.peerBridge
+      ? async (input: Record<string, unknown>) => {
+          const dispatched = dispatchPeerRuntimeSelfConfig({
+            bridge: ctx.peerBridge!,
+            userId: ctx.userId,
+            tool: def.name,
+            input,
+            ...(ctx.currentUserPrompt ? { currentUserPrompt: ctx.currentUserPrompt } : {}),
+          });
+          if (!dispatched) {
+            return errorResult("Error: the peer self-config bridge is not available on this node.");
+          }
+          return dispatched;
+        }
+      : def.handler;
+    server.tool(def.name, def.description, def.schema as any, handler as any);
   }
 
   const askUserTool = createAskUserToolDefinition({
@@ -226,11 +223,26 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
     agent: ctx.agent,
     model: ctx.model,
   });
+  const askHandler = ctx.peerBridge
+    ? async (input: Record<string, unknown>) => {
+        const dispatched = dispatchPeerRuntimeAskUser({
+          bridge: ctx.peerBridge!,
+          userId: ctx.userId,
+          agent: ctx.agent,
+          model: ctx.model,
+          input,
+        });
+        if (!dispatched) {
+          return errorResult("Error: the peer ask-user bridge is not available on this node.");
+        }
+        return dispatched;
+      }
+    : askUserTool.handler;
   server.tool(
     askUserTool.name,
     askUserTool.description,
     askUserTool.schema as any,
-    askUserTool.handler as any,
+    askHandler as any,
   );
 
   // Delegation is for top-level agent rooms only: subagent rooms never get the

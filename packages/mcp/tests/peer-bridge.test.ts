@@ -6,6 +6,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
   issueRuntimeMcpToken,
+  type PeerRuntimeAskUserRequest,
+  type PeerRuntimeSelfConfigRequest,
   type PeerRuntimeSpawnRequest,
   type RuntimeMcpContext,
   registerPeerRuntimeBridge,
@@ -65,8 +67,8 @@ describe("placed-room runtime bridge", () => {
       );
       const names = (await client.listTools()).tools.map((tool) => tool.name);
       expect(names).toContain("spawn_subagent");
-      expect(names).not.toContain("spawn_topic");
-      expect(names).not.toContain("fork_topic");
+      expect(names).toContain("spawn_topic");
+      expect(names).toContain("fork_topic");
 
       const result = await client.callTool({
         name: "spawn_subagent",
@@ -131,6 +133,100 @@ describe("placed-room runtime bridge", () => {
     } finally {
       await client.close();
       server.stop(true);
+    }
+  });
+
+  test("ask-user and self-config tools execute on the canonical hub", async () => {
+    const topic = registerTopic({
+      title: `peer-runtime-${crypto.randomUUID()}`,
+      userId: "peer-runtime-user",
+      agent: "claude",
+    });
+    const askCalls: PeerRuntimeAskUserRequest[] = [];
+    const configCalls: PeerRuntimeSelfConfigRequest[] = [];
+    const unregister = registerPeerRuntimeBridge({
+      async spawnSubagent() {
+        return textResult("unused");
+      },
+      async askUser(request) {
+        askCalls.push(request);
+        return textResult("Hub choice");
+      },
+      async selfConfig(request) {
+        configCalls.push(request);
+        return textResult("Hub model: sonnet");
+      },
+    });
+    const ctx: RuntimeMcpContext = {
+      userId: "peer-runtime-user",
+      topicId: topic.id,
+      topicTitle: topic.title,
+      cwd: mkdtempSync(join(tmpdir(), "negotium-peer-runtime-")),
+      agent: "claude",
+      model: "sonnet",
+      currentUserPrompt: "inspect the hub",
+      peerBridge: {
+        hubCellId: "hub-cell",
+        hostTopicId: "host-topic",
+        hostQueryId: "host-query",
+        canSpawnSubagents: true,
+      },
+    };
+    const server = Bun.serve({
+      port: 0,
+      fetch: async (req) =>
+        (await handleNegotiumMcpRequest(req)) ?? new Response("not found", { status: 404 }),
+    });
+    const client = new Client({ name: "peer-runtime-test", version: "1.0.0" });
+
+    try {
+      const token = issueRuntimeMcpToken(ctx);
+      await client.connect(
+        new StreamableHTTPClientTransport(
+          new URL(
+            `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+          ),
+        ),
+      );
+      const names = (await client.listTools()).tools.map((tool) => tool.name);
+      expect(names).toContain("ask_user_question");
+      expect(names).toContain("get_model");
+      expect(names).toContain("spawn_topic");
+      expect(names).toContain("fork_topic");
+
+      const askResult = await client.callTool({
+        name: "ask_user_question",
+        arguments: {
+          question: "Continue?",
+          choices: [{ label: "Hub choice" }],
+        },
+      });
+      expect(resultText(askResult)).toBe("Hub choice");
+
+      const configResult = await client.callTool({ name: "get_model", arguments: {} });
+      expect(resultText(configResult)).toBe("Hub model: sonnet");
+      expect(askCalls).toEqual([
+        {
+          bridge: ctx.peerBridge!,
+          userId: ctx.userId,
+          agent: ctx.agent,
+          model: ctx.model,
+          input: { question: "Continue?", choices: [{ label: "Hub choice" }] },
+        },
+      ]);
+      expect(configCalls).toEqual([
+        {
+          bridge: ctx.peerBridge!,
+          userId: ctx.userId,
+          tool: "get_model",
+          input: {},
+          currentUserPrompt: "inspect the hub",
+        },
+      ]);
+    } finally {
+      await client.close();
+      server.stop(true);
+      unregister();
     }
   });
 });

@@ -53,6 +53,11 @@ export type {
 } from "#application/submit-user-message";
 export { submitUserMessage } from "#application/submit-user-message";
 export type {
+  SwitchTopicEffortParams,
+  SwitchTopicEffortResult,
+} from "#application/switch-topic-effort";
+export { switchTopicEffort } from "#application/switch-topic-effort";
+export type {
   SwitchTopicModelParams,
   SwitchTopicModelResult,
 } from "#application/switch-topic-model";
@@ -65,22 +70,30 @@ export type {
 } from "#application/topic-service";
 export { TopicServiceError, topicService } from "#application/topic-service";
 export {
+  deleteVaultEntry,
   executeVaultCommand,
   isVaultCommandLine,
+  listVaultEntries,
+  type SaveVaultEntryResult,
+  saveVaultEntry,
   VAULT_COMMAND_HELP,
 } from "#application/vault-command";
 // ── Host boundary ───────────────────────────────────────────────────
 export type { RuntimeBus, RuntimeBusEvent, RuntimeBusListener } from "#bus";
 export { runtimeBus, setRuntimeBus, WsHub } from "#bus";
 export type {
+  PeerRuntimeAskUserRequest,
   PeerRuntimeBridge,
   PeerRuntimeFileRequest,
+  PeerRuntimeSelfConfigRequest,
   PeerRuntimeSpawnRequest,
   PeerRuntimeVisualRequest,
   PeerRuntimeVisualResult,
 } from "#mcp/peer-bridge";
 export {
+  dispatchPeerRuntimeAskUser,
   dispatchPeerRuntimeFile,
+  dispatchPeerRuntimeSelfConfig,
   dispatchPeerRuntimeSpawn,
   dispatchPeerRuntimeVisual,
   flushPeerRuntimeEvents,
@@ -186,8 +199,13 @@ export {
   composeAttachmentPrompt,
   ingestAttachment,
 } from "#runtime/attachments";
-export { listBackgroundSessionsForUser } from "#runtime/background-sessions";
-export type { FileHooks } from "#runtime/file-hooks";
+export type { BackgroundSessionProvider } from "#runtime/background-sessions";
+export {
+  backgroundSessionProgress,
+  listBackgroundSessionsForUser,
+  registerBackgroundSessionProvider,
+} from "#runtime/background-sessions";
+export type { FileHooks, UploadAccess } from "#runtime/file-hooks";
 export {
   fileHooks,
   resolveAttachmentByFileId,
@@ -246,6 +264,7 @@ export type {
   AcquireRuntimeProcessLeaseOptions,
   RuntimeProcessLease,
   RuntimeProcessLeaseHandle,
+  WaitForRequiredRuntimeProcessLeaseOptions,
   WaitForRuntimeProcessLeaseOptions,
 } from "#storage/runtime-process-leases";
 export {
@@ -253,6 +272,7 @@ export {
   getRuntimeProcessLease,
   PROCESS_LEASE_HEARTBEAT_MS,
   PROCESS_LEASE_STALE_MS,
+  waitForRequiredRuntimeProcessLease,
   waitForRuntimeProcessLease,
 } from "#storage/runtime-process-leases";
 export { clearPendingAsk } from "#storage/session-asks";

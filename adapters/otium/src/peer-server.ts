@@ -142,6 +142,8 @@ function localCapabilities() {
       inputFiles: true,
       outputFiles: true,
       visualBridge: true,
+      askUserBridge: true,
+      selfConfigBridge: true,
     },
     agents,
     // These are negotium MCP catalog names — a hub room whose MCP

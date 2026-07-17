@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { executeVaultCommand, isVaultCommandLine } from "#application/vault-command";
+import {
+  deleteVaultEntry,
+  executeVaultCommand,
+  isVaultCommandLine,
+  listVaultEntries,
+  saveVaultEntry,
+} from "#application/vault-command";
 import { vaultDel, vaultGetValue } from "#storage/vault";
 
 const created: Array<{ userId: string; key: string }> = [];
@@ -39,6 +45,23 @@ describe("human-facing Vault commands", () => {
     ).toBe("Stored PASSPHRASE.");
     expect(vaultGetValue(userId, "PASSPHRASE")).toBe("value with spaces");
     expect(executeVaultCommand(userId, "/vault list")).toContain("PASSPHRASE: signing passphrase");
+  });
+
+  test("structured operations preserve values that contain command delimiters", () => {
+    const userId = `vault-command-${randomUUID()}`;
+    const secret = "prefix | middle with spaces | suffix";
+    created.push({ userId, key: "STRUCTURED_TOKEN" });
+
+    expect(saveVaultEntry(userId, "structured_token", secret, "native editor")).toEqual({
+      key: "STRUCTURED_TOKEN",
+      updated: false,
+    });
+    expect(vaultGetValue(userId, "STRUCTURED_TOKEN")).toBe(secret);
+    expect(listVaultEntries(userId)).toEqual([
+      { key: "STRUCTURED_TOKEN", description: "native editor" },
+    ]);
+    expect(JSON.stringify(listVaultEntries(userId))).not.toContain(secret);
+    expect(deleteVaultEntry(userId, "STRUCTURED_TOKEN")).toBe(true);
   });
 
   test("recognizes only the exact Vault command and never exposes a get operation", () => {

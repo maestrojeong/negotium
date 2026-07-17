@@ -161,7 +161,7 @@ describe("negotium MCP endpoint", () => {
         arguments: { delay_seconds: 60, message: "This must run on the hub." },
       });
       expect(scheduleResult.isError).toBe(true);
-      expect(resultText(scheduleResult)).toContain("canonical hub");
+      expect(resultText(scheduleResult)).toContain("peer self-config bridge");
     } finally {
       await peerClient.close();
       unregister();

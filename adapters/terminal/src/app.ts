@@ -1,9 +1,16 @@
 import {
   type AgentKind,
+  EFFORT_VALUES,
+  getRegistry,
   isVaultCommandLine,
+  normalizeVaultKey,
   type RuntimeBusEvent,
   SELECTABLE_MODELS,
   type TopicDto,
+  VAULT_DESCRIPTION_MAX_LENGTH,
+  VAULT_VALUE_MAX_BYTES,
+  VAULT_VALUE_MIN_BYTES,
+  validateVaultKey,
 } from "@negotium/core";
 import {
   INITIAL_MESSAGE_HISTORY_LIMIT,
@@ -14,6 +21,7 @@ import {
 import { copyToClipboard } from "@/clipboard";
 import { terminalNowMs } from "@/clock";
 import { commandSuggestions, completeCommand } from "@/commands";
+import { completePathToken, type PathSuggestion, pathSuggestions } from "@/path-suggest";
 import {
   maxConversationScrollOffset,
   plainTranscript,
@@ -64,6 +72,18 @@ const CANCEL_KEYS = new Set(["n", "ㅜ"]);
 const MESSAGE_MUTATING_AI_STATUS_KINDS = new Set(["tool_call", "tool_output"]);
 // biome-ignore lint/complexity/useRegexLiterals: avoids a literal terminal control byte in source.
 const SGR_MOUSE_PATTERN = new RegExp("\\u001b\\[<(\\d+);(\\d+);(\\d+)([mM])", "g");
+
+function selectableEfforts(topic: TopicDto | null) {
+  return topic?.agent ? getRegistry(topic.agent).validEfforts : EFFORT_VALUES;
+}
+
+export function vaultFormBlocksOverlaySwitch(
+  state: Pick<AppState, "overlay" | "vaultMode">,
+): boolean {
+  return (
+    state.overlay === "vault" && (state.vaultMode === "value" || state.vaultMode === "description")
+  );
+}
 
 export interface TerminalMouseEvent extends ScreenPoint {
   button: number;
@@ -135,6 +155,7 @@ export class TerminalApp {
   readonly #input = new TextBuffer();
   readonly #screen = new TerminalScreenRenderer();
   #history = new InputHistory();
+  #vaultDraftValue = "";
   #pasting = false;
   #renderQueued = false;
   #renderTimer: ReturnType<typeof setTimeout> | undefined;
@@ -446,15 +467,12 @@ export class TerminalApp {
   }
 
   #syncInput(): void {
-    const suggestions = commandSuggestions(this.#input.text);
+    const count = this.#suggestionCount();
     this.#state = {
       ...this.#state,
       input: this.#input.text,
       inputCursor: this.#input.cursor,
-      suggestionIndex:
-        suggestions.length === 0
-          ? 0
-          : Math.min(this.#state.suggestionIndex, suggestions.length - 1),
+      suggestionIndex: count === 0 ? 0 : Math.min(this.#state.suggestionIndex, count - 1),
     };
   }
 
@@ -512,6 +530,7 @@ export class TerminalApp {
       return;
     }
     this.#lastInterruptAt = 0;
+    const editingVaultSecret = vaultFormBlocksOverlaySwitch(this.#state);
     if (chunk === "\u0018") {
       void this.#abort(); // Ctrl-X
       return;
@@ -525,10 +544,14 @@ export class TerminalApp {
       return;
     }
     if (chunk === "\u000f") {
+      // Switching overlays would render the composer as ordinary plaintext.
+      // Keep secret/description entry inside the masking Vault overlay.
+      if (editingVaultSecret) return;
       this.#toggleTopics();
       return;
     }
     if (chunk === "\u0014") {
+      if (editingVaultSecret) return;
       this.#state = {
         ...this.#state,
         overlay: this.#state.overlay === "transcript" ? null : "transcript",
@@ -650,9 +673,29 @@ export class TerminalApp {
       }
       return;
     }
+    if (this.#state.overlay === "effort") {
+      if (chunk === "\u001b[A") this.#moveEffortPicker(-1);
+      else if (chunk === "\u001b[B") this.#moveEffortPicker(1);
+      else if (chunk === "\r") void this.#selectPickedEffort();
+      else if (chunk === "\u001b") {
+        this.#state = { ...this.#state, overlay: null };
+        this.#queueRender();
+      }
+      return;
+    }
+    if (this.#state.overlay === "vault") {
+      if (this.#state.vaultMode === "list" || this.#state.vaultMode === "confirm-delete") {
+        this.#handleVaultListInput(chunk);
+        return;
+      }
+      if (chunk === "\u001b") {
+        this.#cancelVaultForm();
+        return;
+      }
+    }
     if (chunk === "\u001b[A") {
       if (activeQuestion(this.#state)) this.#moveAskChoice(-1);
-      else if (commandSuggestions(this.#input.text).length > 0) this.#moveSuggestion(-1);
+      else if (this.#suggestionCount() > 0) this.#moveSuggestion(-1);
       else if (this.#input.isOnFirstLine) {
         const previous = this.#history.previous(this.#input.text);
         if (previous !== null) this.#replaceInput(previous);
@@ -665,7 +708,7 @@ export class TerminalApp {
     }
     if (chunk === "\u001b[B") {
       if (activeQuestion(this.#state)) this.#moveAskChoice(1);
-      else if (commandSuggestions(this.#input.text).length > 0) this.#moveSuggestion(1);
+      else if (this.#suggestionCount() > 0) this.#moveSuggestion(1);
       else if (this.#input.isOnLastLine) {
         const next = this.#history.next();
         if (next !== null) this.#replaceInput(next);
@@ -679,9 +722,19 @@ export class TerminalApp {
     if (chunk === "\t" || chunk === "\u001b[Z") {
       const completed = completeCommand(this.#input.text, this.#state.suggestionIndex);
       if (completed !== null) this.#replaceInput(completed);
+      else this.#applyPathCompletion(true);
       return;
     }
     if (chunk === "\r") {
+      if (
+        this.#state.overlay !== "vault" &&
+        !activeQuestion(this.#state) &&
+        commandSuggestions(this.#input.text).length === 0 &&
+        this.#pathItems().length > 0
+      ) {
+        this.#applyPathCompletion(false);
+        return;
+      }
       void this.#submit();
       return;
     }
@@ -728,6 +781,14 @@ export class TerminalApp {
   }
 
   async #submit(): Promise<void> {
+    if (
+      this.#state.overlay === "vault" &&
+      this.#state.vaultMode !== "list" &&
+      this.#state.vaultMode !== "confirm-delete"
+    ) {
+      await this.#submitVaultField();
+      return;
+    }
     const ask = activeQuestion(this.#state);
     if (ask?.askUserQuestion?.choices.length) {
       const index = Math.min(this.#state.askChoiceIndex, ask.askUserQuestion.choices.length - 1);
@@ -809,29 +870,12 @@ export class TerminalApp {
 
   async #runCommand(commandLine: string): Promise<void> {
     if (isVaultCommandLine(commandLine)) {
-      if (!this.#client.runVaultCommand) {
-        this.#state = { ...this.#state, notice: "Vault commands are unavailable for this client." };
+      if (commandLine.trim().toLowerCase() !== "/vault") {
+        this.#state = { ...this.#state, notice: "Use /vault to open the Vault manager." };
         this.#queueRender();
         return;
       }
-      // The client rejects insecure vault transports (and may fail otherwise);
-      // surface that as a notice instead of an unhandled rejection.
-      let vaultResponse: string | null;
-      try {
-        vaultResponse = await this.#client.runVaultCommand(commandLine);
-      } catch (error) {
-        this.#state = {
-          ...this.#state,
-          notice: error instanceof Error ? error.message : String(error),
-        };
-        this.#queueRender();
-        return;
-      }
-      if (vaultResponse === null) return;
-      this.#state = vaultResponse.includes("\n")
-        ? { ...this.#state, overlay: "vault", notice: undefined, vaultOutput: vaultResponse }
-        : { ...this.#state, notice: vaultResponse, vaultOutput: undefined };
-      this.#queueRender();
+      await this.#openVault();
       return;
     }
     const [command = "", ...args] = commandLine.slice(1).trim().split(/\s+/);
@@ -873,6 +917,28 @@ export class TerminalApp {
         ...this.#state,
         overlay: "models",
         modelPickerIndex: Math.max(0, currentIndex),
+      };
+      this.#queueRender();
+      return;
+    }
+    if (command === "effort") {
+      if (args.length > 0) {
+        this.#state = { ...this.#state, notice: "Usage: /effort" };
+        this.#queueRender();
+        return;
+      }
+      const topic = activeTopic(this.#state);
+      if (!topic) {
+        this.#state = { ...this.#state, notice: "No topic selected" };
+        this.#queueRender();
+        return;
+      }
+      const currentEffort = topic.effectiveEffort ?? topic.defaultEffort;
+      const currentIndex = selectableEfforts(topic).indexOf(currentEffort);
+      this.#state = {
+        ...this.#state,
+        overlay: "effort",
+        effortPickerIndex: Math.max(0, currentIndex),
       };
       this.#queueRender();
       return;
@@ -1104,6 +1170,238 @@ export class TerminalApp {
     this.#queueRender();
   }
 
+  async #openVault(): Promise<void> {
+    if (
+      !this.#client.listVaultEntries ||
+      !this.#client.saveVaultEntry ||
+      !this.#client.deleteVaultEntry
+    ) {
+      this.#state = { ...this.#state, notice: "Vault management is unavailable for this client." };
+      this.#queueRender();
+      return;
+    }
+    try {
+      const entries = await this.#client.listVaultEntries();
+      this.#vaultDraftValue = "";
+      this.#state = {
+        ...this.#state,
+        overlay: "vault",
+        notice: undefined,
+        vaultEntries: entries,
+        vaultPickerIndex: Math.min(this.#state.vaultPickerIndex, Math.max(0, entries.length - 1)),
+        vaultMode: "list",
+        vaultDraftKey: undefined,
+        vaultDraftDescription: "",
+        vaultEditing: false,
+        vaultNotice: undefined,
+      };
+    } catch (error) {
+      this.#state = {
+        ...this.#state,
+        notice: error instanceof Error ? error.message : String(error),
+      };
+    }
+    this.#queueRender();
+  }
+
+  #handleVaultListInput(chunk: string): void {
+    if (this.#state.vaultMode === "confirm-delete") {
+      const key = chunk.toLowerCase();
+      if (CONFIRM_KEYS.has(key)) void this.#deleteSelectedVaultEntry();
+      else if (CANCEL_KEYS.has(key) || chunk === "\u001b") {
+        this.#state = { ...this.#state, vaultMode: "list", vaultNotice: undefined };
+        this.#queueRender();
+      }
+      return;
+    }
+
+    const key = chunk.toLowerCase();
+    if (chunk === "\u001b[A") this.#moveVaultPicker(-1);
+    else if (chunk === "\u001b[B") this.#moveVaultPicker(1);
+    else if (key === "n" || key === "a") this.#beginVaultAdd();
+    else if (chunk === "\r" || key === "e") this.#beginVaultEdit();
+    else if (key === "d" || chunk === "\u001b[3~") this.#requestVaultDelete();
+    else if (chunk === "\u001b") {
+      this.#vaultDraftValue = "";
+      this.#state = { ...this.#state, overlay: null, vaultNotice: undefined };
+      this.#queueRender();
+    }
+  }
+
+  #moveVaultPicker(delta: number): void {
+    const count = this.#state.vaultEntries.length;
+    if (count === 0) return;
+    this.#state = {
+      ...this.#state,
+      vaultPickerIndex: (this.#state.vaultPickerIndex + delta + count) % count,
+      vaultNotice: undefined,
+    };
+    this.#queueRender();
+  }
+
+  #beginVaultAdd(): void {
+    this.#vaultDraftValue = "";
+    this.#state = {
+      ...this.#state,
+      vaultMode: "key",
+      vaultDraftKey: undefined,
+      vaultDraftDescription: "",
+      vaultEditing: false,
+      vaultNotice: undefined,
+    };
+    this.#replaceInput("");
+  }
+
+  #beginVaultEdit(): void {
+    const selected = this.#state.vaultEntries[this.#state.vaultPickerIndex];
+    if (!selected) {
+      this.#beginVaultAdd();
+      return;
+    }
+    this.#vaultDraftValue = "";
+    this.#state = {
+      ...this.#state,
+      vaultMode: "value",
+      vaultDraftKey: selected.key,
+      vaultDraftDescription: selected.description,
+      vaultEditing: true,
+      vaultNotice: undefined,
+    };
+    this.#replaceInput("");
+  }
+
+  #requestVaultDelete(): void {
+    if (!this.#state.vaultEntries[this.#state.vaultPickerIndex]) return;
+    this.#state = { ...this.#state, vaultMode: "confirm-delete", vaultNotice: undefined };
+    this.#queueRender();
+  }
+
+  #cancelVaultForm(): void {
+    this.#vaultDraftValue = "";
+    this.#input.setText("");
+    this.#syncInput();
+    this.#state = {
+      ...this.#state,
+      vaultMode: "list",
+      vaultDraftKey: undefined,
+      vaultDraftDescription: "",
+      vaultEditing: false,
+      vaultNotice: undefined,
+    };
+    this.#queueRender();
+  }
+
+  async #submitVaultField(): Promise<void> {
+    const raw = this.#input.text;
+    if (this.#state.vaultMode === "key") {
+      const key = normalizeVaultKey(raw);
+      if (!validateVaultKey(key)) {
+        this.#state = {
+          ...this.#state,
+          vaultNotice: "Use A-Z, 0-9, and _. The key must start with a letter.",
+        };
+        this.#queueRender();
+        return;
+      }
+      if (this.#state.vaultEntries.some((entry) => entry.key === key)) {
+        this.#state = {
+          ...this.#state,
+          vaultNotice: `${key} already exists. Select it to update.`,
+        };
+        this.#queueRender();
+        return;
+      }
+      this.#state = {
+        ...this.#state,
+        vaultMode: "value",
+        vaultDraftKey: key,
+        vaultNotice: undefined,
+      };
+      this.#replaceInput("");
+      return;
+    }
+
+    if (this.#state.vaultMode === "value") {
+      const valueBytes = Buffer.byteLength(raw, "utf8");
+      if (valueBytes < VAULT_VALUE_MIN_BYTES || valueBytes > VAULT_VALUE_MAX_BYTES) {
+        this.#state = {
+          ...this.#state,
+          vaultNotice: `Secret must be ${VAULT_VALUE_MIN_BYTES}-${VAULT_VALUE_MAX_BYTES} bytes.`,
+        };
+        this.#queueRender();
+        return;
+      }
+      this.#vaultDraftValue = raw;
+      this.#state = { ...this.#state, vaultMode: "description", vaultNotice: undefined };
+      this.#replaceInput(this.#state.vaultDraftDescription);
+      return;
+    }
+
+    if (raw.length > VAULT_DESCRIPTION_MAX_LENGTH) {
+      this.#state = {
+        ...this.#state,
+        vaultNotice: `Description must not exceed ${VAULT_DESCRIPTION_MAX_LENGTH} characters.`,
+      };
+      this.#queueRender();
+      return;
+    }
+    const key = this.#state.vaultDraftKey;
+    if (!key || !this.#client.saveVaultEntry) return;
+
+    this.#input.setText("");
+    this.#syncInput();
+    try {
+      const result = await this.#client.saveVaultEntry(key, this.#vaultDraftValue, raw);
+      const entries = this.#client.listVaultEntries ? await this.#client.listVaultEntries() : [];
+      const selectedIndex = Math.max(
+        0,
+        entries.findIndex((entry) => entry.key === result.key),
+      );
+      this.#state = {
+        ...this.#state,
+        vaultEntries: entries,
+        vaultPickerIndex: selectedIndex,
+        vaultMode: "list",
+        vaultDraftKey: undefined,
+        vaultDraftDescription: "",
+        vaultEditing: false,
+        vaultNotice: `${result.updated ? "Updated" : "Added"} ${result.key}.`,
+      };
+    } catch (error) {
+      this.#state = {
+        ...this.#state,
+        vaultMode: "list",
+        vaultNotice: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      this.#vaultDraftValue = "";
+    }
+    this.#queueRender();
+  }
+
+  async #deleteSelectedVaultEntry(): Promise<void> {
+    const selected = this.#state.vaultEntries[this.#state.vaultPickerIndex];
+    if (!selected || !this.#client.deleteVaultEntry) return;
+    try {
+      const deleted = await this.#client.deleteVaultEntry(selected.key);
+      const entries = this.#client.listVaultEntries ? await this.#client.listVaultEntries() : [];
+      this.#state = {
+        ...this.#state,
+        vaultEntries: entries,
+        vaultPickerIndex: Math.min(this.#state.vaultPickerIndex, Math.max(0, entries.length - 1)),
+        vaultMode: "list",
+        vaultNotice: deleted ? `Deleted ${selected.key}.` : `${selected.key} no longer exists.`,
+      };
+    } catch (error) {
+      this.#state = {
+        ...this.#state,
+        vaultMode: "list",
+        vaultNotice: error instanceof Error ? error.message : String(error),
+      };
+    }
+    this.#queueRender();
+  }
+
   async #selectPickedModel(): Promise<void> {
     const topic = activeTopic(this.#state);
     const selected = SELECTABLE_MODELS[this.#state.modelPickerIndex];
@@ -1123,8 +1421,63 @@ export class TerminalApp {
     this.#queueRender();
   }
 
+  #moveEffortPicker(delta: number): void {
+    const count = selectableEfforts(activeTopic(this.#state)).length;
+    this.#state = {
+      ...this.#state,
+      effortPickerIndex: (this.#state.effortPickerIndex + delta + count) % count,
+    };
+    this.#queueRender();
+  }
+
+  async #selectPickedEffort(): Promise<void> {
+    const topic = activeTopic(this.#state);
+    const effort = selectableEfforts(topic)[this.#state.effortPickerIndex];
+    if (!topic || !effort) return;
+    this.#state = { ...this.#state, overlay: null, notice: `Setting effort to ${effort}…` };
+    this.#queueRender();
+    try {
+      const notice = await this.#client.setEffort(topic, effort);
+      await this.#refreshTopics(topic.title);
+      this.#state = { ...this.#state, notice };
+    } catch (error) {
+      this.#state = {
+        ...this.#state,
+        notice: error instanceof Error ? error.message : String(error),
+      };
+    }
+    this.#queueRender();
+  }
+
+  #pathItems(): PathSuggestion[] {
+    const cursor = this.#input.cursor;
+    const lineText = this.#input.text.split("\n")[cursor.row] ?? "";
+    return pathSuggestions(lineText, cursor.col)?.items ?? [];
+  }
+
+  /** Active suggestion count: slash commands take precedence over `@` paths. */
+  #suggestionCount(): number {
+    const commands = commandSuggestions(this.#input.text).length;
+    return commands > 0 ? commands : this.#pathItems().length;
+  }
+
+  #applyPathCompletion(keepTrigger: boolean): void {
+    const items = this.#pathItems();
+    if (items.length === 0) return;
+    const cursor = this.#input.cursor;
+    const lines = this.#input.text.split("\n");
+    const lineText = lines[cursor.row] ?? "";
+    const selected = items[(this.#state.suggestionIndex + items.length) % items.length];
+    const result = completePathToken(lineText, cursor.col, selected, { keepTrigger });
+    if (!result) return;
+    lines[cursor.row] = result.line;
+    this.#input.setText(lines.join("\n"), { row: cursor.row, col: result.col });
+    this.#syncInput();
+    this.#queueRender();
+  }
+
   #moveSuggestion(delta: number): void {
-    const count = commandSuggestions(this.#input.text).length;
+    const count = this.#suggestionCount();
     if (count === 0) return;
     this.#state = {
       ...this.#state,
@@ -1345,6 +1698,7 @@ export class TerminalApp {
     }
     if (this.#input.text || this.#state.overlay || this.#state.creatingTopic) {
       this.#lastInterruptAt = 0;
+      if (this.#state.overlay === "vault") this.#vaultDraftValue = "";
       this.#input.setText("");
       this.#history.reset();
       this.#syncInput();

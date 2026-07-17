@@ -84,6 +84,40 @@ test("node control executes Vault commands for the requested user without return
   }
 });
 
+test("node control exposes structured Vault management without returning values", async () => {
+  const vaultUser = `node-control-vault-ui-${randomUUID()}`;
+  const key = "UI_TOKEN";
+  const secret = `secret | with spaces | ${randomUUID()}`;
+
+  try {
+    const stored = await handler(
+      request("/vault", {
+        method: "POST",
+        body: JSON.stringify({ userId: vaultUser, key, value: secret, description: "UI test" }),
+      }),
+    );
+    expect(stored?.status).toBe(200);
+    const storedText = await stored!.text();
+    expect(storedText).toContain(`"key":"${key}"`);
+    expect(storedText).not.toContain(secret);
+
+    const listed = await handler(request(`/vault?user=${encodeURIComponent(vaultUser)}`));
+    const listedText = await listed!.text();
+    expect(listedText).toContain(`"description":"UI test"`);
+    expect(listedText).not.toContain(secret);
+    expect(vaultListWithValues(vaultUser).find((entry) => entry.key === key)?.value).toBe(secret);
+
+    const deleted = await handler(
+      request(`/vault?user=${encodeURIComponent(vaultUser)}&key=${encodeURIComponent(key)}`, {
+        method: "DELETE",
+      }),
+    );
+    expect(await deleted!.json()).toMatchObject({ ok: true, deleted: true });
+  } finally {
+    vaultDel(vaultUser, key);
+  }
+});
+
 test("node control session, topic routes, and SSE use one versioned boundary", async () => {
   const status = await handler(request("/status"));
   expect(status?.status).toBe(200);
@@ -240,6 +274,30 @@ test("POST model applies a picker selection without a public agent argument", as
     model: "gpt-5.6-sol",
     agentLocked: true,
     modelLocked: true,
+  });
+});
+
+test("POST effort applies and locks a picker selection", async () => {
+  const topic = registerTopic({
+    title: `Effort ${randomUUID()}`,
+    userId,
+    agent: "codex",
+  });
+
+  const response = await handler(
+    request(`/topics/${encodeURIComponent(topic.id)}/effort`, {
+      method: "POST",
+      body: JSON.stringify({ userId, effort: "xhigh" }),
+    }),
+  );
+  const body = (await response?.json()) as { effort?: string; result?: string };
+
+  expect(response?.status).toBe(200);
+  expect(body.effort).toBe("xhigh");
+  expect(body.result).toBe("Effort set to 'xhigh'. Applies from the next turn.");
+  expect(getApiTopicConfig(topic.id)).toMatchObject({
+    effort: "xhigh",
+    effortLocked: true,
   });
 });
 

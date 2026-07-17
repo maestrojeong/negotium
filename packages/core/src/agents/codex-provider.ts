@@ -662,6 +662,9 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
                 agentTextSoFar = finalText;
                 yield { type: "text", content: finalText };
                 yield* extractFileEvents(finalText, "text");
+              } else if (item.type === "reasoning") {
+                const reasoning = String(item.text ?? "").trim();
+                if (reasoning) yield { type: "reasoning", content: reasoning };
               } else if (item.type === "mcp_tool_call") {
                 yield {
                   type: "tool_result",

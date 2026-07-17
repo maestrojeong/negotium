@@ -1,5 +1,7 @@
 /** Worker-side runtime MCP mutations that must execute on Otium's canonical hub. */
 
+import { randomUUID } from "node:crypto";
+
 import {
   errorResult,
   logger,
@@ -85,6 +87,110 @@ export const otiumPeerRuntimeBridge = {
       return errorResult("Error: Failed to spawn on hub: invalid tool result");
     }
     return parsed.result;
+  },
+  async askUser(request) {
+    const hubNode = await resolvePeerNodeByCellId(request.bridge.hubCellId).catch(() => null);
+    if (!hubNode) return errorResult("Error: Hub node is no longer attached.");
+    let token: string;
+    try {
+      token = await mintPeerToken(hubNode.cellId);
+    } catch (error) {
+      return errorResult(`Error: Failed to open hub question: ${(error as Error).message}`);
+    }
+    const bridgeRequestId = `bridge-ask-${randomUUID()}`;
+    const baseUrl = hubNode.baseUrl.replace(/\/+$/, "");
+    const post = async (path: string, body: Record<string, unknown>) => {
+      const response = await fetch(`${baseUrl}${path}`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(PEER_BRIDGE_TIMEOUT_MS),
+      });
+      const parsed = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        pending?: boolean;
+        result?: unknown;
+        error?: string;
+      } | null;
+      return { response, parsed };
+    };
+    try {
+      const started = await post("/api/v1/peer/bridge/ask/start", {
+        hostQueryId: request.bridge.hostQueryId,
+        bridgeRequestId,
+        userId: request.userId,
+        agent: request.agent,
+        ...(request.model ? { model: request.model } : {}),
+        input: request.input,
+      });
+      if (!started.response.ok || !started.parsed?.ok) {
+        return errorResult(
+          `Error: Failed to open hub question: ${started.parsed?.error ?? `peer call failed (${started.response.status})`}`,
+        );
+      }
+      for (;;) {
+        await Bun.sleep(500);
+        const polled = await post("/api/v1/peer/bridge/ask/result", {
+          hostQueryId: request.bridge.hostQueryId,
+          bridgeRequestId,
+        });
+        if (!polled.response.ok || !polled.parsed?.ok) {
+          return errorResult(
+            `Error: Failed to read hub answer: ${polled.parsed?.error ?? `peer call failed (${polled.response.status})`}`,
+          );
+        }
+        if (polled.parsed.pending !== false) continue;
+        if (!isMcpToolResult(polled.parsed.result)) {
+          return errorResult("Error: Failed to read hub answer: invalid tool result");
+        }
+        return polled.parsed.result;
+      }
+    } catch (error) {
+      return errorResult(`Error: Hub question bridge failed: ${(error as Error).message}`);
+    }
+  },
+  async selfConfig(request) {
+    const hubNode = await resolvePeerNodeByCellId(request.bridge.hubCellId).catch(() => null);
+    if (!hubNode) return errorResult("Error: Hub node is no longer attached.");
+    try {
+      const token = await mintPeerToken(hubNode.cellId);
+      const response = await fetch(
+        `${hubNode.baseUrl.replace(/\/+$/, "")}/api/v1/peer/bridge/self-config`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            hostQueryId: request.bridge.hostQueryId,
+            userId: request.userId,
+            tool: request.tool,
+            input: request.input,
+            ...(request.currentUserPrompt ? { currentUserPrompt: request.currentUserPrompt } : {}),
+          }),
+          signal: AbortSignal.timeout(PEER_BRIDGE_TIMEOUT_MS),
+        },
+      );
+      const body = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        result?: unknown;
+        error?: string;
+      } | null;
+      if (!response.ok || !body?.ok) {
+        return errorResult(
+          `Error: Failed to update hub topic config: ${body?.error ?? `peer call failed (${response.status})`}`,
+        );
+      }
+      return isMcpToolResult(body.result)
+        ? body.result
+        : errorResult("Error: Failed to update hub topic config: invalid tool result");
+    } catch (error) {
+      return errorResult(`Error: Hub self-config bridge failed: ${(error as Error).message}`);
+    }
   },
   async showVisual(request) {
     const hubNode = await resolvePeerNodeByCellId(request.bridge.hubCellId).catch(() => null);

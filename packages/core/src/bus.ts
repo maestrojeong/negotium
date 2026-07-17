@@ -79,6 +79,7 @@ export interface RuntimeBus {
     meta?: { toolName?: string; elapsed?: number },
   ): void;
   broadcastFileReady(topicId: string, queryId: string, path: string, source: string): void;
+  broadcastReasoning(topicId: string, queryId: string, content: string): void;
   broadcastVisual(
     topicId: string,
     queryId: string,
@@ -269,6 +270,10 @@ export class SqliteRuntimeBus implements RuntimeBus {
 
   broadcastFileReady(topicId: string, queryId: string, path: string, source: string): void {
     this.broadcastAiStatus(topicId, { kind: "file_ready", queryId, path, source });
+  }
+
+  broadcastReasoning(topicId: string, queryId: string, content: string): void {
+    this.broadcastAiStatus(topicId, { kind: "reasoning", queryId, content });
   }
 
   broadcastVisual(

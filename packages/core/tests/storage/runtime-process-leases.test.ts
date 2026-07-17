@@ -3,6 +3,7 @@ import {
   acquireRuntimeProcessLease,
   getRuntimeProcessLease,
   PROCESS_LEASE_STALE_MS,
+  waitForRequiredRuntimeProcessLease,
   waitForRuntimeProcessLease,
 } from "#storage/runtime-process-leases";
 
@@ -123,5 +124,22 @@ describe("runtime process leases", () => {
     await Bun.sleep(20);
     expect(lost).toBe(1);
     expect(getRuntimeProcessLease(role)?.ownerId).toBe("owner-new");
+  });
+
+  test("reports the current process when a required role is unavailable", async () => {
+    const role = `adapter:test:${crypto.randomUUID()}`;
+    const first = acquireRuntimeProcessLease(role, {
+      ownerId: "owner-a",
+      heartbeatMs: 60_000,
+    });
+    if (first) handles.push(first);
+
+    await expect(
+      waitForRequiredRuntimeProcessLease(role, {
+        ownerId: "owner-b",
+        waitMs: 0,
+        workloadName: "Test adapter",
+      }),
+    ).rejects.toThrow(`Test adapter is already running (pid ${process.pid})`);
   });
 });

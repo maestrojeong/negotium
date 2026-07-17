@@ -40,6 +40,51 @@ function parseSetValue(rest: string): { value: string; description: string } {
 
 type VaultEntry = { key: string; description: string };
 
+export interface SaveVaultEntryResult {
+  key: string;
+  updated: boolean;
+}
+
+export function listVaultEntries(userId: string): VaultEntry[] {
+  return vaultList(userId);
+}
+
+export function saveVaultEntry(
+  userId: string,
+  rawKey: string,
+  value: string,
+  description = "",
+): SaveVaultEntryResult {
+  const key = normalizeVaultKey(rawKey);
+  if (!validateVaultKey(key)) {
+    throw new Error("Invalid key. Use A-Z, 0-9, and _; start with a letter (max 128 characters).");
+  }
+  const valueBytes = Buffer.byteLength(value, "utf8");
+  if (valueBytes < VAULT_VALUE_MIN_BYTES) {
+    throw new Error(`Vault value must be at least ${VAULT_VALUE_MIN_BYTES} bytes.`);
+  }
+  if (valueBytes > VAULT_VALUE_MAX_BYTES) {
+    throw new Error(`Vault value must not exceed ${VAULT_VALUE_MAX_BYTES} bytes.`);
+  }
+  if (description.length > VAULT_DESCRIPTION_MAX_LENGTH) {
+    throw new Error(
+      `Vault description must not exceed ${VAULT_DESCRIPTION_MAX_LENGTH} characters.`,
+    );
+  }
+
+  const updated = vaultHasKey(userId, key);
+  vaultSet(userId, key, value, description);
+  return { key, updated };
+}
+
+export function deleteVaultEntry(userId: string, rawKey: string): boolean {
+  const key = normalizeVaultKey(rawKey);
+  if (!validateVaultKey(key)) {
+    throw new Error("Invalid key. Use A-Z, 0-9, and _; start with a letter (max 128 characters).");
+  }
+  return vaultDel(userId, key);
+}
+
 function renderVaultPanel(entries: VaultEntry[]): string {
   const lines: string[] = [
     "Vault",
@@ -99,7 +144,7 @@ export function executeVaultCommand(userId: string, commandLine: string): string
     if (!validateVaultKey(key)) {
       return "Invalid key. Use A-Z, 0-9, and _; start with a letter (max 128 characters).";
     }
-    return vaultDel(userId, key) ? `Deleted ${key}.` : `No Vault key named ${key}.`;
+    return deleteVaultEntry(userId, key) ? `Deleted ${key}.` : `No Vault key named ${key}.`;
   }
 
   if (subcommand === "set") {
@@ -113,19 +158,12 @@ export function executeVaultCommand(userId: string, commandLine: string): string
 
     const { value, description } = parseSetValue(match[2]);
     if (!value) return "Vault value cannot be empty.";
-    const valueBytes = Buffer.byteLength(value, "utf8");
-    if (valueBytes < VAULT_VALUE_MIN_BYTES) {
-      return `Vault value must be at least ${VAULT_VALUE_MIN_BYTES} bytes.`;
+    try {
+      const result = saveVaultEntry(userId, key, value, description);
+      return `${result.updated ? "Updated" : "Stored"} ${result.key}.`;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
     }
-    if (valueBytes > VAULT_VALUE_MAX_BYTES) {
-      return `Vault value must not exceed ${VAULT_VALUE_MAX_BYTES} bytes.`;
-    }
-    if (description.length > VAULT_DESCRIPTION_MAX_LENGTH) {
-      return `Vault description must not exceed ${VAULT_DESCRIPTION_MAX_LENGTH} characters.`;
-    }
-    const existed = vaultHasKey(userId, key);
-    vaultSet(userId, key, value, description);
-    return `${existed ? "Updated" : "Stored"} ${key}.`;
   }
 
   return VAULT_COMMAND_HELP;

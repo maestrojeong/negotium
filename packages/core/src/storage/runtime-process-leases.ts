@@ -30,6 +30,11 @@ export interface WaitForRuntimeProcessLeaseOptions extends AcquireRuntimeProcess
   retryMs?: number;
 }
 
+export interface WaitForRequiredRuntimeProcessLeaseOptions
+  extends WaitForRuntimeProcessLeaseOptions {
+  workloadName?: string;
+}
+
 interface RuntimeProcessLeaseRow {
   role: string;
   owner_id: string;
@@ -196,4 +201,16 @@ export async function waitForRuntimeProcessLease(
     if (remaining <= 0) return null;
     await new Promise<void>((resolve) => setTimeout(resolve, Math.min(interval, remaining)));
   }
+}
+
+/** Claim a process role or report the live owner in a user-facing error. */
+export async function waitForRequiredRuntimeProcessLease(
+  role: string,
+  options: WaitForRequiredRuntimeProcessLeaseOptions = {},
+): Promise<RuntimeProcessLeaseHandle> {
+  const { workloadName = role, ...leaseOptions } = options;
+  const lease = await waitForRuntimeProcessLease(role, leaseOptions);
+  if (lease) return lease;
+  const current = getRuntimeProcessLease(role);
+  throw new Error(`${workloadName} is already running${current ? ` (pid ${current.pid})` : ""}`);
 }

@@ -6,6 +6,10 @@ the workspace issues an invite code, the node joins, and rooms placed on the
 node execute their agent turns locally — messages, tool activity, and visuals
 flow back into the workspace UI.
 
+The worker is fully supplied by Negotium packages. It does not import, install,
+or check out the Otium runtime repository: `@negotium/adapter-otium` implements
+the peer/relay boundary while `@negotium/core` owns local agent execution.
+
 ```bash
 npm install --global @negotium/cli
 negotium otium join <invite-code>   # store credentials (…/otium-join.json, 0600)

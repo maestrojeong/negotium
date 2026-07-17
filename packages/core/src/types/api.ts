@@ -122,7 +122,7 @@ export interface TopicDto {
   runningQueryId?: string;
 }
 
-/** Read-only internal work shown by operational clients while it is active. */
+/** Read-only internal work shown by operational clients. */
 export interface BackgroundSessionDto {
   id: string;
   kind: "memory" | "cron";
@@ -130,8 +130,14 @@ export interface BackgroundSessionDto {
   startedAt: string;
   topicId?: string;
   status: string;
+  /** False for durable sessions that are currently waiting for their next run. */
+  active?: boolean;
   agent?: AgentKind;
   model?: string;
+  effort?: EffortLevel;
+  /** User/task prompt that started the displayed run. Never includes system instructions. */
+  prompt?: string;
+  promptTitle?: string;
   steps: string[];
 }
 

@@ -214,9 +214,9 @@ event ordering. Disconnects fail pending requests visibly; reconnect uses bounde
 | Hub-backed subagent bridge | Implemented |
 | Remote ask/reply | Implemented |
 | Input/output file and visual bridge | Implemented |
-| Hub-backed ask-user and self-configuration | Not implemented; these tools remain worker-local |
+| Hub-backed ask-user and self-configuration | Implemented |
 | Worker-origin peer session communication | Implemented |
-| Relay client | Not implemented; direct URL is validated |
+| Relay client | Implemented; outbound relay protocol v1 tunnel |
 
 Acceptance criteria for these gaps belong in [Feature review](./FEATURE-REVIEW.md), not in this wire
 contract.

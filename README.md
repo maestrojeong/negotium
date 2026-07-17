@@ -101,10 +101,10 @@ negotium vault list|set|get|del
 negotium cron list|create|inspect|logs|run|pause|resume|restart|kill|reset|delete
 ```
 
-Inside the Terminal or Telegram adapter, use `/vault list`,
-`/vault set KEY VALUE [description]`, and `/vault del KEY`. For a value containing
-spaces, separate the optional description with ` | `. Vault commands are handled
-by the adapter and never enter the agent conversation or Terminal input history.
+Inside Terminal, `/vault` opens the interactive encrypted-secret manager. Use the
+picker to add, update, or delete keys; secret input is masked and never enters the
+agent conversation or Terminal input history. Telegram retains `/vault list`,
+`/vault set KEY VALUE [description]`, and `/vault del KEY` for chat-based management.
 Telegram still transports the original command to the bot, so prefer a private DM
 or Terminal for high-value credentials.
 
@@ -115,6 +115,7 @@ Inside terminal chat:
 /topics               open the topic picker
 /del                  archive and delete the current topic
 /copy [all]           copy the last answer or transcript
+/vault                open the encrypted-secret manager
 /abort                stop the current turn
 /quit                 close the terminal host
 ```

@@ -37,6 +37,22 @@ export interface PeerRuntimeFileRequest {
   source: string;
 }
 
+export interface PeerRuntimeAskUserRequest {
+  bridge: PeerRuntimeBridgeContext;
+  userId: string;
+  agent: AgentKind;
+  model?: string;
+  input: Record<string, unknown>;
+}
+
+export interface PeerRuntimeSelfConfigRequest {
+  bridge: PeerRuntimeBridgeContext;
+  userId: string;
+  tool: string;
+  input: Record<string, unknown>;
+  currentUserPrompt?: string;
+}
+
 export interface PeerRuntimeBridge {
   spawnSubagent(request: PeerRuntimeSpawnRequest): Promise<McpToolResult>;
   /** Wait until already-broadcast runtime events for this local turn have
@@ -44,6 +60,8 @@ export interface PeerRuntimeBridge {
   flushEvents?(localTopicId: string): Promise<boolean>;
   showVisual?(request: PeerRuntimeVisualRequest): Promise<PeerRuntimeVisualResult>;
   sendFile?(request: PeerRuntimeFileRequest): Promise<{ ok: true } | { ok: false; error: string }>;
+  askUser?(request: PeerRuntimeAskUserRequest): Promise<McpToolResult>;
+  selfConfig?(request: PeerRuntimeSelfConfigRequest): Promise<McpToolResult>;
 }
 
 export function flushPeerRuntimeEvents(localTopicId: string): Promise<boolean> {
@@ -81,4 +99,16 @@ export function dispatchPeerRuntimeFile(
   request: PeerRuntimeFileRequest,
 ): Promise<{ ok: true } | { ok: false; error: string }> | null {
   return activeBridge?.sendFile?.(request) ?? null;
+}
+
+export function dispatchPeerRuntimeAskUser(
+  request: PeerRuntimeAskUserRequest,
+): Promise<McpToolResult> | null {
+  return activeBridge?.askUser?.(request) ?? null;
+}
+
+export function dispatchPeerRuntimeSelfConfig(
+  request: PeerRuntimeSelfConfigRequest,
+): Promise<McpToolResult> | null {
+  return activeBridge?.selfConfig?.(request) ?? null;
 }

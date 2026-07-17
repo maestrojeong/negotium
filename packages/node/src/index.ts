@@ -30,6 +30,7 @@ import {
   runtimeBus,
   STATE_DIR,
   type StartedNegotiumNodeModules,
+  setFileHooks,
   setNodeMcpServers,
   setRuntimeMcpPort,
   startDurableTurnRequestWorker,
@@ -47,6 +48,7 @@ import {
   removeNodeDaemonInfo,
   writeNodeDaemonInfo,
 } from "./control";
+import { nodeFileStore } from "./files";
 
 export type {
   NodeDaemonConnection,
@@ -134,6 +136,7 @@ async function wireNodeMcps(host: McpHost, manifest: McpManifest): Promise<void>
 
 export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   sweepStaleSubagentCards();
+  setFileHooks(nodeFileStore.hooks);
   const startedAt = new Date().toISOString();
   const processLease = opts.singleton
     ? acquireRuntimeProcessLease(NODE_DAEMON_ROLE, {

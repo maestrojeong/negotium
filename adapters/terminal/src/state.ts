@@ -4,6 +4,7 @@ import {
   type MessageDto,
   type RuntimeBusEvent,
   type TopicDto,
+  type VaultEntry,
 } from "@negotium/core";
 import { terminalNowMs } from "@/clock";
 
@@ -13,6 +14,7 @@ type Overlay =
   | "topics"
   | "background-session"
   | "models"
+  | "effort"
   | "vault"
   | "transcript"
   | "confirm-delete"
@@ -35,6 +37,8 @@ interface TopicActivity {
   tools: ToolActivity[];
 }
 
+export type VaultMode = "list" | "key" | "value" | "description" | "confirm-delete";
+
 export interface MessageHistoryStatus {
   hasMore: boolean;
   loading: boolean;
@@ -55,6 +59,7 @@ export interface AppState {
   topicPickerIndex: number;
   topicPickerBackgroundId?: string;
   modelPickerIndex: number;
+  effortPickerIndex: number;
   pendingDeleteTopicId?: string;
   creatingTopic: boolean;
   scrollOffset: number;
@@ -62,7 +67,13 @@ export interface AppState {
   overlay: Overlay;
   topicPickerRoot: boolean;
   notice?: string;
-  vaultOutput?: string;
+  vaultEntries: VaultEntry[];
+  vaultPickerIndex: number;
+  vaultMode: VaultMode;
+  vaultDraftKey?: string;
+  vaultDraftDescription: string;
+  vaultEditing: boolean;
+  vaultNotice?: string;
 }
 
 export function createInitialState(userId: string): AppState {
@@ -80,11 +91,17 @@ export function createInitialState(userId: string): AppState {
     suggestionIndex: 0,
     topicPickerIndex: 0,
     modelPickerIndex: 0,
+    effortPickerIndex: 0,
     creatingTopic: false,
     scrollOffset: 0,
     askChoiceIndex: 0,
     overlay: null,
     topicPickerRoot: false,
+    vaultEntries: [],
+    vaultPickerIndex: 0,
+    vaultMode: "list",
+    vaultDraftDescription: "",
+    vaultEditing: false,
   };
 }
 

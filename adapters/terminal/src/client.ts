@@ -2,6 +2,8 @@ import {
   type AgentKind,
   type BackgroundSessionDto,
   createDerivedTopic,
+  deleteVaultEntry,
+  type EffortLevel,
   ensurePersonalGeneral,
   executeVaultCommand,
   getAllMessagesForTopic,
@@ -11,13 +13,18 @@ import {
   listBackgroundSessionsForUser,
   listRecentRuntimeEventsForTopic,
   listRunningTopicQueries,
+  listVaultEntries,
   type MessageDto,
   type RuntimeBusEvent,
   runtimeBus,
+  type SaveVaultEntryResult,
+  saveVaultEntry,
   submitUserMessage,
+  switchTopicEffort,
   switchTopicModel,
   type TopicDto,
   topicService,
+  type VaultEntry,
 } from "@negotium/core";
 import {
   NODE_CONTROL_BASE_PATH,
@@ -57,6 +64,7 @@ export interface NegotiumClient {
   resetTopic(topic: TopicDto): Promise<string>;
   compactTopic(topic: TopicDto): Promise<string>;
   setModel(topic: TopicDto, model: string): ClientResult<string>;
+  setEffort(topic: TopicDto, effort: EffortLevel): ClientResult<string>;
   deleteTopic(topic: TopicDto): Promise<void>;
   sendMessage(topic: TopicDto, text: string): ClientResult<MessageDto>;
   answerQuestion(
@@ -66,6 +74,13 @@ export interface NegotiumClient {
   ): ClientResult<{ ok: boolean; error?: string }>;
   abort(topicId: string): ClientResult<boolean>;
   runVaultCommand?(commandLine: string): ClientResult<string | null>;
+  listVaultEntries?(): ClientResult<VaultEntry[]>;
+  saveVaultEntry?(
+    key: string,
+    value: string,
+    description: string,
+  ): ClientResult<SaveVaultEntryResult>;
+  deleteVaultEntry?(key: string): ClientResult<boolean>;
   listInputHistory?(): string[];
   appendInputHistory?(text: string): void;
   listRecentEvents?(topicId: string): ClientResult<RuntimeBusEvent[]>;
@@ -208,6 +223,12 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
     return result.text;
   }
 
+  setEffort(topic: TopicDto, effort: EffortLevel): string {
+    const result = switchTopicEffort({ topicId: topic.id, userId: this.#userId, effort });
+    if (!result.ok) throw new Error(result.error);
+    return result.text;
+  }
+
   async deleteTopic(topic: TopicDto): Promise<void> {
     await topicService.delete({ topicId: topic.id, userId: this.#userId });
   }
@@ -238,6 +259,18 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
     return executeVaultCommand(this.#userId, commandLine);
   }
 
+  listVaultEntries(): VaultEntry[] {
+    return listVaultEntries(this.#userId);
+  }
+
+  saveVaultEntry(key: string, value: string, description: string): SaveVaultEntryResult {
+    return saveVaultEntry(this.#userId, key, value, description);
+  }
+
+  deleteVaultEntry(key: string): boolean {
+    return deleteVaultEntry(this.#userId, key);
+  }
+
   listInputHistory(): string[] {
     return loadTerminalInputHistory(this.#userId);
   }
@@ -255,6 +288,22 @@ interface ApiEnvelope {
   ok?: boolean;
   error?: string;
   [key: string]: unknown;
+}
+
+function missingControlRoute(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not found|http 404/i.test(message);
+}
+
+function parseLegacyVaultList(output: string | null): VaultEntry[] {
+  if (!output || /vault is empty/i.test(output)) return [];
+  return output
+    .split("\n")
+    .slice(1)
+    .flatMap((line) => {
+      const match = line.match(/^- ([A-Z][A-Z0-9_]*)(?:: (.*))?$/);
+      return match?.[1] ? [{ key: match[1], description: match[2] ?? "" }] : [];
+    });
 }
 
 function isSecureControlTransport(baseUrl: string): boolean {
@@ -408,6 +457,14 @@ export class RemoteNegotiumClient implements NegotiumClient {
     return String(result.result ?? `Model set to '${model}'.`);
   }
 
+  async setEffort(topic: TopicDto, effort: EffortLevel): Promise<string> {
+    const result = await this.#request(`/topics/${encodeURIComponent(topic.id)}/effort`, {
+      method: "POST",
+      body: JSON.stringify({ userId: this.#userId, effort }),
+    });
+    return String(result.result ?? `Effort set to '${effort}'.`);
+  }
+
   async deleteTopic(topic: TopicDto): Promise<void> {
     await this.#request(
       `/topics/${encodeURIComponent(topic.id)}?user=${encodeURIComponent(this.#userId)}`,
@@ -453,6 +510,57 @@ export class RemoteNegotiumClient implements NegotiumClient {
       body: JSON.stringify({ userId: this.#userId, commandLine }),
     });
     return typeof result.result === "string" ? result.result : null;
+  }
+
+  async listVaultEntries(): Promise<VaultEntry[]> {
+    try {
+      const result = await this.#request(`/vault?user=${encodeURIComponent(this.#userId)}`);
+      return (result.entries ?? []) as VaultEntry[];
+    } catch (error) {
+      if (!missingControlRoute(error)) throw error;
+      return parseLegacyVaultList(await this.runVaultCommand("/vault list"));
+    }
+  }
+
+  async saveVaultEntry(
+    key: string,
+    value: string,
+    description: string,
+  ): Promise<SaveVaultEntryResult> {
+    try {
+      const result = await this.#request("/vault", {
+        method: "POST",
+        body: JSON.stringify({ userId: this.#userId, key, value, description }),
+      });
+      return result.result as SaveVaultEntryResult;
+    } catch (error) {
+      if (!missingControlRoute(error)) throw error;
+      if (/\s\|\s/.test(value)) {
+        throw new Error("Restart the Negotium node before saving a secret containing ' | '.");
+      }
+      const output = await this.runVaultCommand(
+        // Always include the legacy value/description delimiter. Without it,
+        // a multi-word value with an empty description is parsed by old nodes
+        // as a one-word secret plus a description, silently corrupting it.
+        `/vault set ${key} ${value} | ${description}`,
+      );
+      if (!output) throw new Error("Vault save failed.");
+      return { key, updated: output.startsWith("Updated") };
+    }
+  }
+
+  async deleteVaultEntry(key: string): Promise<boolean> {
+    try {
+      const result = await this.#request(
+        `/vault?user=${encodeURIComponent(this.#userId)}&key=${encodeURIComponent(key)}`,
+        { method: "DELETE" },
+      );
+      return result.deleted === true;
+    } catch (error) {
+      if (!missingControlRoute(error)) throw error;
+      const output = await this.runVaultCommand(`/vault del ${key}`);
+      return output?.startsWith("Deleted") === true;
+    }
   }
 
   listInputHistory(): string[] {
