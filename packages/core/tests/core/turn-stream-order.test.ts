@@ -537,7 +537,7 @@ describe("turn stream ordering", () => {
     });
   });
 
-  test("removes already-flushed assistant segments when the turn is superseded", async () => {
+  test("preserves assistant text when the turn is superseded", async () => {
     const topicId = seedTopic();
     const queryId = randomUUID();
     const control: RoomQueryControl = {
@@ -550,17 +550,19 @@ describe("turn stream ordering", () => {
     };
     const after = latestRuntimeEventSeq();
     async function* supersededStream(): AsyncGenerator<UnifiedEvent> {
-      yield { type: "text_delta", content: "obsolete status" };
-      yield { type: "text", content: "obsolete status" };
+      yield { type: "text_delta", content: "kept status" };
+      yield { type: "text", content: "kept status" };
       yield {
         type: "tool_use",
         name: "Bash",
         input: { command: "pwd" },
         toolUseId: "tool-1",
       };
+      yield { type: "tool_result", toolUseId: "tool-1", content: "/tmp" };
+      yield { type: "text_delta", content: "kept tail" };
       control.abortReason = AbortReason.Internal;
       control.abortController.abort();
-      yield { type: "tool_result", toolUseId: "tool-1", content: "/tmp" };
+      yield { type: "text", content: "ignored after abort" };
     }
 
     await streamAgentEvents(
@@ -575,15 +577,15 @@ describe("turn stream ordering", () => {
       "owner",
     );
 
-    expect(listApiMessages(topicId).page).toEqual([]);
+    expect(listApiMessages(topicId).page.map((message) => message.text)).toEqual([
+      "kept status",
+      "kept tail",
+    ]);
     expect(
       listRuntimeEventsAfter(after)
         .filter((event) => event.topicId === topicId && event.type === "message-updated")
-        .map((event) => event.payload),
-    ).toContainEqual({
-      messageId: expect.any(String),
-      patch: { deleted: true, text: "" },
-    });
+        .some((event) => (event.payload as { patch?: { deleted?: boolean } }).patch?.deleted),
+    ).toBe(false);
   });
 
   test("preserves intermediate assistant messages when the user explicitly aborts", async () => {

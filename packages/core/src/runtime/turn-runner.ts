@@ -808,10 +808,10 @@ export async function streamAgentEvents(
     }
 
     if (!errorOccurred && abortController.signal.aborted) {
-      // reason discriminates supersede (new user message) vs explicit stop.
-      const isSuperseded = control.abortReason === AbortReason.Internal;
-      if (isSuperseded) discardVisibleAssistantMessages();
-      else emitPendingAssistantMessage();
+      // Keep text already spoken before either an explicit stop or a new user
+      // message supersedes the turn. Adapters clean up transient tool status
+      // separately when they receive ai_aborted.
+      emitPendingAssistantMessage();
       if (!silent) hub.broadcastAborted(topicId, queryId, wsAbortReason(control.abortReason));
       terminalEmitted = true;
       outcome = { kind: "aborted" };
@@ -843,7 +843,6 @@ export async function streamAgentEvents(
     const discardIncompleteSegments =
       outcome.kind === "session-expired" ||
       outcome.kind === "provider-error" ||
-      (outcome.kind === "aborted" && control.abortReason === AbortReason.Internal) ||
       (!terminalEmitted && !abortController.signal.aborted);
     if (discardIncompleteSegments) discardVisibleAssistantMessages();
     if (!terminalEmitted && !silent) {
