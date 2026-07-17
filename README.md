@@ -19,8 +19,8 @@ Negotium is a host-agnostic runtime for long-lived AI agents. A node owns its to
 provider sessions, MCP tools, workspace, memory, queues, and encrypted secrets. A terminal,
 Telegram bot, or workspace app is only a thin host around that same runtime.
 
-The project is early-stage. Its CLI, node host, adapter SDK, and first-party adapters ship as 12
-lockstep-versioned npm packages. Public APIs may change while the project is in the `0.x` series.
+The project is early-stage. The complete runtime ships as `negotium`; adapter authors use the
+lockstep-versioned `@negotium/adapter-sdk`. Public APIs may change during the `0.x` series.
 
 ## Why Negotium?
 
@@ -79,8 +79,8 @@ negotium chat work --agent=codex
 
 Pick `claude`, `codex`, or `maestro` according to the auth check printed by `init`.
 
-The canonical scoped package remains available as `@negotium/cli`; the unscoped package is a
-functional convenience entrypoint rather than a name-only placeholder.
+The `negotium` package contains the CLI, runtime, MCP services, Cron module, and first-party
+Terminal, Telegram, and Otium adapters.
 
 ## CLI
 
@@ -266,65 +266,12 @@ The core invariants are intentionally small:
 
 For the detailed design, read [Architecture](./docs/ARCHITECTURE.md).
 
-## Embed the runtime
+## Runtime internals
 
-A channel adapter persists inbound messages, starts a turn, and subscribes to outbound events:
-
-```ts
-import {
-  appendApiMessage,
-  registerTopic,
-  runtimeBus,
-  startAiTurn,
-} from "@negotium/core";
-
-const topic = registerTopic({
-  title: "support",
-  userId: "local",
-  agent: "codex",
-});
-
-const unsubscribe = runtimeBus().subscribe((event) => {
-  // Render message, status, tool, file, and topic events in your channel.
-  console.log(event);
-});
-
-appendApiMessage({
-  id: crypto.randomUUID(),
-  topicId: topic.id,
-  authorId: "local",
-  text: "Inspect this repository.",
-  createdAt: new Date().toISOString(),
-});
-
-startAiTurn({
-  topic,
-  userId: "local",
-  prompt: "Inspect this repository.",
-  allowAutoContinue: true,
-});
-
-// startAiTurn returns immediately and streams in the background.
-// Keep the subscription alive; call unsubscribe() during host shutdown.
-```
-
-The reference implementation is
-[`apps/cli/src/commands/chat.ts`](./apps/cli/src/commands/chat.ts). First-party channel adapters
-live together under [`adapters/`](./adapters), while each remains independently publishable.
-
-### Compose optional modules
-
-```ts
-import { createCronModule } from "@negotium/module-cron";
-import { startNode } from "@negotium/node";
-
-const node = startNode({
-  modules: [createCronModule()],
-});
-
-// Later:
-await node.stop();
-```
+A channel adapter persists inbound messages, starts a turn, and subscribes to outbound runtime
+events. The implementation remains split into private workspaces for development, but those
+workspaces are bundled into `negotium` and are not public npm APIs. External adapters should depend
+only on `@negotium/adapter-sdk`.
 
 Modules advertise stable capability IDs such as `scheduler.cron.v1` and
 `scheduler.cron.v2`. A disabled module is not
@@ -367,22 +314,16 @@ The vault stores row-bound authenticated ciphertext in `data/vault.db`; its node
 created with mode `0600`. Do not commit `.env` or copy a live state directory between running
 nodes.
 
-## Packages
+## Published packages
 
 | Package | Responsibility |
 |---|---|
-| [`@negotium/core`](./packages/core) | Providers, turns, topics, storage, queues, memory, tools, host boundary |
-| [`@negotium/mcp`](./packages/mcp) | Authenticated HTTP MCP endpoint and node/runtime tools |
-| [`@negotium/mcp-host`](./packages/mcp-host) | Long-lived MCP process, port, health, and idle-eviction manager |
-| [`@negotium/module-cron`](./packages/module-cron) | Persistent schedules, run journal, scheduler, and Cron MCP tools |
-| [`@negotium/node`](./packages/node) | Composable single-process node host used by every adapter |
-| [`@negotium/adapter-sdk`](./packages/adapter-sdk) | Adapter API v2 lifecycle and transcript projection capability contract |
-| [`@negotium/adapter-testkit`](./packages/adapter-testkit) | Runner-neutral contract assertions for adapter authors |
-| [`@negotium/adapter-terminal`](./adapters/terminal) | Responsive local TUI channel |
-| [`@negotium/adapter-telegram`](./adapters/telegram) | Telegram chat/forum channel and durable mapping store |
-| [`@negotium/adapter-otium`](./adapters/otium) | Otium workspace worker and shared-topic binding |
-| [`@negotium/cli`](./apps/cli) | Installable CLI and combined multi-adapter host |
-| [`negotium`](./apps/negotium) | Functional unscoped entry package for the CLI |
+| [`negotium`](./apps/negotium) | CLI, runtime, MCP services, Cron, and first-party adapters |
+| [`@negotium/adapter-sdk`](./packages/adapter-sdk) | Adapter API v3 lifecycle, durable outbox, and `./testkit` contract assertions |
+
+`packages/core`, `packages/node`, MCP/Cron workspaces, `apps/cli`, and first-party adapter
+directories remain private source boundaries. They are built and tested independently but are not
+published or supported as standalone npm dependencies.
 
 ## Development
 
@@ -392,10 +333,10 @@ cd negotium
 bun install
 
 bun test          # all core, MCP, host, adapter, and Cron tests
-bun run build     # build publishable packages and check every workspace
+bun run build     # build private workspaces and the two public packages
 bun run lint      # Biome formatter/linter checks
 bun run check     # Biome checks followed by the full build
-bun run release:dry-run  # inspect every npm package without publishing
+bun run release:dry-run  # inspect both npm packages without publishing
 ```
 
 New app and adapter packages use package-local `@/` source aliases. The build resolves those

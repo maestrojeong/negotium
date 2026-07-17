@@ -1,26 +1,25 @@
 # Adapters
 
-Negotium keeps first-party adapters in one repository while publishing each as a separate package.
+Negotium keeps first-party adapters as private source workspaces and bundles them into `negotium`.
 This document owns adapter lifecycle, state mapping, topic access, and transcript projection. Runtime
 invariants are defined in [Architecture](./ARCHITECTURE.md).
 
 ## Package layout
 
 ```text
-@negotium/cli
-├── @negotium/node
-├── @negotium/adapter-terminal
-├── @negotium/adapter-telegram
-└── @negotium/adapter-otium
+negotium
+├── private node/runtime workspaces
+├── built-in Terminal adapter
+├── built-in Telegram adapter
+└── built-in Otium adapter
 
 Terminal clients ── authenticated REST + cursor SSE ── long-lived node
 all adapters ────── @negotium/adapter-sdk lifecycle contract
 ```
 
-Keeping separate packages provides independent binaries, dependencies, exports, and README files.
-Keeping them in one repository allows one change to validate the shared runtime and every adapter
-contract together. `adapters/*` is the canonical source; published packages must not depend on a
-developer checkout or a linked sibling repository.
+Keeping source boundaries allows focused builds and tests without exposing internal npm APIs.
+`adapters/*` is canonical source; the release build bundles it into `negotium`. Third-party adapters
+depend on `@negotium/adapter-sdk`, including its `./outbox` and `./testkit` subpaths.
 
 ## Lifecycle contract
 

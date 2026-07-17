@@ -27,6 +27,10 @@ type ReleasePackage = {
 const root = resolve(import.meta.dir, "..");
 const releasePackages: ReleasePackage[] = [
   { name: "@negotium/adapter-sdk", directory: "packages/adapter-sdk" },
+  { name: "negotium", directory: "apps/negotium" },
+];
+
+const privatePackages: ReleasePackage[] = [
   { name: "@negotium/core", directory: "packages/core" },
   { name: "@negotium/mcp-host", directory: "packages/mcp-host" },
   { name: "@negotium/module-cron", directory: "packages/module-cron" },
@@ -37,7 +41,6 @@ const releasePackages: ReleasePackage[] = [
   { name: "@negotium/adapter-telegram", directory: "adapters/telegram" },
   { name: "@negotium/adapter-otium", directory: "adapters/otium" },
   { name: "@negotium/cli", directory: "apps/cli" },
-  { name: "negotium", directory: "apps/negotium" },
 ];
 
 const mode = (process.argv[2] ?? "check") as ReleaseMode;
@@ -120,6 +123,9 @@ async function loadAndValidatePackages(): Promise<void> {
       ...manifest.peerDependencies,
     };
     for (const dependency of Object.keys(productionDependencies)) {
+      if (privatePackages.some((candidate) => candidate.name === dependency)) {
+        fail(`${pkg.name}: public release cannot depend on private workspace ${dependency}`);
+      }
       const dependencyIndex = packageIndexes.get(dependency);
       if (dependencyIndex !== undefined && dependencyIndex >= index) {
         fail(`${pkg.name}: internal dependency ${dependency} must appear earlier in release order`);
@@ -137,6 +143,23 @@ async function loadAndValidatePackages(): Promise<void> {
 
   if (versions.size !== 1) {
     fail(`Negotium packages release in lockstep; found versions: ${[...versions].join(", ")}`);
+  }
+
+  const runtimeVersionSource = await Bun.file(resolve(root, "packages/core/src/version.ts")).text();
+  const runtimeVersion = runtimeVersionSource.match(/NEGOTIUM_VERSION\s*=\s*"([^"]+)"/)?.[1];
+  const releaseVersion = releasePackages[0]?.manifest?.version;
+  if (runtimeVersion !== releaseVersion) {
+    fail(
+      `runtime version ${runtimeVersion ?? "<missing>"} does not match release ${releaseVersion}`,
+    );
+  }
+
+  for (const pkg of privatePackages) {
+    const manifestPath = resolve(root, pkg.directory, "package.json");
+    const manifest = (await Bun.file(manifestPath).json()) as PackageManifest;
+    if (manifest.name !== pkg.name) fail(`${pkg.directory}: unexpected package name`);
+    if (!manifest.private) fail(`${pkg.name}: internal workspace package must be private`);
+    if (manifest.publishConfig) fail(`${pkg.name}: private package must not have publishConfig`);
   }
 }
 
@@ -207,7 +230,9 @@ async function dryRun(packages: ReleasePackage[]): Promise<void> {
         fail(`${pkg.name}: packed manifest identity changed unexpectedly`);
       }
 
-      const internalNames = new Set(releasePackages.map((candidate) => candidate.name));
+      const internalNames = new Set(
+        [...releasePackages, ...privatePackages].map((candidate) => candidate.name),
+      );
       const packedDependencies = {
         ...packedManifest.dependencies,
         ...packedManifest.optionalDependencies,
@@ -272,21 +297,22 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
     };
     await run("npm", ["install", "--ignore-scripts=false"], smokeRoot, true, smokeEnv);
 
-    const importTargets = packages
-      .map((pkg) => pkg.name)
-      .filter((name) => name !== "@negotium/cli" && name !== "negotium");
     await Bun.write(
       join(smokeRoot, "imports.ts"),
-      `${importTargets.map((name) => `await import(${JSON.stringify(name)});`).join("\n")}
+      `await import("@negotium/adapter-sdk");
+await import("@negotium/adapter-sdk/outbox");
+await import("@negotium/adapter-sdk/testkit");
 import { existsSync } from "node:fs";
-const runtimeConfig = await import("@negotium/core/src/platform/config.ts");
+import { resolve } from "node:path";
+const packageRoot = resolve("node_modules/negotium");
 for (const path of [
-  runtimeConfig.FASTER_WHISPER_WRAPPER,
-  runtimeConfig.PLAYWRIGHT_MCP_BIN,
-  runtimeConfig.SESSION_COMM_SERVER,
-  runtimeConfig.TASK_SERVER,
+  resolve(packageRoot, "dist/runtime/scripts/faster-whisper-wrapper.py"),
+  resolve(packageRoot, "dist/runtime/scripts/mcp-patchright-http.mjs"),
+  resolve(packageRoot, "dist/runtime/src/mcp/session-comm/server.ts"),
+  resolve(packageRoot, "dist/runtime/src/mcp/task-server.ts"),
+  resolve(packageRoot, "dist/runtime/src/prompts/agents/wiki-archiver.md"),
 ]) {
-  if (!existsSync(path)) throw new Error(\`packed core runtime resource is missing: \${path}\`);
+  if (!existsSync(path)) throw new Error(\`packed runtime resource is missing: \${path}\`);
 }
 `,
     );

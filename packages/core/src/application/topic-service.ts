@@ -6,6 +6,7 @@ import { getRuntimeTurnLease } from "#storage/runtime-leases";
 import { beginRuntimeTopicMaintenance } from "#storage/runtime-topic-state";
 import { cancelRuntimeUserTurnRequestsBeforeEpoch } from "#storage/runtime-turn-requests";
 import { type RegisterTopicOptions, registerTopic } from "#topics/create";
+import { createDerivedTopic } from "#topics/derive";
 import { type DeleteTopicCascadeOptions, deleteTopicCascade } from "#topics/lifecycle";
 import {
   compactTopicSession,
@@ -61,9 +62,25 @@ export interface CompactUserTopicParams extends TopicSessionParams {
   compactSession?: typeof compactTopicSession;
 }
 
+export interface DeriveUserTopicParams {
+  sourceTopicId: string;
+  userId: string;
+  copyHistory: boolean;
+  name?: string;
+}
+
 export const topicService = {
   create(options: RegisterTopicOptions): TopicDto {
     return registerTopic(options);
+  },
+
+  derive(params: DeriveUserTopicParams): Promise<TopicDto | null> {
+    return createDerivedTopic(
+      params.sourceTopicId,
+      params.userId,
+      params.copyHistory,
+      params.name ? { name: params.name } : undefined,
+    );
   },
 
   async delete(params: DeleteUserTopicParams): Promise<void> {

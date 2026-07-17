@@ -1,7 +1,6 @@
 import {
   type AgentKind,
   type BackgroundSessionDto,
-  createDerivedTopic,
   deleteVaultEntry,
   type EffortLevel,
   ensurePersonalGeneral,
@@ -187,12 +186,12 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
   }
 
   async deriveTopic(topic: TopicDto, copyHistory: boolean, name?: string): Promise<TopicDto> {
-    const derived = await createDerivedTopic(
-      topic.id,
-      this.#userId,
+    const derived = await topicService.derive({
+      sourceTopicId: topic.id,
+      userId: this.#userId,
       copyHistory,
-      name ? { name } : undefined,
-    );
+      ...(name ? { name } : {}),
+    });
     if (!derived) throw new Error(`Failed to ${copyHistory ? "fork" : "spawn"} "${topic.title}"`);
     return derived;
   }

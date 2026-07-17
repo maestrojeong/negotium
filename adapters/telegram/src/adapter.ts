@@ -38,10 +38,10 @@
 
 import { existsSync } from "node:fs";
 import type { NegotiumAdapterHandle } from "@negotium/adapter-sdk";
+import { createDurableOutboxWorker } from "@negotium/adapter-sdk/outbox";
 import {
   type AgentKind,
   composeAttachmentPrompt,
-  createDerivedTopic,
   ensurePersonalGeneral,
   errMsg,
   executeVaultCommand,
@@ -71,7 +71,7 @@ import {
   topicService,
   transcribeAudio,
 } from "@negotium/core";
-import { openMappingStore, type PersistedMapping } from "@/mapping-store";
+import { type OutboxEntry, openMappingStore, type PersistedMapping } from "@/mapping-store";
 import { renderOutbound } from "@/render";
 import type {
   TelegramChatMember,
@@ -694,23 +694,88 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     maxDelayMs: opts.outbox?.maxDelayMs ?? 60_000,
     maxAttempts: opts.outbox?.maxAttempts ?? 6,
   };
-  let outboxTimer: ReturnType<typeof setTimeout> | undefined;
-  let outboxFlushing = false;
 
-  function scheduleOutboxFlush(): void {
-    if (stopped || outboxTimer !== undefined) return;
-    outboxTimer = setTimeout(() => {
-      outboxTimer = undefined;
-      void flushOutbox();
-    }, outboxCfg.pollMs);
+  interface TelegramOutboxDelivery {
+    sentValue: unknown;
+    sentText: string;
+    sentAsHtml: boolean;
   }
 
-  function outboxBackoffMs(attempts: number, info: TelegramErrorInfo): number {
-    if (info.status === 429 && info.retryAfterSec !== undefined) {
-      return Math.max(info.retryAfterSec * 1000, 0);
-    }
-    return Math.min(outboxCfg.baseDelayMs * 2 ** (attempts - 1), outboxCfg.maxDelayMs);
-  }
+  const outboxWorker = createDurableOutboxWorker<OutboxEntry, TelegramOutboxDelivery>({
+    policy: outboxCfg,
+    store: {
+      due: (now) => store.outboxDue(now),
+      hasPending: () => store.outboxAll().some((entry) => !entry.dead),
+      acknowledge: async (entry, delivery) => {
+        store.outboxDelete(entry.id);
+        const telegramMessageId = sentMessageId(delivery.sentValue);
+        if (!entry.runtimeMessageId || telegramMessageId === null) return;
+        const ref: DeliveredMessageRef = {
+          chatId: entry.chatId,
+          threadId: entry.threadId,
+          messageId: telegramMessageId,
+          kind: "text",
+          text: delivery.sentText,
+          html: delivery.sentAsHtml,
+          ...(entry.footer ? { footer: entry.footer } : {}),
+        };
+        if (deletedRuntimeMessageIds.has(entry.runtimeMessageId)) {
+          await deleteDeliveredRefs(entry.runtimeMessageId, [ref]);
+        } else {
+          rememberDeliveredRefs(entry.runtimeMessageId, [ref]);
+        }
+      },
+      discard: (entry) => {
+        store.outboxDelete(entry.id);
+      },
+      retry: (entry, retry) => {
+        store.outboxReschedule(entry.id, retry.attempts, retry.nextTryAt, retry.error);
+      },
+      deadLetter: (entry, retry) => {
+        store.outboxMarkDead(entry.id, retry.attempts, retry.error);
+      },
+    },
+    shouldDiscard: (entry) =>
+      Boolean(entry.runtimeMessageId && deletedRuntimeMessageIds.has(entry.runtimeMessageId)),
+    deliver: async (entry) => {
+      try {
+        const sentValue = await client.sendMessage(entry.chatId, entry.html, {
+          ...threadOpts(entry.threadId),
+          parse_mode: "HTML",
+        });
+        return { sentValue, sentText: entry.html, sentAsHtml: true };
+      } catch (error) {
+        if (!isHtmlParseError(telegramErrorInfo(error))) throw error;
+        const sentValue = await client.sendMessage(
+          entry.chatId,
+          entry.plain,
+          threadOpts(entry.threadId),
+        );
+        return { sentValue, sentText: entry.plain, sentAsHtml: false };
+      }
+    },
+    classifyError: (error) => {
+      const info = telegramErrorInfo(error);
+      return {
+        message: info.description || info.code || "send failed",
+        ...(info.status === 429 && info.retryAfterSec !== undefined
+          ? { retryAfterMs: Math.max(info.retryAfterSec * 1000, 0) }
+          : {}),
+      };
+    },
+    onEntryStart: (entry) => beginRuntimeDelivery(entry.runtimeMessageId),
+    onEntryEnd: (entry) => endRuntimeDelivery(entry.runtimeMessageId),
+    onDeadLetter: (entry, retry) => {
+      logger.warn(
+        { id: entry.id, chatId: entry.chatId, attempts: retry.attempts, error: retry.error },
+        "telegram adapter: outbox entry dead-lettered after max attempts",
+      );
+    },
+    onError: (error) => {
+      logger.warn({ err: error }, "telegram adapter: outbox flush failed");
+    },
+  });
+  outboxWorker.start();
 
   function enqueueOutbox(
     chatId: number,
@@ -741,114 +806,8 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       { chatId, threadId, status: info.status, code: info.code },
       "telegram adapter: transient send failure — queued for retry",
     );
-    scheduleOutboxFlush();
+    outboxWorker.wake();
   }
-
-  async function flushOutbox(): Promise<void> {
-    if (stopped || outboxFlushing) return;
-    outboxFlushing = true;
-    let entries: ReturnType<typeof store.outboxDue> = [];
-    const releasedEntryIds = new Set<number>();
-    const releaseEntry = (entry: (typeof entries)[number]): void => {
-      if (releasedEntryIds.has(entry.id)) return;
-      releasedEntryIds.add(entry.id);
-      endRuntimeDelivery(entry.runtimeMessageId);
-    };
-    try {
-      entries = store.outboxDue(Date.now());
-      for (const entry of entries) beginRuntimeDelivery(entry.runtimeMessageId);
-      for (const entry of entries) {
-        if (stopped) return;
-        if (entry.runtimeMessageId && deletedRuntimeMessageIds.has(entry.runtimeMessageId)) {
-          store.outboxDelete(entry.id);
-          releaseEntry(entry);
-          continue;
-        }
-        let sendErr: unknown;
-        let sent = false;
-        let sentValue: unknown;
-        let sentText = entry.html;
-        let sentAsHtml = true;
-        try {
-          sentValue = await client.sendMessage(entry.chatId, entry.html, {
-            ...threadOpts(entry.threadId),
-            parse_mode: "HTML",
-          });
-          sent = true;
-        } catch (err) {
-          sendErr = err;
-          if (isHtmlParseError(telegramErrorInfo(err))) {
-            try {
-              sentValue = await client.sendMessage(
-                entry.chatId,
-                entry.plain,
-                threadOpts(entry.threadId),
-              );
-              sentText = entry.plain;
-              sentAsHtml = false;
-              sent = true;
-            } catch (plainErr) {
-              sendErr = plainErr;
-            }
-          }
-        }
-        if (stopped) {
-          releaseEntry(entry);
-          return; // store is (about to be) closed — leave the row for restart
-        }
-        if (sent) {
-          store.outboxDelete(entry.id);
-          const telegramMessageId = sentMessageId(sentValue);
-          if (entry.runtimeMessageId && telegramMessageId !== null) {
-            const ref: DeliveredMessageRef = {
-              chatId: entry.chatId,
-              threadId: entry.threadId,
-              messageId: telegramMessageId,
-              kind: "text",
-              text: sentText,
-              html: sentAsHtml,
-              ...(entry.footer ? { footer: entry.footer } : {}),
-            };
-            if (deletedRuntimeMessageIds.has(entry.runtimeMessageId)) {
-              await deleteDeliveredRefs(entry.runtimeMessageId, [ref]);
-            } else {
-              rememberDeliveredRefs(entry.runtimeMessageId, [ref]);
-            }
-          }
-          releaseEntry(entry);
-          continue;
-        }
-        const info = telegramErrorInfo(sendErr);
-        const attempts = entry.attempts + 1;
-        const error = info.description || info.code || "send failed";
-        if (attempts >= outboxCfg.maxAttempts) {
-          store.outboxMarkDead(entry.id, attempts, error);
-          logger.warn(
-            { id: entry.id, chatId: entry.chatId, attempts, error },
-            "telegram adapter: outbox entry dead-lettered after max attempts",
-          );
-        } else {
-          store.outboxReschedule(
-            entry.id,
-            attempts,
-            Date.now() + outboxBackoffMs(attempts, info),
-            error,
-          );
-        }
-        releaseEntry(entry);
-      }
-    } catch (err) {
-      // Post-stop db access or unexpected store failure must not crash the host.
-      if (!stopped) logger.warn({ err }, "telegram adapter: outbox flush failed");
-    } finally {
-      for (const entry of entries) releaseEntry(entry);
-      outboxFlushing = false;
-      if (!stopped && store.outboxAll().some((e) => !e.dead)) scheduleOutboxFlush();
-    }
-  }
-
-  // Restart durability: resume flushing anything queued by a previous run.
-  if (store.outboxAll().some((e) => !e.dead)) scheduleOutboxFlush();
 
   // ── outbound delivery ───────────────────────────────────────────────
   /** Send one runtime message into a chat: HTML chunks, sequential awaits so
@@ -2095,12 +2054,13 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
         }
         // fork = config + history copy; spawn = config only, fresh session.
         const copyHistory = cmd === "/fork";
-        void createDerivedTopic(
-          mapping.topicId,
-          userId,
-          copyHistory,
-          arg ? { name: arg } : undefined,
-        )
+        void topicService
+          .derive({
+            sourceTopicId: mapping.topicId,
+            userId,
+            copyHistory,
+            ...(arg ? { name: arg } : {}),
+          })
           .then((derived) => {
             if (!derived) {
               reply(chatId, threadId, `${label} failed`);
@@ -2362,10 +2322,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     stop(): void {
       if (stopped) return;
       stopped = true;
-      if (outboxTimer !== undefined) {
-        clearTimeout(outboxTimer);
-        outboxTimer = undefined;
-      }
+      outboxWorker.stop();
       for (const timer of typingHeartbeatByQueryId.values()) clearInterval(timer);
       typingHeartbeatByQueryId.clear();
       for (const queryId of toolStatusByQueryId.keys()) closeToolStatus(queryId);

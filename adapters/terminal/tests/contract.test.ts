@@ -1,14 +1,15 @@
-import { expect, test } from "bun:test";
-import {
-  assertNegotiumAdapterCapability,
-  assertNegotiumAdapterDefinition,
-} from "@negotium/adapter-testkit";
+import { test } from "bun:test";
+import { assertNegotiumAdapterContract } from "@negotium/adapter-sdk/testkit";
 import { terminalAdapter } from "@/index";
 
-test("terminal implements the shared adapter definition", () => {
-  assertNegotiumAdapterDefinition(terminalAdapter, "terminal");
-  assertNegotiumAdapterCapability(terminalAdapter, "localUserInput", true);
-  assertNegotiumAdapterCapability(terminalAdapter, "topicManagement", true);
-  assertNegotiumAdapterCapability(terminalAdapter, "externalPlacedTurn", false);
-  expect(terminalAdapter.apiVersion).toBe(3);
+test("terminal implements the shared adapter definition", async () => {
+  await assertNegotiumAdapterContract({
+    name: "terminal",
+    definition: terminalAdapter,
+    capabilities: {
+      localUserInput: true,
+      topicManagement: true,
+      externalPlacedTurn: false,
+    },
+  });
 });

@@ -32,6 +32,7 @@ import {
   listTopics,
   logger,
   MAX_TELL_DEPTH,
+  NEGOTIUM_VERSION,
   normalizeVaultKey,
   OPTIONAL_FORUM_MCP_SERVERS,
   SUPPORTED_AGENTS,
@@ -71,7 +72,7 @@ import {
 } from "@/store";
 import { abortHostedPeerTurn, provisionMirrorTopic, runPeerTurn } from "@/turn-bridge";
 
-const RUNTIME_VERSION = "0.1.6";
+const RUNTIME_VERSION = NEGOTIUM_VERSION;
 
 function jsonError(error: string, status: number): Response {
   return Response.json({ ok: false, error }, { status });

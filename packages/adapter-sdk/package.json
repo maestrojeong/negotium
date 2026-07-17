@@ -1,6 +1,6 @@
 {
   "name": "@negotium/adapter-sdk",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "type": "module",
   "description": "Shared lifecycle contract for Negotium channel adapters",
   "license": "Apache-2.0",
@@ -10,6 +10,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./outbox": {
+      "types": "./dist/outbox.d.ts",
+      "default": "./dist/outbox.js"
+    },
+    "./testkit": {
+      "types": "./dist/testkit.d.ts",
+      "default": "./dist/testkit.js"
     }
   },
   "files": [
@@ -33,7 +41,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "bun ../../scripts/build-package.ts src/index.ts",
+    "build": "bun ../../scripts/build-package.ts src/index.ts src/outbox.ts src/testkit.ts",
     "check": "bunx tsc --noEmit",
     "lint": "biome check",
     "test": "bun test",

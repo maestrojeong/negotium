@@ -1,6 +1,7 @@
 {
   "name": "@negotium/mcp-host",
-  "version": "0.1.7",
+  "version": "0.1.8",
+  "private": true,
   "type": "module",
   "description": "MCP server process manager — port allocation, transports, health checks, idle eviction, per-node MCP manifest",
   "license": "Apache-2.0",
@@ -30,9 +31,6 @@
   "homepage": "https://github.com/maestrojeong/negotium#readme",
   "bugs": {
     "url": "https://github.com/maestrojeong/negotium/issues"
-  },
-  "publishConfig": {
-    "access": "public"
   },
   "scripts": {
     "build": "bunx tsc --noEmit",

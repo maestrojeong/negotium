@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { NEGOTIUM_VERSION } from "#version";
 
 type CodexModel = Record<string, unknown>;
 type CodexModelCache = {
@@ -106,7 +107,7 @@ async function bootstrapCodexModelCache(codexHome: string, cachePath: string): P
       id: 1,
       method: "initialize",
       params: {
-        clientInfo: { name: "negotium", version: "0.1.6" },
+        clientInfo: { name: "negotium", version: NEGOTIUM_VERSION },
         capabilities: { experimentalApi: true },
       },
     });

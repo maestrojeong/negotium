@@ -13,6 +13,7 @@ import { defineNegotiumAdapter, type NegotiumAdapterHandle } from "@negotium/ada
 import {
   failInterruptedRemoteAskCallbacks,
   logger,
+  NEGOTIUM_VERSION,
   registerPeerRuntimeBridge,
   registerPeerSessionBridge,
   runtimeBus,
@@ -176,7 +177,7 @@ export function startOtiumAdapter(options: OtiumAdapterOptions): OtiumWorkerHand
         relayUrl: selectedRelay,
         token: join.secret,
         targetOrigin,
-        nodeVersion: "@negotium/adapter-otium@0.1.6",
+        nodeVersion: `negotium@${NEGOTIUM_VERSION}`,
         logger,
       });
       tunnel.start();

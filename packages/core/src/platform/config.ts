@@ -20,7 +20,14 @@ const HOME = homedir();
 
 // new URL("../..", import.meta.url) causes webpack to treat "../.." as a module import.
 // Split into fileURLToPath → dirname → resolve to avoid that.
-export const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+function resolveProjectRoot(): string {
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  const packagedRuntime = resolve(moduleDir, "runtime");
+  if (existsSync(resolve(packagedRuntime, "src"))) return packagedRuntime;
+  return resolve(moduleDir, "../..");
+}
+
+export const PROJECT_ROOT = resolveProjectRoot();
 
 /** Resolve a dependency executable from either a package-local or hoisted install. */
 function resolveDependencyBin(name: string): string {

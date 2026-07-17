@@ -12,7 +12,6 @@ import { dirname, resolve } from "node:path";
 import {
   type AgentKind,
   type compactTopicSession,
-  createDerivedTopic,
   deleteVaultEntry,
   ensurePersonalGeneral,
   executeVaultCommand,
@@ -26,6 +25,7 @@ import {
   listRunningTopicQueries,
   listRuntimeEventsAfter,
   listVaultEntries,
+  NEGOTIUM_VERSION,
   NODE_CONTROL_TOKEN,
   RUN_DIR,
   type RuntimeBusEvent,
@@ -48,7 +48,7 @@ export const NODE_CONTROL_PROTOCOL_VERSION = 1;
 export const NODE_CONTROL_BASE_PATH = "/api/v1/control";
 export const NODE_DAEMON_ROLE = "node-daemon";
 export const NODE_DAEMON_INFO_PATH = resolve(RUN_DIR, "node-daemon.json");
-const NODE_VERSION = "0.1.6";
+const NODE_VERSION = NEGOTIUM_VERSION;
 
 export interface NodeDaemonInfo {
   schemaVersion: 1;
@@ -469,12 +469,12 @@ export function createNodeControlHandler(
         }
         const name =
           typeof body.name === "string" && body.name.trim() ? body.name.trim() : undefined;
-        const derived = await createDerivedTopic(
-          topicId,
+        const derived = await topicService.derive({
+          sourceTopicId: topicId,
           userId,
           copyHistory,
-          name ? { name } : undefined,
-        );
+          ...(name ? { name } : {}),
+        });
         if (!derived) return jsonError(500, "Failed to derive topic");
         return Response.json({ ok: true, topic: derived }, { status: 201 });
       }

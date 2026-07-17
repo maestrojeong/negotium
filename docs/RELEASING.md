@@ -1,8 +1,12 @@
 # npm release guide
 
-Negotium publishes 12 npm packages from one repository at a lockstep version. Scoped packages contain
-the implementation; the unscoped `negotium` package is a working convenience entry point for
-`@negotium/cli`.
+Negotium publishes two npm packages at one lockstep version:
+
+1. `@negotium/adapter-sdk` for third-party adapter contracts, outbox helpers, and testkit utilities.
+2. `negotium` for the CLI, runtime, MCP services, Cron module, and first-party adapters.
+
+The other ten workspaces are private source boundaries. They are built and tested in the monorepo
+but must never be published or referenced by a public package manifest.
 
 ## One-time setup
 
@@ -15,12 +19,10 @@ npm login --auth-type=web
 npm whoami
 ```
 
-The organization owns `@negotium/*`. The npm account that first publishes the unscoped `negotium`
-package owns that name, so use a stable release account.
+The organization owns `@negotium/adapter-sdk`. The stable release account owns the unscoped
+`negotium` name.
 
 ## Validation
-
-Run every check before publishing:
 
 ```bash
 bun install
@@ -32,57 +34,55 @@ bun run release:dry-run
 bun run release:smoke
 ```
 
-Narrow a dry run or resume a status check when investigating one package:
-
-```bash
-bun scripts/release-packages.ts dry-run --only=@negotium/core
-bun scripts/release-packages.ts status --from=@negotium/node
-```
-
 The release scripts enforce:
 
-- one version across all publishable packages;
-- dependency order and exact release versions for internal packages;
-- an explicit `files` allowlist and public publish configuration;
-- a clean Git worktree for an actual publish;
+- one version across both public packages and the runtime version constant;
+- `private: true` and no `publishConfig` on every internal workspace;
+- no public dependency on a private workspace package;
+- explicit package file allowlists and public publish configuration;
+- a clean Git worktree for publishing;
 - idempotent skipping when a version already exists on npm; and
-- npm packing plus npm installation of all tarballs into an empty project during `release:smoke`.
-
-## Publish order
-
-Packages are published in dependency order:
-
-1. `@negotium/adapter-sdk`
-2. `@negotium/core`
-3. `@negotium/mcp-host`
-4. `@negotium/module-cron`
-5. `@negotium/mcp`
-6. `@negotium/node`
-7. `@negotium/adapter-testkit`
-8. `@negotium/adapter-terminal`
-9. `@negotium/adapter-telegram`
-10. `@negotium/adapter-otium`
-11. `@negotium/cli`
-12. `negotium`
+- tarball installation of both packages into an empty project.
 
 ## Publishing
 
-After reviewing the dry run, publish from a clean committed worktree:
+Commit and push the validated release before publishing:
 
 ```bash
+git push
 bun run release:publish --confirm
 ```
 
-If authentication or registry propagation interrupts the command, run it again. Versions already
-published are skipped. Use `--from=<package>` only when a deliberate resume point is needed.
+The command publishes the SDK first and the complete runtime second. If authentication or registry
+propagation interrupts it, rerun the same command; versions already visible on npm are skipped.
 
-Releases currently run locally. The repository does not store a long-lived npm token or an npm
-publish workflow. Confirm `npm whoami` immediately before publishing.
+## Retiring the old package graph
 
-For a new release:
+Previously published internal packages remain available so old lockfiles continue to install. Do
+not unpublish them. After the replacement `negotium` version is visible, mark their old versions as
+deprecated with a migration message:
 
-1. Update all publishable package versions together.
-2. Refresh the lockfile.
+```bash
+npm deprecate '@negotium/core@<=0.1.7' 'Bundled into negotium; install negotium instead.'
+npm deprecate '@negotium/mcp@<=0.1.7' 'Bundled into negotium; install negotium instead.'
+npm deprecate '@negotium/mcp-host@<=0.1.7' 'Bundled into negotium; install negotium instead.'
+npm deprecate '@negotium/module-cron@<=0.1.7' 'Bundled into negotium; install negotium instead.'
+npm deprecate '@negotium/node@<=0.1.7' 'Bundled into negotium; install negotium instead.'
+npm deprecate '@negotium/adapter-testkit@<=0.1.7' 'Use @negotium/adapter-sdk/testkit instead.'
+npm deprecate '@negotium/adapter-terminal@<=0.1.7' 'Bundled into negotium; run negotium terminal.'
+npm deprecate '@negotium/adapter-telegram@<=0.1.7' 'Bundled into negotium; run negotium telegram.'
+npm deprecate '@negotium/adapter-otium@<=0.1.7' 'Bundled into negotium; run negotium otium.'
+npm deprecate '@negotium/cli@<=0.1.7' 'Replaced by the complete negotium package.'
+```
+
+Deprecation is reversible and preserves reproducible installs. Unpublishing is not part of the
+release process.
+
+## Release checklist
+
+1. Update both public manifests, private workspace manifests, and `NEGOTIUM_VERSION` together.
+2. Refresh `bun.lock`.
 3. Run check, test, dry-run, and smoke validation.
-4. Commit the version change.
+4. Commit and push the release.
 5. Publish with explicit confirmation.
+6. For the first consolidated release only, deprecate the old package graph after verification.

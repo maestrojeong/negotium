@@ -1,7 +1,7 @@
 # negotium
 
-The one-command installer for the Negotium multi-agent runtime and CLI. This is a functional,
-unscoped entry package backed by [`@negotium/cli`](https://www.npmjs.com/package/@negotium/cli).
+The one-command installer for the complete Negotium multi-agent node. The package includes the CLI,
+runtime, MCP services, Cron module, and first-party Terminal, Telegram, and Otium adapters.
 
 Requires Bun 1.2.15 or newer on macOS or Linux, plus credentials for Claude, Codex, or Maestro.
 

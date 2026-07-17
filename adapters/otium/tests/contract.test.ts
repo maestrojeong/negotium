@@ -2,12 +2,7 @@ import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import {
-  assertAdapterStopIsIdempotent,
-  assertNegotiumAdapterCapability,
-  assertNegotiumAdapterDefinition,
-  assertNegotiumAdapterHandle,
-} from "@negotium/adapter-testkit";
+import { assertNegotiumAdapterContract } from "@negotium/adapter-sdk/testkit";
 import { db, runtimeBus, upsertTopic } from "@negotium/core";
 import { otiumAdapter, startOtiumAdapter } from "@/index";
 import {
@@ -33,16 +28,18 @@ test("otium worker package has no Otium runtime dependency", () => {
 });
 
 test("otium implements the shared adapter lifecycle", async () => {
-  assertNegotiumAdapterDefinition(otiumAdapter, "otium");
-  assertNegotiumAdapterCapability(otiumAdapter, "localUserInput", false);
-  assertNegotiumAdapterCapability(otiumAdapter, "topicManagement", false);
-  assertNegotiumAdapterCapability(otiumAdapter, "externalPlacedTurn", true);
   const central = startFakeCentral();
   try {
-    const handle = startOtiumAdapter({ join: central.join });
-    assertNegotiumAdapterHandle(handle, "otium");
-    expect(handle.name).toBe("otium");
-    await assertAdapterStopIsIdempotent(handle);
+    await assertNegotiumAdapterContract({
+      name: "otium",
+      definition: otiumAdapter,
+      capabilities: {
+        localUserInput: false,
+        topicManagement: false,
+        externalPlacedTurn: true,
+      },
+      createHandle: () => startOtiumAdapter({ join: central.join }),
+    });
   } finally {
     central.stop();
   }

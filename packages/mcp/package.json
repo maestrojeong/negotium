@@ -1,6 +1,7 @@
 {
   "name": "@negotium/mcp",
-  "version": "0.1.7",
+  "version": "0.1.8",
+  "private": true,
   "type": "module",
   "description": "The negotium MCP server — mount this one MCP to give any agent host sessions, subagents, tasks, wiki/skills, vault and MCP management",
   "license": "Apache-2.0",
@@ -31,9 +32,6 @@
   "bugs": {
     "url": "https://github.com/maestrojeong/negotium/issues"
   },
-  "publishConfig": {
-    "access": "public"
-  },
   "scripts": {
     "build": "bunx tsc --noEmit",
     "lint": "biome check",
@@ -42,7 +40,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@negotium/core": "0.1.7",
+    "@negotium/core": "0.1.8",
     "zod": "^4.3.6"
   },
   "devDependencies": {

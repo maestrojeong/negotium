@@ -65,6 +65,7 @@ export { switchTopicModel } from "#application/switch-topic-model";
 export type {
   CompactUserTopicParams,
   DeleteUserTopicParams,
+  DeriveUserTopicParams,
   TopicServiceErrorCode,
   TopicSessionParams,
 } from "#application/topic-service";
@@ -314,8 +315,9 @@ export type {
   RestartTopicSessionResult,
 } from "#topics/session";
 export { compactTopicSession, restartTopicSession } from "#topics/session";
-// ── Types ───────────────────────────────────────────────────────────
 export * from "#types";
+// ── Types ───────────────────────────────────────────────────────────
+export { EFFORT_VALUES } from "#types";
 export type {
   AiMode,
   AttachmentDto,
@@ -328,3 +330,4 @@ export type {
   TopicKind,
   TopicVisibility,
 } from "#types/api";
+export { NEGOTIUM_VERSION } from "#version";
