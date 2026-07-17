@@ -33,6 +33,11 @@ import { AbortReason } from "#query/types";
 import { appendApiMessage, getApiMessage } from "#storage/api-messages";
 import { RUNTIME_INSTANCE_ID } from "#storage/runtime-leases";
 import {
+  acquireRuntimeProcessLease,
+  PROCESS_LEASE_HEARTBEAT_MS,
+  type RuntimeProcessLeaseHandle,
+} from "#storage/runtime-process-leases";
+import {
   claimNextDueSelfSchedule,
   completeSelfSchedule,
   heartbeatSelfScheduleClaim,
@@ -866,32 +871,76 @@ async function handleAskEntry(
 let watcher: ReturnType<typeof watchDir> | null = null;
 let fallbackTimer: ReturnType<typeof setInterval> | null = null;
 let debouncedTrigger: (() => void) | null = null;
+let leadershipTimer: ReturnType<typeof setInterval> | null = null;
+let workerLease: RuntimeProcessLeaseHandle | null = null;
+let workerStarted = false;
 
-/**
- * Start the session-inbox consumer. Call once on host boot.
- * Returns a cleanup function for graceful shutdown.
- */
-export function startSessionInboxWorker(): () => void {
-  if (debouncedTrigger) return () => {}; // Already started.
+const SESSION_INBOX_PROCESS_ROLE = "worker:session-inbox";
 
+function stopLeaderResources(): void {
+  if (watcher) {
+    watcher.close();
+    watcher = null;
+  }
+  if (fallbackTimer) {
+    clearInterval(fallbackTimer);
+    fallbackTimer = null;
+  }
+  debouncedTrigger = null;
+}
+
+function tryBecomeSessionInboxLeader(): void {
+  if (!workerStarted || workerLease) return;
+
+  let acquired: RuntimeProcessLeaseHandle | null = null;
+  acquired = acquireRuntimeProcessLease(SESSION_INBOX_PROCESS_ROLE, {
+    onLost: () => {
+      if (workerLease !== acquired) return;
+      workerLease = null;
+      stopLeaderResources();
+      logger.warn("session-inbox: worker leadership lost");
+    },
+  });
+  if (!acquired) return;
+
+  workerLease = acquired;
   debouncedTrigger = debouncedFlush(flushSessionInbox, "session-inbox", 200);
   watcher = watchDir(SESSION_INBOX_DIR, () => debouncedTrigger?.());
   fallbackTimer = setInterval(() => debouncedTrigger?.(), FALLBACK_INTERVAL_MS);
+  fallbackTimer.unref?.();
 
-  logger.info({ dir: SESSION_INBOX_DIR }, "session-inbox: worker started");
-  // Fire an initial flush to drain any entries written before the worker started.
+  logger.info(
+    { dir: SESSION_INBOX_DIR, role: SESSION_INBOX_PROCESS_ROLE },
+    "session-inbox: worker leadership acquired",
+  );
+  // Fire an initial flush to drain entries written before this leader started.
   void flushSessionInbox();
+}
+
+/**
+ * Join the session-inbox worker election. Exactly one runtime process watches
+ * and drains the shared inbox; contenders take over when its process lease is
+ * released, expires, or belongs to a dead PID.
+ * Returns a cleanup function for graceful shutdown.
+ */
+export function startSessionInboxWorker(): () => void {
+  if (workerStarted) return () => {};
+  workerStarted = true;
+
+  tryBecomeSessionInboxLeader();
+  leadershipTimer = setInterval(tryBecomeSessionInboxLeader, PROCESS_LEASE_HEARTBEAT_MS);
+  leadershipTimer.unref?.();
 
   return () => {
-    if (watcher) {
-      watcher.close();
-      watcher = null;
+    if (!workerStarted) return;
+    workerStarted = false;
+    if (leadershipTimer) {
+      clearInterval(leadershipTimer);
+      leadershipTimer = null;
     }
-    if (fallbackTimer) {
-      clearInterval(fallbackTimer);
-      fallbackTimer = null;
-    }
-    debouncedTrigger = null;
+    stopLeaderResources();
+    workerLease?.stop();
+    workerLease = null;
     logger.info("session-inbox: worker stopped");
   };
 }

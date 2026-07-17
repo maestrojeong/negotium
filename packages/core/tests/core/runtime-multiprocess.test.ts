@@ -121,4 +121,21 @@ describe("cross-process runtime", () => {
     expect(await first.child.exited).toBe(0);
     expect(await second.child.exited).toBe(0);
   });
+
+  test("elects one session inbox worker and recovers after its process dies", async () => {
+    const env = stateEnv();
+    const owner = spawnWorker(env, "inbox-worker");
+    expect(await owner.lines.next()).toBe(`READY ${owner.child.pid}`);
+
+    const contender = spawnWorker(env, "inbox-worker");
+    expect(await contender.lines.next()).toBe(`READY ${owner.child.pid}`);
+
+    owner.child.kill();
+    await owner.child.exited;
+    expect(await contender.lines.next(3_000)).toBe(`OWNER ${contender.child.pid}`);
+
+    contender.child.stdin.write("stop\n");
+    contender.child.stdin.end();
+    expect(await contender.child.exited).toBe(0);
+  });
 });

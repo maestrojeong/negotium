@@ -43,6 +43,28 @@ switch (mode) {
     await node.stop();
     break;
   }
+  case "inbox-worker": {
+    const { getRuntimeProcessLease, startSessionInboxWorker } = await import("../../src/index");
+    const stop = startSessionInboxWorker();
+    let lastOwnerPid: number | null = null;
+    const reportOwner = (prefix: "READY" | "OWNER") => {
+      const ownerPid = getRuntimeProcessLease("worker:session-inbox")?.pid ?? null;
+      lastOwnerPid = ownerPid;
+      process.stdout.write(`${prefix} ${ownerPid ?? "none"}\n`);
+    };
+    reportOwner("READY");
+    const timer = setInterval(() => {
+      const ownerPid = getRuntimeProcessLease("worker:session-inbox")?.pid ?? null;
+      if (ownerPid !== lastOwnerPid) reportOwner("OWNER");
+    }, 100);
+    process.stdin.setEncoding("utf8");
+    for await (const chunk of process.stdin) {
+      if (String(chunk).includes("stop")) break;
+    }
+    clearInterval(timer);
+    stop();
+    break;
+  }
   default:
     throw new Error(`unknown worker mode: ${mode}`);
 }
