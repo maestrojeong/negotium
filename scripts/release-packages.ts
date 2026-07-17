@@ -124,7 +124,10 @@ async function loadAndValidatePackages(): Promise<void> {
       if (dependencyIndex !== undefined && dependencyIndex >= index) {
         fail(`${pkg.name}: internal dependency ${dependency} must appear earlier in release order`);
       }
-      if (dependencyIndex !== undefined && productionDependencies[dependency] !== manifest.version) {
+      if (
+        dependencyIndex !== undefined &&
+        productionDependencies[dependency] !== manifest.version
+      ) {
         fail(
           `${pkg.name}: internal dependency ${dependency} must use the release version ${manifest.version}, found ${productionDependencies[dependency]}`,
         );
