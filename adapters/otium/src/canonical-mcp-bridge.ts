@@ -205,8 +205,13 @@ export function startCanonicalMcpBridge(
       expiresAt: Date.now() + CAPABILITY_TTL_MS,
     });
     return {
-      NEGOTIUM_CANONICAL_MCP_BRIDGE_URL: url,
-      NEGOTIUM_CANONICAL_MCP_BRIDGE_TOKEN: token,
+      env: {
+        NEGOTIUM_CANONICAL_MCP_BRIDGE_URL: url,
+        NEGOTIUM_CANONICAL_MCP_BRIDGE_TOKEN: token,
+      },
+      revoke: () => {
+        capabilities.delete(token);
+      },
     };
   });
   let stopped = false;

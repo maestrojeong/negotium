@@ -6,6 +6,7 @@ import {
   transformHostedQueryOptions,
 } from "#agents/execution-host";
 import { maestroProvider } from "#agents/maestro-provider";
+import { revokeCanonicalMcpBridgeTurn } from "#mcp/canonical-bridge-config";
 import type { AgentQueryOptions, UnifiedEvent } from "#types";
 
 export { type AgentExecutionHost, configureAgentExecutionHost };
@@ -18,19 +19,30 @@ export { type AgentExecutionHost, configureAgentExecutionHost };
  */
 export async function* runHostedAgent(input: AgentQueryOptions): AsyncGenerator<UnifiedEvent> {
   const opts = transformHostedQueryOptions({ ...input });
-  switch (opts.agent) {
-    case "claude":
-      yield* claudeProvider(opts);
-      return;
-    case "codex":
-      yield* codexProvider(opts);
-      return;
-    case "maestro":
-      yield* maestroProvider(opts);
-      return;
-    default: {
-      const exhaustive: never = opts.agent;
-      throw new Error(`runHostedAgent: unknown agent '${exhaustive}'`);
+  try {
+    switch (opts.agent) {
+      case "claude":
+        yield* claudeProvider(opts);
+        return;
+      case "codex":
+        yield* codexProvider(opts);
+        return;
+      case "maestro":
+        yield* maestroProvider(opts);
+        return;
+      default: {
+        const exhaustive: never = opts.agent;
+        throw new Error(`runHostedAgent: unknown agent '${exhaustive}'`);
+      }
+    }
+  } finally {
+    if (opts.userId && opts.topicId && opts.queryId && opts.peerBridge) {
+      revokeCanonicalMcpBridgeTurn({
+        userId: opts.userId,
+        topicId: opts.topicId,
+        queryId: opts.queryId,
+        peerBridge: opts.peerBridge,
+      });
     }
   }
 }

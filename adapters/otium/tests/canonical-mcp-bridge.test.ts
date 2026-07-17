@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { canonicalMcpBridgeEnv } from "@negotium/core/canonical-mcp-bridge";
+import {
+  canonicalMcpBridgeEnv,
+  revokeCanonicalMcpBridgeTurn,
+} from "@negotium/core/canonical-mcp-bridge";
 import { startCanonicalMcpBridge } from "@/canonical-mcp-bridge";
 
 describe("canonical MCP loopback bridge", () => {
@@ -77,6 +80,19 @@ describe("canonical MCP loopback bridge", () => {
         body: JSON.stringify({ tool: "skill_query", input: { question: "private" } }),
       });
       expect(denied.status).toBe(403);
+      expect(revokeCanonicalMcpBridgeTurn(scope)).toBe(1);
+      expect(
+        (
+          await fetch(bridge.url, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${env?.NEGOTIUM_CANONICAL_MCP_BRIDGE_TOKEN}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ tool: "task_list", input: {} }),
+          })
+        ).status,
+      ).toBe(401);
     } finally {
       bridge.stop();
     }

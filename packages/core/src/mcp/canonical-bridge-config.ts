@@ -10,11 +10,31 @@ export interface CanonicalMcpBridgeScope {
   peerBridge: PeerRuntimeBridgeContext;
 }
 
+export interface CanonicalMcpBridgeEnvLease {
+  env: Record<string, string>;
+  /** Revoke the capability immediately. Must be safe to call more than once. */
+  revoke(): void;
+}
+
 export type CanonicalMcpBridgeEnvProvider = (
   scope: CanonicalMcpBridgeScope,
-) => Record<string, string> | undefined;
+) => CanonicalMcpBridgeEnvLease | undefined;
 
 const registrations: Array<{ id: symbol; provider: CanonicalMcpBridgeEnvProvider }> = [];
+const turnLeases = new Map<string, Set<() => void>>();
+
+function turnKey(
+  scope: Pick<CanonicalMcpBridgeScope, "userId" | "topicId" | "queryId" | "peerBridge">,
+): string {
+  return JSON.stringify([
+    scope.userId,
+    scope.topicId,
+    scope.queryId,
+    scope.peerBridge.hubCellId,
+    scope.peerBridge.hostTopicId,
+    scope.peerBridge.hostQueryId,
+  ]);
+}
 
 /** Placement adapters install a scoped capability issuer without exposing
  * their hub discovery or authentication model to generic core. */
@@ -35,5 +55,30 @@ export function registerCanonicalMcpBridgeEnvProvider(
 export function canonicalMcpBridgeEnv(
   scope: CanonicalMcpBridgeScope,
 ): Record<string, string> | undefined {
-  return registrations.at(-1)?.provider(scope);
+  const lease = registrations.at(-1)?.provider(scope);
+  if (!lease) return undefined;
+  const key = turnKey(scope);
+  const leases = turnLeases.get(key) ?? new Set<() => void>();
+  leases.add(lease.revoke);
+  turnLeases.set(key, leases);
+  return lease.env;
+}
+
+/** Revoke every canonical MCP capability issued while building one placed turn. */
+export function revokeCanonicalMcpBridgeTurn(
+  scope: Pick<CanonicalMcpBridgeScope, "userId" | "topicId" | "queryId" | "peerBridge">,
+): number {
+  const key = turnKey(scope);
+  const leases = turnLeases.get(key);
+  if (!leases) return 0;
+  turnLeases.delete(key);
+  for (const revoke of leases) {
+    try {
+      revoke();
+    } catch {
+      // Revocation is best-effort across independently owned bridge adapters;
+      // continue so one broken disposer cannot preserve sibling capabilities.
+    }
+  }
+  return leases.size;
 }

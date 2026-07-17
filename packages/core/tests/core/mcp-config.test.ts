@@ -343,8 +343,11 @@ describe("mcp-config: playwright transport selection per agent", () => {
 
   test("placed turns proxy canonical task/wiki while vault and skills stay node-local", () => {
     const unregister = registerCanonicalMcpBridgeEnvProvider((scope) => ({
-      NEGOTIUM_CANONICAL_MCP_BRIDGE_URL: `http://127.0.0.1/${scope.surface}`,
-      NEGOTIUM_CANONICAL_MCP_BRIDGE_TOKEN: `token-${scope.surface}`,
+      env: {
+        NEGOTIUM_CANONICAL_MCP_BRIDGE_URL: `http://127.0.0.1/${scope.surface}`,
+        NEGOTIUM_CANONICAL_MCP_BRIDGE_TOKEN: `token-${scope.surface}`,
+      },
+      revoke: () => undefined,
     }));
     try {
       const servers = getForumMcpServers({
