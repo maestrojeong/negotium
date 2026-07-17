@@ -16,6 +16,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import type { ForkHandle } from "#agents/fork";
 import { WsHub } from "#bus";
 import { deliverPeerReply, type RemoteReplyRoute } from "#mcp/session-comm/peer-forward";
 import { deleteProcessingFile, drainOutboxFile, parseOutboxLine } from "#outbox/file-ops";
@@ -31,6 +32,7 @@ import {
 } from "#query/session-inbox-path";
 import { AbortReason } from "#query/types";
 import { appendApiMessage, getApiMessage } from "#storage/api-messages";
+import type { ConversationEntry } from "#storage/conversations";
 import { RUNTIME_INSTANCE_ID } from "#storage/runtime-leases";
 import {
   acquireRuntimeProcessLease,
@@ -77,6 +79,42 @@ type SessionInboxEntry =
 
 interface PendingAskScope {
   userId: string;
+}
+
+interface AskForkPlanOptions {
+  entries: ConversationEntry[];
+  forkNative?: () => Promise<ForkHandle>;
+  synthesize: (entries: ConversationEntry[]) => ForkHandle;
+  onNativeForkError?: (error: unknown) => void;
+}
+
+export interface AskForkPlan {
+  forkHandle: ForkHandle;
+  /** Rebuild from the inbox-consumption snapshot, never from mutable provider state. */
+  prepareSession: () => Promise<ForkHandle>;
+}
+
+/**
+ * Create the first ask fork eagerly while retaining a replay recipe over the
+ * exact provider-neutral history observed when the inbox entry was consumed.
+ * Every replay receives its own clone so rollout writers cannot mutate the
+ * snapshot shared by a later retry.
+ */
+export async function createAskForkPlan(options: AskForkPlanOptions): Promise<AskForkPlan> {
+  const snapshot = structuredClone(options.entries);
+  const prepareSession = async (): Promise<ForkHandle> =>
+    options.synthesize(structuredClone(snapshot));
+
+  let forkHandle: ForkHandle | undefined;
+  if (options.forkNative) {
+    try {
+      forkHandle = await options.forkNative();
+    } catch (error) {
+      options.onNativeForkError?.(error);
+    }
+  }
+  forkHandle ??= await prepareSession();
+  return { forkHandle, prepareSession };
 }
 
 type ScheduledSessionInboxEntry = Extract<SessionInboxEntry, { type: "tell" }> & {
@@ -744,67 +782,117 @@ async function handleAskEntry(
     return;
   }
 
-  // Delay the snapshot until the queued turn actually claims the target room.
-  // This ensures the fork includes any user turn that was ahead of the ask.
-  const prepareSession = async () => {
-    const { forkAgentSession } = await import("#agents/fork");
-    const { getRegistry } = await import("#agents/registry");
-    const { resolveModelForAgent } = await import("#agents/model-catalog");
-    const { getApiTopicConfig } = await import("#storage/api-topic-config");
-    const { readConversation } = await import("#storage/conversations");
-    const currentTopic = getTopic(topic.id);
-    const registry = getRegistry(agentOverride);
-    const topicConfig = getApiTopicConfig(topic.id);
-    const model = resolveModelForAgent(
-      agentOverride,
-      topicConfig?.model ?? currentTopic?.defaultModel,
-      registry,
-    );
-    const requestedEffort = topicConfig?.effort ?? currentTopic?.defaultEffort;
-    const effort =
-      requestedEffort && registry.validateEffort(requestedEffort)
-        ? requestedEffort
-        : registry.defaultEffort;
-    const parentSessionId = getTopicSessionId(topic.id);
+  // Fork immediately — snapshot the target topic's state at the moment the
+  // inbox entry is consumed (just like clawgram). The ask session reads the
+  // history that exists right now, not after any in-flight user turn finishes.
+  const { forkAgentSession } = await import("#agents/fork");
+  const { getRegistry } = await import("#agents/registry");
+  const { resolveModelForAgent } = await import("#agents/model-catalog");
+  const { getApiTopicConfig } = await import("#storage/api-topic-config");
+  const { readConversation } = await import("#storage/conversations");
+  const registry = getRegistry(agentOverride);
+  const topicConfig = getApiTopicConfig(topic.id);
+  const model = resolveModelForAgent(
+    agentOverride,
+    topicConfig?.model ?? fullTopic?.defaultModel,
+    registry,
+  );
+  const requestedEffort = topicConfig?.effort ?? fullTopic?.defaultEffort;
+  const effort =
+    requestedEffort && registry.validateEffort(requestedEffort)
+      ? requestedEffort
+      : registry.defaultEffort;
+  const parentSessionId = getTopicSessionId(topic.id);
 
-    if (parentSessionId) {
-      try {
-        return await forkAgentSession({
-          agent: agentOverride,
-          parentSessionId,
+  let forkPlan: AskForkPlan;
+  try {
+    forkPlan = await createAskForkPlan({
+      // Read once: queued/replayed asks must keep the history visible at inbox
+      // consumption time even if the target topic advances while they wait.
+      entries: readConversation(scope.userId, topicName),
+      ...(parentSessionId
+        ? {
+            forkNative: () =>
+              forkAgentSession({
+                agent: agentOverride,
+                parentSessionId,
+                cwd,
+                userId: scope.userId,
+                topicName,
+                title: `ask: ${entry.from} -> ${topicName}`,
+                model,
+                ...(effort ? { effort } : {}),
+              }),
+          }
+        : {}),
+      synthesize: (entries) => {
+        const rollout = registry.writeRollout({
           cwd,
-          userId: scope.userId,
-          topicName,
-          title: `ask: ${entry.from} -> ${topicName}`,
+          entries,
           model,
           ...(effort ? { effort } : {}),
         });
-      } catch (err) {
+        return {
+          agent: agentOverride,
+          forkId: rollout.sessionId,
+          rolloutPath: rollout.rolloutPath,
+        };
+      },
+      onNativeForkError: (err) => {
         // A stale provider session should not make ask_session unusable. The
         // unified log is the durable source of truth and can seed a new fork.
         logger.warn(
           { err, topicName, from: entry.from, requestId, parentSessionId },
           "session-inbox: native target fork failed; synthesizing from unified history",
         );
+      },
+    });
+  } catch (err) {
+    // This entry has already been claimed. Convert preparation failure into a
+    // terminal ask result so processTopicInbox can delete its `.processing`
+    // file instead of leaving the request undiscoverable until another write.
+    logger.error(
+      { err, topicName, from: entry.from, requestId, parentSessionId },
+      "session-inbox: failed to prepare target ask session",
+    );
+    try {
+      clearPendingAskForEntry(scope, entry, topicName, "target-session-prepare-failed");
+    } catch (clearError) {
+      logger.warn(
+        { err: clearError, topicName, from: entry.from, requestId },
+        "session-inbox: failed to clear ask after session preparation failure",
+      );
+    }
+    const message = "(error: target session could not be prepared)";
+    if (remoteReply) {
+      try {
+        const delivered = await deliverPeerReply(remoteReply, topic.title, message, "error");
+        if (!delivered) {
+          logger.warn(
+            { topicName, from: entry.from, requestId },
+            "session-inbox: failed to deliver remote ask preparation error",
+          );
+        }
+      } catch (deliveryError) {
+        logger.warn(
+          { err: deliveryError, topicName, from: entry.from, requestId },
+          "session-inbox: remote ask preparation error delivery threw",
+        );
+      }
+    } else {
+      try {
+        await notifyAskDrop(scope, entry, topicName, message);
+      } catch (deliveryError) {
+        logger.warn(
+          { err: deliveryError, topicName, from: entry.from, requestId },
+          "session-inbox: local ask preparation error delivery threw",
+        );
       }
     }
+    return;
+  }
 
-    const rollout = registry.writeRollout({
-      cwd,
-      entries: readConversation(scope.userId, topicName),
-      model,
-      ...(effort ? { effort } : {}),
-    });
-    return {
-      agent: agentOverride,
-      forkId: rollout.sessionId,
-      rolloutPath: rollout.rolloutPath,
-    };
-  };
-
-  // Trigger the AI turn. The onDispatched callback registers the reply route
-  // at the moment the turn actually starts (immediately, or after being deferred
-  // behind a running user turn via B's queue).
+  // Trigger the AI turn immediately with the pre-forked session.
   triggerTopicAiTurn(
     topic.id,
     String(scope.userId),
@@ -816,7 +904,12 @@ async function handleAskEntry(
       contextId: entry.contextId,
       depth: (entry.fromDepth ?? 0) + 1,
       silent: true,
-      prepareSession,
+      sessionId: forkPlan.forkHandle.forkId,
+      forkHandle: forkPlan.forkHandle,
+      // Keep a regeneration recipe even though the first fork is eager. If a
+      // user preempts this turn, turn-runner strips the partially-consumed
+      // fork and invokes this recipe after the user turn completes.
+      prepareSession: forkPlan.prepareSession,
       cwd,
       onSettled: (result) => {
         if (result.queryId || result.kind !== "error") return;
