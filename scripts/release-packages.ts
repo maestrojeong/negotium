@@ -307,6 +307,7 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
     await Bun.write(
       join(smokeRoot, "imports.ts"),
       `import { join } from "node:path";
+import { Database } from "bun:sqlite";
 await import("@negotium/adapter-sdk");
 await import("@negotium/adapter-sdk/outbox");
 await import("@negotium/adapter-sdk/testkit");
@@ -323,6 +324,7 @@ import type { ChatPair, CodexContextUsage } from "negotium/rollout";
 import type { VaultStorageOptions } from "negotium/vault";
 import type { SessionSystemPromptOpts } from "negotium/prompts";
 import type { MermaidTheme } from "negotium/runtime-helpers";
+import type { StorageHostOptions } from "negotium/storage";
 const hostedAgent = await import("negotium/hosted-agent");
 const canonicalBridge = await import("negotium/canonical-mcp-bridge");
 const cron = await import("negotium/cron");
@@ -332,6 +334,7 @@ const rollout = await import("negotium/rollout");
 const vault = await import("negotium/vault");
 const prompts = await import("negotium/prompts");
 const runtimeHelpers = await import("negotium/runtime-helpers");
+const storage = await import("negotium/storage");
 if (typeof hostedAgent.configureAgentExecutionHost !== "function") {
   throw new Error("packed hosted-agent export is missing");
 }
@@ -375,6 +378,35 @@ if (typeof vault.configureVaultStorage !== "function" || typeof prompts.buildTop
 if (typeof runtimeHelpers.buildMermaidHtml !== "function" || typeof runtimeHelpers.renderTaskPanel !== "function") {
   throw new Error("packed runtime helper export is missing");
 }
+if (
+  typeof storage.configureStorageHost !== "function" ||
+  typeof storage.getTopic !== "function" ||
+  typeof storage.forum?.getTopicByName !== "function" ||
+  typeof storage.sessionAsks?.createPendingAsk !== "function"
+) {
+  throw new Error("packed storage facade export is missing");
+}
+const storageDatabase = new Database(":memory:");
+const storageHost: StorageHostOptions = {
+  database: storageDatabase,
+  dataDir: join(process.cwd(), "storage-data"),
+  logDir: join(process.cwd(), "storage-logs"),
+  sessionAsksDir: join(process.cwd(), "storage-asks"),
+  workspaceDir: join(process.cwd(), "storage-workspace"),
+};
+const restoreStorageHost = storage.configureStorageHost(storageHost);
+try {
+  storage.listTopics();
+  const table = storageDatabase
+    .query("SELECT name FROM sqlite_master WHERE type='table' AND name='api_topics'")
+    .get() as { name?: string } | null;
+  if (table?.name !== "api_topics") throw new Error("packed storage schema was not initialized");
+  storage.flushSessionCache();
+  storageDatabase.query("SELECT 1").get();
+} finally {
+  restoreStorageHost();
+  storageDatabase.close();
+}
 const publicTypes = {} as {
   host: Partial<AgentExecutionHost>;
   options: AgentQueryOptions;
@@ -390,6 +422,7 @@ const publicTypes = {} as {
   vaultOptions: VaultStorageOptions;
   promptOptions: SessionSystemPromptOpts;
   mermaidTheme: MermaidTheme;
+  storageHost: StorageHostOptions;
 };
 void publicTypes;
 
@@ -472,6 +505,7 @@ for (const subpath of [
   "./vault",
   "./prompts",
   "./runtime-helpers",
+  "./storage",
 ]) {
   const types = packedManifest.exports?.[subpath]?.types;
   if (typeof types !== "string" || !types.endsWith(".d.ts")) {

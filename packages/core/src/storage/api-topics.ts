@@ -3,6 +3,7 @@
 import { GENERAL_TOPIC_ID } from "#platform/constants";
 import { logger } from "#platform/logger";
 import { db } from "#storage/forum-db";
+import { registerStorageSchemaInitializer } from "#storage/storage-host";
 import type { AgentKind, EffortLevel } from "#types";
 import type {
   AiMode,
@@ -38,7 +39,8 @@ export function setApiTopicAgent(
   );
 }
 
-db.exec(`
+function initializeApiTopicsSchema(): void {
+  db.exec(`
   CREATE TABLE IF NOT EXISTS api_topics (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -56,107 +58,107 @@ db.exec(`
   )
 `);
 
-const initialTopicColumns = tableColumns("api_topics");
-const legacyTopicSchema = !initialTopicColumns.has("response_policy");
-const needsCanonicalTopicRebuild = legacyTopicSchema || !initialTopicColumns.has("agent");
-if (legacyTopicSchema) {
-  // Rename the legacy column once; new databases are created with `agent`.
-  try {
-    db.exec("ALTER TABLE api_topics RENAME COLUMN default_agent TO agent");
-  } catch {
-    // Already migrated or freshly created.
-  }
+  const initialTopicColumns = tableColumns("api_topics");
+  const legacyTopicSchema = !initialTopicColumns.has("response_policy");
+  const needsCanonicalTopicRebuild = legacyTopicSchema || !initialTopicColumns.has("agent");
+  if (legacyTopicSchema) {
+    // Rename the legacy column once; new databases are created with `agent`.
+    try {
+      db.exec("ALTER TABLE api_topics RENAME COLUMN default_agent TO agent");
+    } catch {
+      // Already migrated or freshly created.
+    }
 
-  // Migrate existing DBs that predate the ai_mention column (team-mode topics).
-  try {
-    db.exec("ALTER TABLE api_topics ADD COLUMN ai_mention INTEGER NOT NULL DEFAULT 0");
-  } catch {
-    // Column already exists — nothing to do.
-  }
+    // Migrate existing DBs that predate the ai_mention column (team-mode topics).
+    try {
+      db.exec("ALTER TABLE api_topics ADD COLUMN ai_mention INTEGER NOT NULL DEFAULT 0");
+    } catch {
+      // Column already exists — nothing to do.
+    }
 
-  // Migrate for spawn/fork tracking (R1).
-  try {
-    db.exec("ALTER TABLE api_topics ADD COLUMN parent_topic_id TEXT");
-  } catch {
-    // Column already exists.
-  }
-  try {
-    db.exec("ALTER TABLE api_topics ADD COLUMN is_fork INTEGER NOT NULL DEFAULT 0");
-  } catch {
-    // Column already exists.
-  }
+    // Migrate for spawn/fork tracking (R1).
+    try {
+      db.exec("ALTER TABLE api_topics ADD COLUMN parent_topic_id TEXT");
+    } catch {
+      // Column already exists.
+    }
+    try {
+      db.exec("ALTER TABLE api_topics ADD COLUMN is_fork INTEGER NOT NULL DEFAULT 0");
+    } catch {
+      // Column already exists.
+    }
 
-  // Migrate for agent-spawned subagent worker rooms.
-  try {
-    db.exec("ALTER TABLE api_topics ADD COLUMN is_subagent INTEGER NOT NULL DEFAULT 0");
-  } catch {
-    // Column already exists.
-  }
+    // Migrate for agent-spawned subagent worker rooms.
+    try {
+      db.exec("ALTER TABLE api_topics ADD COLUMN is_subagent INTEGER NOT NULL DEFAULT 0");
+    } catch {
+      // Column already exists.
+    }
 
-  // Migrate for session persistence.
-  try {
-    db.exec("ALTER TABLE api_topics ADD COLUMN session_id TEXT");
-  } catch {
-    // Column already exists.
-  }
+    // Migrate for session persistence.
+    try {
+      db.exec("ALTER TABLE api_topics ADD COLUMN session_id TEXT");
+    } catch {
+      // Column already exists.
+    }
 
-  try {
-    db.exec("ALTER TABLE api_topics ADD COLUMN kind TEXT NOT NULL DEFAULT 'channel'");
-  } catch {
-    // Column already exists.
-  }
+    try {
+      db.exec("ALTER TABLE api_topics ADD COLUMN kind TEXT NOT NULL DEFAULT 'channel'");
+    } catch {
+      // Column already exists.
+    }
 
-  try {
-    db.exec("ALTER TABLE api_topics ADD COLUMN ai_mode TEXT");
-  } catch {
-    // Column already exists.
-  }
+    try {
+      db.exec("ALTER TABLE api_topics ADD COLUMN ai_mode TEXT");
+    } catch {
+      // Column already exists.
+    }
 
-  db.exec(`
+    db.exec(`
   CREATE TABLE IF NOT EXISTS api_schema_migrations (
     key TEXT PRIMARY KEY,
     applied_at TEXT NOT NULL
   )
 `);
 
-  const ALWAYS_RESPOND_MIGRATION = "api_topics_ai_invited_default_always_respond_20260623";
-  const alwaysRespondMigration = db
-    .query("SELECT key FROM api_schema_migrations WHERE key = ?")
-    .get(ALWAYS_RESPOND_MIGRATION);
-  if (!alwaysRespondMigration) {
-    db.transaction(() => {
-      db.query("UPDATE api_topics SET ai_mention = 0 WHERE agent IS NOT NULL").run();
-      db.query("INSERT INTO api_schema_migrations (key, applied_at) VALUES (?, ?)").run(
-        ALWAYS_RESPOND_MIGRATION,
-        new Date().toISOString(),
-      );
-    })();
-  }
+    const ALWAYS_RESPOND_MIGRATION = "api_topics_ai_invited_default_always_respond_20260623";
+    const alwaysRespondMigration = db
+      .query("SELECT key FROM api_schema_migrations WHERE key = ?")
+      .get(ALWAYS_RESPOND_MIGRATION);
+    if (!alwaysRespondMigration) {
+      db.transaction(() => {
+        db.query("UPDATE api_topics SET ai_mention = 0 WHERE agent IS NOT NULL").run();
+        db.query("INSERT INTO api_schema_migrations (key, applied_at) VALUES (?, ?)").run(
+          ALWAYS_RESPOND_MIGRATION,
+          new Date().toISOString(),
+        );
+      })();
+    }
 
-  const GENERAL_AGENT_KIND_MIGRATION = "api_topics_general_agent_kind_20260704";
-  const generalAgentKindMigration = db
-    .query("SELECT key FROM api_schema_migrations WHERE key = ?")
-    .get(GENERAL_AGENT_KIND_MIGRATION);
-  if (!generalAgentKindMigration) {
-    db.transaction(() => {
-      db.query("UPDATE api_topics SET kind = 'agent', ai_mention = 0 WHERE id = ?").run(
-        GENERAL_TOPIC_ID,
-      );
-      db.query("INSERT INTO api_schema_migrations (key, applied_at) VALUES (?, ?)").run(
-        GENERAL_AGENT_KIND_MIGRATION,
-        new Date().toISOString(),
-      );
-    })();
-  }
+    const GENERAL_AGENT_KIND_MIGRATION = "api_topics_general_agent_kind_20260704";
+    const generalAgentKindMigration = db
+      .query("SELECT key FROM api_schema_migrations WHERE key = ?")
+      .get(GENERAL_AGENT_KIND_MIGRATION);
+    if (!generalAgentKindMigration) {
+      db.transaction(() => {
+        db.query("UPDATE api_topics SET kind = 'agent', ai_mention = 0 WHERE id = ?").run(
+          GENERAL_TOPIC_ID,
+        );
+        db.query("INSERT INTO api_schema_migrations (key, applied_at) VALUES (?, ?)").run(
+          GENERAL_AGENT_KIND_MIGRATION,
+          new Date().toISOString(),
+        );
+      })();
+    }
 
-  const AI_MODE_MIGRATION = "api_topics_ai_mode_20260704";
-  const aiModeMigration = db
-    .query("SELECT key FROM api_schema_migrations WHERE key = ?")
-    .get(AI_MODE_MIGRATION);
-  if (!aiModeMigration) {
-    db.transaction(() => {
-      db.query(
-        `UPDATE api_topics
+    const AI_MODE_MIGRATION = "api_topics_ai_mode_20260704";
+    const aiModeMigration = db
+      .query("SELECT key FROM api_schema_migrations WHERE key = ?")
+      .get(AI_MODE_MIGRATION);
+    if (!aiModeMigration) {
+      db.transaction(() => {
+        db.query(
+          `UPDATE api_topics
        SET
          kind = CASE
            WHEN id = ? THEN 'agent'
@@ -172,33 +174,33 @@ if (legacyTopicSchema) {
            WHEN ai_mention != 0 THEN 'mention'
            ELSE 'always'
          END`,
-      ).run(GENERAL_TOPIC_ID, GENERAL_TOPIC_ID);
-      db.query("INSERT INTO api_schema_migrations (key, applied_at) VALUES (?, ?)").run(
-        AI_MODE_MIGRATION,
-        new Date().toISOString(),
-      );
-    })();
+        ).run(GENERAL_TOPIC_ID, GENERAL_TOPIC_ID);
+        db.query("INSERT INTO api_schema_migrations (key, applied_at) VALUES (?, ?)").run(
+          AI_MODE_MIGRATION,
+          new Date().toISOString(),
+        );
+      })();
+    }
+
+    const GENERAL_MANAGER_KIND_MIGRATION = "api_topics_general_manager_kind_20260704";
+    const generalManagerKindMigration = db
+      .query("SELECT key FROM api_schema_migrations WHERE key = ?")
+      .get(GENERAL_MANAGER_KIND_MIGRATION);
+    if (!generalManagerKindMigration) {
+      db.transaction(() => {
+        db.query(
+          "UPDATE api_topics SET kind = 'manager', ai_mention = 0, ai_mode = 'always' WHERE id = ?",
+        ).run(GENERAL_TOPIC_ID);
+        db.query("INSERT INTO api_schema_migrations (key, applied_at) VALUES (?, ?)").run(
+          GENERAL_MANAGER_KIND_MIGRATION,
+          new Date().toISOString(),
+        );
+      })();
+    }
   }
 
-  const GENERAL_MANAGER_KIND_MIGRATION = "api_topics_general_manager_kind_20260704";
-  const generalManagerKindMigration = db
-    .query("SELECT key FROM api_schema_migrations WHERE key = ?")
-    .get(GENERAL_MANAGER_KIND_MIGRATION);
-  if (!generalManagerKindMigration) {
-    db.transaction(() => {
-      db.query(
-        "UPDATE api_topics SET kind = 'manager', ai_mention = 0, ai_mode = 'always' WHERE id = ?",
-      ).run(GENERAL_TOPIC_ID);
-      db.query("INSERT INTO api_schema_migrations (key, applied_at) VALUES (?, ?)").run(
-        GENERAL_MANAGER_KIND_MIGRATION,
-        new Date().toISOString(),
-      );
-    })();
-  }
-}
-
-function createCanonicalTopicsTable(name: string): void {
-  db.exec(`
+  function createCanonicalTopicsTable(name: string): void {
+    db.exec(`
     CREATE TABLE IF NOT EXISTS ${name} (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
@@ -225,10 +227,10 @@ function createCanonicalTopicsTable(name: string): void {
       )
     )
   `);
-}
+  }
 
-function createTopicMembersTable(): void {
-  db.exec(`
+  function createTopicMembersTable(): void {
+    db.exec(`
     CREATE TABLE IF NOT EXISTS topic_members (
       topic_id TEXT NOT NULL REFERENCES api_topics(id) ON DELETE CASCADE,
       user_id TEXT NOT NULL,
@@ -236,129 +238,129 @@ function createTopicMembersTable(): void {
       PRIMARY KEY (topic_id, user_id)
     )
   `);
-  db.exec("CREATE INDEX IF NOT EXISTS idx_topic_members_user ON topic_members(user_id)");
-}
+    db.exec("CREATE INDEX IF NOT EXISTS idx_topic_members_user ON topic_members(user_id)");
+  }
 
-if (needsCanonicalTopicRebuild) {
-  const legacyRows = db.query("SELECT * FROM api_topics").all() as Array<Record<string, unknown>>;
-  const existingMemberRows = tableColumns("topic_members").has("topic_id")
-    ? (db.query("SELECT topic_id, user_id, role FROM topic_members").all() as Array<{
-        topic_id: string;
-        user_id: string;
-        role: string;
-      }>)
-    : [];
-  const configColumns = tableColumns("api_topic_config");
-  const legacyAgentOverrides = configColumns.has("agent")
-    ? new Map(
-        (
-          db
-            .query("SELECT topic_id, agent FROM api_topic_config WHERE agent IS NOT NULL")
-            .all() as Array<{ topic_id: string; agent: AgentKind }>
-        ).map((row) => [row.topic_id, row.agent]),
-      )
-    : new Map<string, AgentKind>();
-  const previousForeignKeys = db
-    .query<{ foreign_keys: number }, []>("PRAGMA foreign_keys")
-    .get()?.foreign_keys;
-  db.exec("PRAGMA foreign_keys = OFF");
-  try {
-    db.transaction(() => {
-      createCanonicalTopicsTable("api_topics_next");
-      for (const row of legacyRows) {
-        const selectedAgent = (legacyAgentOverrides.get(String(row.id)) ??
-          row.agent ??
-          row.runtime_agent ??
-          row.default_agent ??
-          undefined) as AgentKind | undefined;
-        const normalized = normalizeTopicState({
-          id: String(row.id),
-          kind: normalizeTopicKind(row.kind),
-          agent: selectedAgent,
-          aiMode: normalizeAiMode(row.response_policy ?? row.ai_mode),
-          aiMention: Number(row.ai_mention ?? 0) !== 0,
-        });
-        const legacyBaseModel = row.base_model ?? row.default_model;
-        const legacyBaseEffort = row.base_effort ?? row.default_effort;
-        db.query(
-          `INSERT INTO api_topics_next
+  if (needsCanonicalTopicRebuild) {
+    const legacyRows = db.query("SELECT * FROM api_topics").all() as Array<Record<string, unknown>>;
+    const existingMemberRows = tableColumns("topic_members").has("topic_id")
+      ? (db.query("SELECT topic_id, user_id, role FROM topic_members").all() as Array<{
+          topic_id: string;
+          user_id: string;
+          role: string;
+        }>)
+      : [];
+    const configColumns = tableColumns("api_topic_config");
+    const legacyAgentOverrides = configColumns.has("agent")
+      ? new Map(
+          (
+            db
+              .query("SELECT topic_id, agent FROM api_topic_config WHERE agent IS NOT NULL")
+              .all() as Array<{ topic_id: string; agent: AgentKind }>
+          ).map((row) => [row.topic_id, row.agent]),
+        )
+      : new Map<string, AgentKind>();
+    const previousForeignKeys = db
+      .query<{ foreign_keys: number }, []>("PRAGMA foreign_keys")
+      .get()?.foreign_keys;
+    db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      db.transaction(() => {
+        createCanonicalTopicsTable("api_topics_next");
+        for (const row of legacyRows) {
+          const selectedAgent = (legacyAgentOverrides.get(String(row.id)) ??
+            row.agent ??
+            row.runtime_agent ??
+            row.default_agent ??
+            undefined) as AgentKind | undefined;
+          const normalized = normalizeTopicState({
+            id: String(row.id),
+            kind: normalizeTopicKind(row.kind),
+            agent: selectedAgent,
+            aiMode: normalizeAiMode(row.response_policy ?? row.ai_mode),
+            aiMention: Number(row.ai_mention ?? 0) !== 0,
+          });
+          const legacyBaseModel = row.base_model ?? row.default_model;
+          const legacyBaseEffort = row.base_effort ?? row.default_effort;
+          db.query(
+            `INSERT INTO api_topics_next
              (id,title,kind,description,agent,base_model,base_effort,response_policy,
               created_at,last_message_at,parent_topic_id,is_fork,is_subagent,visibility,access_mode,session_id)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        ).run(
-          String(row.id),
-          String(row.title),
-          normalized.kind,
-          typeof row.description === "string" ? row.description : null,
-          normalized.agent ?? null,
-          typeof legacyBaseModel === "string" ? legacyBaseModel : null,
-          typeof legacyBaseEffort === "string" ? legacyBaseEffort : null,
-          normalized.aiMode,
-          String(row.created_at),
-          typeof row.last_message_at === "string" ? row.last_message_at : null,
-          typeof row.parent_topic_id === "string" ? row.parent_topic_id : null,
-          Number(row.is_fork ?? 0) !== 0 ? 1 : 0,
-          Number(row.is_subagent ?? 0) !== 0 ? 1 : 0,
-          row.visibility === "hidden" ? "hidden" : "visible",
-          row.access_mode === "shared" ? "shared" : "private",
-          typeof row.session_id === "string" ? row.session_id : null,
-        );
-      }
-      db.exec("DROP TABLE IF EXISTS topic_members");
-      db.exec("DROP TABLE api_topics");
-      db.exec("ALTER TABLE api_topics_next RENAME TO api_topics");
-      createTopicMembersTable();
-      if (existingMemberRows.length > 0) {
-        for (const member of existingMemberRows) {
-          db.query(
-            "INSERT OR REPLACE INTO topic_members (topic_id,user_id,role) VALUES (?,?,?)",
-          ).run(member.topic_id, member.user_id, member.role === "owner" ? "owner" : "member");
+          ).run(
+            String(row.id),
+            String(row.title),
+            normalized.kind,
+            typeof row.description === "string" ? row.description : null,
+            normalized.agent ?? null,
+            typeof legacyBaseModel === "string" ? legacyBaseModel : null,
+            typeof legacyBaseEffort === "string" ? legacyBaseEffort : null,
+            normalized.aiMode,
+            String(row.created_at),
+            typeof row.last_message_at === "string" ? row.last_message_at : null,
+            typeof row.parent_topic_id === "string" ? row.parent_topic_id : null,
+            Number(row.is_fork ?? 0) !== 0 ? 1 : 0,
+            Number(row.is_subagent ?? 0) !== 0 ? 1 : 0,
+            row.visibility === "hidden" ? "hidden" : "visible",
+            row.access_mode === "shared" ? "shared" : "private",
+            typeof row.session_id === "string" ? row.session_id : null,
+          );
         }
-      } else {
-        for (const row of legacyRows) {
-          let participants: ParticipantDto[] = [];
-          try {
-            const parsed = JSON.parse(String(row.participants ?? "[]"));
-            if (Array.isArray(parsed)) participants = parsed as ParticipantDto[];
-          } catch {
-            participants = [];
-          }
-          for (const participant of participants) {
-            if (!participant?.userId) continue;
+        db.exec("DROP TABLE IF EXISTS topic_members");
+        db.exec("DROP TABLE api_topics");
+        db.exec("ALTER TABLE api_topics_next RENAME TO api_topics");
+        createTopicMembersTable();
+        if (existingMemberRows.length > 0) {
+          for (const member of existingMemberRows) {
             db.query(
               "INSERT OR REPLACE INTO topic_members (topic_id,user_id,role) VALUES (?,?,?)",
-            ).run(
-              String(row.id),
-              participant.userId,
-              participant.role === "owner" ? "owner" : "member",
-            );
+            ).run(member.topic_id, member.user_id, member.role === "owner" ? "owner" : "member");
+          }
+        } else {
+          for (const row of legacyRows) {
+            let participants: ParticipantDto[] = [];
+            try {
+              const parsed = JSON.parse(String(row.participants ?? "[]"));
+              if (Array.isArray(parsed)) participants = parsed as ParticipantDto[];
+            } catch {
+              participants = [];
+            }
+            for (const participant of participants) {
+              if (!participant?.userId) continue;
+              db.query(
+                "INSERT OR REPLACE INTO topic_members (topic_id,user_id,role) VALUES (?,?,?)",
+              ).run(
+                String(row.id),
+                participant.userId,
+                participant.role === "owner" ? "owner" : "member",
+              );
+            }
           }
         }
-      }
-    })();
-  } finally {
-    db.exec(`PRAGMA foreign_keys = ${previousForeignKeys ? "ON" : "OFF"}`);
+      })();
+    } finally {
+      db.exec(`PRAGMA foreign_keys = ${previousForeignKeys ? "ON" : "OFF"}`);
+    }
+  } else {
+    createCanonicalTopicsTable("api_topics");
+    createTopicMembersTable();
   }
-} else {
-  createCanonicalTopicsTable("api_topics");
-  createTopicMembersTable();
-}
 
-// Canonical databases created before explicit adapter visibility need a
-// lightweight additive migration; fresh/rebuilt databases already have it.
-if (!tableColumns("api_topics").has("visibility")) {
-  db.exec("ALTER TABLE api_topics ADD COLUMN visibility TEXT NOT NULL DEFAULT 'visible'");
-}
-if (!tableColumns("api_topics").has("access_mode")) {
-  db.exec("ALTER TABLE api_topics ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'private'");
-}
-if (!tableColumns("api_topics").has("browser_profile")) {
-  db.exec("ALTER TABLE api_topics ADD COLUMN browser_profile TEXT NOT NULL DEFAULT 'default'");
-}
-if (!tableColumns("api_topics").has("browser_profile_owner")) {
-  db.exec("ALTER TABLE api_topics ADD COLUMN browser_profile_owner TEXT");
-}
-db.exec(`
+  // Canonical databases created before explicit adapter visibility need a
+  // lightweight additive migration; fresh/rebuilt databases already have it.
+  if (!tableColumns("api_topics").has("visibility")) {
+    db.exec("ALTER TABLE api_topics ADD COLUMN visibility TEXT NOT NULL DEFAULT 'visible'");
+  }
+  if (!tableColumns("api_topics").has("access_mode")) {
+    db.exec("ALTER TABLE api_topics ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'private'");
+  }
+  if (!tableColumns("api_topics").has("browser_profile")) {
+    db.exec("ALTER TABLE api_topics ADD COLUMN browser_profile TEXT NOT NULL DEFAULT 'default'");
+  }
+  if (!tableColumns("api_topics").has("browser_profile_owner")) {
+    db.exec("ALTER TABLE api_topics ADD COLUMN browser_profile_owner TEXT");
+  }
+  db.exec(`
   UPDATE api_topics
   SET browser_profile_owner = (
     SELECT m.user_id FROM topic_members m
@@ -368,6 +370,9 @@ db.exec(`
   )
   WHERE browser_profile_owner IS NULL
 `);
+}
+
+registerStorageSchemaInitializer(initializeApiTopicsSchema, 20);
 
 interface TopicRow {
   id: string;

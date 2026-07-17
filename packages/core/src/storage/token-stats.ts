@@ -1,11 +1,9 @@
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { LOG_DIR } from "#platform/config";
 import { appendJsonlEntry, readJsonlLines } from "#platform/jsonl";
 import { logger } from "#platform/logger";
-
-mkdirSync(LOG_DIR, { recursive: true });
+import { resolveStorageLogDir } from "#storage/storage-host";
 
 export interface QueryRecord {
   timestamp: string; // ISO 8601 UTC
@@ -34,14 +32,20 @@ function emptyBucket(): Bucket {
   };
 }
 
-function queriesPath(userId: number | string): string {
+export function tokenStatsFileId(userId: number | string): string {
   const rawUserId = String(userId);
   // Preserve existing filenames for ordinary IDs, but never let an external
   // identity introduce path separators or unbounded filename length.
-  const fileId = /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,255}$/.test(rawUserId)
+  return /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,255}$/.test(rawUserId)
     ? rawUserId
     : `sha256-${createHash("sha256").update(rawUserId).digest("hex")}`;
-  return join(LOG_DIR, `token-queries-${fileId}.jsonl`);
+}
+
+function queriesPath(userId: number | string): string {
+  const fileId = tokenStatsFileId(userId);
+  const logDir = resolveStorageLogDir();
+  mkdirSync(logDir, { recursive: true });
+  return join(logDir, `token-queries-${fileId}.jsonl`);
 }
 
 function loadRecords(userId: number | string): QueryRecord[] {

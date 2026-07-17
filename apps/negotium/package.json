@@ -1,6 +1,6 @@
 {
   "name": "negotium",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "type": "module",
   "description": "Install the Negotium multi-agent runtime and CLI with one package",
   "license": "Apache-2.0",
@@ -42,6 +42,11 @@
       "types": "./dist/types/packages/core/src/storage/vault-public.d.ts",
       "import": "./dist/vault.js",
       "default": "./dist/vault.js"
+    },
+    "./storage": {
+      "types": "./dist/types/packages/core/src/storage/storage-public.d.ts",
+      "import": "./dist/storage.js",
+      "default": "./dist/storage.js"
     },
     "./prompts": {
       "types": "./dist/types/packages/core/src/prompts/builders.d.ts",

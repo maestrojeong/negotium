@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { DATA_DIR } from "#platform/config";
 import { logger } from "#platform/logger";
 import { sanitizeFileName } from "#security/sanitize";
+import { resolveStorageDataDir } from "#storage/storage-host";
 import type { TaskSnapshot } from "#types";
 
 /**
@@ -43,7 +43,12 @@ export function taskScopeKey(opts: { topicId?: string; session: string }): strin
 }
 
 export function getTaskFilePath(userId: number | string, scopeKey: string): string {
-  return join(DATA_DIR, "tasks", safeUserIdComponent(userId), `${safeTaskScopeKey(scopeKey)}.json`);
+  return join(
+    resolveStorageDataDir(),
+    "tasks",
+    safeUserIdComponent(userId),
+    `${safeTaskScopeKey(scopeKey)}.json`,
+  );
 }
 
 export function readTasks(userId: number | string, scopeKey: string): StoredTask[] {

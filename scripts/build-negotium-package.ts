@@ -17,6 +17,7 @@ const packageEntrypoints = new Map<string, string>([
   ["@negotium/core/registry", "packages/core/src/agents/registry.ts"],
   ["@negotium/core/rollout", "packages/core/src/agents/rollout/index.ts"],
   ["@negotium/core/vault", "packages/core/src/storage/vault-public.ts"],
+  ["@negotium/core/storage", "packages/core/src/storage/storage-public.ts"],
   ["@negotium/core/prompts", "packages/core/src/prompts/builders.ts"],
   ["@negotium/core/runtime-helpers", "packages/core/src/runtime/public-helpers.ts"],
   [
@@ -137,6 +138,7 @@ for (const entrypoint of [
   "apps/negotium/src/cron.ts",
   "apps/negotium/src/mcp-servers.ts",
   "apps/negotium/src/vault.ts",
+  "apps/negotium/src/storage.ts",
   "apps/negotium/src/prompts.ts",
   "apps/negotium/src/runtime-helpers.ts",
 ]) {
@@ -203,6 +205,7 @@ const declarations = Bun.spawn(
     resolve(root, "packages/core/src/agents/registry.ts"),
     resolve(root, "packages/core/src/agents/rollout/index.ts"),
     resolve(root, "packages/core/src/storage/vault-public.ts"),
+    resolve(root, "packages/core/src/storage/storage-public.ts"),
     resolve(root, "packages/core/src/prompts/builders.ts"),
     resolve(root, "packages/core/src/runtime/public-helpers.ts"),
   ],
@@ -258,6 +261,7 @@ for (const publicEntrypoint of [
   "registry.js",
   "rollout.js",
   "vault.js",
+  "storage.js",
   "prompts.js",
   "runtime-helpers.js",
 ]) {

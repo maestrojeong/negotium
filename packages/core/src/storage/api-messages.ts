@@ -9,10 +9,12 @@
 // pagination resolves the cursor id → its rowid and returns rows after it.
 
 import { db } from "#storage/forum-db";
+import { registerStorageSchemaInitializer } from "#storage/storage-host";
 import type { AgentKind } from "#types";
 import type { MessageDto } from "#types/api";
 
-db.exec(`
+function initializeApiMessagesSchema(): void {
+  db.exec(`
   CREATE TABLE IF NOT EXISTS api_messages (
     id TEXT PRIMARY KEY,
     topic_id TEXT NOT NULL,
@@ -35,57 +37,62 @@ db.exec(`
     created_at TEXT NOT NULL
   )
 `);
-try {
-  db.exec("ALTER TABLE api_messages ADD COLUMN source_adapter TEXT");
-} catch {
-  // Column already exists.
+  try {
+    db.exec("ALTER TABLE api_messages ADD COLUMN source_adapter TEXT");
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.exec("ALTER TABLE api_messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0");
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.exec("ALTER TABLE api_messages ADD COLUMN edited_at TEXT");
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.exec("ALTER TABLE api_messages ADD COLUMN reactions TEXT");
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.exec("ALTER TABLE api_messages ADD COLUMN kind TEXT");
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.exec("ALTER TABLE api_messages ADD COLUMN ask_user_question TEXT");
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.exec("ALTER TABLE api_messages ADD COLUMN mentions TEXT");
+  } catch {
+    // Column already exists.
+  }
+  try {
+    // Slack-style threads: a reply carries the ROOT message id (flat, no nesting).
+    // Distinct from parent_id (which is a Telegram-style inline quote-reply).
+    db.exec("ALTER TABLE api_messages ADD COLUMN thread_root_id TEXT");
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.exec("ALTER TABLE api_messages ADD COLUMN subagent_card TEXT");
+  } catch {
+    // Column already exists.
+  }
+  // Index on topic_id; SQLite appends the implicit rowid to every index entry,
+  // so `WHERE topic_id=? AND rowid>? ORDER BY rowid` stays index-driven.
+  db.exec("CREATE INDEX IF NOT EXISTS idx_api_messages_topic ON api_messages(topic_id)");
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_api_messages_thread_root ON api_messages(thread_root_id)",
+  );
 }
-try {
-  db.exec("ALTER TABLE api_messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0");
-} catch {
-  // Column already exists.
-}
-try {
-  db.exec("ALTER TABLE api_messages ADD COLUMN edited_at TEXT");
-} catch {
-  // Column already exists.
-}
-try {
-  db.exec("ALTER TABLE api_messages ADD COLUMN reactions TEXT");
-} catch {
-  // Column already exists.
-}
-try {
-  db.exec("ALTER TABLE api_messages ADD COLUMN kind TEXT");
-} catch {
-  // Column already exists.
-}
-try {
-  db.exec("ALTER TABLE api_messages ADD COLUMN ask_user_question TEXT");
-} catch {
-  // Column already exists.
-}
-try {
-  db.exec("ALTER TABLE api_messages ADD COLUMN mentions TEXT");
-} catch {
-  // Column already exists.
-}
-try {
-  // Slack-style threads: a reply carries the ROOT message id (flat, no nesting).
-  // Distinct from parent_id (which is a Telegram-style inline quote-reply).
-  db.exec("ALTER TABLE api_messages ADD COLUMN thread_root_id TEXT");
-} catch {
-  // Column already exists.
-}
-try {
-  db.exec("ALTER TABLE api_messages ADD COLUMN subagent_card TEXT");
-} catch {
-  // Column already exists.
-}
-// Index on topic_id; SQLite appends the implicit rowid to every index entry,
-// so `WHERE topic_id=? AND rowid>? ORDER BY rowid` stays index-driven.
-db.exec("CREATE INDEX IF NOT EXISTS idx_api_messages_topic ON api_messages(topic_id)");
-db.exec("CREATE INDEX IF NOT EXISTS idx_api_messages_thread_root ON api_messages(thread_root_id)");
+
+registerStorageSchemaInitializer(initializeApiMessagesSchema, 30);
 
 export interface ApiMessageRow {
   id: string;

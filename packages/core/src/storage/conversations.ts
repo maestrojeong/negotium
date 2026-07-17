@@ -7,10 +7,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { DATA_DIR } from "#platform/config";
 import { appendJsonlLine } from "#platform/jsonl";
 import { logger } from "#platform/logger";
 import { sanitizeTopicName } from "#security/sanitize";
+import { resolveStorageDataDir } from "#storage/storage-host";
 import type { AgentKind, UnifiedEvent } from "#types";
 
 /**
@@ -58,7 +58,7 @@ function safeUserIdComponent(userId: number | string): string {
 }
 
 function conversationDir(userId: number | string): string {
-  return join(DATA_DIR, "conversations", safeUserIdComponent(userId));
+  return join(resolveStorageDataDir(), "conversations", safeUserIdComponent(userId));
 }
 
 function topicFilename(topicName: string): string {

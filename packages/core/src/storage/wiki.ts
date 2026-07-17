@@ -1,9 +1,9 @@
 import { existsSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { SHARED_WIKI_DIR, WORKSPACE_DIR } from "#platform/config";
 import { sanitizeTopicName } from "#security/sanitize";
+import { resolveStorageSharedWikiDir, resolveStorageWorkspaceDir } from "#storage/storage-host";
 
-export function getWikiDir(_userId: number, workspaceDir = WORKSPACE_DIR): string {
+export function getWikiDir(_userId: number, workspaceDir = resolveStorageWorkspaceDir()): string {
   return join(workspaceDir, "wiki");
 }
 
@@ -11,8 +11,10 @@ export function getWikiDir(_userId: number, workspaceDir = WORKSPACE_DIR): strin
  * Shared wiki root. Otium keeps one workspace wiki for every topic and member;
  * filesystem wiki state is not partitioned by user.
  */
-export function getSharedWikiDir(workspaceDir = WORKSPACE_DIR): string {
-  return workspaceDir === WORKSPACE_DIR ? SHARED_WIKI_DIR : join(workspaceDir, "wiki");
+export function getSharedWikiDir(workspaceDir = resolveStorageWorkspaceDir()): string {
+  return workspaceDir === resolveStorageWorkspaceDir()
+    ? resolveStorageSharedWikiDir()
+    : join(workspaceDir, "wiki");
 }
 
 /** Find the most recent wiki/summaries/ file for a given topic. */
@@ -38,7 +40,7 @@ export function getTopicMemoryFilePaths(
   _userId: number,
   topicName: string,
   forkOrigin?: string,
-  workspaceDir = WORKSPACE_DIR,
+  workspaceDir = resolveStorageWorkspaceDir(),
 ): {
   memoryDir: string;
   memoryFiles: string[];

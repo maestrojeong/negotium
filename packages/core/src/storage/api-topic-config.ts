@@ -4,6 +4,7 @@
 // regression now that topic config is the canonical path for model/effort
 // switching (the MCP-based direction), not just a transient convenience.
 import { db } from "#storage/forum-db";
+import { registerStorageSchemaInitializer } from "#storage/storage-host";
 import type { EffortLevel } from "#types";
 
 function tableColumns(table: string): Set<string> {
@@ -25,28 +26,29 @@ function createCanonicalConfigTable(name = "api_topic_config"): void {
   `);
 }
 
-const existingConfigColumns = tableColumns("api_topic_config");
-if (existingConfigColumns.size === 0) {
-  createCanonicalConfigTable();
-} else if (
-  existingConfigColumns.has("agent") ||
-  existingConfigColumns.has("agent_pinned") ||
-  existingConfigColumns.has("runtime_locked") ||
-  existingConfigColumns.has("model_pinned") ||
-  existingConfigColumns.has("effort_pinned") ||
-  existingConfigColumns.has("last_shown_agent")
-) {
-  // Complete the old agent-override migration before dropping the column. The
-  // selected agent itself belongs to api_topics; only its user lock belongs here.
-  const topicColumns = tableColumns("api_topics");
-  const agentColumn = topicColumns.has("agent")
-    ? "agent"
-    : topicColumns.has("runtime_agent")
-      ? "runtime_agent"
-      : null;
-  if (agentColumn && existingConfigColumns.has("agent")) {
-    db.exec(
-      `UPDATE api_topics
+function initializeApiTopicConfigSchema(): void {
+  const existingConfigColumns = tableColumns("api_topic_config");
+  if (existingConfigColumns.size === 0) {
+    createCanonicalConfigTable();
+  } else if (
+    existingConfigColumns.has("agent") ||
+    existingConfigColumns.has("agent_pinned") ||
+    existingConfigColumns.has("runtime_locked") ||
+    existingConfigColumns.has("model_pinned") ||
+    existingConfigColumns.has("effort_pinned") ||
+    existingConfigColumns.has("last_shown_agent")
+  ) {
+    // Complete the old agent-override migration before dropping the column. The
+    // selected agent itself belongs to api_topics; only its user lock belongs here.
+    const topicColumns = tableColumns("api_topics");
+    const agentColumn = topicColumns.has("agent")
+      ? "agent"
+      : topicColumns.has("runtime_agent")
+        ? "runtime_agent"
+        : null;
+    if (agentColumn && existingConfigColumns.has("agent")) {
+      db.exec(
+        `UPDATE api_topics
        SET ${agentColumn} = (
          SELECT c.agent FROM api_topic_config c WHERE c.topic_id = api_topics.id
        )
@@ -55,32 +57,32 @@ if (existingConfigColumns.size === 0) {
            SELECT 1 FROM api_topic_config c
            WHERE c.topic_id = api_topics.id AND c.agent IS NOT NULL
          )`,
-    );
-  }
+      );
+    }
 
-  const previousForeignKeys = db
-    .query<{ foreign_keys: number }, []>("PRAGMA foreign_keys")
-    .get()?.foreign_keys;
-  db.exec("PRAGMA foreign_keys = OFF");
-  try {
-    const agentLockSource = existingConfigColumns.has("runtime_locked")
-      ? "runtime_locked"
-      : existingConfigColumns.has("agent_pinned")
-        ? "agent_pinned"
-        : "0";
-    const modelLockSource = existingConfigColumns.has("model_locked")
-      ? "model_locked"
-      : existingConfigColumns.has("model_pinned")
-        ? "model_pinned"
-        : "0";
-    const effortLockSource = existingConfigColumns.has("effort_locked")
-      ? "effort_locked"
-      : existingConfigColumns.has("effort_pinned")
-        ? "effort_pinned"
-        : "0";
-    db.transaction(() => {
-      createCanonicalConfigTable("api_topic_config_next");
-      db.exec(`
+    const previousForeignKeys = db
+      .query<{ foreign_keys: number }, []>("PRAGMA foreign_keys")
+      .get()?.foreign_keys;
+    db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      const agentLockSource = existingConfigColumns.has("runtime_locked")
+        ? "runtime_locked"
+        : existingConfigColumns.has("agent_pinned")
+          ? "agent_pinned"
+          : "0";
+      const modelLockSource = existingConfigColumns.has("model_locked")
+        ? "model_locked"
+        : existingConfigColumns.has("model_pinned")
+          ? "model_pinned"
+          : "0";
+      const effortLockSource = existingConfigColumns.has("effort_locked")
+        ? "effort_locked"
+        : existingConfigColumns.has("effort_pinned")
+          ? "effort_pinned"
+          : "0";
+      db.transaction(() => {
+        createCanonicalConfigTable("api_topic_config_next");
+        db.exec(`
         INSERT INTO api_topic_config_next
           (topic_id, model, effort, mcp, agent_locked, model_locked, effort_locked)
         SELECT
@@ -94,15 +96,18 @@ if (existingConfigColumns.size === 0) {
         FROM api_topic_config
         WHERE EXISTS (SELECT 1 FROM api_topics t WHERE t.id = api_topic_config.topic_id)
       `);
-      db.exec("DROP TABLE api_topic_config");
-      db.exec("ALTER TABLE api_topic_config_next RENAME TO api_topic_config");
-    })();
-  } finally {
-    db.exec(`PRAGMA foreign_keys = ${previousForeignKeys ? "ON" : "OFF"}`);
+        db.exec("DROP TABLE api_topic_config");
+        db.exec("ALTER TABLE api_topic_config_next RENAME TO api_topic_config");
+      })();
+    } finally {
+      db.exec(`PRAGMA foreign_keys = ${previousForeignKeys ? "ON" : "OFF"}`);
+    }
+  } else {
+    createCanonicalConfigTable();
   }
-} else {
-  createCanonicalConfigTable();
 }
+
+registerStorageSchemaInitializer(initializeApiTopicConfigSchema, 40);
 
 export interface TopicConfig {
   model?: string;

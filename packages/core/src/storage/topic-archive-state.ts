@@ -1,13 +1,16 @@
 import { db } from "#storage/forum-db";
+import { registerStorageSchemaInitializer } from "#storage/storage-host";
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS api_topic_archive_state (
-    topic_id TEXT PRIMARY KEY,
-    last_archived_rowid INTEGER NOT NULL DEFAULT 0,
-    last_archive_path TEXT,
-    updated_at TEXT NOT NULL
-  )
-`);
+registerStorageSchemaInitializer((database) => {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS api_topic_archive_state (
+      topic_id TEXT PRIMARY KEY,
+      last_archived_rowid INTEGER NOT NULL DEFAULT 0,
+      last_archive_path TEXT,
+      updated_at TEXT NOT NULL
+    )
+  `);
+}, 30);
 
 export interface TopicArchiveState {
   topicId: string;

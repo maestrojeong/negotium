@@ -1,4 +1,3 @@
-import { SESSION_AGENT } from "#platform/config";
 import { type AgentKind, isAgentKind } from "#types";
 import {
   db,
@@ -9,6 +8,17 @@ import {
   type UserForumConfig,
   type UserRow,
 } from "./schema";
+
+function defaultSessionAgent(): AgentKind {
+  for (const value of [
+    process.env.SESSION_AGENT?.trim(),
+    process.env.FALLBACK_AGENT?.trim(),
+    process.env.DEFAULT_AGENT?.trim(),
+  ]) {
+    if (isAgentKind(value)) return value;
+  }
+  return "maestro";
+}
 
 export function getUserConfig(userId: number): UserForumConfig | null {
   const user = db.query<UserRow, string>("SELECT * FROM users WHERE id = ?").get(String(userId));
@@ -146,7 +156,7 @@ export function addTopic(
     messageThreadId,
     sessionId ?? null,
     createdAt ?? new Date().toISOString(),
-    SESSION_AGENT,
+    defaultSessionAgent(),
   );
   return true;
 }

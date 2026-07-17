@@ -65,11 +65,18 @@ describe("forum schema migration", () => {
     `);
     legacy.close();
 
-    execFileSync(process.execPath, ["-e", 'await import("./src/storage/forum/schema.ts");'], {
-      cwd: join(import.meta.dir, "../.."),
-      env: { ...process.env, SESSIONS_DB_PATH: dbPath },
-      stdio: "pipe",
-    });
+    execFileSync(
+      process.execPath,
+      [
+        "-e",
+        'const { db } = await import("./src/storage/forum/schema.ts"); db.query("SELECT 1").get();',
+      ],
+      {
+        cwd: join(import.meta.dir, "../.."),
+        env: { ...process.env, SESSIONS_DB_PATH: dbPath },
+        stdio: "pipe",
+      },
+    );
 
     const migrated = new Database(dbPath);
     const topicSql = migrated

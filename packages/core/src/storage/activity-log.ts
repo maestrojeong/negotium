@@ -8,16 +8,24 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { LOG_DIR, USERS_LOG_DIR } from "#platform/config";
 import { appendJsonlEntry, readJsonlLines } from "#platform/jsonl";
 import { logger } from "#platform/logger";
 import { sanitizeTopicName } from "#security/sanitize";
+import { resolveStorageLogDir, resolveStorageUsersLogDir } from "#storage/storage-host";
 import type { TokenUsage } from "#types";
 
 // --- Log rotation config ---
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB per log file
 const MAX_TOTAL_SIZE = 200 * 1024 * 1024; // 200MB total log budget
 const ROTATION_CHECK_INTERVAL = 60 * 60 * 1000; // check every hour
+let rotationTimer: ReturnType<typeof setInterval> | null = null;
+
+function startLogRotation(): void {
+  if (rotationTimer) return;
+  rotateOldLogs();
+  rotationTimer = setInterval(rotateOldLogs, ROTATION_CHECK_INTERVAL);
+  rotationTimer.unref?.();
+}
 
 export interface LogEntry {
   timestamp: string;
@@ -30,9 +38,12 @@ export interface LogEntry {
 }
 
 export function writeLog(entry: LogEntry) {
+  startLogRotation();
+  const logDir = resolveStorageLogDir();
+  mkdirSync(logDir, { recursive: true });
   const safeSession = sanitizeTopicName(entry.session);
   const sidShort = entry.sessionId ? entry.sessionId.slice(0, 8) : "new";
-  const file = join(LOG_DIR, `${entry.userId}_${safeSession}_${sidShort}.jsonl`);
+  const file = join(logDir, `${entry.userId}_${safeSession}_${sidShort}.jsonl`);
 
   // Rotate if file is too large
   try {
@@ -50,12 +61,14 @@ export function writeLog(entry: LogEntry) {
 
 /** Remove oldest log files when total size exceeds budget */
 export function rotateOldLogs() {
+  const logDir = resolveStorageLogDir();
+  mkdirSync(logDir, { recursive: true });
   try {
-    const files = readdirSync(LOG_DIR)
+    const files = readdirSync(logDir)
       .filter((f) => f.endsWith(".jsonl"))
       .map((f) => {
         try {
-          const stat = statSync(join(LOG_DIR, f));
+          const stat = statSync(join(logDir, f));
           return { name: f, size: stat.size, mtimeMs: stat.mtimeMs };
         } catch {
           return null;
@@ -73,7 +86,7 @@ export function rotateOldLogs() {
     for (const file of files) {
       if (freed >= toFree) break;
       try {
-        unlinkSync(join(LOG_DIR, file.name));
+        unlinkSync(join(logDir, file.name));
         freed += file.size;
         logger.info(
           { file: file.name, sizeKB: (file.size / 1024).toFixed(0) },
@@ -88,10 +101,6 @@ export function rotateOldLogs() {
   }
 }
 
-// Run rotation check periodically
-rotateOldLogs();
-setInterval(rotateOldLogs, ROTATION_CHECK_INTERVAL);
-
 export interface SentFileEntry {
   timestamp: string;
   userId: number;
@@ -102,7 +111,7 @@ export interface SentFileEntry {
 }
 
 export function writeSentFileLog(entry: Omit<SentFileEntry, "fileName">) {
-  const dir = join(USERS_LOG_DIR, String(entry.userId));
+  const dir = join(resolveStorageUsersLogDir(), String(entry.userId));
   mkdirSync(dir, { recursive: true });
   const file = join(dir, "sent-files.jsonl");
   try {
@@ -117,7 +126,7 @@ function entryMatchesTopic(e: SentFileEntry, topicName: string): boolean {
 }
 
 export function readSentFilesForTopic(userId: number, topicName: string): SentFileEntry[] {
-  const file = join(USERS_LOG_DIR, String(userId), "sent-files.jsonl");
+  const file = join(resolveStorageUsersLogDir(), String(userId), "sent-files.jsonl");
   if (!existsSync(file)) return [];
   try {
     return readJsonlLines(file)
@@ -131,7 +140,7 @@ export function readSentFilesForTopic(userId: number, topicName: string): SentFi
 
 /** 토픽 삭제 후 JSONL에서 해당 토픽 항목 제거 */
 export function removeSentFilesForTopic(userId: number, topicName: string): void {
-  const file = join(USERS_LOG_DIR, String(userId), "sent-files.jsonl");
+  const file = join(resolveStorageUsersLogDir(), String(userId), "sent-files.jsonl");
   if (!existsSync(file)) return;
   try {
     const remaining = readJsonlLines(file).filter((line) => {

@@ -325,6 +325,11 @@ nodes.
 directories remain private source boundaries. They are built and tested independently but are not
 published or supported as standalone npm dependencies.
 
+Embedding hosts can use stable subpaths such as `negotium/hosted-agent`, `negotium/cron`,
+`negotium/vault`, and `negotium/storage`. The storage facade accepts a borrowed SQLite connection
+plus host-owned data, log, session-ask, and workspace roots through `configureStorageHost()`; all
+resolution and schema initialization is lazy.
+
 ## Development
 
 ```bash

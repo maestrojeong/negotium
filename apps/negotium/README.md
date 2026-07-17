@@ -46,3 +46,45 @@ import {
 
 These subpaths are the stable public boundary. Paths under `negotium/dist/` are package internals
 and may change between releases.
+
+## Storage embedding API
+
+Embedding hosts can reuse Negotium's SQLite and filesystem stores without importing package
+internals:
+
+```ts
+import { Database } from "bun:sqlite";
+import {
+  configureStorageHost,
+  getTopic,
+  sessionAsks,
+  tasks,
+} from "negotium/storage";
+
+const database = new Database("/srv/otium/state/sessions.db", { create: true });
+const restoreStorageHost = configureStorageHost({
+  database,
+  dataDir: "/srv/otium/state/data",
+  logDir: "/srv/otium/logs",
+  sessionAsksDir: "/srv/otium/state/run/session-asks",
+  workspaceDir: "/srv/otium/state/workspace",
+});
+
+getTopic("topic-id");
+sessionAsks.listPendingAsksForCaller({ userId: "user-id", from: "caller" });
+tasks.readTasks("user-id", "topic-id");
+
+restoreStorageHost();
+database.close();
+```
+
+Configuration and schema setup are lazy. An injected database is borrowed: Negotium initializes
+the required tables on first access but never closes that connection. Omitted fields use the same
+`NEGOTIUM_*` paths as the standalone runtime, and the returned disposer restores the previous host
+for nested tests or embeddings. `workspaceDir` owns the shared `wiki/` subtree.
+
+The facade exposes both direct functions and collision-safe module namespaces such as
+`apiTopics.getTopicByName` and `forum.getTopicByName`; the direct forum alias is
+`getForumTopicByName`. Pending session asks use bounded `v3-<sha256>` filenames and migrate live v2
+and legacy records on access. Unsafe or oversized user IDs and token-stat IDs are stored under
+stable SHA-256 components.

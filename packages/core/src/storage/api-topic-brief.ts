@@ -4,16 +4,19 @@
 // Briefs are injected into AI-invited topic turns at session start. The
 // wiki-archiver updates them post-session.
 import { db } from "#storage/forum-db";
+import { registerStorageSchemaInitializer } from "#storage/storage-host";
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS api_topic_brief (
-    topic_id TEXT PRIMARY KEY,
-    brief_md TEXT NOT NULL DEFAULT '',
-    latest_summary_md TEXT,
-    summary_date TEXT,
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )
-`);
+registerStorageSchemaInitializer((database) => {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS api_topic_brief (
+      topic_id TEXT PRIMARY KEY,
+      brief_md TEXT NOT NULL DEFAULT '',
+      latest_summary_md TEXT,
+      summary_date TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+}, 30);
 
 export interface TopicBrief {
   topicId: string;
