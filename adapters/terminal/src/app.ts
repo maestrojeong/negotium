@@ -814,7 +814,19 @@ export class TerminalApp {
         this.#queueRender();
         return;
       }
-      const vaultResponse = await this.#client.runVaultCommand(commandLine);
+      // The client rejects insecure vault transports (and may fail otherwise);
+      // surface that as a notice instead of an unhandled rejection.
+      let vaultResponse: string | null;
+      try {
+        vaultResponse = await this.#client.runVaultCommand(commandLine);
+      } catch (error) {
+        this.#state = {
+          ...this.#state,
+          notice: error instanceof Error ? error.message : String(error),
+        };
+        this.#queueRender();
+        return;
+      }
       if (vaultResponse === null) return;
       this.#state = vaultResponse.includes("\n")
         ? { ...this.#state, overlay: "vault", notice: undefined, vaultOutput: vaultResponse }
