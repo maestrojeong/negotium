@@ -43,11 +43,15 @@ class HalfOpenWebSocket {
   onclose: ((event: CloseEvent) => unknown) | null = null;
   onerror: ((event: Event) => unknown) | null = null;
   closeCalls = 0;
+  closeCode: number | undefined;
+  closeReason: string | undefined;
 
   send(): void {}
 
-  close(): void {
+  close(code?: number, reason?: string): void {
     this.closeCalls += 1;
+    this.closeCode = code;
+    this.closeReason = reason;
     // Deliberately never emit close: model a half-open kernel/proxy socket.
   }
 
@@ -217,6 +221,137 @@ describe("Otium relay tunnel client", () => {
     }
   });
 
+  test("closes malformed relay frames as protocol errors without throwing", () => {
+    const sockets: HalfOpenWebSocket[] = [];
+    const malformedClient = new TunnelClient({
+      relayUrl: "wss://relay.invalid",
+      token: "rcs_malformed",
+      targetOrigin: "http://127.0.0.1:1",
+      minReconnectDelayMs: 1_000,
+      maxReconnectDelayMs: 1_000,
+      webSocketFactory: () => {
+        const socket = new HalfOpenWebSocket();
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      malformedClient.start();
+      sockets[0]?.open();
+      expect(() =>
+        sockets[0]?.receive(
+          JSON.stringify({
+            type: "http_req_head",
+            id: "request",
+            method: "POST",
+            path: "/echo",
+            hasBody: true,
+          }),
+        ),
+      ).not.toThrow();
+      expect(sockets[0]?.closeCalls).toBe(1);
+      expect(sockets[0]?.closeCode).toBe(1002);
+      expect(sockets[0]?.closeReason).toBe("invalid relay frame");
+      expect(malformedClient.status).toBe("connecting");
+    } finally {
+      malformedClient.stop();
+    }
+  });
+
+  test("a superseded same-credential client stops reconnecting until explicitly restarted", async () => {
+    let verifierCount = 0;
+    let registerCount = 0;
+    let active: ServerWebSocket<object> | null = null;
+    const sockets = new Set<ServerWebSocket<object>>();
+    const replacementRelay = serve<object>({
+      port: 0,
+      fetch(req, server) {
+        if (new URL(req.url).pathname !== "/tunnel")
+          return new Response("not found", { status: 404 });
+        if (req.headers.get("authorization") !== "Bearer shared-credential") {
+          return new Response("unauthorized", { status: 401 });
+        }
+        verifierCount += 1;
+        return server.upgrade(req, { data: {} })
+          ? undefined
+          : new Response("upgrade failed", { status: 400 });
+      },
+      websocket: {
+        open(ws) {
+          sockets.add(ws);
+        },
+        message(ws, raw) {
+          const frame = decodeNodeFrame(typeof raw === "string" ? raw : raw.toString());
+          if (frame?.type !== "register") return;
+          registerCount += 1;
+          if (active && active !== ws) {
+            active.send(
+              encodeFrame({
+                type: "register_error",
+                code: "replaced",
+                message: "a newer connection for this node registered",
+              }),
+            );
+            active.close(4001, "replaced");
+          }
+          active = ws;
+          ws.send(
+            encodeFrame({
+              type: "registered",
+              nodeId: "shared-node",
+              protocolVersion: PROTOCOL_VERSION,
+              pingIntervalMs: 60_000,
+            }),
+          );
+        },
+        close(ws) {
+          sockets.delete(ws);
+          if (active === ws) active = null;
+        },
+      },
+    });
+    const options = {
+      relayUrl: `http://127.0.0.1:${replacementRelay.port}`,
+      token: "shared-credential",
+      targetOrigin: "http://127.0.0.1:1",
+      minReconnectDelayMs: 5,
+      maxReconnectDelayMs: 5,
+    };
+    const older = new TunnelClient(options);
+    const newer = new TunnelClient(options);
+
+    try {
+      older.start();
+      await waitFor(() => older.status === "registered");
+      newer.start();
+      await waitFor(() => older.status === "superseded" && newer.status === "registered");
+
+      await Bun.sleep(100);
+      expect(verifierCount).toBe(2);
+      expect(registerCount).toBe(2);
+      expect(newer.status).toBe("registered");
+
+      older.start();
+      await Bun.sleep(25);
+      expect(verifierCount).toBe(2);
+      expect(registerCount).toBe(2);
+
+      older.stop();
+      newer.stop();
+      older.start();
+      await waitFor(() => older.status === "registered");
+      await Bun.sleep(25);
+      expect(verifierCount).toBe(3);
+      expect(registerCount).toBe(3);
+    } finally {
+      older.stop();
+      newer.stop();
+      for (const socket of sockets) socket.close();
+      replacementRelay.stop(true);
+    }
+  });
+
   test("replays a chunked HTTP request and returns chunked response frames", async () => {
     const originalSocket = relay.socket;
     expect(originalSocket).not.toBeNull();
@@ -292,7 +427,7 @@ describe("Otium relay tunnel client", () => {
     });
   });
 
-  test("rejects unexpected or injected WebSocket upgrade headers", async () => {
+  test("rejects unexpected WebSocket headers and closes header-injection frames", async () => {
     const socket = relay.socket;
     expect(socket).not.toBeNull();
     relay.frames.length = 0;
@@ -311,18 +446,22 @@ describe("Otium relay tunnel client", () => {
     });
 
     relay.frames.length = 0;
+    const connectionCount = relay.connectionCount;
     socket?.send(
-      encodeFrame({
+      JSON.stringify({
         type: "ws_open",
         id: "ws-injected-1",
         path: "/ws-auth",
         headers: [["authorization", "Bearer safe\r\nx-injected: yes"]],
       }),
     );
-    await waitFor(() => relay.frames.some((frame) => frame.type === "ws_open_error"));
-    expect(relay.frames.find((frame) => frame.type === "ws_open_error")).toMatchObject({
-      id: "ws-injected-1",
-      message: "invalid websocket upgrade headers",
-    });
+    await waitFor(
+      () =>
+        relay.connectionCount > connectionCount &&
+        relay.socket !== null &&
+        relay.socket !== socket &&
+        client.status === "registered",
+    );
+    expect(relay.frames.some((frame) => frame.type === "ws_open_error")).toBe(false);
   });
 });

@@ -50,7 +50,13 @@ export interface TunnelClientOptions {
   webSocketFactory?: (url: string, options: { headers: Record<string, string> }) => WebSocket;
 }
 
-export type TunnelStatus = "idle" | "connecting" | "registered" | "stopped" | "unsupported";
+export type TunnelStatus =
+  | "idle"
+  | "connecting"
+  | "registered"
+  | "stopped"
+  | "unsupported"
+  | "superseded";
 
 /** Bun's WebSocket client accepts a non-standard `headers` option; the DOM lib
  *  typing doesn't know it. */
@@ -185,10 +191,21 @@ export class TunnelClient {
 
     ws.onmessage = (event) => {
       if (!this.isActiveConnection(ws, generation)) return;
-      this.resetLiveness(ws, generation);
-      const frame = decodeRelayFrame(event.data);
-      if (!frame) return;
-      this.handleFrame(frame);
+      try {
+        const frame = decodeRelayFrame(event.data);
+        if (!frame) {
+          this.rejectProtocolFrame(ws, generation, "invalid relay frame");
+          return;
+        }
+        this.resetLiveness(ws, generation);
+        this.handleFrame(frame);
+      } catch (err) {
+        this.log.error(
+          { error: err instanceof Error ? err.message : String(err) },
+          "relay frame dispatch failed",
+        );
+        this.rejectProtocolFrame(ws, generation, "relay frame dispatch failed");
+      }
     };
 
     ws.onclose = (event) => {
@@ -207,6 +224,16 @@ export class TunnelClient {
     return this.ws === ws && this.connectionGeneration === generation;
   }
 
+  private rejectProtocolFrame(ws: WebSocket, generation: number, reason: string): void {
+    this.log.warn({ reason }, "closing relay tunnel after protocol error");
+    this.disconnectActiveConnection(ws, generation, { reason });
+    try {
+      ws.close(1002, reason);
+    } catch {
+      // The active connection was already invalidated and reconnect is scheduled.
+    }
+  }
+
   /** Invalidate before closing: a half-open socket may never emit `close`. */
   private disconnectActiveConnection(
     ws: WebSocket,
@@ -219,7 +246,11 @@ export class TunnelClient {
     this.connectionGeneration += 1;
     this.clearLiveness();
     this.cleanupInFlight();
-    if (this.statusValue !== "stopped" && this.statusValue !== "unsupported") {
+    if (
+      this.statusValue !== "stopped" &&
+      this.statusValue !== "unsupported" &&
+      this.statusValue !== "superseded"
+    ) {
       this.statusValue = "connecting";
       this.log.warn(details, "relay tunnel disconnected");
       this.scheduleReconnect();
@@ -245,7 +276,12 @@ export class TunnelClient {
     );
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      if (this.statusValue === "stopped" || this.statusValue === "unsupported") return;
+      if (
+        this.statusValue === "stopped" ||
+        this.statusValue === "unsupported" ||
+        this.statusValue === "superseded"
+      )
+        return;
       this.connect();
     }, delay);
   }
@@ -312,8 +348,22 @@ export class TunnelClient {
           // Token may be fixed out-of-band; keep retrying, but only at the cap.
           this.reconnectDelayMs = this.opts.maxReconnectDelayMs ?? DEFAULT_MAX_RECONNECT_MS;
           this.log.error({ message: frame.message }, "relay rejected node credentials");
+        } else {
+          // A newer process owns this credential. Retrying would displace it and
+          // create an endless replacement storm, so this instance is terminal
+          // until an operator explicitly stop/starts it.
+          this.statusValue = "superseded";
+          this.log.info({ message: frame.message }, "relay tunnel superseded by newer connection");
+          const ws = this.ws;
+          if (ws) {
+            this.disconnectActiveConnection(
+              ws,
+              this.connectionGeneration,
+              { reason: "tunnel superseded" },
+              true,
+            );
+          }
         }
-        // "replaced" needs no action — a newer connection of this node took over.
         break;
       case "ping":
         this.send({ type: "pong", ts: frame.ts });
