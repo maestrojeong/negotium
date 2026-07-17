@@ -32,9 +32,17 @@ import {
   listTopics,
   logger,
   MAX_TELL_DEPTH,
+  normalizeVaultKey,
   OPTIONAL_FORUM_MCP_SERVERS,
   SUPPORTED_AGENTS,
   sessionInboxPath,
+  VAULT_DESCRIPTION_MAX_LENGTH,
+  VAULT_VALUE_MAX_BYTES,
+  VAULT_VALUE_MIN_BYTES,
+  validateVaultKey,
+  vaultDel,
+  vaultList,
+  vaultSet,
 } from "@negotium/core";
 import { bindOtiumTopic, unbindOtiumTopic } from "@/bindings";
 import {
@@ -53,7 +61,7 @@ import {
   type PeerTurnRequest,
   parseExecutionSpec,
 } from "@/protocol";
-import { acceptRemoteAskReply } from "@/session-bridge";
+import { acceptRemoteAskReplyResult } from "@/session-bridge";
 import {
   claimPeerInboxRequest,
   getPeerSession,
@@ -529,7 +537,7 @@ async function handleReply(req: Request): Promise<Response> {
   if (!requestId || !userId || replyText === null) {
     return jsonError("requestId, userId and replyText are required", 400);
   }
-  const accepted = await acceptRemoteAskReply({
+  const accepted = await acceptRemoteAskReplyResult({
     fromCellId: peer.verified.fromCellId,
     requestId,
     userId,
@@ -537,9 +545,9 @@ async function handleReply(req: Request): Promise<Response> {
     replyText,
     kind,
   });
-  return accepted
-    ? Response.json({ ok: true })
-    : jsonError("no pending ask for this requestId", 404);
+  if (accepted === "accepted") return Response.json({ ok: true });
+  if (accepted === "retry") return jsonError("ask callback delivery is retryable", 503);
+  return jsonError("no pending ask for this requestId", 404);
 }
 
 async function handleInputFile(req: Request): Promise<Response> {
@@ -570,6 +578,51 @@ async function handleInputFile(req: Request): Promise<Response> {
     ownerUserId: userId,
   });
   return Response.json({ ok: true, fileId: stored.id });
+}
+
+/** Hub-mediated management of this device's encrypted, node-local vault.
+ * Secret values are accepted only for `set` and are never returned or logged. */
+async function handleDeviceVault(req: Request): Promise<Response> {
+  const peer = await requirePeer(req);
+  if (!peer.ok) return peer.response;
+  const originError = requirePrimaryOrigin(peer);
+  if (originError) return originError;
+  const body = await readBody(req);
+  if (!body) return jsonError("invalid JSON body", 400);
+  const protocolError = checkProtocol(body);
+  if (protocolError) return protocolError;
+  const userId = str(body, "userId");
+  const operation = str(body, "operation");
+  if (!userId || !operation) return jsonError("userId and operation are required", 400);
+
+  if (operation === "list") {
+    return Response.json({ ok: true, entries: vaultList(userId) });
+  }
+
+  const rawKey = str(body, "key");
+  if (!rawKey || !validateVaultKey(rawKey)) return jsonError("invalid vault key", 400);
+  const key = normalizeVaultKey(rawKey);
+  if (operation === "delete") {
+    return vaultDel(userId, key)
+      ? Response.json({ ok: true, deleted: key })
+      : jsonError(`vault key "${key}" not found`, 404);
+  }
+  if (operation !== "set") return jsonError("invalid vault operation", 400);
+
+  const value = typeof body.value === "string" ? body.value : "";
+  const valueBytes = Buffer.byteLength(value, "utf8");
+  if (valueBytes < VAULT_VALUE_MIN_BYTES || valueBytes > VAULT_VALUE_MAX_BYTES) {
+    return jsonError(
+      `value must be between ${VAULT_VALUE_MIN_BYTES} and ${VAULT_VALUE_MAX_BYTES} bytes`,
+      400,
+    );
+  }
+  const description = body.description === undefined ? "" : body.description;
+  if (typeof description !== "string" || description.length > VAULT_DESCRIPTION_MAX_LENGTH) {
+    return jsonError(`description must be at most ${VAULT_DESCRIPTION_MAX_LENGTH} characters`, 400);
+  }
+  vaultSet(userId, key, value, description);
+  return Response.json({ ok: true, key, ...(description ? { description } : {}) });
 }
 
 // ── Router ───────────────────────────────────────────────────────────
@@ -627,6 +680,8 @@ export async function handleOtiumPeerRequest(req: Request): Promise<Response | n
       return handleReply(req);
     case "/api/v1/peer/input-file":
       return handleInputFile(req);
+    case "/api/v1/peer/device-vault":
+      return handleDeviceVault(req);
     default:
       return jsonError("not found", 404);
   }

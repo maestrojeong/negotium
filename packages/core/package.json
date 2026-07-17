@@ -1,6 +1,6 @@
 {
   "name": "@negotium/core",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "description": "Multi-agent AI runtime — Claude/Codex/Maestro providers, unified event stream, sessions, wiki/skills, local-first storage",
   "license": "Apache-2.0",
@@ -11,6 +11,9 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./hosted-agent": "./src/agents/hosted-agent.ts",
+    "./peer-session-bridge-ipc": "./src/mcp/session-comm/bridge-ipc-config.ts",
+    "./canonical-mcp-bridge": "./src/mcp/canonical-bridge-config.ts",
     "./src/*": "./src/*"
   },
   "files": [

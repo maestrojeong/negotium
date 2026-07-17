@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,6 +60,8 @@ mock.module("#platform/mcp-config", () => ({
 }));
 
 const { codexProvider, toCodexMcpServers } = await import("#agents/codex-provider");
+const { configureAgentExecutionHost } = await import("#agents/execution-host");
+let restoreExecutionHost: (() => void) | undefined;
 
 function opts(overrides: Partial<AgentQueryOptions> = {}): AgentQueryOptions {
   return {
@@ -76,12 +78,20 @@ function opts(overrides: Partial<AgentQueryOptions> = {}): AgentQueryOptions {
 
 describe("codexProvider stale rollout recovery", () => {
   beforeEach(() => {
+    restoreExecutionHost = configureAgentExecutionHost({
+      getMcpServersForQuery: () => ({}),
+    });
     streamedEvents = fallbackEvents;
     resumeRunStreamed.mockClear();
     startRunStreamed.mockClear();
     resumeThread.mockClear();
     startThread.mockClear();
     codexConstructor.mockClear();
+  });
+
+  afterEach(() => {
+    restoreExecutionHost?.();
+    restoreExecutionHost = undefined;
   });
 
   test("falls back to a fresh thread when resume cannot find a rollout", async () => {

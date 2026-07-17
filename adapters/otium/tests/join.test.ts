@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, statSync, unlinkSync } from "node:fs";
+import { resolve } from "node:path";
+import { DATA_DIR } from "@negotium/core";
 import { joinFilePath, loadJoin, parseInviteCode, saveJoin } from "@/join";
 
 function encode(value: unknown): string {
@@ -69,6 +71,57 @@ describe("saveJoin / loadJoin", () => {
     expect(path).toBe(joinFilePath());
     expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(loadJoin()).toEqual(join);
+  });
+
+  test("re-saving the same credentials is idempotent", () => {
+    const join = { central: "https://central.example", cellId: "cell_a", secret: "rcs_a" };
+    saveJoin(join);
+    expect(saveJoin(join)).toBe(joinFilePath());
+    expect(loadJoin()).toEqual(join);
+  });
+
+  test("requires explicit replacement of different credentials", () => {
+    saveJoin({ central: "https://one.example", cellId: "cell_one", secret: "rcs_one" });
+    const replacement = {
+      central: "https://two.example",
+      cellId: "cell_two",
+      secret: "rcs_two",
+    };
+    expect(() => saveJoin(replacement)).toThrow("--replace");
+    expect(loadJoin()?.cellId).toBe("cell_one");
+    saveJoin(replacement, { replaceExisting: true });
+    expect(loadJoin()).toEqual(replacement);
+  });
+
+  test("serializes a concurrent explicit replacement behind the join lock", async () => {
+    const initial = { central: "https://one.example", cellId: "cell_one", secret: "rcs_one" };
+    const replacement = {
+      central: "https://two.example",
+      cellId: "cell_two",
+      secret: "rcs_two",
+    };
+    saveJoin(initial);
+    const moduleUrl = new URL("../src/join.ts", import.meta.url).href;
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        `const {withJoinCredentialLock}=await import(${JSON.stringify(moduleUrl)}); withJoinCredentialLock(()=>Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,300));`,
+      ],
+      { env: { ...process.env }, stdout: "pipe", stderr: "pipe" },
+    );
+    const lockPath = resolve(DATA_DIR, ".otium-join.lock");
+    for (let attempt = 0; attempt < 100 && !existsSync(lockPath); attempt += 1) {
+      await Bun.sleep(5);
+    }
+    expect(existsSync(lockPath)).toBe(true);
+    expect(() => saveJoin(replacement, { replaceExisting: true })).toThrow("in progress");
+    expect(loadJoin()).toEqual(initial);
+    expect(await child.exited).toBe(0);
+    expect(await new Response(child.stderr).text()).toBe("");
+
+    saveJoin(replacement, { replaceExisting: true });
+    expect(loadJoin()).toEqual(replacement);
   });
 
   test("returns null when nothing is persisted", () => {

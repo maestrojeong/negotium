@@ -189,4 +189,49 @@ describe("claudeProvider terminal handling", () => {
     expect(events.map((e) => e.type)).toEqual(["session", "error"]);
     expect(consumedPastError).toBe(false);
   });
+
+  test("passes a hard cost cap and surfaces budget exhaustion with usage", async () => {
+    mock.module("@anthropic-ai/claude-agent-sdk", () => ({
+      query: async function* ({ options }: { options?: Record<string, unknown> }) {
+        expect(options?.maxBudgetUsd).toBe(3);
+        yield {
+          type: "result",
+          subtype: "error_max_budget_usd",
+          errors: [],
+          total_cost_usd: 3.02,
+          usage: { input_tokens: 100, output_tokens: 50 },
+        };
+      },
+    }));
+
+    const { claudeProvider } = await import("#agents/claude-provider");
+    const events = [];
+    for await (const event of claudeProvider({
+      agent: "claude",
+      prompt: "do work",
+      session: "dev",
+      sessionType: "forum",
+      systemPrompt: "system",
+      cwd: "/tmp",
+      userId: "test-user",
+      maxBudgetUsd: 3,
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      {
+        type: "error",
+        content: "The job reached its cost limit",
+        code: "budget_exceeded",
+        usage: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheCreationInputTokens: undefined,
+          cacheReadInputTokens: undefined,
+          costUsd: 3.02,
+        },
+      },
+    ]);
+  });
 });

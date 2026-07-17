@@ -1,0 +1,71 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  configureAgentExecutionHost,
+  hostedMcpServers,
+  redactHostedSecrets,
+  referencesHostedSecretStorage,
+  shouldRedirectHostedVaultTool,
+  transformHostedQueryOptions,
+} from "#agents/execution-host";
+import type { AgentQueryOptions } from "#types";
+
+const disposers: Array<() => void> = [];
+
+afterEach(() => {
+  while (disposers.length > 0) disposers.pop()?.();
+});
+
+function opts(): AgentQueryOptions {
+  return {
+    agent: "codex",
+    cwd: "/tmp",
+    prompt: "hello",
+    systemPrompt: "system",
+    userId: "u1",
+  };
+}
+
+describe("agent execution host", () => {
+  test("injects host-owned MCP and device-local secret services", () => {
+    disposers.push(
+      configureAgentExecutionHost({
+        getMcpServersForQuery: () => ({ local_vault: { command: "vault" } }),
+        redactVaultSecrets: (_userId, value) => value.replaceAll("secret", "[redacted]"),
+        referencesRuntimeSecretStorage: (value) => value === "/device/vault.db",
+        shouldRedirectVaultTool: (_userId, toolName) => toolName === "Bash",
+      }),
+    );
+
+    expect(hostedMcpServers(opts())).toEqual({ local_vault: { command: "vault" } });
+    expect(redactHostedSecrets("u1", "a secret")).toBe("a [redacted]");
+    expect(referencesHostedSecretStorage("/device/vault.db")).toBe(true);
+    expect(shouldRedirectHostedVaultTool("u1", "Bash", {})).toBe(true);
+  });
+
+  test("allows a private host to transform a copied query", () => {
+    const original = opts();
+    disposers.push(
+      configureAgentExecutionHost({
+        transformQueryOptions: (input) => ({ ...input, prompt: `${input.prompt}\nprivate host` }),
+      }),
+    );
+
+    expect(transformHostedQueryOptions({ ...original }).prompt).toBe("hello\nprivate host");
+    expect(original.prompt).toBe("hello");
+  });
+
+  test("out-of-order disposal does not replace a newer host", () => {
+    const disposeFirst = configureAgentExecutionHost({
+      getMcpServersForQuery: () => ({ first: {} }),
+    });
+    const disposeSecond = configureAgentExecutionHost({
+      getMcpServersForQuery: () => ({ second: {} }),
+    });
+    disposers.push(disposeFirst, disposeSecond);
+
+    disposeFirst();
+    expect(hostedMcpServers(opts())).toEqual({ second: {} });
+    disposeSecond();
+    expect(hostedMcpServers(opts())).not.toEqual({ first: {} });
+  });
+});

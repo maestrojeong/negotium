@@ -286,7 +286,7 @@ describe("runPeerTurn", () => {
     });
   });
 
-  test("a failed dispatch emits an ai_error terminal and 409s the replay", async () => {
+  test("a failed dispatch becomes replay-safe after its ai_error terminal is acknowledged", async () => {
     __setTurnTriggerForTests(() => null);
     const recorder = recordingSender();
     const payload = {
@@ -305,10 +305,9 @@ describe("runPeerTurn", () => {
     expect(recorder.sent[0]!.event.type).toBe("ai_error");
     expect(recorder.sent[0]!.event.queryId).toBe("pt-turn-2");
 
-    expect(getPeerTurnRequest(HUB_CELL_ID, "pt-turn-2")?.status).toBe("failed");
+    expect(getPeerTurnRequest(HUB_CELL_ID, "pt-turn-2")?.status).toBe("finished");
     const replay = runPeerTurn(hubNode(), HUB_CELL_ID, payload, { sendEvent: recorder.send });
-    expect(replay.ok).toBe(false);
-    if (!replay.ok) expect(replay.status).toBe(409);
+    expect(replay).toEqual({ ok: true });
   });
 
   test("tracks a fresh queryId when provider session recovery redispatches the turn", () => {

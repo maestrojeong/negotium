@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { registerCanonicalMcpBridgeEnvProvider } from "#mcp/canonical-bridge-config";
 import {
   browserOwnerCapability,
   consumePlaywrightUnavailable,
@@ -336,6 +337,46 @@ describe("mcp-config: playwright transport selection per agent", () => {
     const wiki = servers.wiki as { args: string[] };
     expect(wiki.args).toContain("--topic-id=topic-abc-123");
     expect(wiki.args).not.toContain("--topic-id=Roadmap Notes");
+    expect(wiki.args).toContain("--surface=wiki");
+    expect((servers.skills as { args: string[] }).args).toContain("--surface=skills");
+  });
+
+  test("placed turns proxy canonical task/wiki while vault and skills stay node-local", () => {
+    const unregister = registerCanonicalMcpBridgeEnvProvider((scope) => ({
+      NEGOTIUM_CANONICAL_MCP_BRIDGE_URL: `http://127.0.0.1/${scope.surface}`,
+      NEGOTIUM_CANONICAL_MCP_BRIDGE_TOKEN: `token-${scope.surface}`,
+    }));
+    try {
+      const servers = getForumMcpServers({
+        userId: "placed-user",
+        session: "worker-mirror",
+        topicId: "local-mirror-topic",
+        queryId: "local-query",
+        agent: "claude",
+        enabled: [],
+        peerBridge: {
+          hubCellId: "hub-cell",
+          hostTopicId: "hub-topic",
+          hostQueryId: "hub-query",
+          canSpawnSubagents: false,
+        },
+      });
+      const task = servers.task as { args: string[]; env: Record<string, string> };
+      const wiki = servers.wiki as { args: string[]; env: Record<string, string> };
+      const skills = servers.skills as { args: string[]; env?: Record<string, string> };
+      const vault = servers.vault as { args: string[]; env?: Record<string, string> };
+
+      expect(task.args).toContain("--surface=task");
+      expect(wiki.args).toContain("--surface=wiki");
+      expect(task.env.NEGOTIUM_CANONICAL_MCP_BRIDGE_TOKEN).toBe("token-task");
+      expect(wiki.env.NEGOTIUM_CANONICAL_MCP_BRIDGE_TOKEN).toBe("token-wiki");
+      expect(skills.args).toContain("--surface=skills");
+      expect(skills.args).toContain("--topic-id=local-mirror-topic");
+      expect(skills.env?.NEGOTIUM_CANONICAL_MCP_BRIDGE_TOKEN).toBeUndefined();
+      expect(vault.env?.NEGOTIUM_CANONICAL_MCP_BRIDGE_TOKEN).toBeUndefined();
+    } finally {
+      unregister();
+    }
   });
 
   test("wiki receives the memory-origin topic id when one is provided", () => {

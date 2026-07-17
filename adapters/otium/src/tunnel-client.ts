@@ -18,6 +18,7 @@ import {
   decodeRelayFrame,
   encodeFrame,
   fromB64,
+  type HeaderPairs,
   type NodeToRelayFrame,
   PROTOCOL_VERSION,
   type RelayToNodeFrame,
@@ -44,6 +45,8 @@ export interface TunnelClientOptions {
   logger?: TunnelLogger;
   minReconnectDelayMs?: number;
   maxReconnectDelayMs?: number;
+  /** Test/embedding hook. Defaults to Bun's WebSocket constructor. */
+  webSocketFactory?: (url: string, options: { headers: Record<string, string> }) => WebSocket;
 }
 
 export type TunnelStatus = "idle" | "connecting" | "registered" | "stopped" | "unsupported";
@@ -54,6 +57,36 @@ type BunWebSocketCtor = new (
   url: string,
   options?: { headers?: Record<string, string> },
 ) => WebSocket;
+
+const MAX_WS_UPGRADE_HEADER_BYTES = 32 * 1024;
+const WS_PROTOCOL_TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+function localWebSocketOptions(headers: HeaderPairs): {
+  headers: Record<string, string>;
+} | null {
+  const forwarded: Record<string, string> = {};
+  let totalBytes = 0;
+  for (const pair of headers) {
+    if (!Array.isArray(pair) || pair.length !== 2) return null;
+    const [rawName, value] = pair;
+    if (typeof rawName !== "string" || typeof value !== "string" || /[\0\r\n]/.test(value)) {
+      return null;
+    }
+    const name = rawName.toLowerCase();
+    if (name !== "cookie" && name !== "authorization" && name !== "sec-websocket-protocol") {
+      return null;
+    }
+    totalBytes += Buffer.byteLength(name) + Buffer.byteLength(value);
+    if (totalBytes > MAX_WS_UPGRADE_HEADER_BYTES || name in forwarded) {
+      return null;
+    }
+    if (name === "sec-websocket-protocol") {
+      if (!WS_PROTOCOL_TOKEN.test(value)) return null;
+    }
+    forwarded[name] = value;
+  }
+  return { headers: forwarded };
+}
 
 const DEFAULT_MIN_RECONNECT_MS = 1_000;
 const DEFAULT_MAX_RECONNECT_MS = 30_000;
@@ -85,6 +118,7 @@ export class TunnelClient {
     TunnelClientOptions;
   private readonly log: TunnelLogger;
   private ws: WebSocket | null = null;
+  private connectionGeneration = 0;
   private statusValue: TunnelStatus = "idle";
   private reconnectDelayMs: number;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -114,8 +148,10 @@ export class TunnelClient {
     this.reconnectTimer = null;
     this.clearLiveness();
     this.cleanupInFlight();
-    this.ws?.close(1000, "tunnel stopped");
+    const ws = this.ws;
     this.ws = null;
+    this.connectionGeneration += 1;
+    ws?.close(1000, "tunnel stopped");
   }
 
   // ── Connection lifecycle ────────────────────────────────────────
@@ -128,12 +164,15 @@ export class TunnelClient {
   private connect(): void {
     this.statusValue = "connecting";
     const WS = WebSocket as unknown as BunWebSocketCtor;
-    const ws = new WS(this.tunnelUrl(), {
-      headers: { authorization: `Bearer ${this.opts.token}` },
-    });
+    const options = { headers: { authorization: `Bearer ${this.opts.token}` } };
+    const ws = this.opts.webSocketFactory
+      ? this.opts.webSocketFactory(this.tunnelUrl(), options)
+      : new WS(this.tunnelUrl(), options);
+    const generation = ++this.connectionGeneration;
     this.ws = ws;
 
     ws.onopen = () => {
+      if (!this.isActiveConnection(ws, generation)) return;
       this.send({
         type: "register",
         protocolVersion: PROTOCOL_VERSION,
@@ -143,26 +182,53 @@ export class TunnelClient {
     };
 
     ws.onmessage = (event) => {
-      if (this.ws !== ws) return;
-      this.resetLiveness();
+      if (!this.isActiveConnection(ws, generation)) return;
+      this.resetLiveness(ws, generation);
       const frame = decodeRelayFrame(event.data);
       if (!frame) return;
       this.handleFrame(frame);
     };
 
     ws.onclose = (event) => {
-      if (this.ws !== ws) return;
-      this.ws = null;
-      this.clearLiveness();
-      this.cleanupInFlight();
-      if (this.statusValue === "stopped" || this.statusValue === "unsupported") return;
-      this.log.warn({ code: event.code, reason: event.reason }, "relay tunnel disconnected");
-      this.scheduleReconnect();
+      this.disconnectActiveConnection(ws, generation, {
+        code: event.code,
+        reason: event.reason,
+      });
     };
 
     ws.onerror = () => {
       // onclose follows; reconnect is handled there.
     };
+  }
+
+  private isActiveConnection(ws: WebSocket, generation: number): boolean {
+    return this.ws === ws && this.connectionGeneration === generation;
+  }
+
+  /** Invalidate before closing: a half-open socket may never emit `close`. */
+  private disconnectActiveConnection(
+    ws: WebSocket,
+    generation: number,
+    details: Record<string, unknown>,
+    close = false,
+  ): void {
+    if (!this.isActiveConnection(ws, generation)) return;
+    this.ws = null;
+    this.connectionGeneration += 1;
+    this.clearLiveness();
+    this.cleanupInFlight();
+    if (this.statusValue !== "stopped" && this.statusValue !== "unsupported") {
+      this.statusValue = "connecting";
+      this.log.warn(details, "relay tunnel disconnected");
+      this.scheduleReconnect();
+    }
+    if (close) {
+      try {
+        ws.close();
+      } catch {
+        // The connection is already invalidated and reconnect is scheduled.
+      }
+    }
   }
 
   private scheduleReconnect(): void {
@@ -182,13 +248,12 @@ export class TunnelClient {
     }, delay);
   }
 
-  private resetLiveness(): void {
+  private resetLiveness(ws = this.ws, generation = this.connectionGeneration): void {
     this.clearLiveness();
+    if (!ws) return;
     this.livenessTimer = setTimeout(() => {
       this.log.warn({}, "relay tunnel silent past liveness window — reconnecting");
-      // close() triggers onclose → cleanup + reconnect. Half-open sockets that
-      // never deliver a close event are exactly what this timer catches.
-      this.ws?.close();
+      this.disconnectActiveConnection(ws, generation, { reason: "liveness timeout" }, true);
     }, this.pingIntervalMs * LIVENESS_INTERVALS);
   }
 
@@ -229,7 +294,7 @@ export class TunnelClient {
         this.statusValue = "registered";
         this.pingIntervalMs = frame.pingIntervalMs;
         this.reconnectDelayMs = this.opts.minReconnectDelayMs ?? DEFAULT_MIN_RECONNECT_MS;
-        this.resetLiveness();
+        this.resetLiveness(this.ws, this.connectionGeneration);
         this.log.info({ nodeId: frame.nodeId }, "relay tunnel registered");
         break;
       case "register_error":
@@ -286,7 +351,7 @@ export class TunnelClient {
         break;
       }
       case "ws_open":
-        this.openBridgedSocket(frame.id, frame.path);
+        this.openBridgedSocket(frame.id, frame.path, frame.headers);
         break;
       case "ws_data": {
         const bridged = this.bridgedSockets.get(frame.id);
@@ -394,11 +459,14 @@ export class TunnelClient {
 
   // ── WebSocket bridging ──────────────────────────────────────────
 
-  private openBridgedSocket(id: string, path: string): void {
+  private openBridgedSocket(id: string, path: string, headers: HeaderPairs): void {
     const wsOrigin = this.opts.targetOrigin.replace(/^http/, "ws");
     let local: WebSocket;
     try {
-      local = new WebSocket(`${wsOrigin}${path}`);
+      const upgrade = localWebSocketOptions(headers);
+      if (!upgrade) throw new Error("invalid websocket upgrade headers");
+      const WS = WebSocket as unknown as BunWebSocketCtor;
+      local = new WS(`${wsOrigin}${path}`, { headers: upgrade.headers });
     } catch (err) {
       this.send({
         type: "ws_open_error",

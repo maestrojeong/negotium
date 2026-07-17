@@ -274,7 +274,6 @@ export function runPeerTurn(
       topicId: localTopicId,
       error: `worker dispatch crashed: ${(err as Error).message}`,
     });
-    markPeerTurnRequestFailed(hostCellId, payload.requestId, "failed to start turn");
     return { ok: false, error: "failed to start turn", status: 500 };
   }
   if (!queryId) {
@@ -284,7 +283,6 @@ export function runPeerTurn(
       topicId: localTopicId,
       error: "worker could not start the turn",
     });
-    markPeerTurnRequestFailed(hostCellId, payload.requestId, "failed to start turn");
     return { ok: false, error: "failed to start turn", status: 500 };
   }
   // Test seams and older dispatchers may return an id without invoking the

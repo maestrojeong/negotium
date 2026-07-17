@@ -301,22 +301,24 @@ export function startPeerReplyOutboxWorker(): () => void {
   return () => clearInterval(timer);
 }
 
-export async function acceptRemoteAskReply(args: {
+export type AcceptRemoteAskReplyResult = "accepted" | "retry" | "missing";
+
+export async function acceptRemoteAskReplyResult(args: {
   fromCellId: string;
   requestId: string;
   userId: string;
   fromLabel: string;
   replyText: string;
   kind: "reply" | "error";
-}): Promise<boolean> {
+}): Promise<AcceptRemoteAskReplyResult> {
   prunePendingRemoteAsks();
   const pending = getRemoteAsk(args.requestId);
   if (!pending || pending.expected_cell_id !== args.fromCellId || pending.user_id !== args.userId) {
-    return false;
+    return "missing";
   }
   if (pending.source_query_id) {
     const node = await resolvePeerNodeByCellId(pending.expected_cell_id).catch(() => null);
-    if (!node?.isPrimary) return false;
+    if (!node?.isPrimary) return "missing";
     const delivered = await postPeer(node, "/api/v1/peer/ask-callback", {
       v: PEER_PROTOCOL_VERSION,
       requestId: args.requestId,
@@ -331,7 +333,7 @@ export async function acceptRemoteAskReply(args: {
         { requestId: args.requestId, error: delivered.error },
         "otium: canonical remote ask callback failed",
       );
-      return false;
+      return delivered.ambiguous ? "retry" : "missing";
     }
     deleteRemoteAsk(args.requestId);
     clearPendingAsk({
@@ -340,7 +342,7 @@ export async function acceptRemoteAskReply(args: {
       to: pending.to_key,
       requestId: args.requestId,
     });
-    return true;
+    return "accepted";
   }
 
   const delivered = await deliverAskCallbackToCaller(
@@ -359,9 +361,16 @@ export async function acceptRemoteAskReply(args: {
     args.replyText,
     args.kind,
   );
-  if (!delivered) return false;
+  if (!delivered) return "missing";
   deleteRemoteAsk(args.requestId);
-  return true;
+  return "accepted";
+}
+
+/** Backward-compatible boolean surface for in-process callers and tests. */
+export async function acceptRemoteAskReply(
+  args: Parameters<typeof acceptRemoteAskReplyResult>[0],
+): Promise<boolean> {
+  return (await acceptRemoteAskReplyResult(args)) === "accepted";
 }
 
 export const otiumPeerSessionBridge: PeerSessionBridge = { forward, sessions, reply };

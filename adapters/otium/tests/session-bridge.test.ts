@@ -8,6 +8,7 @@ import {
 import { configureOtiumCentral } from "@/central";
 import {
   acceptRemoteAskReply,
+  acceptRemoteAskReplyResult,
   flushPeerReplyOutbox,
   otiumPeerSessionBridge,
 } from "@/session-bridge";
@@ -179,7 +180,7 @@ describe("otium peer session bridge routing", () => {
       replyText: "answer",
       kind: "reply" as const,
     };
-    expect(await acceptRemoteAskReply(reply)).toBe(false);
+    expect(await acceptRemoteAskReplyResult(reply)).toBe("retry");
     expect(getRemoteAsk(requestId)).not.toBeNull();
     failCallback = false;
     expect(await acceptRemoteAskReply(reply)).toBe(true);

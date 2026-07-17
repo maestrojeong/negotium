@@ -18,9 +18,9 @@
  */
 
 import { logger, type RuntimeBusEvent, runtimeBus } from "@negotium/core";
-import { mintPeerToken, type PeerNode } from "@/central";
+import { mintPeerToken, type PeerNode, resolvePeerNodeByCellId } from "@/central";
 import { PEER_PROTOCOL_VERSION } from "@/protocol";
-import { markPeerTurnRequestFinished } from "@/store";
+import { acknowledgePeerTerminal, listPeerTerminalOutbox, upsertPeerTerminalOutbox } from "@/store";
 
 const FORWARDED_TYPES = new Set([
   "message",
@@ -40,6 +40,7 @@ const TERMINAL_TYPES = new Set(["ai_done", "ai_error", "ai_aborted"]);
 const PEER_EVENT_MAX_ATTEMPTS = 5;
 const PEER_EVENT_RETRY_BASE_MS = 100;
 const PEER_EVENT_TIMEOUT_MS = 15_000;
+const PEER_EVENT_MAX_PENDING = 256;
 
 export type SendEventResult = { ok: true } | { ok: false; error: string; status?: number };
 
@@ -213,6 +214,8 @@ export interface TurnForwarder {
   queryId: string | null;
   finished: boolean;
   deliveryBlocked: boolean;
+  /** Number of closures retained by the ordered promise queue. */
+  pendingEvents: number;
   seq: number;
   chain: Promise<void>;
   /** Feed one already-translated raw event through filter → seq → delivery. */
@@ -235,51 +238,71 @@ export function createTurnForwarder(opts: {
   sendEvent: SendPeerEvent;
   /** Test seam — production keeps the contract's 100ms base backoff. */
   retryBaseMs?: number;
+  /** Test/host seam. One slot is reserved for a synthetic overflow terminal. */
+  maxPendingEvents?: number;
 }): TurnForwarder {
   const { hostNodeId, requestId, localTopicId, sendEvent } = opts;
   const retryBaseMs = opts.retryBaseMs ?? PEER_EVENT_RETRY_BASE_MS;
+  const maxPendingEvents = Math.max(2, opts.maxPendingEvents ?? PEER_EVENT_MAX_PENDING);
   const forwarder: TurnForwarder = {
     requestId,
     queryId: null,
     finished: false,
     deliveryBlocked: false,
+    pendingEvents: 0,
     seq: 0,
     chain: Promise.resolve(),
     tap: () => {},
     finish: () => {},
   };
 
-  const post = (event: RawEvent) => {
-    forwarder.seq += 1;
-    const seq = forwarder.seq;
-    forwarder.chain = forwarder.chain.then(async () => {
-      if (forwarder.deliveryBlocked) return;
-      for (let attempt = 1; attempt <= PEER_EVENT_MAX_ATTEMPTS; attempt++) {
-        const result = await sendEvent({ v: PEER_PROTOCOL_VERSION, requestId, seq, event });
-        if (result.ok) return;
-        logger.warn(
-          { requestId, seq, type: event.type, attempt, error: result.error },
-          "otium: peer event delivery to hub failed",
-        );
-        if (attempt < PEER_EVENT_MAX_ATTEMPTS) {
-          const delayMs = retryBaseMs * 2 ** (attempt - 1);
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
-        }
-      }
-      // Never send seq N+1 after seq N was lost. The hub requires a
-      // contiguous cursor; its watchdog fails the turn if connectivity does
-      // not recover within this bounded retry budget.
-      forwarder.deliveryBlocked = true;
-      logger.error({ requestId, seq, type: event.type }, "otium: peer event delivery exhausted");
-    });
-  };
+  let terminalQueued = false;
 
-  const cleanup = () => {
+  const detach = () => {
     forwarder.finished = true;
-    markPeerTurnRequestFinished(hostNodeId, requestId);
     if (activeForwarders.get(localTopicId) === forwarder) {
       activeForwarders.delete(localTopicId);
     }
+  };
+
+  const post = (event: RawEvent) => {
+    const isTerminal = TERMINAL_TYPES.has(String(event.type ?? ""));
+    if (isTerminal) terminalQueued = true;
+    forwarder.seq += 1;
+    const seq = forwarder.seq;
+    forwarder.pendingEvents += 1;
+    forwarder.chain = forwarder.chain.then(async () => {
+      try {
+        if (forwarder.deliveryBlocked) return;
+        // Prior seqs are now acknowledged. Persist immediately before the
+        // first terminal send, closing the crash window without retaining a
+        // terminal that can never cross an earlier permanent gap.
+        if (isTerminal) {
+          upsertPeerTerminalOutbox({ hostNodeId, requestId, seq, event });
+        }
+        for (let attempt = 1; attempt <= PEER_EVENT_MAX_ATTEMPTS; attempt++) {
+          const result = await sendEvent({ v: PEER_PROTOCOL_VERSION, requestId, seq, event });
+          if (result.ok) {
+            if (isTerminal) acknowledgePeerTerminal(hostNodeId, requestId);
+            return;
+          }
+          logger.warn(
+            { requestId, seq, type: event.type, attempt, error: result.error },
+            "otium: peer event delivery to hub failed",
+          );
+          if (attempt < PEER_EVENT_MAX_ATTEMPTS) {
+            const delayMs = retryBaseMs * 2 ** (attempt - 1);
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+          }
+        }
+        // Never send seq N+1 after seq N was lost. A terminal stays in the
+        // durable outbox and the reconnect flusher retries its exact envelope.
+        forwarder.deliveryBlocked = true;
+        logger.error({ requestId, seq, type: event.type }, "otium: peer event delivery exhausted");
+      } finally {
+        forwarder.pendingEvents -= 1;
+      }
+    });
   };
 
   forwarder.tap = (raw: RawEvent) => {
@@ -304,14 +327,30 @@ export function createTurnForwarder(opts: {
         return;
       }
     }
+    const isTerminal = TERMINAL_TYPES.has(type);
+    if (!isTerminal && forwarder.pendingEvents >= maxPendingEvents - 1) {
+      // Do not retain an unbounded Promise chain under a noisy tool stream.
+      // Since no seq was assigned to this dropped event, a synthetic terminal
+      // remains contiguous and occupies the queue's reserved final slot.
+      if (!terminalQueued) {
+        post({
+          type: "ai_error",
+          topicId: localTopicId,
+          queryId: forwarder.queryId ?? requestId,
+          error: `worker event queue saturated (${maxPendingEvents})`,
+        });
+        detach();
+      }
+      return;
+    }
     post(raw);
-    if (TERMINAL_TYPES.has(type)) cleanup();
+    if (isTerminal) detach();
   };
 
   forwarder.finish = (event: RawEvent) => {
     if (forwarder.finished) return;
     post(event);
-    cleanup();
+    detach();
   };
 
   return forwarder;
@@ -326,6 +365,37 @@ export function registerTurnForwarder(localTopicId: string, forwarder: TurnForwa
 // ── Global bus subscription (otium's registerTopicTap equivalent) ────
 
 let unsubscribe: (() => void) | null = null;
+let terminalOutboxTimer: ReturnType<typeof setInterval> | null = null;
+let terminalOutboxFlushInFlight = false;
+
+/** Retry exact terminal envelopes left by a lost ACK or worker restart. */
+export async function flushPeerTerminalOutbox(): Promise<number> {
+  if (terminalOutboxFlushInFlight) return 0;
+  terminalOutboxFlushInFlight = true;
+  let acknowledged = 0;
+  try {
+    for (const row of listPeerTerminalOutbox()) {
+      const node = await resolvePeerNodeByCellId(row.host_node_id).catch(() => null);
+      if (!node) continue;
+      let event: RawEvent;
+      try {
+        event = JSON.parse(row.event_json) as RawEvent;
+      } catch {
+        continue;
+      }
+      const result = await hubEventSender(node)({
+        v: PEER_PROTOCOL_VERSION,
+        requestId: row.request_id,
+        seq: row.seq,
+        event,
+      });
+      if (result.ok && acknowledgePeerTerminal(row.host_node_id, row.request_id)) acknowledged += 1;
+    }
+    return acknowledged;
+  } finally {
+    terminalOutboxFlushInFlight = false;
+  }
+}
 
 function onBusEvent(event: RuntimeBusEvent): void {
   const forwarder = activeForwarders.get(event.topicId);
@@ -341,11 +411,18 @@ function ensureBackflowSubscription(): void {
 /** Subscribe the backflow tap to the RuntimeBus. Returns a stop function. */
 export function startEventBackflow(): () => void {
   ensureBackflowSubscription();
+  if (!terminalOutboxTimer) {
+    void flushPeerTerminalOutbox();
+    terminalOutboxTimer = setInterval(() => void flushPeerTerminalOutbox(), 5_000);
+    terminalOutboxTimer.unref?.();
+  }
   return stopEventBackflow;
 }
 
 export function stopEventBackflow(): void {
   unsubscribe?.();
   unsubscribe = null;
+  if (terminalOutboxTimer) clearInterval(terminalOutboxTimer);
+  terminalOutboxTimer = null;
   activeForwarders.clear();
 }

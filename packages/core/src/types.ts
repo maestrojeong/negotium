@@ -15,6 +15,8 @@ export interface TokenUsage {
   outputTokens: number;
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
+  /** Provider-reported query cost when available. */
+  costUsd?: number;
   /** Tokens occupied by the latest model call, not aggregate turn spend. */
   contextTokens?: number;
   /** Provider-reported context window for the latest model call. */
@@ -126,7 +128,12 @@ export type UnifiedEvent =
   | { type: "text"; content: string }
   | { type: "result"; content: string; stopReason: string; usage?: TokenUsage }
   | { type: "file"; path: string; source: string; origin: "tag" | "extension" }
-  | { type: "error"; content: string }
+  | {
+      type: "error";
+      content: string;
+      usage?: TokenUsage;
+      code?: "budget_exceeded";
+    }
   | { type: "status"; content: string };
 
 export interface AgentInputAttachment {
@@ -171,6 +178,8 @@ export interface AgentQueryOptions {
   autoContinue?: boolean;
   abortController?: AbortController;
   model?: string;
+  /** Provider-side hard budget when the selected SDK supports one. */
+  maxBudgetUsd?: number;
   depth?: number;
   agents?: Record<
     string,

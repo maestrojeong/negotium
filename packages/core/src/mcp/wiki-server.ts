@@ -27,20 +27,25 @@ const WIKI_ROOT = SHARED_WIKI_DIR;
 
 // --- CLI parsing -----------------------------------------------------------
 
-function parseArgv(): { userId: string; topicId?: string } {
+type WikiSurface = "all" | "wiki" | "skills";
+
+function parseArgv(): { userId: string; topicId?: string; surface: WikiSurface } {
   let userId = "default";
   let topicId: string | undefined;
+  let surface: WikiSurface = "all";
 
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith("--user-id=")) userId = a.slice("--user-id=".length);
     else if (a.startsWith("--topic-id=")) topicId = a.slice("--topic-id=".length);
+    else if (a === "--surface=wiki") surface = "wiki";
+    else if (a === "--surface=skills") surface = "skills";
   }
 
-  return { userId, topicId };
+  return { userId, topicId, surface };
 }
 
-const { topicId } = parseArgv();
+const { topicId, surface } = parseArgv();
 
 const WIKI_DIR = WIKI_ROOT;
 
@@ -172,7 +177,10 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
   }
 
   scan(ARTICLES_DIR, "articles");
-  scan(SKILLS_DIR, "skills");
+  // Skills are node-local runtime knowledge, not canonical workspace memory.
+  // Keep the legacy all-in-one server compatible while ensuring the explicit
+  // wiki surface cannot read a node's skill library.
+  if (surface === "all") scan(SKILLS_DIR, "skills");
   scan(TOPICS_DIR, "topic");
   scan(SUMMARIES_DIR, "summaries");
 
@@ -582,7 +590,7 @@ function indexUpsert(args: Record<string, unknown>): CallToolResult {
 
 // --- MCP Tool definitions -------------------------------------------------
 
-const TOOLS: Tool[] = [
+const WIKI_TOOLS: Tool[] = [
   {
     name: "wiki_query",
     description: "Search the wiki knowledge base and return relevant articles.",
@@ -624,35 +632,6 @@ const TOOLS: Tool[] = [
     },
   },
   {
-    name: "skill_query",
-    description: "Search the skill library and return matching skill definitions.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        question: {
-          type: "string",
-          description: "The skill name or description of what you want to do",
-        },
-      },
-      required: ["question"],
-    },
-  },
-  {
-    name: "skill_save",
-    description: "Create or update a skill.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "Skill folder name in kebab-case" },
-        content: {
-          type: "string",
-          description: "Skill definition in markdown (with frontmatter name+description)",
-        },
-      },
-      required: ["name", "content"],
-    },
-  },
-  {
     name: "save_wiki_entry",
     description: "Save a session summary directly to wiki/summaries/.",
     inputSchema: {
@@ -685,6 +664,45 @@ const TOOLS: Tool[] = [
   },
 ];
 
+const SKILL_TOOLS: Tool[] = [
+  {
+    name: "skill_query",
+    description: "Search this node's local skill library and return matching definitions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        question: {
+          type: "string",
+          description: "The skill name or description of what you want to do",
+        },
+      },
+      required: ["question"],
+    },
+  },
+  {
+    name: "skill_save",
+    description: "Create or update a skill on this node.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Skill folder name in kebab-case" },
+        content: {
+          type: "string",
+          description: "Skill definition in markdown (with frontmatter name+description)",
+        },
+      },
+      required: ["name", "content"],
+    },
+  },
+];
+
+const TOOLS =
+  surface === "wiki"
+    ? WIKI_TOOLS
+    : surface === "skills"
+      ? SKILL_TOOLS
+      : [...WIKI_TOOLS, ...SKILL_TOOLS];
+
 // --- Server ----------------------------------------------------------------
 
 const server = new Server(
@@ -710,7 +728,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
       save_wiki_entry: saveWikiEntry,
       index_upsert: indexUpsert,
     };
-    const handler = fn[name];
+    const handler = TOOLS.some((tool) => tool.name === name) ? fn[name] : undefined;
     if (handler) return handler(a);
     return { content: [{ type: "text", text: `Unknown tool: ${name}` }] };
   }

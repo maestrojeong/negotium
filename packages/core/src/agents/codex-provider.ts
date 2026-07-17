@@ -15,16 +15,15 @@ import {
   snapshotCodexChildren,
   unregisterOwnedCodexPids,
 } from "#agents/codex-tree-kill";
+import { hostedCodexAuthFilePath, hostedMcpServers } from "#agents/execution-host";
 import { readLatestCodexContextUsage } from "#agents/rollout/codex";
 import { extractFileEvents } from "#media/file-events";
-import { codexAuthFilePath } from "#platform/config";
 import { errMsg } from "#platform/error";
 import { logger } from "#platform/logger";
 import {
   browserOwnerCapability,
   browserOwnerForContext,
   CODEX_BROWSER_CAPABILITY_ENV,
-  getMcpServersForQuery,
 } from "#platform/mcp-config";
 import type { AgentQueryOptions, EffortLevel, UnifiedEvent } from "#types";
 
@@ -376,7 +375,7 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
   // for the @openai/codex-sdk to spawn the codex binary and surface an
   // opaque OAuth failure on the first turn. Path is the default codex
   // location unless NEGOTIUM_CODEX_AUTH_FILE relocates it for this host.
-  const codexAuthPath = codexAuthFilePath();
+  const codexAuthPath = hostedCodexAuthFilePath();
   if (!existsSync(codexAuthPath)) {
     yield {
       type: "error",
@@ -385,7 +384,7 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
     return;
   }
 
-  const codexMcpServers = toCodexMcpServers(getMcpServersForQuery(opts));
+  const codexMcpServers = toCodexMcpServers(hostedMcpServers(opts));
   const browserOwner = browserOwnerForContext(opts);
   const scopedBrowserCapability =
     opts.playwrightCapability && browserOwner

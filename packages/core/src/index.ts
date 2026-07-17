@@ -254,9 +254,13 @@ export { clearPendingAsk } from "#storage/session-asks";
 export type { VaultEntry, VaultEntryWithValue } from "#storage/vault";
 export {
   normalizeVaultKey,
+  VAULT_DESCRIPTION_MAX_LENGTH,
+  VAULT_VALUE_MAX_BYTES,
+  VAULT_VALUE_MIN_BYTES,
   validateVaultKey,
   vaultDel,
   vaultHasKey,
+  vaultList,
   vaultListWithValues,
   vaultSet,
 } from "#storage/vault";

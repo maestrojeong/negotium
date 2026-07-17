@@ -64,6 +64,21 @@ db.exec(`
   )
 `);
 
+// A terminal is not completion until the canonical hub acknowledges it. Keep
+// the exact envelope so a worker restart can replay it; the hub's event
+// journal makes that replay idempotent when the original ACK was lost.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS otium_peer_terminal_outbox (
+    host_node_id  TEXT NOT NULL,
+    request_id    TEXT NOT NULL,
+    seq           INTEGER NOT NULL,
+    event_json    TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL,
+    PRIMARY KEY (host_node_id, request_id)
+  )
+`);
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS otium_peer_inbox_requests (
     from_cell_id  TEXT NOT NULL,
@@ -200,6 +215,7 @@ export function listPeerSessions(): PeerSessionRow[] {
 export interface PeerTopicCleanupResult {
   sessions: number;
   turns: number;
+  terminalOutbox: number;
   inboxRequests: number;
   remoteAsks: number;
 }
@@ -211,6 +227,19 @@ export interface PeerTopicCleanupResult {
  */
 export function cleanupPeerStateForLocalTopic(localTopicId: string): PeerTopicCleanupResult {
   return db.transaction(() => {
+    const terminalOutbox = db.run(
+      `DELETE FROM otium_peer_terminal_outbox
+       WHERE EXISTS (
+         SELECT 1 FROM otium_peer_turn_requests turn_request
+         JOIN otium_peer_sessions session
+           ON session.host_node_id = turn_request.host_node_id
+          AND session.host_topic_id = turn_request.host_topic_id
+         WHERE session.local_topic_id = ?
+           AND turn_request.host_node_id = otium_peer_terminal_outbox.host_node_id
+           AND turn_request.request_id = otium_peer_terminal_outbox.request_id
+       )`,
+      [localTopicId],
+    ).changes;
     const turns = db.run(
       `DELETE FROM otium_peer_turn_requests
        WHERE EXISTS (
@@ -230,7 +259,7 @@ export function cleanupPeerStateForLocalTopic(localTopicId: string): PeerTopicCl
     const sessions = db.run("DELETE FROM otium_peer_sessions WHERE local_topic_id = ?", [
       localTopicId,
     ]).changes;
-    return { sessions, turns, inboxRequests, remoteAsks };
+    return { sessions, turns, terminalOutbox, inboxRequests, remoteAsks };
   })();
 }
 
@@ -253,7 +282,12 @@ export function failInterruptedPeerTurnRequestsOnStartup(): number {
   return db.run(
     `UPDATE otium_peer_turn_requests
      SET status = 'failed', error = 'worker restarted during turn', updated_at = ?
-     WHERE status IN ('claimed', 'running')`,
+     WHERE status IN ('claimed', 'running')
+       AND NOT EXISTS (
+         SELECT 1 FROM otium_peer_terminal_outbox terminal
+         WHERE terminal.host_node_id = otium_peer_turn_requests.host_node_id
+           AND terminal.request_id = otium_peer_turn_requests.request_id
+       )`,
     [new Date().toISOString()],
   ).changes;
 }
@@ -320,6 +354,53 @@ export function markPeerTurnRequestFailed(
   error: string,
 ): void {
   setPeerTurnRequestStatus(hostNodeId, requestId, "failed", error);
+}
+
+export interface PeerTerminalOutboxRow {
+  host_node_id: string;
+  request_id: string;
+  seq: number;
+  event_json: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export function upsertPeerTerminalOutbox(args: {
+  hostNodeId: string;
+  requestId: string;
+  seq: number;
+  event: Record<string, unknown>;
+}): void {
+  const now = Date.now();
+  db.run(
+    `INSERT INTO otium_peer_terminal_outbox
+       (host_node_id, request_id, seq, event_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(host_node_id, request_id) DO UPDATE SET
+       seq = excluded.seq, event_json = excluded.event_json, updated_at = excluded.updated_at`,
+    [args.hostNodeId, args.requestId, args.seq, JSON.stringify(args.event), now, now],
+  );
+}
+
+export function listPeerTerminalOutbox(limit = 100): PeerTerminalOutboxRow[] {
+  return db
+    .query<PeerTerminalOutboxRow, [number]>(
+      "SELECT * FROM otium_peer_terminal_outbox ORDER BY created_at LIMIT ?",
+    )
+    .all(limit);
+}
+
+/** Atomically acknowledge the terminal locally only after the hub ACK. */
+export function acknowledgePeerTerminal(hostNodeId: string, requestId: string): boolean {
+  return db.transaction(() => {
+    const removed = db.run(
+      "DELETE FROM otium_peer_terminal_outbox WHERE host_node_id = ? AND request_id = ?",
+      [hostNodeId, requestId],
+    ).changes;
+    if (removed !== 1) return false;
+    markPeerTurnRequestFinished(hostNodeId, requestId);
+    return true;
+  })();
 }
 
 // ── peer inbox requests: durable idempotent claim for inbound tell/ask ──

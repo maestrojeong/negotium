@@ -3,6 +3,7 @@ import { runtimeBus } from "@negotium/core";
 import { configureOtiumCentral, type PeerNode } from "@/central";
 import {
   createTurnForwarder,
+  flushPeerTerminalOutbox,
   getActiveForwarder,
   hubEventSender,
   registerTurnForwarder,
@@ -11,6 +12,12 @@ import {
   stopEventBackflow,
   translateBusEvent,
 } from "@/event-backflow";
+import {
+  claimPeerTurnRequest,
+  failInterruptedPeerTurnRequestsOnStartup,
+  getPeerTurnRequest,
+  listPeerTerminalOutbox,
+} from "@/store";
 import {
   type FakeCentral,
   type FakeHub,
@@ -310,6 +317,54 @@ describe("forwarder over the live RuntimeBus", () => {
     expect(recorder.attempts.get(1)).toBe(3);
     expect(recorder.sent.map((e) => e.event.type)).toEqual(["ai_done"]);
   });
+
+  test("bounds a saturated queue, preserves order, and reserves a terminal slot", async () => {
+    const topicId = `peer-saturated-${crypto.randomUUID()}`;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const sent: Array<{ seq: number; event: Record<string, unknown> }> = [];
+    let first = true;
+    const forwarder = createTurnForwarder({
+      hostNodeId: HUB_CELL_ID,
+      requestId: `pt-saturated-${crypto.randomUUID()}`,
+      localTopicId: topicId,
+      maxPendingEvents: 4,
+      sendEvent: async (payload) => {
+        if (first) {
+          first = false;
+          await gate;
+        }
+        sent.push({ seq: payload.seq, event: payload.event });
+        return { ok: true };
+      },
+    });
+    forwarder.queryId = "q-saturated";
+    registerTurnForwarder(topicId, forwarder);
+    startEventBackflow();
+
+    const bus = runtimeBus();
+    for (let i = 0; i < 20; i++) {
+      bus.broadcastToolCall(topicId, "q-saturated", "Bash", { i }, `Bash(${i})`, `t-${i}`);
+    }
+    expect(forwarder.finished).toBe(true);
+    expect(forwarder.pendingEvents).toBe(4);
+    release();
+    await forwarder.chain;
+
+    expect(sent.map(({ seq }) => seq)).toEqual([1, 2, 3, 4]);
+    expect(sent.slice(0, 3).map(({ event }) => event.type)).toEqual([
+      "tool_call",
+      "tool_call",
+      "tool_call",
+    ]);
+    expect(sent[3]!.event).toMatchObject({
+      type: "ai_error",
+      error: "worker event queue saturated (4)",
+    });
+    expect(forwarder.pendingEvents).toBe(0);
+  });
 });
 
 describe("hubEventSender against a fake hub (Bun.serve port 0)", () => {
@@ -380,5 +435,41 @@ describe("hubEventSender against a fake hub (Bun.serve port 0)", () => {
     expect(forwarder.deliveryBlocked).toBe(false);
     expect(hub.events.length).toBe(before + 1);
     expect(hub.events.at(-1)!.body).toMatchObject({ requestId: "pt-http-2", seq: 1 });
+  });
+
+  test("a dropped terminal ACK remains durable and reconnect replay finishes exactly once locally", async () => {
+    const topicId = `peer-terminal-replay-${crypto.randomUUID()}`;
+    const requestId = `pt-terminal-replay-${crypto.randomUUID()}`;
+    claimPeerTurnRequest(HUB_CELL_ID, requestId, topicId);
+    const node: PeerNode = {
+      cellId: HUB_CELL_ID,
+      nodeName: null,
+      isPrimary: true,
+      baseUrl: hub.url,
+      self: false,
+    };
+    hub.failNext(5);
+    const forwarder = createTurnForwarder({
+      hostNodeId: HUB_CELL_ID,
+      requestId,
+      localTopicId: topicId,
+      sendEvent: hubEventSender(node),
+      retryBaseMs: 1,
+    });
+    forwarder.queryId = "q-terminal-replay";
+    registerTurnForwarder(topicId, forwarder);
+    forwarder.finish({ type: "ai_done", topicId, queryId: "q-terminal-replay" });
+    await forwarder.chain;
+
+    expect(getPeerTurnRequest(HUB_CELL_ID, requestId)?.status).toBe("claimed");
+    expect(listPeerTerminalOutbox().some((row) => row.request_id === requestId)).toBe(true);
+    failInterruptedPeerTurnRequestsOnStartup();
+    expect(getPeerTurnRequest(HUB_CELL_ID, requestId)?.status).toBe("claimed");
+
+    expect(await flushPeerTerminalOutbox()).toBeGreaterThanOrEqual(1);
+    expect(getPeerTurnRequest(HUB_CELL_ID, requestId)?.status).toBe("finished");
+    expect(listPeerTerminalOutbox().some((row) => row.request_id === requestId)).toBe(false);
+    // Repeated reconnect sweeps are idempotent locally.
+    expect(await flushPeerTerminalOutbox()).toBe(0);
   });
 });

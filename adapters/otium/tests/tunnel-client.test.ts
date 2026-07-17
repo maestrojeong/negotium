@@ -17,7 +17,13 @@ interface FakeRelay {
   stop(): void;
 }
 
-let target: Server<object>;
+interface TargetSocketData {
+  cookie: string | null;
+  authorization: string | null;
+  protocol: string | null;
+}
+
+let target: Server<TargetSocketData>;
 let relay: FakeRelay;
 let client: TunnelClient;
 
@@ -30,11 +36,51 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<voi
   throw new Error("waitFor timed out");
 }
 
+class HalfOpenWebSocket {
+  readonly readyState = WebSocket.OPEN;
+  onopen: ((event: Event) => unknown) | null = null;
+  onmessage: ((event: MessageEvent) => unknown) | null = null;
+  onclose: ((event: CloseEvent) => unknown) | null = null;
+  onerror: ((event: Event) => unknown) | null = null;
+  closeCalls = 0;
+
+  send(): void {}
+
+  close(): void {
+    this.closeCalls += 1;
+    // Deliberately never emit close: model a half-open kernel/proxy socket.
+  }
+
+  open(): void {
+    this.onopen?.(new Event("open"));
+  }
+
+  receive(data: string): void {
+    this.onmessage?.(new MessageEvent("message", { data }));
+  }
+
+  emitLateClose(): void {
+    this.onclose?.(new CloseEvent("close", { code: 1006, reason: "late" }));
+  }
+}
+
 beforeAll(async () => {
-  target = serve({
+  target = serve<TargetSocketData>({
     port: 0,
-    async fetch(req) {
+    async fetch(req, server) {
       const url = new URL(req.url);
+      if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+        const protocol = req.headers.get("sec-websocket-protocol");
+        return server.upgrade(req, {
+          data: {
+            cookie: req.headers.get("cookie"),
+            authorization: req.headers.get("authorization"),
+            protocol,
+          },
+        })
+          ? undefined
+          : new Response("upgrade failed", { status: 400 });
+      }
       if (url.pathname === "/echo") {
         return new Response(`echo:${await req.text()}`, {
           status: 201,
@@ -42,6 +88,12 @@ beforeAll(async () => {
         });
       }
       return Response.json({ ok: true });
+    },
+    websocket: {
+      open(ws) {
+        ws.send(JSON.stringify(ws.data));
+      },
+      message() {},
     },
   });
 
@@ -108,6 +160,46 @@ afterAll(() => {
 });
 
 describe("Otium relay tunnel client", () => {
+  test("invalidates and reconnects a half-open tunnel without duplicate reconnects", async () => {
+    const sockets: HalfOpenWebSocket[] = [];
+    const halfOpenClient = new TunnelClient({
+      relayUrl: "http://relay.invalid",
+      token: "rcs_half_open",
+      targetOrigin: "http://127.0.0.1:1",
+      minReconnectDelayMs: 1,
+      maxReconnectDelayMs: 1,
+      webSocketFactory: () => {
+        const socket = new HalfOpenWebSocket();
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      halfOpenClient.start();
+      sockets[0]?.open();
+      sockets[0]?.receive(
+        encodeFrame({
+          type: "registered",
+          nodeId: "cell_half_open",
+          protocolVersion: PROTOCOL_VERSION,
+          pingIntervalMs: 5,
+        }),
+      );
+      expect(halfOpenClient.status).toBe("registered");
+
+      await waitFor(() => sockets.length === 2 && halfOpenClient.status === "connecting");
+      expect(sockets[0]?.closeCalls).toBe(1);
+
+      sockets[0]?.emitLateClose();
+      await Bun.sleep(10);
+      expect(sockets).toHaveLength(2);
+      expect(halfOpenClient.status).toBe("connecting");
+    } finally {
+      halfOpenClient.stop();
+    }
+  });
+
   test("replays a chunked HTTP request and returns chunked response frames", async () => {
     const originalSocket = relay.socket;
     expect(originalSocket).not.toBeNull();
@@ -153,5 +245,67 @@ describe("Otium relay tunnel client", () => {
         client.status === "registered",
       2_000,
     );
+  });
+
+  test("forwards only allowed WebSocket authentication headers and subprotocol", async () => {
+    const socket = relay.socket;
+    expect(socket).not.toBeNull();
+    relay.frames.length = 0;
+    socket?.send(
+      encodeFrame({
+        type: "ws_open",
+        id: "ws-auth-1",
+        path: "/ws-auth",
+        headers: [
+          ["cookie", "session=worker-cookie"],
+          ["authorization", "Bearer worker-user-token"],
+          ["sec-websocket-protocol", "otium.v2"],
+        ],
+      }),
+    );
+    await waitFor(() => relay.frames.some((frame) => frame.type === "ws_data"));
+    expect(relay.frames.some((frame) => frame.type === "ws_open_ok")).toBe(true);
+    const data = relay.frames.find(
+      (frame): frame is Extract<NodeToRelayFrame, { type: "ws_data" }> => frame.type === "ws_data",
+    );
+    expect(JSON.parse(data?.text ?? "{}")).toEqual({
+      cookie: "session=worker-cookie",
+      authorization: "Bearer worker-user-token",
+      protocol: "otium.v2",
+    });
+  });
+
+  test("rejects unexpected or injected WebSocket upgrade headers", async () => {
+    const socket = relay.socket;
+    expect(socket).not.toBeNull();
+    relay.frames.length = 0;
+    socket?.send(
+      encodeFrame({
+        type: "ws_open",
+        id: "ws-invalid-1",
+        path: "/ws-auth",
+        headers: [["x-forwarded-host", "attacker.example"]],
+      }),
+    );
+    await waitFor(() => relay.frames.some((frame) => frame.type === "ws_open_error"));
+    expect(relay.frames.find((frame) => frame.type === "ws_open_error")).toMatchObject({
+      id: "ws-invalid-1",
+      message: "invalid websocket upgrade headers",
+    });
+
+    relay.frames.length = 0;
+    socket?.send(
+      encodeFrame({
+        type: "ws_open",
+        id: "ws-injected-1",
+        path: "/ws-auth",
+        headers: [["authorization", "Bearer safe\r\nx-injected: yes"]],
+      }),
+    );
+    await waitFor(() => relay.frames.some((frame) => frame.type === "ws_open_error"));
+    expect(relay.frames.find((frame) => frame.type === "ws_open_error")).toMatchObject({
+      id: "ws-injected-1",
+      message: "invalid websocket upgrade headers",
+    });
   });
 });

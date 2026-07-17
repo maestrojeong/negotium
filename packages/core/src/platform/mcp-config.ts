@@ -1,7 +1,10 @@
 import { createHmac } from "node:crypto";
+import { canonicalMcpBridgeEnv } from "#mcp/canonical-bridge-config";
 import { buildRuntimeMcpSpec, RUNTIME_MCP_KEY } from "#mcp/runtime-spec";
+import { peerSessionBridgeIpcEnv } from "#mcp/session-comm/bridge-ipc-config";
 import {
   AGENT_HEALTH_SERVER,
+  CANONICAL_MCP_PROXY_SERVER,
   FALLBACK_AGENT,
   PADDLEOCR_SERVER,
   resolveTopicWorkspaceDir,
@@ -34,16 +37,21 @@ export function buildStdioMcpServer(
   agent: AgentKind | undefined,
   serverFile: string,
   serverArgs: string[],
+  env?: Record<string, string>,
 ): Record<string, unknown> {
   if (agent === "codex") {
     return {
       command: "node",
       args: [TSX_BIN, serverFile, ...serverArgs],
       // Merged onto codex's inherited env (not a replacement) — verified.
-      env: { TSX_TSCONFIG_PATH: TSCONFIG_PATH },
+      env: { TSX_TSCONFIG_PATH: TSCONFIG_PATH, ...env },
     };
   }
-  return { command: "bun", args: ["run", serverFile, ...serverArgs] };
+  return {
+    command: "bun",
+    args: ["run", serverFile, ...serverArgs],
+    ...(env ? { env } : {}),
+  };
 }
 
 // --- Playwright unavailable notifier + per-turn state ---
@@ -324,7 +332,20 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   task: {
     scopes: ["dm", "forum", "manager", "cron"],
     forumRequired: true,
-    build({ userId, session, topicId, agent }) {
+    build({ userId, session, topicId, queryId, agent, peerBridge }) {
+      if (peerBridge) {
+        if (!topicId || !queryId) return null;
+        const env = canonicalMcpBridgeEnv({
+          surface: "task",
+          userId,
+          topicId,
+          queryId,
+          peerBridge,
+        });
+        return env
+          ? buildStdioMcpServer(agent, CANONICAL_MCP_PROXY_SERVER, ["--surface=task"], env)
+          : null;
+      }
       const args = [`--user-id=${userId}`, `--topic=${session}`];
       if (topicId) args.push(`--topic-id=${topicId}`);
       return buildStdioMcpServer(agent, TASK_SERVER, args);
@@ -348,19 +369,47 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
         ...(silent ? ["--reply-only=true"] : []),
         ...(peerBridge ? [`--peer-host-query-id=${peerBridge.hostQueryId}`] : []),
       ];
-      return buildStdioMcpServer(effectiveAgent, SESSION_COMM_SERVER, args);
+      return buildStdioMcpServer(
+        effectiveAgent,
+        SESSION_COMM_SERVER,
+        args,
+        peerBridge ? peerSessionBridgeIpcEnv() : undefined,
+      );
     },
   },
   wiki: {
     scopes: ["dm", "forum", "manager", "cron"],
     forumRequired: true,
-    build({ userId, session, topicId, wikiTopicId, agent }) {
+    build({ userId, session, topicId, queryId, wikiTopicId, agent, peerBridge }) {
+      if (peerBridge) {
+        if (!topicId || !queryId) return null;
+        const env = canonicalMcpBridgeEnv({
+          surface: "wiki",
+          userId,
+          topicId,
+          queryId,
+          peerBridge,
+        });
+        return env
+          ? buildStdioMcpServer(agent, CANONICAL_MCP_PROXY_SERVER, ["--surface=wiki"], env)
+          : null;
+      }
       const args = [`--user-id=${userId}`];
       // Prefer the REST topic id so save_wiki_entry writes filenames and SQLite
       // briefs keyed the same way the topic wiki API reads them.
       const resolvedWikiTopicId =
         wikiTopicId ?? topicId ?? (session !== "dm" ? session : undefined);
       if (resolvedWikiTopicId) args.push(`--topic-id=${resolvedWikiTopicId}`);
+      args.push("--surface=wiki");
+      return buildStdioMcpServer(agent, WIKI_SERVER, args);
+    },
+  },
+  skills: {
+    scopes: ["dm", "forum", "manager", "cron"],
+    forumRequired: true,
+    build({ userId, topicId, agent }) {
+      const args = [`--user-id=${userId}`, "--surface=skills"];
+      if (topicId) args.push(`--topic-id=${topicId}`);
       return buildStdioMcpServer(agent, WIKI_SERVER, args);
     },
   },

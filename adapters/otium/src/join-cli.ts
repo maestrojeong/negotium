@@ -8,7 +8,13 @@
  */
 
 import { configureOtiumCentral, selfPeerNode } from "@/central";
-import { claimEnrollment, parseEnrollmentInvite, previewEnrollment } from "@/enrollment";
+import {
+  claimEnrollment,
+  commitEnrollment,
+  isEnrollmentPending,
+  parseEnrollmentInvite,
+  previewEnrollment,
+} from "@/enrollment";
 import { parseInviteCode, saveJoin } from "@/join";
 
 function option(args: string[], name: string): string | undefined {
@@ -31,13 +37,14 @@ export async function joinCommand(args: string[]): Promise<void> {
   const code = args[0]?.trim();
   if (!code) {
     console.error(
-      "usage: negotium-otium join <invite-code> [--yes] [--name <node-name>] [--legacy]",
+      "usage: negotium-otium join <invite-code> [--yes] [--name <node-name>] [--legacy] [--replace]",
     );
     process.exitCode = 1;
     return;
   }
 
   let join: ReturnType<typeof parseInviteCode>;
+  let productionEnrollment = false;
   if (args.includes("--legacy")) {
     try {
       join = parseInviteCode(code);
@@ -49,19 +56,27 @@ export async function joinCommand(args: string[]): Promise<void> {
   } else {
     try {
       const invite = parseEnrollmentInvite(code);
-      const preview = await previewEnrollment(invite);
-      const workspace = preview.preview?.workspace;
-      const nodeName = option(args, "name") || preview.preview?.suggestedNodeName || undefined;
-      console.log(`Otium workspace: ${workspace?.name ?? workspace?.slug ?? workspace?.id}`);
-      console.log(`  central:   ${invite.central}`);
-      console.log(`  transport: ${preview.preview?.transport ?? "relay"}`);
-      console.log(`  access:    ${preview.preview?.topics ?? "explicitly shared topics only"}`);
-      const accepted = args.includes("--yes") || (await confirmEnrollment("Join this workspace?"));
-      if (!accepted) {
-        console.log("enrollment cancelled");
-        return;
+      const resuming = isEnrollmentPending(invite);
+      let nodeName = option(args, "name");
+      if (resuming) {
+        console.log(`Resuming interrupted Otium enrollment with ${invite.central}`);
+      } else {
+        const preview = await previewEnrollment(invite);
+        const workspace = preview.preview?.workspace;
+        nodeName ||= preview.preview?.suggestedNodeName || undefined;
+        console.log(`Otium workspace: ${workspace?.name ?? workspace?.slug ?? workspace?.id}`);
+        console.log(`  central:   ${invite.central}`);
+        console.log(`  transport: ${preview.preview?.transport ?? "relay"}`);
+        console.log(`  access:    ${preview.preview?.topics ?? "explicitly shared topics only"}`);
+        const accepted =
+          args.includes("--yes") || (await confirmEnrollment("Join this workspace?"));
+        if (!accepted) {
+          console.log("enrollment cancelled");
+          return;
+        }
       }
       join = await claimEnrollment(invite, nodeName);
+      productionEnrollment = true;
     } catch (err) {
       console.error(`enrollment failed: ${err instanceof Error ? err.message : err}`);
       process.exitCode = 1;
@@ -69,7 +84,15 @@ export async function joinCommand(args: string[]): Promise<void> {
     }
   }
 
-  const path = saveJoin(join);
+  let path: string;
+  try {
+    const saveOptions = { replaceExisting: args.includes("--replace") };
+    path = productionEnrollment ? commitEnrollment(join, saveOptions) : saveJoin(join, saveOptions);
+  } catch (err) {
+    console.error(`could not save join credentials: ${err instanceof Error ? err.message : err}`);
+    process.exitCode = 1;
+    return;
+  }
   console.log(`otium join credentials saved to ${path}`);
   console.log(`  central: ${join.central}`);
   console.log(`  cellId:  ${join.cellId}`);

@@ -1,6 +1,6 @@
 {
   "name": "@negotium/adapter-testkit",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "description": "Framework-neutral contract assertions for Negotium adapters",
   "license": "Apache-2.0",
@@ -40,7 +40,7 @@
     "prepack": "bun run build"
   },
   "dependencies": {
-    "@negotium/adapter-sdk": "0.1.4"
+    "@negotium/adapter-sdk": "0.1.5"
   },
   "devDependencies": {
     "@types/node": "^20",

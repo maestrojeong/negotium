@@ -64,12 +64,12 @@ import "#platform/maestro-bootstrap-env";
 import type { HookRegistration, McpResolver } from "maestro-agent-sdk";
 import { maestroProvider as sdkMaestroProvider, setMcpResolver } from "maestro-agent-sdk";
 import {
-  referencesRuntimeSecretStorage,
-  shouldRedirectVaultTool,
-  VAULT_BROKER_REDIRECT_ERROR,
-} from "#agents/vault-tool-policy";
-import { getMcpServersForQuery } from "#platform/mcp-config";
-import { redactVaultSecrets } from "#storage/vault";
+  hostedMcpServers,
+  redactHostedSecrets,
+  referencesHostedSecretStorage,
+  shouldRedirectHostedVaultTool,
+} from "#agents/execution-host";
+import { VAULT_BROKER_REDIRECT_ERROR } from "#agents/vault-tool-policy";
 import type { AgentQueryOptions, UnifiedEvent } from "#types";
 
 /**
@@ -122,19 +122,19 @@ function buildVaultHook(userId: string): HookRegistration {
   return {
     name: "vault-guard",
     pre({ toolName, input }) {
-      if (referencesRuntimeSecretStorage(input)) {
+      if (referencesHostedSecretStorage(input)) {
         return { decision: "block", error: "Runtime secret storage access is not permitted" };
       }
 
       // Detect key references from metadata only. No Vault value is decrypted
       // or injected into the provider/tool registry on this path.
-      if (shouldRedirectVaultTool(userId, toolName, input)) {
+      if (shouldRedirectHostedVaultTool(userId, toolName, input)) {
         return { decision: "block", error: VAULT_BROKER_REDIRECT_ERROR };
       }
       return { decision: "allow" };
     },
     post({ output }) {
-      const redacted = redactVaultSecrets(userId, output);
+      const redacted = redactHostedSecrets(userId, output);
       return redacted === output ? {} : { output: redacted };
     },
   };
@@ -180,7 +180,7 @@ export function maestroProvider(opts: AgentQueryOptions): AsyncGenerator<Unified
   // The SDK deliberately ships with an empty MCP resolver. Keep this wiring in
   // the provider adapter rather than every host bootstrap so a new Negotium
   // channel cannot accidentally run Maestro with zero runtime/wiki/task MCPs.
-  setMcpResolver(getMcpServersForQuery as McpResolver);
+  setMcpResolver(hostedMcpServers as McpResolver);
   const callerDisallowedTools = opts.disallowedTools ?? [];
   const callerToolHooks = (opts as { toolHooks?: HookRegistration[] }).toolHooks ?? [];
   // maestro-agent-sdk's type does not yet include Otium's "cron" sessionType;

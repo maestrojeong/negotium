@@ -131,6 +131,7 @@ describe("peer auth", () => {
       ["/api/v1/peer/abort", { v: PEER_PROTOCOL_VERSION }],
       ["/api/v1/peer/sessions", { v: PEER_PROTOCOL_VERSION }],
       ["/api/v1/peer/reply", { v: PEER_PROTOCOL_VERSION }],
+      ["/api/v1/peer/device-vault", { v: PEER_PROTOCOL_VERSION }],
     ];
     for (const [path, body] of cases) {
       const response = await call(path, { token: WORKER_PEER_TOKEN, body });
@@ -187,6 +188,39 @@ describe("capabilities / health", () => {
     expect(typeof cpu.cores).toBe("number");
     expect(typeof memory.totalBytes).toBe("number");
     expect(typeof memory.processRssBytes).toBe("number");
+  });
+});
+
+describe("device-local vault bridge", () => {
+  test("primary hub can list/set/delete without any secret value in responses", async () => {
+    const key = `DEVICE_TEST_${Date.now()}`;
+    const set = await call("/api/v1/peer/device-vault", {
+      token: HUB_TOKEN,
+      body: {
+        v: PEER_PROTOCOL_VERSION,
+        operation: "set",
+        userId: USER,
+        key,
+        value: "super-secret-device-only",
+        description: "worker credential",
+      },
+    });
+    expect(set.status).toBe(200);
+    expect(JSON.stringify(set.body)).not.toContain("super-secret-device-only");
+
+    const listed = await call("/api/v1/peer/device-vault", {
+      token: HUB_TOKEN,
+      body: { v: PEER_PROTOCOL_VERSION, operation: "list", userId: USER },
+    });
+    expect(listed.status).toBe(200);
+    expect(listed.body.entries).toContainEqual({ key, description: "worker credential" });
+    expect(JSON.stringify(listed.body)).not.toContain("super-secret-device-only");
+
+    const removed = await call("/api/v1/peer/device-vault", {
+      token: HUB_TOKEN,
+      body: { v: PEER_PROTOCOL_VERSION, operation: "delete", userId: USER, key },
+    });
+    expect(removed).toEqual({ status: 200, body: { ok: true, deleted: key } });
   });
 });
 

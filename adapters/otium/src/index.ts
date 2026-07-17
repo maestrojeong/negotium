@@ -17,12 +17,14 @@ import {
   registerPeerSessionBridge,
   runtimeBus,
 } from "@negotium/core";
+import { startCanonicalMcpBridge } from "@/canonical-mcp-bridge";
 import { configureOtiumCentral, selfPeerNode } from "@/central";
 import { startEventBackflow } from "@/event-backflow";
 import { loadJoin, type OtiumJoin } from "@/join";
 import { installPeerFileHooks } from "@/peer-files";
 import { otiumPeerRuntimeBridge } from "@/runtime-bridge";
 import { otiumPeerSessionBridge, startPeerReplyOutboxWorker } from "@/session-bridge";
+import { startPeerSessionBridgeIpc } from "@/session-bridge-ipc";
 import { cleanupPeerStateForLocalTopic, failInterruptedPeerTurnRequestsOnStartup } from "@/store";
 import { TunnelClient, type TunnelClientOptions } from "@/tunnel-client";
 
@@ -51,8 +53,10 @@ export {
 } from "@/central";
 export {
   claimEnrollment,
+  commitEnrollment,
   type EnrollmentCredentialEnvelope,
   type EnrollmentInvite,
+  isEnrollmentPending,
   parseEnrollmentInvite,
   pendingEnrollmentPath,
   previewEnrollment,
@@ -68,7 +72,15 @@ export {
   type TurnForwarder,
   translateBusEvent,
 } from "@/event-backflow";
-export { joinFilePath, loadJoin, type OtiumJoin, parseInviteCode, saveJoin } from "@/join";
+export {
+  isJoinPersisted,
+  joinFilePath,
+  loadJoin,
+  type OtiumJoin,
+  parseInviteCode,
+  type SaveJoinOptions,
+  saveJoin,
+} from "@/join";
 export { handleOtiumPeerRequest } from "@/peer-server";
 export {
   PEER_PROTOCOL_VERSION,
@@ -116,6 +128,8 @@ export function startOtiumAdapter(options: OtiumAdapterOptions): OtiumWorkerHand
   const stopBackflow = startEventBackflow();
   const unregisterRuntimeBridge = registerPeerRuntimeBridge(otiumPeerRuntimeBridge);
   const unregisterSessionBridge = registerPeerSessionBridge(otiumPeerSessionBridge);
+  const sessionBridgeIpc = startPeerSessionBridgeIpc(otiumPeerSessionBridge);
+  const canonicalMcpBridge = startCanonicalMcpBridge();
   const stopPeerReplyOutbox = startPeerReplyOutboxWorker();
   void failInterruptedRemoteAskCallbacks().then((failedAsks) => {
     if (failedAsks > 0) {
@@ -162,7 +176,7 @@ export function startOtiumAdapter(options: OtiumAdapterOptions): OtiumWorkerHand
         relayUrl: selectedRelay,
         token: join.secret,
         targetOrigin,
-        nodeVersion: "@negotium/adapter-otium@0.1.4",
+        nodeVersion: "@negotium/adapter-otium@0.1.5",
         logger,
       });
       tunnel.start();
@@ -175,6 +189,8 @@ export function startOtiumAdapter(options: OtiumAdapterOptions): OtiumWorkerHand
       unsubscribeTopicCleanup();
       unregisterRuntimeBridge();
       unregisterSessionBridge();
+      sessionBridgeIpc.stop();
+      canonicalMcpBridge.stop();
       stopPeerReplyOutbox();
       uninstallFileHooks();
       stopBackflow();

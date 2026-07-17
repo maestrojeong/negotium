@@ -19,9 +19,9 @@
  * validation — the version handshake is the compatibility gate.
  */
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 /** Oldest node protocol version the relay still accepts. */
-export const MIN_PROTOCOL_VERSION = 1;
+export const MIN_PROTOCOL_VERSION = 2;
 
 /** Header list as ordered pairs — preserves duplicates (e.g. set-cookie). */
 export type HeaderPairs = Array<[string, string]>;
@@ -60,7 +60,14 @@ export type RelayToNodeFrame =
   | { type: "http_req_chunk"; id: string; dataB64: string }
   | { type: "http_req_end"; id: string }
   | { type: "http_req_abort"; id: string }
-  | { type: "ws_open"; id: string; path: string }
+  | {
+      type: "ws_open";
+      id: string;
+      path: string;
+      /** Authentication context from the public upgrade. Only cookie,
+       * authorization, and the relay-selected subprotocol are permitted. */
+      headers: HeaderPairs;
+    }
   | { type: "ws_data"; id: string; text?: string; dataB64?: string }
   | { type: "ws_close"; id: string; code?: number; reason?: string };
 

@@ -23,16 +23,16 @@ import type {
 import { claudeRegistry } from "#agents/claude-registry";
 import { deepMapStrings } from "#agents/deep-map";
 import {
-  referencesRuntimeSecretStorage,
-  shouldRedirectVaultTool,
-  VAULT_BROKER_REDIRECT_ERROR,
-} from "#agents/vault-tool-policy";
+  hostedClaudeCodeExecutablePath,
+  hostedMcpServers,
+  redactHostedSecrets,
+  referencesHostedSecretStorage,
+  shouldRedirectHostedVaultTool,
+} from "#agents/execution-host";
+import { VAULT_BROKER_REDIRECT_ERROR } from "#agents/vault-tool-policy";
 import { extractFileEvents } from "#media/file-events";
-import { CLAUDE_EXECUTABLE } from "#platform/config";
 import { errMsg } from "#platform/error";
 import { logger } from "#platform/logger";
-import { getMcpServersForQuery } from "#platform/mcp-config";
-import { redactVaultSecrets } from "#storage/vault";
 import type { AgentInputAttachment, AgentQueryOptions, EffortLevel, UnifiedEvent } from "#types";
 
 const CLAUDE_DEFAULT_DISALLOWED_TOOLS = [
@@ -330,19 +330,22 @@ function isAbortError(err: unknown): boolean {
  * surface as ghost error messages.
  */
 export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<UnifiedEvent> {
+  const claudeExecutable = hostedClaudeCodeExecutablePath();
   // Up-front existence check — gives the user a clean, actionable error
   // instead of waiting for the SDK to spawn the binary and fail mid-stream
   // with an opaque ENOENT. The SDK's own resolution path runs after spawn,
   // so if CLAUDE_EXECUTABLE points nowhere we want to surface it now.
-  if (!existsSync(CLAUDE_EXECUTABLE)) {
+  if (claudeExecutable && !existsSync(claudeExecutable)) {
     yield {
       type: "error",
-      content: `Claude CLI not found at ${CLAUDE_EXECUTABLE}. Install Claude Code or set CLAUDE_EXECUTABLE.`,
+      content: `Claude CLI not found at ${claudeExecutable}. Install Claude Code or configure the executable path.`,
     };
     return;
   }
 
   const cleanEnv = { ...process.env };
+  delete cleanEnv.NEGOTIUM_PEER_SESSION_BRIDGE_URL;
+  delete cleanEnv.NEGOTIUM_PEER_SESSION_BRIDGE_TOKEN;
   delete cleanEnv.CLAUDECODE;
   cleanEnv.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT ??= process.env.PADDLEOCR_TIMEOUT_MS ?? "300000";
   // Workflow is a feature flag, not a disallowedTools-addressable tool name.
@@ -351,14 +354,14 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
   cleanEnv.CLAUDE_CODE_DISABLE_WORKFLOWS = "1";
 
   const queryOptions: Options = {
-    pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE,
+    ...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
     spawnClaudeCodeProcess: spawnClaudeCodeProcessWithTreeKill,
     cwd: opts.cwd,
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     includePartialMessages: true,
     env: cleanEnv,
-    mcpServers: getMcpServersForQuery(opts) as Options["mcpServers"],
+    mcpServers: hostedMcpServers(opts) as Options["mcpServers"],
     abortController: opts.abortController,
     // `AskUserQuestion` is Claude Code's built-in clarification tool, but it
     // expects the SDK CLI to render a TUI prompt and read stdin for the
@@ -376,6 +379,7 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
     // task state must go through the required shared task MCP.
     disallowedTools: buildClaudeDisallowedTools(opts.disallowedTools),
     ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.maxBudgetUsd ? { maxBudgetUsd: opts.maxBudgetUsd } : {}),
     ...(opts.agents
       ? {
           agents: Object.fromEntries(
@@ -394,7 +398,7 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
           hooks: [
             async (input: HookInput) => {
               const { tool_name, tool_input } = input as PreToolUseHookInput;
-              if (referencesRuntimeSecretStorage(tool_input)) {
+              if (referencesHostedSecretStorage(tool_input)) {
                 return {
                   hookSpecificOutput: {
                     hookEventName: "PreToolUse" as const,
@@ -425,7 +429,7 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
               // Detect real Vault placeholders but never inject plaintext into
               // provider-visible tool input. The Vault MCP broker expands them.
               const userId = opts.userId ?? "";
-              if (!shouldRedirectVaultTool(userId, tool_name, tool_input)) {
+              if (!shouldRedirectHostedVaultTool(userId, tool_name, tool_input)) {
                 return { continue: true };
               }
               return {
@@ -446,7 +450,7 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
               const { tool_response } = input as PostToolUseHookInput;
               const userId = opts.userId ?? "";
               const redacted = deepMapStrings(tool_response, (value) =>
-                redactVaultSecrets(userId, value),
+                redactHostedSecrets(userId, value),
               );
               if (JSON.stringify(redacted) === JSON.stringify(tool_response)) {
                 return { continue: true };
@@ -625,6 +629,7 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
                   outputTokens: m.usage.output_tokens,
                   cacheCreationInputTokens: m.usage.cache_creation_input_tokens ?? undefined,
                   cacheReadInputTokens: m.usage.cache_read_input_tokens ?? undefined,
+                  costUsd: m.total_cost_usd,
                   ...(lastContextTokens !== undefined && contextWindow
                     ? { contextTokens: lastContextTokens, contextWindow }
                     : {}),
@@ -635,8 +640,26 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
           return;
         }
         // Error result
-        const errorMsg = m.errors?.join("; ") || "Unknown error";
-        yield { type: "error", content: errorMsg };
+        const budgetExceeded = m.subtype === "error_max_budget_usd";
+        const errorMsg = budgetExceeded
+          ? "The job reached its cost limit"
+          : m.errors?.join("; ") || "Unknown error";
+        yield {
+          type: "error",
+          content: errorMsg,
+          ...(budgetExceeded ? { code: "budget_exceeded" as const } : {}),
+          ...(m.usage
+            ? {
+                usage: {
+                  inputTokens: m.usage.input_tokens,
+                  outputTokens: m.usage.output_tokens,
+                  cacheCreationInputTokens: m.usage.cache_creation_input_tokens ?? undefined,
+                  cacheReadInputTokens: m.usage.cache_read_input_tokens ?? undefined,
+                  costUsd: m.total_cost_usd,
+                },
+              }
+            : {}),
+        };
         return;
       }
 
