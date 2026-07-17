@@ -4,8 +4,10 @@ import {
   hostedMcpServers,
   redactHostedSecrets,
   referencesHostedSecretStorage,
+  resolveAgentExecutionHost,
   shouldRedirectHostedVaultTool,
   transformHostedQueryOptions,
+  withAgentExecutionHost,
 } from "#agents/execution-host";
 import type { AgentQueryOptions } from "#types";
 
@@ -67,5 +69,24 @@ describe("agent execution host", () => {
     expect(hostedMcpServers(opts())).toEqual({ second: {} });
     disposeSecond();
     expect(hostedMcpServers(opts())).not.toEqual({ first: {} });
+  });
+
+  test("isolates call-local hosts across concurrent async work", async () => {
+    const first = resolveAgentExecutionHost({ getMcpServersForQuery: () => ({ first: {} }) });
+    const second = resolveAgentExecutionHost({ getMcpServersForQuery: () => ({ second: {} }) });
+
+    const [firstResult, secondResult] = await Promise.all([
+      withAgentExecutionHost(first, async () => {
+        await Promise.resolve();
+        return hostedMcpServers(opts());
+      }),
+      withAgentExecutionHost(second, async () => {
+        await Promise.resolve();
+        return hostedMcpServers(opts());
+      }),
+    ]);
+
+    expect(firstResult).toEqual({ first: {} });
+    expect(secondResult).toEqual({ second: {} });
   });
 });

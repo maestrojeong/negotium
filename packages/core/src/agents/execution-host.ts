@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   referencesRuntimeSecretStorage as defaultReferencesRuntimeSecretStorage,
   shouldRedirectVaultTool as defaultShouldRedirectVaultTool,
@@ -39,10 +40,29 @@ const hostRegistrations: Array<{
   overrides: Partial<AgentExecutionHost>;
 }> = [];
 
+const scopedHost = new AsyncLocalStorage<AgentExecutionHost>();
+
 function activeHost(): AgentExecutionHost {
+  const scoped = scopedHost.getStore();
+  if (scoped) return scoped;
   const host = { ...defaultHost };
   for (const registration of hostRegistrations) Object.assign(host, registration.overrides);
   return host;
+}
+
+/** Resolve call-local overrides against the currently configured process host. */
+export function resolveAgentExecutionHost(
+  overrides: Partial<AgentExecutionHost> = {},
+): AgentExecutionHost {
+  return { ...activeHost(), ...overrides };
+}
+
+/** Run one async provider operation with an isolated call-local host. */
+export function withAgentExecutionHost<T>(
+  host: AgentExecutionHost,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return scopedHost.run(host, operation);
 }
 
 /** Configure provider host services. Returns a disposer useful for tests. */

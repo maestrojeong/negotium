@@ -7,6 +7,12 @@ export {
   rotateCronTopicContext,
   updateCronJobWithContextReset,
 } from "#context";
+export type {
+  CronAuthorizationAction,
+  CronAuthorizationResource,
+  CronHost,
+} from "#host";
+export { configureCronHost } from "#host";
 export { createCronModule } from "#module";
 export {
   computeNextCronRun,
@@ -31,6 +37,7 @@ export {
   validateCronScriptName,
 } from "#scripts";
 export type {
+  CronDatabase,
   CronJobPatch,
   CronJobRecord,
   CronRunRecord,
@@ -42,6 +49,7 @@ export {
   claimCronCancellations,
   claimCronRuns,
   clearCronTopicSession,
+  configureCronDatabase,
   countCronRuns,
   createCronJob,
   cronJobPatchChangesContext,

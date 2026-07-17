@@ -123,7 +123,7 @@ test("node control session, topic routes, and SSE use one versioned boundary", a
   expect(status?.status).toBe(200);
   const statusBody = (await status?.json()) as { protocolVersion: number; nodeVersion: string };
   expect(statusBody.protocolVersion).toBe(NODE_CONTROL_PROTOCOL_VERSION);
-  expect(statusBody.nodeVersion).toBe("0.1.9");
+  expect(statusBody.nodeVersion).toBe("0.1.10");
 
   const session = await handler(request(`/session?user=${encodeURIComponent(userId)}`));
   const sessionBody = (await session?.json()) as {

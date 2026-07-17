@@ -3,7 +3,9 @@ import { codexProvider } from "#agents/codex-provider";
 import {
   type AgentExecutionHost,
   configureAgentExecutionHost,
+  resolveAgentExecutionHost,
   transformHostedQueryOptions,
+  withAgentExecutionHost,
 } from "#agents/execution-host";
 import { maestroProvider } from "#agents/maestro-provider";
 import { revokeCanonicalMcpBridgeTurn } from "#mcp/canonical-bridge-config";
@@ -18,23 +20,35 @@ export { type AgentExecutionHost, configureAgentExecutionHost };
  * Conversation persistence, authorization, placement, and topic lifecycle are
  * deliberately not handled here; those remain the embedding host's concern.
  */
-export async function* runHostedAgent(input: AgentQueryOptions): AsyncGenerator<UnifiedEvent> {
-  const opts = transformHostedQueryOptions({ ...input });
+export async function* runHostedAgent(
+  input: AgentQueryOptions,
+  host?: Partial<AgentExecutionHost>,
+): AsyncGenerator<UnifiedEvent> {
+  const executionHost = resolveAgentExecutionHost(host);
+  const opts = await withAgentExecutionHost(executionHost, async () =>
+    transformHostedQueryOptions({ ...input }),
+  );
   try {
+    let events: AsyncGenerator<UnifiedEvent>;
     switch (opts.agent) {
       case "claude":
-        yield* claudeProvider(opts);
-        return;
+        events = claudeProvider(opts);
+        break;
       case "codex":
-        yield* codexProvider(opts);
-        return;
+        events = codexProvider(opts);
+        break;
       case "maestro":
-        yield* maestroProvider(opts);
-        return;
+        events = maestroProvider(opts);
+        break;
       default: {
         const exhaustive: never = opts.agent;
         throw new Error(`runHostedAgent: unknown agent '${exhaustive}'`);
       }
+    }
+    while (true) {
+      const next = await withAgentExecutionHost(executionHost, () => events.next());
+      if (next.done) return;
+      yield next.value;
     }
   } finally {
     if (opts.userId && opts.topicId && opts.queryId && opts.peerBridge) {

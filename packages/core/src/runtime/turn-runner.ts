@@ -52,6 +52,7 @@ import {
   deferInject,
   getRoomQuery,
   interSessionQueue,
+  isolatedTurnRoomId,
   isUserOrigin,
   type RoomQueryControl,
   setRoomQuery,
@@ -239,6 +240,7 @@ export async function streamAgentEvents(
   execution?: { silent?: boolean; peerBridge?: PeerRuntimeBridgeContext },
 ): Promise<StreamAgentOutcome> {
   const abortController = control.abortController;
+  const roomId = control.roomId ?? topicId;
   const hub = WsHub.get();
   const silent = execution?.silent ?? control.injectParams?.silent ?? false;
   const peerBridge = execution?.peerBridge ?? control.injectParams?.peerBridge;
@@ -857,10 +859,10 @@ export async function streamAgentEvents(
     // (abort-and-replace sets a fresh control synchronously before this dying
     // turn's generator unwinds here). Query-state cleanup follows the same
     // guard so a superseded turn cannot delete its replacement's state file.
-    const stillCurrent = getRoomQuery(topicId)?.queryId === queryId;
-    clearRoomQuery(topicId, queryId);
+    const stillCurrent = getRoomQuery(roomId)?.queryId === queryId;
+    clearRoomQuery(roomId, queryId);
     cancelPendingAskUserQuestions(topicId, queryId);
-    if (stillCurrent) clearQueryState(userId, topicTitle);
+    if (stillCurrent && roomId === topicId) clearQueryState(userId, topicTitle);
     // Stop typing only if this turn still owns the room. A superseded turn may
     // finish cleanup after its replacement already broadcast a fresh start.
     if (!silent && stillCurrent) hub.broadcastTyping(topicId, "");
@@ -876,7 +878,7 @@ export async function streamAgentEvents(
     // Drain one deferred session-inject if the room is now idle. If a
     // replacement turn already occupies the slot, leave it queued — that
     // turn's finally will drain it when it completes.
-    if (outcome.kind !== "session-expired" && !getRoomQuery(topicId)) {
+    if (roomId === topicId && outcome.kind !== "session-expired" && !getRoomQuery(topicId)) {
       const next = takeDeferredInject(topicId);
       if (next) redispatchInject(next);
     }
@@ -937,6 +939,7 @@ function redispatchInject(inject: DeferredInject): void {
     // session here; isolated/external turns carry their explicit id.
     sessionId: inject.sessionId,
     sessionScope: inject.sessionScope,
+    turnConcurrency: inject.turnConcurrency,
     forkHandle: inject.forkHandle,
     prepareSession: inject.prepareSession,
     cwd: inject.cwd,
@@ -1206,6 +1209,8 @@ export interface AiTurnExecutionOptions {
   sessionId?: string | null;
   /** Explicitly isolate a provider conversation from the topic's durable session. */
   sessionScope?: "topic" | "isolated";
+  /** Allow an isolated fork to run beside the topic's visible turn. Internal use only. */
+  turnConcurrency?: "topic" | "isolated";
   forkHandle?: ForkHandle;
   /** Lazily create an isolated provider session immediately before execution. */
   prepareSession?: DeferredInject["prepareSession"];
@@ -1543,6 +1548,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   const modelOverride = params.modelOverride;
   const effortOverride = params.effortOverride;
   const sessionScope = params.sessionScope;
+  const turnConcurrency = params.turnConcurrency ?? "topic";
   let forkHandle = params.forkHandle;
   const prepareSession = params.prepareSession;
   const cwd = params.cwd;
@@ -1557,6 +1563,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   const askReplySources = params.askReplySources;
   const sessionRetried = params._sessionRetried === true;
   const queryId = params._queryId ?? randomUUID();
+  const roomId = turnConcurrency === "isolated" ? isolatedTurnRoomId(topicId, queryId) : topicId;
   const currentRuntimeEpoch = getRuntimeTopicEpoch(topic.id);
   const runtimeEpoch = params._runtimeEpoch ?? currentRuntimeEpoch;
   if (params._runtimeEpoch !== undefined && params._runtimeEpoch !== currentRuntimeEpoch) {
@@ -1592,6 +1599,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       effortOverride,
       sessionId: deferredSessionId,
       sessionScope,
+      turnConcurrency,
       forkHandle,
       prepareSession,
       cwd,
@@ -1612,16 +1620,38 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     return queued;
   };
 
-  // Abort-on-new-message priority (Otium handler.ts L175-208). At most one
-  // in-flight turn per room: a user message preempts whatever is running; a
-  // session-inject waits its turn behind the user.
-  const decision = decideNewQuery(topicId, origin);
+  const rejectIsolatedTurnBeforeDispatch = (error: string): null => {
+    if (forkHandle) cleanupAgentFork(forkHandle);
+    try {
+      onSettled?.({ queryId: "", kind: "error", error });
+    } catch (err) {
+      logger.warn({ err, topicId, queryId }, "ai: isolated-turn rejection hook failed");
+    }
+    return null;
+  };
+
+  if (turnConcurrency === "isolated" && isRuntimeTopicMaintenance(topicId)) {
+    return rejectIsolatedTurnBeforeDispatch("target topic is being reset or deleted");
+  }
+
+  // Abort-on-new-message priority is scoped to the runtime room. Normal turns
+  // share the topic room; a read-only ask fork owns a private room and can run
+  // immediately beside the target topic's visible user turn.
+  const decision = decideNewQuery(roomId, origin);
   if (decision.action === "defer") {
+    if (turnConcurrency === "isolated") {
+      return rejectIsolatedTurnBeforeDispatch("isolated turn slot is already occupied");
+    }
     deferCurrentTurn();
     logger.info({ topicId, origin }, "ai: session-inject deferred behind running turn");
     return null;
   }
   if (decision.action === "remote-defer") {
+    if (turnConcurrency === "isolated") {
+      return rejectIsolatedTurnBeforeDispatch(
+        "isolated turn slot is owned by another runtime process",
+      );
+    }
     if (deferCurrentTurn()) waitToDrainRemoteInject(topicId);
     logger.info(
       { topicId, origin, remoteQueryId: decision.running.queryId },
@@ -1651,9 +1681,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       // A silent ask fork may already contain a partially-consumed provider
       // rollout. Requeue only its recipe, never that mutable rollout; the old
       // turn's finally block owns cleanup and the replay prepares a fresh fork.
-      const requeuedInject = runningInject.prepareSession
-        ? { ...runningInject, sessionId: undefined, forkHandle: undefined }
-        : runningInject;
+      const requeuedInject = prepareInjectReplayAfterUserPreemption(runningInject);
       const queued = deferInject(requeuedInject);
       running.injectRequeued = queued;
       if (queued && runningInject.prepareSession) {
@@ -1682,6 +1710,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   const abortController = new AbortController();
   const control: RoomQueryControl = {
     topicId,
+    roomId,
     queryId,
     origin,
     prompt,
@@ -1707,6 +1736,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           effortOverride,
           sessionId: deferredSessionId,
           sessionScope,
+          turnConcurrency,
           forkHandle,
           prepareSession,
           cwd,
@@ -1728,6 +1758,9 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     // Another process won the lease between the decision and the atomic claim.
     // Preserve the same user-priority behavior and retry after that owner
     // releases (or its heartbeat expires).
+    if (turnConcurrency === "isolated") {
+      return rejectIsolatedTurnBeforeDispatch("failed to claim isolated turn slot");
+    }
     if (isUserOrigin(origin)) {
       requestRuntimeTurnAbort(topicId, "internal");
       const queuedQueryId = waitToStartRemoteUserTurn(
@@ -1741,10 +1774,12 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     }
     return null;
   }
-  try {
-    writeQueryState(userId, topic.title, prompt);
-  } catch (err) {
-    logger.warn({ err, topicId, userId }, "ai: failed to write active query state");
+  if (turnConcurrency === "topic") {
+    try {
+      writeQueryState(userId, topic.title, prompt);
+    } catch (err) {
+      logger.warn({ err, topicId, userId }, "ai: failed to write active query state");
+    }
   }
   try {
     onDispatched?.(queryId);
@@ -2110,6 +2145,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           effortOverride,
           sessionId: retrySessionId,
           sessionScope,
+          turnConcurrency,
           forkHandle,
           // Keep the recipe so a later user preemption can replay from a
           // clean snapshot. A non-empty retrySessionId suppresses immediate
@@ -2208,6 +2244,19 @@ export function wasLocallyRequeuedAfterUserPreemption(
 }
 
 /**
+ * Prepare an injected turn for replay after a user preempts it. An eager ask
+ * can carry both its first fork and a regeneration recipe; only the recipe is
+ * safe to retain once the provider may have partially consumed that fork.
+ */
+export function prepareInjectReplayAfterUserPreemption(
+  runningInject: DeferredInject,
+): DeferredInject {
+  return runningInject.prepareSession
+    ? { ...runningInject, sessionId: undefined, forkHandle: undefined }
+    : runningInject;
+}
+
+/**
  * Programmatic AI turn trigger — used by session-comm (tell/ask) and any
  * internal consumer that needs to inject a prompt into a topic's AI pipeline.
  *
@@ -2281,6 +2330,7 @@ export function triggerTopicAiTurn(
     effortOverride: opts?.effortOverride,
     sessionId: opts?.sessionId,
     sessionScope: opts?.sessionScope,
+    turnConcurrency: opts?.turnConcurrency,
     forkHandle: opts?.forkHandle,
     prepareSession: opts?.prepareSession,
     cwd: opts?.cwd,

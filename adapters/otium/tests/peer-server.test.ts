@@ -159,7 +159,7 @@ describe("capabilities / health", () => {
     expect(status).toBe(200);
     expect(body.ok).toBe(true);
     expect(body.protocolVersion).toBe(1);
-    expect(body.runtimeVersion).toBe("0.1.9");
+    expect(body.runtimeVersion).toBe("0.1.10");
     expect(body.features).toEqual({
       remoteAsk: true,
       inputFiles: true,

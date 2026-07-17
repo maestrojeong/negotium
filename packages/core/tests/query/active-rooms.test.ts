@@ -14,6 +14,7 @@ import {
   getRoomQueryStatus,
   InterSessionQueue,
   interSessionQueue,
+  isolatedTurnRoomId,
   isTopicRunning,
   isUserOrigin,
   listRunningTopicIds,
@@ -78,6 +79,28 @@ describe("decideNewQuery", () => {
   test("session-inject yields to another running session-inject → defer", () => {
     setRoomQuery(makeControl("r5", "q1", "from-topic"));
     expect(decideNewQuery("r5", "from-topic2")).toEqual({ action: "defer" });
+  });
+
+  test("isolated ask room proceeds while the visible topic room is busy", () => {
+    const topicId = "r4";
+    const askRoomId = isolatedTurnRoomId(topicId, "q-ask");
+    const askControl = {
+      ...makeControl(topicId, "q-ask", "caller-topic"),
+      roomId: askRoomId,
+    };
+    setRoomQuery(makeControl(topicId, "q-user", "user"));
+
+    try {
+      expect(decideNewQuery(topicId, "caller-topic")).toEqual({ action: "defer" });
+      expect(decideNewQuery(askRoomId, "caller-topic")).toEqual({ action: "proceed" });
+      expect(setRoomQuery(askControl)).toBe(true);
+      expect(getRoomQuery(topicId)?.queryId).toBe("q-user");
+      expect(getRoomQuery(askRoomId)?.queryId).toBe("q-ask");
+      expect(listRunningTopicQueries().get(topicId)).toBe("q-user");
+    } finally {
+      clearRoomQuery(askRoomId, "q-ask");
+      clearRoomQuery(topicId, "q-user");
+    }
   });
 });
 

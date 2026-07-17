@@ -146,7 +146,7 @@ export function loadAgentPrompt(filename: string): AgentDef {
   };
 }
 
-interface SessionSystemPromptOpts {
+export interface SessionSystemPromptOpts {
   aiLabel: string;
   topicTitle: string;
   workspaceCwd: string;

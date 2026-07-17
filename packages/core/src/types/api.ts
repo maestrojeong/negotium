@@ -246,6 +246,8 @@ export interface SubagentCardDto {
   name: string;
   /** The self-contained task brief the child received. */
   task: string;
+  /** Runtime process instance that owns completion tracking for this child. */
+  runtimeOwnerId?: string;
   status: SubagentCardStatus;
   /** Truncated final response (set when completed). */
   resultSummary?: string;

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { referencesRuntimeSecretStorage, shouldRedirectVaultTool } from "#agents/vault-tool-policy";
 import { executeVaultHttpRequest } from "#mcp/vault-http";
@@ -7,6 +9,7 @@ import { executeVaultRun } from "#mcp/vault-run";
 import { DATA_DIR } from "#platform/config";
 import { Database } from "#storage/sqlite";
 import {
+  configureVaultStorage,
   redactVaultSecrets,
   vaultDel,
   vaultGetValue,
@@ -27,6 +30,31 @@ afterEach(() => {
 });
 
 describe("Vault secret boundary", () => {
+  test("supports an embedding host data directory and master key", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "negotium-vault-host-"));
+    const restore = configureVaultStorage({ dataDir, masterKey: "host-owned-test-key" });
+    try {
+      vaultSet("embedded-user", "HOST_TOKEN", "embedded-secret");
+      expect(vaultGetValue("embedded-user", "HOST_TOKEN")).toBe("embedded-secret");
+      const database = new Database(join(dataDir, "vault.db"), { readonly: true });
+      try {
+        const row = database
+          .prepare("SELECT value FROM vault WHERE user_id = ? AND key = ?")
+          .get("embedded-user", "HOST_TOKEN") as { value: string };
+        expect(row.value).not.toContain("embedded-secret");
+        expect(() => decryptVaultValue("embedded-user", "HOST_TOKEN", row.value)).toThrow();
+        expect(
+          decryptVaultValue("embedded-user", "HOST_TOKEN", row.value, "host-owned-test-key").value,
+        ).toBe("embedded-secret");
+      } finally {
+        database.close();
+      }
+    } finally {
+      restore();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   test("encrypts values with row-bound authenticated encryption", () => {
     const encrypted = encryptVaultValue("user-a", "API_TOKEN", "secret-value");
     expect(isEncryptedVaultValue(encrypted)).toBe(true);

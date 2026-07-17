@@ -1,15 +1,13 @@
 import {
   type AgentKind,
   type AiTurnSettlement,
-  abortRoom,
-  getRoomQuery,
-  getTopic,
   logger,
   type MessageDto,
   type RuntimeBus,
   runtimeBus,
 } from "@negotium/core";
 import { CRON_CONTEXT_ROTATE_EVERY, rotateCronTopicContext } from "#context";
+import { cronHost } from "#host";
 import {
   type CronJobRecord,
   type CronRunRecord,
@@ -148,6 +146,7 @@ export class CronScheduler {
   }
 
   stop(): void {
+    const host = cronHost();
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
     this.#stopped = true;
@@ -157,8 +156,8 @@ export class CronScheduler {
     for (const active of [...this.#activeByTopic.values()]) {
       active.abortController.abort();
       active.cancelDeferred?.();
-      if (active.queryId && getRoomQuery(active.job.topicId)?.queryId === active.queryId) {
-        abortRoom(active.job.topicId);
+      if (active.queryId && host.getRoomQuery(active.job.topicId)?.queryId === active.queryId) {
+        host.abortRoom(active.job.topicId);
       }
       this.#finish(active, "aborted", "scheduler stopped before run completed");
     }
@@ -192,7 +191,7 @@ export class CronScheduler {
   }
 
   #enqueueOrStart(job: CronJobRecord, run: CronRunRecord): void {
-    const topic = getTopic(job.topicId);
+    const topic = cronHost().getTopic(job.topicId);
     if (!topic?.agent) {
       setCronJobEnabled(job.id, false, this.#now());
       finishCronRun(run.id, {
@@ -325,8 +324,9 @@ export class CronScheduler {
     this.#activeByQuery.set(queryId, active);
     markCronRunStarted(active.run.id, queryId, this.#now());
     active.timeout = setTimeout(() => {
-      const room = getRoomQuery(active.job.topicId);
-      if (room?.queryId === active.queryId) abortRoom(active.job.topicId);
+      const host = cronHost();
+      const room = host.getRoomQuery(active.job.topicId);
+      if (room?.queryId === active.queryId) host.abortRoom(active.job.topicId);
       else active.cancelDeferred?.();
       this.#finish(active, "failed", `run exceeded ${this.#runTimeoutMs}ms`);
     }, this.#runTimeoutMs);
@@ -415,8 +415,9 @@ export class CronScheduler {
       if (active.job.id !== jobId) continue;
       active.abortController.abort();
       active.cancelDeferred?.();
-      if (active.queryId && getRoomQuery(active.job.topicId)?.queryId === active.queryId) {
-        abortRoom(active.job.topicId);
+      const host = cronHost();
+      if (active.queryId && host.getRoomQuery(active.job.topicId)?.queryId === active.queryId) {
+        host.abortRoom(active.job.topicId);
       }
       this.#finish(active, "aborted", "run cancelled by cron_kill");
     }

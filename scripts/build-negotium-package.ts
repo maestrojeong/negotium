@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 
 import { existsSync, statSync } from "node:fs";
-import { cp, mkdir, rm } from "node:fs/promises";
-import { resolve } from "node:path";
+import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, relative, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
 const packageRoot = resolve(root, "apps/negotium");
@@ -14,6 +14,11 @@ const packageEntrypoints = new Map<string, string>([
   ["@negotium/adapter-sdk/testkit", "packages/adapter-sdk/src/testkit.ts"],
   ["@negotium/core", "packages/core/src/index.ts"],
   ["@negotium/core/hosted-agent", "packages/core/src/agents/hosted-agent.ts"],
+  ["@negotium/core/registry", "packages/core/src/agents/registry.ts"],
+  ["@negotium/core/rollout", "packages/core/src/agents/rollout/index.ts"],
+  ["@negotium/core/vault", "packages/core/src/storage/vault-public.ts"],
+  ["@negotium/core/prompts", "packages/core/src/prompts/builders.ts"],
+  ["@negotium/core/runtime-helpers", "packages/core/src/runtime/public-helpers.ts"],
   [
     "@negotium/core/peer-session-bridge-ipc",
     "packages/core/src/mcp/session-comm/bridge-ipc-config.ts",
@@ -70,7 +75,7 @@ function resolvePackageImport(specifier: string, importer: string): string {
   return resolveTypeScriptSource(resolve(sourceRoot, specifier.slice(1)));
 }
 
-async function bundle(entrypoints: string[]): Promise<void> {
+async function bundle(entrypoints: string[], splitting = true): Promise<void> {
   const build = await Bun.build({
     // Keep every public entrypoint in one build graph. Stateful core modules
     // (for example canonical MCP bridge registrations) must be emitted once
@@ -79,7 +84,7 @@ async function bundle(entrypoints: string[]): Promise<void> {
     outdir,
     target: "bun",
     packages: "external",
-    splitting: true,
+    splitting,
     naming: {
       entry: "[name].[ext]",
       chunk: "chunk-[hash].[ext]",
@@ -119,10 +124,32 @@ await bundle([
   "apps/negotium/src/canonical-mcp-bridge.ts",
 ]);
 
+// Registry writers consume the mutable rollout-host configuration. Keep both
+// public entrypoints in one graph so configureRolloutHost() and getRegistry()
+// observe the same singleton instead of two independently bundled copies.
+await bundle(["apps/negotium/src/registry.ts", "apps/negotium/src/rollout.ts"]);
+
+// These remaining leaf entrypoints do not share mutable runtime registrations
+// with one another. Building them independently avoids Bun exposing both a source
+// module's exports and @negotium/core's re-exports in the same split chunk,
+// which produces invalid duplicate ESM export names.
+for (const entrypoint of [
+  "apps/negotium/src/cron.ts",
+  "apps/negotium/src/mcp-servers.ts",
+  "apps/negotium/src/vault.ts",
+  "apps/negotium/src/prompts.ts",
+  "apps/negotium/src/runtime-helpers.ts",
+]) {
+  await bundle([entrypoint], false);
+}
+
 const runtimeRoot = resolve(outdir, "runtime");
 await mkdir(runtimeRoot, { recursive: true });
 await cp(resolve(root, "packages/core/src"), resolve(runtimeRoot, "src"), { recursive: true });
 await cp(resolve(root, "packages/core/scripts"), resolve(runtimeRoot, "scripts"), {
+  recursive: true,
+});
+await cp(resolve(root, "packages/module-cron/src"), resolve(runtimeRoot, "cron"), {
   recursive: true,
 });
 await Bun.write(
@@ -142,11 +169,98 @@ await Bun.write(
   )}\n`,
 );
 
+const typesRoot = resolve(outdir, "types");
+const declarations = Bun.spawn(
+  [
+    "bunx",
+    "tsc",
+    "--noEmit",
+    "false",
+    "--emitDeclarationOnly",
+    "--declaration",
+    "--declarationMap",
+    "false",
+    "--moduleResolution",
+    "bundler",
+    "--module",
+    "esnext",
+    "--target",
+    "esnext",
+    "--lib",
+    "esnext",
+    "--types",
+    "bun-types",
+    "--skipLibCheck",
+    "--strict",
+    "--rootDir",
+    root,
+    "--outDir",
+    typesRoot,
+    resolve(root, "packages/core/src/agents/hosted-agent.ts"),
+    resolve(root, "packages/core/src/mcp/canonical-bridge-config.ts"),
+    resolve(root, "packages/module-cron/src/index.ts"),
+    resolve(root, "apps/negotium/src/mcp-servers.ts"),
+    resolve(root, "packages/core/src/agents/registry.ts"),
+    resolve(root, "packages/core/src/agents/rollout/index.ts"),
+    resolve(root, "packages/core/src/storage/vault-public.ts"),
+    resolve(root, "packages/core/src/prompts/builders.ts"),
+    resolve(root, "packages/core/src/runtime/public-helpers.ts"),
+  ],
+  { cwd: root, stdout: "inherit", stderr: "inherit" },
+);
+if ((await declarations.exited) !== 0) process.exit(1);
+
+async function declarationFiles(directory: string): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = resolve(directory, entry.name);
+    if (entry.isDirectory()) files.push(...(await declarationFiles(path)));
+    else if (entry.name.endsWith(".d.ts")) files.push(path);
+  }
+  return files;
+}
+
+function relativeDeclaration(fromFile: string, targetWithoutExtension: string): string {
+  const path = relative(dirname(fromFile), targetWithoutExtension).replaceAll("\\", "/");
+  return path.startsWith(".") ? path : `./${path}`;
+}
+
+for (const file of await declarationFiles(typesRoot)) {
+  const source = await readFile(file, "utf8");
+  const packageSource = relative(typesRoot, file).replaceAll("\\", "/");
+  const aliasRoot = packageSource.startsWith("packages/module-cron/src/")
+    ? resolve(typesRoot, "packages/module-cron/src")
+    : resolve(typesRoot, "packages/core/src");
+  const portable = source
+    .replace(/(["'])#([^"']+)\1/g, (_match, quote, specifier) => {
+      return `${quote}${relativeDeclaration(file, resolve(aliasRoot, specifier))}${quote}`;
+    })
+    .replace(/(["'])@negotium\/core\/hosted-agent\1/g, (_match, quote) => {
+      const target = resolve(typesRoot, "packages/core/src/agents/hosted-agent");
+      return `${quote}${relativeDeclaration(file, target)}${quote}`;
+    })
+    .replace(/(["'])@negotium\/core\1/g, (_match, quote) => {
+      const target = resolve(typesRoot, "packages/core/src/index");
+      return `${quote}${relativeDeclaration(file, target)}${quote}`;
+    });
+  if (portable !== source) await writeFile(file, portable);
+}
+
 const main = resolve(outdir, "main.js");
 if (!(await Bun.file(main).exists())) {
   throw new Error(`bundled CLI entrypoint missing: ${main}`);
 }
-for (const publicEntrypoint of ["hosted-agent.js", "canonical-mcp-bridge.js"]) {
+for (const publicEntrypoint of [
+  "hosted-agent.js",
+  "canonical-mcp-bridge.js",
+  "cron.js",
+  "mcp-servers.js",
+  "registry.js",
+  "rollout.js",
+  "vault.js",
+  "prompts.js",
+  "runtime-helpers.js",
+]) {
   const path = resolve(outdir, publicEntrypoint);
   if (!(await Bun.file(path).exists())) {
     throw new Error(`bundled public entrypoint missing: ${path}`);

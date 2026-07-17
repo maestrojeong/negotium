@@ -1,4 +1,5 @@
-import { logger, purgeTopicLogs, resolveTopicWorkspaceDir, rotateTopicLogs } from "@negotium/core";
+import { logger } from "@negotium/core";
+import { cronHost } from "#host";
 import {
   type CronJobPatch,
   type CronJobRecord,
@@ -40,6 +41,7 @@ export async function resetCronTopicContext(
   topicId: string,
   extraOwnerUserIds: Iterable<string> = [],
 ): Promise<number> {
+  const host = cronHost();
   const sessions = listCronTopicSessions(topicId);
   const owners = new Set([
     ...sessions.map((session) => session.ownerUserId),
@@ -47,10 +49,10 @@ export async function resetCronTopicContext(
     ...extraOwnerUserIds,
   ]);
   for (const ownerUserId of owners) {
-    await purgeTopicLogs({
+    await host.purgeTopicLogs({
       userId: ownerUserId,
       topicName: cronTopicSessionName(topicId),
-      cwd: resolveTopicWorkspaceDir(topicId),
+      cwd: host.resolveTopicWorkspaceDir(topicId),
       extraSessions: sessions
         .filter((session) => session.ownerUserId === ownerUserId)
         .map((session) => ({ agent: session.agent, sessionId: session.sessionId })),
@@ -74,6 +76,7 @@ export async function rotateCronTopicContext(
   topicId: string,
   retainTurns = CRON_CONTEXT_RETAIN_TURNS,
 ): Promise<CronTopicRotationResult> {
+  const host = cronHost();
   const sessions = listCronTopicSessions(topicId);
   const jobs = listCronJobsForTopic(topicId);
   const owners = new Set([
@@ -84,10 +87,10 @@ export async function rotateCronTopicContext(
   let retained = 0;
 
   for (const ownerUserId of owners) {
-    const result = await rotateTopicLogs({
+    const result = await host.rotateTopicLogs({
       userId: ownerUserId,
       topicName: cronTopicSessionName(topicId),
-      cwd: resolveTopicWorkspaceDir(topicId),
+      cwd: host.resolveTopicWorkspaceDir(topicId),
       retainTurns,
       extraSessions: sessions
         .filter((session) => session.ownerUserId === ownerUserId)

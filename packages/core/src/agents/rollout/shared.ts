@@ -16,6 +16,40 @@ import type { ConversationEntry } from "#storage/conversations";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+export interface RolloutHostOptions {
+  /** Absolute workspace roots under which synthetic provider sessions may be written. */
+  workspaceRoots?: readonly string[];
+  /** Directory containing the provider rollout fixture JSONL files. */
+  fixturesDir?: string;
+}
+
+let trustedWorkspaceRoots = [WORKSPACE_DIR, DM_WORKSPACE_DIR, TOPIC_WORKSPACE_DIR].map((root) =>
+  resolve(root),
+);
+
+/** Configure the embedding host's trusted workspace roots. */
+export function configureRolloutHost(options: RolloutHostOptions): () => void {
+  if (!options.workspaceRoots && !options.fixturesDir) {
+    throw new Error("configureRolloutHost requires workspaceRoots or fixturesDir");
+  }
+  if (options.workspaceRoots?.length === 0) {
+    throw new Error("configureRolloutHost requires at least one workspace root");
+  }
+  const previousRoots = trustedWorkspaceRoots;
+  const previousFixturesDir = FIXTURES_DIR;
+  if (options.workspaceRoots) {
+    trustedWorkspaceRoots = options.workspaceRoots.map((root) => resolve(root));
+  }
+  if (options.fixturesDir) FIXTURES_DIR = resolve(options.fixturesDir);
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    trustedWorkspaceRoots = previousRoots;
+    FIXTURES_DIR = previousFixturesDir;
+  };
+}
+
 /**
  * Captured fixture snapshots — `claude-attachments.jsonl`, `codex-shell.jsonl`,
  * etc. — live one level above the per-agent rollout files (under
@@ -26,7 +60,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * non-conversational entries from the resulting rollout file, and update
  * `src/agents/fixtures/{codex-shell,claude-attachments}.jsonl`.
  */
-export const FIXTURES_DIR = join(__dirname, "..", "fixtures");
+export let FIXTURES_DIR = join(__dirname, "..", "fixtures");
 
 /** Deep-clone to avoid mutating cached fixture objects. */
 export function clone<T>(obj: T): T {
@@ -58,8 +92,7 @@ function assertCwdInWorkspace(cwd: string): void {
   // Synthetic rollouts for spawn/fork must be written under the same root as
   // live topic turns or provider resume looks in a different cwd hash than the
   // one we generated.
-  const roots = [WORKSPACE_DIR, DM_WORKSPACE_DIR, TOPIC_WORKSPACE_DIR];
-  const ok = roots.some((root) => abs === root || abs.startsWith(`${root}/`));
+  const ok = trustedWorkspaceRoots.some((root) => abs === root || abs.startsWith(`${root}/`));
   if (!ok) {
     throw new Error(`rollout: cwd outside trusted workspace roots: ${cwd} (resolved=${abs})`);
   }

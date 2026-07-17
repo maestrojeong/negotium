@@ -905,10 +905,14 @@ async function handleAskEntry(
       depth: (entry.fromDepth ?? 0) + 1,
       silent: true,
       sessionId: forkPlan.forkHandle.forkId,
+      // The fork is read-only and session-isolated, so it does not need the
+      // target topic's visible execution slot. Answer immediately even while
+      // that topic is processing a user turn.
+      turnConcurrency: "isolated",
       forkHandle: forkPlan.forkHandle,
-      // Keep a regeneration recipe even though the first fork is eager. If a
-      // user preempts this turn, turn-runner strips the partially-consumed
-      // fork and invokes this recipe after the user turn completes.
+      // Keep a regeneration recipe even though the first fork is eager. The
+      // isolated room prevents user preemption; the recipe remains available
+      // for a clean retry if the provider reports an expired session.
       prepareSession: forkPlan.prepareSession,
       cwd,
       onSettled: (result) => {

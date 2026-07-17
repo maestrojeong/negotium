@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type AgentKind, db, type EffortLevel } from "@negotium/core";
+import { type AgentKind, db as defaultDb, type EffortLevel } from "@negotium/core";
 import { computeNextCronRun, normalizeCronTimezone, parseCronExpression } from "#schedule";
 import { validateCronScriptName } from "#scripts";
 
@@ -136,6 +136,24 @@ interface TableColumnRow {
 }
 
 let schemaReady = false;
+
+export type CronDatabase = Pick<typeof defaultDb, "exec" | "query" | "transaction">;
+
+let db: CronDatabase = defaultDb;
+
+/** Replace the cron persistence handle for an embedding host. */
+export function configureCronDatabase(database: CronDatabase): () => void {
+  const previous = db;
+  db = database;
+  schemaReady = false;
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    db = previous;
+    schemaReady = false;
+  };
+}
 
 export function ensureCronSchema(): void {
   if (schemaReady) return;

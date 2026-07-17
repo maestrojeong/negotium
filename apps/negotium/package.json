@@ -1,6 +1,6 @@
 {
   "name": "negotium",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "type": "module",
   "description": "Install the Negotium multi-agent runtime and CLI with one package",
   "license": "Apache-2.0",
@@ -9,14 +9,49 @@
   },
   "exports": {
     "./hosted-agent": {
-      "types": "./dist/runtime/src/agents/hosted-agent.ts",
+      "types": "./dist/types/packages/core/src/agents/hosted-agent.d.ts",
       "import": "./dist/hosted-agent.js",
       "default": "./dist/hosted-agent.js"
     },
     "./canonical-mcp-bridge": {
-      "types": "./dist/runtime/src/mcp/canonical-bridge-config.ts",
+      "types": "./dist/types/packages/core/src/mcp/canonical-bridge-config.d.ts",
       "import": "./dist/canonical-mcp-bridge.js",
       "default": "./dist/canonical-mcp-bridge.js"
+    },
+    "./cron": {
+      "types": "./dist/types/packages/module-cron/src/index.d.ts",
+      "import": "./dist/cron.js",
+      "default": "./dist/cron.js"
+    },
+    "./mcp-servers": {
+      "types": "./dist/types/apps/negotium/src/mcp-servers.d.ts",
+      "import": "./dist/mcp-servers.js",
+      "default": "./dist/mcp-servers.js"
+    },
+    "./registry": {
+      "types": "./dist/types/packages/core/src/agents/registry.d.ts",
+      "import": "./dist/registry.js",
+      "default": "./dist/registry.js"
+    },
+    "./rollout": {
+      "types": "./dist/types/packages/core/src/agents/rollout/index.d.ts",
+      "import": "./dist/rollout.js",
+      "default": "./dist/rollout.js"
+    },
+    "./vault": {
+      "types": "./dist/types/packages/core/src/storage/vault-public.d.ts",
+      "import": "./dist/vault.js",
+      "default": "./dist/vault.js"
+    },
+    "./prompts": {
+      "types": "./dist/types/packages/core/src/prompts/builders.d.ts",
+      "import": "./dist/prompts.js",
+      "default": "./dist/prompts.js"
+    },
+    "./runtime-helpers": {
+      "types": "./dist/types/packages/core/src/runtime/public-helpers.d.ts",
+      "import": "./dist/runtime-helpers.js",
+      "default": "./dist/runtime-helpers.js"
     }
   },
   "files": [
@@ -64,6 +99,9 @@
     "typescript": "^5"
   },
   "imports": {
-    "#*": "./dist/runtime/src/*.ts"
+    "#*": {
+      "types": "./dist/types/packages/core/src/*.d.ts",
+      "default": "./dist/runtime/src/*.ts"
+    }
   }
 }

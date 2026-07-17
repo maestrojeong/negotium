@@ -39,6 +39,7 @@ const arg = (name: string) =>
 const userId = arg("user-id");
 const currentTopic = arg("topic");
 const currentTopicId = arg("topic-id");
+const authorized = arg("authorized") === "true";
 const efforts = new Set<string>(EFFORT_VALUES);
 
 function ok(value: unknown) {
@@ -69,10 +70,11 @@ function resolveTopic(input?: { topic_id?: string; topic?: string }) {
 }
 
 function ownsTopic(topic: NonNullable<ReturnType<typeof getTopic>>): boolean {
-  return topic.participants.some((participant) => participant.userId === userId);
+  return authorized || topic.participants.some((participant) => participant.userId === userId);
 }
 
 function canSeeJob(job: NonNullable<ReturnType<typeof getCronJob>>): boolean {
+  if (authorized) return true;
   if (job.ownerUserId === userId) return true;
   const topic = getTopic(job.topicId);
   return Boolean(topic && ownsTopic(topic));
@@ -96,14 +98,15 @@ function resolveVisibleJob(input: { job_id?: string; name?: string }) {
 
 function resolveOwnedJob(input: { job_id?: string; name?: string }) {
   const job = resolveVisibleJob(input);
-  if (job.ownerUserId !== userId) throw new Error("only the job owner can mutate this cron job");
+  if (!authorized && job.ownerUserId !== userId)
+    throw new Error("only the job owner can mutate this cron job");
   return job;
 }
 
 function jobDto(job: NonNullable<ReturnType<typeof getCronJob>>) {
   const runs = listCronRuns(job.id, 1);
   const contextState = getCronTopicContext(job.topicId);
-  const canMutate = job.ownerUserId === userId;
+  const canMutate = authorized || job.ownerUserId === userId;
   const prompt = job.prompt?.trim() ?? "";
   return {
     ...job,

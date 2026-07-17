@@ -4,6 +4,7 @@ import {
   createSpawnSubagentToolDefinition,
   createSubagentManagementToolDefinitions,
   sweepStaleSubagentCards,
+  takeSubagentWatch,
 } from "#agents/mcp-tools/spawn-subagent";
 import {
   appendApiMessage,
@@ -13,6 +14,7 @@ import {
   updateApiMessageSubagentCard,
 } from "#storage/api-messages";
 import { deleteTopic, getTopic, upsertTopic } from "#storage/api-topics";
+import { claimRuntimeTurnLease, releaseRuntimeTurnLease } from "#storage/runtime-leases";
 import type { MessageDto, SubagentCardDto, TopicDto } from "#types/api";
 
 const createdTopicIds: string[] = [];
@@ -235,6 +237,7 @@ describe("subagent card storage", () => {
       subagentTopicId: `child-${randomUUID()}`,
       name: "runner",
       task: "long job",
+      runtimeOwnerId: "2147483647-dead-runtime",
       status: "running",
       startedAt,
     });
@@ -257,5 +260,60 @@ describe("subagent card storage", () => {
 
     const byKind = listApiMessagesByKind("subagent").filter((m) => m.topicId === topic.id);
     expect(byKind).toHaveLength(2);
+  });
+
+  test("boot sweep preserves cards owned by another live runtime and legacy cards", () => {
+    const topic = makeTopic("user-1");
+    const startedAt = new Date(Date.now() - 60_000).toISOString();
+    const live = makeCardMessage(topic.id, {
+      subagentTopicId: `child-${randomUUID()}`,
+      name: "live-runner",
+      task: "long job",
+      runtimeOwnerId: `${process.pid}-other-runtime`,
+      status: "running",
+      startedAt,
+    });
+    const legacy = makeCardMessage(topic.id, {
+      subagentTopicId: `child-${randomUUID()}`,
+      name: "legacy-runner",
+      task: "old job",
+      status: "running",
+      startedAt,
+    });
+
+    sweepStaleSubagentCards();
+
+    expect(getApiMessage(topic.id, live.id)?.subagentCard?.status).toBe("running");
+    expect(getApiMessage(topic.id, legacy.id)?.subagentCard?.status).toBe("running");
+  });
+
+  test("recovers a persisted watch from the child turn lease after restart", () => {
+    const parent = makeTopic("user-1");
+    const child = makeTopic("user-1", {
+      parentTopicId: parent.id,
+      isSubagent: true,
+    });
+    const queryId = `query-${randomUUID()}`;
+    makeCardMessage(parent.id, {
+      subagentTopicId: child.id,
+      name: child.title,
+      task: "recover me",
+      runtimeOwnerId: `${process.pid}-previous-runtime`,
+      status: "running",
+      startedAt: new Date().toISOString(),
+    });
+    expect(
+      claimRuntimeTurnLease({ topicId: child.id, queryId, origin: "subagent-recovery-test" }),
+    ).toBe(true);
+    try {
+      expect(takeSubagentWatch(queryId)).toMatchObject({
+        parentTopicId: parent.id,
+        childTopicId: child.id,
+        userId: "user-1",
+        queryId,
+      });
+    } finally {
+      releaseRuntimeTurnLease(child.id, queryId);
+    }
   });
 });

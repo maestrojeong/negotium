@@ -5,10 +5,10 @@ const ENVELOPE_PREFIX = "otium-vault:v1:";
 const IV_BYTES = 12;
 const KEY_BYTES = 32;
 
-function encryptionKey(): Buffer {
+function encryptionKey(masterKey = VAULT_MASTER_KEY): Buffer {
   return createHash("sha256")
     .update("otium-vault-value-v1\0", "utf8")
-    .update(VAULT_MASTER_KEY, "utf8")
+    .update(masterKey, "utf8")
     .digest()
     .subarray(0, KEY_BYTES);
 }
@@ -22,9 +22,14 @@ export function isEncryptedVaultValue(value: string): boolean {
 }
 
 /** Encrypt one vault row. The user/key binding prevents ciphertext row swapping. */
-export function encryptVaultValue(userId: string, key: string, value: string): string {
+export function encryptVaultValue(
+  userId: string,
+  key: string,
+  value: string,
+  masterKey = VAULT_MASTER_KEY,
+): string {
   const iv = randomBytes(IV_BYTES);
-  const cipher = createCipheriv("aes-256-gcm", encryptionKey(), iv);
+  const cipher = createCipheriv("aes-256-gcm", encryptionKey(masterKey), iv);
   cipher.setAAD(aad(userId, key));
   const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
@@ -39,6 +44,7 @@ export function decryptVaultValue(
   userId: string,
   key: string,
   storedValue: string,
+  masterKey = VAULT_MASTER_KEY,
 ): { value: string; legacyPlaintext: boolean } {
   if (!isEncryptedVaultValue(storedValue)) {
     return { value: storedValue, legacyPlaintext: true };
@@ -57,7 +63,7 @@ export function decryptVaultValue(
     throw new Error("Invalid encrypted vault value");
   }
 
-  const decipher = createDecipheriv("aes-256-gcm", encryptionKey(), iv);
+  const decipher = createDecipheriv("aes-256-gcm", encryptionKey(masterKey), iv);
   decipher.setAAD(aad(userId, key));
   decipher.setAuthTag(tag);
   const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);

@@ -18,6 +18,8 @@ import {
   updateApiMessageSubagentCard,
 } from "#storage/api-messages";
 import { getTopic, listTopics } from "#storage/api-topics";
+import { getRuntimeTurnLease, RUNTIME_INSTANCE_ID } from "#storage/runtime-leases";
+import { getRuntimeUserTurnRequest } from "#storage/runtime-turn-requests";
 import { type AgentKind, isAgentKind } from "#types";
 import type { MessageDto, SubagentCardDto } from "#types/api";
 
@@ -91,12 +93,75 @@ function registerWatchDispatch(watch: SubagentWatch, queryId: string): void {
 /** Claim the watch for a finished child turn (delete-on-take). */
 export function takeSubagentWatch(queryId: string): SubagentWatch | null {
   const childTopicId = childByQueryId.get(queryId);
-  if (!childTopicId) return null;
+  if (!childTopicId) return recoverPersistedSubagentWatch(queryId);
   childByQueryId.delete(queryId);
   const watch = watchesByChild.get(childTopicId);
   if (!watch || watch.queryId !== queryId) return null;
   watchesByChild.delete(childTopicId);
   return watch;
+}
+
+function childExecutionQueryId(childTopicId: string): string | null {
+  const lease = getRuntimeTurnLease(childTopicId);
+  if (lease) return lease.queryId;
+  return getRuntimeUserTurnRequest(childTopicId)?.runningQueryId ?? null;
+}
+
+function childExecutionIsRecoverable(childTopicId: string): boolean {
+  if (getRuntimeUserTurnRequest(childTopicId)) return true;
+  const lease = getRuntimeTurnLease(childTopicId);
+  if (!lease) return false;
+  const ownerPid = Number.parseInt(lease.ownerId.split("-", 1)[0] ?? "", 10);
+  if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) return true;
+  try {
+    process.kill(ownerPid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+function runtimeOwnerIsAlive(ownerId: string): boolean {
+  const ownerPid = Number.parseInt(ownerId.split("-", 1)[0] ?? "", 10);
+  if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) return true;
+  try {
+    process.kill(ownerPid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+function watchFromPersistedCard(
+  message: MessageDto,
+  card: SubagentCardDto,
+  queryId?: string,
+): SubagentWatch | null {
+  const child = getTopic(card.subagentTopicId);
+  const userId =
+    child?.participants.find((participant) => participant.role === "owner")?.userId ??
+    child?.participants[0]?.userId;
+  if (!userId) return null;
+  return {
+    parentTopicId: message.topicId,
+    childTopicId: card.subagentTopicId,
+    cardMessageId: message.id,
+    name: card.name,
+    userId,
+    startedAt: card.startedAt,
+    queryId,
+    running: card.status === "running",
+  };
+}
+
+function recoverPersistedSubagentWatch(queryId: string): SubagentWatch | null {
+  for (const message of listApiMessagesByKind("subagent")) {
+    const card = message.subagentCard;
+    if (!card || (card.status !== "spawned" && card.status !== "running")) continue;
+    if (childExecutionQueryId(card.subagentTopicId) !== queryId) continue;
+    return watchFromPersistedCard(message, card, queryId);
+  }
+  return null;
 }
 
 function dropWatch(watch: SubagentWatch): void {
@@ -240,6 +305,14 @@ export function sweepStaleSubagentCards(): void {
   for (const msg of listApiMessagesByKind("subagent")) {
     const card = msg.subagentCard;
     if (!card || (card.status !== "spawned" && card.status !== "running")) continue;
+    if (card.runtimeOwnerId && runtimeOwnerIsAlive(card.runtimeOwnerId)) continue;
+    const queryId = childExecutionQueryId(card.subagentTopicId);
+    if (childExecutionIsRecoverable(card.subagentTopicId)) {
+      const watch = watchFromPersistedCard(msg, card, queryId ?? undefined);
+      if (watch && queryId) registerWatchDispatch(watch, queryId);
+      continue;
+    }
+    if (!card.runtimeOwnerId) continue;
     patchSubagentCard(msg.topicId, msg.id, {
       status: "failed",
       errorMessage: "server restarted while the subagent was running",
@@ -330,6 +403,7 @@ async function spawnSubagent(
     subagentTopicId: child.id,
     name: child.title,
     task,
+    runtimeOwnerId: RUNTIME_INSTANCE_ID,
     status: "spawned",
     startedAt: now,
   };

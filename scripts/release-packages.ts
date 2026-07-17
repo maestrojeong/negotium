@@ -298,6 +298,7 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
     await mkdir(installTmp, { recursive: true });
     const smokeEnv = {
       ...process.env,
+      CODEX_HOME: join(smokeRoot, ".codex"),
       NEGOTIUM_STATE_DIR: join(smokeRoot, "state"),
       TMPDIR: installTmp,
     };
@@ -305,7 +306,8 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
 
     await Bun.write(
       join(smokeRoot, "imports.ts"),
-      `await import("@negotium/adapter-sdk");
+      `import { join } from "node:path";
+await import("@negotium/adapter-sdk");
 await import("@negotium/adapter-sdk/outbox");
 await import("@negotium/adapter-sdk/testkit");
 import type {
@@ -314,8 +316,22 @@ import type {
   UnifiedEvent,
 } from "negotium/hosted-agent";
 import type { CanonicalMcpBridgeScope } from "negotium/canonical-mcp-bridge";
+import type { CronDatabase, CronHost } from "negotium/cron";
+import type { McpServerName } from "negotium/mcp-servers";
+import type { AgentRegistry, WriteRolloutOptions } from "negotium/registry";
+import type { ChatPair, CodexContextUsage } from "negotium/rollout";
+import type { VaultStorageOptions } from "negotium/vault";
+import type { SessionSystemPromptOpts } from "negotium/prompts";
+import type { MermaidTheme } from "negotium/runtime-helpers";
 const hostedAgent = await import("negotium/hosted-agent");
 const canonicalBridge = await import("negotium/canonical-mcp-bridge");
+const cron = await import("negotium/cron");
+const mcpServers = await import("negotium/mcp-servers");
+const registry = await import("negotium/registry");
+const rollout = await import("negotium/rollout");
+const vault = await import("negotium/vault");
+const prompts = await import("negotium/prompts");
+const runtimeHelpers = await import("negotium/runtime-helpers");
 if (typeof hostedAgent.configureAgentExecutionHost !== "function") {
   throw new Error("packed hosted-agent export is missing");
 }
@@ -331,11 +347,49 @@ if (typeof canonicalBridge.canonicalMcpBridgeEnv !== "function") {
 if (typeof canonicalBridge.revokeCanonicalMcpBridgeTurn !== "function") {
   throw new Error("packed canonical MCP bridge revoker is missing");
 }
+if (typeof cron.createCronModule !== "function") {
+  throw new Error("packed cron export is missing");
+}
+if (typeof mcpServers.resolveMcpServerFile !== "function") {
+  throw new Error("packed MCP server export is missing");
+}
+if (typeof mcpServers.resolveMcpServerTsconfig !== "function") {
+  throw new Error("packed MCP server tsconfig helper is missing");
+}
+if (typeof registry.getRegistry !== "function" || typeof rollout.encodeClaudeCwd !== "function") {
+  throw new Error("packed registry/rollout export is missing");
+}
+const rolloutRoot = join(process.cwd(), "rollout-smoke");
+const restoreRolloutHost = rollout.configureRolloutHost({ workspaceRoots: [rolloutRoot] });
+try {
+  const encoded = registry.getRegistry("codex").writeRollout({ cwd: rolloutRoot, entries: [] });
+  if (!encoded.rolloutPath.startsWith(process.env.CODEX_HOME ?? "")) {
+    throw new Error("packed registry/rollout did not use the configured rollout host");
+  }
+} finally {
+  restoreRolloutHost();
+}
+if (typeof vault.configureVaultStorage !== "function" || typeof prompts.buildTopicSystemPrompt !== "function") {
+  throw new Error("packed vault/prompts export is missing");
+}
+if (typeof runtimeHelpers.buildMermaidHtml !== "function" || typeof runtimeHelpers.renderTaskPanel !== "function") {
+  throw new Error("packed runtime helper export is missing");
+}
 const publicTypes = {} as {
   host: Partial<AgentExecutionHost>;
   options: AgentQueryOptions;
   event: UnifiedEvent;
   bridgeScope: CanonicalMcpBridgeScope;
+  cronDatabase: CronDatabase;
+  cronHost: Partial<CronHost>;
+  mcpServerName: McpServerName;
+  registry: AgentRegistry;
+  rolloutOptions: WriteRolloutOptions;
+  chatPair: ChatPair;
+  codexUsage: CodexContextUsage;
+  vaultOptions: VaultStorageOptions;
+  promptOptions: SessionSystemPromptOpts;
+  mermaidTheme: MermaidTheme;
 };
 void publicTypes;
 
@@ -390,6 +444,7 @@ if (revokedBridgeLeases !== 1) {
   throw new Error("packed hosted-agent and canonical MCP bridge do not share lease state");
 }
 import { existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 const packageRoot = resolve("node_modules/negotium");
 for (const path of [
@@ -398,8 +453,30 @@ for (const path of [
   resolve(packageRoot, "dist/runtime/src/mcp/session-comm/server.ts"),
   resolve(packageRoot, "dist/runtime/src/mcp/task-server.ts"),
   resolve(packageRoot, "dist/runtime/src/prompts/agents/wiki-archiver.md"),
+  resolve(packageRoot, "dist/runtime/cron/mcp-server.ts"),
 ]) {
   if (!existsSync(path)) throw new Error(\`packed runtime resource is missing: \${path}\`);
+}
+for (const name of mcpServers.MCP_SERVER_NAMES) {
+  const path = mcpServers.resolveMcpServerFile(name);
+  if (!existsSync(path)) throw new Error(\`packed MCP server is missing: \${name} at \${path}\`);
+}
+const packedManifest = JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8"));
+for (const subpath of [
+  "./hosted-agent",
+  "./canonical-mcp-bridge",
+  "./cron",
+  "./mcp-servers",
+  "./registry",
+  "./rollout",
+  "./vault",
+  "./prompts",
+  "./runtime-helpers",
+]) {
+  const types = packedManifest.exports?.[subpath]?.types;
+  if (typeof types !== "string" || !types.endsWith(".d.ts")) {
+    throw new Error(\`packed \${subpath} types must resolve to .d.ts, got \${String(types)}\`);
+  }
 }
 `,
     );
