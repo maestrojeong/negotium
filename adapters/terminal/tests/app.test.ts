@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  animationFrameAt,
   consumeMouseInput,
   ctrlCExitsTopicPicker,
   escapeStopsActiveTurn,
@@ -12,7 +13,7 @@ import {
   MESSAGE_HISTORY_PAGE_SIZE,
   type NegotiumClient,
 } from "@/client";
-import { stripAnsi } from "@/render";
+import { stripAnsi, WORKING_FRAME_INTERVAL_MS } from "@/render";
 import { highlightScreenSelection, screenSelectionText } from "@/selection";
 import { applyRuntimeEvent, createInitialState, setTopics, startTopicCreation } from "@/state";
 
@@ -71,6 +72,13 @@ test("applies spinner status immediately while message history is loading", () =
       payload: { id: "message" },
     }),
   ).toBe(true);
+});
+
+test("derives animation frames from elapsed time instead of callback count", () => {
+  expect(animationFrameAt(0)).toBe(0);
+  expect(animationFrameAt(WORKING_FRAME_INTERVAL_MS - 1)).toBe(0);
+  expect(animationFrameAt(WORKING_FRAME_INTERVAL_MS)).toBe(1);
+  expect(animationFrameAt(WORKING_FRAME_INTERVAL_MS * 7)).toBe(7);
 });
 
 test("parses left-button drag selection events", () => {

@@ -11,7 +11,13 @@ import {
   workingFrame,
   wrapText,
 } from "@/render";
-import { applyRuntimeEvent, createInitialState, setMessages, setTopics } from "@/state";
+import {
+  applyRuntimeEvent,
+  createInitialState,
+  openTopicPicker,
+  setMessages,
+  setTopics,
+} from "@/state";
 
 function topic(): TopicDto {
   return {
@@ -477,6 +483,22 @@ describe("terminal renderer", () => {
     expect(second).toContain(`${workingFrame(1)} Working`);
     expect(first.match(/Working/g)).toHaveLength(1);
     expect(second.match(/Working/g)).toHaveLength(1);
+    expect(first).not.toBe(second);
+  });
+
+  test("animates running topics in the topic picker", () => {
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: { kind: "ai_active", queryId: "query" },
+    });
+    state = openTopicPicker(state);
+
+    const first = stripAnsi(renderApp(state, 100, 30, 0));
+    const second = stripAnsi(renderApp(state, 100, 30, 1));
+    expect(first).toContain(`${workingFrame(0)} Terminal`);
+    expect(second).toContain(`${workingFrame(1)} Terminal`);
     expect(first).not.toBe(second);
   });
 

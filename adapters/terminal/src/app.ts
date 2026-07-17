@@ -11,6 +11,7 @@ import {
   type NegotiumClient,
 } from "@/client";
 import { copyToClipboard } from "@/clipboard";
+import { terminalNowMs } from "@/clock";
 import { commandSuggestions, completeCommand } from "@/commands";
 import {
   maxConversationScrollOffset,
@@ -75,6 +76,10 @@ export function runtimeEventWaitsForMessageLoad(event: RuntimeBusEvent): boolean
   return typeof payload?.kind === "string" && MESSAGE_MUTATING_AI_STATUS_KINDS.has(payload.kind);
 }
 
+export function animationFrameAt(nowMs = terminalNowMs()): number {
+  return Math.floor(nowMs / WORKING_FRAME_INTERVAL_MS);
+}
+
 export function consumeMouseInput(raw: string): {
   input: string;
   scrollDelta: number;
@@ -135,7 +140,7 @@ export class TerminalApp {
   #animationTimer: ReturnType<typeof setInterval> | undefined;
   #backgroundRefreshTimer: ReturnType<typeof setInterval> | undefined;
   #backgroundRefreshRunning = false;
-  #animationFrame = 0;
+  #animationFrame = animationFrameAt();
   #topicsRefreshGeneration = 0;
   readonly #messageLoadGeneration = new Map<string, number>();
   readonly #messageHistory = new Map<
@@ -215,10 +220,14 @@ export class TerminalApp {
           this.#state.overlay === "topics" &&
           this.#state.topics.some((topic) => this.#state.activity[topic.id]?.running);
         if (!activeRunning && !pickerRunning && this.#state.backgroundSessions.length === 0) return;
-        this.#animationFrame += 1;
+        // Derive the frame from elapsed time so a delayed timer callback does
+        // not make the larger topic-picker render appear to spin slowly.
+        this.#animationFrame = animationFrameAt();
         this.#queueRender();
       }, WORKING_FRAME_INTERVAL_MS);
-      this.#animationTimer.unref?.();
+      // Keep this timer referenced. Bun heavily throttles an unref'ed timer
+      // while the TUI is otherwise waiting on stdin, which makes the spinner
+      // advance in regular bursts instead of at the requested frame rate.
       this.#backgroundRefreshTimer = setInterval(() => {
         void this.#refreshBackgroundSessions();
       }, 1_000);
