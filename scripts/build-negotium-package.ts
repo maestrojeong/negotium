@@ -119,11 +119,11 @@ async function bundle(entrypoints: string[], splitting = true): Promise<void> {
 }
 
 await rm(outdir, { recursive: true, force: true });
-await bundle([
-  "apps/cli/src/main.ts",
-  "apps/negotium/src/hosted-agent.ts",
-  "apps/negotium/src/canonical-mcp-bridge.ts",
-]);
+// The CLI dynamically loads every adapter. Building it in a split graph with
+// public library entrypoints can make Bun re-export an imported binding twice
+// in a shared adapter chunk, which newer Bun runtimes reject as invalid ESM.
+await bundle(["apps/cli/src/main.ts"], false);
+await bundle(["apps/negotium/src/hosted-agent.ts", "apps/negotium/src/canonical-mcp-bridge.ts"]);
 
 // Registry writers consume the mutable rollout-host configuration. Keep both
 // public entrypoints in one graph so configureRolloutHost() and getRegistry()
