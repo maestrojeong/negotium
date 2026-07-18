@@ -135,6 +135,20 @@ describe("terminal adapter state", () => {
     expect(state.topics[state.topicPickerIndex]?.id).toBe("work");
   });
 
+  test("navigates private topics before public topics like the picker renders them", () => {
+    const firstPrivate = topic("private-1", "Private 1");
+    const publicTopic = { ...topic("public", "Public"), accessMode: "shared" as const };
+    const secondPrivate = topic("private-2", "Private 2");
+    let state = setTopics(createInitialState("local"), [firstPrivate, publicTopic, secondPrivate]);
+    state = openTopicPicker(state, undefined, true);
+
+    expect(state.topics[state.topicPickerIndex]?.id).toBe("private-1");
+    state = moveTopicPickerSelection(state, 1);
+    expect(state.topics[state.topicPickerIndex]?.id).toBe("private-2");
+    state = moveTopicPickerSelection(state, 1);
+    expect(state.topics[state.topicPickerIndex]?.id).toBe("public");
+  });
+
   test("navigates grouped background sessions after topics and drops finished selections", () => {
     let state = setTopics(createInitialState("local"), [topic("general", "General")]);
     state = setBackgroundSessions(state, [

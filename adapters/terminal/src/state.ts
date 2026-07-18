@@ -208,8 +208,14 @@ export function pickedTopic(state: AppState): TopicDto | undefined {
 }
 
 export function moveTopicPickerSelection(state: AppState, delta: number): AppState {
+  const indexedTopics = state.topics.map((topic, index) => ({ topic, index }));
   const items = [
-    ...state.topics.map((topic, index) => ({ kind: "topic" as const, id: topic.id, index })),
+    ...indexedTopics
+      .filter(({ topic }) => topic.accessMode !== "shared")
+      .map(({ topic, index }) => ({ kind: "topic" as const, id: topic.id, index })),
+    ...indexedTopics
+      .filter(({ topic }) => topic.accessMode === "shared")
+      .map(({ topic, index }) => ({ kind: "topic" as const, id: topic.id, index })),
     ...state.backgroundSessions.map((session) => ({
       kind: "background" as const,
       id: session.id,
