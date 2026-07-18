@@ -22,17 +22,17 @@ const topicIds = new Set<string>();
 const leases: Array<{ topicId: string; queryId: string; ownerId: string }> = [];
 
 describe("default topic MCPs", () => {
-  test("enables playwright for ordinary topics without duplicating it", () => {
-    expect(withDefaultPlaywright([], false)).toEqual(["playwright"]);
+  test("enables browser and background shell tools for ordinary topics without duplicates", () => {
+    expect(withDefaultPlaywright([], false)).toEqual(["playwright", "background-bash"]);
     expect(withDefaultPlaywright(["background-bash"], false)).toEqual([
       "background-bash",
       "playwright",
     ]);
-    expect(withDefaultPlaywright(["playwright"], false)).toEqual(["playwright"]);
+    expect(withDefaultPlaywright(["playwright"], false)).toEqual(["playwright", "background-bash"]);
   });
 
-  test("keeps Manager free of playwright", () => {
-    expect(withDefaultPlaywright(["background-bash"], true)).toEqual(["background-bash"]);
+  test("does not add browser or background shell tools to Manager", () => {
+    expect(withDefaultPlaywright([], true)).toEqual([]);
   });
 });
 

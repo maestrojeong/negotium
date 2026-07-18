@@ -276,6 +276,7 @@ function backgroundBashTransport(
 const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   playwright: {
     scopes: ["dm", "forum", "fork", "cron"],
+    forumRequired: true,
     build({ userId, session, topicId, playwrightPort, playwrightCapability, agent }) {
       // Codex uses streamable HTTP while Claude and Maestro use SSE. Both
       // transports terminate at the same long-lived browser/profile server.
@@ -442,6 +443,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   },
   "background-bash": {
     scopes: ["forum"],
+    forumRequired: true,
     build({ agent, bgBashPort, userId, topicId, session }) {
       const topic = topicId ?? session;
       if (bgBashPort === undefined || !topic) return null;

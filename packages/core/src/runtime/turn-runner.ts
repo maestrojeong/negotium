@@ -150,10 +150,13 @@ const PLAYWRIGHT_UNAVAILABLE_NOTICE_COOLDOWN_MS = 5 * 60_000;
 const ASK_REPLY_INJECT_BATCH_MS = 500;
 const playwrightUnavailableNoticeAt = new Map<string, number>();
 
-/** Playwright is part of every ordinary topic; Manager keeps its lean MCP bundle. */
+/** Browser and background shell tools are part of every ordinary topic. */
 export function withDefaultPlaywright(configuredMcp: string[], isManager: boolean): string[] {
-  if (isManager || configuredMcp.includes("playwright")) return configuredMcp;
-  return [...configuredMcp, "playwright"];
+  if (isManager) return configuredMcp;
+  const enabled = new Set(configuredMcp);
+  enabled.add("playwright");
+  enabled.add("background-bash");
+  return [...enabled];
 }
 
 // dequeueAll() is the merge primitive; this short gate makes the first reply
@@ -1980,7 +1983,8 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   // Wrap runAgent in a lazy async generator so we can `await ensurePlaywright`
   // at the moment streaming starts (startAiTurn itself is sync — it returns the
   // queryId immediately and streams in the background). Bring up a long-lived
-  // Playwright MCP for every non-manager topic: without a live `playwrightPort`,
+  // Playwright and Background Bash MCPs for every non-manager topic. Without
+  // a live `playwrightPort`,
   // mcp-config omits the
   // playwright entry entirely, so the agent connects but sees NO browser tools
   // — the "playwright active but tools missing" bug. The host must allocate

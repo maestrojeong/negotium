@@ -323,7 +323,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
     expect((servers.task as { args: string[] }).args).toContain("--topic-id=general");
   });
 
-  test("background-bash is excluded when not in whitelist", () => {
+  test("runtime-managed tools stay active outside the optional whitelist", () => {
     const servers = getForumMcpServers({
       userId,
       session: "coding",
@@ -331,7 +331,9 @@ describe("mcp-config: playwright transport selection per agent", () => {
       bgBashPort: 9500,
       enabled: ["wiki"],
     });
-    expect(servers["background-bash"]).toBeUndefined();
+    expect(servers["background-bash"]).toBeDefined();
+    expect(OPTIONAL_FORUM_MCP_SERVERS).not.toContain("background-bash");
+    expect(OPTIONAL_FORUM_MCP_SERVERS).not.toContain("playwright");
   });
 
   test("wiki receives the REST topic id when one is available", () => {
