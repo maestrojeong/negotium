@@ -6,7 +6,6 @@ import {
   AGENT_HEALTH_SERVER,
   CANONICAL_MCP_PROXY_SERVER,
   FALLBACK_AGENT,
-  PADDLEOCR_SERVER,
   resolveTopicWorkspaceDir,
   SESSION_COMM_SERVER,
   SYSTEM_HEALTH_SERVER,
@@ -317,12 +316,6 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
         fileDeliveryTools,
         peerBridge,
       });
-    },
-  },
-  paddleocr: {
-    scopes: ["dm", "forum", "fork", "cron"],
-    build({ agent }) {
-      return buildStdioMcpServer(agent, PADDLEOCR_SERVER, []);
     },
   },
   "token-stats": {
@@ -648,8 +641,8 @@ export function getDmMcpServers(opts: {
 /**
  * Manager session: lives in the caller's private General API topic. Owns topic CRUD,
  * invite/user admin, and cross-topic MCP toggling through `topic-admin`,
- * plus general utilities. Browser/OCR work belongs in dedicated topics, so
- * heavyweight Playwright/PaddleOCR tools are intentionally excluded here.
+ * plus general utilities. Browser-heavy work belongs in dedicated topics, so
+ * Playwright is intentionally excluded here.
  * No whitelist — manager-scope catalog entries are loaded as-is.
  */
 export function getManagerMcpServers(opts: {
@@ -780,7 +773,7 @@ export function getForumMcpServers(opts: {
 /**
  * Cron session: scheduled background run for a concrete API topic. Keep the
  * catalog narrower than forum scope: runtime delivery, topic memory/status,
- * OCR/vault utilities, and a caller-provided disposable Playwright port.
+ * vault utilities and a caller-provided disposable Playwright port.
  */
 export function getCronMcpServers(opts: {
   userId: string;

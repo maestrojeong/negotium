@@ -4,7 +4,7 @@
  * The custom `spawnClaudeCodeProcessWithTreeKill` ensures that when an
  * AbortController fires, the SIGTERM (and a 2.5s SIGKILL fallback) is sent
  * to the *process group* of the child, not just the child itself, so MCP
- * grandchildren (playwright-mcp, OCR servers, …) and their browsers/python
+ * grandchildren (playwright-mcp, background workers, …) and their browsers/processes
  * interpreters are reaped. Without this, single-user Mac deployments
  * accumulate Chrome zombies and DevTools port (9222) gets stuck.
  *

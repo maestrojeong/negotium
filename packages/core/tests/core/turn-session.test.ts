@@ -6,6 +6,7 @@ import {
   resolveTopicTurnSession,
   startAiTurn,
   triggerTopicAiTurn,
+  withDefaultPlaywright,
 } from "#runtime/turn-runner";
 import { getAllMessagesForTopic } from "#storage/api-messages";
 import { setApiTopicConfig } from "#storage/api-topic-config";
@@ -19,6 +20,21 @@ import {
 
 const topicIds = new Set<string>();
 const leases: Array<{ topicId: string; queryId: string; ownerId: string }> = [];
+
+describe("default topic MCPs", () => {
+  test("enables playwright for ordinary topics without duplicating it", () => {
+    expect(withDefaultPlaywright([], false)).toEqual(["playwright"]);
+    expect(withDefaultPlaywright(["background-bash"], false)).toEqual([
+      "background-bash",
+      "playwright",
+    ]);
+    expect(withDefaultPlaywright(["playwright"], false)).toEqual(["playwright"]);
+  });
+
+  test("keeps Manager free of playwright", () => {
+    expect(withDefaultPlaywright(["background-bash"], true)).toEqual(["background-bash"]);
+  });
+});
 
 function seedTopic(): string {
   const id = randomUUID();

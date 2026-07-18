@@ -150,6 +150,12 @@ const PLAYWRIGHT_UNAVAILABLE_NOTICE_COOLDOWN_MS = 5 * 60_000;
 const ASK_REPLY_INJECT_BATCH_MS = 500;
 const playwrightUnavailableNoticeAt = new Map<string, number>();
 
+/** Playwright is part of every ordinary topic; Manager keeps its lean MCP bundle. */
+export function withDefaultPlaywright(configuredMcp: string[], isManager: boolean): string[] {
+  if (isManager || configuredMcp.includes("playwright")) return configuredMcp;
+  return [...configuredMcp, "playwright"];
+}
+
 // dequeueAll() is the merge primitive; this short gate makes the first reply
 // to an idle caller wait long enough for sibling ask replies to join it.
 const askReplyInjectBatcher = new DeferredInjectBatcher({
@@ -1974,13 +1980,14 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   // Wrap runAgent in a lazy async generator so we can `await ensurePlaywright`
   // at the moment streaming starts (startAiTurn itself is sync — it returns the
   // queryId immediately and streams in the background). Bring up a long-lived
-  // Playwright MCP for this topic when (and only when) playwright is in the
-  // topic's enabled set: without a live `playwrightPort`, mcp-config omits the
+  // Playwright MCP for every non-manager topic: without a live `playwrightPort`,
+  // mcp-config omits the
   // playwright entry entirely, so the agent connects but sees NO browser tools
   // — the "playwright active but tools missing" bug. The host must allocate
-  // the port before building MCP config. Gated on the opt-in whitelist
-  // so topics that don't use playwright never spawn a Chromium. Non-fatal.
-  const enabledMcp = override?.mcp ?? [];
+  // the port before building MCP config. Named browser profiles still control
+  // which topics share a Chromium process and login state. Non-fatal.
+  const configuredMcp = override?.mcp ?? [];
+  const enabledMcp = withDefaultPlaywright(configuredMcp, isManager);
   const playwrightRequested = !isManager && enabledMcp.includes("playwright");
   const browserProfileOwner = isTopicBrowserProfileOwner(topic.id, userId);
   const wantsPlaywright = playwrightRequested && browserProfileOwner;

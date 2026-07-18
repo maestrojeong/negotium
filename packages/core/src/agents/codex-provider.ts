@@ -100,14 +100,7 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function withCodexMcpServerOverrides(name: string, server: CodexMcpServer): CodexMcpServer {
-  if (name === "paddleocr") {
-    return {
-      ...server,
-      startup_timeout_sec: parsePositiveInt(process.env.PADDLEOCR_MCP_STARTUP_TIMEOUT_SEC, 30),
-      tool_timeout_sec: parsePositiveInt(process.env.PADDLEOCR_MCP_TOOL_TIMEOUT_SEC, 300),
-    };
-  }
+function withCodexMcpServerOverrides(_name: string, server: CodexMcpServer): CodexMcpServer {
   // For codex, Otium launches MCP servers via node + tsx (see serverLaunch in
   // mcp-config.ts), which transpiles the .ts on the fly — cold start is slower
   // than `bun run`, so give the handshake a generous startup window. codex's

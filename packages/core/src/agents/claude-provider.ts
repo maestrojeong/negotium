@@ -168,7 +168,7 @@ type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | { type: string 
 // --- Process tree kill on abort ---
 //
 // The Claude Agent SDK spawns a `claude` CLI subprocess, which in turn spawns
-// MCP servers (playwright-mcp, python OCR servers, …) which themselves spawn
+// MCP servers (playwright-mcp, background workers, …) which themselves spawn
 // browsers / interpreters. The SDK's default abort path only signals the
 // direct child, leaving grandchildren orphaned — over time they accumulate as
 // zombies, holding ports (Playwright DevTools 9222) and leaking memory
@@ -347,7 +347,7 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
   delete cleanEnv.NEGOTIUM_PEER_SESSION_BRIDGE_URL;
   delete cleanEnv.NEGOTIUM_PEER_SESSION_BRIDGE_TOKEN;
   delete cleanEnv.CLAUDECODE;
-  cleanEnv.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT ??= process.env.PADDLEOCR_TIMEOUT_MS ?? "300000";
+  cleanEnv.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT ??= "300000";
   // Workflow is a feature flag, not a disallowedTools-addressable tool name.
   // The env var is the version-robust kill switch (works on any CLI the SDK
   // spawns); the `settings` flag layer below covers it a second time.

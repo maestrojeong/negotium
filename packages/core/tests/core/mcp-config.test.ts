@@ -134,7 +134,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
     expect((claude.vault as { args: string[] }).args).not.toContain("--http-only=true");
   });
 
-  test("manager/codex omits heavyweight browser/OCR tools even with a port", () => {
+  test("manager/codex omits heavyweight browser tools even with a port", () => {
     const topicId = "private-general-topic";
     const servers = getManagerMcpServers({
       userId,
@@ -144,7 +144,6 @@ describe("mcp-config: playwright transport selection per agent", () => {
       playwrightCapability,
     });
     expect(servers.playwright).toBeUndefined();
-    expect(servers.paddleocr).toBeUndefined();
     expect(servers.runtime).toEqual({
       url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp\/runtime\/mcp\?token=.+/),
     });
@@ -307,7 +306,6 @@ describe("mcp-config: playwright transport selection per agent", () => {
       model: "deepseek-pro",
     });
     expect(servers.playwright).toBeUndefined();
-    expect(servers.paddleocr).toBeUndefined();
     expect(servers.runtime).toEqual({
       url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp\/runtime\/mcp\?token=.+/),
     });

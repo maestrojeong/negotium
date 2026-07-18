@@ -151,8 +151,6 @@ export const CANONICAL_MCP_PROXY_SERVER = resolve(
 
 export const WIKI_SERVER = resolve(PROJECT_ROOT, "src/mcp/wiki-server.ts");
 
-export const PADDLEOCR_SERVER = resolve(PROJECT_ROOT, "src/mcp/paddleocr-server.ts");
-
 export const TOKEN_STATS_SERVER = resolve(PROJECT_ROOT, "src/mcp/token-stats-server.ts");
 
 export const SYSTEM_HEALTH_SERVER = resolve(PROJECT_ROOT, "src/mcp/system-health-server.ts");
