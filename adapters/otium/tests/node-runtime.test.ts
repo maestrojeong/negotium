@@ -42,7 +42,10 @@ describe("Otium sidecar proxy", () => {
     const response = await proxyOtiumPeerRequest(
       new Request("http://sidecar/api/v1/peer/provision", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "transfer-encoding": "chunked",
+        },
         body: JSON.stringify({ topicId: "topic-1" }),
       }),
       {
@@ -69,6 +72,8 @@ describe("Otium sidecar proxy", () => {
     expect(forwarded?.url).toBe(
       `http://127.0.0.1:4000${OTIUM_ADAPTER_CONTROL_PREFIX}/api/v1/peer/provision`,
     );
+    expect(forwarded?.headers.get("transfer-encoding")).toBeNull();
+    expect(forwarded?.headers.get("content-length")).toBe("21");
     expect(await forwarded?.json()).toEqual({ topicId: "topic-1" });
   });
 

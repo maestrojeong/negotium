@@ -45,6 +45,13 @@ export async function proxyOtiumPeerRequest(
   try {
     const body =
       req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer();
+    // The relay-to-sidecar hop uses a streamed body, so Bun adds chunked
+    // framing. The sidecar buffers that stream before the Node-owned hop;
+    // forwarding both framing modes makes Bun reject the request before it
+    // reaches the adapter route.
+    headers.delete("transfer-encoding");
+    headers.delete("content-length");
+    if (body) headers.set("content-length", String(body.byteLength));
     return await fetchRequest(
       new Request(target.toString(), { method: req.method, headers, body, signal: req.signal }),
     );
