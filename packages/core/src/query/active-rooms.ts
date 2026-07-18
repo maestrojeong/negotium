@@ -41,6 +41,7 @@ export interface DeferredInject {
   prompt: string;
   /** Inject source — the topic name/id this inject came from (never "user"). */
   origin: string;
+  sourceNode?: string;
   /** Inter-session request id for dedup. */
   requestId?: string;
   /** Nesting depth (starts at 1 for the first cross-topic hop). */

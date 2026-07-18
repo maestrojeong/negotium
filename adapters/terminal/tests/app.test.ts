@@ -161,6 +161,9 @@ test("stops a started client when terminal initialization fails", async () => {
     setEffort() {
       throw new Error("not reached");
     },
+    setAccessMode() {
+      throw new Error("not reached");
+    },
     async deleteTopic() {
       throw new Error("not reached");
     },

@@ -200,6 +200,9 @@ export interface MessageDto {
   authorId: string;
   /** Originating adapter for live cross-channel echo suppression/routing. */
   sourceAdapter?: string;
+  /** Stable origin metadata used by idempotent cross-node transcript sync. */
+  sourceNode?: string;
+  sourceMessageId?: string;
   /** Display name of the author, resolved from the user store at read time. */
   authorName?: string;
   /** Current profile image URL for the author, resolved from the user store at read time. */

@@ -56,6 +56,8 @@ export interface PeerTurnRequest {
   effort?: string;
   /** File ids already copied into the worker hidden topic's upload store. */
   attachments?: string[];
+  /** Hub message id used to mark the injected worker copy as Hub-origin. */
+  sourceMessageId?: string;
   message: string;
 }
 
@@ -74,6 +76,25 @@ export interface PeerEventRequest {
   requestId: string;
   seq: number;
   event: Record<string, unknown>;
+}
+
+export interface SharedTopicMetadata {
+  localTopicId: string;
+  title: string;
+  description?: string;
+  agent: string;
+  model: string;
+  effort: string;
+}
+
+export interface SharedTopicMessage {
+  sourceMessageId: string;
+  author: "user" | "ai" | "system";
+  text: string;
+  createdAt: string;
+  agent?: string;
+  model?: string;
+  kind?: string;
 }
 
 function str(body: Record<string, unknown>, field: string): string | null {

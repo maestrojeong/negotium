@@ -1,4 +1,4 @@
-import { getTopic, isTopicShared, isTopicVisible, upsertTopic } from "@negotium/core";
+import { getTopic, isTopicShared, isTopicVisible, upsertTopic, WsHub } from "@negotium/core";
 import {
   bindPeerSession,
   getPeerSession,
@@ -88,6 +88,7 @@ export function shareOtiumTopic(options: {
   if (!owned.ok) return owned;
   if (!isTopicShared(owned.topic)) {
     upsertTopic({ ...owned.topic, accessMode: "shared" });
+    WsHub.get().broadcastTopicUpdated(owned.topic.id);
   }
   return bindOtiumTopic(options);
 }
@@ -102,6 +103,7 @@ export function setOtiumTopicPrivate(options: {
   const removedBindings = unbindSharedPeerSessionsForLocalTopic(options.localTopicId);
   if (isTopicShared(owned.topic)) {
     upsertTopic({ ...owned.topic, accessMode: "private" });
+    WsHub.get().broadcastTopicUpdated(owned.topic.id);
   }
   return { ok: true, localTopicId: options.localTopicId, removedBindings };
 }

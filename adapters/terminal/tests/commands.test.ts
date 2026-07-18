@@ -31,6 +31,13 @@ describe("terminal slash command completion", () => {
     expect(completeCommand("/va", 0)).toBe("/vault");
   });
 
+  test("suggests topic privacy commands", () => {
+    expect(commandSuggestions("/pub").map((command) => command.name)).toEqual(["public"]);
+    expect(commandSuggestions("/pri").map((command) => command.name)).toEqual(["private"]);
+    expect(completeCommand("/pub", 0)).toBe("/public");
+    expect(completeCommand("/pri", 0)).toBe("/private");
+  });
+
   test("uses only the short delete command", () => {
     expect(commandSuggestions("/de").map((command) => command.name)).toEqual(["del"]);
     expect(commandSuggestions("/de")[0]?.usage).toBe("/del");

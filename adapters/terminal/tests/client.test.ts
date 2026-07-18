@@ -165,6 +165,47 @@ test("remote effort changes use the authenticated topic control boundary", async
   expect(await requests[0]?.json()).toEqual({ userId: "remote-user", effort: "high" });
 });
 
+test("remote privacy changes use the authenticated topic control boundary", async () => {
+  const requests: Request[] = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const request =
+      typeof input === "string"
+        ? new Request(input, init)
+        : input instanceof Request
+          ? new Request(input, init)
+          : new Request(input.toString(), init);
+    requests.push(request);
+    return Response.json({ ok: true, accessMode: "shared", result: "Topic is public." });
+  }) as unknown as typeof fetch;
+
+  const client = new RemoteNegotiumClient({
+    userId: "remote-user",
+    baseUrl: "http://127.0.0.1:43210",
+    token: "node-token",
+  });
+  const result = await client.setAccessMode(
+    {
+      id: "topic/with slash",
+      title: "Topic",
+      kind: "agent",
+      agent: "codex",
+      defaultModel: "gpt-5.6-luna",
+      defaultEffort: "medium",
+      participants: [{ userId: "remote-user", role: "owner" }],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      lastMessageAt: "2026-01-01T00:00:00.000Z",
+    },
+    "shared",
+  );
+
+  expect(result).toBe("Topic is public.");
+  expect(requests[0]?.url).toBe(
+    `http://127.0.0.1:43210${NODE_CONTROL_BASE_PATH}/topics/topic%2Fwith%20slash/access-mode`,
+  );
+  expect(requests[0]?.method).toBe("POST");
+  expect(await requests[0]?.json()).toEqual({ userId: "remote-user", accessMode: "shared" });
+});
+
 test("remote control rejects plaintext transport to non-loopback hosts before any request", () => {
   let requested = false;
   globalThis.fetch = (async () => {

@@ -22,6 +22,7 @@ export interface FakeCentral {
   verifyRequests: string[];
   hubBaseUrl: string;
   setHubBaseUrl: (baseUrl: string) => void;
+  setWorkerAttached: (attached: boolean) => void;
   addPeerNode: (node: {
     cellId: string;
     nodeName: string | null;
@@ -36,6 +37,7 @@ export function startFakeCentral(): FakeCentral {
   const verifyRequests: string[] = [];
   const state = {
     hubBaseUrl: "http://127.0.0.1:1",
+    workerAttached: true,
     additionalNodes: [] as Array<{
       cellId: string;
       nodeName: string | null;
@@ -97,13 +99,17 @@ export function startFakeCentral(): FakeCentral {
               baseUrl: state.hubBaseUrl,
               self: false,
             },
-            {
-              cellId: WORKER_CELL_ID,
-              nodeName: "nego",
-              isPrimary: false,
-              baseUrl: "http://127.0.0.1:7777",
-              self: true,
-            },
+            ...(state.workerAttached
+              ? [
+                  {
+                    cellId: WORKER_CELL_ID,
+                    nodeName: "nego",
+                    isPrimary: false,
+                    baseUrl: "http://127.0.0.1:7777",
+                    self: true,
+                  },
+                ]
+              : []),
             ...state.additionalNodes,
           ],
         });
@@ -121,6 +127,9 @@ export function startFakeCentral(): FakeCentral {
     },
     setHubBaseUrl: (baseUrl: string) => {
       state.hubBaseUrl = baseUrl;
+    },
+    setWorkerAttached: (attached: boolean) => {
+      state.workerAttached = attached;
     },
     addPeerNode: (node) => {
       state.additionalNodes.push(node);

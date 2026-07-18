@@ -4,6 +4,7 @@ import {
   appendApiMessage,
   claimRuntimeTurnLease,
   getApiTopicConfig,
+  getTopic,
   getTopicSessionId,
   latestRuntimeEventSeq,
   NEGOTIUM_VERSION,
@@ -300,6 +301,26 @@ test("POST effort applies and locks a picker selection", async () => {
     effort: "xhigh",
     effortLocked: true,
   });
+});
+
+test("POST access-mode changes topic privacy for its owner", async () => {
+  const topic = registerTopic({
+    title: `Privacy ${randomUUID()}`,
+    userId,
+    agent: "codex",
+  });
+
+  const response = await handler(
+    request(`/topics/${encodeURIComponent(topic.id)}/access-mode`, {
+      method: "POST",
+      body: JSON.stringify({ userId, accessMode: "shared" }),
+    }),
+  );
+  const body = (await response?.json()) as { accessMode?: string };
+
+  expect(response?.status).toBe(200);
+  expect(body.accessMode).toBe("shared");
+  expect(getTopic(topic.id)?.accessMode).toBe("shared");
 });
 
 test("message history pages backward from the latest messages", async () => {

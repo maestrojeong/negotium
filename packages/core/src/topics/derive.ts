@@ -73,6 +73,7 @@ export function updateTopic(topicId: string, patch: Partial<TopicDto>): boolean 
   if (!topic) return false;
   Object.assign(topic, patch);
   upsertTopic(topic);
+  WsHub.get().broadcastTopicUpdated(topicId);
   return true;
 }
 

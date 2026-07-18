@@ -237,7 +237,11 @@ export async function streamAgentEvents(
   userId: string,
   retryableSessionExpired = true,
   onSessionId?: (sessionId: string) => void,
-  execution?: { silent?: boolean; peerBridge?: PeerRuntimeBridgeContext },
+  execution?: {
+    silent?: boolean;
+    peerBridge?: PeerRuntimeBridgeContext;
+    sourceNode?: string;
+  },
 ): Promise<StreamAgentOutcome> {
   const abortController = control.abortController;
   const roomId = control.roomId ?? topicId;
@@ -305,6 +309,7 @@ export async function streamAgentEvents(
       queryId,
       agentType,
       model,
+      sourceNode: execution?.sourceNode,
       usage,
       createdAt: new Date().toISOString(),
     };
@@ -952,6 +957,7 @@ function redispatchInject(inject: DeferredInject): void {
     bridgeSessionFromHistory: inject.bridgeSessionFromHistory,
     onSettled: inject.onSettled,
     peerBridge: inject.peerBridge,
+    sourceNode: inject.sourceNode,
     askReplySources: inject.askReplySources,
     _runtimeEpoch: inject.runtimeEpoch,
     _sessionRetried: inject._sessionRetried,
@@ -1197,6 +1203,8 @@ export interface AiTurnExecutionOptions {
   attachments?: string[];
   /** "user" (default) for a human message; otherwise the inject source topic. */
   origin?: string;
+  /** Origin node for transcript echo suppression. */
+  sourceNode?: string;
   /** Fired when the turn is actually dispatched, including after a defer. */
   onDispatched?: (queryId: string) => void;
   /** Inter-session requestId for queue dedup (session-inject only). */
@@ -1259,6 +1267,8 @@ export interface TriggerTopicAiTurnOptions extends AiTurnExecutionOptions {
   injectAuthorId?: string;
   /** Identifies the subsystem that created the visible injected message. */
   injectSourceAdapter?: string;
+  injectSourceNode?: string;
+  injectSourceMessageId?: string;
 }
 
 export interface ResolvedTopicTurnExecution {
@@ -1544,6 +1554,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   const deferredSessionId =
     params.sessionId === undefined && !sessionResolution.isolated ? undefined : sessionId;
   const origin = params.origin ?? "user";
+  const sourceNode = params.sourceNode;
   const topicId = topic.id;
   const requestId = params.requestId;
   const depth = params.depth;
@@ -1596,6 +1607,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       userId,
       prompt,
       origin,
+      sourceNode,
       requestId,
       depth,
       silent,
@@ -2105,7 +2117,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     userId,
     !sessionRetried,
     onSessionId,
-    { silent, peerBridge },
+    { silent, peerBridge, sourceNode },
   )
     .then(async (outcome) => {
       if (outcome.kind === "session-expired") {
@@ -2312,6 +2324,8 @@ export function triggerTopicAiTurn(
       topicId,
       authorId: opts?.injectAuthorId ?? userId,
       sourceAdapter: opts?.injectSourceAdapter,
+      sourceNode: opts?.injectSourceNode,
+      sourceMessageId: opts?.injectSourceMessageId,
       authorName: execution.agent,
       text: prompt,
       agentType: execution.agent,
@@ -2354,6 +2368,7 @@ export function triggerTopicAiTurn(
     bridgeSessionFromHistory: opts?.bridgeSessionFromHistory,
     onSettled: opts?.onSettled,
     peerBridge: opts?.peerBridge,
+    sourceNode: opts?.injectSourceNode,
     askReplySources: opts?.askReplySources,
     from: opts?.from,
   });

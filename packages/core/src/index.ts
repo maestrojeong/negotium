@@ -53,6 +53,11 @@ export type {
 } from "#application/submit-user-message";
 export { submitUserMessage } from "#application/submit-user-message";
 export type {
+  SwitchTopicAccessModeParams,
+  SwitchTopicAccessModeResult,
+} from "#application/switch-topic-access-mode";
+export { switchTopicAccessMode } from "#application/switch-topic-access-mode";
+export type {
   SwitchTopicEffortParams,
   SwitchTopicEffortResult,
 } from "#application/switch-topic-effort";

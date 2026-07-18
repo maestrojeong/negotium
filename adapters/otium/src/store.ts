@@ -34,12 +34,11 @@ if (!peerSessionColumns.has("binding_mode")) {
   db.exec("ALTER TABLE otium_peer_sessions ADD COLUMN binding_mode TEXT NOT NULL DEFAULT 'mirror'");
 }
 
-// Migrate mirrors created before core had an explicit visibility boundary.
-// `isSubagent` remains execution metadata; it is no longer used as a picker
-// hiding convention.
+// Hub execution mirrors are ordinary visible top-level rooms in Terminal.
+// Their peer binding mode, not `isSubagent`, excludes them from publication.
 db.run(
   `UPDATE api_topics
-   SET visibility = 'hidden', access_mode = 'shared'
+   SET visibility = 'visible', access_mode = 'shared', is_subagent = 0
    WHERE id IN (
      SELECT local_topic_id FROM otium_peer_sessions WHERE binding_mode = 'mirror'
    )`,
@@ -124,6 +123,146 @@ db.exec(`
   )
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS otium_shared_topic_state (
+    local_topic_id TEXT PRIMARY KEY,
+    host_topic_id  TEXT,
+    status         TEXT NOT NULL CHECK (status IN ('publishing', 'published', 'unpublishing')),
+    updated_at     TEXT NOT NULL
+  )
+`);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS otium_shared_message_outbox (
+    local_topic_id TEXT NOT NULL,
+    source_message_id TEXT NOT NULL,
+    message_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (local_topic_id, source_message_id)
+  )
+`);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS otium_peer_lifecycle (
+    hub_node_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL CHECK (status IN ('attached', 'detached')),
+    updated_at TEXT NOT NULL
+  )
+`);
+
+export function isPeerDetached(hubNodeId: string): boolean {
+  const row = db
+    .query<{ status: string }, [string]>(
+      "SELECT status FROM otium_peer_lifecycle WHERE hub_node_id = ?",
+    )
+    .get(hubNodeId);
+  return row?.status === "detached";
+}
+
+export function setPeerDetached(hubNodeId: string, detached: boolean): void {
+  db.run(
+    `INSERT INTO otium_peer_lifecycle (hub_node_id, status, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(hub_node_id) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at`,
+    [hubNodeId, detached ? "detached" : "attached", new Date().toISOString()],
+  );
+}
+
+export interface SharedMessageOutboxRow {
+  local_topic_id: string;
+  source_message_id: string;
+  message_json: string;
+  created_at: string;
+}
+
+export function enqueueSharedMessage(args: {
+  localTopicId: string;
+  sourceMessageId: string;
+  message: unknown;
+}): void {
+  db.run(
+    `INSERT OR REPLACE INTO otium_shared_message_outbox
+       (local_topic_id, source_message_id, message_json, created_at)
+     VALUES (?, ?, ?, ?)`,
+    [
+      args.localTopicId,
+      args.sourceMessageId,
+      JSON.stringify(args.message),
+      new Date().toISOString(),
+    ],
+  );
+}
+
+export function listSharedMessages(localTopicId: string): SharedMessageOutboxRow[] {
+  return db
+    .query<SharedMessageOutboxRow, [string]>(
+      "SELECT * FROM otium_shared_message_outbox WHERE local_topic_id = ? ORDER BY created_at",
+    )
+    .all(localTopicId);
+}
+
+export function deleteSharedMessage(localTopicId: string, sourceMessageId: string): boolean {
+  return (
+    db.run(
+      "DELETE FROM otium_shared_message_outbox WHERE local_topic_id = ? AND source_message_id = ?",
+      [localTopicId, sourceMessageId],
+    ).changes === 1
+  );
+}
+
+export function clearSharedMessages(localTopicId: string): number {
+  return db.run("DELETE FROM otium_shared_message_outbox WHERE local_topic_id = ?", [localTopicId])
+    .changes;
+}
+
+export function clearAllSharedMessages(): number {
+  return db.run("DELETE FROM otium_shared_message_outbox").changes;
+}
+
+export interface SharedTopicStateRow {
+  local_topic_id: string;
+  host_topic_id: string | null;
+  status: "publishing" | "published" | "unpublishing";
+  updated_at: string;
+}
+
+export function getSharedTopicState(localTopicId: string): SharedTopicStateRow | null {
+  return (
+    db
+      .query<SharedTopicStateRow, [string]>(
+        "SELECT * FROM otium_shared_topic_state WHERE local_topic_id = ?",
+      )
+      .get(localTopicId) ?? null
+  );
+}
+
+export function listSharedTopicStates(): SharedTopicStateRow[] {
+  return db
+    .query<SharedTopicStateRow, []>("SELECT * FROM otium_shared_topic_state ORDER BY updated_at")
+    .all();
+}
+
+export function setSharedTopicState(args: {
+  localTopicId: string;
+  hostTopicId?: string | null;
+  status: SharedTopicStateRow["status"];
+}): void {
+  db.run(
+    `INSERT INTO otium_shared_topic_state (local_topic_id, host_topic_id, status, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(local_topic_id) DO UPDATE SET
+       host_topic_id = excluded.host_topic_id,
+       status = excluded.status,
+       updated_at = excluded.updated_at`,
+    [args.localTopicId, args.hostTopicId ?? null, args.status, new Date().toISOString()],
+  );
+}
+
+export function deleteSharedTopicState(localTopicId: string): boolean {
+  return (
+    db.run("DELETE FROM otium_shared_topic_state WHERE local_topic_id = ?", [localTopicId])
+      .changes === 1
+  );
+}
+
 // ── peer sessions: Otium room → hidden mirror OR user-selected shared topic ──
 
 export type PeerTopicBindingMode = "mirror" | "shared";
@@ -206,6 +345,31 @@ export function unbindSharedPeerSessionsForLocalTopic(localTopicId: string): num
     "DELETE FROM otium_peer_sessions WHERE local_topic_id = ? AND binding_mode = 'shared'",
     [localTopicId],
   ).changes;
+}
+
+export function unbindAllSharedPeerSessions(): number {
+  return db.run("DELETE FROM otium_peer_sessions WHERE binding_mode = 'shared'").changes;
+}
+
+/** Atomically enforce the local privacy boundary for this Hub connection. */
+export function downgradeSharedTopicsLocally(hubNodeId: string): string[] {
+  return db.transaction(() => {
+    const topics = db
+      .query<{ id: string }, []>("SELECT id FROM api_topics WHERE access_mode = 'shared'")
+      .all()
+      .map((row) => row.id);
+    db.run("UPDATE api_topics SET access_mode = 'private' WHERE access_mode = 'shared'");
+    db.run("DELETE FROM otium_peer_sessions WHERE host_node_id = ?", [hubNodeId]);
+    db.run("DELETE FROM otium_shared_message_outbox");
+    db.run("DELETE FROM otium_shared_topic_state");
+    db.run(
+      `INSERT INTO otium_peer_lifecycle (hub_node_id, status, updated_at)
+       VALUES (?, 'detached', ?)
+       ON CONFLICT(hub_node_id) DO UPDATE SET status = 'detached', updated_at = excluded.updated_at`,
+      [hubNodeId, new Date().toISOString()],
+    );
+    return topics;
+  })();
 }
 
 export function listPeerSessions(): PeerSessionRow[] {

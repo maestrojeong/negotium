@@ -62,7 +62,7 @@ function recordingSender(): { sent: Array<{ seq: number; event: Record<string, u
 }
 
 describe("provisionMirrorTopic", () => {
-  test("creates a hidden mirror topic with the hub execution spec pinned as config", () => {
+  test("creates a visible mirror topic with the hub execution spec pinned as config", () => {
     const result = provisionMirrorTopic(HUB_CELL_ID, {
       userId: USER,
       hostTopicId: "host-topic-1",
@@ -76,8 +76,8 @@ describe("provisionMirrorTopic", () => {
     expect(topic?.title).toBe("프로젝트방");
     expect(topic?.kind).toBe("agent");
     expect(topic?.agent).toBe("claude");
-    expect(topic?.isSubagent).toBe(true);
-    expect(topic?.visibility).toBe("hidden");
+    expect(topic?.isSubagent).toBeUndefined();
+    expect(topic?.visibility).toBe("visible");
     expect(topic?.accessMode).toBe("shared");
     expect(topic?.participants).toEqual([{ userId: USER, role: "owner" }]);
 

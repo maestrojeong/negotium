@@ -34,6 +34,7 @@ import {
   saveVaultEntry,
   type startAiTurn,
   submitUserMessage,
+  switchTopicAccessMode,
   switchTopicEffort,
   switchTopicModel,
   TopicDeriveBusyError,
@@ -400,6 +401,24 @@ export function createNodeControlHandler(
         const result = switchTopicModel({ topicId, userId, model });
         if (!result.ok) return jsonError(400, result.error);
         return Response.json({ ok: true, model: result.model, result: result.text });
+      }
+
+      const accessModeMatch = path.match(/^\/topics\/([^/]+)\/access-mode$/);
+      if (accessModeMatch && req.method === "POST") {
+        const topicId = decodeURIComponent(accessModeMatch[1]);
+        const body = await bodyRecord(req);
+        const userId = requiredText(body.userId, "userId");
+        const accessMode = requiredText(body.accessMode, "accessMode");
+        if (accessMode !== "private" && accessMode !== "shared") {
+          return jsonError(400, `Unknown access mode: ${accessMode}`);
+        }
+        const result = switchTopicAccessMode({ topicId, userId, accessMode });
+        if (!result.ok) return jsonError(400, result.error);
+        return Response.json({
+          ok: true,
+          accessMode: result.accessMode,
+          result: result.text,
+        });
       }
 
       const effortMatch = path.match(/^\/topics\/([^/]+)\/effort$/);

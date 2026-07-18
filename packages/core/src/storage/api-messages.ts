@@ -21,6 +21,8 @@ function initializeApiMessagesSchema(): void {
     parent_id TEXT,
     author_id TEXT NOT NULL,
     source_adapter TEXT,
+    source_node TEXT,
+    source_message_id TEXT,
     text TEXT NOT NULL,
     query_id TEXT,
     agent_type TEXT,
@@ -42,6 +44,12 @@ function initializeApiMessagesSchema(): void {
   } catch {
     // Column already exists.
   }
+  try {
+    db.exec("ALTER TABLE api_messages ADD COLUMN source_node TEXT");
+  } catch {}
+  try {
+    db.exec("ALTER TABLE api_messages ADD COLUMN source_message_id TEXT");
+  } catch {}
   try {
     db.exec("ALTER TABLE api_messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0");
   } catch {
@@ -100,6 +108,8 @@ export interface ApiMessageRow {
   parent_id: string | null;
   author_id: string;
   source_adapter: string | null;
+  source_node: string | null;
+  source_message_id: string | null;
   text: string;
   query_id: string | null;
   agent_type: string | null;
@@ -152,6 +162,8 @@ function rowToDto(r: ApiMessageRow): MessageDto {
     parentId: r.parent_id ?? undefined,
     authorId: r.author_id,
     sourceAdapter: r.source_adapter ?? undefined,
+    sourceNode: r.source_node ?? undefined,
+    sourceMessageId: r.source_message_id ?? undefined,
     text: r.text,
     queryId: r.query_id ?? undefined,
     agentType: (r.agent_type as AgentKind | null) ?? undefined,
@@ -198,8 +210,8 @@ export function appendApiMessage(msg: MessageDto, options: AppendApiMessageOptio
     const result = db
       .query(
         `INSERT INTO api_messages
-         (id, topic_id, parent_id, author_id, source_adapter, text, query_id, agent_type, model, attachments, usage, deleted, edited_at, reactions, kind, ask_user_question, subagent_card, mentions, thread_root_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (id, topic_id, parent_id, author_id, source_adapter, source_node, source_message_id, text, query_id, agent_type, model, attachments, usage, deleted, edited_at, reactions, kind, ask_user_question, subagent_card, mentions, thread_root_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO NOTHING`,
       )
       .run(
@@ -208,6 +220,8 @@ export function appendApiMessage(msg: MessageDto, options: AppendApiMessageOptio
         msg.parentId ?? null,
         msg.authorId,
         msg.sourceAdapter ?? null,
+        msg.sourceNode ?? null,
+        msg.sourceMessageId ?? null,
         msg.text,
         msg.queryId ?? null,
         msg.agentType ?? null,

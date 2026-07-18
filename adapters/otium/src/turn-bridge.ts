@@ -1,5 +1,5 @@
 /**
- * Worker-side peer turn execution. Each hub room maps to one hidden local
+ * Worker-side peer turn execution. Each hub room maps to one visible local
  * mirror topic (otium_peer_sessions) that reuses negotium's normal turn
  * pipeline — session resume, MCP catalog, project cwd, abort/preempt.
  *
@@ -72,10 +72,10 @@ export type ProvisionResult =
   | { ok: false; error: string; status: number };
 
 /**
- * Idempotent hidden-mirror upsert keyed on (hostCellId, hostTopicId). The
- * mirror has explicit `visibility: hidden`. `isSubagent` remains separate
- * execution metadata (MCP whitelist not inherited); `canSpawnSubagents` is
- * carried separately in the per-turn peerBridge context.
+ * Idempotent mirror upsert keyed on (hostCellId, hostTopicId). The
+ * mirror has explicit visible access so Terminal users can inspect it. It is
+ * a top-level room; `canSpawnSubagents` is carried separately in the per-turn
+ * peerBridge context while the peer binding prevents publication loops.
  */
 export function provisionMirrorTopic(
   hostCellId: string,
@@ -121,8 +121,8 @@ export function provisionMirrorTopic(
       ? (execution.effort as EffortLevel)
       : (current?.defaultEffort ?? "medium"),
     participants: [{ userId: payload.userId, role: "owner" }],
-    isSubagent: true,
-    visibility: "hidden",
+    isSubagent: undefined,
+    visibility: "visible",
     accessMode: "shared",
     ...(execution.description ? { description: execution.description } : {}),
     createdAt: current?.createdAt ?? now,
@@ -251,6 +251,8 @@ export function runPeerTurn(
         origin: "user",
         requestId: payload.requestId,
         injectAuthorId: payload.userId,
+        injectSourceNode: hostCellId,
+        ...(payload.sourceMessageId ? { injectSourceMessageId: payload.sourceMessageId } : {}),
         attachments: payload.attachments,
         visualTools: true,
         fileDeliveryTools: true,

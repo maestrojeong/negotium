@@ -322,6 +322,25 @@ export function saveJoin(join: OtiumJoin, options: SaveJoinOptions = {}): string
   return withJoinCredentialLock(() => saveJoinWhileLocked(join, options));
 }
 
+/** Remove persisted join credentials after the runtime privacy downgrade. */
+export function removeJoin(): boolean {
+  return withJoinCredentialLock(() => {
+    const path = joinFilePath();
+    if (!existsSync(path)) return false;
+    if (lstatSync(path).isSymbolicLink()) {
+      throw new Error(`refusing to remove symlinked Otium join file at ${path}`);
+    }
+    unlinkSync(path);
+    const directoryFd = openSync(dirname(path), "r");
+    try {
+      fsyncSync(directoryFd);
+    } finally {
+      closeSync(directoryFd);
+    }
+    return true;
+  });
+}
+
 /**
  * Load join credentials. Env triple (OTIUM_CENTRAL_URL / OTIUM_CELL_ID /
  * OTIUM_CELL_SECRET) wins when all three are set — same values `negotium

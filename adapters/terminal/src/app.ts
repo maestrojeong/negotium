@@ -943,6 +943,34 @@ export class TerminalApp {
       this.#queueRender();
       return;
     }
+    if (command === "public" || command === "private") {
+      if (args.length > 0) {
+        this.#state = { ...this.#state, notice: `Usage: /${command}` };
+        this.#queueRender();
+        return;
+      }
+      const topic = activeTopic(this.#state);
+      if (!topic) {
+        this.#state = { ...this.#state, notice: "No topic selected" };
+        this.#queueRender();
+        return;
+      }
+      try {
+        const notice = await this.#client.setAccessMode(
+          topic,
+          command === "public" ? "shared" : "private",
+        );
+        await this.#refreshTopics(topic.title);
+        this.#state = { ...this.#state, notice };
+      } catch (error) {
+        this.#state = {
+          ...this.#state,
+          notice: error instanceof Error ? error.message : String(error),
+        };
+      }
+      this.#queueRender();
+      return;
+    }
     if (command === "compact") {
       const topic = activeTopic(this.#state);
       if (!topic) {

@@ -466,7 +466,8 @@ function helpLines(): UiLine[] {
     line("  Esc/Ctrl-C stop active turn · Ctrl-C twice when idle to quit"),
     line(""),
     line("  Commands", { fg: theme.cyan, bold: true }),
-    line("  /new  /model  /effort  /topics  /fork  /spawn  /del  /copy"),
+    line("  /new  /model  /effort  /topics  /public  /private"),
+    line("  /fork  /spawn  /del  /copy"),
     line("  /abort  /help  /quit", { fg: theme.muted }),
   ];
 }

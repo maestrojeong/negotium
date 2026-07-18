@@ -19,8 +19,10 @@ import {
   type SaveVaultEntryResult,
   saveVaultEntry,
   submitUserMessage,
+  switchTopicAccessMode,
   switchTopicEffort,
   switchTopicModel,
+  type TopicAccessMode,
   type TopicDto,
   topicService,
   type VaultEntry,
@@ -64,6 +66,7 @@ export interface NegotiumClient {
   compactTopic(topic: TopicDto): Promise<string>;
   setModel(topic: TopicDto, model: string): ClientResult<string>;
   setEffort(topic: TopicDto, effort: EffortLevel): ClientResult<string>;
+  setAccessMode(topic: TopicDto, accessMode: TopicAccessMode): ClientResult<string>;
   deleteTopic(topic: TopicDto): Promise<void>;
   sendMessage(topic: TopicDto, text: string): ClientResult<MessageDto>;
   answerQuestion(
@@ -224,6 +227,16 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
 
   setEffort(topic: TopicDto, effort: EffortLevel): string {
     const result = switchTopicEffort({ topicId: topic.id, userId: this.#userId, effort });
+    if (!result.ok) throw new Error(result.error);
+    return result.text;
+  }
+
+  setAccessMode(topic: TopicDto, accessMode: TopicAccessMode): string {
+    const result = switchTopicAccessMode({
+      topicId: topic.id,
+      userId: this.#userId,
+      accessMode,
+    });
     if (!result.ok) throw new Error(result.error);
     return result.text;
   }
@@ -464,6 +477,14 @@ export class RemoteNegotiumClient implements NegotiumClient {
       body: JSON.stringify({ userId: this.#userId, effort }),
     });
     return String(result.result ?? `Effort set to '${effort}'.`);
+  }
+
+  async setAccessMode(topic: TopicDto, accessMode: TopicAccessMode): Promise<string> {
+    const result = await this.#request(`/topics/${encodeURIComponent(topic.id)}/access-mode`, {
+      method: "POST",
+      body: JSON.stringify({ userId: this.#userId, accessMode }),
+    });
+    return String(result.result ?? `Access mode set to '${accessMode}'.`);
   }
 
   async deleteTopic(topic: TopicDto): Promise<void> {

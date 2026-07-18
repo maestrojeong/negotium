@@ -135,6 +135,33 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
       await joinCommand(commandArgs);
       break;
     }
+    case "leave":
+    case "disconnect": {
+      if (commandArgs.length > 0) throw new Error(`usage: negotium otium ${command}`);
+      if (
+        process.env.OTIUM_CENTRAL_URL ||
+        process.env.OTIUM_CELL_ID ||
+        process.env.OTIUM_CELL_SECRET
+      ) {
+        throw new Error(
+          "Otium join is configured by environment; remove OTIUM_CENTRAL_URL, OTIUM_CELL_ID, and OTIUM_CELL_SECRET to disconnect",
+        );
+      }
+      const { configureOtiumCentral } = await import("@/central");
+      const { loadJoin, removeJoin } = await import("@/join");
+      const { disconnectSharedTopics } = await import("@/shared-topic-sync");
+      const join = loadJoin();
+      if (!join) throw new Error("not joined to an Otium workspace");
+      configureOtiumCentral(join);
+      try {
+        await disconnectSharedTopics(join);
+        removeJoin();
+      } finally {
+        configureOtiumCentral(null);
+      }
+      console.log("disconnected from Otium; local shared topics are now private");
+      break;
+    }
     case "serve": {
       const { NEGOTIUM_PORT } = await import("@negotium/core");
       const { runOtiumSidecar } = await import("@/sidecar");
@@ -200,9 +227,10 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
         [
           "negotium otium — attach a Negotium node to an Otium workspace",
           "",
-          "usage: negotium otium <join|serve|bindings|share|private> [args]",
+          "usage: negotium otium <join|leave|serve|bindings|share|private> [args]",
           "",
           "  join <code>   store credentials from an Otium invite code",
+          "  leave         delete Hub copies, make local topics private, and remove credentials",
           "  serve [--port <port>] [--relay <url>]",
           "                 run peer routes and an outbound relay tunnel",
           "  bindings      list internal mirrors and shared topic bindings",

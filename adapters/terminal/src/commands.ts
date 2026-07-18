@@ -11,6 +11,8 @@ export const TERMINAL_COMMANDS: readonly TerminalCommand[] = [
   { name: "model", usage: "/model", description: "choose the model" },
   { name: "effort", usage: "/effort", description: "choose reasoning effort" },
   { name: "topics", usage: "/topics", description: "open topic picker" },
+  { name: "public", usage: "/public", description: "share this topic with Otium Hub" },
+  { name: "private", usage: "/private", description: "make this topic local-only" },
   {
     name: "fork",
     usage: "/fork [name]",

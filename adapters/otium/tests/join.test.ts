@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, statSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { DATA_DIR } from "@negotium/core";
-import { joinFilePath, loadJoin, parseInviteCode, saveJoin } from "@/join";
+import { joinFilePath, loadJoin, parseInviteCode, removeJoin, saveJoin } from "@/join";
 
 function encode(value: unknown): string {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -97,6 +97,13 @@ describe("saveJoin / loadJoin", () => {
     saveJoin(join);
     expect(saveJoin(join)).toBe(joinFilePath());
     expect(loadJoin()).toEqual(join);
+  });
+
+  test("removes persisted credentials idempotently", () => {
+    saveJoin({ central: "https://central.example", cellId: "cell_a", secret: "rcs_a" });
+    expect(removeJoin()).toBe(true);
+    expect(loadJoin()).toBeNull();
+    expect(removeJoin()).toBe(false);
   });
 
   test("requires explicit replacement of different credentials", () => {
