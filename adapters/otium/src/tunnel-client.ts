@@ -106,6 +106,11 @@ interface PendingHttp {
   abort: AbortController;
   /** Set while a chunked request body is being replayed into local fetch. */
   bodyController: ReadableStreamDefaultController<Uint8Array> | null;
+  body: ReadableStream<Uint8Array> | undefined;
+  method: string;
+  path: string;
+  headers: Headers;
+  started: boolean;
 }
 
 interface BridgedSocket {
@@ -375,6 +380,7 @@ export class TunnelClient {
         const pending = this.pendingHttp.get(frame.id);
         try {
           pending?.bodyController?.enqueue(fromB64(frame.dataB64));
+          if (pending) this.startPendingHttp(frame.id, pending);
         } catch {
           // request already settled locally
         }
@@ -384,6 +390,7 @@ export class TunnelClient {
         const pending = this.pendingHttp.get(frame.id);
         try {
           pending?.bodyController?.close();
+          if (pending) this.startPendingHttp(frame.id, pending);
         } catch {
           // request already settled locally
         }
@@ -433,23 +440,44 @@ export class TunnelClient {
 
   private startHttpRequest(frame: Extract<RelayToNodeFrame, { type: "http_req_head" }>): void {
     const abort = new AbortController();
-    const pending: PendingHttp = { abort, bodyController: null };
-    this.pendingHttp.set(frame.id, pending);
-
-    let body: ReadableStream<Uint8Array> | undefined;
+    const headers = new Headers();
+    for (const [name, value] of frame.headers) headers.append(name, value);
+    const pending: PendingHttp = {
+      abort,
+      bodyController: null,
+      body: undefined,
+      method: frame.method,
+      path: frame.path,
+      headers,
+      started: false,
+    };
     if (frame.hasBody) {
-      body = new ReadableStream<Uint8Array>({
+      pending.body = new ReadableStream<Uint8Array>({
         start: (controller) => {
           pending.bodyController = controller;
         },
       });
     }
+    this.pendingHttp.set(frame.id, pending);
 
-    const headers = new Headers();
-    for (const [name, value] of frame.headers) headers.append(name, value);
+    // Bun can reject a fetch whose streaming request body has not produced its
+    // first chunk yet. Body-bearing requests therefore start on the first
+    // chunk (or on end for an empty body); bodyless requests start immediately.
+    if (!frame.hasBody) this.startPendingHttp(frame.id, pending);
+  }
 
-    void this.replayHttp(frame.id, frame.method, frame.path, headers, body, abort).finally(() => {
-      this.pendingHttp.delete(frame.id);
+  private startPendingHttp(id: string, pending: PendingHttp): void {
+    if (pending.started || pending.abort.signal.aborted) return;
+    pending.started = true;
+    void this.replayHttp(
+      id,
+      pending.method,
+      pending.path,
+      pending.headers,
+      pending.body,
+      pending.abort,
+    ).finally(() => {
+      this.pendingHttp.delete(id);
     });
   }
 

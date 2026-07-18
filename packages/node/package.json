@@ -1,6 +1,6 @@
 {
   "name": "@negotium/node",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "private": true,
   "type": "module",
   "description": "Composable Negotium node host used by CLIs and channel adapters",

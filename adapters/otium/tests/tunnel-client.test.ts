@@ -352,7 +352,7 @@ describe("Otium relay tunnel client", () => {
     }
   });
 
-  test("replays a chunked HTTP request and returns chunked response frames", async () => {
+  test("waits for a delayed first body chunk before replaying the HTTP request", async () => {
     const originalSocket = relay.socket;
     expect(originalSocket).not.toBeNull();
     relay.frames.length = 0;
@@ -367,6 +367,9 @@ describe("Otium relay tunnel client", () => {
         hasBody: true,
       }),
     );
+    await Bun.sleep(50);
+    expect(relay.frames.some((frame) => frame.type.startsWith("http_res_"))).toBe(false);
+
     originalSocket?.send(encodeFrame({ type: "http_req_chunk", id, dataB64: btoa("hello") }));
     originalSocket?.send(encodeFrame({ type: "http_req_end", id }));
     await waitFor(() => relay.frames.some((frame) => frame.type === "http_res_end"));
@@ -382,6 +385,33 @@ describe("Otium relay tunnel client", () => {
         ),
       ),
     ).toBe("echo:hello");
+  });
+
+  test("starts an empty body-bearing request when the end frame arrives", async () => {
+    const socket = relay.socket;
+    expect(socket).not.toBeNull();
+    relay.frames.length = 0;
+    const id = "http-empty-body";
+    socket?.send(
+      encodeFrame({
+        type: "http_req_head",
+        id,
+        method: "POST",
+        path: "/echo",
+        headers: [["content-type", "text/plain"]],
+        hasBody: true,
+      }),
+    );
+    await Bun.sleep(25);
+    expect(relay.frames.some((frame) => frame.type.startsWith("http_res_"))).toBe(false);
+    socket?.send(encodeFrame({ type: "http_req_end", id }));
+
+    await waitFor(() => relay.frames.some((frame) => frame.type === "http_res_end"));
+    expect(relay.frames.find((frame) => frame.type === "http_res_head")).toMatchObject({
+      type: "http_res_head",
+      id,
+      status: 201,
+    });
   });
 
   test("reconnects after the relay closes the tunnel", async () => {

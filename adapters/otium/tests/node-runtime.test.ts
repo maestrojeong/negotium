@@ -37,6 +37,41 @@ describe("Otium node adapter control bridge", () => {
 });
 
 describe("Otium sidecar proxy", () => {
+  test("buffers and forwards POST payloads to the canonical Node", async () => {
+    let forwarded: Request | undefined;
+    const response = await proxyOtiumPeerRequest(
+      new Request("http://sidecar/api/v1/peer/provision", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ topicId: "topic-1" }),
+      }),
+      {
+        inspectNode: async () => ({
+          running: true,
+          info: {
+            schemaVersion: 1 as const,
+            protocolVersion: 1,
+            nodeVersion: "test",
+            pid: 4000,
+            port: 4000,
+            stateDir: "/tmp/test",
+            startedAt: new Date().toISOString(),
+          },
+        }),
+        fetch: (async (request: Request) => {
+          forwarded = request;
+          return Response.json({ ok: true });
+        }) as typeof fetch,
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(forwarded?.url).toBe(
+      `http://127.0.0.1:4000${OTIUM_ADAPTER_CONTROL_PREFIX}/api/v1/peer/provision`,
+    );
+    expect(await forwarded?.json()).toEqual({ topicId: "topic-1" });
+  });
+
   test("discovers the advertised Node for every request so restarts reconnect", async () => {
     const ports = [41001, 41002];
     const seen: string[] = [];
