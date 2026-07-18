@@ -36,6 +36,7 @@ import {
   isSensitivePath,
   logger,
   type MessageDto,
+  prepareDeliveryAck,
   RUNTIME_MCP_BASE_PATH,
   RUNTIME_MCP_KEY,
   type RuntimeMcpContext,
@@ -54,6 +55,15 @@ import { SseTransport } from "#sse-transport";
 const SSE_PATH = `${RUNTIME_MCP_BASE_PATH}/sse`;
 const SSE_MESSAGE_PATH = `${RUNTIME_MCP_BASE_PATH}/message`;
 const STREAMABLE_PATH = `${RUNTIME_MCP_BASE_PATH}/mcp`;
+
+// send_file's own delivery attempt (sendPhoto/sendDocument, no retry-outbox
+// hop) settles within one HTTP round trip — generous enough for slow
+// networks without stalling the tool call for minutes.
+const FILE_DELIVERY_ACK_TIMEOUT_MS = 30_000;
+// RuntimeBus peers poll every 100ms by default. This window lets a separate
+// adapter process claim the message without imposing the full delivery wait
+// on web-only or otherwise unclaimed uploads.
+const FILE_DELIVERY_CLAIM_TIMEOUT_MS = 500;
 
 const sseSessions = new Map<
   string,
@@ -150,14 +160,36 @@ async function deliverFile(ctx: RuntimeMcpContext, filePath: string) {
     id: randomUUID(),
     topicId: ctx.topicId,
     authorId: "ai",
+    sourceAdapter: "runtime.send_file",
     text: `📎 ${attachment.filename}`,
     agentType: ctx.agent,
     model: ctx.model ?? cfg?.model ?? "unknown",
     attachments: [attachment],
+    deliveryAckRequested: true,
     createdAt: new Date().toISOString(),
   };
-  appendApiMessage(msg);
-  WsHub.get().broadcastMessage(ctx.topicId, msg);
+  // Install before broadcast so an in-process adapter cannot resolve the ack
+  // synchronously before the waiter exists. The same signals cross process
+  // through the durable RuntimeBus event log.
+  const ackWaiter = prepareDeliveryAck(
+    msg.id,
+    FILE_DELIVERY_CLAIM_TIMEOUT_MS,
+    FILE_DELIVERY_ACK_TIMEOUT_MS,
+  );
+  try {
+    appendApiMessage(msg);
+    WsHub.get().broadcastMessage(ctx.topicId, msg);
+  } catch (err) {
+    ackWaiter.cancel();
+    throw err;
+  }
+
+  const ack = await ackWaiter.promise;
+  if (ack && !ack.ok) {
+    return errorResult(
+      `Error: File was stored but the channel failed to deliver it${ack.error ? ` (${ack.error})` : ""}.`,
+    );
+  }
 
   return textResult(
     [
@@ -293,33 +325,35 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
     }
   }
 
-  server.tool(
-    "send_file",
-    "Send a local file to the user in the chat. Use this when you want to share a file (image, document, PDF, code, etc.) with the user. The file will appear as a downloadable item in the chat.",
-    { file_path: z.string().describe("Absolute path to the file to send") },
-    async ({ file_path }) => deliverFile(ctx, file_path),
-  );
+  if (ctx.fileDeliveryTools === true) {
+    server.tool(
+      "send_file",
+      "Send a local file to the user in the chat. Use this when you want to share a file (image, document, PDF, code, etc.) with the user. The file will appear as a downloadable item in the chat.",
+      { file_path: z.string().describe("Absolute path to the file to send") },
+      async ({ file_path }) => deliverFile(ctx, file_path),
+    );
 
-  server.tool(
-    "send_files",
-    "Send multiple local files to the user in the chat at once.",
-    { file_paths: z.array(z.string()).describe("Array of absolute file paths to send") },
-    async ({ file_paths }) => {
-      const results = await Promise.all(file_paths.map((filePath) => deliverFile(ctx, filePath)));
-      const hasError = results.some((result) => "isError" in result && result.isError);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: results
-              .map((result) => result.content.map((c) => c.text).join("\n"))
-              .join("\n\n"),
-          },
-        ],
-        ...(hasError ? { isError: true as const } : {}),
-      };
-    },
-  );
+    server.tool(
+      "send_files",
+      "Send multiple local files to the user in the chat at once.",
+      { file_paths: z.array(z.string()).describe("Array of absolute file paths to send") },
+      async ({ file_paths }) => {
+        const results = await Promise.all(file_paths.map((filePath) => deliverFile(ctx, filePath)));
+        const hasError = results.some((result) => "isError" in result && result.isError);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: results
+                .map((result) => result.content.map((c) => c.text).join("\n"))
+                .join("\n\n"),
+            },
+          ],
+          ...(hasError ? { isError: true as const } : {}),
+        };
+      },
+    );
+  }
 
   registerNodeTools(server, ctx);
 

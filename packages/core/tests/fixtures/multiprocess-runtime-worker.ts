@@ -1,4 +1,4 @@
-const [mode, value = ""] = process.argv.slice(2);
+const [mode, value = "", extra = ""] = process.argv.slice(2);
 
 switch (mode) {
   case "bus-listen": {
@@ -15,6 +15,21 @@ switch (mode) {
   case "bus-write": {
     const { runtimeBus } = await import("../../src/index");
     runtimeBus().broadcastTopicUpdated(value);
+    process.stdout.write("WROTE\n");
+    break;
+  }
+  case "delivery-ack-listen": {
+    const { prepareDeliveryAck } = await import("../../src/index");
+    const waiter = prepareDeliveryAck(extra, 1_000, 1_000);
+    process.stdout.write("READY\n");
+    const result = await waiter.promise;
+    process.stdout.write(`ACK ${JSON.stringify(result)}\n`);
+    break;
+  }
+  case "delivery-ack-write": {
+    const { claimDeliveryAck, resolveDeliveryAck } = await import("../../src/index");
+    claimDeliveryAck(value, extra);
+    resolveDeliveryAck(value, extra, { ok: true });
     process.stdout.write("WROTE\n");
     break;
   }

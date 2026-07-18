@@ -44,9 +44,19 @@ export interface TelegramClientLike {
   getFileLink?(fileId: string): Promise<string>;
   /** Send a local file as a photo. Optional — when absent the adapter falls
    *  back to {@link TelegramClientLike.sendDocument} or a plain path notice. */
-  sendPhoto?(chatId: number, photo: string, opts?: Record<string, unknown>): Promise<unknown>;
+  sendPhoto?(
+    chatId: number,
+    photo: string,
+    opts?: Record<string, unknown>,
+    fileOptions?: { filename?: string; contentType?: string; knownLength?: number },
+  ): Promise<unknown>;
   /** Send a local file as a document. */
-  sendDocument?(chatId: number, doc: string, opts?: Record<string, unknown>): Promise<unknown>;
+  sendDocument?(
+    chatId: number,
+    doc: string,
+    opts?: Record<string, unknown>,
+    fileOptions?: { filename?: string; contentType?: string; knownLength?: number },
+  ): Promise<unknown>;
   /** Chat action indicator ("typing", …). Best-effort, optional. */
   sendChatAction?(chatId: number, action: string, opts?: Record<string, unknown>): Promise<unknown>;
 }

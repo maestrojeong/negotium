@@ -566,7 +566,7 @@ if (!isReplyOnly) {
 
       if (currentDepth + 1 > MAX_TELL_DEPTH) {
         return mcpError(
-          `Error: depth 한도 도달 (현재 ${currentDepth}, 최대 ${MAX_TELL_DEPTH}). 더 이상 tell_session 체인을 만들 수 없습니다.`,
+          `Error: depth limit reached (current ${currentDepth}, max ${MAX_TELL_DEPTH}). Cannot build any more tell_session chains.`,
         );
       }
 

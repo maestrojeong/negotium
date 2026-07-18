@@ -23,21 +23,23 @@ test("submitUserMessage persists and publishes before starting the AI turn", () 
       topic,
       userId,
       text: "one shared submission flow",
-      sourceAdapter: "terminal",
+      sourceAdapter: "telegram",
       visualTools: false,
-      startTurn: ({ prompt, visualTools }) => {
+      fileDeliveryTools: true,
+      startTurn: ({ prompt, visualTools, fileDeliveryTools }) => {
         expect(publishedMessageId).toBeString();
         expect(getApiMessage(topic.id, publishedMessageId!)).not.toBeNull();
         expect(observed).toEqual(["published"]);
         expect(prompt).toBe("one shared submission flow");
         expect(visualTools).toBe(false);
+        expect(fileDeliveryTools).toBe(true);
         return "query-shared";
       },
     });
 
     expect(result.queryId).toBe("query-shared");
     expect(getApiMessage(topic.id, result.message.id)).toMatchObject(result.message);
-    expect(getApiMessage(topic.id, result.message.id)?.sourceAdapter).toBe("terminal");
+    expect(getApiMessage(topic.id, result.message.id)?.sourceAdapter).toBe("telegram");
   } finally {
     unsubscribe();
   }

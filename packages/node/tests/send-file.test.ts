@@ -31,6 +31,7 @@ test("runtime send_file stores and serves a downloadable node attachment", async
     cwd: root,
     agent: "codex",
     model: "gpt-5.6-luna",
+    fileDeliveryTools: true,
   };
   const token = issueRuntimeMcpToken(ctx);
   const client = new Client({ name: "node-send-file-test", version: "1.0.0" });

@@ -93,6 +93,20 @@ describe("cross-process runtime", () => {
     expect(await listener.child.exited).toBe(0);
   });
 
+  test("returns a delivery acknowledgement between independent processes", async () => {
+    const env = stateEnv();
+    const topicId = `topic-${crypto.randomUUID()}`;
+    const messageId = crypto.randomUUID();
+    const listener = spawnWorker(env, "delivery-ack-listen", topicId, messageId);
+    expect(await listener.lines.next()).toBe("READY");
+
+    const writer = spawnWorker(env, "delivery-ack-write", topicId, messageId);
+    expect(await writer.lines.next()).toBe("WROTE");
+    expect(await writer.child.exited).toBe(0);
+    expect(await listener.lines.next()).toBe('ACK {"ok":true}');
+    expect(await listener.child.exited).toBe(0);
+  });
+
   test("enforces singleton roles across processes", async () => {
     const env = stateEnv();
     const role = `adapter:test:${crypto.randomUUID()}`;

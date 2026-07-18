@@ -37,10 +37,12 @@
  */
 
 import { existsSync } from "node:fs";
+import { basename, extname } from "node:path";
 import type { NegotiumAdapterHandle } from "@negotium/adapter-sdk";
 import { createDurableOutboxWorker } from "@negotium/adapter-sdk/outbox";
 import {
   type AgentKind,
+  claimDeliveryAck,
   composeAttachmentPrompt,
   ensurePersonalGeneral,
   errMsg,
@@ -60,6 +62,8 @@ import {
   type MessageDto,
   type RegisterTopicOptions,
   renderTurnFooter,
+  resolveDeliveryAck,
+  resolveUploadedFilePathByFileId,
   runtimeBus,
   startAiTurn,
   stripFileTags,
@@ -160,10 +164,17 @@ interface ChatMapping {
 }
 
 /** One outbound unit: rendered text plus files referenced by [FILE:] tags. */
+interface OutboundFile {
+  path: string;
+  filename: string;
+  mimeType?: string;
+}
+
 interface OutboundPayload {
   text: string;
-  files: string[];
+  files: OutboundFile[];
   runtimeMessageId?: string;
+  deliveryAckRequested?: boolean;
 }
 
 interface DeliveredMessageRef {
@@ -369,7 +380,6 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   let stopped = false;
   let botIdentity: Awaited<ReturnType<NonNullable<TelegramClientLike["getMe"]>>> | undefined;
   let botIdentityPromise: Promise<typeof botIdentity> | undefined;
-
   function beginRuntimeDelivery(messageId: string | undefined): void {
     if (!messageId) return;
     activeRuntimeDeliveries.set(messageId, (activeRuntimeDeliveries.get(messageId) ?? 0) + 1);
@@ -934,40 +944,64 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     return delivered;
   }
 
-  /** Send one produced file (from a [FILE:] tag): photos by extension via
-   *  sendPhoto, everything else via sendDocument; sensitive paths blocked;
-   *  missing files surface as a plain-text notice (model intent was explicit). */
+  /** Outcome of one file-send attempt. `delivered` is true only when the
+   *  file's actual bytes reached Telegram (sendPhoto/sendDocument) — the
+   *  missing-file and no-file-surface fallbacks still produce a `ref` (a
+   *  text notice was sent) but are not a real delivery of the attachment. */
+  interface SendFileOutcome {
+    ref: DeliveredMediaRef | null;
+    delivered: boolean;
+    error?: string;
+  }
+
+  /** Send one produced file (from a [FILE:] tag, or a resolved send_file/
+   *  send_files attachment): photos by extension via sendPhoto, everything
+   *  else via sendDocument; sensitive paths blocked; missing files surface
+   *  as a plain-text notice (model intent was explicit). */
   async function sendFile(
     chatId: number,
     threadId: number | undefined,
-    path: string,
-  ): Promise<DeliveredMediaRef | null> {
+    file: OutboundFile,
+  ): Promise<SendFileOutcome> {
+    const { path } = file;
     const base = threadOpts(threadId);
     if (isSensitivePath(path)) {
       logger.warn({ path, chatId }, "telegram adapter: blocked sensitive file path");
-      return null;
+      return { ref: null, delivered: false, error: "path matches the sensitive-file blacklist" };
     }
     if (!existsSync(path)) {
       const sent = await client.sendMessage(chatId, `File: ${path}`, base).catch(() => null);
       const messageId = sentMessageId(sent);
-      return messageId === null ? null : { messageId, kind: "media" };
+      return {
+        ref: messageId === null ? null : { messageId, kind: "media" },
+        delivered: false,
+        error: "file not found on disk",
+      };
     }
-    const ext = path.split(".").pop()?.toLowerCase() ?? "";
+    const ext = extname(path).slice(1).toLowerCase();
+    const fileOptions = {
+      filename: basename(file.filename) || basename(path),
+      ...(file.mimeType ? { contentType: file.mimeType } : {}),
+    };
     try {
       let sent: unknown;
+      let delivered = true;
+      let error: string | undefined;
       if (PHOTO_EXTS.has(ext) && typeof client.sendPhoto === "function") {
-        sent = await client.sendPhoto(chatId, path, base);
+        sent = await client.sendPhoto(chatId, path, base, fileOptions);
       } else if (typeof client.sendDocument === "function") {
-        sent = await client.sendDocument(chatId, path, base);
+        sent = await client.sendDocument(chatId, path, base, fileOptions);
       } else {
         // Client has no file surface — at least point the user at the path.
         sent = await client.sendMessage(chatId, `File: ${path}`, base);
+        delivered = false;
+        error = "this Telegram client cannot send file attachments";
       }
       const messageId = sentMessageId(sent);
-      return messageId === null ? null : { messageId, kind: "media" };
+      return { ref: messageId === null ? null : { messageId, kind: "media" }, delivered, error };
     } catch (err) {
       logger.warn({ err, path, chatId }, "telegram adapter: file send failed");
-      return null;
+      return { ref: null, delivered: false, error: errMsg(err, "file send failed") };
     }
   }
 
@@ -975,10 +1009,13 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     chatId: number,
     threadId: number | undefined,
     payload: OutboundPayload,
-  ): Promise<void> {
-    if (payload.runtimeMessageId && deletedRuntimeMessageIds.has(payload.runtimeMessageId)) return;
+  ): Promise<SendFileOutcome[]> {
+    if (payload.runtimeMessageId && deletedRuntimeMessageIds.has(payload.runtimeMessageId)) {
+      return [];
+    }
     beginRuntimeDelivery(payload.runtimeMessageId);
     const deliveredRefs: DeliveredMessageRef[] = [];
+    const fileOutcomes: SendFileOutcome[] = [];
     try {
       let text = payload.text;
       let footer: string | null = null;
@@ -1009,12 +1046,13 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
           })),
         );
       }
-      for (const path of payload.files) {
+      for (const file of payload.files) {
         if (payload.runtimeMessageId && deletedRuntimeMessageIds.has(payload.runtimeMessageId)) {
           break;
         }
-        const delivered = await sendFile(chatId, threadId, path);
-        if (delivered) deliveredRefs.push({ ...delivered, chatId, threadId });
+        const outcome = await sendFile(chatId, threadId, file);
+        fileOutcomes.push(outcome);
+        if (outcome.ref) deliveredRefs.push({ ...outcome.ref, chatId, threadId });
       }
       if (payload.runtimeMessageId && deliveredRefs.length > 0) {
         if (deletedRuntimeMessageIds.has(payload.runtimeMessageId)) {
@@ -1026,6 +1064,30 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     } finally {
       endRuntimeDelivery(payload.runtimeMessageId);
     }
+    return fileOutcomes;
+  }
+
+  /** Deliver every fan-out target, then publish exactly one aggregate ack. */
+  async function deliverToTargets(
+    topicId: string,
+    targets: Iterable<ChatMapping>,
+    payload: OutboundPayload,
+  ): Promise<void> {
+    const outcomes: SendFileOutcome[] = [];
+    for (const target of targets) {
+      outcomes.push(...(await deliverPayload(target.chatId, target.threadId, payload)));
+    }
+    if (!payload.deliveryAckRequested || !payload.runtimeMessageId) return;
+    const failed = outcomes.find((outcome) => !outcome.delivered);
+    const missing = outcomes.length === 0;
+    resolveDeliveryAck(topicId, payload.runtimeMessageId, {
+      ok: !failed && !missing,
+      ...(failed?.error
+        ? { error: failed.error }
+        : missing
+          ? { error: "attachment path could not be resolved or delivery was cancelled" }
+          : {}),
+    });
   }
 
   // Per-topic send chains keep messages ordered even when materialization
@@ -1069,13 +1131,11 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     payload: OutboundPayload,
   ): void {
     const targets = [...mappings];
-    enqueueSend(topicId, async () => {
-      for (const m of targets) await deliverPayload(m.chatId, m.threadId, payload);
-    });
+    enqueueSend(topicId, () => deliverToTargets(topicId, targets, payload));
   }
 
   function enqueueTarget(topicId: string, target: ChatMapping, payload: OutboundPayload): void {
-    enqueueSend(topicId, () => deliverPayload(target.chatId, target.threadId, payload));
+    enqueueSend(topicId, () => deliverToTargets(topicId, [target], payload));
   }
 
   // ── forum mode: materialize runtime topics as forum threads ─────────
@@ -1100,11 +1160,16 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     for (const t of store.loadTombstones()) materializeTombstones.set(t.topicId, t.title);
   }
 
-  function deliverFallback(title: string, payload: OutboundPayload): Promise<void> {
-    return deliverPayload(forumChat, undefined, {
+  function deliverFallback(
+    topicId: string,
+    title: string,
+    payload: OutboundPayload,
+  ): Promise<void> {
+    return deliverToTargets(topicId, [{ chatId: forumChat, topicId }], {
       text: payload.text ? `[${title}] ${payload.text}` : "",
       files: payload.files,
       runtimeMessageId: payload.runtimeMessageId,
+      deliveryAckRequested: payload.deliveryAckRequested,
     });
   }
 
@@ -1116,7 +1181,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     for (const payload of buffer) enqueueSend(topicId, () => send(payload));
   }
 
-  function materializeTopic(topic: TopicDto): void {
+  function materializeTopic(topic: TopicDto): boolean {
     if (
       !forumManageTopicsAvailable ||
       suppressMaterialize > 0 ||
@@ -1125,11 +1190,11 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       permissionBlockedTopics.has(topic.id) ||
       materializeTombstones.has(topic.id)
     ) {
-      return;
+      return false;
     }
-    if (!isTopicVisible(topic)) return;
+    if (!isTopicVisible(topic)) return false;
     // Only rooms the adapter's (single) negotium user can see.
-    if (!topic.participants?.some((p) => p.userId === userId)) return;
+    if (!topic.participants?.some((p) => p.userId === userId)) return false;
     const materializationChat = forumChat;
     const pending: PendingMaterialization = { buffer: [], cancelled: false };
     pendingByTopic.set(topic.id, pending);
@@ -1163,7 +1228,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
             );
           }
           flushBuffered(topic.id, pending.buffer, (payload) =>
-            deliverFallback(topic.title, payload),
+            deliverFallback(topic.id, topic.title, payload),
           );
           return;
         }
@@ -1173,7 +1238,9 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
         );
         materializeTombstones.set(topic.id, topic.title);
         store.saveTombstone(topic.id, topic.title);
-        flushBuffered(topic.id, pending.buffer, (payload) => deliverFallback(topic.title, payload));
+        flushBuffered(topic.id, pending.buffer, (payload) =>
+          deliverFallback(topic.id, topic.title, payload),
+        );
         return;
       }
       if (pendingByTopic.get(topic.id) === pending) pendingByTopic.delete(topic.id);
@@ -1192,9 +1259,14 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       }
       bindMapping(materializationChat, threadId, topic.id);
       flushBuffered(topic.id, pending.buffer, (payload) =>
-        deliverPayload(materializationChat, threadId, payload),
+        deliverToTargets(
+          topic.id,
+          [{ chatId: materializationChat, threadId, topicId: topic.id }],
+          payload,
+        ),
       );
     })();
+    return true;
   }
 
   function handleTopicDeleted(topicId: string): void {
@@ -1232,16 +1304,16 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     return undefined;
   }
 
-  function routeMessage(topicId: string, payload: OutboundPayload, queryId?: string): void {
+  function routeMessage(topicId: string, payload: OutboundPayload, queryId?: string): boolean {
     const pending = pendingByTopic.get(topicId);
     if (pending) {
       pending.buffer.push(payload); // thread creation in flight — flushed in order later
-      return;
+      return true;
     }
     const specificTarget = queryId ? targetByQueryId.get(queryId) : undefined;
     if (specificTarget) {
       enqueueTarget(topicId, specificTarget, payload);
-      return;
+      return true;
     }
     const mappings = byTopic.get(topicId);
     if (mappings && mappings.size > 0) {
@@ -1249,27 +1321,27 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       // Terminal or another surface intentionally fan out to every mapped
       // personal General so the owner's channel views stay synchronized.
       enqueueFanout(topicId, mappings, payload);
-      return;
+      return true;
     }
     const tombstoneTitle = materializeTombstones.get(topicId);
     if (tombstoneTitle !== undefined) {
-      enqueueSend(topicId, () => deliverFallback(tombstoneTitle, payload));
-      return;
+      enqueueSend(topicId, () => deliverFallback(topicId, tombstoneTitle, payload));
+      return true;
     }
     const topic = getTopic(topicId);
-    if (!topic) return;
+    if (!topic) return false;
     if (forumMode) {
       if (!forumManageTopicsAvailable || permissionBlockedTopics.has(topicId)) {
-        enqueueSend(topicId, () => deliverFallback(topic.title, payload));
-        return;
+        enqueueSend(topicId, () => deliverFallback(topicId, topic.title, payload));
+        return true;
       }
       // Lazy materialization: first message for a live topic with no binding
       // (topic predates the adapter, missed topic-created, dropped binding…)
       // — create its thread now instead of silently discarding the message.
       // Same suppress/participant rules as the topic-created path.
-      materializeTopic(topic);
+      if (!materializeTopic(topic)) return false;
       pendingByTopic.get(topicId)?.buffer.push(payload);
-      return;
+      return true;
     }
     // DM fallback: a child room (spawn_subagent, fork) descending from a
     // mapped chat topic forwards into that chat with a `[title]` prefix so
@@ -1280,8 +1352,11 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
         text: payload.text ? `[${topic.title}] ${payload.text}` : "",
         files: payload.files,
         runtimeMessageId: payload.runtimeMessageId,
+        deliveryAckRequested: payload.deliveryAckRequested,
       });
+      return true;
     }
+    return false;
   }
 
   function deleteDeliveredRuntimeMessage(topicId: string, messageId: string): void {
@@ -1672,6 +1747,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       text: prompt,
       sourceAdapter: "telegram",
       visualTools: false,
+      fileDeliveryTools: true,
       onDispatched: rememberTarget,
       startTurn: dispatchTurn,
     });
@@ -2288,7 +2364,8 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     const msg = event.payload as MessageDto;
     if (msg.authorId === userId && msg.sourceAdapter === "telegram") return;
     if (msg.kind === "tool") return; // tool chatter stays off the chat
-    if (!msg.text) return;
+    const hasAttachments = Boolean(msg.attachments && msg.attachments.length > 0);
+    if (!msg.text && !hasAttachments) return;
     const runtimeMessageId = msg.authorId === "ai" ? msg.id : undefined;
     if (runtimeMessageId) {
       runtimeMessages.set(runtimeMessageId, msg);
@@ -2300,12 +2377,38 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
         timer.unref?.();
       }
     }
-    // Produced files ride as real attachments; the raw [FILE:] tags are noise.
-    const files = extractFileTagPaths(msg.text);
-    const rawText = files.length > 0 ? stripFileTags(msg.text) : msg.text;
+    // Produced files ride either as [FILE:] tags (channel-agnostic providers)
+    // or as real host-stored attachments (e.g. the send_file/send_files MCP
+    // tools) — resolve both to local paths so they reach sendPhoto/sendDocument.
+    const tagFiles: OutboundFile[] = msg.text
+      ? extractFileTagPaths(msg.text).map((path) => ({ path, filename: basename(path) }))
+      : [];
+    const attachmentFiles = hasAttachments
+      ? (msg.attachments ?? [])
+          .map((attachment): OutboundFile | null => {
+            const path = resolveUploadedFilePathByFileId(attachment.id);
+            if (!path) return null;
+            return {
+              path,
+              filename: basename(attachment.filename) || basename(path),
+              ...(attachment.mimeType ? { mimeType: attachment.mimeType } : {}),
+            };
+          })
+          .filter((file): file is OutboundFile => file !== null)
+      : [];
+    const files = [...tagFiles, ...attachmentFiles];
+    const rawText = tagFiles.length > 0 && msg.text ? stripFileTags(msg.text) : (msg.text ?? "");
     const text = msg.authorId === userId && rawText ? `[From: User] ${rawText}` : rawText;
     if (!text && files.length === 0) return;
-    routeMessage(event.topicId, { text, files, runtimeMessageId }, msg.queryId);
+    const payload: OutboundPayload = {
+      text,
+      files,
+      runtimeMessageId,
+      deliveryAckRequested: msg.deliveryAckRequested === true,
+    };
+    if (routeMessage(event.topicId, payload, msg.queryId) && payload.deliveryAckRequested) {
+      claimDeliveryAck(event.topicId, msg.id);
+    }
   });
 
   if (forumMode) {

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { type RuntimeBusEvent, SqliteRuntimeBus } from "#bus";
+import { type RuntimeBusEvent, runtimeBus, SqliteRuntimeBus, setRuntimeBus } from "#bus";
+import { claimDeliveryAck, prepareDeliveryAck, resolveDeliveryAck } from "#runtime/delivery-ack";
 import { listRecentRuntimeEventsForTopic } from "#storage/runtime-events";
 
 async function eventually(assertion: () => void, timeoutMs = 1_000): Promise<void> {
@@ -16,6 +17,42 @@ async function eventually(assertion: () => void, timeoutMs = 1_000): Promise<voi
 }
 
 describe("SQLite runtime bus", () => {
+  test("carries delivery claims and results between separate bus instances", async () => {
+    const original = runtimeBus();
+    const waiterBus = new SqliteRuntimeBus({
+      sourceId: `ack-waiter-${crypto.randomUUID()}`,
+      pollIntervalMs: 25,
+    });
+    const adapterBus = new SqliteRuntimeBus({
+      sourceId: `ack-adapter-${crypto.randomUUID()}`,
+      pollIntervalMs: 25,
+    });
+    const topicId = `ack-topic-${crypto.randomUUID()}`;
+    const messageId = crypto.randomUUID();
+
+    try {
+      setRuntimeBus(waiterBus);
+      const waiter = prepareDeliveryAck(messageId, 250, 1_000);
+      setRuntimeBus(adapterBus);
+      claimDeliveryAck(topicId, messageId);
+      resolveDeliveryAck(topicId, messageId, { ok: true });
+      expect(await waiter.promise).toEqual({ ok: true });
+    } finally {
+      setRuntimeBus(original);
+    }
+  });
+
+  test("fails a claimed delivery that never settles", async () => {
+    const topicId = `ack-timeout-${crypto.randomUUID()}`;
+    const messageId = crypto.randomUUID();
+    const waiter = prepareDeliveryAck(messageId, 50, 20);
+    claimDeliveryAck(topicId, messageId);
+    expect(await waiter.promise).toEqual({
+      ok: false,
+      error: "channel delivery confirmation timed out",
+    });
+  });
+
   test("delivers local events immediately and peer events through the durable log", async () => {
     const left = new SqliteRuntimeBus({
       sourceId: `left-${crypto.randomUUID()}`,

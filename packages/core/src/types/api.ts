@@ -206,6 +206,8 @@ export interface MessageDto {
   authorAvatarUrl?: string | null;
   text: string;
   attachments?: AttachmentDto[];
+  /** Internal hint: an external channel may claim and acknowledge attachment delivery. */
+  deliveryAckRequested?: boolean;
   queryId?: string;
   agentType?: AgentKind;
   model?: string;

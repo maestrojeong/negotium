@@ -16,11 +16,11 @@ export function stringifyError(err: unknown): string {
 export function authRecoveryHint(agent: AgentKind): string {
   switch (agent) {
     case "claude":
-      return "Claude Code 로그인을 갱신해주세요";
+      return "Please refresh your Claude Code login";
     case "codex":
-      return "`codex login` 으로 다시 로그인해주세요 (~/.codex/auth.json)";
+      return "Please log in again with `codex login` (~/.codex/auth.json)";
     case "maestro":
-      return "DEEPSEEK_API_KEY 환경변수를 확인해주세요";
+      return "Please check the DEEPSEEK_API_KEY environment variable";
   }
 }
 
@@ -31,14 +31,14 @@ export function classifyAgentError(err: unknown, agent: AgentKind): string {
     typeof err === "object" && err !== null
       ? (err as Record<string, unknown>).constructor?.name
       : undefined;
-  if (ctor === "AuthenticationError") return `${name} 인증이 만료되었습니다. ${hint}. (401)`;
+  if (ctor === "AuthenticationError") return `${name} authentication expired. ${hint}. (401)`;
   if (ctor === "RateLimitError")
-    return `${name} 요청 한도를 초과했습니다. 잠시 후 다시 시도해주세요. (429)`;
+    return `${name} request limit exceeded. Please try again in a moment. (429)`;
   if (ctor === "InternalServerError") {
     const status = (err as Record<string, unknown>).status;
     return status === 529
-      ? `${name} 서버가 과부하 상태입니다. 잠시 후 다시 시도해주세요. (529)`
-      : `${name} 서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요. (500)`;
+      ? `${name} server is overloaded. Please try again in a moment. (529)`
+      : `${name} server error occurred. Please try again in a moment. (500)`;
   }
 
   const s = stringifyError(err);
@@ -47,17 +47,17 @@ export function classifyAgentError(err: unknown, agent: AgentKind): string {
       s,
     )
   ) {
-    return `${name} 인증이 만료되었습니다. ${hint}. (401)`;
+    return `${name} authentication expired. ${hint}. (401)`;
   }
   if (/429|rate.limit/i.test(s))
-    return `${name} 요청 한도를 초과했습니다. 잠시 후 다시 시도해주세요. (429)`;
+    return `${name} request limit exceeded. Please try again in a moment. (429)`;
   if (/529|overloaded/i.test(s))
-    return `${name} 서버가 과부하 상태입니다. 잠시 후 다시 시도해주세요. (529)`;
+    return `${name} server is overloaded. Please try again in a moment. (529)`;
   if (/500|internal.server/i.test(s))
-    return `${name} 서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요. (500)`;
+    return `${name} server error occurred. Please try again in a moment. (500)`;
 
   const snippet = s.length > 200 ? `${s.slice(0, 200)}...` : s;
-  return `${name} 오류: ${snippet}`;
+  return `${name} error: ${snippet}`;
 }
 
 export function isSessionExpiredError(message: string): boolean {

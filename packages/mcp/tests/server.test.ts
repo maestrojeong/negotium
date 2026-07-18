@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
+  claimDeliveryAck,
   getTopic,
   getTopicByNameForUser,
   getTopicSessionId,
@@ -13,7 +14,10 @@ import {
   type RuntimeMcpContext,
   registerPeerRuntimeBridge,
   registerTopic,
+  resolveDeliveryAck,
+  runtimeBus,
   sessionInboxPath,
+  setFileHooks,
   setTopicSessionId,
   upsertTopic,
 } from "@negotium/core";
@@ -35,6 +39,21 @@ function resultText(result: unknown): string {
 }
 
 beforeAll(async () => {
+  // The local (non-peer) send_file path stores the file as a host upload
+  // before broadcasting it; the test host has no real uploads subsystem, so
+  // stand in with a minimal one (mirrors otium's implementation shape).
+  setFileHooks({
+    resolveAttachmentByFileId: () => null,
+    resolveUploadedFilePathByFileId: () => null,
+    storeLocalFileAsUpload: (absPath) => ({
+      id: randomUUID(),
+      type: "file",
+      filename: absPath.split("/").pop() ?? "file",
+      url: `/files/${randomUUID()}`,
+      mimeType: "application/octet-stream",
+      sizeBytes: 0,
+    }),
+  });
   mainTopic = registerTopic({ title: "main-room", userId: USER_ID, agent: "claude" });
   ctx = {
     userId: USER_ID,
@@ -42,6 +61,7 @@ beforeAll(async () => {
     topicTitle: mainTopic.title,
     cwd: mkdtempSync(join(tmpdir(), "negotium-mcp-cwd-")),
     agent: "claude",
+    fileDeliveryTools: true,
   };
 
   server = Bun.serve({
@@ -115,7 +135,11 @@ describe("negotium MCP endpoint", () => {
 
   test("exposes visual tools only when the adapter grants the capability", async () => {
     const visualClient = new Client({ name: "negotium-visual-mcp-test", version: "1.0.0" });
-    const token = issueRuntimeMcpToken({ ...ctx, visualTools: true });
+    const token = issueRuntimeMcpToken({
+      ...ctx,
+      visualTools: true,
+      fileDeliveryTools: false,
+    });
     const url = new URL(
       `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
     );
@@ -126,8 +150,39 @@ describe("negotium MCP endpoint", () => {
       for (const visual of ["show_html", "show_mermaid", "show_image", "show_video"]) {
         expect(names).toContain(visual);
       }
+      expect(names).not.toContain("send_file");
+      expect(names).not.toContain("send_files");
     } finally {
       await visualClient.close();
+    }
+  });
+
+  test("omits visual and file tools when no adapter grants either capability", async () => {
+    const headlessClient = new Client({ name: "negotium-headless-mcp-test", version: "1.0.0" });
+    const token = issueRuntimeMcpToken({
+      ...ctx,
+      visualTools: false,
+      fileDeliveryTools: false,
+    });
+    const url = new URL(
+      `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+    );
+
+    try {
+      await headlessClient.connect(new StreamableHTTPClientTransport(url));
+      const names = (await headlessClient.listTools()).tools.map((tool) => tool.name);
+      for (const name of [
+        "show_html",
+        "show_mermaid",
+        "show_image",
+        "show_video",
+        "send_file",
+        "send_files",
+      ]) {
+        expect(names).not.toContain(name);
+      }
+    } finally {
+      await headlessClient.close();
     }
   });
 
@@ -187,6 +242,61 @@ describe("negotium MCP endpoint", () => {
       await peerClient.close();
       unregister();
     }
+  });
+
+  test("send_file installs its waiter before broadcast and surfaces a synchronous failure ack", async () => {
+    const filePath = join(ctx.cwd, "ack-fail.txt");
+    writeFileSync(filePath, "bytes");
+    const unsubscribe = runtimeBus().subscribe((event) => {
+      if (event.type !== "message") return;
+      const msg = event.payload as { id: string; topicId: string };
+      if (msg.topicId !== ctx.topicId) return;
+      claimDeliveryAck(msg.topicId, msg.id);
+      resolveDeliveryAck(msg.topicId, msg.id, {
+        ok: false,
+        error: "simulated channel failure",
+      });
+    });
+    try {
+      const result = await client.callTool({
+        name: "send_file",
+        arguments: { file_path: filePath },
+      });
+      expect(result.isError).toBe(true);
+      expect(resultText(result)).toContain("simulated channel failure");
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  test("send_file succeeds once the delivery-ack provider confirms", async () => {
+    const filePath = join(ctx.cwd, "ack-success.txt");
+    writeFileSync(filePath, "bytes");
+    const unsubscribe = runtimeBus().subscribe((event) => {
+      if (event.type !== "message") return;
+      const msg = event.payload as { id: string; topicId: string };
+      if (msg.topicId !== ctx.topicId) return;
+      claimDeliveryAck(msg.topicId, msg.id);
+      resolveDeliveryAck(msg.topicId, msg.id, { ok: true });
+    });
+    try {
+      const result = await client.callTool({
+        name: "send_file",
+        arguments: { file_path: filePath },
+      });
+      expect(result.isError).toBeFalsy();
+      expect(resultText(result)).toContain("File sent to chat");
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  test("send_file without a channel claim keeps the host-storage success result", async () => {
+    const filePath = join(ctx.cwd, "ack-none.txt");
+    writeFileSync(filePath, "bytes");
+    const result = await client.callTool({ name: "send_file", arguments: { file_path: filePath } });
+    expect(result.isError).toBeFalsy();
+    expect(resultText(result)).toContain("File sent to chat");
   });
 
   test("register_topic creates a topic owned by the token's user", async () => {

@@ -946,6 +946,7 @@ function redispatchInject(inject: DeferredInject): void {
     sessionName: inject.sessionName,
     sessionType: inject.sessionType,
     visualTools: inject.visualTools,
+    fileDeliveryTools: inject.fileDeliveryTools,
     onSessionId: inject.onSessionId,
     onSessionReset: inject.onSessionReset,
     bridgeSessionFromHistory: inject.bridgeSessionFromHistory,
@@ -1221,6 +1222,8 @@ export interface AiTurnExecutionOptions {
   sessionType?: "dm" | "forum" | "ephemeral" | "manager" | "cron";
   /** Adapter-granted access to Otium's visual panel tools. Default-deny. */
   visualTools?: boolean;
+  /** Adapter-granted access to chat file-delivery tools. Default-deny. */
+  fileDeliveryTools?: boolean;
   /** Own this turn's provider session without replacing the topic's main session. */
   onSessionId?: (sessionId: string) => void;
   /** Clear the externally-owned provider session after recovery fails. */
@@ -1366,6 +1369,7 @@ function serializableUserTurnExecution(params: StartAiTurnParams): RuntimeUserTu
     sessionName: params.sessionName,
     sessionType: params.sessionType,
     visualTools: params.visualTools,
+    fileDeliveryTools: params.fileDeliveryTools,
     bridgeSessionFromHistory: params.bridgeSessionFromHistory,
     peerBridge: params.peerBridge,
     from: params.from,
@@ -1451,6 +1455,7 @@ async function drainOneDurableUserTurn(): Promise<void> {
       sessionName: execution?.sessionName,
       sessionType: execution?.sessionType,
       visualTools: execution?.visualTools,
+      fileDeliveryTools: execution?.fileDeliveryTools,
       bridgeSessionFromHistory: execution?.bridgeSessionFromHistory,
       peerBridge: execution?.peerBridge,
       from: execution?.from,
@@ -1555,6 +1560,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   const sessionName = params.sessionName ?? topic.title;
   const sessionType = params.sessionType;
   const visualTools = params.visualTools === true;
+  const fileDeliveryTools = params.fileDeliveryTools === true;
   const onSessionId = params.onSessionId;
   const onSessionReset = params.onSessionReset;
   const bridgeSessionFromHistory = params.bridgeSessionFromHistory === true;
@@ -1606,6 +1612,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       sessionName,
       sessionType,
       visualTools,
+      fileDeliveryTools,
       onSessionId,
       onSessionReset,
       bridgeSessionFromHistory,
@@ -1743,6 +1750,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           sessionName,
           sessionType,
           visualTools,
+          fileDeliveryTools,
           onSessionId,
           onSessionReset,
           bridgeSessionFromHistory,
@@ -1872,6 +1880,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     canSpawnSubagents:
       peerBridge?.canSpawnSubagents ?? (topicRecord?.kind === "agent" && !topicRecord.isSubagent),
     visualTools,
+    fileDeliveryTools,
   };
   const isManager = topicRecord?.kind === "manager";
   const isMentionOnlyChannel = topic.aiMode === "mention" && !isManager;
@@ -2063,6 +2072,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         wikiTopicId: memoryTopic.id,
         autoContinue: allowAutoContinue && !silent,
         visualTools,
+        fileDeliveryTools,
         peerBridge,
       });
     } finally {
@@ -2155,6 +2165,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           sessionName,
           sessionType,
           visualTools,
+          fileDeliveryTools,
           onSessionId,
           onSessionReset,
           bridgeSessionFromHistory,
@@ -2337,6 +2348,7 @@ export function triggerTopicAiTurn(
     sessionName: opts?.sessionName,
     sessionType: opts?.sessionType,
     visualTools: opts?.visualTools,
+    fileDeliveryTools: opts?.fileDeliveryTools,
     onSessionId: opts?.onSessionId,
     onSessionReset: opts?.onSessionReset,
     bridgeSessionFromHistory: opts?.bridgeSessionFromHistory,

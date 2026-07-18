@@ -15,7 +15,11 @@ import {
   getTopic,
   getTopicByNameForUser,
   type MessageDto,
+  prepareDeliveryAck,
+  registerTopic,
+  resetFileHooks,
   runtimeBus,
+  setFileHooks,
   WORKSPACE_DIR,
 } from "@negotium/core";
 import type { TelegramAdapterHandle, TelegramAdapterOptions } from "@/index";
@@ -383,7 +387,11 @@ describe("outbound files", () => {
         aiMessage(topic.id, `done, see [FILE:${pdf}] and [FILE:${png}]`),
       );
       await waitFor(() => fake.photoCalls.length > 0 && fake.docCalls.length > 0);
-      expect(fake.docCalls[0]).toMatchObject({ chatId, path: pdf });
+      expect(fake.docCalls[0]).toMatchObject({
+        chatId,
+        path: pdf,
+        fileOptions: { filename: "report.pdf" },
+      });
       expect(fake.photoCalls[0]).toMatchObject({ chatId, path: png });
       const textCall = fake.callsFor(chatId).at(-1)!;
       expect(textCall.text).toBe("done, see  and"); // tags stripped
@@ -447,6 +455,120 @@ describe("outbound files", () => {
       await waitFor(() => fake.callsFor(chatId).some((c) => c.text === `File: ${missing}`));
       expect(fake.docCalls.some((c) => c.path === missing)).toBe(false);
     } finally {
+      adapter.stop();
+    }
+  });
+
+  test("send_file/send_files attachments (no [FILE:] tag) are resolved to a local path and delivered", async () => {
+    const USER = freshUser();
+    const { fake, adapter } = startAdapter({ userId: USER });
+    const chatId = freshChat();
+    try {
+      await mapChat(fake, chatId, room("files-attachments"));
+      const topic = getTopicByNameForUser(room("files-attachments"), USER)!;
+      const storedPath = join(TMP, "6e29099e-9dc8-4ca4-b76b-702f868e3a9f.pdf");
+      writeFileSync(storedPath, "pdf-bytes");
+
+      // Mirrors what packages/mcp's send_file tool stores: an AttachmentDto
+      // riding on the message, with no [FILE:] tag in the text at all.
+      setFileHooks({
+        resolveAttachmentByFileId: () => null,
+        resolveUploadedFilePathByFileId: (fileId) =>
+          fileId === "attachment-1" ? storedPath : null,
+        storeLocalFileAsUpload: () => null,
+      });
+      try {
+        const message = aiMessage(topic.id, "📎 Quarterly Report.pdf", {
+          deliveryAckRequested: true,
+          attachments: [
+            {
+              id: "attachment-1",
+              type: "file",
+              filename: "Quarterly Report.pdf",
+              url: "/files/attachment-1",
+              mimeType: "application/pdf",
+              sizeBytes: 9,
+            },
+          ],
+        });
+        const ack = prepareDeliveryAck(message.id, 100, 1_000);
+        runtimeBus().broadcastMessage(topic.id, message);
+        await waitFor(() => fake.docCalls.length > 0);
+        expect(fake.docCalls[0]).toMatchObject({
+          chatId,
+          path: storedPath,
+          fileOptions: {
+            filename: "Quarterly Report.pdf",
+            contentType: "application/pdf",
+          },
+        });
+        expect(await ack.promise).toEqual({ ok: true });
+      } finally {
+        resetFileHooks();
+      }
+    } finally {
+      adapter.stop();
+    }
+  });
+
+  test("an active adapter does not claim an unmapped DM topic", async () => {
+    const USER = freshUser();
+    const { adapter } = startAdapter({ userId: USER });
+    try {
+      const topic = registerTopic({ title: room("files-unmapped"), userId: USER });
+      const message = aiMessage(topic.id, "📎 nowhere.txt", { deliveryAckRequested: true });
+      const ack = prepareDeliveryAck(message.id, 50, 1_000);
+      runtimeBus().broadcastMessage(topic.id, message);
+      expect(await ack.promise).toBeNull();
+    } finally {
+      adapter.stop();
+    }
+  });
+
+  test("fan-out settles once after every target and reports a later target failure", async () => {
+    const USER = freshUser();
+    const { fake, adapter } = startAdapter({ userId: USER });
+    const chatA = freshChat();
+    const chatB = freshChat();
+    const title = room("files-fanout");
+    const filePath = join(TMP, "fanout.txt");
+    writeFileSync(filePath, "fanout");
+    try {
+      await mapChat(fake, chatA, title);
+      const topic = getTopicByNameForUser(title, USER)!;
+      fake.emit({ chat: { id: chatB }, from: { id: 1 }, text: `/load ${topic.id}` });
+      await waitFor(() => fake.callsFor(chatB).some((call) => call.text.includes("loaded topic")));
+
+      setFileHooks({
+        resolveAttachmentByFileId: () => null,
+        resolveUploadedFilePathByFileId: () => filePath,
+        storeLocalFileAsUpload: () => null,
+      });
+      const sendDocument = fake.sendDocument.bind(fake);
+      fake.sendDocument = (chatId, path, opts, fileOptions) =>
+        chatId === chatB
+          ? Promise.reject(new Error("second target failed"))
+          : sendDocument(chatId, path, opts, fileOptions);
+
+      const message = aiMessage(topic.id, "📎 fanout.txt", {
+        deliveryAckRequested: true,
+        attachments: [
+          {
+            id: "fanout-attachment",
+            type: "file",
+            filename: "fanout.txt",
+            url: "/files/fanout-attachment",
+            mimeType: "text/plain",
+            sizeBytes: 6,
+          },
+        ],
+      });
+      const ack = prepareDeliveryAck(message.id, 100, 1_000);
+      runtimeBus().broadcastMessage(topic.id, message);
+      expect(await ack.promise).toEqual({ ok: false, error: "second target failed" });
+      expect(fake.docCalls.some((call) => call.chatId === chatA)).toBe(true);
+    } finally {
+      resetFileHooks();
       adapter.stop();
     }
   });

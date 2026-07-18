@@ -12,6 +12,8 @@ export interface SubmitUserMessageParams {
   allowAutoContinue?: boolean;
   /** Adapter capability: only Otium should enable visual panel tools. */
   visualTools?: boolean;
+  /** Adapter capability: Otium and Telegram may enable file delivery. */
+  fileDeliveryTools?: boolean;
   onDispatched?: (queryId: string) => void;
   /** Override used by remote hosts and deterministic tests. */
   startTurn?: (params: StartAiTurnParams) => string | null;
@@ -44,6 +46,7 @@ export function submitUserMessage(params: SubmitUserMessageParams): SubmitUserMe
     prompt: params.text,
     allowAutoContinue: params.allowAutoContinue ?? true,
     visualTools: params.visualTools === true,
+    fileDeliveryTools: params.fileDeliveryTools === true,
     onDispatched: params.onDispatched,
   });
   return { message, queryId };

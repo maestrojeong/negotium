@@ -35,8 +35,18 @@ export class FakeTelegramClient implements TelegramClientLike {
   deleteCalls: Array<{ chatId: number; threadId: number }> = [];
   deletedMessageCalls: Array<{ chatId: number; messageId: number }> = [];
   editCalls: EditedCall[] = [];
-  photoCalls: Array<{ chatId: number; path: string; opts?: Record<string, unknown> }> = [];
-  docCalls: Array<{ chatId: number; path: string; opts?: Record<string, unknown> }> = [];
+  photoCalls: Array<{
+    chatId: number;
+    path: string;
+    opts?: Record<string, unknown>;
+    fileOptions?: { filename?: string; contentType?: string; knownLength?: number };
+  }> = [];
+  docCalls: Array<{
+    chatId: number;
+    path: string;
+    opts?: Record<string, unknown>;
+    fileOptions?: { filename?: string; contentType?: string; knownLength?: number };
+  }> = [];
   chatActions: Array<{ chatId: number; action: string; opts?: Record<string, unknown> }> = [];
   /** fileId → URL served by the test's local Bun.serve. */
   fileLinks = new Map<string, string>();
@@ -110,8 +120,13 @@ export class FakeTelegramClient implements TelegramClientLike {
     return url;
   }
 
-  async sendPhoto(chatId: number, path: string, opts?: Record<string, unknown>): Promise<unknown> {
-    this.photoCalls.push({ chatId, path, opts });
+  async sendPhoto(
+    chatId: number,
+    path: string,
+    opts?: Record<string, unknown>,
+    fileOptions?: { filename?: string; contentType?: string; knownLength?: number },
+  ): Promise<unknown> {
+    this.photoCalls.push({ chatId, path, opts, fileOptions });
     return { message_id: this.nextMessageId++ };
   }
 
@@ -119,8 +134,9 @@ export class FakeTelegramClient implements TelegramClientLike {
     chatId: number,
     path: string,
     opts?: Record<string, unknown>,
+    fileOptions?: { filename?: string; contentType?: string; knownLength?: number },
   ): Promise<unknown> {
-    this.docCalls.push({ chatId, path, opts });
+    this.docCalls.push({ chatId, path, opts, fileOptions });
     return { message_id: this.nextMessageId++ };
   }
 

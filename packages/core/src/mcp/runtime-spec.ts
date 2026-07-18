@@ -30,6 +30,8 @@ export interface RuntimeMcpContext {
   autoContinue?: boolean;
   /** Capability minted by the adapter. Visual tools are absent unless true. */
   visualTools?: boolean;
+  /** Capability minted by the adapter. File-delivery tools are absent unless true. */
+  fileDeliveryTools?: boolean;
   peerBridge?: PeerRuntimeBridgeContext;
 }
 
@@ -83,6 +85,7 @@ function isRuntimeMcpContext(value: unknown): value is RuntimeMcpContext {
     (ctx.currentUserPrompt === undefined || typeof ctx.currentUserPrompt === "string") &&
     (ctx.autoContinue === undefined || typeof ctx.autoContinue === "boolean") &&
     (ctx.visualTools === undefined || typeof ctx.visualTools === "boolean") &&
+    (ctx.fileDeliveryTools === undefined || typeof ctx.fileDeliveryTools === "boolean") &&
     (ctx.peerBridge === undefined ||
       (typeof ctx.peerBridge.hubCellId === "string" &&
         typeof ctx.peerBridge.hostTopicId === "string" &&

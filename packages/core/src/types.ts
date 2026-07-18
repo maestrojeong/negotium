@@ -182,6 +182,8 @@ export interface AgentQueryOptions {
   autoContinue?: boolean;
   /** Expose Otium-only visual panel tools for this turn. Default-deny. */
   visualTools?: boolean;
+  /** Expose adapter-backed file-delivery tools for this turn. Default-deny. */
+  fileDeliveryTools?: boolean;
   abortController?: AbortController;
   model?: string;
   /** Provider-side hard budget when the selected SDK supports one. */

@@ -206,9 +206,16 @@ export {
   listBackgroundSessionsForUser,
   registerBackgroundSessionProvider,
 } from "#runtime/background-sessions";
+export type { DeliveryAckResult } from "#runtime/delivery-ack";
+export {
+  claimDeliveryAck,
+  prepareDeliveryAck,
+  resolveDeliveryAck,
+} from "#runtime/delivery-ack";
 export type { FileHooks, UploadAccess } from "#runtime/file-hooks";
 export {
   fileHooks,
+  resetFileHooks,
   resolveAttachmentByFileId,
   resolveUploadedFilePathByFileId,
   setFileHooks,

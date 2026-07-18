@@ -156,12 +156,15 @@ export interface SessionSystemPromptOpts {
   canSpawnSubagents?: boolean;
   /** True only when the current adapter renders Otium visual cards. */
   visualTools?: boolean;
+  /** True only when the current adapter can deliver files to its chat. */
+  fileDeliveryTools?: boolean;
 }
 
 function buildRuntimeToolSection(
   agentKind: AgentKind,
   canSpawnSubagents = false,
   visualTools = false,
+  fileDeliveryTools = false,
 ): string {
   const runtimeNamespace = "mcp__runtime";
   const taskNamespace = "mcp__task";
@@ -222,6 +225,14 @@ function buildRuntimeToolSection(
         "Visual HTML runs in a sandbox. Use inline CSS/JS only; local buttons, tabs, filters, forms with preventDefault, canvas, and SVG interactions are supported. External navigation, scripts, network fetches, form posts, popups, and parent-window access are blocked.",
       ]
     : [];
+  const fileDeliverySection = fileDeliveryTools
+    ? [
+        "",
+        "## File Delivery",
+        `To send a file to the user, save it under your working directory and call the ${sendFileTool} with { file_path: "<absolute path>" }.`,
+        "It appears as a downloadable attachment in the chat and returns success. Never claim file delivery is unavailable after a successful call.",
+      ]
+    : [];
 
   const shared = [
     "",
@@ -237,10 +248,7 @@ function buildRuntimeToolSection(
     taskToolLine,
     "Use this shared task store for plans, task progress, and checklist updates. It is visible across claude/codex/maestro turns and drives the live task panel.",
     nativeTaskPolicyLine,
-    "",
-    "## File Delivery",
-    `To send a file to the user, save it under your working directory and call the ${sendFileTool} with { file_path: "<absolute path>" }.`,
-    "It appears as a downloadable attachment in the chat and returns success. Never claim file delivery is unavailable after a successful call.",
+    ...fileDeliverySection,
     "",
     "## Session Communication",
     "The session-comm MCP server is the only cross-topic messaging surface. Its canonical tools are `list_sessions`, `peek_session`, `tell_session`, `ask_session`, and `abort_session`.",
@@ -292,7 +300,13 @@ export function buildTopicSystemPrompt(opts: SessionSystemPromptOpts): string {
       TOPIC_TITLE: opts.topicTitle,
       WORKSPACE_CWD: opts.workspaceCwd,
       UPLOADS_DIR: uploadsDir,
-    }) + buildRuntimeToolSection(opts.agentKind, opts.canSpawnSubagents, opts.visualTools);
+    }) +
+    buildRuntimeToolSection(
+      opts.agentKind,
+      opts.canSpawnSubagents,
+      opts.visualTools,
+      opts.fileDeliveryTools,
+    );
   if (opts.description?.trim()) {
     prompt += `\n\n## Topic-Specific Instructions\n${opts.description.trim()}`;
   }
@@ -307,7 +321,7 @@ export function buildChannelSystemPrompt(opts: SessionSystemPromptOpts): string 
       TOPIC_TITLE: opts.topicTitle,
       WORKSPACE_CWD: opts.workspaceCwd,
       UPLOADS_DIR: uploadsDir,
-    }) + buildRuntimeToolSection(opts.agentKind, false, opts.visualTools)
+    }) + buildRuntimeToolSection(opts.agentKind, false, opts.visualTools, opts.fileDeliveryTools)
   );
 }
 

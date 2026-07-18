@@ -239,6 +239,7 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
       text,
       sourceAdapter: "terminal",
       visualTools: false,
+      fileDeliveryTools: false,
     }).message;
   }
 

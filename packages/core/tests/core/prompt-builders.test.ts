@@ -25,6 +25,7 @@ describe("session system prompt builders", () => {
       workspaceCwd: "/otium/workspace/topics/research",
       agentKind: "claude",
       visualTools: true,
+      fileDeliveryTools: true,
     });
 
     expect(prompt).toContain('named "Otium"');
@@ -69,6 +70,7 @@ describe("session system prompt builders", () => {
       workspaceCwd: "/otium/workspace/topics/general",
       agentKind: "codex",
       visualTools: true,
+      fileDeliveryTools: true,
     });
 
     expect(prompt).toContain("## Manager Role");
@@ -98,6 +100,7 @@ describe("session system prompt builders", () => {
       workspaceCwd: "/otium/workspace/topics/design",
       agentKind: "maestro",
       visualTools: true,
+      fileDeliveryTools: true,
     });
 
     expect(prompt).toContain("mcp__runtime__show_html");
@@ -122,6 +125,7 @@ describe("session system prompt builders", () => {
       workspaceCwd: "/otium/workspace/topics/channel-design",
       agentKind: "claude",
       visualTools: true,
+      fileDeliveryTools: true,
     });
 
     expect(prompt).toContain('Your name is "Otium"');
@@ -150,6 +154,8 @@ describe("session system prompt builders", () => {
     expect(prompt).not.toContain("show_image");
     expect(prompt).not.toContain("show_video");
     expect(prompt).not.toContain("Visual Design System");
+    expect(prompt).not.toContain("## File Delivery");
+    expect(prompt).not.toContain("send_file");
     expect(prompt).toContain("ask_user_question");
   });
 

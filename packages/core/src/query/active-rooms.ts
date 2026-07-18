@@ -73,6 +73,8 @@ export interface DeferredInject {
   sessionType?: "dm" | "forum" | "ephemeral" | "manager" | "cron";
   /** Adapter-granted access to Otium's visual panel tools. */
   visualTools?: boolean;
+  /** Adapter-granted access to chat file-delivery tools. */
+  fileDeliveryTools?: boolean;
   /** Optional session owner; when present the topic's main session is not replaced. */
   onSessionId?: (sessionId: string) => void;
   /** Clear an externally-owned session after an unrecoverable expiry. */
