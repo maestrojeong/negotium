@@ -116,11 +116,13 @@ test("runtime gateway accepts durably, deduplicates client messages, and streams
     accepted: boolean;
     deduplicated: boolean;
     messageId: string;
+    cursor: number;
   };
   expect(acceptedBody).toMatchObject({ accepted: true, deduplicated: false });
   // The handler has no turn worker. A 202 therefore proves acknowledgement is
   // not delayed on agent placement or execution.
   expect(getApiMessage(topic.id, acceptedBody.messageId)?.text).toBe("durable before execution");
+  expect(acceptedBody.cursor).toBeGreaterThan(cursor);
 
   const duplicate = await handler(
     runtimeRequest("/turns", {
@@ -135,7 +137,12 @@ test("runtime gateway accepts durably, deduplicates client messages, and streams
       }),
     }),
   );
-  expect(await duplicate?.json()).toMatchObject({ accepted: true, deduplicated: true });
+  expect(await duplicate?.json()).toMatchObject({
+    accepted: true,
+    deduplicated: true,
+    messageId: acceptedBody.messageId,
+    cursor: acceptedBody.cursor,
+  });
   // This handler-level test intentionally has no durable worker. Remove the
   // pending request before other storage tests contend for the shared queue.
   db.query("DELETE FROM runtime_user_turn_requests WHERE topic_id = ?").run(topic.id);
@@ -156,6 +163,7 @@ test("runtime gateway accepts durably, deduplicates client messages, and streams
   expect(stream.indexOf('"kind":"turn_accepted"')).toBeLessThan(
     stream.indexOf('"text":"durable before execution"'),
   );
+  expect(stream).toContain(`id: ${acceptedBody.cursor}`);
   await reader?.cancel();
 
   const topicResponse = await handler(runtimeRequest(`/topics/${encodeURIComponent(topic.id)}`));
@@ -178,6 +186,25 @@ test("runtime gateway accepts durably, deduplicates client messages, and streams
   expect(await terminalMessages?.json()).toMatchObject({
     messages: [{ id: acceptedBody.messageId, text: "durable before execution" }],
   });
+});
+
+test("runtime gateway rejects a user who is not a topic participant", async () => {
+  const owner = `runtime-owner-${randomUUID()}`;
+  const topic = registerTopic({ title: `Gateway membership ${randomUUID()}`, userId: owner });
+  const response = await handler(
+    runtimeRequest("/turns", {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        topicId: topic.id,
+        userId: `outsider-${randomUUID()}`,
+        text: "must not persist",
+        clientMessageId: randomUUID(),
+      }),
+    }),
+  );
+
+  expect(response?.status).toBe(404);
 });
 
 test("node control executes Vault commands for the requested user without returning secrets", async () => {

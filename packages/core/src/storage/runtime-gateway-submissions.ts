@@ -7,6 +7,8 @@ export interface RuntimeGatewaySubmission {
   messageId: string;
   userId: string;
   createdAt: string;
+  ackCursor: number;
+  messageCursor: number;
 }
 
 interface RuntimeGatewaySubmissionRow {
@@ -16,6 +18,8 @@ interface RuntimeGatewaySubmissionRow {
   message_id: string;
   user_id: string;
   created_at: string;
+  ack_cursor: number | bigint;
+  message_cursor: number | bigint;
 }
 
 db.exec(`
@@ -25,9 +29,21 @@ db.exec(`
     topic_id TEXT NOT NULL,
     message_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    ack_cursor INTEGER NOT NULL DEFAULT 0,
+    message_cursor INTEGER NOT NULL DEFAULT 0
   )
 `);
+try {
+  db.exec(
+    "ALTER TABLE runtime_gateway_submissions ADD COLUMN ack_cursor INTEGER NOT NULL DEFAULT 0",
+  );
+} catch {}
+try {
+  db.exec(
+    "ALTER TABLE runtime_gateway_submissions ADD COLUMN message_cursor INTEGER NOT NULL DEFAULT 0",
+  );
+} catch {}
 db.exec(
   "CREATE INDEX IF NOT EXISTS idx_runtime_gateway_submissions_topic ON runtime_gateway_submissions(topic_id)",
 );
@@ -40,6 +56,8 @@ function rowToSubmission(row: RuntimeGatewaySubmissionRow): RuntimeGatewaySubmis
     messageId: row.message_id,
     userId: row.user_id,
     createdAt: row.created_at,
+    ackCursor: Number(row.ack_cursor),
+    messageCursor: Number(row.message_cursor),
   };
 }
 
@@ -61,8 +79,9 @@ export function findRuntimeGatewaySubmission(
 export function recordRuntimeGatewaySubmission(submission: RuntimeGatewaySubmission): void {
   db.query(
     `INSERT INTO runtime_gateway_submissions
-       (client_message_id, request_id, topic_id, message_id, user_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+       (client_message_id, request_id, topic_id, message_id, user_id, created_at,
+        ack_cursor, message_cursor)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     submission.clientMessageId,
     submission.requestId,
@@ -70,5 +89,7 @@ export function recordRuntimeGatewaySubmission(submission: RuntimeGatewaySubmiss
     submission.messageId,
     submission.userId,
     submission.createdAt,
+    submission.ackCursor,
+    submission.messageCursor,
   );
 }

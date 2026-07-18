@@ -5,6 +5,7 @@ import {
   TURN_LEASE_STALE_MS,
 } from "#storage/runtime-leases";
 import {
+  cancelRuntimeUserTurnRequests,
   claimNextRuntimeUserTurnRequest,
   completeRuntimeUserTurnRequest,
   enqueueRuntimeUserTurnRequest,
@@ -23,8 +24,7 @@ function topicId(): string {
 
 afterEach(() => {
   for (const topic of topics) {
-    const request = getRuntimeUserTurnRequest(topic);
-    if (request) completeRuntimeUserTurnRequest(topic, request.requestId);
+    cancelRuntimeUserTurnRequests(topic);
   }
   for (const lease of leases) {
     releaseRuntimeTurnLease(lease.topicId, lease.queryId, lease.ownerId);
@@ -97,6 +97,29 @@ describe("runtime user turn requests", () => {
 
     expect(claimNextRuntimeUserTurnRequest("worker-a")?.topicId).toBe(topic);
     expect(claimNextRuntimeUserTurnRequest("worker-b")).toBeNull();
+  });
+
+  test("preserves gateway-style FIFO requests when superseding is disabled", () => {
+    const topic = topicId();
+    const first = enqueueRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      prompt: "first",
+      allowAutoContinue: true,
+      supersedeExisting: false,
+    });
+    const second = enqueueRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      prompt: "second",
+      allowAutoContinue: true,
+      supersedeExisting: false,
+    });
+
+    expect(claimNextRuntimeUserTurnRequest("worker")?.requestId).toBe(first);
+    expect(claimNextRuntimeUserTurnRequest("competing-worker")).toBeNull();
+    expect(completeRuntimeUserTurnRequest(topic, first)).toBe(true);
+    expect(claimNextRuntimeUserTurnRequest("worker")?.requestId).toBe(second);
   });
 
   test("does not claim a request until the active topic lease is released", () => {

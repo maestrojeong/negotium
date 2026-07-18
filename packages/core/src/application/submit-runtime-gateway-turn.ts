@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { runtimeBus } from "#bus";
-import { appendApiMessage } from "#storage/api-messages";
+import { appendApiMessage, getApiMessage } from "#storage/api-messages";
 import { db } from "#storage/forum-db";
+import { appendRuntimeEvent } from "#storage/runtime-events";
 import {
   findRuntimeGatewaySubmission,
   type RuntimeGatewaySubmission,
@@ -25,16 +25,11 @@ export interface SubmitRuntimeGatewayTurnResult extends RuntimeGatewaySubmission
 }
 
 function duplicateResult(submission: RuntimeGatewaySubmission): SubmitRuntimeGatewayTurnResult {
+  const message = getApiMessage(submission.topicId, submission.messageId);
+  if (!message) throw new Error("gateway submission references a missing canonical message");
   return {
     ...submission,
-    message: {
-      id: submission.messageId,
-      topicId: submission.topicId,
-      authorId: submission.userId,
-      sourceAdapter: "runtime-gateway",
-      text: "",
-      createdAt: submission.createdAt,
-    },
+    message,
     deduplicated: true,
   };
 }
@@ -78,18 +73,38 @@ export function submitRuntimeGatewayTurn(
     messageId: message.id,
     userId: params.userId,
     createdAt,
+    ackCursor: 0,
+    messageCursor: 0,
   };
 
   try {
     db.transaction(() => {
-      appendApiMessage(message);
+      appendApiMessage(message, { notify: false });
       enqueueRuntimeUserTurnRequest({
         topicId: params.topic.id,
         userId: params.userId,
         prompt: params.text,
         allowAutoContinue: params.allowAutoContinue ?? true,
         requestId,
+        supersedeExisting: false,
       });
+      const acceptedEvent = appendRuntimeEvent("runtime-gateway-ingress", {
+        type: "ai-status",
+        topicId: params.topic.id,
+        payload: {
+          kind: "turn_accepted",
+          requestId,
+          clientMessageId: params.clientMessageId,
+          messageId: message.id,
+        },
+      });
+      const messageEvent = appendRuntimeEvent("runtime-gateway-ingress", {
+        type: "message",
+        topicId: params.topic.id,
+        payload: message,
+      });
+      submission.ackCursor = acceptedEvent.seq;
+      submission.messageCursor = messageEvent.seq;
       recordRuntimeGatewaySubmission(submission);
     })();
   } catch {
@@ -98,14 +113,5 @@ export function submitRuntimeGatewayTurn(
     throw new Error("failed to persist gateway turn idempotency record");
   }
 
-  // Lifecycle is ordered on the durable bus: the acknowledgement precedes the
-  // user message publication and eventual ai_active / tool / terminal events.
-  runtimeBus().broadcastAiStatus(params.topic.id, {
-    kind: "turn_accepted",
-    requestId,
-    clientMessageId: params.clientMessageId,
-    messageId: message.id,
-  });
-  runtimeBus().broadcastMessage(params.topic.id, message);
   return { ...submission, message, deduplicated: false };
 }

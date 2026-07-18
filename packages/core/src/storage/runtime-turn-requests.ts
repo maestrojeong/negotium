@@ -58,10 +58,11 @@ interface RuntimeUserTurnRequestRow {
   running_query_id: string | null;
 }
 
-db.exec(`
+function createRuntimeUserTurnRequestsTable(): void {
+  db.exec(`
   CREATE TABLE IF NOT EXISTS runtime_user_turn_requests (
-    topic_id TEXT PRIMARY KEY,
-    request_id TEXT NOT NULL UNIQUE,
+    request_id TEXT PRIMARY KEY,
+    topic_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     prompt TEXT NOT NULL,
     attachments_json TEXT,
@@ -75,6 +76,32 @@ db.exec(`
     running_query_id TEXT
   )
 `);
+}
+
+createRuntimeUserTurnRequestsTable();
+
+const legacyTopicPrimaryKey = db
+  .query<{ name: string; pk: number }, []>("PRAGMA table_info(runtime_user_turn_requests)")
+  .all()
+  .some((column) => column.name === "topic_id" && column.pk === 1);
+if (legacyTopicPrimaryKey) {
+  db.transaction(() => {
+    db.exec("ALTER TABLE runtime_user_turn_requests RENAME TO runtime_user_turn_requests_legacy");
+    createRuntimeUserTurnRequestsTable();
+    db.exec(`
+      INSERT INTO runtime_user_turn_requests (
+        request_id, topic_id, user_id, prompt, attachments_json,
+        allow_auto_continue, execution_json, topic_epoch, created_at,
+        status, claimed_by, claimed_at, running_query_id
+      )
+      SELECT request_id, topic_id, user_id, prompt, attachments_json,
+        allow_auto_continue, execution_json, topic_epoch, created_at,
+        status, claimed_by, claimed_at, running_query_id
+      FROM runtime_user_turn_requests_legacy
+    `);
+    db.exec("DROP TABLE runtime_user_turn_requests_legacy");
+  })();
+}
 try {
   db.exec("ALTER TABLE runtime_user_turn_requests ADD COLUMN execution_json TEXT");
 } catch {
@@ -140,40 +167,35 @@ export function enqueueRuntimeUserTurnRequest(input: {
   requestId?: string;
   execution?: RuntimeUserTurnExecution;
   topicEpoch?: number;
+  /** Existing channel behavior supersedes queued work; gateways opt into FIFO. */
+  supersedeExisting?: boolean;
 }): string {
   const requestId = input.requestId ?? randomUUID();
   const now = Date.now();
   const topicEpoch = input.topicEpoch ?? getRuntimeTopicEpoch(input.topicId);
-  db.query(
-    `INSERT INTO runtime_user_turn_requests
-       (topic_id, request_id, user_id, prompt, attachments_json,
+  db.transaction(() => {
+    if (input.supersedeExisting !== false) {
+      db.query("DELETE FROM runtime_user_turn_requests WHERE topic_id = ?").run(input.topicId);
+    }
+    db.query(
+      `INSERT INTO runtime_user_turn_requests
+       (request_id, topic_id, user_id, prompt, attachments_json,
         allow_auto_continue, execution_json, topic_epoch, created_at,
         status, claimed_by, claimed_at, running_query_id)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL)
-     ON CONFLICT(topic_id) DO UPDATE SET
-       request_id = excluded.request_id,
-       user_id = excluded.user_id,
-       prompt = excluded.prompt,
-       attachments_json = excluded.attachments_json,
-       allow_auto_continue = excluded.allow_auto_continue,
-       execution_json = excluded.execution_json,
-       topic_epoch = excluded.topic_epoch,
-       created_at = excluded.created_at,
-       status = 'pending',
-       claimed_by = NULL,
-       claimed_at = NULL,
-       running_query_id = NULL`,
-  ).run(
-    input.topicId,
-    requestId,
-    input.userId,
-    input.prompt,
-    input.attachments?.length ? JSON.stringify(input.attachments) : null,
-    input.allowAutoContinue ? 1 : 0,
-    input.execution ? JSON.stringify(input.execution) : null,
-    topicEpoch,
-    now,
-  );
+     ON CONFLICT(request_id) DO NOTHING`,
+    ).run(
+      requestId,
+      input.topicId,
+      input.userId,
+      input.prompt,
+      input.attachments?.length ? JSON.stringify(input.attachments) : null,
+      input.allowAutoContinue ? 1 : 0,
+      input.execution ? JSON.stringify(input.execution) : null,
+      topicEpoch,
+      now,
+    );
+  })();
   return requestId;
 }
 
@@ -184,7 +206,7 @@ export function claimNextRuntimeUserTurnRequest(
   return db
     .transaction(() => {
       const row = db
-        .query<RuntimeUserTurnRequestRow, [number, number, number, number]>(
+        .query<RuntimeUserTurnRequestRow, [number, number, number, number, number]>(
           `SELECT r.*
          FROM runtime_user_turn_requests r
          LEFT JOIN runtime_turn_leases l ON l.topic_id = r.topic_id
@@ -192,16 +214,25 @@ export function claimNextRuntimeUserTurnRequest(
          WHERE (l.topic_id IS NULL OR l.heartbeat_at < ?)
            AND (s.topic_id IS NULL OR s.maintenance = 0 OR s.heartbeat_at < ?)
            AND r.topic_epoch = COALESCE(s.epoch, 0)
+           AND NOT EXISTS (
+             SELECT 1
+             FROM runtime_user_turn_requests active
+             WHERE active.topic_id = r.topic_id
+               AND active.request_id <> r.request_id
+               AND active.claimed_at IS NOT NULL
+               AND active.claimed_at >= ?
+           )
            AND (
              (r.status = 'pending' AND (r.claimed_at IS NULL OR r.claimed_at < ?))
              OR (r.status = 'running' AND (r.claimed_at IS NULL OR r.claimed_at < ?))
            )
-         ORDER BY r.created_at ASC
+         ORDER BY r.created_at ASC, r.rowid ASC
          LIMIT 1`,
         )
         .get(
           now - TURN_LEASE_STALE_MS,
           now - TOPIC_MAINTENANCE_STALE_MS,
+          now - REQUEST_CLAIM_STALE_MS,
           now - REQUEST_CLAIM_STALE_MS,
           now - REQUEST_CLAIM_STALE_MS,
         );
@@ -210,7 +241,7 @@ export function claimNextRuntimeUserTurnRequest(
         .query(
           `UPDATE runtime_user_turn_requests
          SET claimed_by = ?, claimed_at = ?
-         WHERE topic_id = ? AND request_id = ?
+         WHERE request_id = ? AND topic_id = ?
            AND (
              (status = 'pending' AND (claimed_at IS NULL OR claimed_at < ?))
              OR (status = 'running' AND (claimed_at IS NULL OR claimed_at < ?))
@@ -219,8 +250,8 @@ export function claimNextRuntimeUserTurnRequest(
         .run(
           ownerId,
           now,
-          row.topic_id,
           row.request_id,
+          row.topic_id,
           now - REQUEST_CLAIM_STALE_MS,
           now - REQUEST_CLAIM_STALE_MS,
         );
@@ -295,7 +326,7 @@ export function cancelRuntimeUserTurnRequests(topicId: string): string[] {
 export function getRuntimeUserTurnRequest(topicId: string): RuntimeUserTurnRequest | null {
   const row = db
     .query<RuntimeUserTurnRequestRow, [string]>(
-      "SELECT * FROM runtime_user_turn_requests WHERE topic_id = ?",
+      "SELECT * FROM runtime_user_turn_requests WHERE topic_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
     )
     .get(topicId);
   return row ? rowToRequest(row) : null;

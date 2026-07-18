@@ -354,6 +354,9 @@ export function createNodeControlHandler(
             body.requestId === undefined ? undefined : requiredText(body.requestId, "requestId");
           const topic = getTopic(topicId);
           if (!topic) return jsonError(404, "Topic not found");
+          if (!topic.participants.some((participant) => participant.userId === userId)) {
+            return jsonError(404, "Topic not found");
+          }
           const submission = submitRuntimeGatewayTurn({
             topic,
             userId,
@@ -372,7 +375,7 @@ export function createNodeControlHandler(
               clientMessageId: submission.clientMessageId,
               topicId: submission.topicId,
               messageId: submission.messageId,
-              cursor: latestRuntimeEventSeq(),
+              cursor: submission.ackCursor,
             },
             { status: 202 },
           );
