@@ -1,12 +1,14 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { BACKGROUND_BASH_SERVER, BG_BASH_BASE_PORT, BG_BASH_MAX_PORT } from "#platform/config";
 import { delay } from "#platform/delay";
 import { logger } from "#platform/logger";
+import { deriveBgBashContextCapability } from "./context";
 
 // --- Instance key (mirrors Playwright manager convention) ---
 
-export function makeBgBashKey(_userId: string, topic: string): string {
-  return `topic:${topic}`;
+export function makeBgBashKey(_userId: string, _topic: string): string {
+  return "runtime";
 }
 
 // --- State ---
@@ -21,6 +23,17 @@ interface BgBashInstance {
 const instances = new Map<string, BgBashInstance>();
 const usedPorts = new Set<number>();
 const spawning = new Map<string, Promise<number>>();
+const runtimeCapability = randomBytes(32).toString("hex");
+const runtimeServerId = randomBytes(16).toString("hex");
+const knownContexts = new Map<string, { userId: string; topic: string }>();
+
+function contextKey(userId: string, topic: string): string {
+  return `${userId}\0${topic}`;
+}
+
+export function bgBashContextCapability(userId: string, topic: string): string {
+  return deriveBgBashContextCapability(runtimeCapability, userId, topic);
+}
 
 // --- Port allocation ---
 
@@ -52,7 +65,7 @@ function processCommand(pid: number): string {
 }
 
 function isBackgroundBashServerProcess(cmdline: string, port: number): boolean {
-  return cmdline.includes("background-bash-server.ts") && cmdline.includes(`--port=${port}`);
+  return cmdline.includes(BACKGROUND_BASH_SERVER) && cmdline.includes(`--port=${port}`);
 }
 
 async function killBackgroundBashOnPort(port: number): Promise<void> {
@@ -80,9 +93,9 @@ async function killBackgroundBashOnPort(port: number): Promise<void> {
   }
 }
 
-async function allocatePort(): Promise<number> {
+async function allocatePort(excludedPorts: ReadonlySet<number> = new Set()): Promise<number> {
   for (let port = BG_BASH_BASE_PORT; port <= BG_BASH_MAX_PORT; port++) {
-    if (usedPorts.has(port)) continue;
+    if (usedPorts.has(port) || excludedPorts.has(port)) continue;
     usedPorts.add(port); // reserve before any await
     if (isPortInUse(port)) {
       await killBackgroundBashOnPort(port);
@@ -105,8 +118,7 @@ async function isHealthy(port: number): Promise<boolean> {
     const res = await fetch(`http://127.0.0.1:${port}/health`, {
       signal: AbortSignal.timeout(2000),
     });
-    res.body?.cancel();
-    return res.ok;
+    return res.ok && (await res.text()) === runtimeServerId;
   } catch {
     return false;
   }
@@ -116,24 +128,21 @@ async function isHealthy(port: number): Promise<boolean> {
 
 async function spawnBgBash(
   key: string,
-  userId: string,
-  topic: string,
   reservedPort?: number,
+  excludedPorts: ReadonlySet<number> = new Set(),
 ): Promise<number> {
-  const port = reservedPort ?? (await allocatePort());
+  const port = reservedPort ?? (await allocatePort(excludedPorts));
 
-  const serverArgs = [
-    "run",
-    BACKGROUND_BASH_SERVER,
-    `--user-id=${userId}`,
-    `--topic=${topic}`,
-    `--port=${port}`,
-  ];
+  const serverArgs = ["run", BACKGROUND_BASH_SERVER, `--port=${port}`];
 
   const proc = spawn("bun", serverArgs, {
     stdio: "ignore",
     detached: false,
-    env: { ...process.env },
+    env: {
+      ...process.env,
+      NEGOTIUM_BG_BASH_CAPABILITY: runtimeCapability,
+      NEGOTIUM_BG_BASH_SERVER_ID: runtimeServerId,
+    },
   });
 
   proc.once("error", (err) => {
@@ -158,13 +167,18 @@ async function spawnBgBash(
   // Wait for health
   const start = Date.now();
   while (Date.now() - start < 8_000) {
+    if (proc.exitCode !== null) {
+      const nextExcludedPorts = new Set(excludedPorts);
+      nextExcludedPorts.add(port);
+      return spawnBgBash(key, undefined, nextExcludedPorts);
+    }
     if (await isHealthy(port)) {
       logger.info({ key, port, pid: proc.pid }, "background-bash server ready");
       return port;
     }
     await delay(200);
   }
-  killBgBash(userId, topic);
+  killRuntimeBgBash();
   throw new Error(`background-bash server failed health check after spawn on port ${port}`);
 }
 
@@ -177,6 +191,7 @@ async function spawnBgBash(
  */
 export async function ensureBgBash(userId: string, topic: string): Promise<number> {
   const key = makeBgBashKey(userId, topic);
+  knownContexts.set(contextKey(userId, topic), { userId, topic });
 
   const inProgress = spawning.get(key);
   if (inProgress) return inProgress;
@@ -195,20 +210,20 @@ export async function ensureBgBash(userId: string, topic: string): Promise<numbe
         existing.lastUsedAt = Date.now();
         return existing.port;
       }
-      killBgBash(userId, topic);
+      killRuntimeBgBash();
     } else if (existing) {
       usedPorts.delete(existing.port);
       instances.delete(key);
     }
 
-    return spawnBgBash(key, userId, topic);
+    return spawnBgBash(key);
   })().finally(() => spawning.delete(key));
   spawning.set(key, promise);
   return promise;
 }
 
-export function killBgBash(userId: string, topic: string): void {
-  const key = makeBgBashKey(userId, topic);
+function killRuntimeBgBash(): void {
+  const key = "runtime";
   const inst = instances.get(key);
   if (!inst) return;
   try {
@@ -219,15 +234,27 @@ export function killBgBash(userId: string, topic: string): void {
   logger.info({ key, port: inst.port }, "background-bash server killed");
 }
 
-export function killBgBashForUser(_userId: string): void {
-  for (const key of [...instances.keys()]) {
-    const inst = instances.get(key);
-    if (!inst) continue;
-    try {
-      inst.process.kill("SIGTERM");
-    } catch {}
-    usedPorts.delete(inst.port);
-    instances.delete(key);
+function clearContext(userId: string, topic: string): void {
+  knownContexts.delete(contextKey(userId, topic));
+  const inst = instances.get("runtime");
+  if (!inst) return;
+  const query = new URLSearchParams({
+    user: userId,
+    topic,
+    capability: bgBashContextCapability(userId, topic),
+  });
+  void fetch(`http://127.0.0.1:${inst.port}/contexts?${query}`, { method: "DELETE" }).catch(
+    () => {},
+  );
+}
+
+export function killBgBash(userId: string, topic: string): void {
+  clearContext(userId, topic);
+}
+
+export function killBgBashForUser(userId: string): void {
+  for (const context of [...knownContexts.values()]) {
+    if (context.userId === userId) clearContext(context.userId, context.topic);
   }
 }
 
@@ -240,6 +267,7 @@ export async function killAllBgBash(): Promise<void> {
   }
   instances.clear();
   usedPorts.clear();
+  knownContexts.clear();
 
   const deadline = Date.now() + 3000;
   await Promise.all(
@@ -258,22 +286,3 @@ export async function killAllBgBash(): Promise<void> {
     ),
   );
 }
-
-// Evict idle instances every 30 minutes (2hr idle threshold)
-const MAX_IDLE_MS = 2 * 60 * 60 * 1000;
-setInterval(
-  () => {
-    const now = Date.now();
-    for (const [key, inst] of instances) {
-      if (now - inst.lastUsedAt > MAX_IDLE_MS) {
-        logger.info({ key }, "evicting idle background-bash server");
-        try {
-          inst.process.kill("SIGTERM");
-        } catch {}
-        usedPorts.delete(inst.port);
-        instances.delete(key);
-      }
-    }
-  },
-  30 * 60 * 1000,
-).unref();

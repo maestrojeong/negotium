@@ -20,26 +20,29 @@
  *   completions asynchronously.
  */
 import { type ChildProcess, spawn } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
-import { createServer, type ServerResponse } from "node:http";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
+import { deriveBgBashContextCapability } from "#platform/background-bash/context";
 import { SESSION_INBOX_DIR } from "#platform/config";
 import { appendJsonlEntry } from "#platform/jsonl";
-import { mcpError, mcpOk, parseUserIdArg } from "./mcp-helpers";
+import { mcpError, mcpOk } from "./mcp-helpers";
 
 // --- CLI args ---
 
 const args = process.argv.slice(2);
-const userId = parseUserIdArg(args);
-const topic = args.find((a) => a.startsWith("--topic="))?.split("=")[1] ?? "";
 const port = parseInt(args.find((a) => a.startsWith("--port="))?.split("=")[1] ?? "0", 10);
+const runtimeCapability = process.env.NEGOTIUM_BG_BASH_CAPABILITY ?? "";
+const runtimeServerId = process.env.NEGOTIUM_BG_BASH_SERVER_ID ?? "";
 
-if (!userId || !topic || !port) {
-  process.stderr.write("FATAL: --user-id, --topic, --port are required\n");
+if (!port || !runtimeCapability || !runtimeServerId) {
+  process.stderr.write(
+    "FATAL: --port, NEGOTIUM_BG_BASH_CAPABILITY, and NEGOTIUM_BG_BASH_SERVER_ID are required\n",
+  );
   process.exit(1);
 }
 
@@ -50,6 +53,8 @@ const MAX_OUTPUT_BYTES = 200_000;
 
 interface BgProc {
   bashId: string;
+  userId: string;
+  topic: string;
   command: string;
   child: ChildProcess;
   stdout: string;
@@ -63,6 +68,19 @@ interface BgProc {
 }
 
 const procs = new Map<string, BgProc>();
+
+interface BgContext {
+  userId: string;
+  topic: string;
+}
+
+function contextCapability(context: BgContext): string {
+  return deriveBgBashContextCapability(runtimeCapability, context.userId, context.topic);
+}
+
+function sameContext(proc: BgProc, context: BgContext): boolean {
+  return proc.userId === context.userId && proc.topic === context.topic;
+}
 
 function newBashId(): string {
   return `bash_${randomBytes(6).toString("hex")}`;
@@ -92,9 +110,9 @@ function injectCompletion(proc: BgProc): void {
     `종료 코드: ${proc.exitCode ?? "unknown"}\n` +
     output;
 
-  const dir = join(SESSION_INBOX_DIR, userId);
+  const dir = join(SESSION_INBOX_DIR, proc.userId);
   try {
-    appendJsonlEntry(join(dir, `${topic}.jsonl`), {
+    appendJsonlEntry(join(dir, `${proc.topic}.jsonl`), {
       type: "tell",
       from: "__bg_bash__",
       message,
@@ -133,7 +151,11 @@ function finishProc(proc: BgProc, exitCode: number | null): void {
   injectCompletion(proc);
 }
 
-function spawnBash(command: string, cwd?: string): { bashId: string } | { error: string } {
+function spawnBash(
+  context: BgContext,
+  command: string,
+  cwd?: string,
+): { bashId: string } | { error: string } {
   if (!command.trim()) return { error: "empty command" };
   const bashId = newBashId();
   let child: ChildProcess;
@@ -148,6 +170,8 @@ function spawnBash(command: string, cwd?: string): { bashId: string } | { error:
   }
   const proc: BgProc = {
     bashId,
+    userId: context.userId,
+    topic: context.topic,
     command,
     child,
     stdout: "",
@@ -180,7 +204,7 @@ process.on("exit", () => {
 
 // --- MCP tool factory (shared registry via closure, one instance per connection) ---
 
-function buildMcpServer(): McpServer {
+function buildMcpServer(context: BgContext): McpServer {
   const server = new McpServer({ name: "background-bash", version: "1.0.0" });
 
   server.tool(
@@ -197,7 +221,7 @@ function buildMcpServer(): McpServer {
       cwd: z.string().optional().describe("Working directory (absolute path)"),
     },
     async ({ command, cwd }) => {
-      const result = spawnBash(command, cwd);
+      const result = spawnBash(context, command, cwd);
       if ("error" in result) return mcpError(result.error);
       return mcpOk(JSON.stringify({ bash_id: result.bashId, status: "started" }));
     },
@@ -209,7 +233,7 @@ function buildMcpServer(): McpServer {
     { bash_id: z.string().describe("bash_id from background_bash_run") },
     async ({ bash_id }) => {
       const proc = procs.get(bash_id);
-      if (!proc) return mcpError(`Unknown bash_id: ${bash_id}`);
+      if (!proc || !sameContext(proc, context)) return mcpError(`Unknown bash_id: ${bash_id}`);
       const newStdout = proc.stdout.slice(proc.stdoutCursor);
       const newStderr = proc.stderr.slice(proc.stderrCursor);
       proc.stdoutCursor = proc.stdout.length;
@@ -232,7 +256,7 @@ function buildMcpServer(): McpServer {
     { bash_id: z.string().describe("bash_id to kill") },
     async ({ bash_id }) => {
       const proc = procs.get(bash_id);
-      if (!proc) return mcpError(`Unknown bash_id: ${bash_id}`);
+      if (!proc || !sameContext(proc, context)) return mcpError(`Unknown bash_id: ${bash_id}`);
       if (proc.exited)
         return mcpOk(JSON.stringify({ bash_id, alreadyExited: true, exitCode: proc.exitCode }));
       signalProcessTree(proc.child, "SIGTERM");
@@ -268,20 +292,59 @@ function writeJsonError(res: ServerResponse, status: number, message: string): v
   );
 }
 
+function requestContext(req: IncomingMessage, url: URL): BgContext | null {
+  const userId =
+    firstHeader(req.headers["x-background-bash-user"]) || url.searchParams.get("user") || "";
+  const topic =
+    firstHeader(req.headers["x-background-bash-topic"]) || url.searchParams.get("topic") || "";
+  const capability =
+    firstHeader(req.headers["x-background-bash-capability"]) ||
+    url.searchParams.get("capability") ||
+    "";
+  if (!userId || !topic || !capability) return null;
+  const context = { userId, topic };
+  const expected = contextCapability(context);
+  const actualBytes = Buffer.from(capability);
+  const expectedBytes = Buffer.from(expected);
+  if (actualBytes.length !== expectedBytes.length || !timingSafeEqual(actualBytes, expectedBytes))
+    return null;
+  return context;
+}
+
 const httpServer = createServer(async (req, res) => {
   const urlStr = req.url ?? "/";
   const url = new URL(urlStr, `http://127.0.0.1:${port}`);
 
   // Health probe
   if (req.method === "GET" && url.pathname === "/health") {
-    res.writeHead(200, { "content-type": "text/plain" }).end("ok");
+    res.writeHead(200, { "content-type": "text/plain" }).end(runtimeServerId);
+    return;
+  }
+
+  if (req.method === "DELETE" && url.pathname === "/contexts") {
+    const context = requestContext(req, url);
+    if (!context) {
+      res.writeHead(403).end("forbidden");
+      return;
+    }
+    let killed = 0;
+    for (const proc of procs.values()) {
+      if (!proc.exited && sameContext(proc, context) && signalProcessTree(proc.child, "SIGTERM"))
+        killed++;
+    }
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ killed }));
     return;
   }
 
   // SSE endpoint (claude / maestro)
   if (req.method === "GET" && url.pathname === "/sse") {
+    const context = requestContext(req, url);
+    if (!context) {
+      res.writeHead(403).end("forbidden");
+      return;
+    }
     const transport = new SSEServerTransport("/message", res);
-    const server = buildMcpServer();
+    const server = buildMcpServer(context);
     sseTransports.set(transport.sessionId, transport);
     transport.onclose = () => sseTransports.delete(transport.sessionId);
     await server.connect(transport);
@@ -312,6 +375,11 @@ const httpServer = createServer(async (req, res) => {
         return;
       }
     } else if (req.method === "POST") {
+      const context = requestContext(req, url);
+      if (!context) {
+        writeJsonError(res, 403, "Forbidden");
+        return;
+      }
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (id) => {
@@ -325,7 +393,7 @@ const httpServer = createServer(async (req, res) => {
       transport.onerror = (err) => {
         process.stderr.write(`[bg-bash] streamable transport error: ${err.message}\n`);
       };
-      const server = buildMcpServer();
+      const server = buildMcpServer(context);
       await server.connect(transport);
     } else {
       writeJsonError(res, 400, "Mcp-Session-Id header is required");
@@ -340,7 +408,5 @@ const httpServer = createServer(async (req, res) => {
 });
 
 httpServer.listen(port, "127.0.0.1", () => {
-  process.stderr.write(
-    `[bg-bash] listening on 127.0.0.1:${port} (user=${userId} topic=${topic})\n`,
-  );
+  process.stderr.write(`[bg-bash] shared runtime listening on 127.0.0.1:${port}\n`);
 });

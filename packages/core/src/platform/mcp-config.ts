@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { canonicalMcpBridgeEnv } from "#mcp/canonical-bridge-config";
 import { buildRuntimeMcpSpec, RUNTIME_MCP_KEY } from "#mcp/runtime-spec";
 import { peerSessionBridgeIpcEnv } from "#mcp/session-comm/bridge-ipc-config";
+import { bgBashContextCapability } from "#platform/background-bash/manager";
 import {
   AGENT_HEALTH_SERVER,
   CANONICAL_MCP_PROXY_SERVER,
@@ -250,6 +251,26 @@ function longLivedHttpMcp(agent: AgentKind | undefined, port: number) {
     : { type: "sse" as const, url: `http://127.0.0.1:${port}/sse` };
 }
 
+function backgroundBashTransport(
+  agent: AgentKind | undefined,
+  port: number,
+  userId: string,
+  topic: string,
+) {
+  const capability = bgBashContextCapability(userId, topic);
+  const headers = {
+    "X-Background-Bash-User": userId,
+    "X-Background-Bash-Topic": topic,
+    "X-Background-Bash-Capability": capability,
+  };
+  if (agent === "codex") return { url: `http://127.0.0.1:${port}/mcp`, http_headers: headers };
+  if (agent === "maestro") {
+    const query = new URLSearchParams({ user: userId, topic, capability });
+    return { type: "sse" as const, url: `http://127.0.0.1:${port}/sse?${query}` };
+  }
+  return { type: "sse" as const, url: `http://127.0.0.1:${port}/sse`, headers };
+}
+
 // --- Catalog ---
 
 const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
@@ -421,9 +442,10 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   },
   "background-bash": {
     scopes: ["forum"],
-    build({ agent, bgBashPort }) {
-      if (bgBashPort === undefined) return null;
-      return longLivedHttpMcp(agent, bgBashPort);
+    build({ agent, bgBashPort, userId, topicId, session }) {
+      const topic = topicId ?? session;
+      if (bgBashPort === undefined || !topic) return null;
+      return backgroundBashTransport(agent, bgBashPort, userId, topic);
     },
   },
   "agent-health": {

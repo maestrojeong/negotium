@@ -179,6 +179,11 @@ describe("mcp-config: playwright transport selection per agent", () => {
     expect(servers["background-bash"]).toEqual({
       type: "sse",
       url: "http://127.0.0.1:9500/sse",
+      headers: {
+        "X-Background-Bash-User": userId,
+        "X-Background-Bash-Topic": "coding",
+        "X-Background-Bash-Capability": expect.any(String),
+      },
     });
   });
 
@@ -191,6 +196,11 @@ describe("mcp-config: playwright transport selection per agent", () => {
     });
     expect(servers["background-bash"]).toEqual({
       url: "http://127.0.0.1:9500/mcp",
+      http_headers: {
+        "X-Background-Bash-User": userId,
+        "X-Background-Bash-Topic": "coding",
+        "X-Background-Bash-Capability": expect.any(String),
+      },
     });
   });
 
