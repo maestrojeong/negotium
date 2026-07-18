@@ -1,6 +1,6 @@
 {
   "name": "@negotium/cli",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "private": true,
   "type": "module",
   "description": "negotium CLI — init a node, manage its MCPs, and chat with the multi-agent runtime from the terminal",

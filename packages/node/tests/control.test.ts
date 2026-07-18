@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import {
   appendApiMessage,
   claimRuntimeTurnLease,
+  db,
+  getApiMessage,
   getApiTopicConfig,
   getTopic,
   getTopicSessionId,
@@ -21,6 +23,8 @@ import {
   createNodeControlHandler,
   NODE_CONTROL_BASE_PATH,
   NODE_CONTROL_PROTOCOL_VERSION,
+  NODE_RUNTIME_CONTRACT_BASE_PATH,
+  NODE_RUNTIME_CONTRACT_VERSION,
 } from "../src/control";
 
 const userId = `node-control-${randomUUID()}`;
@@ -41,11 +45,139 @@ function request(path: string, init: RequestInit = {}): Request {
   });
 }
 
+function runtimeRequest(path: string, init: RequestInit = {}): Request {
+  return new Request(`http://127.0.0.1:43210${NODE_RUNTIME_CONTRACT_BASE_PATH}${path}`, {
+    ...init,
+    headers: {
+      authorization: `Bearer ${NODE_CONTROL_TOKEN}`,
+      ...(init.body ? { "content-type": "application/json" } : {}),
+      ...init.headers,
+    },
+  });
+}
+
 test("node control API rejects missing bearer authentication", async () => {
   const response = await handler(
     new Request(`http://127.0.0.1:43210${NODE_CONTROL_BASE_PATH}/status`),
   );
   expect(response?.status).toBe(401);
+});
+
+test("runtime gateway contract rejects missing bearer authentication", async () => {
+  const response = await handler(
+    new Request(`http://127.0.0.1:43210${NODE_RUNTIME_CONTRACT_BASE_PATH}/health`),
+  );
+  expect(response?.status).toBe(401);
+});
+
+test("runtime gateway health negotiates the v1 capability set", async () => {
+  const response = await handler(runtimeRequest("/health"));
+  expect(await response?.json()).toMatchObject({
+    ok: true,
+    v: NODE_RUNTIME_CONTRACT_VERSION,
+    capabilities: expect.arrayContaining([
+      "turn-submit-idempotent",
+      "turn-events-sse-resume",
+      "canonical-topic-read",
+      "canonical-message-read",
+    ]),
+  });
+});
+
+test("runtime gateway accepts durably, deduplicates client messages, and streams ordered events", async () => {
+  const gatewayUser = `runtime-gateway-${randomUUID()}`;
+  const topic = registerTopic({
+    title: `Gateway ${randomUUID()}`,
+    userId: gatewayUser,
+    agent: "codex",
+  });
+  const clientMessageId = randomUUID();
+  const requestId = randomUUID();
+  const cursor = latestRuntimeEventSeq();
+  const events = await handler(runtimeRequest(`/events?after=${cursor}&topicId=${topic.id}`));
+  const reader = events?.body?.getReader();
+  await reader?.read(); // ready
+
+  const accepted = await handler(
+    runtimeRequest("/turns", {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        topicId: topic.id,
+        userId: gatewayUser,
+        text: "durable before execution",
+        clientMessageId,
+        requestId,
+      }),
+    }),
+  );
+  expect(accepted?.status).toBe(202);
+  const acceptedBody = (await accepted?.json()) as {
+    accepted: boolean;
+    deduplicated: boolean;
+    messageId: string;
+  };
+  expect(acceptedBody).toMatchObject({ accepted: true, deduplicated: false });
+  // The handler has no turn worker. A 202 therefore proves acknowledgement is
+  // not delayed on agent placement or execution.
+  expect(getApiMessage(topic.id, acceptedBody.messageId)?.text).toBe("durable before execution");
+
+  const duplicate = await handler(
+    runtimeRequest("/turns", {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        topicId: topic.id,
+        userId: gatewayUser,
+        text: "durable before execution",
+        clientMessageId,
+        requestId,
+      }),
+    }),
+  );
+  expect(await duplicate?.json()).toMatchObject({ accepted: true, deduplicated: true });
+  // This handler-level test intentionally has no durable worker. Remove the
+  // pending request before other storage tests contend for the shared queue.
+  db.query("DELETE FROM runtime_user_turn_requests WHERE topic_id = ?").run(topic.id);
+
+  const chunks: string[] = [];
+  for (
+    let index = 0;
+    index < 8 &&
+    (chunks.join("").indexOf("turn_accepted") < 0 ||
+      chunks.join("").indexOf("durable before execution") < 0);
+    index += 1
+  ) {
+    const item = await reader?.read();
+    if (item?.value) chunks.push(new TextDecoder().decode(item.value));
+  }
+  const stream = chunks.join("");
+  expect(stream).toContain('"kind":"turn_accepted"');
+  expect(stream.indexOf('"kind":"turn_accepted"')).toBeLessThan(
+    stream.indexOf('"text":"durable before execution"'),
+  );
+  await reader?.cancel();
+
+  const topicResponse = await handler(runtimeRequest(`/topics/${encodeURIComponent(topic.id)}`));
+  expect(await topicResponse?.json()).toMatchObject({ ok: true, v: 1, topic: { id: topic.id } });
+  const messagesResponse = await handler(
+    runtimeRequest(`/topics/${encodeURIComponent(topic.id)}/messages`),
+  );
+  const messages = (await messagesResponse?.json()) as { page: Array<{ id: string }> };
+  expect(messages.page.filter((message) => message.id === acceptedBody.messageId)).toHaveLength(1);
+
+  // Terminal's pre-existing control routes see the same canonical topic and
+  // transcript; the gateway did not create a parallel conversation path.
+  const terminalTopics = await handler(request(`/topics?user=${encodeURIComponent(gatewayUser)}`));
+  expect(await terminalTopics?.json()).toMatchObject({ topics: [{ id: topic.id }] });
+  const terminalMessages = await handler(
+    request(
+      `/topics/${encodeURIComponent(topic.id)}/messages?user=${encodeURIComponent(gatewayUser)}`,
+    ),
+  );
+  expect(await terminalMessages?.json()).toMatchObject({
+    messages: [{ id: acceptedBody.messageId, text: "durable before execution" }],
+  });
 });
 
 test("node control executes Vault commands for the requested user without returning secrets", async () => {

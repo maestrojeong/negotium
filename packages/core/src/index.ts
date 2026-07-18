@@ -48,6 +48,11 @@ export { purgeTopicLogs, rotateTopicLogs } from "#agents/topic-cleanup";
 export type { ExecuteExternalUserTurnParams } from "#application/execute-external-user-turn";
 export { executeExternalUserTurn } from "#application/execute-external-user-turn";
 export type {
+  SubmitRuntimeGatewayTurnParams,
+  SubmitRuntimeGatewayTurnResult,
+} from "#application/submit-runtime-gateway-turn";
+export { submitRuntimeGatewayTurn } from "#application/submit-runtime-gateway-turn";
+export type {
   SubmitUserMessageParams,
   SubmitUserMessageResult,
 } from "#application/submit-user-message";

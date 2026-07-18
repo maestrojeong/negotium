@@ -33,6 +33,7 @@ import {
   type StoredRuntimeEvent,
   saveVaultEntry,
   type startAiTurn,
+  submitRuntimeGatewayTurn,
   submitUserMessage,
   switchTopicAccessMode,
   switchTopicEffort,
@@ -47,6 +48,9 @@ import { nodeFileStore } from "./files";
 
 export const NODE_CONTROL_PROTOCOL_VERSION = 1;
 export const NODE_CONTROL_BASE_PATH = "/api/v1/control";
+/** Stable gateway contract, intentionally separate from the UI control routes. */
+export const NODE_RUNTIME_CONTRACT_VERSION = 1;
+export const NODE_RUNTIME_CONTRACT_BASE_PATH = `${NODE_CONTROL_BASE_PATH}/runtime/v1`;
 export const NODE_DAEMON_ROLE = "node-daemon";
 export const NODE_DAEMON_INFO_PATH = resolve(RUN_DIR, "node-daemon.json");
 const NODE_VERSION = NEGOTIUM_VERSION;
@@ -142,6 +146,85 @@ function runtimeEvent(event: StoredRuntimeEvent): RuntimeBusEvent {
     seq: event.seq,
     createdAt: event.createdAt,
   };
+}
+
+function createRuntimeContractEventStream(req: Request, after: number, topicId?: string): Response {
+  const encoder = new TextEncoder();
+  let cursor = Math.max(0, after);
+  let closed = false;
+  let pumping = false;
+  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const send = (event: string, data: unknown, id?: number) => {
+        if (closed) return;
+        const lines = [
+          id === undefined ? "" : `id: ${id}`,
+          `event: ${event}`,
+          `data: ${JSON.stringify(data)}`,
+        ]
+          .filter(Boolean)
+          .join("\n");
+        controller.enqueue(encoder.encode(`${lines}\n\n`));
+      };
+      const close = () => {
+        if (closed) return;
+        closed = true;
+        if (pollTimer) clearInterval(pollTimer);
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+        try {
+          controller.close();
+        } catch {
+          // The peer may already have closed the stream.
+        }
+      };
+      const pump = () => {
+        if (closed || pumping) return;
+        pumping = true;
+        try {
+          while (!closed) {
+            const events = listRuntimeEventsAfter(cursor, 500);
+            if (events.length === 0) break;
+            for (const event of events) {
+              cursor = event.seq;
+              if (!topicId || event.topicId === topicId)
+                send("runtime", runtimeEvent(event), event.seq);
+            }
+            // A cursor is global because RuntimeBus ordering is global. This
+            // lets a topic-filtered subscriber resume without rescanning it.
+            send("cursor", { cursor }, cursor);
+            if (events.length < 500) break;
+          }
+        } finally {
+          pumping = false;
+        }
+      };
+
+      send("ready", { v: NODE_RUNTIME_CONTRACT_VERSION, cursor });
+      pump();
+      pollTimer = setInterval(pump, 100);
+      heartbeatTimer = setInterval(() => {
+        if (!closed) controller.enqueue(encoder.encode(`: heartbeat ${Date.now()}\n\n`));
+      }, 15_000);
+      req.signal.addEventListener("abort", close, { once: true });
+    },
+    cancel() {
+      closed = true;
+      if (pollTimer) clearInterval(pollTimer);
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "content-type": "text/event-stream; charset=utf-8",
+      "x-accel-buffering": "no",
+    },
+  });
 }
 
 function createEventStream(req: Request, userId: string, after: number): Response {
@@ -241,6 +324,93 @@ export function createNodeControlHandler(
 
     const path = url.pathname.slice(NODE_CONTROL_BASE_PATH.length) || "/";
     try {
+      const runtimePath = url.pathname.startsWith(NODE_RUNTIME_CONTRACT_BASE_PATH)
+        ? url.pathname.slice(NODE_RUNTIME_CONTRACT_BASE_PATH.length) || "/"
+        : null;
+      if (runtimePath !== null) {
+        if (req.method === "GET" && runtimePath === "/health") {
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            nodeVersion: NODE_VERSION,
+            capabilities: [
+              "turn-submit-idempotent",
+              "turn-events-sse-resume",
+              "canonical-topic-read",
+              "canonical-message-read",
+            ],
+            cursor: latestRuntimeEventSeq(),
+          });
+        }
+
+        if (req.method === "POST" && runtimePath === "/turns") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const topicId = requiredText(body.topicId, "topicId");
+          const userId = requiredText(body.userId, "userId");
+          const text = requiredText(body.text, "text");
+          const clientMessageId = requiredText(body.clientMessageId, "clientMessageId");
+          const requestId =
+            body.requestId === undefined ? undefined : requiredText(body.requestId, "requestId");
+          const topic = getTopic(topicId);
+          if (!topic) return jsonError(404, "Topic not found");
+          const submission = submitRuntimeGatewayTurn({
+            topic,
+            userId,
+            text,
+            clientMessageId,
+            requestId,
+            allowAutoContinue: body.allowAutoContinue !== false,
+          });
+          return Response.json(
+            {
+              ok: true,
+              v: NODE_RUNTIME_CONTRACT_VERSION,
+              accepted: true,
+              deduplicated: submission.deduplicated,
+              requestId: submission.requestId,
+              clientMessageId: submission.clientMessageId,
+              topicId: submission.topicId,
+              messageId: submission.messageId,
+              cursor: latestRuntimeEventSeq(),
+            },
+            { status: 202 },
+          );
+        }
+
+        if (req.method === "GET" && runtimePath === "/events") {
+          const parsed = Number.parseInt(url.searchParams.get("after") ?? "0", 10);
+          const topicId = url.searchParams.get("topicId")?.trim() || undefined;
+          return createRuntimeContractEventStream(
+            req,
+            Number.isFinite(parsed) ? parsed : 0,
+            topicId,
+          );
+        }
+
+        const runtimeMessagesMatch = runtimePath.match(/^\/topics\/([^/]+)\/messages$/);
+        if (runtimeMessagesMatch && req.method === "GET") {
+          const topicId = decodeURIComponent(runtimeMessagesMatch[1]);
+          if (!getTopic(topicId)) return jsonError(404, "Topic not found");
+          const cursor = url.searchParams.get("cursor");
+          const parsedLimit = Number.parseInt(url.searchParams.get("limit") ?? "50", 10);
+          const result = listApiMessages(topicId, {
+            cursor,
+            limit: Number.isFinite(parsedLimit) ? parsedLimit : 50,
+          });
+          return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, ...result });
+        }
+
+        const runtimeTopicMatch = runtimePath.match(/^\/topics\/([^/]+)$/);
+        if (runtimeTopicMatch && req.method === "GET") {
+          const topic = getTopic(decodeURIComponent(runtimeTopicMatch[1]));
+          if (!topic) return jsonError(404, "Topic not found");
+          return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, topic });
+        }
+
+        return jsonError(404, "Runtime contract route not found");
+      }
+
       if (req.method === "GET" && path === "/status") {
         return Response.json({
           ok: true,
@@ -517,6 +687,12 @@ export function createNodeControlHandler(
 
       return jsonError(404, "Control route not found");
     } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.includes("clientMessageId") || error.message.includes("requestId"))
+      ) {
+        return jsonError(409, error.message);
+      }
       if (error instanceof TopicServiceError) return topicServiceError(error);
       if (error instanceof TopicDeriveBusyError) return jsonError(409, error.message);
       if (error instanceof TopicTitleConflictError) return jsonError(409, error.message);
