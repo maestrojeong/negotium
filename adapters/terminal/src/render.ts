@@ -555,10 +555,16 @@ function topicOverlayLines(
   animationFrame = 0,
 ): UiLine[] {
   const indexedTopics = state.topics.map((topic, topicIndex) => ({ topic, topicIndex }));
-  const privateTopics = indexedTopics.filter(({ topic }) => topic.accessMode !== "shared");
-  const publicTopics = indexedTopics.filter(({ topic }) => topic.accessMode === "shared");
+  const managerTopics = indexedTopics.filter(({ topic }) => topic.kind === "manager");
+  const privateTopics = indexedTopics.filter(
+    ({ topic }) => topic.kind !== "manager" && topic.accessMode !== "shared",
+  );
+  const publicTopics = indexedTopics.filter(
+    ({ topic }) => topic.kind !== "manager" && topic.accessMode === "shared",
+  );
   const entries: TopicOverlayEntry[] = [];
   for (const [label, topics] of [
+    ["Manager", managerTopics],
     ["Private", privateTopics],
     ["Public", publicTopics],
   ] as const) {
@@ -573,7 +579,7 @@ function topicOverlayLines(
       })),
     );
   }
-  for (const kind of ["memory", "cron"] as const) {
+  for (const kind of ["cron", "memory"] as const) {
     const sessions = state.backgroundSessions.filter((session) => session.kind === kind);
     if (sessions.length === 0) continue;
     if (entries.length > 0) entries.push({ kind: "separator" });

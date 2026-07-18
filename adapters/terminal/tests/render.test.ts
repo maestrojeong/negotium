@@ -188,8 +188,14 @@ describe("terminal renderer", () => {
     expect(output).toContain("Ctrl-C exit; work continues");
   });
 
-  test("groups topics by private and public access", () => {
-    const general = { ...topic(), id: "general", title: "General", kind: "manager" as const };
+  test("groups manager, private, and public topics separately", () => {
+    const general = {
+      ...topic(),
+      id: "general",
+      title: "General",
+      kind: "manager" as const,
+      accessMode: "private" as const,
+    };
     const work = { ...topic(), id: "work", title: "Work", accessMode: "private" as const };
     const shared = { ...topic(), id: "shared", title: "Shared", accessMode: "shared" as const };
     const state = {
@@ -198,15 +204,18 @@ describe("terminal renderer", () => {
     };
 
     const output = stripAnsi(renderApp(state, 120, 30));
+    expect(output).toContain("  Manager");
     expect(output).toContain("  Private");
     expect(output).toContain("  Public");
-    expect(output.indexOf("Private")).toBeLessThan(output.indexOf("○ General"));
+    expect(output.indexOf("Manager")).toBeLessThan(output.indexOf("○ General"));
     expect(output.indexOf("○ General")).toBeLessThan(output.indexOf("────"));
-    expect(output.indexOf("────")).toBeLessThan(output.indexOf("Public"));
+    expect(output.indexOf("────")).toBeLessThan(output.indexOf("Private"));
+    expect(output.indexOf("Private")).toBeLessThan(output.indexOf("○ Work"));
+    expect(output.indexOf("○ Work")).toBeLessThan(output.indexOf("Public"));
     expect(output.indexOf("Public")).toBeLessThan(output.indexOf("○ Shared"));
   });
 
-  test("shows active Memory and Cron sessions in read-only groups", () => {
+  test("shows active Cron and Memory sessions in read-only groups", () => {
     const state = {
       ...setTopics(createInitialState("local"), [topic()]),
       backgroundSessions: [
@@ -235,7 +244,7 @@ describe("terminal renderer", () => {
     expect(output).toContain("Archive Research  ·  Tool: wiki_save");
     expect(output).toContain("Cron");
     expect(output).toContain("Daily digest  ·  Running");
-    expect(output.indexOf("Archive Research")).toBeLessThan(output.indexOf("Daily digest"));
+    expect(output.indexOf("Daily digest")).toBeLessThan(output.indexOf("Archive Research"));
   });
 
   test("renders a background session without an interactive composer", () => {

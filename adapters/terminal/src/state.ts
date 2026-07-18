@@ -184,8 +184,8 @@ export function setBackgroundSessions(
   backgroundSessions: BackgroundSessionDto[],
 ): AppState {
   const orderedSessions = [
-    ...backgroundSessions.filter((session) => session.kind === "memory"),
     ...backgroundSessions.filter((session) => session.kind === "cron"),
+    ...backgroundSessions.filter((session) => session.kind === "memory"),
   ];
   const selectedStillExists = orderedSessions.some(
     (session) => session.id === state.topicPickerBackgroundId,
@@ -211,10 +211,13 @@ export function moveTopicPickerSelection(state: AppState, delta: number): AppSta
   const indexedTopics = state.topics.map((topic, index) => ({ topic, index }));
   const items = [
     ...indexedTopics
-      .filter(({ topic }) => topic.accessMode !== "shared")
+      .filter(({ topic }) => topic.kind === "manager")
       .map(({ topic, index }) => ({ kind: "topic" as const, id: topic.id, index })),
     ...indexedTopics
-      .filter(({ topic }) => topic.accessMode === "shared")
+      .filter(({ topic }) => topic.kind !== "manager" && topic.accessMode !== "shared")
+      .map(({ topic, index }) => ({ kind: "topic" as const, id: topic.id, index })),
+    ...indexedTopics
+      .filter(({ topic }) => topic.kind !== "manager" && topic.accessMode === "shared")
       .map(({ topic, index }) => ({ kind: "topic" as const, id: topic.id, index })),
     ...state.backgroundSessions.map((session) => ({
       kind: "background" as const,

@@ -122,7 +122,11 @@ describe("terminal adapter state", () => {
 
   test("uses the same Manager-first order for rendering and keyboard navigation", () => {
     const work = topic("work", "Work");
-    const general = { ...topic("general", "General"), kind: "manager" as const };
+    const general = {
+      ...topic("general", "General"),
+      kind: "manager" as const,
+      accessMode: "private" as const,
+    };
     let state = setTopics(createInitialState("local"), [work, general]);
     state = openTopicPicker(state, undefined, true);
 
@@ -171,9 +175,9 @@ describe("terminal adapter state", () => {
     ]);
 
     state = moveTopicPickerSelection(state, 1);
-    expect(state.topicPickerBackgroundId).toBe("memory-1");
-    state = moveTopicPickerSelection(state, 1);
     expect(state.topicPickerBackgroundId).toBe("cron-1");
+    state = moveTopicPickerSelection(state, 1);
+    expect(state.topicPickerBackgroundId).toBe("memory-1");
 
     state = { ...state, overlay: "background-session" };
     state = setBackgroundSessions(state, []);
