@@ -84,7 +84,7 @@ describe("session-comm topic listing", () => {
       title: "Current Room",
       kind: "agent",
     });
-    makeTopic({
+    const duplicate = makeTopic({
       title: "Current Room",
       kind: "channel",
       agent: undefined,
@@ -96,7 +96,10 @@ describe("session-comm topic listing", () => {
 
     setMcpConfig(["playwright"]);
 
-    expect(getApiTopicConfig(current.id)?.mcp).toEqual(["playwright"]);
-    expect(getMcpConfig().enabled).toEqual(["playwright"]);
+    // Required MCPs are no longer persisted as topic-specific options. The
+    // write must still resolve the current topic by id, not the duplicate title.
+    expect(getApiTopicConfig(current.id)?.mcp).toEqual([]);
+    expect(getApiTopicConfig(duplicate.id)).toBeUndefined();
+    expect(getMcpConfig().enabled).toEqual([]);
   });
 });

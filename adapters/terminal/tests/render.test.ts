@@ -123,6 +123,24 @@ describe("terminal renderer", () => {
     expect(lines[labelIndex - 1]?.trim()).toBe("");
   });
 
+  test("scrolls slash command suggestions to keep the keyboard selection visible", () => {
+    const output = stripAnsi(
+      renderApp(
+        {
+          ...createInitialState("local"),
+          input: "/",
+          inputCursor: { row: 0, col: 1 },
+          suggestionIndex: 7,
+        },
+        100,
+        24,
+      ),
+    );
+
+    expect(output).toContain("› /private");
+    expect(output).not.toContain("/new  reset the current session");
+  });
+
   test("shows a dedicated topic-name composer after choosing new topic", () => {
     const previousMessage: MessageDto = {
       id: "previous-message",
@@ -574,6 +592,35 @@ describe("terminal renderer", () => {
     expect(output).toContain("◫ Tasks");
     expect(output).toContain("☐ Verify the result");
     expect(output).not.toContain("Shared tasks");
+  });
+
+  test("shows unfinished tasks before the most recently completed tasks", () => {
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [
+      {
+        id: "tasks-priority",
+        topicId: "topic",
+        authorId: "system",
+        text: [
+          "📋 Tasks (6/8)",
+          "[x] Old 1",
+          "[x] Old 2",
+          "[x] Old 3",
+          "[x] Old 4",
+          "[x] Old 5",
+          "[x] Old 6",
+          "[ ] Current",
+          "[->] Running",
+        ].join("\n"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("[ ] Current");
+    expect(output).toContain("[->] Running");
+    expect(output).toContain("[x] Old 6");
+    expect(output).not.toContain("[x] Old 1");
   });
 
   test("animates the working indicator without requiring another runtime event", () => {

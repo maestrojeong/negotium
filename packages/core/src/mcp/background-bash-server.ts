@@ -50,6 +50,8 @@ if (!port || !runtimeCapability || !runtimeServerId) {
 
 const SIGTERM_GRACE_MS = 5_000;
 const MAX_OUTPUT_BYTES = 200_000;
+const COMPLETED_RETENTION_MS = 60 * 60_000;
+const MAX_COMPLETED_PROCS = 100;
 
 interface BgProc {
   bashId: string;
@@ -65,6 +67,7 @@ interface BgProc {
   exitCode: number | null;
   startedAt: number;
   killTimer?: ReturnType<typeof setTimeout>;
+  cleanupTimer?: ReturnType<typeof setTimeout>;
 }
 
 const procs = new Map<string, BgProc>();
@@ -140,6 +143,34 @@ function signalProcessTree(child: ChildProcess, signal: NodeJS.Signals): boolean
   }
 }
 
+function forgetProc(proc: BgProc): void {
+  if (procs.get(proc.bashId) !== proc) return;
+  if (proc.cleanupTimer) clearTimeout(proc.cleanupTimer);
+  procs.delete(proc.bashId);
+}
+
+function pruneCompletedProcs(): void {
+  const completed = [...procs.values()]
+    .filter((proc) => proc.exited)
+    .sort((a, b) => a.startedAt - b.startedAt);
+  while (completed.length > MAX_COMPLETED_PROCS) {
+    const oldest = completed.shift();
+    if (oldest) forgetProc(oldest);
+  }
+}
+
+function terminateProc(proc: BgProc): boolean {
+  if (proc.exited) return false;
+  const signalled = signalProcessTree(proc.child, "SIGTERM");
+  if (!proc.killTimer) {
+    proc.killTimer = setTimeout(() => {
+      if (!proc.exited) signalProcessTree(proc.child, "SIGKILL");
+    }, SIGTERM_GRACE_MS);
+    proc.killTimer.unref?.();
+  }
+  return signalled;
+}
+
 function finishProc(proc: BgProc, exitCode: number | null): void {
   if (proc.exited) return;
   proc.exited = true;
@@ -149,6 +180,9 @@ function finishProc(proc: BgProc, exitCode: number | null): void {
     proc.killTimer = undefined;
   }
   injectCompletion(proc);
+  proc.cleanupTimer = setTimeout(() => forgetProc(proc), COMPLETED_RETENTION_MS);
+  proc.cleanupTimer.unref?.();
+  pruneCompletedProcs();
 }
 
 function spawnBash(
@@ -259,11 +293,7 @@ function buildMcpServer(context: BgContext): McpServer {
       if (!proc || !sameContext(proc, context)) return mcpError(`Unknown bash_id: ${bash_id}`);
       if (proc.exited)
         return mcpOk(JSON.stringify({ bash_id, alreadyExited: true, exitCode: proc.exitCode }));
-      signalProcessTree(proc.child, "SIGTERM");
-      proc.killTimer = setTimeout(() => {
-        if (!proc.exited) signalProcessTree(proc.child, "SIGKILL");
-      }, SIGTERM_GRACE_MS);
-      proc.killTimer.unref?.();
+      terminateProc(proc);
       return mcpOk(JSON.stringify({ bash_id, killed: true }));
     },
   );
@@ -329,8 +359,7 @@ const httpServer = createServer(async (req, res) => {
     }
     let killed = 0;
     for (const proc of procs.values()) {
-      if (!proc.exited && sameContext(proc, context) && signalProcessTree(proc.child, "SIGTERM"))
-        killed++;
+      if (!proc.exited && sameContext(proc, context) && terminateProc(proc)) killed++;
     }
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ killed }));
     return;

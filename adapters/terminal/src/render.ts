@@ -440,16 +440,17 @@ function activityLines(state: AppState, animationFrame = 0, nowMs = terminalNowM
 function taskLines(state: AppState, width: number): UiLine[] {
   const taskPanel = activeTaskPanel(state);
   if (!taskPanel) return [];
+  const tasks = safeText(taskPanel.text).split("\n").slice(1);
+  const pending = tasks.filter((task) => !/^\s*(?:\[x\]|☒|✓|✅)/i.test(task));
+  const completed = tasks.filter((task) => /^\s*(?:\[x\]|☒|✓|✅)/i.test(task));
+  const visibleTasks = [...pending, ...completed.reverse()].slice(0, 5);
   return [
     line("  ◫ Tasks", { fg: theme.amber, bold: true }),
-    ...safeText(taskPanel.text)
-      .split("\n")
-      .slice(1, 6)
-      .flatMap((task) =>
-        wrapText(task.trimStart(), Math.max(4, width - 6)).map((text) =>
-          line(`    ${text}`, { fg: theme.muted }),
-        ),
+    ...visibleTasks.flatMap((task) =>
+      wrapText(task.trimStart(), Math.max(4, width - 6)).map((text) =>
+        line(`    ${text}`, { fg: theme.muted }),
       ),
+    ),
     line(""),
   ];
 }
@@ -1049,12 +1050,17 @@ function composerPane(state: AppState, width: number): ComposerPane {
   const cap = Math.max(0, 6 - inputLines.length);
   let suggestionLines: ReturnType<typeof line>[];
   if (commands.length > 0) {
-    suggestionLines = commands.slice(0, cap).map((command, index) =>
+    const selectedIndex = Math.min(state.suggestionIndex, commands.length - 1);
+    const start = Math.min(
+      Math.max(0, selectedIndex - cap + 1),
+      Math.max(0, commands.length - cap),
+    );
+    suggestionLines = commands.slice(start, start + cap).map((command, index) =>
       line(
-        `    ${index === state.suggestionIndex ? "›" : " "} ${command.usage}  ${command.description}`,
+        `    ${start + index === selectedIndex ? "›" : " "} ${command.usage}  ${command.description}`,
         {
-          fg: index === state.suggestionIndex ? theme.text : theme.muted,
-          bg: index === state.suggestionIndex ? theme.selected : theme.surface,
+          fg: start + index === selectedIndex ? theme.text : theme.muted,
+          bg: start + index === selectedIndex ? theme.selected : theme.surface,
         },
       ),
     );
@@ -1064,12 +1070,15 @@ function composerPane(state: AppState, width: number): ComposerPane {
     const lineText = state.input.split("\n")[cursor.row] ?? "";
     const paths = pathSuggestions(lineText, cursor.col);
     const items = paths?.items ?? [];
-    suggestionLines = items.slice(0, cap).map((item, index) =>
-      line(`    ${index === state.suggestionIndex ? "›" : " "} ${item.value.slice(1)}`, {
-        fg: index === state.suggestionIndex ? theme.text : theme.muted,
-        bg: index === state.suggestionIndex ? theme.selected : theme.surface,
-      }),
-    );
+    const selectedIndex = Math.min(state.suggestionIndex, Math.max(0, items.length - 1));
+    const start = Math.min(Math.max(0, selectedIndex - cap + 1), Math.max(0, items.length - cap));
+    suggestionLines = items.slice(start, start + cap).map((item, index) => {
+      const selected = start + index === selectedIndex;
+      return line(`    ${selected ? "›" : " "} ${item.value.slice(1)}`, {
+        fg: selected ? theme.text : theme.muted,
+        bg: selected ? theme.selected : theme.surface,
+      });
+    });
     const hidden = (paths?.truncated ?? 0) + Math.max(0, items.length - suggestionLines.length);
     if (hidden > 0 && suggestionLines.length < cap) {
       suggestionLines.push(line(`      … +${hidden} more`, { fg: theme.muted, dim: true }));

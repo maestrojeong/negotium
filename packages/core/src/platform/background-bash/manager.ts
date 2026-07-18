@@ -54,55 +54,16 @@ function isPortInUse(port: number): boolean {
   return pidsOnPort(port).length > 0;
 }
 
-function processCommand(pid: number): string {
-  try {
-    return execFileSync("ps", ["-p", String(pid), "-o", "command="], { stdio: "pipe" })
-      .toString()
-      .trim();
-  } catch {
-    return "";
-  }
-}
-
-function isBackgroundBashServerProcess(cmdline: string, port: number): boolean {
-  return cmdline.includes(BACKGROUND_BASH_SERVER) && cmdline.includes(`--port=${port}`);
-}
-
-async function killBackgroundBashOnPort(port: number): Promise<void> {
-  for (const pid of pidsOnPort(port)) {
-    const cmdline = processCommand(pid);
-    if (!isBackgroundBashServerProcess(cmdline, port)) {
-      logger.warn(
-        { port, pid, cmdline: cmdline.slice(0, 120) },
-        "background-bash port occupied by non-background-bash process; skipping",
-      );
-      continue;
-    }
-    try {
-      process.kill(pid, "SIGKILL");
-      logger.info({ port, pid }, "Killed zombie background-bash server");
-    } catch (e) {
-      logger.warn({ err: e, port, pid }, "Failed to kill zombie background-bash server");
-    }
-  }
-
-  const deadline = Date.now() + 2000;
-  while (Date.now() < deadline) {
-    if (!isPortInUse(port)) return;
-    await delay(100);
-  }
-}
-
 async function allocatePort(excludedPorts: ReadonlySet<number> = new Set()): Promise<number> {
   for (let port = BG_BASH_BASE_PORT; port <= BG_BASH_MAX_PORT; port++) {
     if (usedPorts.has(port) || excludedPorts.has(port)) continue;
     usedPorts.add(port); // reserve before any await
     if (isPortInUse(port)) {
-      await killBackgroundBashOnPort(port);
-      if (isPortInUse(port)) {
-        usedPorts.delete(port);
-        continue;
-      }
+      // Another runtime may legitimately own this port. Never infer that it
+      // is a zombie from its command path; two runtimes can launch the same
+      // installed server file. Skip it and use the next port instead.
+      usedPorts.delete(port);
+      continue;
     }
     return port;
   }
