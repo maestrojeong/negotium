@@ -80,6 +80,19 @@ function createRuntimeUserTurnRequestsTable(): void {
 
 createRuntimeUserTurnRequestsTable();
 
+try {
+  db.exec("ALTER TABLE runtime_user_turn_requests ADD COLUMN execution_json TEXT");
+} catch {
+  // Existing standalone database already has the additive handoff column.
+}
+try {
+  db.exec(
+    "ALTER TABLE runtime_user_turn_requests ADD COLUMN topic_epoch INTEGER NOT NULL DEFAULT 0",
+  );
+} catch {
+  // Existing standalone database already has the additive epoch column.
+}
+
 const legacyTopicPrimaryKey = db
   .query<{ name: string; pk: number }, []>("PRAGMA table_info(runtime_user_turn_requests)")
   .all()
@@ -101,18 +114,6 @@ if (legacyTopicPrimaryKey) {
     `);
     db.exec("DROP TABLE runtime_user_turn_requests_legacy");
   })();
-}
-try {
-  db.exec("ALTER TABLE runtime_user_turn_requests ADD COLUMN execution_json TEXT");
-} catch {
-  // Existing standalone database already has the additive handoff column.
-}
-try {
-  db.exec(
-    "ALTER TABLE runtime_user_turn_requests ADD COLUMN topic_epoch INTEGER NOT NULL DEFAULT 0",
-  );
-} catch {
-  // Existing standalone database already has the additive epoch column.
 }
 db.exec(
   "CREATE INDEX IF NOT EXISTS idx_runtime_user_turn_requests_ready ON runtime_user_turn_requests(status, created_at)",
