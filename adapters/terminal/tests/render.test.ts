@@ -188,20 +188,22 @@ describe("terminal renderer", () => {
     expect(output).toContain("Ctrl-C exit; work continues");
   });
 
-  test("separates the Manager room from other topics with a rule", () => {
+  test("groups topics by private and public access", () => {
     const general = { ...topic(), id: "general", title: "General", kind: "manager" as const };
-    const work = { ...topic(), id: "work", title: "Work" };
+    const work = { ...topic(), id: "work", title: "Work", accessMode: "private" as const };
+    const shared = { ...topic(), id: "shared", title: "Shared", accessMode: "shared" as const };
     const state = {
-      ...setTopics(createInitialState("local"), [work, general]),
+      ...setTopics(createInitialState("local"), [work, shared, general]),
       overlay: "topics" as const,
     };
 
     const output = stripAnsi(renderApp(state, 120, 30));
-    expect(output).toContain("  Manager");
-    expect(output).not.toContain("Other topics");
-    expect(output.indexOf("Manager")).toBeLessThan(output.indexOf("○ General"));
+    expect(output).toContain("  Private");
+    expect(output).toContain("  Public");
+    expect(output.indexOf("Private")).toBeLessThan(output.indexOf("○ General"));
     expect(output.indexOf("○ General")).toBeLessThan(output.indexOf("────"));
-    expect(output.indexOf("────")).toBeLessThan(output.indexOf("○ Work"));
+    expect(output.indexOf("────")).toBeLessThan(output.indexOf("Public"));
+    expect(output.indexOf("Public")).toBeLessThan(output.indexOf("○ Shared"));
   });
 
   test("shows active Memory and Cron sessions in read-only groups", () => {
@@ -301,11 +303,17 @@ describe("terminal renderer", () => {
       activeTopicId: null,
       overlay: "topics" as const,
       topicPickerRoot: true,
+      input: "stale chat draft",
+      inputCursor: { row: 0, col: 16 },
     };
 
-    const output = stripAnsi(renderApp(state, 120, 30));
+    const rendered = renderAppFrame(state, 120, 30);
+    const output = stripAnsi(rendered.frame);
     expect(output).toContain("Esc/Ctrl-C exit");
     expect(output).not.toContain("Esc close");
+    expect(output).not.toContain("stale chat draft");
+    expect(output).not.toContain("Ctrl-O topics");
+    expect(rendered.cursor).toBeNull();
   });
 
   test("keeps the selected topic visible in a short grouped picker", () => {

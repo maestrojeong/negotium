@@ -536,7 +536,6 @@ export function plainTranscript(state: AppState): string {
 }
 
 type TopicOverlayEntry =
-  | { kind: "manager" }
   | { kind: "heading"; label: string }
   | { kind: "separator" }
   | { kind: "topic"; topic: TopicDto; topicIndex: number }
@@ -555,20 +554,18 @@ function topicOverlayLines(
   animationFrame = 0,
 ): UiLine[] {
   const indexedTopics = state.topics.map((topic, topicIndex) => ({ topic, topicIndex }));
-  const general = indexedTopics.filter(({ topic }) => topic.title.toLowerCase() === "general");
-  const otherTopics = indexedTopics.filter(({ topic }) => topic.title.toLowerCase() !== "general");
+  const privateTopics = indexedTopics.filter(({ topic }) => topic.accessMode !== "shared");
+  const publicTopics = indexedTopics.filter(({ topic }) => topic.accessMode === "shared");
   const entries: TopicOverlayEntry[] = [];
-  if (general.length > 0) {
+  for (const [label, topics] of [
+    ["Private", privateTopics],
+    ["Public", publicTopics],
+  ] as const) {
+    if (topics.length === 0) continue;
+    if (entries.length > 0) entries.push({ kind: "separator" });
+    entries.push({ kind: "heading", label });
     entries.push(
-      { kind: "manager" },
-      ...general.map(({ topic, topicIndex }) => ({ kind: "topic" as const, topic, topicIndex })),
-    );
-  }
-  if (otherTopics.length > 0) {
-    if (general.length > 0) entries.push({ kind: "separator" });
-    entries.push({ kind: "heading", label: "Worker" });
-    entries.push(
-      ...otherTopics.map(({ topic, topicIndex }) => ({
+      ...topics.map(({ topic, topicIndex }) => ({
         kind: "topic" as const,
         topic,
         topicIndex,
@@ -598,18 +595,10 @@ function topicOverlayLines(
         entry.topicIndex === state.topicPickerIndex) ||
       (entry.kind === "background" && entry.sessionId === state.topicPickerBackgroundId),
   );
-  let start = Math.min(
+  const start = Math.min(
     Math.max(0, entries.length - visibleCount),
     Math.max(0, selectedEntryIndex - visibleCount + 1),
   );
-  if (
-    start > 0 &&
-    entries[start - 1]?.kind === "manager" &&
-    selectedEntryIndex - (start - 1) < visibleCount
-  ) {
-    start -= 1;
-  }
-
   return [
     line("  Topics", { fg: theme.accent, bold: true }),
     line(
@@ -622,9 +611,6 @@ function topicOverlayLines(
     ...(entries.length === 0
       ? [line("  No topics yet · Press N to create one", { fg: theme.muted })]
       : entries.slice(start, start + visibleCount).map((entry) => {
-          if (entry.kind === "manager") {
-            return line("  Manager", { fg: theme.cyan, bold: true });
-          }
           if (entry.kind === "heading") {
             return line(`  ${entry.label}`, { fg: theme.cyan, bold: true });
           }
@@ -1199,6 +1185,7 @@ export function renderAppFrame(
   const decision = decisionPane(state, width);
   const hideComposer =
     state.overlay === "background-session" ||
+    state.overlay === "topics" ||
     (state.overlay === "vault" &&
       (state.vaultMode === "list" || state.vaultMode === "confirm-delete"));
   const composer = hideComposer ? { lines: [], cursor: null } : composerPane(state, width);
