@@ -13,7 +13,7 @@ the peer/relay boundary while `@negotium/core` owns local agent execution.
 ```bash
 npm install --global @negotium/cli
 negotium otium join <invite-code>   # store credentials (…/otium-join.json, 0600)
-negotium otium serve --port 7777    # direct mode; add --relay <url> for NAT workers
+negotium serve otium --port 7777    # canonical node + sidecar; add --relay <url> for NAT workers
 negotium otium bindings             # inspect internal/shared transports
 negotium otium share <host-topic-id> <local-topic-id> --user <user-id>
 negotium otium private <local-topic-id> --user <user-id>
@@ -46,7 +46,8 @@ is scoped to an active peer turn. The adapter therefore declares
 `transcript: full`, `historyBackfill: false`, and `externalAuthors: relayed` in
 the adapter SDK v2 contract.
 
-Otium, Telegram, and Terminal share SQLite state but run independently:
+One canonical Node owns turns, MCP, Cron, and inbox workers. Otium, Telegram,
+and Terminal are independent clients/sidecars of that Node:
 
 ```bash
 negotium start otium
@@ -54,10 +55,12 @@ negotium start telegram  # another shell
 negotium start terminal  # another shell; may be repeated
 ```
 
-Otium holds a state-directory singleton lease and owns a stable loopback node port
-(`NEGOTIUM_PORT`, default 7777, or `--port`). The integration
-mounts through negotium's plugin chain
-(`registerNodeRequestHandler`) — negotium core knows nothing about otium.
+`negotium serve otium` ensures the advertised singleton Node daemon and keeps
+the Otium sidecar in the foreground. The sidecar owns the stable peer port
+(`NEGOTIUM_PORT`, default 7777, or `--port`) and relay tunnel; the Node owns
+the authenticated adapter-control endpoint and all runtime state. If the Node
+restarts, the sidecar returns a clear 503 while it is unavailable and discovers
+the replacement automatically. `negotium otium serve` remains a deprecated alias.
 
 Relay mode uses the optional `relay` field in join credentials, or
 `OTIUM_RELAY_URL`, with `serve --relay <http(s)/ws(s) URL>` taking precedence.

@@ -11,7 +11,6 @@ import {
   OPTIONAL_FORUM_MCP_SERVERS,
   registerRuntimeMcpServer,
 } from "#platform/mcp-config";
-import { resolveRuntimeMcpToken } from "#mcp/runtime-spec";
 
 /**
  * Playwright MCP transport selection.

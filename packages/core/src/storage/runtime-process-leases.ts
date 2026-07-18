@@ -102,6 +102,24 @@ export function getRuntimeProcessLease(
   return now - lease.heartbeatAt <= staleMs ? lease : null;
 }
 
+/** List healthy process leases, optionally restricted to one role prefix. */
+export function listRuntimeProcessLeases(
+  rolePrefix = "",
+  now = Date.now(),
+  staleMs = PROCESS_LEASE_STALE_MS,
+): RuntimeProcessLease[] {
+  const rows = rolePrefix
+    ? db
+        .query<RuntimeProcessLeaseRow, [string]>(
+          "SELECT * FROM runtime_process_leases WHERE role LIKE ? ORDER BY role",
+        )
+        .all(`${rolePrefix}%`)
+    : db
+        .query<RuntimeProcessLeaseRow, []>("SELECT * FROM runtime_process_leases ORDER BY role")
+        .all();
+  return rows.map(rowToLease).filter((lease) => now - lease.heartbeatAt <= staleMs);
+}
+
 export function heartbeatRuntimeProcessLease(
   role: string,
   ownerId: string,

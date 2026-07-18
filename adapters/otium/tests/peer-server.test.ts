@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
+  NEGOTIUM_VERSION,
   registerTopic,
   resolveAttachmentByFileId,
   resolveUploadedFilePathByFileId,
@@ -159,7 +160,7 @@ describe("capabilities / health", () => {
     expect(status).toBe(200);
     expect(body.ok).toBe(true);
     expect(body.protocolVersion).toBe(1);
-    expect(body.runtimeVersion).toBe("0.1.12");
+    expect(body.runtimeVersion).toBe(NEGOTIUM_VERSION);
     expect(body.features).toEqual({
       remoteAsk: true,
       inputFiles: true,

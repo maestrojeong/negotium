@@ -35,7 +35,9 @@ const packageEntrypoints = new Map<string, string>([
   ["@negotium/adapter-telegram/cli", "adapters/telegram/src/cli.ts"],
   ["@negotium/adapter-otium", "adapters/otium/src/index.ts"],
   ["@negotium/adapter-otium/cli", "adapters/otium/src/cli.ts"],
+  ["@negotium/adapter-otium/node-runtime", "adapters/otium/src/node-runtime.ts"],
   ["@negotium/adapter-otium/relay", "adapters/otium/src/relay.ts"],
+  ["@negotium/adapter-otium/sidecar", "adapters/otium/src/sidecar.ts"],
   ["@negotium/cli", "apps/cli/src/main.ts"],
 ]);
 

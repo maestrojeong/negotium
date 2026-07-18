@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { MessageDto, TopicDto } from "@negotium/core";
+import { terminalNowMs } from "@/clock";
 import {
   displayWidth,
   effectiveTopicModel,
@@ -34,6 +35,10 @@ function topic(): TopicDto {
 }
 
 describe("terminal renderer", () => {
+  test("uses wall time compatible with persisted runtime-event timestamps", () => {
+    expect(Math.abs(terminalNowMs() - Date.now())).toBeLessThan(50);
+  });
+
   test("formats working time with day, hour, minute, and second units", () => {
     expect(formatElapsedDuration(0)).toBe("0s");
     expect(formatElapsedDuration(45)).toBe("45s");

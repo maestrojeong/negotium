@@ -87,6 +87,43 @@ afterAll(() => {
 });
 
 describe("inbound", () => {
+  test("can submit the turn through a canonical remote Node boundary", async () => {
+    const remoteFake = new FakeTelegramClient();
+    const submitted: Array<{ topicId: string; text: string; sourceAdapter: string }> = [];
+    const aborted: string[] = [];
+    const remoteAdapter = startTelegramAdapter({
+      client: remoteFake,
+      userId: USER,
+      startTurn: () => {
+        throw new Error("embedded turn dispatcher must not run");
+      },
+      submitTurn: async (input) => {
+        submitted.push({
+          topicId: input.topic.id,
+          text: input.text,
+          sourceAdapter: input.sourceAdapter,
+        });
+        return { queryId: "remote-query" };
+      },
+      abortTurn: async (topicId) => {
+        aborted.push(topicId);
+        return true;
+      },
+      mappingDbPath: join(TMP, "remote-mappings.db"),
+    });
+    const chatId = chat(19);
+    try {
+      remoteFake.emit({ chat: { id: chatId }, from: { id: ALLOWED_TG_ID }, text: "remote turn" });
+      await waitFor(() => submitted.length === 1);
+      expect(submitted[0]).toMatchObject({ text: "remote turn", sourceAdapter: "telegram" });
+      remoteFake.emit({ chat: { id: chatId }, from: { id: ALLOWED_TG_ID }, text: "/abort" });
+      await waitFor(() => aborted.length === 1);
+      expect(aborted).toEqual([submitted[0]!.topicId]);
+    } finally {
+      await remoteAdapter.stop();
+    }
+  });
+
   test("publishes an inbound user message for simultaneous Terminal clients", () => {
     const chatId = chat(11);
     const seen: MessageDto[] = [];

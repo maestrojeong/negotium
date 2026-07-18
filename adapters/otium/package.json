@@ -1,6 +1,6 @@
 {
   "name": "@negotium/adapter-otium",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "private": true,
   "type": "module",
   "description": "Join an Otium workspace and run placed rooms on a Negotium node",
@@ -19,6 +19,14 @@
     "./relay": {
       "types": "./dist/relay.d.ts",
       "default": "./dist/relay.js"
+    },
+    "./node-runtime": {
+      "types": "./dist/node-runtime.d.ts",
+      "default": "./dist/node-runtime.js"
+    },
+    "./sidecar": {
+      "types": "./dist/sidecar.d.ts",
+      "default": "./dist/sidecar.js"
     }
   },
   "bin": {
@@ -43,7 +51,7 @@
   },
   "scripts": {
     "serve": "bun src/cli.ts serve",
-    "build": "bun ../../scripts/build-package.ts src/index.ts src/cli.ts src/relay.ts",
+    "build": "bun ../../scripts/build-package.ts src/index.ts src/cli.ts src/relay.ts src/node-runtime.ts src/sidecar.ts",
     "check": "bunx tsc --noEmit",
     "lint": "biome check",
     "test": "bun test",

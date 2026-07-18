@@ -118,8 +118,13 @@ export interface OtiumWorkerHandle extends NegotiumAdapterHandle<"otium"> {
   startTunnel(options: Pick<TunnelClientOptions, "targetOrigin"> & { relayUrl?: string }): void;
 }
 
-/** Start the configured Otium channel adapter. */
-export function startOtiumAdapter(options: OtiumAdapterOptions): OtiumWorkerHandle {
+/** Runtime-owned Otium services. This handle must live in the canonical Node process. */
+export interface OtiumNodeRuntimeHandle extends NegotiumAdapterHandle<"otium"> {
+  join: OtiumJoin;
+}
+
+/** Start the runtime half of Otium inside the canonical Node process. */
+export function startOtiumNodeRuntime(options: OtiumAdapterOptions): OtiumNodeRuntimeHandle {
   const { join } = options;
   configureOtiumCentral(join);
   const failed = failInterruptedPeerTurnRequestsOnStartup();
@@ -149,7 +154,6 @@ export function startOtiumAdapter(options: OtiumAdapterOptions): OtiumWorkerHand
     }
   });
   let stopped = false;
-  let tunnel: TunnelClient | null = null;
   logger.info({ central: join.central, cellId: join.cellId }, "otium: worker mode enabled");
   void selfPeerNode()
     .then((self) => {
@@ -166,16 +170,44 @@ export function startOtiumAdapter(options: OtiumAdapterOptions): OtiumWorkerHand
   return {
     name: "otium",
     join,
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      unsubscribeTopicCleanup();
+      unregisterRuntimeBridge();
+      unregisterSessionBridge();
+      sessionBridgeIpc.stop();
+      canonicalMcpBridge.stop();
+      stopPeerReplyOutbox();
+      uninstallFileHooks();
+      stopBackflow();
+      configureOtiumCentral(null);
+    },
+  };
+}
+
+/**
+ * Backward-compatible embedded composition. New hosts should run
+ * `startOtiumNodeRuntime` in the canonical Node and the tunnel in a sidecar.
+ */
+export function startOtiumAdapter(options: OtiumAdapterOptions): OtiumWorkerHandle {
+  const runtime = startOtiumNodeRuntime(options);
+  let tunnel: TunnelClient | null = null;
+  let stopped = false;
+  return {
+    name: "otium",
+    join: runtime.join,
     startTunnel: ({ targetOrigin, relayUrl }) => {
       if (stopped || tunnel) return;
-      const selectedRelay = relayUrl?.trim() || join.relay || process.env.OTIUM_RELAY_URL?.trim();
+      const selectedRelay =
+        relayUrl?.trim() || runtime.join.relay || process.env.OTIUM_RELAY_URL?.trim();
       if (!selectedRelay) {
         logger.info({}, "otium: relay tunnel disabled (no relay URL configured)");
         return;
       }
       tunnel = new TunnelClient({
         relayUrl: selectedRelay,
-        token: join.secret,
+        token: runtime.join.secret,
         targetOrigin,
         nodeVersion: `negotium@${NEGOTIUM_VERSION}`,
         logger,
@@ -187,15 +219,7 @@ export function startOtiumAdapter(options: OtiumAdapterOptions): OtiumWorkerHand
       stopped = true;
       tunnel?.stop();
       tunnel = null;
-      unsubscribeTopicCleanup();
-      unregisterRuntimeBridge();
-      unregisterSessionBridge();
-      sessionBridgeIpc.stop();
-      canonicalMcpBridge.stop();
-      stopPeerReplyOutbox();
-      uninstallFileHooks();
-      stopBackflow();
-      configureOtiumCentral(null);
+      runtime.stop();
     },
   };
 }

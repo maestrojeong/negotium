@@ -306,9 +306,12 @@ export async function startDefaultNode(
 }
 
 /** Long-lived local node entry used by the CLI's detached child process. */
-export async function runNodeDaemon(opts: { port?: number } = {}): Promise<void> {
+export async function runNodeDaemon(
+  opts: { port?: number; maxRequestBodySize?: number } = {},
+): Promise<void> {
   const node = await startDefaultNode({
     port: opts.port ?? 0,
+    ...(opts.maxRequestBodySize ? { maxRequestBodySize: opts.maxRequestBodySize } : {}),
     advertise: true,
     singleton: true,
   });

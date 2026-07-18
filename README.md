@@ -145,15 +145,20 @@ negotium stop
 negotium terminal --embedded   # explicit in-process recovery/development mode
 ```
 
-Channel processes share durable SQLite state and do not need a common parent process. Terminal
-clients may be opened more than once and share the long-lived node; Telegram and Otium currently
-retain independent host processes and enforce one live process each for the same state directory:
+Channel processes share one canonical Node and do not need a common parent process. Terminal clients
+may be opened more than once; Telegram submits turns through the Node control API; Otium keeps only
+its public peer listener and relay tunnel in a sidecar:
 
 ```bash
 negotium start terminal    # shell 1 (repeat in more shells if useful)
 negotium start telegram    # shell 2
 negotium start otium       # shell 3
 ```
+
+`negotium serve otium` is the supervisor form: it ensures the canonical daemon, then runs the Otium
+sidecar in the foreground. `negotium otium serve` is a deprecated migration alias. `negotium status`
+shows the Node and adapter PIDs; `negotium stop` stops only the Node, while `negotium stop otium`,
+`negotium stop telegram`, and `negotium stop --all` make the wider scope explicit.
 
 The Terminal node publishes an ephemeral authenticated loopback control endpoint and holds a
 state-directory singleton lease. Topics, messages, runtime events, pending turn requests, leases,

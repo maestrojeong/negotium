@@ -13,8 +13,9 @@ negotium
 ├── built-in Telegram adapter
 └── built-in Otium adapter
 
-Terminal clients ── authenticated REST + cursor SSE ── long-lived node
-all adapters ────── @negotium/adapter-sdk lifecycle contract
+Terminal/Telegram ── authenticated control API ── canonical node
+Otium sidecar ────── authenticated adapter API ─── canonical node
+all adapters ─────── @negotium/adapter-sdk lifecycle contract
 ```
 
 Keeping source boundaries allows focused builds and tests without exposing internal npm APIs.
@@ -40,12 +41,15 @@ They must not disappear silently.
 
 ## Process topology
 
-One long-lived node owns a state directory. Terminal is a client of that node; closing a TUI does not
-stop active turns. Multiple Terminal clients may connect concurrently. Telegram and Otium run as
-independent channel processes and currently enforce one process of each kind per state directory.
+One canonical long-lived node owns a state directory, turn execution, MCP hosts, Cron, and inbox
+workers. Terminal and Telegram use its authenticated control API. Otium's public peer listener and
+relay tunnel run in a sidecar, while its runtime bridge is mounted inside the canonical Node through
+an authenticated loopback adapter API. Closing or crashing any adapter does not stop active turns.
+Telegram and Otium enforce one process of each kind per state directory.
 
-The loopback control API binds to `127.0.0.1` and uses a mode-0600 bearer token stored under the state
-root. A SQLite singleton lease prevents a second node from owning the same state directory.
+The loopback control and adapter APIs bind to `127.0.0.1` and use a mode-0600 bearer token stored
+under the state root. A SQLite singleton lease prevents a second node from owning the same state
+directory. Adapter process leases power `negotium status` and adapter-specific stop commands.
 
 For commands and recovery options, see the root [README](../README.md) and the relevant package README.
 

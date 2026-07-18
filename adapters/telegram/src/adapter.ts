@@ -101,6 +101,17 @@ export interface TelegramAdapterOptions {
   defaultAgent?: "claude" | "codex" | "maestro";
   /** Turn dispatcher override for remote hosts and deterministic tests. */
   startTurn?: typeof startAiTurn;
+  /** Submit a user turn through a canonical remote Node instead of this process. */
+  submitTurn?: (input: {
+    topic: TopicDto;
+    userId: string;
+    text: string;
+    sourceAdapter: "telegram";
+    visualTools: false;
+    fileDeliveryTools: true;
+  }) => Promise<{ queryId?: string }>;
+  /** Abort through the canonical Node when this adapter is a sidecar process. */
+  abortTurn?: (topicId: string, userId: string) => Promise<boolean> | boolean;
   /** Topic title for a chat/thread; default `tg-{chatId}` / `tg-{chatId}-{threadId}`. */
   topicTitleFor?: (chatId: number, threadId?: number) => string;
   /**
@@ -1741,13 +1752,27 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     const rememberTarget = (queryId: string): void => {
       targetByQueryId.set(queryId, target);
     };
-    const { queryId } = submitUserMessage({
+    const input = {
       topic,
       userId,
       text: prompt,
-      sourceAdapter: "telegram",
-      visualTools: false,
-      fileDeliveryTools: true,
+      sourceAdapter: "telegram" as const,
+      visualTools: false as const,
+      fileDeliveryTools: true as const,
+    };
+    if (opts.submitTurn) {
+      void opts
+        .submitTurn(input)
+        .then(({ queryId }) => {
+          if (queryId) rememberTarget(queryId);
+        })
+        .catch((error) => {
+          logger.error({ err: error, topicId: topic.id }, "telegram adapter: remote turn failed");
+        });
+      return;
+    }
+    const { queryId } = submitUserMessage({
+      ...input,
       onDispatched: rememberTarget,
       startTurn: dispatchTurn,
     });
@@ -2011,13 +2036,11 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       }
       case "/abort": {
         const mapping = byKey.get(mappingKey(chatId, threadId));
-        reply(
-          chatId,
-          threadId,
-          mapping && topicService.abortTurn(mapping.topicId, userId)
-            ? "aborted"
-            : "nothing running",
-        );
+        const aborted = mapping
+          ? await (opts.abortTurn?.(mapping.topicId, userId) ??
+              topicService.abortTurn(mapping.topicId, userId))
+          : false;
+        reply(chatId, threadId, aborted ? "aborted" : "nothing running");
         return;
       }
       case "/agent": {

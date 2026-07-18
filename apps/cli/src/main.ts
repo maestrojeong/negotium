@@ -13,6 +13,37 @@ function numericOption(values: string[], name: string, fallback: number): number
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
+async function runCanonicalNode(port: number): Promise<void> {
+  const { onShutdown } = await import("@negotium/core");
+  const { MAX_PEER_INPUT_REQUEST_BYTES, mountConfiguredOtiumNodeRuntime } = await import(
+    "@negotium/adapter-otium/node-runtime"
+  );
+  const { startDefaultNode } = await import("@negotium/node");
+  const otiumRuntime = mountConfiguredOtiumNodeRuntime();
+  if (otiumRuntime) onShutdown("otium-node-runtime", 125, () => otiumRuntime.stop());
+  const node = await startDefaultNode({
+    port,
+    advertise: true,
+    singleton: true,
+    maxRequestBodySize: MAX_PEER_INPUT_REQUEST_BYTES,
+  });
+  console.log(`negotium node listening on 127.0.0.1:${node.port} (ctrl-c to stop)`);
+  await node.completed;
+}
+
+async function stopAdapter(name: "otium" | "telegram"): Promise<boolean> {
+  const { getRuntimeProcessLease } = await import("@negotium/core");
+  const lease = getRuntimeProcessLease(`adapter:${name}`);
+  if (!lease) return false;
+  try {
+    process.kill(lease.pid, "SIGTERM");
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+}
+
 switch (command) {
   case "init": {
     const { initCommand } = await import("@/commands/init");
@@ -25,22 +56,20 @@ switch (command) {
     break;
   }
   case "serve": {
-    const { startDefaultNode } = await import("@negotium/node");
-    const node = await startDefaultNode({
-      port: numericOption(args, "port", 7777),
-      advertise: true,
-      singleton: true,
-    });
-    console.log(`negotium node listening on 127.0.0.1:${node.port} (ctrl-c to stop)`);
-    await node.completed;
+    if (args[0] === "otium") {
+      const { runOtiumCli } = await loadOtiumCli();
+      await runOtiumCli(["serve", ...args.slice(1)]);
+      break;
+    }
+    await runCanonicalNode(numericOption(args, "port", 7777));
     break;
   }
   case "__node-daemon": {
-    const { runNodeDaemon } = await import("@negotium/node");
-    await runNodeDaemon({ port: numericOption(args, "port", 0) });
+    await runCanonicalNode(numericOption(args, "port", 0));
     break;
   }
   case "status": {
+    const { listRuntimeProcessLeases } = await import("@negotium/core");
     const { inspectNodeDaemon } = await import("@negotium/node");
     const status = await inspectNodeDaemon();
     if (status.running && status.info) {
@@ -55,10 +84,35 @@ switch (command) {
     } else {
       console.log("negotium node is stopped");
     }
+    const adapters = listRuntimeProcessLeases("adapter:");
+    if (adapters.length === 0) console.log("adapters: none");
+    else {
+      for (const adapter of adapters) {
+        console.log(
+          `adapter ${adapter.role.slice("adapter:".length)} running (pid ${adapter.pid}, since ${new Date(adapter.startedAt).toISOString()})`,
+        );
+      }
+    }
     break;
   }
   case "stop": {
     const { stopNodeDaemon } = await import("@negotium/node");
+    const target = args[0];
+    if (target === "otium" || target === "telegram") {
+      const stopped = await stopAdapter(target);
+      console.log(
+        stopped ? `${target} adapter shutdown requested` : `${target} adapter is not running`,
+      );
+      break;
+    }
+    if (target && target !== "--all") {
+      throw new Error("usage: negotium stop [otium|telegram|--all]");
+    }
+    if (target === "--all") {
+      for (const name of ["otium", "telegram"] as const) {
+        if (await stopAdapter(name)) console.log(`${name} adapter shutdown requested`);
+      }
+    }
     const stopped = await stopNodeDaemon();
     console.log(stopped ? "negotium node shutdown requested" : "negotium node is not running");
     break;
@@ -90,11 +144,16 @@ switch (command) {
   }
   case "telegram": {
     const { runTelegramCli } = await loadTelegramCli();
-    await runTelegramCli();
+    await runTelegramCli(args);
     break;
   }
   case "otium": {
     const { runOtiumCli } = await loadOtiumCli();
+    if (args[0] === "serve") {
+      process.stderr.write(
+        "warning: `negotium otium serve` is deprecated; use `negotium serve otium`\n",
+      );
+    }
     await runOtiumCli(args);
     break;
   }
@@ -114,9 +173,10 @@ switch (command) {
         "  init            bootstrap ~/.negotium and check agent auth",
         "  chat [topic]    interactive chat (creates the topic if missing)",
         "                  options: --agent=claude|codex|maestro",
-        "  serve           foreground long-lived node (default port 7777)",
-        "  status          show the local long-lived node status",
-        "  stop            stop the local long-lived node",
+        "  serve           foreground canonical node (default port 7777)",
+        "  serve otium     ensure the canonical node and run the Otium sidecar",
+        "  status          show the canonical node and adapter processes",
+        "  stop [otium|telegram|--all]  stop the node, one adapter, or everything",
         "  topics          list topics on this node",
         "  mcp list|add|remove|enable|disable   manage node MCP manifest",
         "  vault list|set|get|del               node secret store (encrypted at rest)",

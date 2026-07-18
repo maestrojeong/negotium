@@ -365,14 +365,20 @@ export function createNodeControlHandler(
         const text = requiredText(body.text, "text");
         const topic = topicForUser(topicId, userId);
         if (!topic) return jsonError(404, "Topic not found");
-        const { message } = submitUserMessage({
+        const sourceAdapter =
+          body.sourceAdapter === "telegram" || body.sourceAdapter === "otium"
+            ? body.sourceAdapter
+            : "terminal";
+        const { message, queryId } = submitUserMessage({
           topic,
           userId,
           text,
-          sourceAdapter: "terminal",
+          sourceAdapter,
+          visualTools: body.visualTools === true,
+          fileDeliveryTools: body.fileDeliveryTools === true,
           startTurn: options.startTurn,
         });
-        return Response.json({ ok: true, message }, { status: 201 });
+        return Response.json({ ok: true, message, queryId }, { status: 201 });
       }
 
       const recentMatch = path.match(/^\/topics\/([^/]+)\/recent-events$/);

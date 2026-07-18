@@ -278,6 +278,7 @@ export type {
 export {
   acquireRuntimeProcessLease,
   getRuntimeProcessLease,
+  listRuntimeProcessLeases,
   PROCESS_LEASE_HEARTBEAT_MS,
   PROCESS_LEASE_STALE_MS,
   waitForRequiredRuntimeProcessLease,

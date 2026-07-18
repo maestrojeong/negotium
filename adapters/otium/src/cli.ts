@@ -3,16 +3,14 @@
  * negotium-otium — run a negotium node as an otium workspace worker.
  *
  *   negotium-otium join <invite-code>   store credentials from an invite code
- *   negotium-otium serve                negotium node + otium peer routes
+ *   negotium-otium serve                canonical node + Otium sidecar
  *   negotium-otium bindings             inspect internal/shared Otium transports
  *   negotium-otium share ...            bind an Otium room to a visible local topic
  *   negotium-otium private ...          keep a topic on Terminal/Telegram only
  *
- * The otium integration mounts onto the node through negotium's plugin chain
- * (registerNodeRequestHandler) — negotium core knows nothing about otium.
+ * The runtime half mounts in the canonical node. This command only keeps the
+ * public peer proxy and relay tunnel in the adapter sidecar process.
  */
-
-import { MAX_PEER_INPUT_REQUEST_BYTES } from "@/protocol";
 
 function parseArgs(args: string[]): { positional: string[]; options: Map<string, string> } {
   const positional: string[] = [];
@@ -91,69 +89,59 @@ async function resolveHostNodeId(explicit?: string): Promise<string> {
   }
 }
 
+async function spawnCanonicalNode(): Promise<void> {
+  const entry = process.argv[1];
+  if (!entry) throw new Error("cannot locate the Negotium CLI entrypoint");
+  const { LOG_DIR } = await import("@negotium/core");
+  const child = Bun.spawn({
+    cmd: [process.execPath, entry, "__node-daemon", "--port=0"],
+    detached: true,
+    env: { ...process.env, LOG_LEVEL: process.env.NEGOTIUM_NODE_LOG_LEVEL?.trim() || "info" },
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: Bun.file(`${LOG_DIR}/node-daemon.log`),
+  });
+  child.unref();
+}
+
+async function ensureCanonicalNode(): Promise<void> {
+  const { inspectNodeDaemon, waitForNodeDaemon } = await import("@negotium/node");
+  const status = await inspectNodeDaemon();
+  if (status.running) return;
+  await spawnCanonicalNode();
+  await waitForNodeDaemon(15_000);
+}
+
+async function runCanonicalNodeChild(): Promise<void> {
+  const { onShutdown } = await import("@negotium/core");
+  const { MAX_PEER_INPUT_REQUEST_BYTES, mountConfiguredOtiumNodeRuntime } = await import(
+    "@/node-runtime"
+  );
+  const { runNodeDaemon } = await import("@negotium/node");
+  const runtime = mountConfiguredOtiumNodeRuntime();
+  if (runtime) onShutdown("otium-node-runtime", 125, () => runtime.stop());
+  await runNodeDaemon({ port: 0, maxRequestBodySize: MAX_PEER_INPUT_REQUEST_BYTES });
+}
+
 export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
   const [command, ...commandArgs] = args;
   switch (command) {
+    case "__node-daemon": {
+      await runCanonicalNodeChild();
+      break;
+    }
     case "join": {
       const { joinCommand } = await import("@/join-cli");
       await joinCommand(commandArgs);
       break;
     }
     case "serve": {
-      const {
-        NEGOTIUM_PORT,
-        onShutdown,
-        registerNodeRequestHandler,
-        unregisterNodeRequestHandler,
-        waitForRequiredRuntimeProcessLease,
-      } = await import("@negotium/core");
-      const [{ startDefaultNode }, otium] = await Promise.all([
-        import("@negotium/node"),
-        import("@/index"),
-      ]);
+      const { NEGOTIUM_PORT } = await import("@negotium/core");
+      const { runOtiumSidecar } = await import("@/sidecar");
       const port = parseOtiumServePort(commandArgs, NEGOTIUM_PORT);
       const relayUrl = parseOtiumServeRelayUrl(commandArgs);
-      let node: Awaited<ReturnType<typeof startDefaultNode>> | undefined;
-      const singleton = await waitForRequiredRuntimeProcessLease("adapter:otium", {
-        workloadName: "Otium adapter",
-        onLost: () => {
-          console.error("negotium otium: singleton lease lost; shutting down");
-          void node?.stop();
-        },
-      });
-      const { handleOtiumPeerRequest, startOtiumWorker } = otium;
-      const worker = startOtiumWorker();
-      if (!worker) {
-        singleton.stop();
-        throw new Error(
-          "not joined to an otium workspace — run `negotium otium join <code>` first",
-        );
-      }
-      registerNodeRequestHandler("otium-peer", handleOtiumPeerRequest);
-      let workerStopped = false;
-      const stopWorker = (): void => {
-        if (workerStopped) return;
-        workerStopped = true;
-        unregisterNodeRequestHandler("otium-peer");
-        worker.stop();
-      };
-      onShutdown("otium-worker", 100, stopWorker);
-      onShutdown("otium-singleton", 90, () => singleton.stop());
-      try {
-        node = await startDefaultNode({
-          port,
-          maxRequestBodySize: MAX_PEER_INPUT_REQUEST_BYTES,
-        });
-      } catch (error) {
-        stopWorker();
-        singleton.stop();
-        throw error;
-      }
-      console.log(
-        `negotium node (otium worker) listening on 127.0.0.1:${node.port} (ctrl-c to stop)`,
-      );
-      worker.startTunnel({ targetOrigin: `http://127.0.0.1:${node.port}`, relayUrl });
-      await node.completed;
+      await ensureCanonicalNode();
+      await runOtiumSidecar({ port, relayUrl });
       break;
     }
     case "bindings": {
