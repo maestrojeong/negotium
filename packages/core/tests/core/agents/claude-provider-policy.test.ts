@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { buildClaudeDisallowedTools } from "#agents/claude-provider";
+import { buildClaudeDisallowedTools, substituteClaudeToolInput } from "#agents/claude-provider";
+import { configureAgentExecutionHost } from "#agents/execution-host";
 
 describe("claudeProvider host tool policy", () => {
   test("disallows native task store and subagent tools by default", () => {
@@ -33,5 +34,21 @@ describe("claudeProvider host tool policy", () => {
       "TaskStop",
       "Bash",
     ]);
+  });
+
+  test("substitutes Vault placeholders in normal tool input", () => {
+    const dispose = configureAgentExecutionHost({
+      substituteVaultSecrets: (_userId, value) => value.replaceAll("{{TOKEN}}", "secret"),
+    });
+    try {
+      expect(
+        substituteClaudeToolInput("user", {
+          command: "use {{TOKEN}}",
+          nested: ["{{TOKEN}}"],
+        }),
+      ).toEqual({ command: "use secret", nested: ["secret"] });
+    } finally {
+      dispose();
+    }
   });
 });

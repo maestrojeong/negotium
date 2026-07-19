@@ -7,6 +7,7 @@ import type { VaultCredentialHost } from "./vault-host";
 
 export interface VaultMcpContext {
   userId?: string;
+  listOnly?: boolean;
   httpOnly?: boolean;
   cwd?: string;
 }
@@ -50,7 +51,7 @@ export function createVaultMcpServer(
     },
   );
 
-  if (!context.httpOnly) {
+  if (!context.listOnly && !context.httpOnly) {
     server.tool(
       "vault_run",
       "Run a shell command containing {{KEY}} references inside Otium's credential broker. Expanded command input never reaches the model/provider, and stdout/stderr are redacted before return. Prefer vault_http_request for HTTP APIs.",
@@ -86,39 +87,40 @@ export function createVaultMcpServer(
     );
   }
 
-  server.tool(
-    "vault_http_request",
-    "Make an HTTPS request with {{KEY}} references resolved inside Otium. Put secrets in headers or body, never in the URL. The expanded request is not returned; the response is redacted before the model sees it.",
-    {
-      method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).default("GET"),
-      url: z.string().url().describe("Absolute HTTPS URL without Vault placeholders"),
-      headers: z.record(z.string(), z.string()).optional(),
-      body: z.string().optional(),
-      timeout_ms: z.number().int().min(1_000).max(120_000).optional(),
-      max_response_bytes: z
-        .number()
-        .int()
-        .min(1_024)
-        .max(1024 * 1024)
-        .optional(),
-    },
-    async ({ method, url, headers, body, timeout_ms, max_response_bytes }) => {
-      if (!context.userId) return mcpError("Vault unavailable: no user context");
-      const result = await http(
-        context.userId,
-        {
-          method,
-          url,
-          headers,
-          body,
-          timeoutMs: timeout_ms,
-          maxResponseBytes: max_response_bytes,
-        },
-        host,
-      );
-      return result.error ? mcpError(result.error) : mcpOk(JSON.stringify(result, null, 2));
-    },
-  );
+  if (!context.listOnly)
+    server.tool(
+      "vault_http_request",
+      "Make an HTTPS request with {{KEY}} references resolved inside Otium. Put secrets in headers or body, never in the URL. The expanded request is not returned; the response is redacted before the model sees it.",
+      {
+        method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).default("GET"),
+        url: z.string().url().describe("Absolute HTTPS URL without Vault placeholders"),
+        headers: z.record(z.string(), z.string()).optional(),
+        body: z.string().optional(),
+        timeout_ms: z.number().int().min(1_000).max(120_000).optional(),
+        max_response_bytes: z
+          .number()
+          .int()
+          .min(1_024)
+          .max(1024 * 1024)
+          .optional(),
+      },
+      async ({ method, url, headers, body, timeout_ms, max_response_bytes }) => {
+        if (!context.userId) return mcpError("Vault unavailable: no user context");
+        const result = await http(
+          context.userId,
+          {
+            method,
+            url,
+            headers,
+            body,
+            timeoutMs: timeout_ms,
+            maxResponseBytes: max_response_bytes,
+          },
+          host,
+        );
+        return result.error ? mcpError(result.error) : mcpOk(JSON.stringify(result, null, 2));
+      },
+    );
 
   return server;
 }

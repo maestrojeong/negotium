@@ -6,6 +6,7 @@ import {
   referencesHostedSecretStorage,
   resolveAgentExecutionHost,
   shouldRedirectHostedVaultTool,
+  substituteHostedSecrets,
   transformHostedQueryOptions,
   withAgentExecutionHost,
 } from "#agents/execution-host";
@@ -33,6 +34,7 @@ describe("agent execution host", () => {
       configureAgentExecutionHost({
         getMcpServersForQuery: () => ({ local_vault: { command: "vault" } }),
         redactVaultSecrets: (_userId, value) => value.replaceAll("secret", "[redacted]"),
+        substituteVaultSecrets: (_userId, value) => value.replaceAll("{{TOKEN}}", "secret"),
         referencesRuntimeSecretStorage: (value) => value === "/device/vault.db",
         shouldRedirectVaultTool: (_userId, toolName) => toolName === "Bash",
       }),
@@ -40,6 +42,7 @@ describe("agent execution host", () => {
 
     expect(hostedMcpServers(opts())).toEqual({ local_vault: { command: "vault" } });
     expect(redactHostedSecrets("u1", "a secret")).toBe("a [redacted]");
+    expect(substituteHostedSecrets("u1", "use {{TOKEN}}")).toBe("use secret");
     expect(referencesHostedSecretStorage("/device/vault.db")).toBe(true);
     expect(shouldRedirectHostedVaultTool("u1", "Bash", {})).toBe(true);
   });

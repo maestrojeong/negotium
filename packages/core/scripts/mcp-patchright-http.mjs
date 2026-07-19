@@ -12,6 +12,7 @@ import {
   isInitializeRequest,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { createBrowserVaultTransforms } from "./browser-vault-transform.mjs";
 
 function parseCli(argv = process.argv.slice(2)) {
   const options = { host: "127.0.0.1" };
@@ -54,6 +55,10 @@ const [{ BrowserManager }, { handleTool }, { tools }] = await Promise.all([
   import(pathToFileURL(resolve(packageRoot, "dist/tools/registry.js")).href),
 ]);
 
+const vaultTransforms = await createBrowserVaultTransforms(
+  process.env.NEGOTIUM_BROWSER_VAULT_USER_ID,
+);
+
 function createMcpServer(defaultStartOptions, sharedManager, owner) {
   const server = new Server(
     { name: "mcp-patchright", version: "0.1.0" },
@@ -63,15 +68,18 @@ function createMcpServer(defaultStartOptions, sharedManager, owner) {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
-      return await manager.runAsOwner(owner, () =>
-        handleTool(manager, request.params.name, request.params.arguments ?? {}),
+      const toolInput = vaultTransforms.substitute(request.params.arguments ?? {});
+      const result = await manager.runAsOwner(owner, () =>
+        handleTool(manager, request.params.name, toolInput),
       );
+      return vaultTransforms.redact(result);
     } catch (error) {
+      const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
       return {
         content: [
           {
             type: "text",
-            text: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+            text: vaultTransforms.redact(message),
           },
         ],
         isError: true,

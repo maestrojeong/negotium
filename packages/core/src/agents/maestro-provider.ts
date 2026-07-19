@@ -63,13 +63,13 @@
 import "#platform/maestro-bootstrap-env";
 import type { HookRegistration, McpResolver } from "maestro-agent-sdk";
 import { maestroProvider as sdkMaestroProvider, setMcpResolver } from "maestro-agent-sdk";
+import { deepMapStrings } from "#agents/deep-map";
 import {
   hostedMcpServers,
   redactHostedSecrets,
   referencesHostedSecretStorage,
-  shouldRedirectHostedVaultTool,
+  substituteHostedSecrets,
 } from "#agents/execution-host";
-import { VAULT_BROKER_REDIRECT_ERROR } from "#agents/vault-tool-policy";
 import type { AgentQueryOptions, UnifiedEvent } from "#types";
 
 /**
@@ -110,28 +110,23 @@ export function buildMaestroDisallowedTools(
  *
  * Pre hook — two responsibilities in one pass:
  *   1. Block direct vault.db filesystem access (security guard).
- *   2. Block direct placeholder substitution and redirect the model to the
- *      Vault MCP credential broker, where expanded input stays outside the
- *      provider process.
+ *   2. Substitute {{KEY}} placeholders immediately before tool execution.
  *
  * Post hook — scrub raw/common encoded secret forms before tool output is sent
- * back to the model. HTTP credentials should still prefer vault_http_request,
- * whose broker never exposes the expanded request to the provider at all.
+ * back to the model.
  */
 function buildVaultHook(userId: string): HookRegistration {
   return {
     name: "vault-guard",
-    pre({ toolName, input }) {
+    pre({ input }) {
       if (referencesHostedSecretStorage(input)) {
         return { decision: "block", error: "Runtime secret storage access is not permitted" };
       }
 
-      // Detect key references from metadata only. No Vault value is decrypted
-      // or injected into the provider/tool registry on this path.
-      if (shouldRedirectHostedVaultTool(userId, toolName, input)) {
-        return { decision: "block", error: VAULT_BROKER_REDIRECT_ERROR };
-      }
-      return { decision: "allow" };
+      const substituted = deepMapStrings(input, (value) => substituteHostedSecrets(userId, value));
+      return JSON.stringify(substituted) === JSON.stringify(input)
+        ? { decision: "allow" }
+        : { decision: "modify", input: substituted as Record<string, unknown> };
     },
     post({ output }) {
       const redacted = redactHostedSecrets(userId, output);

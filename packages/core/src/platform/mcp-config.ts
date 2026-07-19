@@ -455,15 +455,11 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   },
   vault: {
     ...commonRuntimeMcpPolicy("vault"),
-    // Credential references must never dead-end because a topic whitelist
-    // omitted the broker while provider hooks correctly block raw expansion.
     build({ userId, agent }) {
-      const args = [`--user-id=${userId}`];
-      // Codex has no host-side PostToolUse redaction. Keep its Vault surface
-      // broker-only and non-persistent: HTTPS responses are scrubbed before the
-      // MCP result reaches Codex, while arbitrary shell could write a secret to
-      // disk and reveal it through a later Read.
-      if (agent === "codex") args.push("--http-only=true");
+      // Normal turns use {{KEY}} directly in tool inputs. Keep the Vault MCP
+      // surface focused on key discovery; broker tools remain available from
+      // the public factory for compatibility but are no longer the default UX.
+      const args = [`--user-id=${userId}`, "--list-only=true"];
       return buildStdioMcpServer(agent, VAULT_SERVER, args);
     },
   },

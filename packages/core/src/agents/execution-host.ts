@@ -5,7 +5,10 @@ import {
 } from "#agents/vault-tool-policy";
 import { CLAUDE_EXECUTABLE, codexAuthFilePath } from "#platform/config";
 import { getMcpServersForQuery as defaultGetMcpServersForQuery } from "#platform/mcp-config";
-import { redactVaultSecrets as defaultRedactVaultSecrets } from "#storage/vault";
+import {
+  redactVaultSecrets as defaultRedactVaultSecrets,
+  vaultSubstituteDetailed as defaultVaultSubstituteDetailed,
+} from "#storage/vault";
 import type { AgentQueryOptions } from "#types";
 
 /**
@@ -19,6 +22,7 @@ import type { AgentQueryOptions } from "#types";
 export interface AgentExecutionHost {
   getMcpServersForQuery(opts: AgentQueryOptions): Record<string, unknown>;
   redactVaultSecrets(userId: string, value: string): string;
+  substituteVaultSecrets(userId: string, value: string): string;
   referencesRuntimeSecretStorage(value: unknown): boolean;
   shouldRedirectVaultTool(userId: string, toolName: string, input: unknown): boolean;
   claudeCodeExecutablePath(): string | undefined;
@@ -29,6 +33,7 @@ export interface AgentExecutionHost {
 const defaultHost: AgentExecutionHost = {
   getMcpServersForQuery: defaultGetMcpServersForQuery,
   redactVaultSecrets: defaultRedactVaultSecrets,
+  substituteVaultSecrets: (userId, value) => defaultVaultSubstituteDetailed(userId, value).text,
   referencesRuntimeSecretStorage: defaultReferencesRuntimeSecretStorage,
   shouldRedirectVaultTool: defaultShouldRedirectVaultTool,
   claudeCodeExecutablePath: () => CLAUDE_EXECUTABLE,
@@ -84,6 +89,10 @@ export function hostedMcpServers(opts: AgentQueryOptions): Record<string, unknow
 
 export function redactHostedSecrets(userId: string, value: string): string {
   return activeHost().redactVaultSecrets(userId, value);
+}
+
+export function substituteHostedSecrets(userId: string, value: string): string {
+  return activeHost().substituteVaultSecrets(userId, value);
 }
 
 export function referencesHostedSecretStorage(value: unknown): boolean {

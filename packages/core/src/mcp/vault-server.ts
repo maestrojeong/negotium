@@ -19,6 +19,7 @@ await connectStdio(
   createVaultMcpServer(
     {
       userId: parseUserIdArg(args),
+      listOnly: args.includes("--list-only=true"),
       httpOnly: args.includes("--http-only=true"),
       cwd: process.cwd(),
     },

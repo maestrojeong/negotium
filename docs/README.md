@@ -14,6 +14,7 @@ instead of copying the explanation.
 | [Releasing](./RELEASING.md) | Package validation and npm publication |
 | [Migration 0.1.18](./MIGRATION-0.1.18.md) | Public helper adoption and Otium thin-adapter upgrade order |
 | [Migration 0.1.19](./MIGRATION-0.1.19.md) | Reset memory safety and the next Otium deduplication boundary |
+| [Migration 0.1.20](./MIGRATION-0.1.20.md) | Direct Vault placeholders and browser credential substitution |
 
 The root [README](../README.md) is the user-facing entry point. Package-specific setup belongs in
 the package README beside the code it describes.

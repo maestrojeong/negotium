@@ -110,6 +110,12 @@ agent conversation or Terminal input history. Telegram retains `/vault list`,
 Telegram still transports the original command to the bot, so prefer a private DM
 or Terminal for high-value credentials.
 
+Agents reference stored values as `{{KEY}}` in normal tool inputs. Claude and Maestro
+resolve placeholders immediately before execution; the authenticated browser wrapper
+does the same for Playwright calls from every provider, including Codex. Tool results
+are scrubbed before returning to the model. The default Vault MCP exposes key names and
+descriptions only.
+
 Inside terminal chat:
 
 ```text

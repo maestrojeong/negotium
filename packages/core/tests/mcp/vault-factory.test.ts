@@ -63,4 +63,16 @@ describe("createVaultMcpServer", () => {
       await server.close();
     }
   });
+
+  test("offers only key discovery for normal tool-input substitution", async () => {
+    const server = createVaultMcpServer({ userId: "user", listOnly: true }, host("TOKEN"));
+    const client = await connect(server);
+    try {
+      const tools = await client.listTools();
+      expect(tools.tools.map((tool) => tool.name)).toEqual(["vault_list"]);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
 });

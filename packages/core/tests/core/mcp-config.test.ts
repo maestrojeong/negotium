@@ -115,7 +115,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
     expect(servers.playwright).toBeUndefined();
   });
 
-  test("Vault is always available and Codex gets the broker-only surface", () => {
+  test("Vault is always available as key discovery for direct tool substitution", () => {
     const codex = getForumMcpServers({
       userId,
       session: "coding",
@@ -130,8 +130,8 @@ describe("mcp-config: playwright transport selection per agent", () => {
       agent: "claude",
       enabled: [],
     });
-    expect((codex.vault as { args: string[] }).args).toContain("--http-only=true");
-    expect((claude.vault as { args: string[] }).args).not.toContain("--http-only=true");
+    expect((codex.vault as { args: string[] }).args).toContain("--list-only=true");
+    expect((claude.vault as { args: string[] }).args).toContain("--list-only=true");
   });
 
   test("manager/codex omits heavyweight browser tools even with a port", () => {

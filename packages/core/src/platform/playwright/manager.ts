@@ -747,6 +747,7 @@ async function spawnPlaywright(
   const childEnv = {
     ...process.env,
     NEGOTIUM_BROWSER_CAPABILITY: capability,
+    NEGOTIUM_BROWSER_VAULT_USER_ID: userId,
     ...(proxy
       ? {
           NEGOTIUM_BROWSER_PROXY_SERVER: proxy.server,

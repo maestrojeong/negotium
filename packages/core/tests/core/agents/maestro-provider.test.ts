@@ -48,26 +48,23 @@ describe("maestroProvider host tool policy", () => {
     expect(allowed).toEqual({ decision: "allow" });
   });
 
-  test("redirects placeholders to the Vault broker and redacts tool output", async () => {
+  test("substitutes placeholders before normal tools and redacts tool output", async () => {
     const userId = `maestro-vault-${randomUUID()}`;
     const secret = "maestro-secret-value";
     vaultSet(userId, "API_TOKEN", secret);
     try {
       const [vaultHook] = buildMaestroToolHooks(userId);
-      const blocked = await vaultHook.pre?.({
+      const substituted = await vaultHook.pre?.({
         toolName: "Bash",
         input: { command: "echo {{API_TOKEN}}" },
       });
-      expect(blocked?.decision).toBe("block");
-
-      const broker = await vaultHook.pre?.({
-        toolName: "mcp__vault__vault_run",
-        input: { command: "echo {{API_TOKEN}}" },
+      expect(substituted).toEqual({
+        decision: "modify",
+        input: { command: `echo ${secret}` },
       });
-      expect(broker).toEqual({ decision: "allow" });
 
       const post = await vaultHook.post?.({
-        toolName: "mcp__vault__vault_run",
+        toolName: "Bash",
         input: { command: "echo {{API_TOKEN}}" },
         output: `result=${secret}`,
       });

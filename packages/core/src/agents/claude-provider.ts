@@ -27,9 +27,8 @@ import {
   hostedMcpServers,
   redactHostedSecrets,
   referencesHostedSecretStorage,
-  shouldRedirectHostedVaultTool,
+  substituteHostedSecrets,
 } from "#agents/execution-host";
-import { VAULT_BROKER_REDIRECT_ERROR } from "#agents/vault-tool-policy";
 import { extractFileEvents } from "#media/file-events";
 import { errMsg } from "#platform/error";
 import { logger } from "#platform/logger";
@@ -47,6 +46,10 @@ const CLAUDE_DEFAULT_DISALLOWED_TOOLS = [
 ] as const;
 
 const CLAUDE_NATIVE_AGENT_TOOLS = ["Task", "Agent", "TaskOutput", "TaskStop"] as const;
+
+export function substituteClaudeToolInput(userId: string, input: unknown): unknown {
+  return deepMapStrings(input, (value) => substituteHostedSecrets(userId, value));
+}
 
 export function buildClaudeDisallowedTools(
   extra: readonly string[] | undefined = undefined,
@@ -431,17 +434,18 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
                 };
               }
 
-              // Detect real Vault placeholders but never inject plaintext into
-              // provider-visible tool input. The Vault MCP broker expands them.
+              // Resolve Vault placeholders at the last provider hook before the
+              // tool runs. The model-facing call remains {{KEY}}, while normal
+              // tools (including browser automation) receive the credential.
               const userId = opts.userId ?? "";
-              if (!shouldRedirectHostedVaultTool(userId, tool_name, tool_input)) {
+              const withVault = substituteClaudeToolInput(userId, tool_input);
+              if (JSON.stringify(withVault) === JSON.stringify(tool_input)) {
                 return { continue: true };
               }
               return {
                 hookSpecificOutput: {
                   hookEventName: "PreToolUse" as const,
-                  permissionDecision: "deny" as const,
-                  permissionDecisionReason: VAULT_BROKER_REDIRECT_ERROR,
+                  updatedInput: withVault as Record<string, unknown>,
                 },
               };
             },
