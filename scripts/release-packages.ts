@@ -787,9 +787,11 @@ if (revokedBridgeLeases !== 1) {
 import { existsSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 const packageRoot = resolve("node_modules/negotium");
 for (const path of [
   resolve(packageRoot, "dist/runtime/scripts/faster-whisper-wrapper.py"),
+  resolve(packageRoot, "dist/runtime/scripts/browser-vault-transform.mjs"),
   resolve(packageRoot, "dist/runtime/scripts/mcp-patchright-http.mjs"),
   resolve(packageRoot, "dist/runtime/src/mcp/session-comm/server.ts"),
   resolve(packageRoot, "dist/runtime/src/mcp/task-server.ts"),
@@ -797,6 +799,41 @@ for (const path of [
   resolve(packageRoot, "dist/runtime/cron/mcp-server.ts"),
 ]) {
   if (!existsSync(path)) throw new Error(\`packed runtime resource is missing: \${path}\`);
+}
+const packedBrowserVault = await import(
+  pathToFileURL(resolve(packageRoot, "dist/runtime/scripts/browser-vault-transform.mjs")).href
+);
+const packedBoundary = packedBrowserVault.prepareBrowserToolInputForRedaction(
+  "browser_snapshot",
+  { maxLength: 10 },
+);
+const packedRedact = (value: unknown): unknown => {
+  if (typeof value === "string") return value.replaceAll("SMOKE-SECRET", "[REDACTED:SMOKE]");
+  if (Array.isArray(value)) return value.map(packedRedact);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, packedRedact(entry)]),
+    );
+  }
+  return value;
+};
+const packedSecuredResult = packedBrowserVault.redactBrowserToolOutputBeforeBounding(
+  {
+    content: [{
+      type: "text",
+      text: JSON.stringify({ snapshot: "12345678SMOKE-SECRET", truncated: false, length: 20 }),
+    }],
+  },
+  packedRedact,
+  packedBoundary.boundary,
+);
+const packedSnapshot = JSON.parse(packedSecuredResult.content[0].text).snapshot;
+if (
+  packedBoundary.input.maxLength <= 10 ||
+  packedSnapshot.length > 10 ||
+  packedSnapshot.includes("SMOKE-SECRET")
+) {
+  throw new Error("packed browser Vault redaction must run before output truncation");
 }
 for (const name of mcpServers.MCP_SERVER_NAMES) {
   const path = mcpServers.resolveMcpServerFile(name);

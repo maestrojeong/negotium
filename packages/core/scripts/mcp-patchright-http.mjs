@@ -17,7 +17,10 @@ import {
   secureBrowserToolInput,
   secureBrowserToolOutput,
 } from "./browser-passkey-policy.mjs";
-import { createBrowserVaultTransforms } from "./browser-vault-transform.mjs";
+import {
+  createBrowserVaultTransforms,
+  prepareBrowserToolInputForRedaction,
+} from "./browser-vault-transform.mjs";
 import { createBrowserWebAuthnGuard } from "./browser-webauthn-policy.mjs";
 
 function parseCli(argv = process.argv.slice(2)) {
@@ -75,30 +78,37 @@ function createMcpServer(defaultStartOptions, sharedManager, owner) {
   const manager = sharedManager ?? new BrowserManager(defaultStartOptions);
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: exposedTools }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    let boundary;
     try {
       const toolName = request.params.name;
-      const toolInput = secureBrowserToolInput(
+      const securedInput = secureBrowserToolInput(
         toolName,
         vaultTransforms.substitute(request.params.arguments ?? {}),
       );
+      const prepared = prepareBrowserToolInputForRedaction(toolName, securedInput);
+      const toolInput = prepared.input;
+      boundary = prepared.boundary;
       const result = await manager.runAsOwner(owner, async () => {
         await webAuthnGuard.beforeTool(toolName, manager);
         const toolResult = await handleTool(manager, toolName, toolInput);
         await webAuthnGuard.afterTool(toolName, manager);
         return toolResult;
       });
-      return vaultTransforms.redact(secureBrowserToolOutput(toolName, result));
+      return vaultTransforms.postprocess(secureBrowserToolOutput(toolName, result), boundary);
     } catch (error) {
       const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      return {
-        content: [
-          {
-            type: "text",
-            text: vaultTransforms.redact(message),
-          },
-        ],
-        isError: true,
-      };
+      return vaultTransforms.postprocess(
+        {
+          content: [
+            {
+              type: "text",
+              text: message,
+            },
+          ],
+          isError: true,
+        },
+        boundary,
+      );
     }
   });
   return server;

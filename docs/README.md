@@ -18,6 +18,7 @@ instead of copying the explanation.
 | [Migration 0.1.21](./MIGRATION-0.1.21.md) | Compact model routing guidance and short-session memory policy |
 | [Migration 0.1.22](./MIGRATION-0.1.22.md) | Direct browser credentials, automatic WebAuthn, and singleton daemon hardening |
 | [Migration 0.1.23](./MIGRATION-0.1.23.md) | Default-deny Vault tool-input substitution and persistence boundary hardening |
+| [Migration 0.1.24](./MIGRATION-0.1.24.md) | Browser output redaction ordering and fail-closed credential tracking |
 
 The root [README](../README.md) is the user-facing entry point. Package-specific setup belongs in
 the package README beside the code it describes.
