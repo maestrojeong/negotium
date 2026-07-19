@@ -1,6 +1,6 @@
 {
   "name": "@negotium/core",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "private": true,
   "type": "module",
   "description": "Multi-agent AI runtime — Claude/Codex/Maestro providers, unified event stream, sessions, wiki/skills, local-first storage",
@@ -19,6 +19,10 @@
     "./storage": "./src/storage/storage-public.ts",
     "./prompts": "./src/prompts/builders.ts",
     "./runtime-helpers": "./src/runtime/public-helpers.ts",
+    "./mcp-factories": "./src/mcp/factories/index.ts",
+    "./agent-helpers": "./src/agents/public-helpers.ts",
+    "./mcp-catalog": "./src/platform/mcp-catalog-policy.ts",
+    "./background-bash": "./src/platform/background-bash/manager.ts",
     "./peer-session-bridge-ipc": "./src/mcp/session-comm/bridge-ipc-config.ts",
     "./canonical-mcp-bridge": "./src/mcp/canonical-bridge-config.ts",
     "./src/*": "./src/*"

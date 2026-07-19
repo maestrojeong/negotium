@@ -132,7 +132,16 @@ export {
 export { extractFileEvents, extractFileTagPaths, stripFileTags } from "#media/file-events";
 export type { ExtractionResult, TranscribeAudioOptions } from "#media/text-extractor";
 export { extractText, isTranscriptionConfigured, transcribeAudio } from "#media/text-extractor";
-export { killAllBgBash } from "#platform/background-bash/manager";
+export {
+  type BackgroundBashManager,
+  type BackgroundBashManagerOptions,
+  bgBashContextCapability,
+  createBackgroundBashManager,
+  ensureBgBash,
+  killAllBgBash,
+  killBgBash,
+  killBgBashForUser,
+} from "#platform/background-bash/manager";
 // ── Platform ────────────────────────────────────────────────────────
 export {
   DATA_DIR,

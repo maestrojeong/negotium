@@ -20,41 +20,65 @@ import type { AgentKind } from "#types";
 
 export type AuthCheckResult = { ok: true } | { ok: false; error: string };
 
-export function checkAgentAuth(agent: AgentKind): AuthCheckResult {
+export interface AgentAuthHost {
+  codexAuthFilePath(): string;
+  exists(path: string): boolean;
+  environment: Record<string, string | undefined>;
+  homeDirectory(): string;
+  operatingSystem(): NodeJS.Platform;
+  hasMacOsCredential(service: string): boolean;
+}
+
+const defaultAgentAuthHost: AgentAuthHost = {
+  codexAuthFilePath,
+  exists: existsSync,
+  environment: process.env,
+  homeDirectory: homedir,
+  operatingSystem: platform,
+  hasMacOsCredential(service) {
+    try {
+      execFileSync("security", ["find-generic-password", "-s", service], { stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+};
+
+export function checkAgentAuth(
+  agent: AgentKind,
+  host: AgentAuthHost = defaultAgentAuthHost,
+): AuthCheckResult {
   switch (agent) {
     case "codex": {
-      const path = codexAuthFilePath();
-      if (existsSync(path)) return { ok: true };
+      const path = host.codexAuthFilePath();
+      if (host.exists(path)) return { ok: true };
       return {
         ok: false,
         error: `codex is not logged in (auth file missing at ${path}). Run \`codex login\` first`,
       };
     }
     case "claude": {
-      if (process.env.ANTHROPIC_API_KEY) return { ok: true };
-      if (platform() === "darwin") {
-        try {
-          execFileSync("security", ["find-generic-password", "-s", "Claude Code-credentials"], {
-            stdio: "ignore",
-          });
+      if (host.environment.ANTHROPIC_API_KEY) return { ok: true };
+      if (host.operatingSystem() === "darwin") {
+        if (host.hasMacOsCredential("Claude Code-credentials")) {
           return { ok: true };
-        } catch {
-          return {
-            ok: false,
-            error:
-              "claude is not logged in (no macOS keychain entry 'Claude Code-credentials'). Run `claude` and complete login first",
-          };
         }
+        return {
+          ok: false,
+          error:
+            "claude is not logged in (no macOS keychain entry 'Claude Code-credentials'). Run `claude` and complete login first",
+        };
       }
-      const path = join(homedir(), ".claude", ".credentials.json");
-      if (existsSync(path)) return { ok: true };
+      const path = join(host.homeDirectory(), ".claude", ".credentials.json");
+      if (host.exists(path)) return { ok: true };
       return {
         ok: false,
         error: `claude is not logged in (credentials missing at ${path}). Run \`claude\` and complete login first`,
       };
     }
     case "maestro": {
-      if (process.env.DEEPSEEK_API_KEY) return { ok: true };
+      if (host.environment.DEEPSEEK_API_KEY) return { ok: true };
       return {
         ok: false,
         error: "maestro is not authenticated (DEEPSEEK_API_KEY env var not set)",

@@ -1,4 +1,6 @@
-export type McpTextContent = { type: "text"; text: string };
+import { type McpContent, mcpError, mcpOk } from "#mcp/mcp-helpers";
+
+export type McpTextContent = McpContent;
 
 export type McpToolResult = {
   content: McpTextContent[];
@@ -13,9 +15,9 @@ export type SharedMcpTool = {
 };
 
 export function textResult(text: string): McpToolResult {
-  return { content: [{ type: "text", text }] };
+  return mcpOk(text);
 }
 
 export function errorResult(text: string): McpToolResult {
-  return { content: [{ type: "text", text }], isError: true };
+  return mcpError(text);
 }

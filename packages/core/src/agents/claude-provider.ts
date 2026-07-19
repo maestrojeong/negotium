@@ -33,6 +33,7 @@ import { VAULT_BROKER_REDIRECT_ERROR } from "#agents/vault-tool-policy";
 import { extractFileEvents } from "#media/file-events";
 import { errMsg } from "#platform/error";
 import { logger } from "#platform/logger";
+import { claudeRequestContextTokens } from "#runtime/context-warning";
 import type { AgentInputAttachment, AgentQueryOptions, EffortLevel, UnifiedEvent } from "#types";
 
 const CLAUDE_DEFAULT_DISALLOWED_TOOLS = [
@@ -669,11 +670,7 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
         const content = (m.message?.content ?? []) as ContentBlock[];
         const usage = m.message?.usage;
         if (usage) {
-          lastContextTokens =
-            (usage.input_tokens ?? 0) +
-            (usage.cache_creation_input_tokens ?? 0) +
-            (usage.cache_read_input_tokens ?? 0) +
-            (usage.output_tokens ?? 0);
+          lastContextTokens = claudeRequestContextTokens(usage) ?? undefined;
           lastContextModel = m.message.model;
         }
 

@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
   bgBashContextCapability,
+  createBackgroundBashManager,
   ensureBgBash,
   killAllBgBash,
   makeBgBashKey,
@@ -24,6 +27,56 @@ afterEach(async () => {
 });
 
 describe("shared background-bash runtime", () => {
+  test("caller-owned managers isolate capability, port, and context state", async () => {
+    const deletedA: string[] = [];
+    const deletedB: string[] = [];
+    const fakeProcess = () => {
+      const process = new EventEmitter() as ChildProcess;
+      process.exitCode = null;
+      process.killed = false;
+      process.kill = () => {
+        process.killed = true;
+        return true;
+      };
+      return process;
+    };
+    const createFetch = (serverId: string, deleted: string[]) =>
+      (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (init?.method === "DELETE") deleted.push(url);
+        return new Response(serverId, { status: 200 });
+      }) as typeof fetch;
+    const common = {
+      basePort: 47_000,
+      maxPort: 47_000,
+      portPids: () => [],
+      spawn: () => fakeProcess(),
+      delay: async () => {},
+    };
+    const first = createBackgroundBashManager({
+      ...common,
+      capability: "a".repeat(64),
+      serverId: "server-a",
+      fetch: createFetch("server-a", deletedA),
+    });
+    const second = createBackgroundBashManager({
+      ...common,
+      capability: "b".repeat(64),
+      serverId: "server-b",
+      fetch: createFetch("server-b", deletedB),
+    });
+
+    expect(await first.ensure("alice", "topic")).toBe(47_000);
+    expect(await second.ensure("alice", "topic")).toBe(47_000);
+    expect(first.contextCapability("alice", "topic")).not.toBe(
+      second.contextCapability("alice", "topic"),
+    );
+    first.clear("alice", "topic");
+    expect(deletedA).toHaveLength(1);
+    expect(deletedB).toHaveLength(0);
+    await Promise.all([first.killAll(), second.killAll()]);
+  });
+
   test("all topics reuse one server key", () => {
     expect(makeBgBashKey("alice", "topic-a")).toBe("runtime");
     expect(makeBgBashKey("bob", "topic-b")).toBe("runtime");

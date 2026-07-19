@@ -1,6 +1,6 @@
 {
   "name": "negotium",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "type": "module",
   "description": "Install the Negotium multi-agent runtime and CLI with one package",
   "license": "Apache-2.0",
@@ -57,6 +57,26 @@
       "types": "./dist/types/packages/core/src/runtime/public-helpers.d.ts",
       "import": "./dist/runtime-helpers.js",
       "default": "./dist/runtime-helpers.js"
+    },
+    "./mcp-factories": {
+      "types": "./dist/types/packages/core/src/mcp/factories/index.d.ts",
+      "import": "./dist/mcp-factories.js",
+      "default": "./dist/mcp-factories.js"
+    },
+    "./agent-helpers": {
+      "types": "./dist/types/packages/core/src/agents/public-helpers.d.ts",
+      "import": "./dist/agent-helpers.js",
+      "default": "./dist/agent-helpers.js"
+    },
+    "./mcp-catalog": {
+      "types": "./dist/types/packages/core/src/platform/mcp-catalog-policy.d.ts",
+      "import": "./dist/mcp-catalog.js",
+      "default": "./dist/mcp-catalog.js"
+    },
+    "./background-bash": {
+      "types": "./dist/types/packages/core/src/platform/background-bash/manager.d.ts",
+      "import": "./dist/background-bash.js",
+      "default": "./dist/background-bash.js"
     }
   },
   "files": [

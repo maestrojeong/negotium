@@ -1,6 +1,6 @@
 {
   "name": "@negotium/adapter-telegram",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "private": true,
   "type": "module",
   "description": "Telegram channel adapter for Negotium, including forum-topic mode",

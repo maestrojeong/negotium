@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
-import { logger } from "#platform/logger";
-import { redactVaultSecrets, vaultSubstituteDetailed } from "#storage/vault";
+import type { VaultCredentialHost } from "#mcp/factories/vault-host";
 
 export interface VaultRunRequest {
   command: string;
@@ -41,8 +40,9 @@ function appendBounded(
 export async function executeVaultRun(
   userId: string,
   request: VaultRunRequest,
+  host: VaultCredentialHost,
 ): Promise<VaultRunResult> {
-  const substitution = vaultSubstituteDetailed(userId, request.command);
+  const substitution = host.substitute(userId, request.command);
   if (substitution.usedKeys.length === 0) {
     return {
       ok: false,
@@ -95,7 +95,8 @@ export async function executeVaultRun(
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      logger.info(
+      host.log?.(
+        "info",
         {
           userId,
           vaultKeys: substitution.usedKeys,
@@ -123,15 +124,15 @@ export async function executeVaultRun(
         stdout: "",
         stderr: "",
         truncated: false,
-        error: redactVaultSecrets(userId, error.message),
+        error: host.redact(userId, error.message),
       });
     });
     child.once("close", (exitCode, signal) => {
       // vault_run is deliberately foreground-only. Clean up descendants a
       // command attempted to leave behind so secrets do not linger in argv/env.
       signalTree("SIGTERM");
-      const stdout = redactVaultSecrets(userId, Buffer.concat(stdoutChunks).toString("utf8"));
-      const stderr = redactVaultSecrets(userId, Buffer.concat(stderrChunks).toString("utf8"));
+      const stdout = host.redact(userId, Buffer.concat(stdoutChunks).toString("utf8"));
+      const stderr = host.redact(userId, Buffer.concat(stderrChunks).toString("utf8"));
       finish({
         ok: !timedOut && exitCode === 0,
         exitCode,

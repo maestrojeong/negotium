@@ -1,5 +1,4 @@
-import { logger } from "#platform/logger";
-import { redactVaultSecrets, vaultSubstituteDetailed } from "#storage/vault";
+import type { VaultCredentialHost } from "#mcp/factories/vault-host";
 
 const SAFE_RESPONSE_HEADERS = new Set([
   "content-type",
@@ -41,6 +40,7 @@ export interface VaultHttpResult {
 function substituteObject(
   userId: string,
   values: Record<string, string>,
+  host: VaultCredentialHost,
 ): { values: Record<string, string>; usedKeys: string[] } {
   const used = new Set<string>();
   const substituted: Record<string, string> = {};
@@ -48,18 +48,22 @@ function substituteObject(
     if (FORBIDDEN_REQUEST_HEADERS.has(key.toLowerCase())) {
       throw new Error(`Header "${key}" is not allowed`);
     }
-    const result = vaultSubstituteDetailed(userId, value);
+    const result = host.substitute(userId, value);
     for (const usedKey of result.usedKeys) used.add(usedKey);
     substituted[key] = result.text;
   }
   return { values: substituted, usedKeys: [...used] };
 }
 
-function safeResponseHeaders(userId: string, headers: Headers): Record<string, string> {
+function safeResponseHeaders(
+  userId: string,
+  headers: Headers,
+  host: VaultCredentialHost,
+): Record<string, string> {
   const output: Record<string, string> = {};
   for (const [key, value] of headers.entries()) {
     if (!SAFE_RESPONSE_HEADERS.has(key.toLowerCase())) continue;
-    output[key] = redactVaultSecrets(userId, value);
+    output[key] = host.redact(userId, value);
   }
   return output;
 }
@@ -112,6 +116,7 @@ async function readBoundedBody(
 export async function executeVaultHttpRequest(
   userId: string,
   request: VaultHttpRequest,
+  host: VaultCredentialHost,
   fetchImpl: typeof fetch = fetch,
 ): Promise<VaultHttpResult> {
   let parsedUrl: URL;
@@ -121,7 +126,10 @@ export async function executeVaultHttpRequest(
     return { ok: false, error: "url must be an absolute HTTPS URL" };
   }
   if (parsedUrl.protocol !== "https:") {
-    return { ok: false, error: "Vault credentials may only be sent over HTTPS" };
+    return {
+      ok: false,
+      error: "Vault credentials may only be sent over HTTPS",
+    };
   }
   if (parsedUrl.username || parsedUrl.password || /\{\{[^}]+\}\}/.test(request.url)) {
     return {
@@ -133,17 +141,20 @@ export async function executeVaultHttpRequest(
   let headers: Record<string, string>;
   let headerKeys: string[];
   try {
-    const substituted = substituteObject(userId, request.headers ?? {});
+    const substituted = substituteObject(userId, request.headers ?? {}, host);
     headers = substituted.values;
     headerKeys = substituted.usedKeys;
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 
   const bodyResult =
     request.body === undefined
       ? { text: undefined, usedKeys: [] as string[] }
-      : vaultSubstituteDetailed(userId, request.body);
+      : host.substitute(userId, request.body);
   const usedKeys = [...new Set([...headerKeys, ...bodyResult.usedKeys])].sort();
   if (usedKeys.length === 0) {
     return {
@@ -152,7 +163,10 @@ export async function executeVaultHttpRequest(
     };
   }
   if (request.method === "GET" && request.body !== undefined) {
-    return { ok: false, error: "GET requests cannot include a credential-bearing body" };
+    return {
+      ok: false,
+      error: "GET requests cannot include a credential-bearing body",
+    };
   }
 
   const controller = new AbortController();
@@ -177,10 +191,11 @@ export async function executeVaultHttpRequest(
       contentType.includes("javascript") ||
       contentType === "";
     const body = textual
-      ? redactVaultSecrets(userId, new TextDecoder().decode(bytes))
+      ? host.redact(userId, new TextDecoder().decode(bytes))
       : `[binary response omitted: ${bytes.byteLength} bytes, ${contentType || "unknown content type"}]`;
 
-    logger.info(
+    host.log?.(
+      "info",
       {
         userId,
         vaultKeys: usedKeys,
@@ -196,13 +211,14 @@ export async function executeVaultHttpRequest(
       ok: response.ok,
       status: response.status,
       statusText: response.statusText,
-      headers: safeResponseHeaders(userId, response.headers),
+      headers: safeResponseHeaders(userId, response.headers, host),
       body,
       truncated,
     };
   } catch (error) {
     const raw = error instanceof Error ? error.message : String(error);
-    logger.warn(
+    host.log?.(
+      "warn",
       {
         userId,
         vaultKeys: usedKeys,
@@ -212,7 +228,7 @@ export async function executeVaultHttpRequest(
       },
       "vault credential request failed",
     );
-    return { ok: false, error: redactVaultSecrets(userId, raw) };
+    return { ok: false, error: host.redact(userId, raw) };
   } finally {
     clearTimeout(timeout);
   }

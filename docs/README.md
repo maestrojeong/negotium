@@ -12,6 +12,7 @@ instead of copying the explanation.
 | [Otium enrollment and sharing](./OTIUM-ENROLLMENT-AND-SHARING.md) | Node invitation, enrollment security, topic-sharing product model, UX, and delivery plan |
 | [Feature review](./FEATURE-REVIEW.md) | Review order, acceptance questions, source areas, and regression coverage |
 | [Releasing](./RELEASING.md) | Package validation and npm publication |
+| [Migration 0.1.18](./MIGRATION-0.1.18.md) | Public helper adoption and Otium thin-adapter upgrade order |
 
 The root [README](../README.md) is the user-facing entry point. Package-specific setup belongs in
 the package README beside the code it describes.

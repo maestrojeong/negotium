@@ -14,47 +14,20 @@
  * of I/O so it unit-tests cleanly; the caller in `runtime/turn-runner.ts` handles
  * the General/subagent guards and the actual posting.
  */
+import {
+  clearContextWarning,
+  createContextWarningState,
+  nextContextWarning,
+} from "#runtime/context-warning";
 import type { TokenUsage } from "#types";
 
-const CONTEXT_ALERT_RATIO = 0.8;
+export { contextUsageRatio } from "#runtime/context-warning";
 
 // Topics already warned this session, keyed by (user, topic) so the same topic
 // under different users tracks independently. Cleared on session reset (`/new`).
-const alerted = new Set<string>();
+const alertState = createContextWarningState();
 
 const alertKey = (userId: string, topicId: string) => `${userId}:${topicId}`;
-
-/** Latest-request context occupancy, or null when the provider did not report it. */
-export function contextUsageRatio(usage: TokenUsage): number | null {
-  if (
-    usage.contextTokens === undefined ||
-    usage.contextWindow === undefined ||
-    !Number.isFinite(usage.contextTokens) ||
-    !Number.isFinite(usage.contextWindow) ||
-    usage.contextTokens < 0 ||
-    usage.contextWindow <= 0
-  ) {
-    return null;
-  }
-  return usage.contextTokens / usage.contextWindow;
-}
-
-function fmt(n: number): string {
-  return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1000)}K`;
-}
-
-function buildUsageAlertText(topicTitle: string, usage: TokenUsage): string {
-  const ratio = contextUsageRatio(usage) ?? 0;
-  const used = usage.contextTokens ?? 0;
-  const window = usage.contextWindow ?? 0;
-  return (
-    `⚠️ "${topicTitle}" context가 ${Math.round(ratio * 100)}% 찼어요 ` +
-    `(${fmt(used)} / ${fmt(window)} 토큰)\n\n` +
-    `이 토픽에서 /compact 를 입력하면 핵심 맥락을 요약해 이어가면서 context를 줄입니다. ` +
-    `완전히 새로 시작하려면 /new 를 사용하세요.\n\n` +
-    `두 명령 모두 지금까지 주고받은 보이는 대화 내역은 그대로 유지합니다.`
-  );
-}
 
 /**
  * If the latest request filled at least 80% of the provider context window and
@@ -68,17 +41,11 @@ export function nextUsageAlert(
   topicTitle: string,
   usage: TokenUsage,
 ): string | null {
-  const ratio = contextUsageRatio(usage);
-  if (ratio === null || ratio < CONTEXT_ALERT_RATIO) return null;
-
   const key = alertKey(userId, topicId);
-  if (alerted.has(key)) return null;
-  alerted.add(key);
-
-  return buildUsageAlertText(topicTitle, usage);
+  return nextContextWarning(alertState, { key, topicTitle, usage, supportsCompact: true });
 }
 
 /** Re-arm the alert for a topic so a fresh session can warn again (called on `/new`). */
 export function clearQueryUsageAlert(userId: string, topicId: string): void {
-  alerted.delete(alertKey(userId, topicId));
+  clearContextWarning(alertState, alertKey(userId, topicId));
 }

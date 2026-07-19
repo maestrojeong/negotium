@@ -32,7 +32,7 @@ import type { AgentKind } from "#types";
 // rmcp parser (`serde error expected value at line 1 column 2`) drops every
 // tool on this server. Pulling these symbols straight from `@/types` keeps the
 // SDK out of the import graph.
-import { isAgentKind } from "#types";
+import { parseSessionCommContext } from "./context";
 
 export { PLAYWRIGHT_PORTS_DIR, SESSION_INBOX_DIR };
 
@@ -43,24 +43,19 @@ export const SESSIONS_DB = CONFIG_SESSIONS_DB;
 export const PROGRESS_DIR = CONFIG_PROGRESS_DIR;
 
 const args = process.argv.slice(2);
-export const userId = parseUserIdArg(args);
-export const currentTopic = args.find((a) => a.startsWith("--topic="))?.split("=")[1] || "";
-export const currentTopicId =
-  args.find((a) => a.startsWith("--topic-id="))?.slice("--topic-id=".length) || "";
-export const peerHostQueryId =
-  args.find((a) => a.startsWith("--peer-host-query-id="))?.slice("--peer-host-query-id=".length) ||
-  "";
-export const currentDepth = Number(
-  args.find((a) => a.startsWith("--depth="))?.split("=")[1] ?? "0",
-);
+export const sessionCommContext = parseSessionCommContext(args, {
+  userId: parseUserIdArg(args),
+  agent: FALLBACK_AGENT,
+});
+export const userId = sessionCommContext.userId;
+export const currentTopic = sessionCommContext.currentTopic;
+export const currentTopicId = sessionCommContext.currentTopicId ?? "";
+export const peerHostQueryId = sessionCommContext.peerHostQueryId ?? "";
+export const currentDepth = sessionCommContext.depth;
 // When true, the session is a silent fork generating an ask_session reply —
 // outbound tools (ask_session/tell_session/abort_session) are not registered.
-export const isReplyOnly = args.includes("--reply-only=true");
-const _agentArg = args.find((a) => a.startsWith("--agent="))?.split("=")[1];
-if (_agentArg !== undefined && !isAgentKind(_agentArg)) {
-  throw new Error(`Invalid --agent arg: ${_agentArg}`);
-}
-export const currentAgent: AgentKind = _agentArg ?? FALLBACK_AGENT;
+export const isReplyOnly = sessionCommContext.replyOnly;
+export const currentAgent: AgentKind = sessionCommContext.agent;
 
 // Max tell_session relay depth — env parse/기본값 로직은 @/platform/config 로 이동.
 export { MAX_TELL_DEPTH } from "#platform/config";

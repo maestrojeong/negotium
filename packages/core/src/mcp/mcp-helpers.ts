@@ -3,9 +3,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
-type McpContent = { type: "text"; text: string };
-type McpResponse = { content: McpContent[] };
-type McpErrorResponse = { content: McpContent[]; isError: true };
+export type McpContent = { type: "text"; text: string };
+export type McpResponse = { content: McpContent[] };
+export type McpErrorResponse = { content: McpContent[]; isError: true };
 
 export function mcpOk(text: string): McpResponse {
   return { content: [{ type: "text", text }] };

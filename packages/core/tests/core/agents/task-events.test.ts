@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { resolveTaskEventScope, withTaskSnapshots } from "#agents/task-events";
+import { resolveTaskEventScope, type TaskEventHost, withTaskSnapshots } from "#agents/task-events";
 import { writeTasks } from "#storage/tasks";
 import type { AgentQueryOptions, UnifiedEvent } from "#types";
 
@@ -50,6 +50,16 @@ describe("resolveTaskEventScope", () => {
     expect(resolveTaskEventScope(opts({ session: "t" }))).toBeNull();
     expect(resolveTaskEventScope(opts({ userId: "1" }))).toBeNull();
   });
+
+  test("uses a caller-owned task scope resolver", () => {
+    expect(
+      resolveTaskEventScope(opts({ userId: "host-user", session: "Host topic" }), {
+        readTasks: () => [],
+        taskFileMtimeNs: () => BigInt(0),
+        taskScopeKey: () => "host-scope",
+      }),
+    ).toEqual({ userId: "host-user", scopeKey: "host-scope" });
+  });
 });
 
 async function* fakeStream(
@@ -68,6 +78,56 @@ async function collect(gen: AsyncGenerator<UnifiedEvent>): Promise<UnifiedEvent[
 }
 
 describe("withTaskSnapshots", () => {
+  test("isolates snapshot state through the caller-owned host", async () => {
+    let mtime = BigInt(0);
+    const host = {
+      readTasks: () => [{ id: "host", subject: "host task", status: "pending" as const }],
+      taskFileMtimeNs: () => mtime,
+      taskScopeKey: () => "host-scope",
+    };
+    const events = await collect(
+      withTaskSnapshots(
+        fakeStream([
+          () => {
+            mtime = BigInt(1);
+          },
+          { type: "result", content: "done", stopReason: "end_turn" },
+        ]),
+        { userId: "host-user", scopeKey: "host-scope" },
+        host,
+      ),
+    );
+    expect(events).toEqual([
+      { type: "result", content: "done", stopReason: "end_turn" },
+      { type: "tasks", tasks: [{ id: "host", subject: "host task", status: "pending" }] },
+    ]);
+  });
+
+  test("keeps snapshots inside the caller-owned host", async () => {
+    let mtime = BigInt(1);
+    const host: TaskEventHost = {
+      taskScopeKey: ({ topicId, session }) => topicId ?? session,
+      taskFileMtimeNs: () => mtime,
+      readTasks: () => [{ id: "host", subject: "isolated", status: "pending" }],
+    };
+    const events = await collect(
+      withTaskSnapshots(
+        fakeStream([
+          () => {
+            mtime = BigInt(2);
+          },
+          { type: "tool_result", toolUseId: "t1", content: "" },
+        ]),
+        { userId: "caller", scopeKey: "topic" },
+        host,
+      ),
+    );
+    expect(events).toEqual([
+      { type: "tool_result", toolUseId: "t1", content: "" },
+      { type: "tasks", tasks: [{ id: "host", subject: "isolated", status: "pending" }] },
+    ]);
+  });
+
   test("injects a tasks snapshot after a tool_result that changed the store", async () => {
     const scope = { userId: "50", scopeKey: "bridge-a" };
     const events = await collect(

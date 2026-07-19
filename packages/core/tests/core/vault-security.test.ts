@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { referencesRuntimeSecretStorage, shouldRedirectVaultTool } from "#agents/vault-tool-policy";
+import type { VaultCredentialHost } from "#mcp/factories/vault";
 import { executeVaultHttpRequest } from "#mcp/vault-http";
 import { executeVaultRun } from "#mcp/vault-run";
 import { DATA_DIR } from "#platform/config";
@@ -13,12 +14,18 @@ import {
   redactVaultSecrets,
   vaultDel,
   vaultGetValue,
+  vaultList,
   vaultSet,
   vaultSubstituteDetailed,
 } from "#storage/vault";
 import { decryptVaultValue, encryptVaultValue, isEncryptedVaultValue } from "#storage/vault-crypto";
 
 const createdEntries: Array<{ userId: string; key: string }> = [];
+const vaultHost: VaultCredentialHost = {
+  list: vaultList,
+  substitute: vaultSubstituteDetailed,
+  redact: redactVaultSecrets,
+};
 
 function remember(userId: string, key: string, value: string): void {
   vaultSet(userId, key, value);
@@ -32,11 +39,16 @@ afterEach(() => {
 describe("Vault secret boundary", () => {
   test("supports an embedding host data directory and master key", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "negotium-vault-host-"));
-    const restore = configureVaultStorage({ dataDir, masterKey: "host-owned-test-key" });
+    const restore = configureVaultStorage({
+      dataDir,
+      masterKey: "host-owned-test-key",
+    });
     try {
       vaultSet("embedded-user", "HOST_TOKEN", "embedded-secret");
       expect(vaultGetValue("embedded-user", "HOST_TOKEN")).toBe("embedded-secret");
-      const database = new Database(join(dataDir, "vault.db"), { readonly: true });
+      const database = new Database(join(dataDir, "vault.db"), {
+        readonly: true,
+      });
       try {
         const row = database
           .prepare("SELECT value FROM vault WHERE user_id = ? AND key = ?")
@@ -123,9 +135,15 @@ describe("Vault secret boundary", () => {
 
   test("blocks runtime secret storage paths at any tool-input depth", () => {
     expect(
-      referencesRuntimeSecretStorage({ nested: { file_path: "/tmp/state/vault-master-key" } }),
+      referencesRuntimeSecretStorage({
+        nested: { file_path: "/tmp/state/vault-master-key" },
+      }),
     ).toBe(true);
-    expect(referencesRuntimeSecretStorage({ command: "cat .otium/runtime-mcp-secret" })).toBe(true);
+    expect(
+      referencesRuntimeSecretStorage({
+        command: "cat .otium/runtime-mcp-secret",
+      }),
+    ).toBe(true);
     expect(referencesRuntimeSecretStorage({ file_path: "/tmp/ordinary.txt" })).toBe(false);
   });
 
@@ -134,10 +152,14 @@ describe("Vault secret boundary", () => {
     const secret = "run-secret-value";
     remember(userId, "RUN_TOKEN", secret);
 
-    const result = await executeVaultRun(userId, {
-      command: "printf '%s' '{{RUN_TOKEN}}'; printf '\\n'; printf '%s' '{{RUN_TOKEN}}' | base64",
-      timeoutMs: 5_000,
-    });
+    const result = await executeVaultRun(
+      userId,
+      {
+        command: "printf '%s' '{{RUN_TOKEN}}'; printf '\\n'; printf '%s' '{{RUN_TOKEN}}' | base64",
+        timeoutMs: 5_000,
+      },
+      vaultHost,
+    );
     expect(result.ok).toBe(true);
     expect(result.usedKeys).toEqual(["RUN_TOKEN"]);
     expect(result.stdout).not.toContain(secret);
@@ -154,7 +176,10 @@ describe("Vault secret boundary", () => {
       receivedAuthorization = new Headers(init?.headers).get("authorization") ?? "";
       return new Response(`echo ${secret}`, {
         status: 200,
-        headers: { "content-type": "text/plain", location: `https://example.com/${secret}` },
+        headers: {
+          "content-type": "text/plain",
+          location: `https://example.com/${secret}`,
+        },
       });
     }) as typeof fetch;
 
@@ -165,6 +190,7 @@ describe("Vault secret boundary", () => {
         url: "https://api.example.com/data",
         headers: { Authorization: "Bearer {{HTTP_TOKEN}}" },
       },
+      vaultHost,
       fetchImpl,
     );
     expect(receivedAuthorization).toBe(`Bearer ${secret}`);
@@ -176,15 +202,23 @@ describe("Vault secret boundary", () => {
   test("vault_http_request rejects plaintext transport and credentials in URLs", async () => {
     const userId = `vault-http-reject-${randomUUID()}`;
     remember(userId, "TOKEN", "secret");
-    const http = await executeVaultHttpRequest(userId, {
-      method: "GET",
-      url: "http://example.com",
-      headers: { Authorization: "Bearer {{TOKEN}}" },
-    });
-    const query = await executeVaultHttpRequest(userId, {
-      method: "GET",
-      url: "https://example.com/?token={{TOKEN}}",
-    });
+    const http = await executeVaultHttpRequest(
+      userId,
+      {
+        method: "GET",
+        url: "http://example.com",
+        headers: { Authorization: "Bearer {{TOKEN}}" },
+      },
+      vaultHost,
+    );
+    const query = await executeVaultHttpRequest(
+      userId,
+      {
+        method: "GET",
+        url: "https://example.com/?token={{TOKEN}}",
+      },
+      vaultHost,
+    );
     expect(http.error).toContain("HTTPS");
     expect(query.error).toContain("out of URLs");
   });

@@ -1,0 +1,40 @@
+export {
+  createWikiMcpServer,
+  type WikiMcpContext,
+  type WikiMcpHost,
+  type WikiSurface,
+  type WikiTopicBrief,
+} from "../wiki-server";
+export {
+  type McpStdioProtectionTarget,
+  protectMcpStdio,
+} from "./stdio-protection";
+export {
+  createSystemHealthMcpServer,
+  defaultSystemHealthMcpHost,
+  type SystemHealthMcpHost,
+  type SystemHealthSnapshot,
+} from "./system-health";
+export {
+  createTaskMcpServer,
+  defaultTaskMcpHost,
+  type TaskMcpContext,
+  type TaskMcpHost,
+} from "./task";
+export {
+  createTokenStatsMcpServer,
+  defaultTokenStatsMcpHost,
+  type TokenStatsMcpContext,
+  type TokenStatsMcpHost,
+  type TokenStatsSnapshot,
+} from "./token-stats";
+export {
+  createVaultMcpServer,
+  type VaultCredentialHost,
+  type VaultHttpRequest,
+  type VaultHttpResult,
+  type VaultMcpContext,
+  type VaultMcpExecutors,
+  type VaultRunRequest,
+  type VaultRunResult,
+} from "./vault";

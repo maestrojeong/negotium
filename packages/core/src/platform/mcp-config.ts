@@ -18,7 +18,14 @@ import {
   WIKI_SERVER,
 } from "#platform/config";
 import { logger } from "#platform/logger";
+import {
+  classifyForumMcpServers,
+  commonRuntimeMcpPolicy,
+  type RuntimeMcpScope,
+} from "#platform/mcp-catalog-policy";
 import type { AgentKind, AgentQueryOptions, PeerRuntimeBridgeContext } from "#types";
+
+export type { RuntimeMcpScope } from "#platform/mcp-catalog-policy";
 
 /**
  * Build the stdio transport spec for a Otium MCP server entry.
@@ -164,8 +171,6 @@ export function consumePlaywrightUnavailable(userId: string, topic: string | und
  * order of server names in user-facing displays.
  */
 
-export type RuntimeMcpScope = "dm" | "forum" | "fork" | "manager" | "cron";
-
 export interface RuntimeMcpBuildContext {
   userId: string;
   /** "dm" for DM scope, topic/session name for forum/fork. */
@@ -275,8 +280,7 @@ function backgroundBashTransport(
 
 const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   playwright: {
-    scopes: ["dm", "forum", "fork", "cron"],
-    forumRequired: true,
+    ...commonRuntimeMcpPolicy("playwright"),
     build({ userId, session, topicId, playwrightPort, playwrightCapability, agent }) {
       // Codex uses streamable HTTP while Claude and Maestro use SSE. Both
       // transports terminate at the same long-lived browser/profile server.
@@ -307,8 +311,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
     },
   },
   [RUNTIME_MCP_KEY]: {
-    scopes: ["forum", "manager", "fork", "cron"],
-    forumRequired: true,
+    ...commonRuntimeMcpPolicy("runtime"),
     build({
       userId,
       session,
@@ -341,8 +344,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
     },
   },
   "token-stats": {
-    scopes: ["dm", "forum", "manager", "cron"],
-    forumRequired: true,
+    ...commonRuntimeMcpPolicy("token-stats"),
     build({ userId, agent }) {
       return buildStdioMcpServer(agent, TOKEN_STATS_SERVER, [`--user-id=${userId}`]);
     },
@@ -351,8 +353,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   // surface across claude/codex/maestro; provider-native task stores are
   // blocked or ignored because they do not survive agent switches.
   task: {
-    scopes: ["dm", "forum", "manager", "cron"],
-    forumRequired: true,
+    ...commonRuntimeMcpPolicy("task"),
     build({ userId, session, topicId, queryId, agent, peerBridge }) {
       if (peerBridge) {
         if (!topicId || !queryId) return null;
@@ -377,8 +378,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
     // can wake fresh-created topics via tell_session/ask_session right after
     // create_topic. Without this, a newly-created topic would stay in the
     // "fresh-start ready" state until the user manually visits it.
-    scopes: ["forum", "fork", "manager"],
-    forumRequired: true,
+    ...commonRuntimeMcpPolicy("session-comm"),
     build({ userId, session, topicId, agent, depth = 0, silent, peerBridge }) {
       const effectiveAgent = agent ?? FALLBACK_AGENT;
       const args = [
@@ -399,8 +399,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
     },
   },
   wiki: {
-    scopes: ["dm", "forum", "manager", "cron"],
-    forumRequired: true,
+    ...commonRuntimeMcpPolicy("wiki"),
     build({ userId, session, topicId, queryId, wikiTopicId, agent, peerBridge }) {
       if (peerBridge) {
         if (!topicId || !queryId) return null;
@@ -426,8 +425,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
     },
   },
   skills: {
-    scopes: ["dm", "forum", "manager", "cron"],
-    forumRequired: true,
+    ...commonRuntimeMcpPolicy("skills"),
     build({ userId, topicId, agent }) {
       const args = [`--user-id=${userId}`, "--surface=skills"];
       if (topicId) args.push(`--topic-id=${topicId}`);
@@ -435,15 +433,13 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
     },
   },
   "system-health": {
-    scopes: ["dm", "forum", "manager", "cron"],
-    forumRequired: true,
+    ...commonRuntimeMcpPolicy("system-health"),
     build({ agent }) {
       return buildStdioMcpServer(agent, SYSTEM_HEALTH_SERVER, []);
     },
   },
   "background-bash": {
-    scopes: ["forum"],
-    forumRequired: true,
+    ...commonRuntimeMcpPolicy("background-bash"),
     build({ agent, bgBashPort, userId, topicId, session }) {
       const topic = topicId ?? session;
       if (bgBashPort === undefined || !topic) return null;
@@ -451,18 +447,16 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
     },
   },
   "agent-health": {
-    scopes: ["forum", "manager", "cron"],
-    forumRequired: true,
+    ...commonRuntimeMcpPolicy("agent-health"),
     build({ userId, agent }) {
       const args = [`--user-id=${userId}`];
       return buildStdioMcpServer(agent, AGENT_HEALTH_SERVER, args);
     },
   },
   vault: {
-    scopes: ["dm", "forum", "manager", "cron"],
+    ...commonRuntimeMcpPolicy("vault"),
     // Credential references must never dead-end because a topic whitelist
     // omitted the broker while provider hooks correctly block raw expansion.
-    forumRequired: true,
     build({ userId, agent }) {
       const args = [`--user-id=${userId}`];
       // Codex has no host-side PostToolUse redaction. Keep its Vault surface
@@ -477,12 +471,6 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
 
 // --- Derived catalog views ---
 
-function namesInScope(scope: RuntimeMcpScope): string[] {
-  return Object.entries(MCP_CATALOG)
-    .filter(([, e]) => e.scopes.includes(scope))
-    .map(([name]) => name);
-}
-
 /** All forum-eligible MCP server names, in display order. */
 const allForumMcpServerNames: string[] = [];
 export const ALL_FORUM_MCP_SERVER_NAMES: readonly string[] = allForumMcpServerNames;
@@ -496,17 +484,10 @@ const optionalForumMcpServers: string[] = [];
 export const OPTIONAL_FORUM_MCP_SERVERS: readonly string[] = optionalForumMcpServers;
 
 function refreshForumCatalogViews(): void {
-  const all = namesInScope("forum");
-  const required = Object.entries(MCP_CATALOG)
-    .filter(([, entry]) => entry.scopes.includes("forum") && entry.forumRequired)
-    .map(([name]) => name);
+  const { all, required, optional } = classifyForumMcpServers(MCP_CATALOG);
   allForumMcpServerNames.splice(0, allForumMcpServerNames.length, ...all);
   requiredForumMcpServers.splice(0, requiredForumMcpServers.length, ...required);
-  optionalForumMcpServers.splice(
-    0,
-    optionalForumMcpServers.length,
-    ...all.filter((name) => !required.includes(name)),
-  );
+  optionalForumMcpServers.splice(0, optionalForumMcpServers.length, ...optional);
 }
 
 refreshForumCatalogViews();

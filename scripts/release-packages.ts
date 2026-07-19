@@ -189,7 +189,9 @@ async function isPublished(pkg: ReleasePackage): Promise<boolean> {
   const version = pkg.manifest?.version;
   if (!version) fail(`${pkg.name}: manifest was not loaded`);
   const url = `https://registry.npmjs.org/${encodeURIComponent(pkg.name)}/${encodeURIComponent(version)}`;
-  const response = await fetch(url, { headers: { accept: "application/json" } });
+  const response = await fetch(url, {
+    headers: { accept: "application/json" },
+  });
   if (response.status === 404) return false;
   if (!response.ok) fail(`registry lookup failed for ${pkg.name}@${version}: ${response.status}`);
   return true;
@@ -323,11 +325,35 @@ import type {
 import type { CanonicalMcpBridgeScope } from "negotium/canonical-mcp-bridge";
 import type { CronDatabase, CronHost } from "negotium/cron";
 import type { McpServerName } from "negotium/mcp-servers";
+import type { ForumMcpClassification, RuntimeMcpPolicyEntry } from "negotium/mcp-catalog";
+import type { AgentAuthHost, ForkHandle, TaskEventHost } from "negotium/agent-helpers";
+import type { BackgroundBashManager, BackgroundBashManagerOptions } from "negotium/background-bash";
+import type {
+  TaskMcpContext,
+  TaskMcpHost,
+  SystemHealthMcpHost,
+  SystemHealthSnapshot,
+  TokenStatsMcpContext,
+  TokenStatsMcpHost,
+  VaultCredentialHost,
+  VaultMcpContext,
+  WikiMcpContext,
+  WikiMcpHost,
+} from "negotium/mcp-factories";
 import type { AgentRegistry, WriteRolloutOptions } from "negotium/registry";
 import type { ChatPair, CodexContextUsage } from "negotium/rollout";
 import type { VaultStorageOptions } from "negotium/vault";
 import type { SessionSystemPromptOpts } from "negotium/prompts";
-import type { MermaidTheme } from "negotium/runtime-helpers";
+import type {
+  ContextOccupancy,
+  ContextWarningState,
+  McpContent,
+  McpErrorResponse,
+  McpResponse,
+  McpToolResult,
+  MermaidTheme,
+  SharedMcpTool,
+} from "negotium/runtime-helpers";
 import type {
   StorageDatabase,
   StorageDatabaseInput,
@@ -338,6 +364,10 @@ const hostedAgent = await import("negotium/hosted-agent");
 const canonicalBridge = await import("negotium/canonical-mcp-bridge");
 const cron = await import("negotium/cron");
 const mcpServers = await import("negotium/mcp-servers");
+const mcpCatalog = await import("negotium/mcp-catalog");
+const mcpFactories = await import("negotium/mcp-factories");
+const agentHelpers = await import("negotium/agent-helpers");
+const backgroundBash = await import("negotium/background-bash");
 const registry = await import("negotium/registry");
 const rollout = await import("negotium/rollout");
 const vault = await import("negotium/vault");
@@ -368,6 +398,65 @@ if (typeof mcpServers.resolveMcpServerFile !== "function") {
 if (typeof mcpServers.resolveMcpServerTsconfig !== "function") {
   throw new Error("packed MCP server tsconfig helper is missing");
 }
+if (typeof mcpCatalog.classifyForumMcpServers !== "function") {
+  throw new Error("packed MCP catalog policy export is missing");
+}
+if (!mcpCatalog.COMMON_RUNTIME_MCP_POLICY.playwright?.forumRequired) {
+  throw new Error("packed MCP catalog policy is incomplete");
+}
+if (typeof mcpFactories.createTaskMcpServer !== "function") {
+  throw new Error("packed MCP factory export is missing");
+}
+if (typeof agentHelpers.forkAgentSession !== "function") {
+  throw new Error("packed fork helper export is missing");
+}
+if (typeof backgroundBash.createBackgroundBashManager !== "function") {
+  throw new Error("packed background-bash manager export is missing");
+}
+const backgroundBashOptions: BackgroundBashManagerOptions = { capability: "a".repeat(64) };
+const backgroundBashManager: BackgroundBashManager =
+  backgroundBash.createBackgroundBashManager(backgroundBashOptions);
+if (backgroundBashManager.contextCapability("smoke", "topic").length !== 64) {
+  throw new Error("packed background-bash manager capability is invalid");
+}
+if (typeof mcpFactories.createTokenStatsMcpServer !== "function") {
+  throw new Error("packed token-stats MCP factory export is missing");
+}
+if (typeof mcpFactories.createSystemHealthMcpServer !== "function") {
+  throw new Error("packed system-health MCP factory export is missing");
+}
+if (typeof mcpFactories.createVaultMcpServer !== "function") {
+  throw new Error("packed vault MCP factory export is missing");
+}
+if (typeof mcpFactories.protectMcpStdio !== "function") {
+  throw new Error("packed MCP stdio protection export is missing");
+}
+if (typeof mcpFactories.createWikiMcpServer !== "function") {
+  throw new Error("packed wiki MCP factory export is missing");
+}
+const packedTaskServer = mcpFactories.createTaskMcpServer({
+  userId: "smoke-user",
+  topic: "smoke-topic",
+});
+await packedTaskServer.close();
+const packedVaultServer = mcpFactories.createVaultMcpServer(
+  { userId: "smoke-user", httpOnly: true },
+  {
+    list: () => [],
+    substitute: (_userId, text) => ({ text, usedKeys: [] }),
+    redact: (_userId, text) => text,
+  },
+);
+await packedVaultServer.close();
+const packedWikiContext: WikiMcpContext = { userId: "smoke-user", surface: "wiki" };
+const packedWikiHost: WikiMcpHost = { wikiRoot: join(process.cwd(), "wiki-smoke") };
+await mcpFactories.createWikiMcpServer(packedWikiContext, packedWikiHost).close();
+if (typeof agentHelpers.checkAgentAuth !== "function") {
+  throw new Error("packed agent auth helper export is missing");
+}
+if (typeof agentHelpers.resolveTaskEventScope !== "function") {
+  throw new Error("packed task event helper export is missing");
+}
 if (typeof registry.getRegistry !== "function" || typeof rollout.encodeClaudeCwd !== "function") {
   throw new Error("packed registry/rollout export is missing");
 }
@@ -386,6 +475,54 @@ if (typeof vault.configureVaultStorage !== "function" || typeof prompts.buildTop
 }
 if (typeof runtimeHelpers.buildMermaidHtml !== "function" || typeof runtimeHelpers.renderTaskPanel !== "function") {
   throw new Error("packed runtime helper export is missing");
+}
+for (const helper of [
+  "deepMapStrings",
+  "delay",
+  "errorResult",
+  "errMsg",
+  "isSensitivePath",
+  "mcpError",
+  "mcpOk",
+  "parseUserIdArg",
+  "sanitizeFileName",
+  "sanitizeId",
+  "sanitizeTopicName",
+  "textResult",
+  "topicAppLink",
+  "topicMarkdownLink",
+] as const) {
+  if (typeof runtimeHelpers[helper] !== "function") {
+    throw new Error("packed runtime helper export is missing: " + helper);
+  }
+}
+const warningState = runtimeHelpers.createContextWarningState();
+const warning = runtimeHelpers.nextContextWarning(warningState, {
+  key: "smoke:topic",
+  topicTitle: "smoke",
+  usage: { contextTokens: 80, contextWindow: 100 },
+  supportsCompact: false,
+});
+if (!warning?.includes("80%") || warning.includes("/compact")) {
+  throw new Error("packed context warning policy is missing or ignored consumer capabilities");
+}
+if (
+  runtimeHelpers.claudeRequestContextTokens({
+    input_tokens: 10,
+    cache_read_input_tokens: 20,
+    output_tokens: 5,
+  }) !== 35
+) {
+  throw new Error("packed Claude context helper returned the wrong latest-request usage");
+}
+if (
+  runtimeHelpers.errMsg(new Error("smoke")) !== "smoke" ||
+  runtimeHelpers.sanitizeId("a.b") !== "a_b" ||
+  runtimeHelpers.parseUserIdArg(["--user-id=user_1"]) !== "user_1" ||
+  runtimeHelpers.topicAppLink("a/b") !== "otium://topic/a%2Fb" ||
+  runtimeHelpers.textResult("ok").content[0]?.text !== "ok"
+) {
+  throw new Error("packed shared runtime helper behavior is missing");
 }
 if (
   typeof storage.configureStorageHost !== "function" ||
@@ -428,6 +565,19 @@ const publicTypes = {} as {
   cronDatabase: CronDatabase;
   cronHost: Partial<CronHost>;
   mcpServerName: McpServerName;
+  mcpCatalogViews: ForumMcpClassification;
+  publicMcpCatalogEntry: RuntimeMcpPolicyEntry;
+  agentAuthHost: AgentAuthHost;
+  forkHandle: ForkHandle;
+  taskEventHost: TaskEventHost;
+  taskMcpContext: TaskMcpContext;
+  taskMcpHost: TaskMcpHost;
+  systemHealthMcpHost: SystemHealthMcpHost;
+  systemHealthSnapshot: SystemHealthSnapshot;
+  tokenStatsMcpContext: TokenStatsMcpContext;
+  tokenStatsMcpHost: TokenStatsMcpHost;
+  vaultCredentialHost: VaultCredentialHost;
+  vaultMcpContext: VaultMcpContext;
   registry: AgentRegistry;
   rolloutOptions: WriteRolloutOptions;
   chatPair: ChatPair;
@@ -435,6 +585,13 @@ const publicTypes = {} as {
   vaultOptions: VaultStorageOptions;
   promptOptions: SessionSystemPromptOpts;
   mermaidTheme: MermaidTheme;
+  contextOccupancy: ContextOccupancy;
+  contextWarningState: ContextWarningState;
+  mcpContent: McpContent;
+  mcpErrorResponse: McpErrorResponse;
+  mcpResponse: McpResponse;
+  mcpToolResult: McpToolResult;
+  sharedMcpTool: SharedMcpTool;
   storageHost: StorageHostOptions;
   storageConfig: StorageHostConfig;
   storageDatabase: StorageDatabase;
@@ -516,6 +673,9 @@ for (const subpath of [
   "./canonical-mcp-bridge",
   "./cron",
   "./mcp-servers",
+  "./mcp-catalog",
+  "./mcp-factories",
+  "./agent-helpers",
   "./registry",
   "./rollout",
   "./vault",

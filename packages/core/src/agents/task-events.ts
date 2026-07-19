@@ -6,7 +6,18 @@ export interface TaskEventScope {
   scopeKey: string;
 }
 
-export function resolveTaskEventScope(opts: AgentQueryOptions): TaskEventScope | null {
+export interface TaskEventHost {
+  readTasks: typeof readTasks;
+  taskFileMtimeNs: typeof taskFileMtimeNs;
+  taskScopeKey: typeof taskScopeKey;
+}
+
+const defaultTaskEventHost: TaskEventHost = { readTasks, taskFileMtimeNs, taskScopeKey };
+
+export function resolveTaskEventScope(
+  opts: AgentQueryOptions,
+  host: TaskEventHost = defaultTaskEventHost,
+): TaskEventScope | null {
   if (opts.silent) return null;
   if (!opts.userId) return null;
   if (opts.sessionType === "dm" || opts.sessionType === "ephemeral") {
@@ -18,7 +29,7 @@ export function resolveTaskEventScope(opts: AgentQueryOptions): TaskEventScope |
   if (!opts.session) return null;
   return {
     userId: opts.userId,
-    scopeKey: taskScopeKey({ topicId: opts.topicId, session: opts.session }),
+    scopeKey: host.taskScopeKey({ topicId: opts.topicId, session: opts.session }),
   };
 }
 
@@ -31,14 +42,15 @@ export function resolveTaskEventScope(opts: AgentQueryOptions): TaskEventScope |
 export async function* withTaskSnapshots(
   inner: AsyncGenerator<UnifiedEvent>,
   scope: TaskEventScope,
+  host: TaskEventHost = defaultTaskEventHost,
 ): AsyncGenerator<UnifiedEvent> {
-  let lastMtime = taskFileMtimeNs(scope.userId, scope.scopeKey);
+  let lastMtime = host.taskFileMtimeNs(scope.userId, scope.scopeKey);
   for await (const event of inner) {
     yield event;
     if (event.type !== "tool_result" && event.type !== "result") continue;
-    const mtime = taskFileMtimeNs(scope.userId, scope.scopeKey);
+    const mtime = host.taskFileMtimeNs(scope.userId, scope.scopeKey);
     if (mtime === lastMtime) continue;
     lastMtime = mtime;
-    yield { type: "tasks", tasks: readTasks(scope.userId, scope.scopeKey) };
+    yield { type: "tasks", tasks: host.readTasks(scope.userId, scope.scopeKey) };
   }
 }

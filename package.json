@@ -21,6 +21,7 @@
     "release:dry-run": "bun scripts/release-packages.ts dry-run",
     "release:smoke": "bun scripts/release-packages.ts smoke",
     "release:publish": "bun scripts/release-packages.ts publish",
+    "audit:runtime-overlap": "bun scripts/runtime-overlap-audit.ts",
     "experiment:otium:setup": "bun scripts/otium-experiment/hub-setup.ts",
     "experiment:otium:e2e": "bun scripts/otium-experiment/run-e2e.ts"
   },

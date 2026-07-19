@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { argv, exit } from "node:process";
@@ -19,15 +20,50 @@ import {
   wikiSummarySlug,
 } from "#storage/wiki-summary-names";
 
-// --- Configuration --------------------------------------------------------
-
-// Otium has one shared filesystem wiki for the workspace. userId/topicId still
-// influence DB keys and filenames, but never the wiki root.
-const WIKI_ROOT = SHARED_WIKI_DIR;
-
 // --- CLI parsing -----------------------------------------------------------
 
-type WikiSurface = "all" | "wiki" | "skills";
+export type WikiSurface = "all" | "wiki" | "skills";
+
+export interface WikiTopicBrief {
+  briefMd: string;
+  latestSummaryMd?: string;
+  summaryDate?: string;
+  updatedAt: string;
+}
+
+export interface WikiMcpHost {
+  wikiRoot: string;
+  getTopicBrief?(topicId: string): WikiTopicBrief | null;
+  setTopicBrief?(
+    topicId: string,
+    fields: { briefMd?: string; latestSummaryMd?: string; summaryDate?: string },
+  ): void;
+}
+
+export interface WikiMcpContext {
+  userId: string;
+  topicId?: string;
+  surface?: WikiSurface;
+}
+
+interface WikiRuntime extends Required<Pick<WikiMcpContext, "userId" | "surface">> {
+  topicId?: string;
+  host: WikiMcpHost;
+  wikiDir: string;
+  skillsDir: string;
+  topicsDir: string;
+  summariesDir: string;
+  articlesDir: string;
+  archiveDir: string;
+}
+
+const wikiRuntime = new AsyncLocalStorage<WikiRuntime>();
+
+function runtime(): WikiRuntime {
+  const current = wikiRuntime.getStore();
+  if (!current) throw new Error("wiki MCP handler called without a runtime context");
+  return current;
+}
 
 function parseArgv(): { userId: string; topicId?: string; surface: WikiSurface } {
   let userId = "default";
@@ -43,44 +79,6 @@ function parseArgv(): { userId: string; topicId?: string; surface: WikiSurface }
   }
 
   return { userId, topicId, surface };
-}
-
-const { topicId, surface } = parseArgv();
-
-const WIKI_DIR = WIKI_ROOT;
-
-const SKILLS_DIR = resolve(WIKI_DIR, "skills");
-const TOPICS_DIR = resolve(WIKI_DIR, "topic");
-const SUMMARIES_DIR = resolve(WIKI_DIR, "summaries");
-const ARTICLES_DIR = resolve(WIKI_DIR, "articles");
-const ARCHIVE_DIR = resolve(WIKI_DIR, "archive");
-
-// --- DB bridge (topicId mode only) ----------------------------------------
-// Imported lazily so the DB connection is only opened when needed AND the
-// import uses the shared @/ path alias that works under both bun and node.
-
-let getTopicBrief:
-  | ((id: string) => {
-      briefMd: string;
-      latestSummaryMd?: string;
-      summaryDate?: string;
-      updatedAt: string;
-    } | null)
-  | undefined;
-let setTopicBrief:
-  | ((id: string, f: { briefMd?: string; latestSummaryMd?: string; summaryDate?: string }) => void)
-  | undefined;
-
-async function ensureDbBridge() {
-  if (!topicId) return;
-  if (getTopicBrief) return; // already loaded
-  try {
-    const mod = await import("#storage/api-topic-brief");
-    getTopicBrief = mod.getTopicBrief;
-    setTopicBrief = mod.setTopicBrief;
-  } catch {
-    // DB not available — degrade gracefully (file-only).
-  }
 }
 
 // --- Helpers ---------------------------------------------------------------
@@ -176,13 +174,13 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
     return score;
   }
 
-  scan(ARTICLES_DIR, "articles");
+  scan(runtime().articlesDir, "articles");
   // Skills are node-local runtime knowledge, not canonical workspace memory.
   // Keep the legacy all-in-one server compatible while ensuring the explicit
   // wiki surface cannot read a node's skill library.
-  if (surface === "all") scan(SKILLS_DIR, "skills");
-  scan(TOPICS_DIR, "topic");
-  scan(SUMMARIES_DIR, "summaries");
+  if (runtime().surface === "all") scan(runtime().skillsDir, "skills");
+  scan(runtime().topicsDir, "topic");
+  scan(runtime().summariesDir, "summaries");
 
   scored.sort((a, b) => b.score - a.score);
   const top = scored.slice(0, 8);
@@ -214,7 +212,7 @@ function wikiTopicBrief(args: Record<string, unknown>): CallToolResult {
   const rawTopic = safeExt<string | undefined>(
     args,
     ["topic", "topicName", "topicId"],
-    topicId ?? undefined,
+    runtime().topicId,
   );
   if (!rawTopic) {
     return {
@@ -222,7 +220,8 @@ function wikiTopicBrief(args: Record<string, unknown>): CallToolResult {
     };
   }
 
-  if (topicId && getTopicBrief) {
+  const getTopicBrief = runtime().host.getTopicBrief;
+  if (runtime().topicId && getTopicBrief) {
     try {
       const brief = getTopicBrief(rawTopic);
       if (!brief) {
@@ -252,7 +251,7 @@ function wikiLastConversation(args: Record<string, unknown>): CallToolResult {
   const rawTopic = safeExt<string | undefined>(
     args,
     ["topic", "topicName", "topicId"],
-    topicId ?? undefined,
+    runtime().topicId,
   );
   const turns = safeExt(args, ["turns", "limit", "n"], 5);
   const maxTurns = Math.min(Math.max(1, Number(turns) || 5), 10);
@@ -264,7 +263,7 @@ function wikiLastConversation(args: Record<string, unknown>): CallToolResult {
   const name = slugify(topicNameFrom(rawTopic));
 
   // Try per-topic archive dir first, then flat file
-  const archiveDir = resolve(ARCHIVE_DIR, name);
+  const archiveDir = resolve(runtime().archiveDir, name);
   ensureDir(archiveDir);
 
   try {
@@ -275,8 +274,8 @@ function wikiLastConversation(args: Record<string, unknown>): CallToolResult {
       .reverse();
     if (files.length === 0) {
       // Try flat archive
-      ensureDir(ARCHIVE_DIR);
-      files = readdirSync(ARCHIVE_DIR)
+      ensureDir(runtime().archiveDir);
+      files = readdirSync(runtime().archiveDir)
         .filter((f) => f.startsWith(name) && f.endsWith(".jsonl"))
         .sort()
         .reverse();
@@ -288,7 +287,10 @@ function wikiLastConversation(args: Record<string, unknown>): CallToolResult {
     // Read most recent archive file
     const actualPath = files[0].includes("/")
       ? files[0]
-      : resolve(readdirSync(archiveDir).includes(files[0]) ? archiveDir : ARCHIVE_DIR, files[0]);
+      : resolve(
+          readdirSync(archiveDir).includes(files[0]) ? archiveDir : runtime().archiveDir,
+          files[0],
+        );
 
     try {
       const raw = readFileSync(actualPath, "utf-8");
@@ -354,14 +356,14 @@ function skillQuery(args: Record<string, unknown>): CallToolResult {
   const question = safeExt(args, ["question", "query", "q"], "");
   const query = question.toLowerCase();
 
-  ensureDir(SKILLS_DIR);
+  ensureDir(runtime().skillsDir);
 
   const matches: { name: string; path: string; desc: string }[] = [];
 
   try {
-    for (const entry of readdirSync(SKILLS_DIR, { withFileTypes: true })) {
+    for (const entry of readdirSync(runtime().skillsDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      const skillFile = resolve(SKILLS_DIR, entry.name, "skill.md");
+      const skillFile = resolve(runtime().skillsDir, entry.name, "skill.md");
       try {
         const text = readFileSync(skillFile, "utf-8");
         const lower = text.toLowerCase();
@@ -427,7 +429,7 @@ function skillSave(args: Record<string, unknown>): CallToolResult {
     return `${target.trimEnd()}\n\n## Gotchas\n${fresh.join("\n")}\n`;
   }
 
-  const skillDir = resolve(SKILLS_DIR, name);
+  const skillDir = resolve(runtime().skillsDir, name);
   ensureDir(skillDir);
   const skillPath = resolve(skillDir, "skill.md");
 
@@ -453,17 +455,18 @@ function saveWikiEntry(args: Record<string, unknown>): CallToolResult {
 
   const now = new Date();
   const dateStr = now.toISOString().slice(0, 10);
-  const summaryName = wikiSummaryFilename(dateStr, rawTopic, topicId);
-  const storageKey = wikiBriefStorageKey(rawTopic, topicId);
+  const summaryName = wikiSummaryFilename(dateStr, rawTopic, runtime().topicId);
+  const storageKey = wikiBriefStorageKey(rawTopic, runtime().topicId);
   const name = slugify(storageKey);
 
   // Save to summaries directory
-  ensureDir(SUMMARIES_DIR);
-  const summaryFile = resolve(SUMMARIES_DIR, summaryName);
+  ensureDir(runtime().summariesDir);
+  const summaryFile = resolve(runtime().summariesDir, summaryName);
   writeFileSync(summaryFile, content, "utf-8");
 
   // Also update SQLite brief if in topicId mode
-  if (topicId && setTopicBrief) {
+  const setTopicBrief = runtime().host.setTopicBrief;
+  if (runtime().topicId && setTopicBrief) {
     try {
       // Extract a brief from the first paragraph (non-heading)
       const bodyStart = content.indexOf("\n\n");
@@ -482,8 +485,8 @@ function saveWikiEntry(args: Record<string, unknown>): CallToolResult {
   }
 
   // Also update topic brief file for backward-compat
-  ensureDir(TOPICS_DIR);
-  const briefPath = resolve(TOPICS_DIR, `${name}.md`);
+  ensureDir(runtime().topicsDir);
+  const briefPath = resolve(runtime().topicsDir, `${name}.md`);
   try {
     writeFileSync(briefPath, content, "utf-8");
   } catch {
@@ -496,7 +499,7 @@ function saveWikiEntry(args: Record<string, unknown>): CallToolResult {
         type: "text",
         text:
           `Saved summary: summaries/${summaryName}` +
-          (topicId ? "\nSQLite brief also updated." : ""),
+          (runtime().topicId ? "\nSQLite brief also updated." : ""),
       },
     ],
   };
@@ -515,9 +518,9 @@ function indexUpsert(args: Record<string, unknown>): CallToolResult {
   const dateStr = date ?? today;
 
   const indexPath = (() => {
-    if (kind === "topic") return resolve(WIKI_DIR, "topic-index.md");
-    if (kind === "skill") return resolve(WIKI_DIR, "skill-index.md");
-    return resolve(WIKI_DIR, "article-index.md");
+    if (kind === "topic") return resolve(runtime().wikiDir, "topic-index.md");
+    if (kind === "skill") return resolve(runtime().wikiDir, "skill-index.md");
+    return resolve(runtime().wikiDir, "article-index.md");
   })();
 
   ensureDir(dirname(indexPath));
@@ -696,60 +699,90 @@ const SKILL_TOOLS: Tool[] = [
   },
 ];
 
-const TOOLS =
-  surface === "wiki"
-    ? WIKI_TOOLS
-    : surface === "skills"
-      ? SKILL_TOOLS
-      : [...WIKI_TOOLS, ...SKILL_TOOLS];
-
 // --- Server ----------------------------------------------------------------
 
-const server = new Server(
-  { name: "wiki-server", version: "2.0.0" },
-  { capabilities: { tools: {} } },
-);
-
-server.setRequestHandler(ListToolsRequestSchema, async (): Promise<ListToolsResult> => {
-  return { tools: TOOLS };
-});
-
-server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
-  const { name, arguments: args } = request.params;
-  const a = (args ?? {}) as Record<string, unknown>;
-
-  {
-    const fn: Record<string, (a: Record<string, unknown>) => CallToolResult> = {
-      wiki_query: wikiQuery,
-      wiki_topic_brief: wikiTopicBrief,
-      wiki_last_conversation: wikiLastConversation,
-      skill_query: skillQuery,
-      skill_save: skillSave,
-      save_wiki_entry: saveWikiEntry,
-      index_upsert: indexUpsert,
-    };
-    const handler = TOOLS.some((tool) => tool.name === name) ? fn[name] : undefined;
-    if (handler) return handler(a);
-    return { content: [{ type: "text", text: `Unknown tool: ${name}` }] };
+export function createWikiMcpServer(context: WikiMcpContext, host: WikiMcpHost): Server {
+  const surface = context.surface ?? "all";
+  const wikiDir = resolve(host.wikiRoot);
+  const current: WikiRuntime = {
+    userId: context.userId,
+    topicId: context.topicId,
+    surface,
+    host,
+    wikiDir,
+    skillsDir: resolve(wikiDir, "skills"),
+    topicsDir: resolve(wikiDir, "topic"),
+    summariesDir: resolve(wikiDir, "summaries"),
+    articlesDir: resolve(wikiDir, "articles"),
+    archiveDir: resolve(wikiDir, "archive"),
+  };
+  const tools =
+    surface === "wiki"
+      ? WIKI_TOOLS
+      : surface === "skills"
+        ? SKILL_TOOLS
+        : [...WIKI_TOOLS, ...SKILL_TOOLS];
+  for (const directory of [
+    current.skillsDir,
+    current.topicsDir,
+    current.summariesDir,
+    current.articlesDir,
+    current.archiveDir,
+  ]) {
+    ensureDir(directory);
   }
-});
+
+  const server = new Server(
+    { name: "wiki-server", version: "2.0.0" },
+    { capabilities: { tools: {} } },
+  );
+  server.setRequestHandler(
+    ListToolsRequestSchema,
+    async (): Promise<ListToolsResult> => ({
+      tools,
+    }),
+  );
+  server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
+    return wikiRuntime.run(current, () => {
+      const { name, arguments: args } = request.params;
+      const handlers: Record<string, (a: Record<string, unknown>) => CallToolResult> = {
+        wiki_query: wikiQuery,
+        wiki_topic_brief: wikiTopicBrief,
+        wiki_last_conversation: wikiLastConversation,
+        skill_query: skillQuery,
+        skill_save: skillSave,
+        save_wiki_entry: saveWikiEntry,
+        index_upsert: indexUpsert,
+      };
+      const handler = tools.some((tool) => tool.name === name) ? handlers[name] : undefined;
+      return handler
+        ? handler((args ?? {}) as Record<string, unknown>)
+        : { content: [{ type: "text", text: `Unknown tool: ${name}` }] };
+    });
+  });
+  return server;
+}
 
 // --- Entrypoint ------------------------------------------------------------
 
 async function main() {
-  // Initialize DB bridge before accepting connections (topicId mode only)
-  await ensureDbBridge();
-
-  // Ensure directories exist
-  for (const d of [SKILLS_DIR, TOPICS_DIR, SUMMARIES_DIR, ARTICLES_DIR, ARCHIVE_DIR]) {
-    ensureDir(d);
+  const context = parseArgv();
+  let bridge: Partial<WikiMcpHost> = {};
+  if (context.topicId) {
+    try {
+      const mod = await import("#storage/api-topic-brief");
+      bridge = { getTopicBrief: mod.getTopicBrief, setTopicBrief: mod.setTopicBrief };
+    } catch {
+      // DB not available — degrade gracefully (file-only).
+    }
   }
-
   const transport = new StdioServerTransport();
-  await server.connect(transport);
+  await createWikiMcpServer(context, { wikiRoot: SHARED_WIKI_DIR, ...bridge }).connect(transport);
 }
 
-main().catch((err) => {
-  console.error("wiki-server fatal:", err);
-  exit(1);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error("wiki-server fatal:", err);
+    exit(1);
+  });
+}
