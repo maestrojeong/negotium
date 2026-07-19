@@ -125,7 +125,7 @@ describe("Vault secret boundary", () => {
       text: "Bearer secret-token / {{MISSING}}",
       usedKeys: ["TOKEN"],
     });
-    expect(shouldRedirectVaultTool(userId, "Bash", { command: "use {{TOKEN}}" })).toBe(true);
+    expect(shouldRedirectVaultTool(userId, "Bash", { command: "use {{TOKEN}}" })).toBe(false);
     expect(
       shouldRedirectVaultTool(userId, "mcp__vault__vault_run", {
         command: "use {{TOKEN}}",

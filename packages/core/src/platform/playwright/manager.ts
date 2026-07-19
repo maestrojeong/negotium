@@ -32,6 +32,7 @@ import {
   hasBrowserProfileTopic,
   normalizeBrowserProfileName,
 } from "#storage/browser-profiles";
+import { getRuntimeProcessLease } from "#storage/runtime-process-leases";
 
 export { PLAYWRIGHT_PORTS_DIR };
 
@@ -515,6 +516,17 @@ export function selectOrphanBrowserPids(
 }
 
 /**
+ * The browser process table is shared across every Negotium process, while the
+ * in-memory `instances` map is not. Only the current node-daemon lease owner may
+ * compare those two views and reap untracked browsers. Otherwise an old daemon
+ * that survived shutdown can mistake the replacement daemon's browser for an
+ * orphan and kill it.
+ */
+export function isBrowserJanitorOwner(leaseOwnerPid: number | null, selfPid: number): boolean {
+  return leaseOwnerPid === selfPid;
+}
+
+/**
  * Periodic sweep that reaps orphaned browser processes the tracked-instance map
  * has lost sight of. The 30-min idle eviction only touches instances still in
  * the map; when an MCP dies on its own its Chrome escapes the map entirely, so
@@ -522,6 +534,12 @@ export function selectOrphanBrowserPids(
  * orphans under memory pressure are exactly this failure mode.
  */
 function reapOrphanBrowsers(): void {
+  // Use an infinite stale window here intentionally: even if the active daemon
+  // briefly misses a heartbeat, the recorded owner remains the only process
+  // allowed to run this destructive cross-process sweep.
+  const daemonLease = getRuntimeProcessLease("node-daemon", Date.now(), Number.POSITIVE_INFINITY);
+  if (!isBrowserJanitorOwner(daemonLease?.pid ?? null, process.pid)) return;
+
   const profileRoot = resolve(BROWSER_PROFILES_DIR);
   let pids: string;
   try {

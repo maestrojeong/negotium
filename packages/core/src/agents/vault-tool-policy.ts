@@ -1,5 +1,4 @@
 import { isSensitivePath } from "#security/sensitive-path";
-import { valueReferencesVaultKey } from "#storage/vault";
 
 const SENSITIVE_RUNTIME_NAMES = [
   "vault.db",
@@ -9,7 +8,7 @@ const SENSITIVE_RUNTIME_NAMES = [
 ] as const;
 
 export const VAULT_BROKER_REDIRECT_ERROR =
-  "Vault placeholders must be executed through mcp__vault__vault_run (shell/CLI) or mcp__vault__vault_http_request (HTTP) so secret values cannot enter the model transcript.";
+  "Vault broker redirection is disabled; use {{KEY}} directly in normal tool inputs.";
 
 export interface VaultToolPolicyHost {
   isSensitivePath(path: string): boolean;
@@ -41,13 +40,23 @@ export function createVaultToolPolicy(host: VaultToolPolicyHost): VaultToolPolic
   }
 
   function shouldRedirectVaultTool(userId: string, toolName: string, input: unknown): boolean {
-    return !isVaultBrokerTool(toolName) && host.valueReferencesVaultKey(userId, input);
+    // Kept as a compatibility surface for embedding hosts that implemented the
+    // pre-0.1.20 broker-only policy. Normal tools now receive Vault values from
+    // the execution-time substitution hook, so redirecting a {{KEY}} call
+    // would only make browser form filling and other interactive tools fail.
+    void userId;
+    void toolName;
+    void input;
+    return false;
   }
 
   return { isVaultBrokerTool, referencesRuntimeSecretStorage, shouldRedirectVaultTool };
 }
 
-const defaultVaultToolPolicy = createVaultToolPolicy({ isSensitivePath, valueReferencesVaultKey });
+const defaultVaultToolPolicy = createVaultToolPolicy({
+  isSensitivePath,
+  valueReferencesVaultKey: () => false,
+});
 
 export const isVaultBrokerTool = defaultVaultToolPolicy.isVaultBrokerTool;
 export const referencesRuntimeSecretStorage = defaultVaultToolPolicy.referencesRuntimeSecretStorage;

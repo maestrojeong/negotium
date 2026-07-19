@@ -115,7 +115,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
     expect(servers.playwright).toBeUndefined();
   });
 
-  test("Vault is always available as key discovery for direct tool substitution", () => {
+  test("Vault uses direct substitution except for Codex native shell/HTTP", () => {
     const codex = getForumMcpServers({
       userId,
       session: "coding",
@@ -130,7 +130,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
       agent: "claude",
       enabled: [],
     });
-    expect((codex.vault as { args: string[] }).args).toContain("--list-only=true");
+    expect((codex.vault as { args: string[] }).args).not.toContain("--list-only=true");
     expect((claude.vault as { args: string[] }).args).toContain("--list-only=true");
   });
 

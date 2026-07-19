@@ -459,7 +459,8 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
       // Normal turns use {{KEY}} directly in tool inputs. Keep the Vault MCP
       // surface focused on key discovery; broker tools remain available from
       // the public factory for compatibility but are no longer the default UX.
-      const args = [`--user-id=${userId}`, "--list-only=true"];
+      const args = [`--user-id=${userId}`];
+      if (agent !== "codex") args.push("--list-only=true");
       return buildStdioMcpServer(agent, VAULT_SERVER, args);
     },
   },

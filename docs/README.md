@@ -16,6 +16,7 @@ instead of copying the explanation.
 | [Migration 0.1.19](./MIGRATION-0.1.19.md) | Reset memory safety and the next Otium deduplication boundary |
 | [Migration 0.1.20](./MIGRATION-0.1.20.md) | Direct Vault placeholders and browser credential substitution |
 | [Migration 0.1.21](./MIGRATION-0.1.21.md) | Compact model routing guidance and short-session memory policy |
+| [Migration 0.1.22](./MIGRATION-0.1.22.md) | Direct browser credentials, automatic WebAuthn, and singleton daemon hardening |
 
 The root [README](../README.md) is the user-facing entry point. Package-specific setup belongs in
 the package README beside the code it describes.

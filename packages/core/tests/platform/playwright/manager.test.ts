@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import {
   browserProcessMatchesExpectedProfile,
   extractUserDataDirArg,
+  isBrowserJanitorOwner,
   makeInstanceKey,
   selectIdleEvictionKey,
   selectOrphanBrowserPids,
@@ -11,6 +12,14 @@ import {
   waitForChildProcessExit,
   withPlaywrightInstanceMaintenance,
 } from "#platform/playwright/manager";
+
+describe("isBrowserJanitorOwner", () => {
+  it("only lets the current node-daemon lease owner reap shared browser processes", () => {
+    expect(isBrowserJanitorOwner(42, 42)).toBe(true);
+    expect(isBrowserJanitorOwner(42, 41)).toBe(false);
+    expect(isBrowserJanitorOwner(null, 42)).toBe(false);
+  });
+});
 
 describe("extractUserDataDirArg", () => {
   it("parses space-form cmdline as emitted by playwright-mcp spawn", () => {

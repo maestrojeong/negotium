@@ -31,6 +31,8 @@ async function runCanonicalNode(port: number): Promise<void> {
   });
   console.log(`negotium node listening on 127.0.0.1:${node.port} (ctrl-c to stop)`);
   await node.completed;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  process.exit(0);
 }
 
 async function stopAdapter(name: "otium" | "telegram"): Promise<boolean> {

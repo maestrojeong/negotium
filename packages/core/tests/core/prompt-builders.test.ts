@@ -62,7 +62,8 @@ describe("session system prompt builders", () => {
     expect(prompt).not.toContain("move up one step");
     expect(prompt).toContain("`set_agent` autonomous calls are forbidden");
     expect(prompt).toContain("explicitly asks to change the model, agent backend");
-    expect(prompt).not.toContain("{{");
+    expect(prompt).toContain("Use `{{KEY}}` directly in browser tools");
+    expect(prompt.replaceAll("{{KEY}}", "")).not.toContain("{{");
   });
 
   test("inserts replacement-pattern characters literally", () => {
@@ -103,7 +104,7 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain("mcp__task");
     expect(prompt).toContain("mcp__runtime__set_model");
     expect(prompt).toContain("show_html");
-    expect(prompt).not.toContain("{{");
+    expect(prompt.replaceAll("{{KEY}}", "")).not.toContain("{{");
   });
 
   test("builds maestro prompt with unprefixed MCP tool names", () => {
@@ -151,7 +152,7 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain("mcp__task__task_create");
     expect(prompt).toContain("mcp__runtime__set_model");
     expect(prompt).not.toContain("## Memory");
-    expect(prompt).not.toContain("{{");
+    expect(prompt.replaceAll("{{KEY}}", "")).not.toContain("{{");
   });
 
   test("omits Otium visual tools when the adapter does not grant them", () => {

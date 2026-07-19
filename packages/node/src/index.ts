@@ -318,4 +318,12 @@ export async function runNodeDaemon(
     singleton: true,
   });
   await node.completed;
+
+  // This entrypoint owns the whole process. Shutdown handlers have completed,
+  // so do not rely on every imported adapter/database/socket to release its
+  // final Bun handle before the process can disappear. A former singleton that
+  // remains half-alive can still run module-level timers and interfere with the
+  // replacement daemon.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  process.exit(0);
 }

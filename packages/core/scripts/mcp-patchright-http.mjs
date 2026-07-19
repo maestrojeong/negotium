@@ -18,6 +18,7 @@ import {
   secureBrowserToolOutput,
 } from "./browser-passkey-policy.mjs";
 import { createBrowserVaultTransforms } from "./browser-vault-transform.mjs";
+import { createBrowserWebAuthnGuard } from "./browser-webauthn-policy.mjs";
 
 function parseCli(argv = process.argv.slice(2)) {
   const options = { host: "127.0.0.1" };
@@ -64,6 +65,7 @@ const vaultTransforms = await createBrowserVaultTransforms(
   process.env.NEGOTIUM_BROWSER_VAULT_USER_ID,
 );
 const exposedTools = secureBrowserToolCatalog(tools);
+const webAuthnGuard = createBrowserWebAuthnGuard();
 
 function createMcpServer(defaultStartOptions, sharedManager, owner) {
   const server = new Server(
@@ -79,9 +81,12 @@ function createMcpServer(defaultStartOptions, sharedManager, owner) {
         toolName,
         vaultTransforms.substitute(request.params.arguments ?? {}),
       );
-      const result = await manager.runAsOwner(owner, () =>
-        handleTool(manager, toolName, toolInput),
-      );
+      const result = await manager.runAsOwner(owner, async () => {
+        await webAuthnGuard.beforeTool(toolName, manager);
+        const toolResult = await handleTool(manager, toolName, toolInput);
+        await webAuthnGuard.afterTool(toolName, manager);
+        return toolResult;
+      });
       return vaultTransforms.redact(secureBrowserToolOutput(toolName, result));
     } catch (error) {
       const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
