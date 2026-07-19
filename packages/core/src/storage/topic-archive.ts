@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { logger } from "#platform/logger";
 import { sanitizeTopicName } from "#security/sanitize";
@@ -14,7 +14,7 @@ export interface TopicArchiveResult {
 
 export interface TopicArchiveOptions {
   afterRowid?: number;
-  reason?: "delete" | "idle";
+  reason?: "delete" | "idle" | "reset";
 }
 
 /**
@@ -51,20 +51,25 @@ export function archiveTopicMessages(
   // Collision-proof file name: a topic deleted twice on the same day (e.g.
   // recreated then deleted again) must not clobber the earlier archive.
   const date = new Date().toISOString().slice(0, 10);
-  const reasonSuffix = options.reason === "idle" ? "_idle" : "";
-  let filename = `${safeTopic}_${date}${reasonSuffix}.jsonl`;
+  const reasonSuffix = options.reason && options.reason !== "delete" ? `_${options.reason}` : "";
+  let filename: string;
   let counter = 1;
-  while (existsSync(join(archiveDir, filename))) {
-    counter++;
-    filename = `${safeTopic}_${date}${reasonSuffix}_${counter}.jsonl`;
-  }
-  const path = join(archiveDir, filename);
   const lastRowid = rows.reduce((max, row) => Math.max(max, row.rowid ?? 0), 0);
-
   const body = `${rows
     .map((r, index) => JSON.stringify(formatTopicArchiveTranscriptRecord(r, topicTitle, index + 1)))
     .join("\n")}\n`;
-  writeFileSync(path, body);
+  let path: string;
+  while (true) {
+    filename = `${safeTopic}_${date}${reasonSuffix}${counter === 1 ? "" : `_${counter}`}.jsonl`;
+    path = join(archiveDir, filename);
+    try {
+      writeFileSync(path, body, { flag: "wx" });
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      counter++;
+    }
+  }
 
   logger.info(
     { topicId, topicTitle, archive: path, messageCount: rows.length, lastRowid },

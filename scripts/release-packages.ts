@@ -327,6 +327,7 @@ import type { CronDatabase, CronHost } from "negotium/cron";
 import type { McpServerName } from "negotium/mcp-servers";
 import type { ForumMcpClassification, RuntimeMcpPolicyEntry } from "negotium/mcp-catalog";
 import type {
+  ActiveTopicArchiveOptions,
   AgentAuthHost,
   AgentForkHost,
   CodexTreeHost,
@@ -342,7 +343,10 @@ import type {
   OutboxWatchOps,
 } from "negotium/outbox";
 import type { RuntimeEnvironment, StdioLogger } from "negotium/platform-runtime";
-import type { RoomQueryRegistryHost } from "negotium/query-runtime";
+import type {
+  HandleAgentQueryOutcome,
+  RoomQueryRegistryHost,
+} from "negotium/query-runtime";
 import type {
   TaskMcpContext,
   TaskMcpHost,
@@ -362,6 +366,7 @@ import type { ChatPair, CodexContextUsage } from "negotium/rollout";
 import type { VaultStorageOptions } from "negotium/vault";
 import type { SessionSystemPromptOpts } from "negotium/prompts";
 import type {
+  AgentKind,
   ContextOccupancy,
   ContextWarningState,
   LifecycleManager,
@@ -433,6 +438,15 @@ if (typeof mcpFactories.createTaskMcpServer !== "function") {
 if (typeof agentHelpers.forkAgentSession !== "function") {
   throw new Error("packed fork helper export is missing");
 }
+const archiveOptions: ActiveTopicArchiveOptions = { reason: "reset", minMessages: 1 };
+if (
+  typeof agentHelpers.archiveActiveTopicForMemory !== "function" ||
+  agentHelpers.showPngTool.name !== "show_png" ||
+  !agentHelpers.otiumVisualToolDefinitions.includes(agentHelpers.showPngTool) ||
+  archiveOptions.reason !== "reset"
+) {
+  throw new Error("packed active-topic memory/visual helper export is missing");
+}
 const forkHost = null as AgentForkHost | null;
 const treeHost = null as CodexTreeHost | null;
 const vaultPolicyHost = null as VaultToolPolicyHost | null;
@@ -492,6 +506,16 @@ const queryHost: RoomQueryRegistryHost<
 };
 if (typeof queryRuntime.createRoomQueryRegistry !== "function" || !queryHost.instanceId) {
   throw new Error("packed query-runtime factory export is invalid");
+}
+const queryOutcome: HandleAgentQueryOutcome = "ran";
+const runtimeAgent: AgentKind = "codex";
+if (
+  queryOutcome !== "ran" ||
+  runtimeAgent !== "codex" ||
+  typeof runtimeHelpers.connectStdio !== "function" ||
+  !runtimeHelpers.EFFORT_VALUES.includes("xhigh")
+) {
+  throw new Error("packed shared query/runtime type exports are invalid");
 }
 const lifecycleProcess: LifecycleProcessHost = {
   once() {},

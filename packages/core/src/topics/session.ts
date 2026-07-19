@@ -1,6 +1,7 @@
 /** Topic session reset shared by every host surface. */
 
 import { randomUUID } from "node:crypto";
+import { archiveActiveTopicForMemory, cancelIdleArchiveForTopic } from "#agents/idle-archiver";
 import { runAgent } from "#agents/index";
 import { resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
@@ -25,7 +26,7 @@ import {
   readConversation,
   replaceConversationStrict,
 } from "#storage/conversations";
-import { getRuntimeTurnLease } from "#storage/runtime-leases";
+import { getRuntimeTurnLease, requestRuntimeTurnAbort } from "#storage/runtime-leases";
 import {
   beginRuntimeTopicMaintenance,
   type RuntimeTopicMaintenanceHandle,
@@ -59,6 +60,11 @@ export interface CompactTopicSessionOptions {
   summarize?: (request: CompactSummaryRequest) => Promise<string>;
 }
 
+export interface RestartTopicSessionOptions {
+  archiveMemory?: typeof archiveActiveTopicForMemory;
+  purgeLogs?: typeof purgeTopicLogs;
+}
+
 async function fenceTopicWork(
   topicId: string,
   maintenance: RuntimeTopicMaintenanceHandle,
@@ -67,7 +73,9 @@ async function fenceTopicWork(
     WsHub.get().broadcastAborted(topicId, queryId, "stopped");
   }
   interSessionQueue.drop(topicId);
-  if (abortRoom(topicId)) {
+  const abortedLocal = abortRoom(topicId);
+  const abortedRemote = requestRuntimeTurnAbort(topicId, "external");
+  if (abortedLocal || abortedRemote || getRuntimeTurnLease(topicId)) {
     const deadline = Date.now() + RESET_TURN_WAIT_MS;
     while ((getRoomQuery(topicId) || getRuntimeTurnLease(topicId)) && Date.now() < deadline) {
       await delay(50);
@@ -87,6 +95,7 @@ export async function restartTopicSession(
   topicId: string,
   userId: string,
   reason = "topic-session-restart",
+  options: RestartTopicSessionOptions = {},
 ): Promise<RestartTopicSessionResult> {
   const topic = getTopic(topicId);
   if (!topic) return { text: "Topic not found.", isError: true };
@@ -106,8 +115,15 @@ export async function restartTopicSession(
     // being purged. The shared epoch also invalidates queues held by peers.
     const fenceError = await fenceTopicWork(topicId, maintenance);
     if (fenceError) return { text: fenceError, isError: true };
+    cancelIdleArchiveForTopic(topicId);
+    (options.archiveMemory ?? archiveActiveTopicForMemory)(topicId, userId, {
+      reason: "reset",
+      minMessages: 1,
+      allowMentionOnly: true,
+      skipBusyCheck: true,
+    });
     const sessionId = getTopicSessionId(topicId);
-    await purgeTopicLogs({
+    await (options.purgeLogs ?? purgeTopicLogs)({
       userId,
       topicName: topic.title,
       cwd: resolveTopicWorkspaceDir(topicId),

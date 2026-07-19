@@ -4,7 +4,7 @@ import { getRoomQuery } from "#query/active-rooms";
 import { getMessagesForTopicAfterRowid } from "#storage/api-messages";
 import { getTopic, getTopicMemoryOrigin } from "#storage/api-topics";
 import { archiveTopicMessages } from "#storage/topic-archive";
-import { getTopicArchiveState, setTopicArchiveState } from "#storage/topic-archive-state";
+import { claimTopicArchiveJob, settleTopicArchiveJob } from "#storage/topic-archive-state";
 
 const DEFAULT_IDLE_DELAY_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_MIN_MESSAGES = 8;
@@ -18,7 +18,20 @@ type IdleArchiveStatus =
   | "mention-only-channel"
   | "below-threshold"
   | "archived"
+  | "deferred"
   | "empty";
+
+export interface ActiveTopicArchiveOptions {
+  reason: "idle" | "reset";
+  minMessages: number;
+  allowMentionOnly?: boolean;
+  skipBusyCheck?: boolean;
+  enabled?: boolean;
+  isBusy?: (topicId: string) => boolean;
+  onBusy?: (topicId: string, userId: string) => void;
+  archiveMessages?: typeof archiveTopicMessages;
+  launchArchiver?: typeof runArchiverTurn;
+}
 
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -77,52 +90,86 @@ export function scheduleIdleArchiveForTopic(topicId: string, userId: string): Id
 export function runIdleArchiveForTopic(topicId: string, userId: string): IdleArchiveStatus {
   if (!idleArchiverEnabled()) return "disabled";
 
-  if (getRoomQuery(topicId)) {
-    scheduleIdleArchiveForTopic(topicId, userId);
+  return archiveActiveTopicForMemory(topicId, userId, {
+    reason: "idle",
+    minMessages: idleArchiveMinMessages(),
+  });
+}
+
+/**
+ * Snapshot the unarchived tail of a live topic and launch its memory turn.
+ * The shared rowid cursor prevents an explicit reset from re-archiving an
+ * idle snapshot, and vice versa.
+ */
+export function archiveActiveTopicForMemory(
+  topicId: string,
+  userId: string,
+  options: ActiveTopicArchiveOptions,
+): IdleArchiveStatus {
+  if (options.reason === "idle" && !(options.enabled ?? idleArchiverEnabled())) return "disabled";
+
+  const busy = options.isBusy ? options.isBusy(topicId) : Boolean(getRoomQuery(topicId));
+  if (!options.skipBusyCheck && busy) {
+    if (options.onBusy) options.onBusy(topicId, userId);
+    else scheduleIdleArchiveForTopic(topicId, userId);
     return "busy";
   }
 
   const topic = getTopic(topicId);
   if (!topic) return "topic-not-found";
   if (!topic.agent) return "not-ai-invited";
-  if (topic.aiMode === "mention") return "mention-only-channel";
+  if (!options.allowMentionOnly && topic.aiMode === "mention") return "mention-only-channel";
 
-  const state = getTopicArchiveState(topicId);
-  const afterRowid = state?.lastArchivedRowid ?? 0;
-  const pending = getMessagesForTopicAfterRowid(topicId, afterRowid);
-  const minMessages = idleArchiveMinMessages();
-  if (pending.length < minMessages) {
-    logger.debug(
-      { topicId, topicTitle: topic.title, pending: pending.length, minMessages },
-      "idle-archiver: skipped below threshold",
-    );
-    return "below-threshold";
-  }
-
-  const archived = archiveTopicMessages(topicId, topic.title, {
-    afterRowid,
-    reason: "idle",
+  let skipped: "below-threshold" | "empty" = "empty";
+  const claim = claimTopicArchiveJob(topicId, (afterRowid) => {
+    const pending = getMessagesForTopicAfterRowid(topicId, afterRowid);
+    const minMessages = options.minMessages;
+    if (pending.length < minMessages) {
+      skipped = "below-threshold";
+      logger.debug(
+        { topicId, topicTitle: topic.title, pending: pending.length, minMessages },
+        "topic-memory-archiver: skipped below threshold",
+      );
+      return null;
+    }
+    const archived = (options.archiveMessages ?? archiveTopicMessages)(topicId, topic.title, {
+      afterRowid,
+      reason: options.reason,
+    });
+    if (!archived) return null;
+    return {
+      archivePath: archived.path,
+      messageCount: archived.messageCount,
+      lastRowid: archived.lastRowid,
+    };
   });
-  if (!archived) return "empty";
+  if (!claim) return skipped;
+  if (claim.kind === "busy") return "busy";
 
-  setTopicArchiveState(topicId, archived.lastRowid, archived.path);
+  const { job } = claim;
   const memoryTopic = getTopicMemoryOrigin(topicId) ?? topic;
-  runArchiverTurn({
+  const launched = (options.launchArchiver ?? runArchiverTurn)({
     userId,
     topicId: memoryTopic.id,
     topicTitle: memoryTopic.title,
-    archivePath: archived.path,
-    messageCount: archived.messageCount,
+    archivePath: job.archivePath,
+    messageCount: job.messageCount,
     mode: "active-topic",
+    onSettled: (success) => settleTopicArchiveJob(topicId, job.archivePath, success),
   });
+  if (!launched) {
+    settleTopicArchiveJob(topicId, job.archivePath, false);
+    return "deferred";
+  }
   logger.info(
     {
       topicId,
       topicTitle: topic.title,
-      messageCount: archived.messageCount,
-      archive: archived.path,
+      messageCount: job.messageCount,
+      archive: job.archivePath,
+      reason: options.reason,
     },
-    "idle-archiver: archived active topic snapshot",
+    "topic-memory-archiver: archived active topic snapshot",
   );
   return "archived";
 }

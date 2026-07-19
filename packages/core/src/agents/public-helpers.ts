@@ -29,6 +29,22 @@ export {
   forkAgentSession,
 } from "#agents/fork";
 export {
+  type ActiveTopicArchiveOptions,
+  archiveActiveTopicForMemory,
+} from "#agents/idle-archiver";
+export {
+  otiumVisualToolDefinitions,
+  showPngTool,
+} from "#agents/mcp-tools/visual-compat";
+export {
+  showHtmlTool,
+  showImageTool,
+  showMermaidTool,
+  showVideoTool,
+  VISUALS_MCP_KEY,
+  visualToolDefinitions,
+} from "#agents/mcp-tools/visuals";
+export {
   resolveTaskEventScope,
   type TaskEventHost,
   type TaskEventScope,

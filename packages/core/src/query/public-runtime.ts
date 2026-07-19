@@ -17,3 +17,8 @@ export {
   type RoomQueryRegistryHost,
   type RuntimeTurnLeaseLike,
 } from "./room-query-registry";
+export {
+  AbortReason,
+  type HandleAgentQueryOutcome,
+  type HandleAgentQueryParams,
+} from "./types";

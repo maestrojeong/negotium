@@ -2,10 +2,18 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { killCodexTrees, snapshotCodexChildren } from "#agents/public-helpers";
+import {
+  archiveActiveTopicForMemory,
+  killCodexTrees,
+  otiumVisualToolDefinitions,
+  showPngTool,
+  snapshotCodexChildren,
+  visualToolDefinitions,
+} from "#agents/public-helpers";
 import {
   deepMapStrings,
   delay,
+  EFFORT_VALUES,
   errMsg,
   errorResult,
   isSensitivePath,
@@ -25,6 +33,13 @@ describe("public runtime helpers", () => {
   test("agent process helpers are exposed without starting a process", () => {
     expect(snapshotCodexChildren()).toBeInstanceOf(Map);
     expect(() => killCodexTrees([])).not.toThrow();
+  });
+  test("exports host-consumable memory and runtime type values", () => {
+    expect(archiveActiveTopicForMemory).toBeFunction();
+    expect(EFFORT_VALUES).toContain("xhigh");
+    expect(showPngTool.name).toBe("show_png");
+    expect(visualToolDefinitions).not.toContain(showPngTool);
+    expect(otiumVisualToolDefinitions).toContain(showPngTool);
   });
   test("exports the shared error, delay, and deep-map behavior", async () => {
     expect(errMsg(new Error("boom"))).toBe("boom");

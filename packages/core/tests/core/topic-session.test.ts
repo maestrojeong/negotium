@@ -3,7 +3,11 @@ import { randomUUID } from "node:crypto";
 import { nextUsageAlert } from "#runtime/usage-alert";
 import { appendApiMessage, getAllMessagesForTopic } from "#storage/api-messages";
 import { deleteTopic, getTopic, getTopicSessionId, setTopicSessionId } from "#storage/api-topics";
-import { appendConversationEventStrict, readConversation } from "#storage/conversations";
+import {
+  appendConversationEventStrict,
+  readConversation,
+  replaceConversationStrict,
+} from "#storage/conversations";
 import { claimRuntimeTurnLease, releaseRuntimeTurnLease } from "#storage/runtime-leases";
 import {
   enqueueRuntimeUserTurnRequest,
@@ -30,6 +34,42 @@ afterEach(() => {
 });
 
 describe("restartTopicSession", () => {
+  test("archives memory before purging provider context", async () => {
+    const { owner, topic } = createTopic();
+    const sessionId = "01940000-0000-7000-8000-000000000099";
+    setTopicSessionId(topic.id, sessionId, { reason: "test", agent: "codex" });
+    appendConversationEventStrict(owner, topic.title, "codex", {
+      type: "user_message",
+      content: "remember before reset",
+    });
+    let archived = false;
+
+    const result = await restartTopicSession(topic.id, owner, "test-reset", {
+      archiveMemory: (topicId, userId, options) => {
+        expect(topicId).toBe(topic.id);
+        expect(userId).toBe(owner);
+        expect(options).toMatchObject({
+          reason: "reset",
+          minMessages: 1,
+          allowMentionOnly: true,
+          skipBusyCheck: true,
+        });
+        expect(getTopicSessionId(topic.id)).toBe(sessionId);
+        expect(readConversation(owner, topic.title)).toHaveLength(1);
+        archived = true;
+        return "archived";
+      },
+      purgeLogs: async () => {
+        expect(archived).toBe(true);
+        replaceConversationStrict(owner, topic.title, []);
+      },
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(archived).toBe(true);
+    expect(readConversation(owner, topic.title)).toEqual([]);
+  });
+
   test("clears runtime context while preserving the topic and visible history owner", async () => {
     const { owner, topic } = createTopic();
     setTopicSessionId(topic.id, "01940000-0000-7000-8000-000000000000", {
@@ -195,7 +235,9 @@ describe("compactTopicSession", () => {
     });
     expect(getTopicSessionId(topic.id)).not.toBe(oldSessionId);
 
-    await restartTopicSession(topic.id, owner, "test-compact-cleanup");
+    await restartTopicSession(topic.id, owner, "test-compact-cleanup", {
+      archiveMemory: () => "below-threshold",
+    });
   });
 
   test("keeps the existing provider context when summarization fails", async () => {
@@ -226,6 +268,8 @@ describe("compactTopicSession", () => {
     expect(getTopicSessionId(topic.id)).toBe(oldSessionId);
     expect(readConversation(owner, topic.title)).toEqual(before);
 
-    await restartTopicSession(topic.id, owner, "test-compact-failure-cleanup");
+    await restartTopicSession(topic.id, owner, "test-compact-failure-cleanup", {
+      archiveMemory: () => "below-threshold",
+    });
   });
 });

@@ -7,6 +7,7 @@ export {
   textResult,
 } from "#agents/mcp-tools/common";
 export {
+  connectStdio,
   type McpContent,
   type McpErrorResponse,
   type McpResponse,
@@ -66,3 +67,4 @@ export {
 export { sanitizeFileName, sanitizeId, sanitizeTopicName } from "#security/sanitize";
 export { isSensitivePath } from "#security/sensitive-path";
 export { topicAppLink, topicMarkdownLink } from "#topics/links";
+export * from "#types";

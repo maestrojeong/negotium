@@ -107,7 +107,7 @@ Maintainers can measure source overlap against an embedding host and fail on reg
 bun run audit:runtime-overlap \
   --source=packages/core/src \
   --consumer=/path/to/otium/apps/runtime-api/src \
-  --max-exact=10 --max-95=31 --max-80=55
+  --max-exact=0 --max-95=4 --max-80=14
 ```
 
 The caps are upper bounds: removing wrappers makes the counts fall, while newly introduced copies

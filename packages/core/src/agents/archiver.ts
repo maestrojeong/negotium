@@ -84,6 +84,8 @@ export interface RunArchiverTurnParams {
   agent?: AgentKind;
   /** Override the archiver model (default: the prompt's frontmatter model). */
   model?: string;
+  /** Called once when an accepted background turn settles. */
+  onSettled?: (success: boolean) => void;
 }
 
 interface GeneralArchiverReply {
@@ -106,15 +108,15 @@ interface GeneralArchiverReply {
  * caller's HTTP response returns immediately. Every failure is best-effort and
  * logged only — a broken archiver must never block or fail a topic deletion.
  */
-export function runArchiverTurn(params: RunArchiverTurnParams): void {
+export function runArchiverTurn(params: RunArchiverTurnParams): boolean {
   const { userId, topicId, topicTitle, archivePath, messageCount, mode = "deleted-topic" } = params;
 
-  if (messageCount < MIN_ARCHIVE_MESSAGES) {
+  if (mode !== "active-topic" && messageCount < MIN_ARCHIVE_MESSAGES) {
     logger.info(
       { userId, topicTitle, messageCount, min: MIN_ARCHIVE_MESSAGES },
       "archiver: skipped — too few messages to distil",
     );
-    return;
+    return false;
   }
 
   let archiverDef: AgentDef;
@@ -122,7 +124,7 @@ export function runArchiverTurn(params: RunArchiverTurnParams): void {
     archiverDef = getArchiverDef();
   } catch (err) {
     logger.warn({ err }, "archiver: failed to load wiki-archiver.md — skipping");
-    return;
+    return false;
   }
 
   const wikiDir = getSharedWikiDir();
@@ -253,6 +255,11 @@ export function runArchiverTurn(params: RunArchiverTurnParams): void {
       logger.warn({ err, userId, topicTitle }, "archiver: background turn failed");
     } finally {
       activeArchiverSessions.delete(activeSessionId);
+      try {
+        params.onSettled?.(ok);
+      } catch (err) {
+        logger.warn({ err, userId, topicTitle }, "archiver: settlement callback failed");
+      }
     }
     if (mode === "deleted-topic") {
       // Roll the deleted topic into the #General memory hub regardless of LLM
@@ -269,6 +276,7 @@ export function runArchiverTurn(params: RunArchiverTurnParams): void {
       );
     }
   })();
+  return true;
 }
 
 // --- #General memory-hub digest ------------------------------------------
