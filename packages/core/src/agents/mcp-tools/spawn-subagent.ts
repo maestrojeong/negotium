@@ -590,7 +590,12 @@ export function createSpawnSubagentToolDefinition(ctx: SpawnSubagentToolContext)
         .enum(["claude", "codex", "maestro"])
         .optional()
         .describe("Agent backend override. Defaults to this room's agent."),
-      model: z.string().optional().describe("Model override. Defaults to the agent's default."),
+      model: z
+        .string()
+        .optional()
+        .describe(
+          `Best-fit model override from the system prompt catalog. Omit agent+model to inherit ${ctx.agent}/${ctx.model ?? "default"}; overriding agent without model uses that agent's default.`,
+        ),
     },
     async handler(input) {
       return spawnSubagent(ctx, input);

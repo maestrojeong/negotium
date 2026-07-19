@@ -142,6 +142,7 @@ describe("idle archiver defaults", () => {
         return {
           path: "/tmp/reset-memory-test.jsonl",
           messageCount: 4,
+          exchangeCount: 2,
           lastRowid: 1_000_000,
         };
       },
@@ -162,6 +163,47 @@ describe("idle archiver defaults", () => {
     expect(launches).toHaveLength(1);
   });
 
+  test("reset preserves a short raw snapshot but skips the memory agent", () => {
+    const topic = makeTopic(false);
+    for (const [index, authorId] of ["idle-owner", "ai"].entries()) {
+      appendApiMessage({
+        id: randomUUID(),
+        topicId: topic.id,
+        authorId,
+        text: `short-${index}`,
+        createdAt: new Date(2_000 + index).toISOString(),
+      });
+    }
+    let archiveCalls = 0;
+    let launches = 0;
+
+    expect(
+      archiveActiveTopicForMemory(topic.id, "idle-owner", {
+        reason: "reset",
+        minMessages: 1,
+        minExchanges: 6,
+        allowMentionOnly: true,
+        skipBusyCheck: true,
+        archiveMessages: () => {
+          archiveCalls++;
+          return {
+            path: "/tmp/reset-memory-short.jsonl",
+            messageCount: 2,
+            exchangeCount: 1,
+            lastRowid: 41,
+          };
+        },
+        launchArchiver: () => {
+          launches++;
+          return true;
+        },
+      }),
+    ).toBe("below-threshold");
+    expect(archiveCalls).toBe(1);
+    expect(launches).toBe(0);
+    expect(getTopicArchiveState(topic.id)?.lastArchivedRowid).toBe(41);
+  });
+
   test("keeps a failed memory launch pending and retries without rewriting its archive", () => {
     const topic = makeTopic(false);
     appendApiMessage({
@@ -180,7 +222,12 @@ describe("idle archiver defaults", () => {
       skipBusyCheck: true,
       archiveMessages: () => {
         archiveCalls++;
-        return { path: "/tmp/reset-memory-retry.jsonl", messageCount: 1, lastRowid: 42 };
+        return {
+          path: "/tmp/reset-memory-retry.jsonl",
+          messageCount: 1,
+          exchangeCount: 0,
+          lastRowid: 42,
+        };
       },
       launchArchiver: (params: RunArchiverTurnParams) => {
         launches++;
@@ -216,7 +263,12 @@ describe("idle archiver defaults", () => {
       skipBusyCheck: true,
       archiveMessages: () => {
         archiveCalls++;
-        return { path: "/tmp/reset-memory-running.jsonl", messageCount: 1, lastRowid: 43 };
+        return {
+          path: "/tmp/reset-memory-running.jsonl",
+          messageCount: 1,
+          exchangeCount: 0,
+          lastRowid: 43,
+        };
       },
       launchArchiver: (_params: RunArchiverTurnParams) => {
         launches++;

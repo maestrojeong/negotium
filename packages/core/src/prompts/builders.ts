@@ -1,8 +1,13 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  formatSelectableModel,
+  MODEL_COST_ROUTING_SUMMARY,
+  SELECTABLE_MODELS,
+} from "#agents/model-catalog";
 import { AGENTS_PROMPTS_DIR, PROJECT_ROOT, RESOURCES_DIR } from "#platform/config";
 import { logger } from "#platform/logger";
-import type { AgentKind } from "#types";
+import type { AgentKind, EffortLevel } from "#types";
 
 const PROMPTS_DIR = resolve(PROJECT_ROOT, "src/prompts");
 const SESSIONS_DIR = resolve(PROMPTS_DIR, "sessions");
@@ -151,6 +156,10 @@ export interface SessionSystemPromptOpts {
   topicTitle: string;
   workspaceCwd: string;
   agentKind: AgentKind;
+  /** Resolved model actually used for this turn. */
+  currentModel?: string;
+  /** Resolved effort actually used for this turn; absent means provider default/off. */
+  currentEffort?: EffortLevel;
   description?: string | null;
   /** True only for top-level agent rooms — the runtime spawn_subagent tool is registered there. */
   canSpawnSubagents?: boolean;
@@ -165,6 +174,8 @@ function buildRuntimeToolSection(
   canSpawnSubagents = false,
   visualTools = false,
   fileDeliveryTools = false,
+  currentModel?: string,
+  currentEffort?: EffortLevel,
 ): string {
   const runtimeNamespace = "mcp__runtime";
   const taskNamespace = "mcp__task";
@@ -262,20 +273,28 @@ function buildRuntimeToolSection(
     ...spawnSubagentSection,
   ];
 
+  const modelCatalog = SELECTABLE_MODELS.map(
+    (candidate) => `- ${formatSelectableModel(candidate)}`,
+  );
   const topicConfig = [
     "",
     "## Topic Configuration (model / agent / effort)",
+    `Current execution: agent=\`${agentKind}\`, model=\`${currentModel ?? "unknown (call get_model)"}\`, effort=\`${currentEffort ?? "provider default/off"}\`.`,
     "The user's configured agent/model/effort is intentional. Preserve it by default.",
     `When the user explicitly asks to change the model, agent backend, or reasoning effort for THIS topic, call "${runtimeNamespace}__set_model", "${runtimeNamespace}__set_agent", or "${runtimeNamespace}__set_effort". The change applies from your NEXT turn. After calling, briefly confirm and the system will continue with the new setting.`,
     "`set_effort` is available but discouraged; use it only when the user explicitly requests an effort change.",
-    "`set_model` may be called autonomously only when the current model is clearly below the task's required capability, such as complex algorithm design, proof-level math, or broad multi-file refactoring. In that case, move up one step within the same agent and end the turn. Do not use vague task complexity as a trigger.",
+    "`set_model` may be called autonomously only when the current model is clearly below the task's required capability, such as complex algorithm design, proof-level math, or broad multi-file refactoring. Choose the best-fit model directly from the same-agent catalog; model selection is not a mandatory one-step ladder. End the turn after changing it. Do not use vague task complexity as a trigger.",
     "`set_agent` autonomous calls are forbidden. Only switch agent when the user explicitly asks to switch runtime, e.g. “codex로 가”, “claude로 바꿔”.",
     "Never use `fable` unless the user explicitly requests it; it is expensive.",
     "",
-    "Accepted values:",
-    "- claude models: `sonnet` (default), `opus`, `fable`; efforts: `low`, `medium`, `high`, `xhigh`, `max`.",
-    "- codex models: `gpt-5.6-luna` (default), `gpt-5.6-terra`, `gpt-5.6-sol`; efforts: `low`, `medium`, `high`, `xhigh`, `max`.",
-    "- maestro models: `deepseek-pro` (default), `deepseek-flash`, `deepseek`; efforts: `low`, `medium`, `high`, `xhigh`, `max`.",
+    "Model catalog (capability/cost routing guidance):",
+    MODEL_COST_ROUTING_SUMMARY,
+    ...modelCatalog,
+    "",
+    "Accepted effort values:",
+    "- claude: `low`, `medium`, `high`, `xhigh`, `max`.",
+    "- codex: `low`, `medium`, `high`, `xhigh`, `max`.",
+    "- maestro: `low`, `medium`, `high`, `xhigh`, `max`.",
     "Agent guidance when the user explicitly asks to switch: `codex` for deepest reasoning and complex code/math; `claude` for tool-heavy MCP/file automation; `maestro` for inexpensive fast drafts and lighter experiments.",
   ];
 
@@ -306,6 +325,8 @@ export function buildTopicSystemPrompt(opts: SessionSystemPromptOpts): string {
       opts.canSpawnSubagents,
       opts.visualTools,
       opts.fileDeliveryTools,
+      opts.currentModel,
+      opts.currentEffort,
     );
   if (opts.description?.trim()) {
     prompt += `\n\n## Topic-Specific Instructions\n${opts.description.trim()}`;
@@ -321,7 +342,15 @@ export function buildChannelSystemPrompt(opts: SessionSystemPromptOpts): string 
       TOPIC_TITLE: opts.topicTitle,
       WORKSPACE_CWD: opts.workspaceCwd,
       UPLOADS_DIR: uploadsDir,
-    }) + buildRuntimeToolSection(opts.agentKind, false, opts.visualTools, opts.fileDeliveryTools)
+    }) +
+    buildRuntimeToolSection(
+      opts.agentKind,
+      false,
+      opts.visualTools,
+      opts.fileDeliveryTools,
+      opts.currentModel,
+      opts.currentEffort,
+    )
   );
 }
 

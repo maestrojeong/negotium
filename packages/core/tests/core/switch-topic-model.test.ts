@@ -45,20 +45,23 @@ describe("topic model picker", () => {
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
-      "gpt-5.5",
       "fable",
       "opus",
       "sonnet",
       "deepseek-pro",
-      "deepseek-flash",
     ]);
     expect(selectableModel("GPT-5.6-SOL")?.model).toBe("gpt-5.6-sol");
-    expect(selectableModel("gpt-5.5")?.description).toBe(
-      "Frontier model for complex coding, research, and real-world work.",
-    );
-    expect(selectableModel("deepseek-flash")?.description).toBe(
-      "DeepSeek V4 Flash · Fast and low-cost for lightweight everyday tasks",
-    );
+    expect(selectableModel("gpt-5.6-sol")?.intelligenceTier).toBe("fable");
+    expect(selectableModel("gpt-5.6-terra")?.intelligenceTier).toBe("opus");
+    expect(selectableModel("sonnet")?.intelligenceTier).toBe("sonnet");
+    expect(selectableModel("gpt-5.6-luna")?.accessCost).toContain("$200/month");
+    expect(selectableModel("gpt-5.6-luna")?.marginalTokenCost).toContain("$1/M");
+    expect(selectableModel("opus")?.marginalTokenCost).toContain("$25/M output");
+    expect(selectableModel("gpt-5.6-luna")?.estimatedUsage).toContain("1,000–5,600");
+    expect(selectableModel("fable")?.estimatedUsage).toContain("explicit user request");
+    expect(selectableModel("deepseek-pro")?.marginalTokenCost).toContain("$0.435/M");
+    expect(selectableModel("gpt-5.5")).toBeUndefined();
+    expect(selectableModel("deepseek-flash")).toBeUndefined();
   });
 
   test("persists and locks a selected model without exposing its agent", () => {
@@ -85,11 +88,11 @@ describe("topic model picker", () => {
     process.env.DEEPSEEK_API_KEY = "test-key";
     try {
       const topicId = seedTopic("codex");
-      const result = switchTopicModel({ topicId, userId: USER, model: "deepseek-flash" });
+      const result = switchTopicModel({ topicId, userId: USER, model: "deepseek-pro" });
 
       expect(result.ok).toBe(true);
       expect(getTopic(topicId)?.agent).toBe("maestro");
-      expect(getApiTopicConfig(topicId)?.model).toBe("deepseek-flash");
+      expect(getApiTopicConfig(topicId)?.model).toBe("deepseek-pro");
       if (result.ok) expect(result.text).not.toContain("maestro");
     } finally {
       if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;

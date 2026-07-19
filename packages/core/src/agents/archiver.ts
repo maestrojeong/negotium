@@ -22,12 +22,6 @@ import type { BackgroundSessionDto } from "#types/api";
  */
 const MAX_BRIEF_ENTRIES = 8;
 
-/**
- * Below this message count a session has no extractable substance worth a full
- * archiver turn (greetings, a single quick question). Mirrors Otium's
- * `MIN_EXCHANGE_COUNT` gate.
- */
-const MIN_ARCHIVE_MESSAGES = 4;
 const MAX_SESSION_STEPS = 20;
 
 interface ActiveArchiverSession extends BackgroundSessionDto {
@@ -110,14 +104,6 @@ interface GeneralArchiverReply {
  */
 export function runArchiverTurn(params: RunArchiverTurnParams): boolean {
   const { userId, topicId, topicTitle, archivePath, messageCount, mode = "deleted-topic" } = params;
-
-  if (mode !== "active-topic" && messageCount < MIN_ARCHIVE_MESSAGES) {
-    logger.info(
-      { userId, topicTitle, messageCount, min: MIN_ARCHIVE_MESSAGES },
-      "archiver: skipped — too few messages to distil",
-    );
-    return false;
-  }
 
   let archiverDef: AgentDef;
   try {

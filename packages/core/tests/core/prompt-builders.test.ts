@@ -24,6 +24,8 @@ describe("session system prompt builders", () => {
       topicTitle: "Research",
       workspaceCwd: "/otium/workspace/topics/research",
       agentKind: "claude",
+      currentModel: "opus",
+      currentEffort: "high",
       visualTools: true,
       fileDeliveryTools: true,
     });
@@ -47,6 +49,17 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain("`tell_session`");
     expect(prompt).toContain("`ask_session`");
     expect(prompt).toContain("mcp__runtime__set_model");
+    expect(prompt).toContain("agent=`claude`, model=`opus`, effort=`high`");
+    expect(prompt).toContain("codex / `gpt-5.6-sol` [Fable-level]");
+    expect(prompt).toContain("maestro / `deepseek-pro` [Sonnet-level]");
+    expect(prompt).not.toContain("deepseek-flash");
+    expect(prompt).toContain("Codex Pro 20x and Claude Max 20x are each $200/month");
+    expect(prompt).toContain("Relative marginal token cost: DeepSeek Pro << Codex < Claude");
+    expect(prompt).not.toContain("Community observations vary");
+    expect(prompt).not.toContain("raw/cached tokens per week");
+    expect(prompt).not.toContain("Marginal tokens:");
+    expect(prompt).toContain("Choose the best-fit model directly");
+    expect(prompt).not.toContain("move up one step");
     expect(prompt).toContain("`set_agent` autonomous calls are forbidden");
     expect(prompt).toContain("explicitly asks to change the model, agent backend");
     expect(prompt).not.toContain("{{");

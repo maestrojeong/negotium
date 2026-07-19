@@ -376,24 +376,24 @@ describe("terminal renderer", () => {
     expect(output).toContain("gpt-5.6-luna (current)");
     const selected = output.split("\n").find((line) => line.includes("gpt-5.6-sol"));
     expect(selected).toContain("› gpt-5.6-sol");
-    expect(selected).toContain("Latest frontier agentic coding model.");
-    expect(selected).not.toContain("codex");
-    expect(output).toContain(
-      "Sonnet 5 · Efficient for routine tasks · $2/$10 per Mtok · promo through Aug 31",
+    expect(selected).toContain(
+      "Highest-capability Codex route for the hardest agentic coding work.",
     );
-    const flash = output.split("\n").find((line) => line.includes("deepseek-flash"));
-    expect(flash).toContain("DeepSeek V4 Flash · Fast and low-cost for lightweight everyday tasks");
+    expect(selected).not.toContain("codex");
+    expect(output).toContain("Default Claude route for capable, efficient everyday work.");
+    expect(output).toContain("API-priced Sonnet-level route for cost-efficient everyday work.");
+    expect(output).not.toContain("deepseek-flash");
   });
 
   test("keeps the selected model visible in a short terminal", () => {
     const state = {
       ...setTopics(createInitialState("local"), [topic()]),
       overlay: "models" as const,
-      modelPickerIndex: 8,
+      modelPickerIndex: 6,
     };
 
     const output = stripAnsi(renderApp(state, 80, 14));
-    expect(output).toContain("› deepseek-flash");
+    expect(output).toContain("› deepseek-pro");
   });
 
   test("shows all reasoning effort choices and marks the current value", () => {

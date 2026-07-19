@@ -31,6 +31,8 @@ import type { TopicDto } from "#types/api";
 let archiveShouldFail = false;
 let archiveError: Error = new Error("archive failed");
 let archiveObservedActiveLease = false;
+let archiveMessageCount = 6;
+let archiveExchangeCount = 6;
 
 const calls = {
   archive: [] as Array<{ topicId: string; title: string }>,
@@ -43,7 +45,12 @@ mock.module("#storage/topic-archive", () => ({
     archiveObservedActiveLease ||= getRuntimeTurnLease(topicId) !== null;
     calls.archive.push({ topicId, title });
     if (archiveShouldFail) throw archiveError;
-    return { path: `/tmp/${topicId}.jsonl`, messageCount: 3, lastRowid: 9 };
+    return {
+      path: `/tmp/${topicId}.jsonl`,
+      messageCount: archiveMessageCount,
+      exchangeCount: archiveExchangeCount,
+      lastRowid: 9,
+    };
   },
 }));
 
@@ -98,6 +105,8 @@ beforeEach(() => {
   archiveShouldFail = false;
   archiveError = new Error("archive failed");
   archiveObservedActiveLease = false;
+  archiveMessageCount = 6;
+  archiveExchangeCount = 6;
   calls.archive = [];
   calls.archiver = [];
 });
@@ -129,9 +138,21 @@ describe("deleteTopicCascade archive policy", () => {
         userId: "owner-user",
         topicTitle: topic.title,
         archivePath: `/tmp/${topic.id}.jsonl`,
-        messageCount: 3,
+        messageCount: 6,
       },
     ]);
+    expect(getTopic(topic.id)).toBeNull();
+  });
+
+  test("preserves a raw archive with five exchanges without launching the memory archiver", async () => {
+    const topic = makeTopic("topic-delete-short", "Delete Short Topic");
+    archiveMessageCount = 100;
+    archiveExchangeCount = 5;
+
+    await deleteTopicCascade(topic, "owner-user");
+
+    expect(calls.archive).toEqual([{ topicId: topic.id, title: topic.title }]);
+    expect(calls.archiver).toEqual([]);
     expect(getTopic(topic.id)).toBeNull();
   });
 
@@ -290,7 +311,7 @@ describe("deleteTopicCascade archive policy", () => {
         topicId: "root-topic",
         topicTitle: "Root Topic",
         archivePath: "/tmp/child-topic.jsonl",
-        messageCount: 3,
+        messageCount: 6,
       },
     ]);
     expect(getTopic(child.id)).toBeNull();
@@ -313,13 +334,13 @@ describe("deleteTopicCascade archive policy", () => {
         userId: "owner-user",
         topicTitle: root.title,
         archivePath: `/tmp/${root.id}.jsonl`,
-        messageCount: 3,
+        messageCount: 6,
       },
       {
         userId: "owner-user",
         topicTitle: root.title,
         archivePath: `/tmp/${child.id}.jsonl`,
-        messageCount: 3,
+        messageCount: 6,
       },
     ]);
   });

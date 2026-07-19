@@ -51,6 +51,7 @@ describe("restartTopicSession", () => {
         expect(options).toMatchObject({
           reason: "reset",
           minMessages: 1,
+          minExchanges: 6,
           allowMentionOnly: true,
           skipBusyCheck: true,
         });

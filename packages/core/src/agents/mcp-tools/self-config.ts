@@ -48,7 +48,7 @@ export function createSelfConfigToolDefinitions(
     {
       name: "set_model",
       description:
-        "Set the model for THIS topic. Persists and applies from the NEXT turn. Claude: 'sonnet' / 'opus' / 'fable'. Codex: 'gpt-5.6-luna' (default) / 'gpt-5.6-terra' / 'gpt-5.6-sol'. Maestro: 'deepseek-pro' / 'deepseek-flash' / 'deepseek'. The model must match the topic's current agent's accepted list. Switch agent first via set_agent only when crossing the claude/codex/maestro runtime boundary. Fails if the user locked this setting. NEVER use 'fable' unless the user explicitly requests it.",
+        "Set the model for THIS topic; it persists and applies from the NEXT turn. Use a model from the system prompt's same-agent catalog. Cross-agent changes require an explicit user-requested set_agent first. Fails if the user locked this setting. NEVER use 'fable' unless explicitly requested.",
       schema: { model: z.string().describe("Model id valid for the topic's current agent.") },
       async handler({ model }: { model: string }) {
         return mcpResult(setSelfConfigModel(getCtx(), model));

@@ -1,4 +1,5 @@
 import { runArchiverTurn } from "#agents/archiver";
+import { countMemoryArchiveExchanges } from "#agents/memory-archive-policy";
 import { logger } from "#platform/logger";
 import { getRoomQuery } from "#query/active-rooms";
 import { getMessagesForTopicAfterRowid } from "#storage/api-messages";
@@ -24,6 +25,8 @@ type IdleArchiveStatus =
 export interface ActiveTopicArchiveOptions {
   reason: "idle" | "reset";
   minMessages: number;
+  /** Preserve the raw snapshot but skip the memory agent below this exchange count. */
+  minExchanges?: number;
   allowMentionOnly?: boolean;
   skipBusyCheck?: boolean;
   enabled?: boolean;
@@ -121,6 +124,7 @@ export function archiveActiveTopicForMemory(
   if (!options.allowMentionOnly && topic.aiMode === "mention") return "mention-only-channel";
 
   let skipped: "below-threshold" | "empty" = "empty";
+  let skipMemoryTurn = false;
   const claim = claimTopicArchiveJob(topicId, (afterRowid) => {
     const pending = getMessagesForTopicAfterRowid(topicId, afterRowid);
     const minMessages = options.minMessages;
@@ -132,6 +136,8 @@ export function archiveActiveTopicForMemory(
       );
       return null;
     }
+    const exchangeCount = countMemoryArchiveExchanges(pending);
+    skipMemoryTurn = options.minExchanges !== undefined && exchangeCount < options.minExchanges;
     const archived = (options.archiveMessages ?? archiveTopicMessages)(topicId, topic.title, {
       afterRowid,
       reason: options.reason,
@@ -147,6 +153,21 @@ export function archiveActiveTopicForMemory(
   if (claim.kind === "busy") return "busy";
 
   const { job } = claim;
+  if (skipMemoryTurn) {
+    settleTopicArchiveJob(topicId, job.archivePath, true);
+    logger.info(
+      {
+        topicId,
+        topicTitle: topic.title,
+        messageCount: job.messageCount,
+        minExchanges: options.minExchanges,
+        archive: job.archivePath,
+        reason: options.reason,
+      },
+      "topic-memory-archiver: raw snapshot preserved below exchange threshold",
+    );
+    return "below-threshold";
+  }
   const memoryTopic = getTopicMemoryOrigin(topicId) ?? topic;
   const launched = (options.launchArchiver ?? runArchiverTurn)({
     userId,

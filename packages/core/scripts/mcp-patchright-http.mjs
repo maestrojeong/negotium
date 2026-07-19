@@ -12,6 +12,11 @@ import {
   isInitializeRequest,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import {
+  secureBrowserToolCatalog,
+  secureBrowserToolInput,
+  secureBrowserToolOutput,
+} from "./browser-passkey-policy.mjs";
 import { createBrowserVaultTransforms } from "./browser-vault-transform.mjs";
 
 function parseCli(argv = process.argv.slice(2)) {
@@ -58,6 +63,7 @@ const [{ BrowserManager }, { handleTool }, { tools }] = await Promise.all([
 const vaultTransforms = await createBrowserVaultTransforms(
   process.env.NEGOTIUM_BROWSER_VAULT_USER_ID,
 );
+const exposedTools = secureBrowserToolCatalog(tools);
 
 function createMcpServer(defaultStartOptions, sharedManager, owner) {
   const server = new Server(
@@ -65,14 +71,18 @@ function createMcpServer(defaultStartOptions, sharedManager, owner) {
     { capabilities: { tools: {} } },
   );
   const manager = sharedManager ?? new BrowserManager(defaultStartOptions);
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: exposedTools }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
-      const toolInput = vaultTransforms.substitute(request.params.arguments ?? {});
-      const result = await manager.runAsOwner(owner, () =>
-        handleTool(manager, request.params.name, toolInput),
+      const toolName = request.params.name;
+      const toolInput = secureBrowserToolInput(
+        toolName,
+        vaultTransforms.substitute(request.params.arguments ?? {}),
       );
-      return vaultTransforms.redact(result);
+      const result = await manager.runAsOwner(owner, () =>
+        handleTool(manager, toolName, toolInput),
+      );
+      return vaultTransforms.redact(secureBrowserToolOutput(toolName, result));
     } catch (error) {
       const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
       return {

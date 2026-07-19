@@ -37,7 +37,39 @@ export interface SelectableModel {
   agent: AgentKind;
   /** Short comparison copy shown alongside the model in picker UIs. */
   description: string;
+  /** User-defined relative intelligence band used for routing across providers. */
+  intelligenceTier: "sonnet" | "opus" | "fable";
+  /** Compact capability/cost hint safe to inject into every turn and tool schema. */
+  routingSummary: string;
+  /** Subscription or API basis used when comparing operating cost. */
+  accessCost: string;
+  /** Marginal per-token rate after included subscription usage, or the API rate. */
+  marginalTokenCost: string;
+  /** Best available quota estimate; never presented as a provider-guaranteed token cap. */
+  estimatedUsage: string;
 }
+
+/**
+ * Pricing and quota observations were checked on 2026-07-19.
+ * Official references:
+ * - https://learn.chatgpt.com/docs/pricing
+ * - https://help.openai.com/en/articles/20001106
+ * - https://support.claude.com/en/articles/11049741-what-is-the-max-plan
+ * - https://api-docs.deepseek.com/quick_start/pricing
+ * Community token counts are deliberately labelled estimates because providers
+ * meter cached input, fresh input, output, reasoning, speed, and model choice
+ * differently and may change server-side weights without publishing a token cap.
+ */
+export const MODEL_COST_RESEARCHED_AT = "2026-07-19";
+export const MODEL_COST_ROUTING_SUMMARY =
+  "Cost basis (2026-07-19): Codex Pro 20x and Claude Max 20x are each $200/month; DeepSeek Pro is pay-per-token. Relative marginal token cost: DeepSeek Pro << Codex < Claude.";
+
+const CODEX_PRO_20X_COST = "ChatGPT Pro 20x subscription: $200/month";
+const CODEX_COMMUNITY_WEEKLY =
+  "Community plan-level observation: roughly 2–4B raw/cached tokens per week; fresh-input equivalent is much lower and unstable (low confidence)";
+const CLAUDE_MAX_20X_COST = "Claude Max 20x subscription: $200/month";
+const CLAUDE_COMMUNITY_SESSION =
+  "Community observations vary from roughly 220–250K locally displayed tokens per 5-hour session to billions of cache-heavy raw tokens per week; calibrated reports value a full weekly allowance around $680–$1,900 at API rates. Recent heavy-model reports reach the weekly cap after about 4–5 full sessions (low confidence; not a token cap)";
 
 /**
  * Canonical model picker shared by every channel. Keep this deliberately
@@ -48,50 +80,84 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
   {
     model: "gpt-5.6-sol",
     agent: "codex",
-    description: "Latest frontier agentic coding model.",
+    description: "Highest-capability Codex route for the hardest agentic coding work.",
+    intelligenceTier: "fable",
+    routingSummary: "hardest coding work; 5x Codex quota cost",
+    accessCost: CODEX_PRO_20X_COST,
+    marginalTokenCost: "Codex credits: $5/M uncached input, $0.50/M cached input, $30/M output",
+    estimatedUsage: `Official Pro 20x range: 300–1,800 local messages per 5 hours; quota weight 5x Luna. ${CODEX_COMMUNITY_WEEKLY}`,
   },
   {
     model: "gpt-5.6-terra",
     agent: "codex",
-    description: "Balanced agentic coding model for everyday work.",
+    description: "High-capability Codex route for complex coding and reasoning.",
+    intelligenceTier: "opus",
+    routingSummary: "complex coding and reasoning; 2.5x Codex quota cost",
+    accessCost: CODEX_PRO_20X_COST,
+    marginalTokenCost: "Codex credits: $2.50/M uncached input, $0.25/M cached input, $15/M output",
+    estimatedUsage: `Official Pro 20x range: 400–2,200 local messages per 5 hours; quota weight 2.5x Luna. ${CODEX_COMMUNITY_WEEKLY}`,
   },
   {
     model: "gpt-5.6-luna",
     agent: "codex",
-    description: "Fast and affordable agentic coding model.",
-  },
-  {
-    model: "gpt-5.5",
-    agent: "codex",
-    description: "Frontier model for complex coding, research, and real-world work.",
+    description: "Default Codex route with strong everyday coding intelligence.",
+    intelligenceTier: "sonnet",
+    routingSummary: "everyday coding default; lowest Codex quota cost (1x)",
+    accessCost: CODEX_PRO_20X_COST,
+    marginalTokenCost: "Codex credits: $1/M uncached input, $0.10/M cached input, $6/M output",
+    estimatedUsage: `Official Pro 20x range: 1,000–5,600 local messages per 5 hours; lowest Codex quota weight (1x). ${CODEX_COMMUNITY_WEEKLY}`,
   },
   {
     model: "fable",
     agent: "claude",
-    description:
-      "Fable 5 · Most capable for your hardest and longest-running tasks · $10/$50 per Mtok",
+    description: "Highest-capability Claude route for the hardest and longest-running tasks.",
+    intelligenceTier: "fable",
+    routingSummary: "hardest long-running work; highest Claude cost; explicit request only",
+    accessCost: CLAUDE_MAX_20X_COST,
+    marginalTokenCost:
+      "Claude API/extra usage: $10/M input, $12.50/M cache write, $1/M cache read, $50/M output",
+    estimatedUsage: `${CLAUDE_COMMUNITY_SESSION}; Fable drains weighted quota fastest, so use only on explicit user request. No stable per-model token cap is published.`,
   },
   {
     model: "opus",
     agent: "claude",
-    description: "Opus 4.8 with 1M context · Best for everyday, complex tasks · $5/$25 per Mtok",
+    description: "High-capability Claude route for complex reasoning and tool-heavy work.",
+    intelligenceTier: "opus",
+    routingSummary: "complex reasoning and tool-heavy work; about 2.5x Sonnet marginal cost",
+    accessCost: CLAUDE_MAX_20X_COST,
+    marginalTokenCost:
+      "Claude API/extra usage: $5/M input, $6.25/M cache write, $0.50/M cache read, $25/M output",
+    estimatedUsage: `${CLAUDE_COMMUNITY_SESSION}; Opus uses the shared all-model weekly pool more quickly than Sonnet. No stable per-model token cap is published.`,
   },
   {
     model: "sonnet",
     agent: "claude",
-    description: "Sonnet 5 · Efficient for routine tasks · $2/$10 per Mtok · promo through Aug 31",
+    description: "Default Claude route for capable, efficient everyday work.",
+    intelligenceTier: "sonnet",
+    routingSummary: "capable everyday default; lowest Claude model cost",
+    accessCost: CLAUDE_MAX_20X_COST,
+    marginalTokenCost:
+      "Claude API/extra usage introductory rate: $2/M input, $2.50/M cache write, $0.20/M cache read, $10/M output through 2026-08-31; then $3/M input and $15/M output",
+    estimatedUsage: `${CLAUDE_COMMUNITY_SESSION}; Sonnet also has a separate weekly allowance and normally provides the highest Claude throughput. No stable weekly token cap is published.`,
   },
   {
     model: "deepseek-pro",
     agent: "maestro",
-    description: "Sonnet-level performance at lower cost · Best for everyday tasks over coding",
-  },
-  {
-    model: "deepseek-flash",
-    agent: "maestro",
-    description: "DeepSeek V4 Flash · Fast and low-cost for lightweight everyday tasks",
+    description: "API-priced Sonnet-level route for cost-efficient everyday work.",
+    intelligenceTier: "sonnet",
+    routingSummary: "cost-efficient everyday work; pay-per-token and cheapest route",
+    accessCost: "DeepSeek V4 Pro pay-as-you-go API; no monthly subscription required",
+    marginalTokenCost:
+      "DeepSeek API: $0.435/M uncached input, $0.003625/M cached input, $0.87/M output",
+    estimatedUsage:
+      "No subscription token cap; pay per token. Official account concurrency limit is 500 requests.",
   },
 ];
+
+export function formatSelectableModel(candidate: SelectableModel): string {
+  const tier = `${candidate.intelligenceTier[0].toUpperCase()}${candidate.intelligenceTier.slice(1)}`;
+  return `${candidate.agent} / \`${candidate.model}\` [${tier}-level]: ${candidate.routingSummary}`;
+}
 
 export function selectableModel(value: string): SelectableModel | undefined {
   const normalized = value.trim().toLowerCase();

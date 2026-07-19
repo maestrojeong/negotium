@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { archiveActiveTopicForMemory, cancelIdleArchiveForTopic } from "#agents/idle-archiver";
 import { runAgent } from "#agents/index";
+import { MIN_MEMORY_ARCHIVE_EXCHANGES } from "#agents/memory-archive-policy";
 import { resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
 import { cleanupTopicRollouts, purgeTopicLogs } from "#agents/topic-cleanup";
@@ -119,6 +120,7 @@ export async function restartTopicSession(
     (options.archiveMemory ?? archiveActiveTopicForMemory)(topicId, userId, {
       reason: "reset",
       minMessages: 1,
+      minExchanges: MIN_MEMORY_ARCHIVE_EXCHANGES,
       allowMentionOnly: true,
       skipBusyCheck: true,
     });

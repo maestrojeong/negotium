@@ -1897,6 +1897,8 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     topicTitle: topic.title,
     workspaceCwd,
     agentKind,
+    currentModel: resolvedModel,
+    currentEffort: resolvedEffort,
     description: topic.description,
     canSpawnSubagents:
       peerBridge?.canSpawnSubagents ?? (topicRecord?.kind === "agent" && !topicRecord.isSubagent),

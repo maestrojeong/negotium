@@ -1,6 +1,6 @@
 {
   "name": "@negotium/adapter-otium",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "private": true,
   "type": "module",
   "description": "Join an Otium workspace and run placed rooms on a Negotium node",

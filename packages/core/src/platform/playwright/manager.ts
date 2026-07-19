@@ -726,6 +726,10 @@ async function spawnPlaywright(
     // browser tools would silently disappear from maestro turns.
     "--host",
     "127.0.0.1",
+    // Keep the browser visible. Do not rely on the launcher's implicit
+    // default: an explicit flag prevents wrapper/upstream default changes
+    // from silently switching topic browsers back to headless mode.
+    "--headed",
     "--user-data-dir",
     userDataDir,
     // NOTE: mcp-patchright throws on unknown CLI args, so the old
@@ -736,8 +740,6 @@ async function spawnPlaywright(
     //     (requires real Google Chrome at /opt/google/chrome/chrome).
     //   --init-script <stealth>  → unneeded; Patchright is stealth by default.
   ];
-  // Headed by default, matching clawgram's production behavior.
-
   // Pass the egress proxy to the child through the environment rather than
   // argv so the credentials never surface in `ps`/`/proc` command lines. The
   // launcher (scripts/mcp-patchright-http.mjs) reads these NEGOTIUM_BROWSER_PROXY_*

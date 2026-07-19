@@ -71,6 +71,16 @@ afterEach(() => {
 });
 
 describe("spawn_subagent guards", () => {
+  test("exposes compact model inheritance guidance without duplicating the catalog", () => {
+    const tool = toolFor(`missing-${randomUUID()}`, "user-1");
+    const description = (tool.schema.model as { description?: string }).description ?? "";
+
+    expect(description).toContain("claude/sonnet");
+    expect(description).toContain("system prompt catalog");
+    expect(description).not.toContain("gpt-5.6-sol");
+    expect(description).not.toContain("quota cost");
+  });
+
   test("rejects unknown topics", async () => {
     const tool = toolFor(`missing-${randomUUID()}`, "user-1");
     const result = await tool.handler({ task: "do something" });

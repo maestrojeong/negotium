@@ -1,6 +1,6 @@
 {
   "name": "negotium",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "type": "module",
   "description": "Install the Negotium multi-agent runtime and CLI with one package",
   "license": "Apache-2.0",
@@ -131,7 +131,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex-sdk": "0.144.4",
     "maestro-agent-sdk": "0.1.45",
-    "mcp-patchright": "0.1.10",
+    "mcp-patchright": "0.1.11",
     "node-telegram-bot-api": "^1.1.2",
     "pino": "^10.3.1",
     "pino-pretty": "^13.1.3",

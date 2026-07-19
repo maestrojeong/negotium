@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { countMemoryArchiveExchanges } from "#agents/memory-archive-policy";
 import { logger } from "#platform/logger";
 import { sanitizeTopicName } from "#security/sanitize";
 import { getAllMessagesForTopic, getMessagesForTopicAfterRowid } from "#storage/api-messages";
@@ -9,6 +10,7 @@ import { getSharedWikiDir } from "#storage/wiki";
 export interface TopicArchiveResult {
   path: string;
   messageCount: number;
+  exchangeCount: number;
   lastRowid: number;
 }
 
@@ -71,9 +73,10 @@ export function archiveTopicMessages(
     }
   }
 
+  const exchangeCount = countMemoryArchiveExchanges(rows);
   logger.info(
-    { topicId, topicTitle, archive: path, messageCount: rows.length, lastRowid },
+    { topicId, topicTitle, archive: path, messageCount: rows.length, exchangeCount, lastRowid },
     "archiveTopicMessages: archived topic messages",
   );
-  return { path, messageCount: rows.length, lastRowid };
+  return { path, messageCount: rows.length, exchangeCount, lastRowid };
 }
