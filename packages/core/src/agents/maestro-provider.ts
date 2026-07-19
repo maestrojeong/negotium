@@ -70,6 +70,7 @@ import {
   referencesHostedSecretStorage,
   substituteHostedSecrets,
 } from "#agents/execution-host";
+import { shouldSubstituteVaultToolInput } from "#agents/vault-tool-policy";
 import type { AgentQueryOptions, UnifiedEvent } from "#types";
 
 /**
@@ -118,10 +119,12 @@ export function buildMaestroDisallowedTools(
 function buildVaultHook(userId: string): HookRegistration {
   return {
     name: "vault-guard",
-    pre({ input }) {
+    pre({ toolName, input }) {
       if (referencesHostedSecretStorage(input)) {
         return { decision: "block", error: "Runtime secret storage access is not permitted" };
       }
+
+      if (!shouldSubstituteVaultToolInput(toolName)) return { decision: "allow" };
 
       const substituted = deepMapStrings(input, (value) => substituteHostedSecrets(userId, value));
       return JSON.stringify(substituted) === JSON.stringify(input)

@@ -3,7 +3,11 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { referencesRuntimeSecretStorage, shouldRedirectVaultTool } from "#agents/vault-tool-policy";
+import {
+  referencesRuntimeSecretStorage,
+  shouldRedirectVaultTool,
+  shouldSubstituteVaultToolInput,
+} from "#agents/vault-tool-policy";
 import type { VaultCredentialHost } from "#mcp/factories/vault";
 import { executeVaultHttpRequest } from "#mcp/vault-http";
 import { executeVaultRun } from "#mcp/vault-run";
@@ -145,6 +149,26 @@ describe("Vault secret boundary", () => {
       }),
     ).toBe(true);
     expect(referencesRuntimeSecretStorage({ file_path: "/tmp/ordinary.txt" })).toBe(false);
+  });
+
+  test("uses a default-deny allowlist for direct tool-input substitution", () => {
+    expect(shouldSubstituteVaultToolInput("Bash")).toBe(true);
+    expect(shouldSubstituteVaultToolInput("WebFetch")).toBe(true);
+    expect(shouldSubstituteVaultToolInput("browser_fill")).toBe(true);
+    expect(shouldSubstituteVaultToolInput("mcp__playwright__browser_fill")).toBe(true);
+
+    for (const toolName of [
+      "tell_session",
+      "mcp__session_comm__ask_session",
+      "task_create",
+      "wiki_query",
+      "write_log",
+      "Write",
+      "Edit",
+      "mcp__vault__vault_run",
+    ]) {
+      expect(shouldSubstituteVaultToolInput(toolName)).toBe(false);
+    }
   });
 
   test("vault_run executes internally and redacts command output", async () => {

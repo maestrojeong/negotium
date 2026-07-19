@@ -63,6 +63,20 @@ describe("maestroProvider host tool policy", () => {
         input: { command: `echo ${secret}` },
       });
 
+      for (const toolName of [
+        "mcp__session_comm__tell_session",
+        "mcp__session_comm__ask_session",
+        "mcp__task__task_update",
+        "mcp__wiki__wiki_query",
+        "mcp__logging__write_log",
+        "Write",
+      ]) {
+        const input = { message: "keep {{API_TOKEN}}" };
+        const result = await vaultHook.pre?.({ toolName, input });
+        expect(result).toEqual({ decision: "allow" });
+        expect(input.message).toBe("keep {{API_TOKEN}}");
+      }
+
       const post = await vaultHook.post?.({
         toolName: "Bash",
         input: { command: "echo {{API_TOKEN}}" },

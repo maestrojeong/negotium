@@ -1,6 +1,6 @@
 {
   "name": "@negotium/mcp-host",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "private": true,
   "type": "module",
   "description": "MCP server process manager — port allocation, transports, health checks, idle eviction, per-node MCP manifest",

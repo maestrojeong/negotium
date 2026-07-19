@@ -29,6 +29,7 @@ import {
   referencesHostedSecretStorage,
   substituteHostedSecrets,
 } from "#agents/execution-host";
+import { shouldSubstituteVaultToolInput } from "#agents/vault-tool-policy";
 import { extractFileEvents } from "#media/file-events";
 import { errMsg } from "#platform/error";
 import { logger } from "#platform/logger";
@@ -47,7 +48,12 @@ const CLAUDE_DEFAULT_DISALLOWED_TOOLS = [
 
 const CLAUDE_NATIVE_AGENT_TOOLS = ["Task", "Agent", "TaskOutput", "TaskStop"] as const;
 
-export function substituteClaudeToolInput(userId: string, input: unknown): unknown {
+export function substituteClaudeToolInput(
+  userId: string,
+  toolName: string,
+  input: unknown,
+): unknown {
+  if (!shouldSubstituteVaultToolInput(toolName)) return input;
   return deepMapStrings(input, (value) => substituteHostedSecrets(userId, value));
 }
 
@@ -434,11 +440,11 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
                 };
               }
 
-              // Resolve Vault placeholders at the last provider hook before the
-              // tool runs. The model-facing call remains {{KEY}}, while normal
-              // tools (including browser automation) receive the credential.
+              // Resolve Vault placeholders only for explicitly allowlisted
+              // transient execution tools. Messaging and persistence tools
+              // must retain {{KEY}} verbatim.
               const userId = opts.userId ?? "";
-              const withVault = substituteClaudeToolInput(userId, tool_input);
+              const withVault = substituteClaudeToolInput(userId, tool_name, tool_input);
               if (JSON.stringify(withVault) === JSON.stringify(tool_input)) {
                 return { continue: true };
               }

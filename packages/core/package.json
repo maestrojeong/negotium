@@ -1,6 +1,6 @@
 {
   "name": "@negotium/core",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "private": true,
   "type": "module",
   "description": "Multi-agent AI runtime — Claude/Codex/Maestro providers, unified event stream, sessions, wiki/skills, local-first storage",
