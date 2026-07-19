@@ -121,7 +121,7 @@ describe("browser Vault transforms", () => {
     });
 
     const userId = "browser-retained-user";
-    const oldSecret = 'old secret with "json" and\na newline';
+    const oldSecret = 'old \\ path with "json" and\na newline';
     vaultSet(userId, "ROTATING_TOKEN", oldSecret);
     const transforms = await createBrowserVaultTransforms(userId);
 
@@ -138,8 +138,9 @@ describe("browser Vault transforms", () => {
       ],
     });
     const serialized = JSON.stringify(secured);
+    const escapedOldSecret = JSON.stringify(oldSecret).slice(1, -1);
     expect(serialized).not.toContain(oldSecret);
-    expect(serialized).not.toContain('old secret with \\"json\\"');
+    expect(serialized).not.toContain(escapedOldSecret);
     expect(serialized).toContain("[REDACTED:ROTATING_TOKEN]");
   });
 
