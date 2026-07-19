@@ -29,8 +29,8 @@ node for the current `NEGOTIUM_STATE_DIR`. Later Terminal processes connect to
 that same node:
 
 ```bash
-negotium start terminal  # shell 1
-negotium start terminal  # shell 2
+negotium terminal  # shell 1
+negotium terminal  # shell 2
 ```
 
 Terminal opens on the topic picker. The personal `General` room appears under `Manager`, with a rule

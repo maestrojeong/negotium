@@ -44,6 +44,33 @@ export function readJsonFile<T = unknown>(filePath: string): T | null {
   }
 }
 
+/** Atomically replace a JSON file and fsync the new contents before rename. */
+export function writeJsonFileAtomic(filePath: string, value: unknown): void {
+  const dir = dirname(filePath);
+  mkdirSync(dir, { recursive: true });
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random()
+    .toString(16)
+    .slice(2)}`;
+  let fd: number | null = null;
+  try {
+    fd = openSync(tmpPath, "wx", 0o600);
+    writeFileSync(fd, JSON.stringify(value, null, 2));
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    renameSync(tmpPath, filePath);
+    fsyncDirectoryBestEffort(dir);
+  } catch (err) {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {}
+    }
+    safeUnlink(tmpPath);
+    throw err;
+  }
+}
+
 // --- Cross-process append lock ---
 // POSIX `O_APPEND` is only atomic when the write payload fits in PIPE_BUF
 // (Linux 4096, macOS 512). MCP servers and the bot run as separate

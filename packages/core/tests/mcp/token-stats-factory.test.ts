@@ -30,6 +30,7 @@ describe("token stats MCP factory", () => {
         };
       },
       calcCost: () => 0.006,
+      extraSummaryLines: () => ["host metric"],
     };
     const server = createTokenStatsMcpServer({ userId: "user-1" }, host);
     const client = new Client({ name: "token-stats-factory-test", version: "1.0.0" });
@@ -45,6 +46,7 @@ describe("token stats MCP factory", () => {
       });
       expect(textOf(result)).toContain("쿼리 횟수: 2회");
       expect(textOf(result)).toContain("dev");
+      expect(textOf(result)).toContain("host metric");
       expect(seen).toEqual([{ userId: "user-1", from: "2026-01-01T00:00:00Z", to: undefined }]);
     } finally {
       await client.close();

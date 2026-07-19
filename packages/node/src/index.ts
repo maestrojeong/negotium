@@ -1,5 +1,5 @@
 /**
- * Node bootstrap shared by `negotium chat` and `negotium serve`.
+ * Node bootstrap shared by Terminal, adapters, and `negotium serve`.
  *
  * Starting a node means: bind the single open port (runtime MCP endpoint),
  * tell core which port agents should dial back to, start the session-inbox

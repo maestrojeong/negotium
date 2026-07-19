@@ -24,6 +24,10 @@ const packageEntrypoints = new Map<string, string>([
   ["@negotium/core/agent-helpers", "packages/core/src/agents/public-helpers.ts"],
   ["@negotium/core/mcp-catalog", "packages/core/src/platform/mcp-catalog-policy.ts"],
   ["@negotium/core/background-bash", "packages/core/src/platform/background-bash/manager.ts"],
+  ["@negotium/core/outbox", "packages/core/src/outbox/index.ts"],
+  ["@negotium/core/query-runtime", "packages/core/src/query/public-runtime.ts"],
+  ["@negotium/core/platform-runtime", "packages/core/src/platform/public-runtime.ts"],
+  ["@negotium/core/sqlite", "packages/core/src/storage/sqlite.ts"],
   [
     "@negotium/core/peer-session-bridge-ipc",
     "packages/core/src/mcp/session-comm/bridge-ipc-config.ts",
@@ -151,6 +155,10 @@ for (const entrypoint of [
   "apps/negotium/src/agent-helpers.ts",
   "apps/negotium/src/mcp-catalog.ts",
   "apps/negotium/src/background-bash.ts",
+  "apps/negotium/src/outbox.ts",
+  "apps/negotium/src/query-runtime.ts",
+  "apps/negotium/src/platform-runtime.ts",
+  "apps/negotium/src/sqlite.ts",
 ]) {
   await bundle([entrypoint], false);
 }
@@ -222,6 +230,10 @@ const declarations = Bun.spawn(
     resolve(root, "packages/core/src/agents/public-helpers.ts"),
     resolve(root, "packages/core/src/platform/mcp-catalog-policy.ts"),
     resolve(root, "packages/core/src/platform/background-bash/manager.ts"),
+    resolve(root, "packages/core/src/outbox/index.ts"),
+    resolve(root, "packages/core/src/query/public-runtime.ts"),
+    resolve(root, "packages/core/src/platform/public-runtime.ts"),
+    resolve(root, "packages/core/src/storage/sqlite.ts"),
   ],
   { cwd: root, stdout: "inherit", stderr: "inherit" },
 );
@@ -282,6 +294,10 @@ for (const publicEntrypoint of [
   "agent-helpers.js",
   "mcp-catalog.js",
   "background-bash.js",
+  "outbox.js",
+  "query-runtime.js",
+  "platform-runtime.js",
+  "sqlite.js",
 ]) {
   const path = resolve(outdir, publicEntrypoint);
   if (!(await Bun.file(path).exists())) {

@@ -77,6 +77,26 @@
       "types": "./dist/types/packages/core/src/platform/background-bash/manager.d.ts",
       "import": "./dist/background-bash.js",
       "default": "./dist/background-bash.js"
+    },
+    "./outbox": {
+      "types": "./dist/types/packages/core/src/outbox/index.d.ts",
+      "import": "./dist/outbox.js",
+      "default": "./dist/outbox.js"
+    },
+    "./query-runtime": {
+      "types": "./dist/types/packages/core/src/query/public-runtime.d.ts",
+      "import": "./dist/query-runtime.js",
+      "default": "./dist/query-runtime.js"
+    },
+    "./platform-runtime": {
+      "types": "./dist/types/packages/core/src/platform/public-runtime.d.ts",
+      "import": "./dist/platform-runtime.js",
+      "default": "./dist/platform-runtime.js"
+    },
+    "./sqlite": {
+      "types": "./dist/types/packages/core/src/storage/sqlite.d.ts",
+      "import": "./dist/sqlite.js",
+      "default": "./dist/sqlite.js"
     }
   },
   "files": [

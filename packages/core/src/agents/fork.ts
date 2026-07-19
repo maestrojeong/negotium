@@ -37,29 +37,58 @@ export interface ForkHandle {
   rolloutPath: string;
 }
 
+export interface AgentForkHost {
+  forkSession(
+    agent: AgentKind,
+    options: Omit<ForkAgentSessionOptions, "agent">,
+  ): Promise<{ forkId: string; rolloutPath: string }>;
+  exists(path: string): boolean;
+  unlink(path: string): void;
+  warn(details: Record<string, unknown>, message: string): void;
+}
+
+export interface AgentForkHelpers {
+  forkAgentSession(options: ForkAgentSessionOptions): Promise<ForkHandle>;
+  cleanupAgentFork(handle: ForkHandle): void;
+}
+
+export function createAgentForkHelpers(host: AgentForkHost): AgentForkHelpers {
+  return {
+    async forkAgentSession(options) {
+      const { agent, ...forkOptions } = options;
+      const { forkId, rolloutPath } = await host.forkSession(agent, forkOptions);
+      return { agent, forkId, rolloutPath };
+    },
+    cleanupAgentFork(handle) {
+      try {
+        if (host.exists(handle.rolloutPath)) host.unlink(handle.rolloutPath);
+      } catch (error) {
+        host.warn(
+          {
+            error,
+            agent: handle.agent,
+            forkId: handle.forkId,
+            rolloutPath: handle.rolloutPath,
+          },
+          "cleanupAgentFork: failed to remove rollout",
+        );
+      }
+    },
+  };
+}
+
+const defaultForkHelpers = createAgentForkHelpers({
+  forkSession: (agent, options) => getRegistry(agent).forkSession(options),
+  exists: existsSync,
+  unlink: unlinkSync,
+  warn: (details, message) => logger.warn(details, message),
+});
+
 export async function forkAgentSession(opts: ForkAgentSessionOptions): Promise<ForkHandle> {
-  const { forkId, rolloutPath } = await getRegistry(opts.agent).forkSession({
-    parentSessionId: opts.parentSessionId,
-    cwd: opts.cwd,
-    userId: opts.userId,
-    topicName: opts.topicName,
-    ...(opts.title ? { title: opts.title } : {}),
-    ...(opts.model ? { model: opts.model } : {}),
-    ...(opts.effort ? { effort: opts.effort } : {}),
-  });
-  return { agent: opts.agent, forkId, rolloutPath };
+  return defaultForkHelpers.forkAgentSession(opts);
 }
 
 /** Best-effort cleanup of a fork's rollout file. Errors are logged, never thrown. */
 export function cleanupAgentFork(handle: ForkHandle): void {
-  try {
-    if (existsSync(handle.rolloutPath)) {
-      unlinkSync(handle.rolloutPath);
-    }
-  } catch (err) {
-    logger.warn(
-      { err, agent: handle.agent, forkId: handle.forkId, rolloutPath: handle.rolloutPath },
-      "cleanupAgentFork: failed to remove rollout",
-    );
-  }
+  defaultForkHelpers.cleanupAgentFork(handle);
 }

@@ -1,7 +1,17 @@
 export {
   type AgentExecutionHost,
   type AgentQueryOptions,
+  type BundledClaudeRuntime,
+  buildClaudeDisallowedTools,
+  buildMaestroDisallowedTools,
+  buildMaestroToolHooks,
+  claudeProvider,
+  codexProvider,
   configureAgentExecutionHost,
+  inspectBundledClaudeRuntime,
+  maestroProvider,
   runHostedAgent,
+  spawnClaudeCodeProcessWithTreeKill,
+  toCodexMcpServers,
   type UnifiedEvent,
 } from "@negotium/core/hosted-agent";

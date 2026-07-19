@@ -3,12 +3,12 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseRuntimePort, readEnvText, safeRuntimePathSegment } from "#platform/config-helpers";
 import { logger } from "#platform/logger";
 import { type AgentKind, isAgentKind } from "#types";
 
 export function envText(envKey: string): string | undefined {
-  const value = process.env[envKey]?.trim();
-  return value ? value : undefined;
+  return readEnvText(process.env, envKey);
 }
 
 function resolveAgentEnv(envKey: string, fallback: AgentKind, legacyEnvKey?: string): AgentKind {
@@ -53,9 +53,7 @@ function resolveLocalStateDir(envKey: string, stateName: string): string {
 }
 
 function parsePortEnv(envValue: string | undefined, fallback: number): number {
-  if (!envValue) return fallback;
-  const port = Number.parseInt(envValue, 10);
-  return Number.isInteger(port) && port > 0 ? port : fallback;
+  return parseRuntimePort(envValue, fallback);
 }
 
 export const WORKSPACE_DIR = resolveLocalStateDir("NEGOTIUM_WORKSPACE_DIR", "workspace");
@@ -165,12 +163,7 @@ export const BG_BASH_BASE_PORT = parsePortEnv(process.env.BG_BASH_BASE_PORT, 970
 export const BG_BASH_MAX_PORT = parsePortEnv(process.env.BG_BASH_MAX_PORT, 9799);
 
 function safeWorkspaceSegment(value: string, fallback: string): string {
-  const cleaned = value
-    .trim()
-    .replace(/[^A-Za-z0-9._-]/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 160);
-  return cleaned || fallback;
+  return safeRuntimePathSegment(value, fallback);
 }
 
 /** Resolve the shared filesystem workspace for an API topic. */

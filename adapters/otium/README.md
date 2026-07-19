@@ -50,9 +50,9 @@ One canonical Node owns turns, MCP, Cron, and inbox workers. Otium, Telegram,
 and Terminal are independent clients/sidecars of that Node:
 
 ```bash
-negotium start otium
-negotium start telegram  # another shell
-negotium start terminal  # another shell; may be repeated
+negotium serve otium  # Otium sidecar
+negotium telegram     # another shell
+negotium terminal     # another shell; may be repeated
 ```
 
 `negotium serve otium` ensures the advertised singleton Node daemon and keeps
@@ -60,7 +60,8 @@ the Otium sidecar in the foreground. The sidecar owns the stable peer port
 (`NEGOTIUM_PORT`, default 7777, or `--port`) and relay tunnel; the Node owns
 the authenticated adapter-control endpoint and all runtime state. If the Node
 restarts, the sidecar returns a clear 503 while it is unavailable and discovers
-the replacement automatically. `negotium otium serve` remains a deprecated alias.
+the replacement automatically. `negotium otium serve` remains a deprecated alias scheduled for
+removal in a future cleanup release.
 
 Relay mode uses the optional `relay` field in join credentials, or
 `OTIUM_RELAY_URL`, with `serve --relay <http(s)/ws(s) URL>` taking precedence.

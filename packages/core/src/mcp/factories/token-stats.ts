@@ -21,6 +21,7 @@ export interface TokenStatsMcpHost {
       "inputTokens" | "outputTokens" | "cacheCreationInputTokens" | "cacheReadInputTokens"
     >,
   ): number;
+  extraSummaryLines?(userId: string): readonly string[];
 }
 
 export const defaultTokenStatsMcpHost: TokenStatsMcpHost = {
@@ -68,6 +69,8 @@ export function createTokenStatsMcpServer(
         `캐시 읽기: ${total.cacheReadInputTokens.toLocaleString()}`,
         `예상 비용: $${estimatedCostUsd.toFixed(4)} USD`,
       ];
+      const extraSummaryLines = host.extraSummaryLines?.(context.userId) ?? [];
+      if (extraSummaryLines.length > 0) lines.push("", ...extraSummaryLines);
 
       if (groupBy === "session") {
         const sorted = Object.entries(bySession)

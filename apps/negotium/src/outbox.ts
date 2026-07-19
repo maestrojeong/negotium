@@ -1,20 +1,18 @@
 export {
   createOutboxFileOps,
+  createOutboxWatchOps,
+  debouncedFlush,
   deleteProcessingFile,
   drainOutboxFile,
+  FALLBACK_INTERVAL_MS,
   isProcessingFile,
   type OutboxFileHost,
   type OutboxFileOps,
   type OutboxLogger,
-  parseOutboxLine,
-  processOutboxFile,
-} from "./file-ops";
-export {
-  createOutboxWatchOps,
-  debouncedFlush,
-  FALLBACK_INTERVAL_MS,
   type OutboxWatchHost,
   type OutboxWatchLogger,
   type OutboxWatchOps,
+  parseOutboxLine,
+  processOutboxFile,
   watchDir,
-} from "./utils";
+} from "@negotium/core/outbox";

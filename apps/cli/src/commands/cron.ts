@@ -63,7 +63,7 @@ function usage(): void {
       "  inspect|logs <name|id>",
       "  run|pause|resume|restart|kill|reset|delete <name|id>",
       "",
-      "The node must stay alive (`negotium serve`, chat, or an adapter) for schedules to run.",
+      "The node must stay alive (`negotium serve` or an adapter) for schedules to run.",
       `Python prompt scripts live in ${CRON_JOBS_DIR}.`,
     ].join("\n"),
   );

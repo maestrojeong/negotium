@@ -18,9 +18,16 @@ import {
   __handlerCount,
   __resetForTests,
   __triggered,
+  createLifecycleManager,
   onShutdown,
   runShutdown,
 } from "#platform/lifecycle";
+
+const silentLogger = {
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+};
 
 describe("lifecycle shutdown registry", () => {
   beforeEach(() => {
@@ -137,5 +144,78 @@ describe("lifecycle shutdown registry", () => {
     __resetForTests();
     expect(__handlerCount()).toBe(0);
     expect(__triggered()).toBe(false);
+  });
+
+  test("factory instances keep handlers and signal hooks isolated", async () => {
+    const listeners = new Map<string, Set<() => void>>();
+    const fakeProcess = {
+      once(signal: string, listener: () => void) {
+        const current = listeners.get(signal) ?? new Set();
+        current.add(listener);
+        listeners.set(signal, current);
+      },
+      removeListener(signal: string, listener: () => void) {
+        listeners.get(signal)?.delete(listener);
+      },
+      exit(): never {
+        throw new Error("unexpected exit");
+      },
+    };
+    const first = createLifecycleManager({ logger: silentLogger, process: fakeProcess });
+    const second = createLifecycleManager({ logger: silentLogger, process: fakeProcess });
+    const calls: string[] = [];
+
+    first.onShutdown("first", 1, () => {
+      calls.push("first");
+    });
+    second.onShutdown("second", 1, () => {
+      calls.push("second");
+    });
+    expect(first.handlerCount()).toBe(1);
+    expect(second.handlerCount()).toBe(1);
+    expect(listeners.get("SIGTERM")?.size).toBe(2);
+
+    await first.runShutdown("test");
+    expect(calls).toEqual(["first"]);
+    expect(second.isTriggered()).toBe(false);
+
+    first.reset();
+    expect(listeners.get("SIGTERM")?.size).toBe(1);
+    second.reset();
+  });
+
+  test("factory owns state and removes installed signal listeners", async () => {
+    const listeners = new Map<string, () => void>();
+    const calls: string[] = [];
+    const registry = createLifecycleManager({
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+      },
+      process: {
+        once: (signal, listener) => {
+          listeners.set(signal, listener);
+        },
+        removeListener: (signal, listener) => {
+          if (listeners.get(signal) === listener) listeners.delete(signal);
+        },
+        exit: () => {
+          throw new Error("unexpected exit");
+        },
+      },
+      handlerTimeoutMs: 10,
+      hardExitTimeoutMs: 100,
+    });
+    registry.onShutdown("owned", 1, () => {
+      calls.push("owned");
+    });
+    expect(listeners.size).toBe(3);
+    await registry.runShutdown("test");
+    expect(calls).toEqual(["owned"]);
+    registry.reset();
+    expect(listeners.size).toBe(0);
+    expect(registry.handlerCount()).toBe(0);
+    expect(registry.isTriggered()).toBe(false);
   });
 });

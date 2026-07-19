@@ -3,7 +3,7 @@
   "version": "0.1.18",
   "private": true,
   "type": "module",
-  "description": "negotium CLI — init a node, manage its MCPs, and chat with the multi-agent runtime from the terminal",
+  "description": "Negotium CLI for node management and Terminal, Telegram, and Otium clients",
   "license": "Apache-2.0",
   "bin": {
     "negotium": "dist/main.js"

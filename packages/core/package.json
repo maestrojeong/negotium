@@ -23,6 +23,10 @@
     "./agent-helpers": "./src/agents/public-helpers.ts",
     "./mcp-catalog": "./src/platform/mcp-catalog-policy.ts",
     "./background-bash": "./src/platform/background-bash/manager.ts",
+    "./query-runtime": "./src/query/public-runtime.ts",
+    "./outbox": "./src/outbox/index.ts",
+    "./platform-runtime": "./src/platform/public-runtime.ts",
+    "./sqlite": "./src/storage/sqlite.ts",
     "./peer-session-bridge-ipc": "./src/mcp/session-comm/bridge-ipc-config.ts",
     "./canonical-mcp-bridge": "./src/mcp/canonical-bridge-config.ts",
     "./src/*": "./src/*"

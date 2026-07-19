@@ -1,10 +1,23 @@
 export {
+  parseSessionCommContext,
+  type SessionCommContext,
+  type SessionCommContextDefaults,
+} from "../session-comm/context";
+export { executeVaultHttpRequest } from "../vault-http";
+export { executeVaultRun } from "../vault-run";
+export {
   createWikiMcpServer,
   type WikiMcpContext,
   type WikiMcpHost,
   type WikiSurface,
   type WikiTopicBrief,
 } from "../wiki-server";
+export {
+  createSessionCommMcpServer,
+  type SessionCommMcpHost,
+  type SessionCommMcpOptions,
+  type SessionCommMcpResult,
+} from "./session-comm";
 export {
   type McpStdioProtectionTarget,
   protectMcpStdio,

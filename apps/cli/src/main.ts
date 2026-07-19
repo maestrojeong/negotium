@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
 
 import { loadOtiumCli, loadTelegramCli, loadTerminalCli } from "@/adapter-loader";
+import { normalizeCliCommand, renderCliHelp } from "@/command-catalog";
 
-const [, , command, ...args] = process.argv;
+const [, , rawCommand, ...args] = process.argv;
+const command = normalizeCliCommand(rawCommand);
 
 function numericOption(values: string[], name: string, fallback: number): number {
   const prefix = `--${name}=`;
@@ -50,9 +52,10 @@ switch (command) {
     initCommand();
     break;
   }
-  case "chat": {
-    const { chatCommand } = await import("@/commands/chat");
-    await chatCommand(args);
+  case "-v":
+  case "--version": {
+    const { NEGOTIUM_VERSION } = await import("@negotium/core");
+    console.log(NEGOTIUM_VERSION);
     break;
   }
   case "serve": {
@@ -157,38 +160,8 @@ switch (command) {
     await runOtiumCli(args);
     break;
   }
-  case "start":
-  case "adapters": {
-    const { adaptersCommand } = await import("@/commands/adapters");
-    await adaptersCommand(args);
-    break;
-  }
   default: {
-    console.log(
-      [
-        "negotium — turn this computer into an agent node",
-        "",
-        "usage: negotium <init|chat|serve|status|stop|topics|mcp|vault|cron|terminal|telegram|otium|start> [args]",
-        "",
-        "  init            bootstrap ~/.negotium and check agent auth",
-        "  chat [topic]    interactive chat (creates the topic if missing)",
-        "                  options: --agent=claude|codex|maestro",
-        "  serve           foreground canonical node (default port 7777)",
-        "  serve otium     ensure the canonical node and run the Otium sidecar",
-        "  status          show the canonical node and adapter processes",
-        "  stop [otium|telegram|--all]  stop the node, one adapter, or everything",
-        "  topics          list topics on this node",
-        "  mcp list|add|remove|enable|disable   manage node MCP manifest",
-        "  vault list|set|get|del               node secret store (encrypted at rest)",
-        "  cron list|create|inspect|logs|run|pause|resume|restart|kill|reset|delete",
-        "  terminal        TUI client; auto-starts and connects to the local node",
-        "                  options: --embedded, --connect=http://host:port, --port=N",
-        "  telegram        Telegram adapter (configured from environment)",
-        "  otium join|serve  join an Otium workspace or serve its worker routes",
-        "  start <terminal|telegram|otium>  run one channel process",
-        "                  Terminal clients may run more than once and share one node",
-      ].join("\n"),
-    );
+    console.log(renderCliHelp());
     if (command && command !== "help" && command !== "--help") process.exitCode = 1;
   }
 }

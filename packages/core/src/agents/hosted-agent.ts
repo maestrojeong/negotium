@@ -11,6 +11,21 @@ import { maestroProvider } from "#agents/maestro-provider";
 import { revokeCanonicalMcpBridgeTurn } from "#mcp/canonical-bridge-config";
 import type { AgentQueryOptions, UnifiedEvent } from "#types";
 
+export {
+  buildClaudeDisallowedTools,
+  claudeProvider,
+  spawnClaudeCodeProcessWithTreeKill,
+} from "#agents/claude-provider";
+export {
+  type BundledClaudeRuntime,
+  inspectBundledClaudeRuntime,
+} from "#agents/claude-runtime-inspection";
+export { codexProvider, toCodexMcpServers } from "#agents/codex-provider";
+export {
+  buildMaestroDisallowedTools,
+  buildMaestroToolHooks,
+  maestroProvider,
+} from "#agents/maestro-provider";
 export type { AgentQueryOptions, UnifiedEvent };
 export { type AgentExecutionHost, configureAgentExecutionHost };
 

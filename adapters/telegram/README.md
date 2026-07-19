@@ -42,8 +42,8 @@ commands are silently ignored.
 Telegram and other channels share SQLite state while running as separate processes:
 
 ```bash
-TELEGRAM_BOT_TOKEN=... negotium start telegram  # one process
-negotium start terminal                         # another shell; may be repeated
+TELEGRAM_BOT_TOKEN=... negotium telegram  # one process
+negotium terminal                         # another shell; may be repeated
 ```
 
 Telegram holds a state-directory singleton lease, so a second Telegram process fails clearly

@@ -1,5 +1,10 @@
 import pino from "pino";
 
+export interface StdioLoggerOptions {
+  level?: string;
+  development?: boolean;
+}
+
 /**
  * Always write logs to stderr (fd 2), never stdout.
  *
@@ -12,11 +17,12 @@ import pino from "pino";
  * pass `destination: 2` through transport.options. In prod (no transport) the
  * second arg to `pino()` sets the destination directly.
  */
-export const logger = pino(
-  {
-    level: process.env.LOG_LEVEL || "info",
-    transport:
-      process.env.NODE_ENV === "development"
+export function createStdioLogger(options: StdioLoggerOptions = {}) {
+  const development = options.development ?? process.env.NODE_ENV === "development";
+  return pino(
+    {
+      level: options.level ?? process.env.LOG_LEVEL ?? "info",
+      transport: development
         ? {
             target: "pino-pretty",
             options: {
@@ -26,6 +32,11 @@ export const logger = pino(
             },
           }
         : undefined,
-  },
-  pino.destination(2),
-);
+    },
+    pino.destination(2),
+  );
+}
+
+export type StdioLogger = ReturnType<typeof createStdioLogger>;
+
+export const logger = createStdioLogger();

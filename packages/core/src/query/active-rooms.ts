@@ -27,7 +27,10 @@ import {
 } from "#storage/runtime-leases";
 import type { AskReplySource } from "#storage/session-asks";
 import type { AgentKind, PeerRuntimeBridgeContext } from "#types";
+import { createRoomQueryRegistry, type RoomQueryDecision } from "./room-query-registry";
 import { AbortReason } from "./types";
+
+export { isolatedTurnRoomId, isUserOrigin } from "./room-query-registry";
 
 /** Lazily create an isolated provider session immediately before execution. */
 export type PrepareInjectSession = () => Promise<ForkHandle>;
@@ -130,89 +133,42 @@ export interface RoomQueryControl {
 
 // ── Room-keyed in-flight registry ──────────────────────────────────────
 
-const activeByRoom = new Map<string, RoomQueryControl>();
-const leaseMonitors = new Map<string, ReturnType<typeof setInterval>>();
-
-const ISOLATED_TURN_ROOM_MARKER = "::isolated-turn::";
-
-/** Build a private scheduling key for a forked turn that may run beside its topic. */
-export function isolatedTurnRoomId(topicId: string, queryId: string): string {
-  return `${topicId}${ISOLATED_TURN_ROOM_MARKER}${queryId}`;
-}
-
-function isIsolatedTurnRoomId(roomId: string): boolean {
-  return roomId.includes(ISOLATED_TURN_ROOM_MARKER);
-}
+const roomQueryRegistry = createRoomQueryRegistry<RoomQueryControl, RuntimeTurnLease, AbortReason>({
+  instanceId: RUNTIME_INSTANCE_ID,
+  internalAbortReason: AbortReason.Internal,
+  externalAbortReason: AbortReason.External,
+  listLeases: listRuntimeTurnLeases,
+  getLease: getRuntimeTurnLease,
+  claimLease: claimRuntimeTurnLease,
+  heartbeatLease: heartbeatRuntimeTurnLease,
+  releaseLease: releaseRuntimeTurnLease,
+  requestAbort: requestRuntimeTurnAbort,
+});
 
 export function getRoomQuery(topicId: string): RoomQueryControl | undefined {
-  return activeByRoom.get(topicId);
+  return roomQueryRegistry.get(topicId);
 }
 
 /** Topic ids and query ids with an in-flight turn in this or another runtime process. */
 export function listRunningTopicQueries(): Map<string, string> {
-  const queries = new Map(
-    [...activeByRoom.entries()]
-      .filter(([roomId]) => !isIsolatedTurnRoomId(roomId))
-      .map(([roomId, control]) => [roomId, control.queryId]),
-  );
-  for (const lease of listRuntimeTurnLeases()) {
-    if (isIsolatedTurnRoomId(lease.topicId)) continue;
-    if (!queries.has(lease.topicId)) queries.set(lease.topicId, lease.queryId);
-  }
-  return queries;
+  return roomQueryRegistry.listRunningTopicQueries();
 }
 
 export function listRunningTopicIds(): Set<string> {
-  return new Set(listRunningTopicQueries().keys());
+  return roomQueryRegistry.listRunningTopicIds();
 }
 
 /** Single-topic status check for callers that do not need a list snapshot. */
 export function isTopicRunning(topicId: string): boolean {
-  return activeByRoom.has(topicId) || getRuntimeTurnLease(topicId) !== null;
+  return roomQueryRegistry.isTopicRunning(topicId);
 }
 
 export function getRoomQueryStatus(topicId: string, queryId: string): "running" | "not_found" {
-  if (activeByRoom.get(topicId)?.queryId === queryId) return "running";
-  return getRuntimeTurnLease(topicId)?.queryId === queryId ? "running" : "not_found";
+  return roomQueryRegistry.status(topicId, queryId);
 }
 
 export function setRoomQuery(control: RoomQueryControl): boolean {
-  const roomId = control.roomId ?? control.topicId;
-  control.startedAt ??= Date.now();
-  const claimed = claimRuntimeTurnLease({
-    topicId: roomId,
-    queryId: control.queryId,
-    origin: control.origin,
-  });
-  if (!claimed) return false;
-
-  const previousMonitor = leaseMonitors.get(roomId);
-  if (previousMonitor) clearInterval(previousMonitor);
-  activeByRoom.set(roomId, control);
-  const monitor = setInterval(() => {
-    const current = activeByRoom.get(roomId);
-    if (!current || current.queryId !== control.queryId) {
-      clearInterval(monitor);
-      if (leaseMonitors.get(roomId) === monitor) {
-        leaseMonitors.delete(roomId);
-      }
-      return;
-    }
-    const heartbeat = heartbeatRuntimeTurnLease(roomId, control.queryId);
-    if (!heartbeat.owned) {
-      control.abortReason = AbortReason.External;
-      control.abortController.abort();
-      return;
-    }
-    if (heartbeat.abortRequested && !control.abortController.signal.aborted) {
-      control.abortReason =
-        heartbeat.abortReason === "internal" ? AbortReason.Internal : AbortReason.External;
-      control.abortController.abort();
-    }
-  }, 1_000);
-  monitor.unref?.();
-  leaseMonitors.set(roomId, monitor);
-  return true;
+  return roomQueryRegistry.set(control);
 }
 
 /**
@@ -222,77 +178,30 @@ export function setRoomQuery(control: RoomQueryControl): boolean {
  * "Only delete our own entry" guard.
  */
 export function clearRoomQuery(topicId: string, queryId: string): void {
-  const cur = activeByRoom.get(topicId);
-  if (cur && cur.queryId === queryId) {
-    activeByRoom.delete(topicId);
-    const monitor = leaseMonitors.get(topicId);
-    if (monitor) clearInterval(monitor);
-    leaseMonitors.delete(topicId);
-  }
-  releaseRuntimeTurnLease(topicId, queryId);
+  roomQueryRegistry.clear(topicId, queryId);
 }
 
 /** Abort the currently-running turn in a room, if any. Cleanup is still owned by
  *  the streaming turn's finally block so deferred injects drain in order. */
 export function abortRoom(topicId: string, reason: AbortReason = AbortReason.External): boolean {
-  const running = activeByRoom.get(topicId);
-  if (running) {
-    running.abortReason = reason;
-    running.abortController.abort();
-    requestRuntimeTurnAbort(topicId, reason === AbortReason.Internal ? "internal" : "external");
-    return true;
-  }
-  return requestRuntimeTurnAbort(
-    topicId,
-    reason === AbortReason.Internal ? "internal" : "external",
-  );
+  return roomQueryRegistry.abort(topicId, reason);
 }
 
 /** Abort every in-flight provider turn before the node tears down its resources. */
 export function abortAllRooms(reason: AbortReason = AbortReason.External): number {
-  let aborted = 0;
-  for (const running of activeByRoom.values()) {
-    running.abortReason = reason;
-    if (!running.abortController.signal.aborted) {
-      running.abortController.abort();
-      aborted++;
-    }
-  }
-  return aborted;
-}
-
-export function isUserOrigin(origin: string | undefined): boolean {
-  return !origin || origin === "user";
+  return roomQueryRegistry.abortAll(reason);
 }
 
 // ── Priority decision ──────────────────────────────────────────────────
 
-export type NewQueryDecision =
-  | { action: "proceed" }
-  | { action: "abort-replace"; running: RoomQueryControl }
-  | { action: "defer" }
-  | { action: "remote-defer"; running: RuntimeTurnLease }
-  | { action: "remote-abort-wait"; running: RuntimeTurnLease };
+export type NewQueryDecision = RoomQueryDecision<RoomQueryControl, RuntimeTurnLease>;
 
 /**
  * Decide what to do when a new turn (with `incomingOrigin`) arrives on a room.
  * Mirrors the abort-on-new-message priority used by live topic turns.
  */
 export function decideNewQuery(topicId: string, incomingOrigin: string): NewQueryDecision {
-  const running = activeByRoom.get(topicId);
-  if (!running) {
-    const remote = getRuntimeTurnLease(topicId);
-    if (!remote || remote.ownerId === RUNTIME_INSTANCE_ID) return { action: "proceed" };
-    return isUserOrigin(incomingOrigin)
-      ? { action: "remote-abort-wait", running: remote }
-      : { action: "remote-defer", running: remote };
-  }
-  // Topic-room session-injects never preempt — the user keeps priority. An
-  // ask_session fork uses its own isolated room key and therefore reaches the
-  // no-running branch above even while the visible topic room is occupied.
-  if (!isUserOrigin(incomingOrigin)) return { action: "defer" };
-  // Incoming is a user message → preempt the running turn and take its slot.
-  return { action: "abort-replace", running };
+  return roomQueryRegistry.decide(topicId, incomingOrigin);
 }
 
 // ── Session-inject queue (inter-session) ───────────────────────────────

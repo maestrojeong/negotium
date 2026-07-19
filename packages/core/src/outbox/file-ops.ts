@@ -1,8 +1,44 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { appendFileSync, existsSync, readFileSync, renameSync, unlinkSync } from "node:fs";
 import { readJsonlLines } from "#platform/jsonl";
 import { logger } from "#platform/logger";
 
 const PROCESSING_SUFFIX = ".processing";
+
+export interface OutboxLogger {
+  debug(fields: Record<string, unknown>, message: string): void;
+  info(fields: Record<string, unknown>, message: string): void;
+  warn(fields: Record<string, unknown>, message: string): void;
+  error(fields: Record<string, unknown>, message: string): void;
+}
+
+export interface OutboxFileHost {
+  logger: OutboxLogger;
+  readJsonlLines(path: string): string[];
+}
+
+export interface OutboxFileOps {
+  isProcessingFile(name: string): boolean;
+  drainOutboxFile(
+    filePath: string,
+    label: string,
+  ): { lines: string[]; processingPath: string } | null;
+  deleteProcessingFile(processingPath: string, label: string, consumedLines?: number): void;
+  parseOutboxLine<T>(line: string, label: string): T | null;
+  processOutboxFile<T extends Record<string, unknown>>(
+    filePath: string,
+    label: string,
+    handler: (entry: T) => Promise<void>,
+    opts?: { maxRetries?: number },
+  ): Promise<void>;
+}
+
+const defaultHost: OutboxFileHost = { logger, readJsonlLines };
+const hostContext = new AsyncLocalStorage<OutboxFileHost>();
+
+function host(): OutboxFileHost {
+  return hostContext.getStore() ?? defaultHost;
+}
 
 /** True if `name` is an in-flight `.processing` claim file written by drainOutboxFile. */
 export function isProcessingFile(name: string): boolean {
@@ -16,10 +52,10 @@ function tryUnlink(path: string, label: string, reason: string) {
     // ENOENT means another path already cleaned this up (e.g. concurrent
     // drain, double-delete in a retry loop). Not worth warning about.
     if ((e as NodeJS.ErrnoException)?.code === "ENOENT") {
-      logger.debug({ path }, `${label}: ${reason} (already gone)`);
+      host().logger.debug({ path }, `${label}: ${reason} (already gone)`);
       return;
     }
-    logger.warn({ err: e, path }, `${label}: ${reason}`);
+    host().logger.warn({ err: e, path }, `${label}: ${reason}`);
   }
 }
 
@@ -54,14 +90,14 @@ export function drainOutboxFile(
     // warn on crash+race (rare), info on plain recovery (expected after crash)
     const logMsg = `${label}: merging leftover .processing before claim`;
     const logCtx = { filePath, processingPath, hadPending: hasPending };
-    if (hasPending) logger.warn(logCtx, logMsg);
-    else logger.info(logCtx, logMsg);
+    if (hasPending) host().logger.warn(logCtx, logMsg);
+    else host().logger.info(logCtx, logMsg);
     try {
       const leftover = readFileSync(processingPath, "utf-8");
       if (leftover) appendFileSync(filePath, leftover.endsWith("\n") ? leftover : `${leftover}\n`);
       unlinkSync(processingPath);
     } catch (e) {
-      logger.error(
+      host().logger.error(
         { err: e, processingPath },
         `${label}: failed to merge leftover — data may be lost`,
       );
@@ -75,16 +111,16 @@ export function drainOutboxFile(
   try {
     renameSync(filePath, processingPath);
   } catch (e) {
-    logger.warn({ err: e, filePath }, `${label}: failed to rename for processing`);
+    host().logger.warn({ err: e, filePath }, `${label}: failed to rename for processing`);
     return null;
   }
 
   // Read lines
   try {
-    const lines = readJsonlLines(processingPath);
+    const lines = host().readJsonlLines(processingPath);
     return { lines, processingPath };
   } catch (e) {
-    logger.warn({ err: e, processingPath }, `${label}: failed to read processing file`);
+    host().logger.warn({ err: e, processingPath }, `${label}: failed to read processing file`);
     tryUnlink(processingPath, label, "failed to delete corrupt processing file");
     return null;
   }
@@ -106,18 +142,18 @@ export function deleteProcessingFile(
 ) {
   if (consumedLines !== undefined && processingPath.endsWith(PROCESSING_SUFFIX)) {
     try {
-      const current = readJsonlLines(processingPath);
+      const current = host().readJsonlLines(processingPath);
       if (current.length > consumedLines) {
         const pendingPath = processingPath.slice(0, -PROCESSING_SUFFIX.length);
         const tail = current.slice(consumedLines).join("\n");
         appendFileSync(pendingPath, `${tail}\n`);
-        logger.warn(
+        host().logger.warn(
           { processingPath, salvaged: current.length - consumedLines },
           `${label}: writer raced the drain — salvaged late lines back to pending`,
         );
       }
     } catch (e) {
-      logger.warn({ err: e, processingPath }, `${label}: writer-race recheck failed`);
+      host().logger.warn({ err: e, processingPath }, `${label}: writer-race recheck failed`);
     }
   }
   tryUnlink(processingPath, label, "failed to delete processing file");
@@ -132,7 +168,7 @@ export function parseOutboxLine<T>(line: string, label: string): T | null {
   try {
     return JSON.parse(line) as T;
   } catch {
-    logger.error({ label, line: line.slice(0, 120) }, `${label}: Invalid JSON, dropping`);
+    host().logger.error({ label, line: line.slice(0, 120) }, `${label}: Invalid JSON, dropping`);
     return null;
   }
 }
@@ -181,13 +217,16 @@ export async function processOutboxFile<T extends Record<string, unknown>>(
       if (MAX_RETRIES > 0) {
         const next = retryCount + 1;
         if (next >= MAX_RETRIES) {
-          logger.error({ err, label, retryCount: next }, `${label}: Max retries reached, dropping`);
+          host().logger.error(
+            { err, label, retryCount: next },
+            `${label}: Max retries reached, dropping`,
+          );
         } else {
-          logger.warn({ err, label, retryCount: next }, `${label}: Failed, will retry`);
+          host().logger.warn({ err, label, retryCount: next }, `${label}: Failed, will retry`);
           failedLines.push(JSON.stringify({ ...entry, retryCount: next }));
         }
       } else {
-        logger.error({ err, label }, `${label}: Failed to process entry`);
+        host().logger.error({ err, label }, `${label}: Failed to process entry`);
       }
     }
   }
@@ -201,10 +240,29 @@ export async function processOutboxFile<T extends Record<string, unknown>>(
     try {
       appendFileSync(filePath, `${failedLines.join("\n")}\n`);
     } catch (e) {
-      logger.error(
+      host().logger.error(
         { err: e, label, count: failedLines.length },
         `${label}: Failed to write back entries`,
       );
     }
   }
+}
+
+/** Bind outbox processing to caller-owned logging and JSONL parsing dependencies. */
+export function createOutboxFileOps(boundHost: OutboxFileHost): OutboxFileOps {
+  return {
+    isProcessingFile,
+    drainOutboxFile: (filePath, label) =>
+      hostContext.run(boundHost, () => drainOutboxFile(filePath, label)),
+    deleteProcessingFile: (processingPath, label, consumedLines) =>
+      hostContext.run(boundHost, () => deleteProcessingFile(processingPath, label, consumedLines)),
+    parseOutboxLine: <T>(line: string, label: string) =>
+      hostContext.run(boundHost, () => parseOutboxLine<T>(line, label)),
+    processOutboxFile: <T extends Record<string, unknown>>(
+      filePath: string,
+      label: string,
+      handler: (entry: T) => Promise<void>,
+      opts: { maxRetries?: number } = {},
+    ) => hostContext.run(boundHost, () => processOutboxFile(filePath, label, handler, opts)),
+  };
 }

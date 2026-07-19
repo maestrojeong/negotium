@@ -74,10 +74,11 @@ DEEPSEEK_API_KEY=your-key
 
 ```bash
 negotium init
-negotium chat work --agent=codex
+negotium
 ```
 
-Pick `claude`, `codex`, or `maestro` according to the auth check printed by `init`.
+Pick or create a topic in Terminal, then choose `claude`, `codex`, or `maestro` according to the
+auth check printed by `init`.
 
 The `negotium` package contains the CLI, runtime, MCP services, Cron module, and first-party
 Terminal, Telegram, and Otium adapters.
@@ -85,16 +86,17 @@ Terminal, Telegram, and Otium adapters.
 ## CLI
 
 ```text
+negotium
 negotium init
-negotium chat [topic] [--agent=claude|codex|maestro]
 negotium serve
+negotium serve otium
 negotium status
-negotium stop
+negotium stop [otium|telegram|--all]
 negotium topics
 negotium terminal
 negotium telegram
-negotium otium join|serve|bindings|share|private
-negotium start <terminal|telegram|otium>
+negotium otium join|bindings|share|private|leave
+negotium -v|--version
 
 negotium mcp list|add|remove|enable|disable
 negotium vault list|set|get|del
@@ -149,14 +151,12 @@ Channel processes share one canonical Node and do not need a common parent proce
 may be opened more than once; Telegram submits turns through the Node control API; Otium keeps only
 its public peer listener and relay tunnel in a sidecar:
 
-```bash
-negotium start terminal    # shell 1 (repeat in more shells if useful)
-negotium start telegram    # shell 2
-negotium start otium       # shell 3
-```
+Run `negotium` or `negotium terminal` for each Terminal client, `negotium telegram` for the
+Telegram adapter, and `negotium serve otium` for the Otium sidecar.
 
 `negotium serve otium` is the supervisor form: it ensures the canonical daemon, then runs the Otium
-sidecar in the foreground. `negotium otium serve` is a deprecated migration alias. `negotium status`
+sidecar in the foreground. `negotium otium serve` remains a deprecated migration alias and is
+scheduled for removal in a future cleanup release. `negotium status`
 shows the Node and adapter PIDs; `negotium stop` stops only the Node, while `negotium stop otium`,
 `negotium stop telegram`, and `negotium stop --all` make the wider scope explicit.
 
@@ -174,8 +174,6 @@ Cron is an optional in-process module enabled by the reference CLI host. Create 
 topic first, create a schedule, and keep a node host running:
 
 ```bash
-negotium chat operations --agent=codex
-
 negotium cron create \
   operations \
   weekday-review \

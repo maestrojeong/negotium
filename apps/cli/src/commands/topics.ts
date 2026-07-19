@@ -5,7 +5,7 @@ import { getVisibleTopics } from "@negotium/core";
 export function topicsCommand(): void {
   const topics = getVisibleTopics();
   if (topics.length === 0) {
-    console.log("no topics yet — `negotium chat <name>` creates one");
+    console.log("no topics yet - start `negotium` to create one in Terminal");
     return;
   }
   for (const t of topics) {

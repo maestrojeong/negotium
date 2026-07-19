@@ -16,6 +16,26 @@ export {
 } from "#mcp/mcp-helpers";
 export { delay } from "#platform/delay";
 export { errMsg } from "#platform/error";
+export {
+  appendJsonlEntry,
+  appendJsonlLine,
+  parseJsonlText,
+  readJsonFile,
+  readJsonlLines,
+  writeJsonFileAtomic,
+  writeJsonlFile,
+} from "#platform/jsonl";
+export {
+  createLifecycleManager,
+  type LifecycleLogger,
+  type LifecycleManager,
+  type LifecycleManagerOptions,
+  type LifecycleProcessHost,
+  onShutdown,
+  runShutdown,
+  type ShutdownHandler,
+  type SignalReason,
+} from "#platform/lifecycle";
 export { escapeRegExp, mentionsAi } from "#runtime/channel-context";
 export {
   buildContextWarningText,

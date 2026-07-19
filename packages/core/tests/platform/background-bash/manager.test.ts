@@ -31,14 +31,19 @@ describe("shared background-bash runtime", () => {
     const deletedA: string[] = [];
     const deletedB: string[] = [];
     const fakeProcess = () => {
-      const process = new EventEmitter() as ChildProcess;
-      process.exitCode = null;
-      process.killed = false;
+      const process = Object.assign(new EventEmitter(), {
+        exitCode: null as number | null,
+        killed: false,
+      }) as EventEmitter & {
+        exitCode: number | null;
+        killed: boolean;
+        kill: () => boolean;
+      };
       process.kill = () => {
         process.killed = true;
         return true;
       };
-      return process;
+      return process as unknown as ChildProcess;
     };
     const createFetch = (serverId: string, deleted: string[]) =>
       (async (input: string | URL | Request, init?: RequestInit) => {

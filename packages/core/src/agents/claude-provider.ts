@@ -44,16 +44,20 @@ const CLAUDE_DEFAULT_DISALLOWED_TOOLS = [
   "TaskUpdate",
   "TaskList",
   "TaskGet",
-  "Task",
-  "Agent",
-  "TaskOutput",
-  "TaskStop",
 ] as const;
+
+const CLAUDE_NATIVE_AGENT_TOOLS = ["Task", "Agent", "TaskOutput", "TaskStop"] as const;
 
 export function buildClaudeDisallowedTools(
   extra: readonly string[] | undefined = undefined,
 ): string[] {
-  return [...new Set([...CLAUDE_DEFAULT_DISALLOWED_TOOLS, ...(extra ?? [])])];
+  return [
+    ...new Set([
+      ...CLAUDE_DEFAULT_DISALLOWED_TOOLS,
+      ...CLAUDE_NATIVE_AGENT_TOOLS,
+      ...(extra ?? []),
+    ]),
+  ];
 }
 
 /**

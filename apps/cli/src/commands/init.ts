@@ -22,5 +22,5 @@ export function initCommand(): void {
     const auth = checkAgentAuth(agent);
     console.log(`  ${agent.padEnd(8)} ${auth.ok ? "ready" : `unavailable — ${auth.error}`}`);
   }
-  console.log("\nnext: `negotium chat` or `negotium serve`");
+  console.log("\nnext: `negotium` or `negotium serve`");
 }

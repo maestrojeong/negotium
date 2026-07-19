@@ -326,13 +326,30 @@ import type { CanonicalMcpBridgeScope } from "negotium/canonical-mcp-bridge";
 import type { CronDatabase, CronHost } from "negotium/cron";
 import type { McpServerName } from "negotium/mcp-servers";
 import type { ForumMcpClassification, RuntimeMcpPolicyEntry } from "negotium/mcp-catalog";
-import type { AgentAuthHost, ForkHandle, TaskEventHost } from "negotium/agent-helpers";
+import type {
+  AgentAuthHost,
+  AgentForkHost,
+  CodexTreeHost,
+  CodexProcStamp,
+  ForkHandle,
+  TaskEventHost,
+  VaultToolPolicyHost,
+} from "negotium/agent-helpers";
 import type { BackgroundBashManager, BackgroundBashManagerOptions } from "negotium/background-bash";
+import type {
+  OutboxFileHost,
+  OutboxFileOps,
+  OutboxWatchOps,
+} from "negotium/outbox";
+import type { RuntimeEnvironment, StdioLogger } from "negotium/platform-runtime";
+import type { RoomQueryRegistryHost } from "negotium/query-runtime";
 import type {
   TaskMcpContext,
   TaskMcpHost,
   SystemHealthMcpHost,
   SystemHealthSnapshot,
+  SessionCommContext,
+  SessionCommMcpHost,
   TokenStatsMcpContext,
   TokenStatsMcpHost,
   VaultCredentialHost,
@@ -347,6 +364,8 @@ import type { SessionSystemPromptOpts } from "negotium/prompts";
 import type {
   ContextOccupancy,
   ContextWarningState,
+  LifecycleManager,
+  LifecycleProcessHost,
   McpContent,
   McpErrorResponse,
   McpResponse,
@@ -368,12 +387,16 @@ const mcpCatalog = await import("negotium/mcp-catalog");
 const mcpFactories = await import("negotium/mcp-factories");
 const agentHelpers = await import("negotium/agent-helpers");
 const backgroundBash = await import("negotium/background-bash");
+const outbox = await import("negotium/outbox");
+const platformRuntime = await import("negotium/platform-runtime");
+const queryRuntime = await import("negotium/query-runtime");
 const registry = await import("negotium/registry");
 const rollout = await import("negotium/rollout");
 const vault = await import("negotium/vault");
 const prompts = await import("negotium/prompts");
 const runtimeHelpers = await import("negotium/runtime-helpers");
 const storage = await import("negotium/storage");
+const sqlite = await import("negotium/sqlite");
 if (typeof hostedAgent.configureAgentExecutionHost !== "function") {
   throw new Error("packed hosted-agent export is missing");
 }
@@ -410,6 +433,14 @@ if (typeof mcpFactories.createTaskMcpServer !== "function") {
 if (typeof agentHelpers.forkAgentSession !== "function") {
   throw new Error("packed fork helper export is missing");
 }
+const forkHost = null as AgentForkHost | null;
+const treeHost = null as CodexTreeHost | null;
+const vaultPolicyHost = null as VaultToolPolicyHost | null;
+if (forkHost || treeHost || vaultPolicyHost) throw new Error("unreachable host smoke");
+const codexStamp: CodexProcStamp = { pid: 1, lstart: "smoke" };
+if (typeof agentHelpers.killCodexTrees !== "function" || codexStamp.pid !== 1) {
+  throw new Error("packed codex process helper export is missing");
+}
 if (typeof backgroundBash.createBackgroundBashManager !== "function") {
   throw new Error("packed background-bash manager export is missing");
 }
@@ -418,6 +449,61 @@ const backgroundBashManager: BackgroundBashManager =
   backgroundBash.createBackgroundBashManager(backgroundBashOptions);
 if (backgroundBashManager.contextCapability("smoke", "topic").length !== 64) {
   throw new Error("packed background-bash manager capability is invalid");
+}
+const outboxHost: OutboxFileHost = {
+  logger: { debug() {}, info() {}, warn() {}, error() {} },
+  readJsonlLines: () => [],
+};
+const outboxOps: OutboxFileOps = outbox.createOutboxFileOps(outboxHost);
+if (outboxOps.parseOutboxLine<{ ok: boolean }>('{"ok":true}', "smoke")?.ok !== true) {
+  throw new Error("packed outbox factory export is invalid");
+}
+const outboxWatchOps: OutboxWatchOps = outbox.createOutboxWatchOps({
+  logger: { error() {}, warn() {} },
+});
+if (typeof outboxWatchOps.debouncedFlush !== "function") {
+  throw new Error("packed outbox watcher factory export is invalid");
+}
+const runtimeEnvironment: RuntimeEnvironment = { NEGOTIUM_STATE_DIR: "/tmp/state" };
+const stdioLogger: StdioLogger = platformRuntime.createStdioLogger({ development: false });
+if (
+  platformRuntime.parseRuntimePort("1234", 80) !== 1234 ||
+  platformRuntime.readEnvText(runtimeEnvironment, "NEGOTIUM_STATE_DIR") !== "/tmp/state" ||
+  !stdioLogger
+) {
+  throw new Error("packed platform runtime export is invalid");
+}
+if (typeof sqlite.Database !== "function") {
+  throw new Error("packed sqlite export is invalid");
+}
+const queryHost: RoomQueryRegistryHost<
+  { topicId: string; queryId: string; ownerId: string },
+  "internal" | "external"
+> = {
+  instanceId: "smoke",
+  internalAbortReason: "internal",
+  externalAbortReason: "external",
+  listLeases: () => [],
+  getLease: () => null,
+  claimLease: () => true,
+  heartbeatLease: () => ({ owned: true, abortRequested: false }),
+  releaseLease: () => {},
+  requestAbort: () => false,
+};
+if (typeof queryRuntime.createRoomQueryRegistry !== "function" || !queryHost.instanceId) {
+  throw new Error("packed query-runtime factory export is invalid");
+}
+const lifecycleProcess: LifecycleProcessHost = {
+  once() {},
+  removeListener() {},
+  exit(): never { throw new Error("unexpected lifecycle exit"); },
+};
+const lifecycle: LifecycleManager = runtimeHelpers.createLifecycleManager({
+  logger: { info() {}, warn() {}, error() {} },
+  process: lifecycleProcess,
+});
+if (lifecycle.handlerCount() !== 0) {
+  throw new Error("packed lifecycle manager export is invalid");
 }
 if (typeof mcpFactories.createTokenStatsMcpServer !== "function") {
   throw new Error("packed token-stats MCP factory export is missing");
@@ -428,11 +514,20 @@ if (typeof mcpFactories.createSystemHealthMcpServer !== "function") {
 if (typeof mcpFactories.createVaultMcpServer !== "function") {
   throw new Error("packed vault MCP factory export is missing");
 }
+if (
+  typeof mcpFactories.executeVaultRun !== "function" ||
+  typeof mcpFactories.executeVaultHttpRequest !== "function"
+) {
+  throw new Error("packed vault executor export is missing");
+}
 if (typeof mcpFactories.protectMcpStdio !== "function") {
   throw new Error("packed MCP stdio protection export is missing");
 }
 if (typeof mcpFactories.createWikiMcpServer !== "function") {
   throw new Error("packed wiki MCP factory export is missing");
+}
+if (typeof mcpFactories.createSessionCommMcpServer !== "function") {
+  throw new Error("packed session-comm MCP factory export is missing");
 }
 const packedTaskServer = mcpFactories.createTaskMcpServer({
   userId: "smoke-user",
@@ -451,6 +546,17 @@ await packedVaultServer.close();
 const packedWikiContext: WikiMcpContext = { userId: "smoke-user", surface: "wiki" };
 const packedWikiHost: WikiMcpHost = { wikiRoot: join(process.cwd(), "wiki-smoke") };
 await mcpFactories.createWikiMcpServer(packedWikiContext, packedWikiHost).close();
+const packedSessionContext: SessionCommContext = {
+  userId: "smoke-user",
+  currentTopic: "smoke-topic",
+  depth: 0,
+  replyOnly: true,
+  agent: "codex",
+};
+const packedSessionHost = new Proxy({}, {
+  get: () => () => ({ content: [{ type: "text", text: "ok" }] }),
+}) as SessionCommMcpHost;
+await mcpFactories.createSessionCommMcpServer(packedSessionContext, packedSessionHost).close();
 if (typeof agentHelpers.checkAgentAuth !== "function") {
   throw new Error("packed agent auth helper export is missing");
 }
@@ -484,13 +590,18 @@ for (const helper of [
   "isSensitivePath",
   "mcpError",
   "mcpOk",
+  "parseJsonlText",
   "parseUserIdArg",
+  "readJsonFile",
+  "readJsonlLines",
   "sanitizeFileName",
   "sanitizeId",
   "sanitizeTopicName",
   "textResult",
   "topicAppLink",
   "topicMarkdownLink",
+  "writeJsonFileAtomic",
+  "writeJsonlFile",
 ] as const) {
   if (typeof runtimeHelpers[helper] !== "function") {
     throw new Error("packed runtime helper export is missing: " + helper);
@@ -676,11 +787,16 @@ for (const subpath of [
   "./mcp-catalog",
   "./mcp-factories",
   "./agent-helpers",
+  "./background-bash",
+  "./outbox",
+  "./query-runtime",
+  "./platform-runtime",
   "./registry",
   "./rollout",
   "./vault",
   "./prompts",
   "./runtime-helpers",
+  "./sqlite",
   "./storage",
 ]) {
   const types = packedManifest.exports?.[subpath]?.types;
@@ -789,6 +905,14 @@ try {
     const bin = join(smokeRoot, "node_modules", ".bin", "negotium");
     const help = await run("bun", [bin, "--help"], smokeRoot, false, smokeEnv);
     if (!help.includes("usage: negotium")) fail("packed negotium binary did not render CLI help");
+    if (help.includes("chat [topic]") || help.includes("start <terminal|telegram|otium>")) {
+      fail("packed negotium binary exposed removed CLI commands");
+    }
+    const expectedVersion = packages.find((pkg) => pkg.name === "negotium")?.manifest?.version;
+    const version = (await run("bun", [bin, "--version"], smokeRoot, false, smokeEnv)).trim();
+    if (!expectedVersion || version !== expectedVersion) {
+      fail(`packed negotium binary reported version ${version}, expected ${expectedVersion}`);
+    }
     const otiumHelp = await run("bun", [bin, "otium", "--help"], smokeRoot, false, smokeEnv);
     if (!otiumHelp.includes("usage: negotium otium")) {
       fail("packed negotium binary did not load the Otium adapter CLI");

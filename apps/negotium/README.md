@@ -14,9 +14,8 @@ negotium status
 negotium stop
 negotium telegram
 negotium otium join <invite-code>
-negotium start terminal
-negotium start telegram  # separate shell
-negotium start otium     # separate shell
+negotium serve otium     # separate shell
+negotium -v
 ```
 
 Authenticate Claude with `claude`, Codex with `codex login`, or Maestro with
@@ -98,8 +97,9 @@ import {
 ```
 
 These exports are stateless or caller-owned. Process singleton utilities such as logging,
-configuration, SQLite ownership, and outbox watchers are intentionally excluded until they have a
-host-injection boundary.
+configuration, SQLite ownership, and outbox watchers remain excluded. Lifecycle reuse is available
+only through `createLifecycleManager({ logger, process })`, which keeps handlers and signal hooks
+owned by the embedding host.
 
 Maintainers can measure source overlap against an embedding host and fail on regressions with:
 
@@ -194,8 +194,10 @@ without copying provider files:
 
 ```ts
 import {
+  acquireCodexSpawnLock,
   checkAgentAuth,
   forkAgentSession,
+  killCodexTrees,
   resolveTaskEventScope,
   withTaskSnapshots,
 } from "negotium/agent-helpers";
@@ -206,6 +208,10 @@ const scope = resolveTaskEventScope(queryOptions, hostTasks);
 
 The host arguments own credential paths, environment checks, and task storage. Provider execution
 itself remains available through `negotium/hosted-agent`.
+
+Process-tree helpers are also exported from this subpath so an embedding runtime does not need a
+copied `codex-tree-kill.ts`. Their ownership Set is process-local; use them only for Codex children
+spawned by the current runtime process.
 
 ## Agent helper embedding API
 

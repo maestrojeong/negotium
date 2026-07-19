@@ -135,8 +135,7 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
       await joinCommand(commandArgs);
       break;
     }
-    case "leave":
-    case "disconnect": {
+    case "leave": {
       if (commandArgs.length > 0) throw new Error(`usage: negotium otium ${command}`);
       if (
         process.env.OTIUM_CENTRAL_URL ||
