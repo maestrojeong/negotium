@@ -1,5 +1,5 @@
 import { unlinkSync } from "node:fs";
-import { checkAgentAuth } from "#agents/auth-check";
+import { checkAgentModelAuth } from "#agents/auth-check";
 import { resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
 import { logger } from "#platform/logger";
@@ -65,7 +65,13 @@ function commitApiTopicSwitch(
  * and durable topic session stay in sync.
  */
 export function switchApiTopicAgent(opts: SwitchApiTopicAgentOptions): ApiTopicSwitchResult {
-  const auth = checkAgentAuth(opts.agent);
+  const targetRegistry = getRegistry(opts.agent);
+  const targetModel = resolveModelForAgent(
+    opts.agent,
+    opts.config.model ?? opts.defaultModel,
+    targetRegistry,
+  );
+  const auth = checkAgentModelAuth(opts.agent, targetModel);
   if (!auth.ok) return { ok: false, error: auth.error };
 
   const entries = readConversation(opts.userId, opts.topicTitle);

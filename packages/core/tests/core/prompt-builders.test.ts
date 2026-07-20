@@ -52,9 +52,11 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain("agent=`claude`, model=`opus`, effort=`high`");
     expect(prompt).toContain("codex / `gpt-5.6-sol` [Fable-level]");
     expect(prompt).toContain("maestro / `deepseek-pro` [Sonnet-level]");
+    expect(prompt).toContain("maestro / `kimi-k3` [Fable-level]");
+    expect(prompt).toContain("maestro / `kimi-k2.7-code` [Opus-level]");
     expect(prompt).not.toContain("deepseek-flash");
     expect(prompt).toContain("Codex Pro 20x and Claude Max 20x are each $200/month");
-    expect(prompt).toContain("Relative marginal token cost: DeepSeek Pro << Codex < Claude");
+    expect(prompt).toContain("DeepSeek Pro is cheapest");
     expect(prompt).not.toContain("Community observations vary");
     expect(prompt).not.toContain("raw/cached tokens per week");
     expect(prompt).not.toContain("Marginal tokens:");

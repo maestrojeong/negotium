@@ -37,6 +37,7 @@ import { isLegacySharedGeneral } from "#topics/personal-general";
 import type { AgentKind, EffortLevel } from "#types";
 
 const RESET_TURN_WAIT_MS = 5_000;
+const RESET_MEMORY_ARCHIVE_WAIT_MS = 5 * 60 * 1000;
 const COMPACTION_TRANSCRIPT_CHARS = 100_000;
 const COMPACTION_OUTPUT_CHARS = 30_000;
 const COMPACT_CONTEXT_MARKER = "[Negotium compacted context]";
@@ -64,6 +65,23 @@ export interface CompactTopicSessionOptions {
 export interface RestartTopicSessionOptions {
   archiveMemory?: typeof archiveActiveTopicForMemory;
   purgeLogs?: typeof purgeTopicLogs;
+  /** Maximum time to wait for durable memory before leaving the session unchanged. */
+  memoryArchiveWaitMs?: number;
+}
+
+async function waitForMemoryArchive(settled: Promise<void>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      settled.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function fenceTopicWork(
@@ -117,13 +135,39 @@ export async function restartTopicSession(
     const fenceError = await fenceTopicWork(topicId, maintenance);
     if (fenceError) return { text: fenceError, isError: true };
     cancelIdleArchiveForTopic(topicId);
-    (options.archiveMemory ?? archiveActiveTopicForMemory)(topicId, userId, {
+    let settleMemoryArchive: (() => void) | undefined;
+    const memoryArchiveSettled = new Promise<void>((resolve) => {
+      settleMemoryArchive = resolve;
+    });
+    const archiveStatus = (options.archiveMemory ?? archiveActiveTopicForMemory)(topicId, userId, {
       reason: "reset",
       minMessages: 1,
       minExchanges: MIN_MEMORY_ARCHIVE_EXCHANGES,
       allowMentionOnly: true,
       skipBusyCheck: true,
+      onSettled: () => settleMemoryArchive?.(),
     });
+    // Keep maintenance ownership until durable memory has settled. All reset
+    // surfaces share this service, so terminal, Telegram, MCP, and embedding
+    // hosts cannot start the fresh session against stale wiki memory.
+    if (archiveStatus === "archived") {
+      const archiveFinished = await waitForMemoryArchive(
+        memoryArchiveSettled,
+        options.memoryArchiveWaitMs ?? RESET_MEMORY_ARCHIVE_WAIT_MS,
+      );
+      if (!archiveFinished) {
+        return {
+          text: "Memory archiving did not finish in time. The session was not reset.",
+          isError: true,
+        };
+      }
+    }
+    // Memory generation is an unbounded provider operation. Re-check the
+    // durable lease after waiting so a superseded owner cannot purge a newer
+    // session created by another process.
+    if (!maintenance.isOwned()) {
+      return { text: "Topic maintenance ownership was lost. Try again.", isError: true };
+    }
     const sessionId = getTopicSessionId(topicId);
     await (options.purgeLogs ?? purgeTopicLogs)({
       userId,

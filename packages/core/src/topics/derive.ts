@@ -193,6 +193,10 @@ async function createDerivedTopicUnderFence(
   const suffix = copyHistory ? "fork" : subagent ? "agent" : "spawn";
   const sourceConfig = getApiTopicConfig(sourceTopicId);
   const agent = subagent?.agent ?? effectiveAgentForTopic(sourceTopicId, topic);
+  const subagentModel =
+    agent && subagent?.model
+      ? resolveModelForAgent(agent, subagent.model, getRegistry(agent))
+      : undefined;
 
   // Fork: inherit all source participants, creator becomes owner
   // Spawn: creator is sole owner
@@ -224,7 +228,7 @@ async function createDerivedTopicUnderFence(
     kind,
     description: topic.description,
     agent: subagent?.agent ?? topic.agent,
-    defaultModel: subagent?.model ?? topic.defaultModel,
+    defaultModel: subagentModel ?? topic.defaultModel,
     defaultEffort: topic.defaultEffort,
     aiMode: topic.aiMode,
     aiMention: topic.aiMention,
@@ -247,7 +251,7 @@ async function createDerivedTopicUnderFence(
       mkdirSync(cwd, { recursive: true });
       const registry = getRegistry(agent);
       const requestedRolloutModel =
-        subagent?.model ??
+        subagentModel ??
         (subagent?.agent ? undefined : sourceConfig?.model) ??
         derived.defaultModel;
       const rolloutModel = resolveModelForAgent(agent, requestedRolloutModel, registry);
@@ -330,7 +334,7 @@ async function createDerivedTopicUnderFence(
           if (subagent.agent) {
             delete childConfig.model;
           }
-          if (subagent.model) childConfig.model = subagent.model;
+          if (subagentModel) childConfig.model = subagentModel;
           if (Object.keys(childConfig).length > 0) setApiTopicConfig(derived.id, childConfig);
         } else if (sourceConfig) {
           setApiTopicConfig(derived.id, sourceConfig);

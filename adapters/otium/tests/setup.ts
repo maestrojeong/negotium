@@ -27,6 +27,7 @@ delete process.env.OTIUM_CELL_SECRET;
 // Token-free guarantee: even if a test accidentally reaches a real provider
 // path, no credentials are available.
 delete process.env.DEEPSEEK_API_KEY;
+delete process.env.MOONSHOT_API_KEY;
 delete process.env.GEMINI_API_KEY;
 delete process.env.ANTHROPIC_API_KEY;
 delete process.env.OPENAI_API_KEY;

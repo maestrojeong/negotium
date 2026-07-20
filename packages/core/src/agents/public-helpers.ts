@@ -2,6 +2,7 @@ export {
   type AgentAuthHost,
   type AuthCheckResult,
   checkAgentAuth,
+  checkAgentModelAuth,
 } from "#agents/auth-check";
 export {
   acquireCodexSpawnLock,
@@ -44,6 +45,7 @@ export {
   VISUALS_MCP_KEY,
   visualToolDefinitions,
 } from "#agents/mcp-tools/visuals";
+export { MIN_MEMORY_ARCHIVE_EXCHANGES } from "#agents/memory-archive-policy";
 export {
   resolveTaskEventScope,
   type TaskEventHost,

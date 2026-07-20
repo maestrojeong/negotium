@@ -60,13 +60,15 @@ Choose at least one:
 |---|---|
 | Claude | Run `claude` and finish login, or set `ANTHROPIC_API_KEY` |
 | Codex | Run `codex login` |
-| Maestro | Set `DEEPSEEK_API_KEY`; `GEMINI_API_KEY` is optional for image QA |
+| Maestro | Set `DEEPSEEK_API_KEY` for DeepSeek or `MOONSHOT_API_KEY` for Kimi; `GEMINI_API_KEY` is optional for image QA |
 
 For environment-based credentials and node settings, create a `.env` in the directory where you
 run Negotium or export the variables in your shell. Bun loads `.env` automatically.
 
 ```bash
 DEEPSEEK_API_KEY=your-key
+# MOONSHOT_API_KEY=your-key
+# MOONSHOT_BASE_URL=https://api.moonshot.ai/v1
 # FALLBACK_AGENT=maestro
 ```
 

@@ -17,8 +17,8 @@ negotium serve otium
 negotium -v
 ```
 
-Run `claude` to authenticate Claude, `codex login` for Codex, or set `DEEPSEEK_API_KEY` for
-Maestro. `negotium init` reports which providers are ready.
+Run `claude` to authenticate Claude, `codex login` for Codex, or set `DEEPSEEK_API_KEY` (DeepSeek)
+or `MOONSHOT_API_KEY` (Kimi) for Maestro. `negotium init` reports which providers are ready.
 
 For the shortest install command, `npm install --global negotium` provides this same CLI through
 the functional unscoped entry package.

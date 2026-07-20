@@ -122,6 +122,27 @@ describe("self-config core", () => {
     expect(getApiTopicConfig(topicId)?.model).toBeUndefined();
   });
 
+  test("set_model persists Kimi aliases as canonical model ids", () => {
+    const previousDeepSeek = process.env.DEEPSEEK_API_KEY;
+    const previousMoonshot = process.env.MOONSHOT_API_KEY;
+    delete process.env.DEEPSEEK_API_KEY;
+    process.env.MOONSHOT_API_KEY = "test-moonshot-key";
+    try {
+      const topicId = seedTopic("maestro");
+
+      const result = setSelfConfigModel({ topicId, userId: USER }, "kimi-pro");
+
+      expect(result.isError).toBeUndefined();
+      expect(result.text).toContain("'kimi-k3'");
+      expect(getApiTopicConfig(topicId)?.model).toBe("kimi-k3");
+    } finally {
+      if (previousDeepSeek === undefined) delete process.env.DEEPSEEK_API_KEY;
+      else process.env.DEEPSEEK_API_KEY = previousDeepSeek;
+      if (previousMoonshot === undefined) delete process.env.MOONSHOT_API_KEY;
+      else process.env.MOONSHOT_API_KEY = previousMoonshot;
+    }
+  });
+
   test("set_effort validates against the current agent", () => {
     const topicId = seedTopic("codex");
 

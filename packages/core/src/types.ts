@@ -206,7 +206,7 @@ export interface AgentQueryOptions {
    * through to the underlying provider request body for every agent
    * (claude/codex/maestro). Omit to inherit each provider SDK's per-model
    * default — for maestro that's the v0.1.21+ `getNativeMaxOutputTokens`
-   * catalog (deepseek-pro=64K, deepseek-flash=32K).
+   * catalog (deepseek-pro=64K, kimi-k3=64K, kimi-k2.7-code=32K).
    *
    * Pass an explicit number when a specific topic / surface needs a tighter
    * latency cap or a higher ceiling for long-form generation (legal

@@ -20,7 +20,7 @@ export function authRecoveryHint(agent: AgentKind): string {
     case "codex":
       return "Please log in again with `codex login` (~/.codex/auth.json)";
     case "maestro":
-      return "Please check the DEEPSEEK_API_KEY environment variable";
+      return "Please check the DEEPSEEK_API_KEY or MOONSHOT_API_KEY environment variable";
   }
 }
 
@@ -43,7 +43,7 @@ export function classifyAgentError(err: unknown, agent: AgentKind): string {
 
   const s = stringifyError(err);
   if (
-    /401|authentication.error|invalid.*api.key|not logged|ANTHROPIC_API_KEY|DEEPSEEK_API_KEY/i.test(
+    /401|authentication.error|invalid.*api.key|not logged|ANTHROPIC_API_KEY|DEEPSEEK_API_KEY|MOONSHOT_API_KEY/i.test(
       s,
     )
   ) {

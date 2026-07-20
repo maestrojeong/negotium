@@ -97,6 +97,13 @@ export function runtimeEventWaitsForMessageLoad(event: RuntimeBusEvent): boolean
   return typeof payload?.kind === "string" && MESSAGE_MUTATING_AI_STATUS_KINDS.has(payload.kind);
 }
 
+export function runtimeEventInvalidatesSelection(
+  state: Pick<AppState, "activeTopicId">,
+  event: Pick<RuntimeBusEvent, "topicId">,
+): boolean {
+  return event.topicId === state.activeTopicId;
+}
+
 export function animationFrameAt(nowMs = terminalNowMs()): number {
   return Math.floor(nowMs / WORKING_FRAME_INTERVAL_MS);
 }
@@ -271,7 +278,10 @@ export class TerminalApp {
   }
 
   #handleRuntimeEvent(event: RuntimeBusEvent): void {
-    this.#selection = null;
+    // Background topics can emit progress events every few seconds. They do
+    // not change the active conversation, so they must not interrupt a drag
+    // selection on this screen.
+    if (runtimeEventInvalidatesSelection(this.#state, event)) this.#selection = null;
     // Only message-order-sensitive events wait for the in-flight history load to
     // finish; ai-status (running/done) is safe to apply immediately so the
     // "is it running" indicator never lags behind a topic switch's network round-trip.

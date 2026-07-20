@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   archiveActiveTopicForMemory,
   killCodexTrees,
+  MIN_MEMORY_ARCHIVE_EXCHANGES,
   otiumVisualToolDefinitions,
   showPngTool,
   snapshotCodexChildren,
@@ -36,6 +37,7 @@ describe("public runtime helpers", () => {
   });
   test("exports host-consumable memory and runtime type values", () => {
     expect(archiveActiveTopicForMemory).toBeFunction();
+    expect(MIN_MEMORY_ARCHIVE_EXCHANGES).toBe(6);
     expect(EFFORT_VALUES).toContain("xhigh");
     expect(showPngTool.name).toBe("show_png");
     expect(visualToolDefinitions).not.toContain(showPngTool);

@@ -21,7 +21,7 @@ import { statfsSync } from "node:fs";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import {
   appendJsonlEntry,
-  checkAgentAuth,
+  checkAgentModelAuth,
   DATA_DIR,
   flushSessionInbox,
   getRegistry,
@@ -127,8 +127,8 @@ function requirePrimaryOrigin(peer: Extract<PeerAuth, { ok: true }>): Response |
 
 function localCapabilities() {
   const agents = SUPPORTED_AGENTS.map((kind) => {
-    const auth = checkAgentAuth(kind);
     const registry = getRegistry(kind);
+    const auth = checkAgentModelAuth(kind, registry.defaultModel);
     return {
       kind,
       available: auth.ok,

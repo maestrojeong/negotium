@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { SELECTABLE_MODELS, selectableModel } from "#agents/model-catalog";
 import { switchTopicModel } from "#application/switch-topic-model";
-import { deleteApiTopicConfig, getApiTopicConfig } from "#storage/api-topic-config";
+import {
+  deleteApiTopicConfig,
+  getApiTopicConfig,
+  setApiTopicConfig,
+} from "#storage/api-topic-config";
 import {
   deleteTopic,
   getTopic,
@@ -48,6 +52,8 @@ describe("topic model picker", () => {
       "fable",
       "opus",
       "sonnet",
+      "kimi-k3",
+      "kimi-k2.7-code",
       "deepseek-pro",
     ]);
     expect(selectableModel("GPT-5.6-SOL")?.model).toBe("gpt-5.6-sol");
@@ -60,6 +66,11 @@ describe("topic model picker", () => {
     expect(selectableModel("gpt-5.6-luna")?.estimatedUsage).toContain("1,000–5,600");
     expect(selectableModel("fable")?.estimatedUsage).toContain("explicit user request");
     expect(selectableModel("deepseek-pro")?.marginalTokenCost).toContain("$0.435/M");
+    expect(selectableModel("kimi")?.model).toBe("kimi-k3");
+    expect(selectableModel("kimi-pro")?.model).toBe("kimi-k3");
+    expect(selectableModel("kimi-code")?.model).toBe("kimi-k2.7-code");
+    expect(selectableModel("kimi-k3")?.intelligenceTier).toBe("fable");
+    expect(selectableModel("kimi-k2.7-code")?.intelligenceTier).toBe("opus");
     expect(selectableModel("gpt-5.5")).toBeUndefined();
     expect(selectableModel("deepseek-flash")).toBeUndefined();
   });
@@ -97,6 +108,31 @@ describe("topic model picker", () => {
     } finally {
       if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
       else process.env.DEEPSEEK_API_KEY = previousKey;
+    }
+  });
+
+  test("canonicalizes a Kimi alias and requires Moonshot authentication", () => {
+    const previousDeepSeek = process.env.DEEPSEEK_API_KEY;
+    const previousMoonshot = process.env.MOONSHOT_API_KEY;
+    delete process.env.DEEPSEEK_API_KEY;
+    process.env.MOONSHOT_API_KEY = "test-moonshot-key";
+    try {
+      const topicId = seedTopic("maestro");
+      setApiTopicConfig(topicId, { model: "kimi-pro" });
+      setTopicSessionId(topicId, "existing-kimi-session", {
+        reason: "test",
+        agent: "maestro",
+      });
+      const result = switchTopicModel({ topicId, userId: USER, model: "kimi-pro" });
+
+      expect(result).toMatchObject({ ok: true, model: "kimi-k3" });
+      expect(getApiTopicConfig(topicId)?.model).toBe("kimi-k3");
+      expect(getTopicSessionId(topicId)).toBe("existing-kimi-session");
+    } finally {
+      if (previousDeepSeek === undefined) delete process.env.DEEPSEEK_API_KEY;
+      else process.env.DEEPSEEK_API_KEY = previousDeepSeek;
+      if (previousMoonshot === undefined) delete process.env.MOONSHOT_API_KEY;
+      else process.env.MOONSHOT_API_KEY = previousMoonshot;
     }
   });
 });

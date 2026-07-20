@@ -34,6 +34,9 @@ export interface ActiveTopicArchiveOptions {
   onBusy?: (topicId: string, userId: string) => void;
   archiveMessages?: typeof archiveTopicMessages;
   launchArchiver?: typeof runArchiverTurn;
+  settleArchiveJob?: typeof settleTopicArchiveJob;
+  /** Called once when a launched memory turn finishes, successfully or not. */
+  onSettled?: (success: boolean) => void;
 }
 
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -176,7 +179,23 @@ export function archiveActiveTopicForMemory(
     archivePath: job.archivePath,
     messageCount: job.messageCount,
     mode: "active-topic",
-    onSettled: (success) => settleTopicArchiveJob(topicId, job.archivePath, success),
+    onSettled: (success) => {
+      let settled = false;
+      try {
+        (options.settleArchiveJob ?? settleTopicArchiveJob)(topicId, job.archivePath, success);
+        settled = true;
+      } catch (err) {
+        logger.warn(
+          { err, topicId, archive: job.archivePath },
+          "topic-memory-archiver: failed to settle archive job",
+        );
+      } finally {
+        // A reset must never hold topic maintenance forever because durable
+        // archive settlement failed. Report failure so callers can release
+        // their fence while the unchanged running job remains retryable.
+        options.onSettled?.(settled && success);
+      }
+    },
   });
   if (!launched) {
     settleTopicArchiveJob(topicId, job.archivePath, false);

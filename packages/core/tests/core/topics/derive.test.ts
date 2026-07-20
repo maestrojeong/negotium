@@ -6,6 +6,7 @@ import { maestroSessionsDir } from "maestro-agent-sdk";
 import { getRegistry } from "#agents/registry";
 import { resolveTopicWorkspaceDir } from "#platform/config";
 import { deleteTopicProfileDir, resolveTopicProfileDir } from "#platform/playwright/manager";
+import { deleteApiTopicConfig, getApiTopicConfig } from "#storage/api-topic-config";
 import { deleteTopic, getTopicSessionId, upsertTopic } from "#storage/api-topics";
 import {
   appendConversationEventStrict,
@@ -183,6 +184,57 @@ describe("createDerivedTopic", () => {
       }
       deleteTopic(sourceTopicId);
       rmSync(getConversationPath(userId, sourceTitle), { force: true });
+      rmSync(getConversationPath(userId, childTitle), { force: true });
+    }
+  });
+
+  test("canonicalizes Kimi aliases for subagent defaults and config", async () => {
+    const sourceTopicId = randomUUID();
+    const sourceTitle = `kimi-source-${randomUUID()}`;
+    const childTitle = `kimi-child-${randomUUID()}`;
+    const userId = `kimi-user-${randomUUID()}`;
+    const now = new Date().toISOString();
+    let childId: string | undefined;
+    let childSessionId: string | null = null;
+
+    upsertTopic({
+      id: sourceTopicId,
+      title: sourceTitle,
+      kind: "agent",
+      agent: "maestro",
+      defaultModel: "deepseek-pro",
+      defaultEffort: "medium",
+      participants: [{ userId, role: "owner" }],
+      createdAt: now,
+      lastMessageAt: now,
+      aiMode: "always",
+    });
+
+    try {
+      const child = await createDerivedTopic(sourceTopicId, userId, false, {
+        name: childTitle,
+        subagent: { agent: "maestro", model: "kimi-pro" },
+      });
+      expect(child).not.toBeNull();
+      if (!child) return;
+      childId = child.id;
+      childSessionId = getTopicSessionId(child.id);
+
+      expect(child.defaultModel).toBe("kimi-k3");
+      expect(getApiTopicConfig(child.id)?.model).toBe("kimi-k3");
+    } finally {
+      if (childSessionId && childId) {
+        await getRegistry("maestro").cleanupRollouts({
+          cwd: resolveTopicWorkspaceDir(childId),
+          sessionIds: [childSessionId],
+        });
+      }
+      if (childId) {
+        deleteApiTopicConfig(childId);
+        deleteTopic(childId);
+        rmSync(resolveTopicWorkspaceDir(childId), { recursive: true, force: true });
+      }
+      deleteTopic(sourceTopicId);
       rmSync(getConversationPath(userId, childTitle), { force: true });
     }
   });

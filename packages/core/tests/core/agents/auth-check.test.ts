@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type AgentAuthHost, checkAgentAuth } from "#agents/auth-check";
+import { type AgentAuthHost, checkAgentAuth, checkAgentModelAuth } from "#agents/auth-check";
 
 function host(overrides: Partial<AgentAuthHost> = {}): AgentAuthHost {
   return {
@@ -39,6 +39,27 @@ describe("checkAgentAuth host boundary", () => {
     ).toEqual({ ok: true });
     expect(checkAgentAuth("maestro", host({ environment: { DEEPSEEK_API_KEY: "key" } }))).toEqual({
       ok: true,
+    });
+    expect(checkAgentAuth("maestro", host({ environment: { MOONSHOT_API_KEY: "key" } }))).toEqual({
+      ok: true,
+    });
+  });
+
+  test("checks the credential for the selected Maestro model", () => {
+    const deepSeekOnly = host({ environment: { DEEPSEEK_API_KEY: "deepseek" } });
+    const moonshotOnly = host({ environment: { MOONSHOT_API_KEY: "moonshot" } });
+
+    expect(checkAgentModelAuth("maestro", "deepseek-pro", deepSeekOnly)).toEqual({ ok: true });
+    expect(checkAgentModelAuth("maestro", "kimi-k3", moonshotOnly)).toEqual({ ok: true });
+    expect(checkAgentModelAuth("maestro", "kimi-k2.7-code", deepSeekOnly)).toEqual({
+      ok: false,
+      error:
+        "maestro is not authenticated for model 'kimi-k2.7-code' (MOONSHOT_API_KEY env var not set)",
+    });
+    expect(checkAgentModelAuth("maestro", "deepseek-pro", moonshotOnly)).toEqual({
+      ok: false,
+      error:
+        "maestro is not authenticated for model 'deepseek-pro' (DEEPSEEK_API_KEY env var not set)",
     });
   });
 });

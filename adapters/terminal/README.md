@@ -21,8 +21,9 @@ Options:
 negotium terminal --topic=chat --agent=maestro --user=local
 ```
 
-Set `DEEPSEEK_API_KEY` in the working directory's ignored `.env` to authenticate
-Maestro Agent SDK. `GEMINI_API_KEY` is optional for image QA.
+Set `DEEPSEEK_API_KEY` for DeepSeek models or `MOONSHOT_API_KEY` for Kimi models in the working
+directory's ignored `.env` to authenticate Maestro Agent SDK. `MOONSHOT_BASE_URL` optionally
+overrides the Kimi endpoint. `GEMINI_API_KEY` is optional for image QA.
 
 The first `negotium terminal` automatically starts one authenticated loopback
 node for the current `NEGOTIUM_STATE_DIR`. Later Terminal processes connect to

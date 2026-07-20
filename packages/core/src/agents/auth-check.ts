@@ -9,7 +9,8 @@
  *   - codex: `~/.codex/auth.json` (override `NEGOTIUM_CODEX_AUTH_FILE`)
  *   - claude: `ANTHROPIC_API_KEY` env, else macOS keychain entry
  *     `Claude Code-credentials`, else `~/.claude/.credentials.json`
- *   - maestro: `DEEPSEEK_API_KEY` env
+ *   - maestro: `DEEPSEEK_API_KEY` for DeepSeek models, or
+ *     `MOONSHOT_API_KEY` for Kimi models
  */
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -78,11 +79,40 @@ export function checkAgentAuth(
       };
     }
     case "maestro": {
-      if (host.environment.DEEPSEEK_API_KEY) return { ok: true };
+      if (host.environment.DEEPSEEK_API_KEY || host.environment.MOONSHOT_API_KEY) {
+        return { ok: true };
+      }
       return {
         ok: false,
-        error: "maestro is not authenticated (DEEPSEEK_API_KEY env var not set)",
+        error:
+          "maestro is not authenticated (neither DEEPSEEK_API_KEY nor MOONSHOT_API_KEY env var is set)",
       };
     }
   }
+}
+
+/** Validate the credential required by one concrete model. */
+export function checkAgentModelAuth(
+  agent: AgentKind,
+  model: string,
+  host: AgentAuthHost = defaultAgentAuthHost,
+): AuthCheckResult {
+  if (agent !== "maestro") return checkAgentAuth(agent, host);
+  if (model.startsWith("kimi")) {
+    return host.environment.MOONSHOT_API_KEY
+      ? { ok: true }
+      : {
+          ok: false,
+          error: `maestro is not authenticated for model '${model}' (MOONSHOT_API_KEY env var not set)`,
+        };
+  }
+  if (model.startsWith("deepseek")) {
+    return host.environment.DEEPSEEK_API_KEY
+      ? { ok: true }
+      : {
+          ok: false,
+          error: `maestro is not authenticated for model '${model}' (DEEPSEEK_API_KEY env var not set)`,
+        };
+  }
+  return checkAgentAuth(agent, host);
 }

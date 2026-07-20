@@ -29,7 +29,8 @@
  *       - 32K is generous enough that ~99% of realistic single-turn
  *         outputs fit without truncation;
  *       - keeps cost / latency bounded relative to the SDK's own
- *         model-catalog defaults (deepseek-pro 64K, deepseek-flash 32K)
+ *         model-catalog defaults (deepseek-pro 64K, kimi-k3 64K,
+ *         kimi-k2.7-code 32K)
  *         which can be expensive for accidental long outputs.
  *     Callers that need more (or less) override per-call via
  *     `AgentQueryOptions.maxTokens` — the caller-supplied value wins

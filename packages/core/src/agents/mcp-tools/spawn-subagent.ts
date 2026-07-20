@@ -362,20 +362,26 @@ async function spawnSubagent(
 
   // Preflight the overrides before creating anything — a bad agent/model would
   // otherwise leave a dead child room with a card that fails on first turn.
-  if (agentOverride) {
-    const { checkAgentAuth } = await import("#agents/auth-check");
-    const auth = checkAgentAuth(agentOverride);
-    if (!auth.ok) {
-      return errorResult(`Error: agent '${agentOverride}' is not available: ${auth.error}`);
-    }
-  }
+  const targetAgent = agentOverride ?? ctx.agent;
+  let resolvedModelOverride = modelOverride;
   if (modelOverride) {
+    const { resolveModelForAgent } = await import("#agents/model-catalog");
     const { getRegistry } = await import("#agents/registry");
-    const targetAgent = agentOverride ?? ctx.agent;
-    if (!getRegistry(targetAgent).validateModel(modelOverride)) {
+    const registry = getRegistry(targetAgent);
+    if (!registry.validateModel(modelOverride)) {
       return errorResult(
         `Error: model '${modelOverride}' is not valid for agent '${targetAgent}'.`,
       );
+    }
+    resolvedModelOverride = resolveModelForAgent(targetAgent, modelOverride, registry);
+  }
+  if (agentOverride || modelOverride) {
+    const { checkAgentModelAuth } = await import("#agents/auth-check");
+    const { getRegistry } = await import("#agents/registry");
+    const targetModel = resolvedModelOverride ?? getRegistry(targetAgent).defaultModel;
+    const auth = checkAgentModelAuth(targetAgent, targetModel);
+    if (!auth.ok) {
+      return errorResult(`Error: agent '${targetAgent}' is not available: ${auth.error}`);
     }
   }
 
@@ -384,7 +390,7 @@ async function spawnSubagent(
   try {
     child = await createDerivedTopic(ctx.topicId, ctx.userId, false, {
       name,
-      subagent: { agent: agentOverride, model: modelOverride },
+      subagent: { agent: agentOverride, model: resolvedModelOverride },
     });
   } catch (e) {
     if (e instanceof TopicTitleConflictError) {

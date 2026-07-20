@@ -16,7 +16,7 @@
  * duplicate the diagnostic context.
  */
 import { unlinkSync } from "node:fs";
-import { checkAgentAuth } from "#agents/auth-check";
+import { checkAgentModelAuth } from "#agents/auth-check";
 import { isAgentKind } from "#agents/index";
 import { resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
@@ -76,7 +76,9 @@ export function switchTopicAgent(
   // Auth precondition — block the switch if the target backend isn't
   // authenticated, otherwise the topic flips and every subsequent turn
   // fails inside the provider with an opaque per-turn error.
-  const auth = checkAgentAuth(agent);
+  const registry = getRegistry(agent);
+  const targetModel = resolveModelForAgent(agent, undefined, registry);
+  const auth = checkAgentModelAuth(agent, targetModel);
   if (!auth.ok) return { ok: false, error: auth.error };
 
   const oldAgent = topic.agent;

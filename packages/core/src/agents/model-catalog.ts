@@ -28,6 +28,11 @@ export const MODEL_OWNER: Record<string, AgentKind> = {
   deepseek: "maestro",
   "deepseek-pro": "maestro",
   "deepseek-flash": "maestro",
+  kimi: "maestro",
+  "kimi-pro": "maestro",
+  "kimi-k3": "maestro",
+  "kimi-code": "maestro",
+  "kimi-k2.7-code": "maestro",
 };
 
 export interface SelectableModel {
@@ -56,13 +61,15 @@ export interface SelectableModel {
  * - https://help.openai.com/en/articles/20001106
  * - https://support.claude.com/en/articles/11049741-what-is-the-max-plan
  * - https://api-docs.deepseek.com/quick_start/pricing
+ * - https://platform.kimi.ai/docs/pricing/chat-k3
+ * - https://platform.kimi.ai/docs/pricing/chat-k27-code
  * Community token counts are deliberately labelled estimates because providers
  * meter cached input, fresh input, output, reasoning, speed, and model choice
  * differently and may change server-side weights without publishing a token cap.
  */
 export const MODEL_COST_RESEARCHED_AT = "2026-07-19";
 export const MODEL_COST_ROUTING_SUMMARY =
-  "Cost basis (2026-07-19): Codex Pro 20x and Claude Max 20x are each $200/month; DeepSeek Pro is pay-per-token. Relative marginal token cost: DeepSeek Pro << Codex < Claude.";
+  "Cost basis (2026-07-19): Codex Pro 20x and Claude Max 20x are each $200/month; Maestro models are pay-per-token. DeepSeek Pro is cheapest, Kimi K2.7 Code is the coding route, and Kimi K3 is the frontier route.";
 
 const CODEX_PRO_20X_COST = "ChatGPT Pro 20x subscription: $200/month";
 const CODEX_COMMUNITY_WEEKLY =
@@ -141,6 +148,27 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
     estimatedUsage: `${CLAUDE_COMMUNITY_SESSION}; Sonnet also has a separate weekly allowance and normally provides the highest Claude throughput. No stable weekly token cap is published.`,
   },
   {
+    model: "kimi-k3",
+    agent: "maestro",
+    description: "Frontier Kimi route for long-horizon coding and knowledge work.",
+    intelligenceTier: "fable",
+    routingSummary: "frontier general/coding route; 1M context; highest Maestro API cost",
+    accessCost: "Moonshot AI pay-as-you-go API; no monthly subscription required",
+    marginalTokenCost: "Kimi API: $3/M cache-miss input, $0.30/M cached input, $15/M output",
+    estimatedUsage: "No subscription token cap; pay per token. Supports a 1M-token context window.",
+  },
+  {
+    model: "kimi-k2.7-code",
+    agent: "maestro",
+    description: "Coding-specialized Kimi route for repository-scale, long-horizon work.",
+    intelligenceTier: "opus",
+    routingSummary: "coding-specialized route; 256K context; cheaper than Kimi K3",
+    accessCost: "Moonshot AI pay-as-you-go API; no monthly subscription required",
+    marginalTokenCost: "Kimi API: $0.95/M cache-miss input, $0.19/M cached input, $4/M output",
+    estimatedUsage:
+      "No subscription token cap; pay per token. Always uses thinking and supports a 256K context window.",
+  },
+  {
     model: "deepseek-pro",
     agent: "maestro",
     description: "API-priced Sonnet-level route for cost-efficient everyday work.",
@@ -154,19 +182,32 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
   },
 ];
 
+const SELECTABLE_MODEL_ALIASES: Readonly<Record<string, string>> = {
+  kimi: "kimi-k3",
+  "kimi-pro": "kimi-k3",
+  "kimi-code": "kimi-k2.7-code",
+};
+
+/** Normalize supported user-facing aliases before validation or persistence. */
+export function canonicalModelId(value: string): string {
+  const trimmed = value.trim();
+  return SELECTABLE_MODEL_ALIASES[trimmed.toLowerCase()] ?? trimmed;
+}
+
 export function formatSelectableModel(candidate: SelectableModel): string {
   const tier = `${candidate.intelligenceTier[0].toUpperCase()}${candidate.intelligenceTier.slice(1)}`;
   return `${candidate.agent} / \`${candidate.model}\` [${tier}-level]: ${candidate.routingSummary}`;
 }
 
 export function selectableModel(value: string): SelectableModel | undefined {
-  const normalized = value.trim().toLowerCase();
-  return SELECTABLE_MODELS.find((candidate) => candidate.model === normalized);
+  const canonical = canonicalModelId(value).toLowerCase();
+  return SELECTABLE_MODELS.find((candidate) => candidate.model === canonical);
 }
 
 export function modelOwner(model: string): AgentKind | undefined {
   if (model.startsWith("claude-")) return "claude";
   if (model.startsWith("deepseek-")) return "maestro";
+  if (model.startsWith("kimi-")) return "maestro";
   if (model.startsWith("gpt-")) return "codex";
   return MODEL_OWNER[model];
 }
@@ -184,9 +225,10 @@ export function resolveModelForAgent(
 ): string {
   const defaultModel = resolveDefaultModel(agent, registry.defaultModel);
   if (!requested) return defaultModel;
-  const owner = modelOwner(requested);
+  const candidate = canonicalModelId(requested);
+  const owner = modelOwner(candidate);
   if (owner && owner !== agent) return defaultModel; // cross-agent stale
-  return registry.validateModel(requested) ? requested : defaultModel;
+  return registry.validateModel(candidate) ? candidate : defaultModel;
 }
 
 /**

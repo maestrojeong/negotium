@@ -1,5 +1,6 @@
 import { switchApiTopicAgent } from "#agents/api-topic-agent-switch";
-import { resolveModelForAgent } from "#agents/model-catalog";
+import { checkAgentModelAuth } from "#agents/auth-check";
+import { modelOwner, resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
 import { WsHub } from "#bus";
 import { resolveTopicWorkspaceDir } from "#platform/config";
@@ -92,8 +93,13 @@ function agentAliases(agent: AgentKind): string[] {
         "메스트로",
         "deepseek",
         "deepseek-pro",
-        "deepseek-flash",
+        "kimi",
+        "kimi-pro",
+        "kimi-k3",
+        "kimi-code",
+        "kimi-k2.7-code",
         "딥시크",
+        "키미",
       ];
   }
 }
@@ -125,18 +131,24 @@ export function setSelfConfigModel(ctx: SelfConfigContext, model: string): SelfC
 
   const agent = currentAgent(topic);
   const registry = getRegistry(agent);
-  if (resolveModelForAgent(agent, model, registry) !== model) {
+  const owner = modelOwner(model);
+  if ((owner && owner !== agent) || !registry.validateModel(model)) {
     return err(
       `'${model}' is not a valid model for agent '${agent}'. If it belongs to another agent, call set_agent first.`,
     );
   }
+  const resolvedModel = resolveModelForAgent(agent, model, registry);
+  const auth = checkAgentModelAuth(agent, resolvedModel);
+  if (!auth.ok) return err(auth.error);
 
-  setApiTopicConfig(topic.id, { ...cfg, model });
+  setApiTopicConfig(topic.id, { ...cfg, model: resolvedModel });
   // Keep the provider conversation. Codex and Claude both support changing
   // the model for a later turn while resuming the same thread/session.
   WsHub.get().broadcastTopicUpdated(topic.id);
   ctx.onConfigChanged?.("model");
-  return ok(`Model for this topic set to '${model}' (agent=${agent}). Applies from the next turn.`);
+  return ok(
+    `Model for this topic set to '${resolvedModel}' (agent=${agent}). Applies from the next turn.`,
+  );
 }
 
 export function getSelfConfigModel(ctx: SelfConfigContext): SelfConfigResult {

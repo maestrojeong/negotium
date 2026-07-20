@@ -8,6 +8,7 @@ import {
   readConversation,
   replaceConversationStrict,
 } from "#storage/conversations";
+import { db } from "#storage/forum-db";
 import { claimRuntimeTurnLease, releaseRuntimeTurnLease } from "#storage/runtime-leases";
 import {
   enqueueRuntimeUserTurnRequest,
@@ -34,7 +35,7 @@ afterEach(() => {
 });
 
 describe("restartTopicSession", () => {
-  test("archives memory before purging provider context", async () => {
+  test("waits for memory archiving before purging provider context", async () => {
     const { owner, topic } = createTopic();
     const sessionId = "01940000-0000-7000-8000-000000000099";
     setTopicSessionId(topic.id, sessionId, { reason: "test", agent: "codex" });
@@ -43,8 +44,9 @@ describe("restartTopicSession", () => {
       content: "remember before reset",
     });
     let archived = false;
+    let settleArchive: (() => void) | undefined;
 
-    const result = await restartTopicSession(topic.id, owner, "test-reset", {
+    const resultPromise = restartTopicSession(topic.id, owner, "test-reset", {
       archiveMemory: (topicId, userId, options) => {
         expect(topicId).toBe(topic.id);
         expect(userId).toBe(owner);
@@ -58,6 +60,7 @@ describe("restartTopicSession", () => {
         expect(getTopicSessionId(topic.id)).toBe(sessionId);
         expect(readConversation(owner, topic.title)).toHaveLength(1);
         archived = true;
+        settleArchive = () => options.onSettled?.(true);
         return "archived";
       },
       purgeLogs: async () => {
@@ -66,9 +69,68 @@ describe("restartTopicSession", () => {
       },
     });
 
+    await Promise.resolve();
+    expect(archived).toBe(true);
+    expect(readConversation(owner, topic.title)).toHaveLength(1);
+    settleArchive?.();
+    const result = await resultPromise;
+
     expect(result.isError).toBeUndefined();
     expect(archived).toBe(true);
     expect(readConversation(owner, topic.title)).toEqual([]);
+  });
+
+  test("times out a stuck memory archiver without clearing provider context", async () => {
+    const { owner, topic } = createTopic();
+    setTopicSessionId(topic.id, "stuck-memory-session", { reason: "test", agent: "codex" });
+    let purged = false;
+
+    const result = await restartTopicSession(topic.id, owner, "test-reset", {
+      archiveMemory: () => "archived",
+      memoryArchiveWaitMs: 5,
+      purgeLogs: async () => {
+        purged = true;
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("did not finish in time");
+    expect(purged).toBe(false);
+    expect(getTopicSessionId(topic.id)).toBe("stuck-memory-session");
+  });
+
+  test("does not purge after losing maintenance ownership during memory archiving", async () => {
+    const { owner, topic } = createTopic();
+    setTopicSessionId(topic.id, "ownership-session", { reason: "test", agent: "codex" });
+    let finishArchive: (() => void) | undefined;
+    let purged = false;
+
+    try {
+      const resultPromise = restartTopicSession(topic.id, owner, "test-reset", {
+        archiveMemory: (_topicId, _userId, options) => {
+          finishArchive = () => options.onSettled?.(true);
+          return "archived";
+        },
+        purgeLogs: async () => {
+          purged = true;
+        },
+      });
+
+      await Promise.resolve();
+      db.query("UPDATE runtime_topic_state SET maintenance_owner = ? WHERE topic_id = ?").run(
+        "replacement-owner",
+        topic.id,
+      );
+      finishArchive?.();
+      const result = await resultPromise;
+
+      expect(result.isError).toBe(true);
+      expect(result.text).toContain("ownership was lost");
+      expect(purged).toBe(false);
+      expect(getTopicSessionId(topic.id)).toBe("ownership-session");
+    } finally {
+      db.query("DELETE FROM runtime_topic_state WHERE topic_id = ?").run(topic.id);
+    }
   });
 
   test("clears runtime context while preserving the topic and visible history owner", async () => {

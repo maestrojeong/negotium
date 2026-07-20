@@ -1,4 +1,5 @@
 import { switchApiTopicAgent } from "#agents/api-topic-agent-switch";
+import { checkAgentModelAuth } from "#agents/auth-check";
 import { resolveModelForAgent, selectableModel } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
 import { WsHub } from "#bus";
@@ -33,6 +34,8 @@ export function switchTopicModel(params: SwitchTopicModelParams): SwitchTopicMod
 
   const target = selectableModel(params.model);
   if (!target) return { ok: false, error: `Unknown model: ${params.model.trim() || "(empty)"}` };
+  const auth = checkAgentModelAuth(target.agent, target.model);
+  if (!auth.ok) return { ok: false, error: auth.error };
 
   const currentAgent = topic.agent;
   const currentConfig = getApiTopicConfig(topic.id) ?? {};

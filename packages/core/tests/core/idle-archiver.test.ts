@@ -245,6 +245,43 @@ describe("idle archiver defaults", () => {
     expect(getTopicArchiveState(topic.id)?.lastArchivedRowid).toBe(42);
   });
 
+  test("notifies reset callers even when durable job settlement throws", () => {
+    const topic = makeTopic(false);
+    appendApiMessage({
+      id: randomUUID(),
+      topicId: topic.id,
+      authorId: "idle-owner",
+      text: "settlement failures must not strand reset",
+      createdAt: new Date().toISOString(),
+    });
+    const settlements: boolean[] = [];
+
+    expect(
+      archiveActiveTopicForMemory(topic.id, "idle-owner", {
+        reason: "reset",
+        minMessages: 1,
+        allowMentionOnly: true,
+        skipBusyCheck: true,
+        archiveMessages: () => ({
+          path: "/tmp/reset-memory-settle-error.jsonl",
+          messageCount: 1,
+          exchangeCount: 0,
+          lastRowid: 44,
+        }),
+        launchArchiver: (params) => {
+          params.onSettled?.(true);
+          return true;
+        },
+        settleArchiveJob: () => {
+          throw new Error("simulated sqlite failure");
+        },
+        onSettled: (success) => settlements.push(success),
+      }),
+    ).toBe("archived");
+    expect(settlements).toEqual([false]);
+    expect(getTopicArchiveState(topic.id)).toBeNull();
+  });
+
   test("does not launch the same snapshot twice while another process owns its job", () => {
     const topic = makeTopic(false);
     appendApiMessage({

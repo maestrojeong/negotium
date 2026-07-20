@@ -4,6 +4,7 @@ import {
   consumeMouseInput,
   ctrlCExitsTopicPicker,
   escapeStopsActiveTurn,
+  runtimeEventInvalidatesSelection,
   runtimeEventWaitsForMessageLoad,
   TerminalApp,
   vaultFormBlocksOverlaySwitch,
@@ -73,6 +74,13 @@ test("applies spinner status immediately while message history is loading", () =
       payload: { id: "message" },
     }),
   ).toBe(true);
+});
+
+test("keeps a screen selection when a background topic emits an event", () => {
+  const state = { ...createInitialState("local"), activeTopicId: TOPIC.id };
+
+  expect(runtimeEventInvalidatesSelection(state, { topicId: "background-topic" })).toBe(false);
+  expect(runtimeEventInvalidatesSelection(state, { topicId: TOPIC.id })).toBe(true);
 });
 
 test("derives animation frames from elapsed time instead of callback count", () => {

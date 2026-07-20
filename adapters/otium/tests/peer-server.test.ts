@@ -179,6 +179,33 @@ describe("capabilities / health", () => {
     expect(Array.isArray(body.optionalMcp)).toBe(true);
   });
 
+  test("does not advertise the DeepSeek default as ready with only Moonshot auth", async () => {
+    const previousDeepSeek = process.env.DEEPSEEK_API_KEY;
+    const previousMoonshot = process.env.MOONSHOT_API_KEY;
+    delete process.env.DEEPSEEK_API_KEY;
+    process.env.MOONSHOT_API_KEY = "test-moonshot-key";
+    try {
+      const { body } = await call("/api/v1/peer/capabilities", {
+        method: "GET",
+        token: HUB_TOKEN,
+      });
+      const maestro = (body.agents as Array<Record<string, unknown>>).find(
+        (agent) => agent.kind === "maestro",
+      );
+
+      expect(maestro).toMatchObject({
+        available: false,
+        defaultModel: "deepseek-pro",
+      });
+      expect(String(maestro?.error)).toContain("DEEPSEEK_API_KEY");
+    } finally {
+      if (previousDeepSeek === undefined) delete process.env.DEEPSEEK_API_KEY;
+      else process.env.DEEPSEEK_API_KEY = previousDeepSeek;
+      if (previousMoonshot === undefined) delete process.env.MOONSHOT_API_KEY;
+      else process.env.MOONSHOT_API_KEY = previousMoonshot;
+    }
+  });
+
   test("health reports cpu/memory/uptime", async () => {
     const { status, body } = await call("/api/v1/peer/health", {
       method: "GET",

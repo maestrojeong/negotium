@@ -441,6 +441,7 @@ if (typeof agentHelpers.forkAgentSession !== "function") {
 const archiveOptions: ActiveTopicArchiveOptions = { reason: "reset", minMessages: 1 };
 if (
   typeof agentHelpers.archiveActiveTopicForMemory !== "function" ||
+  agentHelpers.MIN_MEMORY_ARCHIVE_EXCHANGES !== 6 ||
   agentHelpers.showPngTool.name !== "show_png" ||
   !agentHelpers.otiumVisualToolDefinitions.includes(agentHelpers.showPngTool) ||
   archiveOptions.reason !== "reset"
