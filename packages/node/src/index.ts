@@ -66,6 +66,7 @@ export {
   stopNodeDaemon,
   waitForNodeDaemon,
 } from "./control";
+export { NodeFileStore, nodeFileStore } from "./files";
 
 export interface NodeHandle {
   port: number;
