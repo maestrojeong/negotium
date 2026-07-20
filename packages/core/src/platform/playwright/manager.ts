@@ -22,8 +22,11 @@ import {
   resolveBrowserProxy,
 } from "#platform/config";
 import { delay } from "#platform/delay";
-
 import { logger } from "#platform/logger";
+import {
+  type HeadedPlaywrightSpawnSpec,
+  resolveHeadedPlaywrightSpawn,
+} from "#platform/playwright/headed-launch";
 import { sanitizeTopicName } from "#security/sanitize";
 import {
   assignTopicBrowserProfile,
@@ -783,11 +786,25 @@ async function spawnPlaywright(
 
   const command = browserBin.endsWith(".mjs") ? process.execPath : browserBin;
   const args = browserBin.endsWith(".mjs") ? [browserBin, ...mcpArgs] : mcpArgs;
-  const proc = spawn(command, args, {
-    stdio: "ignore",
-    detached: false,
-    env: childEnv,
-  });
+  let spawnSpec: HeadedPlaywrightSpawnSpec;
+  try {
+    spawnSpec = resolveHeadedPlaywrightSpawn(command, args, { environment: childEnv });
+  } catch (err) {
+    releasePort(port);
+    throw err;
+  }
+  let proc: ChildProcess;
+  try {
+    proc = spawn(spawnSpec.command, spawnSpec.args, {
+      stdio: "ignore",
+      detached: false,
+      env: childEnv,
+    });
+  } catch (err) {
+    releasePort(port);
+    throw err;
+  }
+  const spawnError = waitForChildProcessSpawnError(proc);
 
   // When the MCP dies on its own (crash / OOM), its Chrome subtree is reparented
   // to init and escapes the tracked-instance map. Reap it by user-data-dir here
@@ -835,8 +852,11 @@ async function spawnPlaywright(
     capability,
   });
 
-  const ready =
-    (await waitForServer(port, 10_000)) && (await supportsOwnerCleanup(port, capability));
+  const ready = await Promise.race([
+    (async () =>
+      (await waitForServer(port, 10_000)) && (await supportsOwnerCleanup(port, capability)))(),
+    spawnError,
+  ]);
   if (!ready) {
     const exitCode = proc.exitCode;
     killInstance(instanceKey);
@@ -853,7 +873,10 @@ async function spawnPlaywright(
     );
   }
   writePortFile(instanceKey, port);
-  logger.info({ instanceKey, port, pid: proc.pid, ready }, "Playwright MCP started");
+  logger.info(
+    { instanceKey, port, pid: proc.pid, ready, virtualDisplay: spawnSpec.virtualDisplay },
+    "Playwright MCP started",
+  );
   return port;
 }
 
@@ -1231,6 +1254,13 @@ export function waitForChildProcessExit(proc: ChildProcess, timeoutMs: number): 
 
     // Close the gap between the initial state check and listener registration.
     if (proc.exitCode !== null || proc.signalCode !== null) finish(true);
+  });
+}
+
+/** Reject immediately when the OS cannot launch a child process. */
+export function waitForChildProcessSpawnError(proc: Pick<ChildProcess, "once">): Promise<never> {
+  return new Promise<never>((_resolve, reject) => {
+    proc.once("error", reject);
   });
 }
 

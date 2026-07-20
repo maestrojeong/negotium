@@ -47,6 +47,7 @@ Requirements:
 - Node.js 20+ when using Codex's stdio MCP tools
 - macOS or Linux; the runtime currently expects POSIX process controls
 - credentials for at least one supported agent
+- Xvfb (`xvfb-run`) on Linux nodes without `DISPLAY`/`WAYLAND_DISPLAY` when using browser tools
 
 ```bash
 npm install --global negotium

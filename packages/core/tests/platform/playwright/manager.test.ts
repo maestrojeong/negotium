@@ -10,6 +10,7 @@ import {
   selectOrphanBrowserPids,
   selectReusablePort,
   waitForChildProcessExit,
+  waitForChildProcessSpawnError,
   withPlaywrightInstanceMaintenance,
 } from "#platform/playwright/manager";
 
@@ -180,5 +181,17 @@ describe("waitForChildProcessExit", () => {
     emitter.signalCode = "SIGTERM";
     emitter.emit("exit", null, "SIGTERM");
     expect(await waiting).toBe(true);
+  });
+});
+
+describe("waitForChildProcessSpawnError", () => {
+  it("preserves the original launcher error without waiting for health polling", async () => {
+    const emitter = new EventEmitter();
+    const waiting = waitForChildProcessSpawnError(emitter as unknown as ChildProcess);
+    const error = Object.assign(new Error("spawn xvfb-run ENOENT"), { code: "ENOENT" });
+
+    emitter.emit("error", error);
+
+    await expect(waiting).rejects.toBe(error);
   });
 });
