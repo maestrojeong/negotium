@@ -10,7 +10,7 @@
     },
     "adapters/otium": {
       "name": "@negotium/adapter-otium",
-      "version": "0.1.26",
+      "version": "0.1.27",
       "bin": {
         "negotium-otium": "dist/cli.js",
       },
@@ -27,7 +27,7 @@
     },
     "adapters/telegram": {
       "name": "@negotium/adapter-telegram",
-      "version": "0.1.26",
+      "version": "0.1.27",
       "bin": {
         "negotium-telegram": "dist/cli.js",
       },
@@ -45,7 +45,7 @@
     },
     "adapters/terminal": {
       "name": "@negotium/adapter-terminal",
-      "version": "0.1.26",
+      "version": "0.1.27",
       "bin": {
         "negotium-terminal": "dist/cli.js",
       },
@@ -62,7 +62,7 @@
     },
     "apps/cli": {
       "name": "@negotium/cli",
-      "version": "0.1.26",
+      "version": "0.1.27",
       "bin": {
         "negotium": "dist/main.js",
       },
@@ -84,7 +84,7 @@
     },
     "apps/negotium": {
       "name": "negotium",
-      "version": "0.1.26",
+      "version": "0.1.27",
       "bin": {
         "negotium": "dist/main.js",
       },
@@ -93,7 +93,7 @@
         "@anthropic-ai/sdk": "^0.111.0",
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@openai/codex-sdk": "0.144.4",
-        "maestro-agent-sdk": "0.1.46",
+        "maestro-agent-sdk": "0.1.47",
         "mcp-patchright": "0.1.11",
         "node-telegram-bot-api": "^1.1.2",
         "pino": "^10.3.1",
@@ -109,7 +109,7 @@
     },
     "packages/adapter-sdk": {
       "name": "@negotium/adapter-sdk",
-      "version": "0.1.26",
+      "version": "0.1.27",
       "devDependencies": {
         "@types/node": "^20",
         "bun-types": "^1.3.11",
@@ -118,7 +118,7 @@
     },
     "packages/adapter-testkit": {
       "name": "@negotium/adapter-testkit",
-      "version": "0.1.26",
+      "version": "0.1.27",
       "dependencies": {
         "@negotium/adapter-sdk": "0.1.9",
       },
@@ -130,13 +130,13 @@
     },
     "packages/core": {
       "name": "@negotium/core",
-      "version": "0.1.26",
+      "version": "0.1.27",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.210",
         "@anthropic-ai/sdk": "^0.111.0",
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@openai/codex-sdk": "0.144.4",
-        "maestro-agent-sdk": "0.1.46",
+        "maestro-agent-sdk": "0.1.47",
         "mcp-patchright": "0.1.11",
         "pino": "^10.3.1",
         "pino-pretty": "^13.1.3",
@@ -151,7 +151,7 @@
     },
     "packages/mcp": {
       "name": "@negotium/mcp",
-      "version": "0.1.26",
+      "version": "0.1.27",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@negotium/core": "0.1.9",
@@ -165,7 +165,7 @@
     },
     "packages/mcp-host": {
       "name": "@negotium/mcp-host",
-      "version": "0.1.26",
+      "version": "0.1.27",
       "dependencies": {
         "zod": "^4.3.6",
       },
@@ -177,7 +177,7 @@
     },
     "packages/module-cron": {
       "name": "@negotium/module-cron",
-      "version": "0.1.26",
+      "version": "0.1.27",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@negotium/core": "0.1.9",
@@ -191,7 +191,7 @@
     },
     "packages/node": {
       "name": "@negotium/node",
-      "version": "0.1.26",
+      "version": "0.1.27",
       "dependencies": {
         "@negotium/core": "0.1.9",
         "@negotium/mcp": "0.1.9",
@@ -518,7 +518,7 @@
 
     "json-schema-typed": ["json-schema-typed@8.0.2", "", {}, "sha512-fQhoXdcvc3V28x7C7BMs4P5+kNlgUURe2jmUT1T//oBRMDrqy1QPelJimwZGo7Hg9VPV3EQV5Bnq4hbFy2vetA=="],
 
-    "maestro-agent-sdk": ["maestro-agent-sdk@0.1.46", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.27.1", "cheerio": "^1.2.0", "pdfjs-dist": "^5.7.284" } }, "sha512-xvuF83LmKR69kODaEezLAXbA6tlg3NMsXjWot4trY5d/2G1fNlk3Ovpjbs3u2GnRwWF1+b8AUmR00ULQhNy5Ng=="],
+    "maestro-agent-sdk": ["maestro-agent-sdk@0.1.47", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.27.1", "cheerio": "^1.2.0", "pdfjs-dist": "^5.7.284" } }, "sha512-wnAz3UmkpgnqYrGqnneUCG42ifhoNdEkx7CVbBYa+r9PNiEyPSwEzwA4OR0RITbaSSP0GFZAy0xjtq+QIknmxw=="],
 
     "math-intrinsics": ["math-intrinsics@1.1.0", "", {}, "sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g=="],
 
