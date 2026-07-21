@@ -139,17 +139,26 @@ test("Vault secret entry keeps global shortcuts inside the masking overlay", () 
   expect(vaultFormBlocksOverlaySwitch({ ...state, vaultMode: "list" })).toBe(false);
 });
 
-test("compact Vault commands keep the manager while restoring set and del", async () => {
+test("compact Vault commands are the default and keep the manager behind manage", async () => {
   const commands: string[] = [];
   const client = {
     runVaultCommand(commandLine: string) {
       commands.push(commandLine);
+      if (commandLine === "/vault") return "Vault keys (1):\n- API_KEY: test credential";
+      if (commandLine === "/vault list") return "Vault keys (1):\n- API_KEY: test credential";
       return commandLine.includes(" set ") ? "Stored API_KEY." : "Deleted API_KEY.";
     },
   };
 
-  expect(await runTerminalVaultCommand(client, "/vault")).toEqual({ kind: "open-manager" });
+  expect(await runTerminalVaultCommand(client, "/vault")).toEqual({
+    kind: "notice",
+    notice: "Vault keys (1): - API_KEY: test credential",
+  });
   expect(await runTerminalVaultCommand(client, "/vault list")).toEqual({
+    kind: "notice",
+    notice: "Vault keys (1): - API_KEY: test credential",
+  });
+  expect(await runTerminalVaultCommand(client, "/vault manage")).toEqual({
     kind: "open-manager",
   });
   expect(await runTerminalVaultCommand(client, "/vault set API_KEY top-secret")).toEqual({
@@ -160,7 +169,12 @@ test("compact Vault commands keep the manager while restoring set and del", asyn
     kind: "notice",
     notice: "Deleted API_KEY.",
   });
-  expect(commands).toEqual(["/vault set API_KEY top-secret", "/vault del API_KEY"]);
+  expect(commands).toEqual([
+    "/vault",
+    "/vault list",
+    "/vault set API_KEY top-secret",
+    "/vault del API_KEY",
+  ]);
 });
 
 test("compact Vault command failures never reflect plaintext command details", async () => {

@@ -90,7 +90,7 @@ export type TerminalVaultCommandOutcome =
   | { kind: "notice"; notice: string };
 
 const TERMINAL_VAULT_USAGE =
-  "Usage: /vault, /vault list, /vault set KEY VALUE [description], or /vault del KEY";
+  "Usage: /vault [list], /vault set KEY VALUE [description], /vault del KEY, or /vault manage";
 
 /**
  * Route the compact Vault command UX without exposing plaintext values in the
@@ -104,8 +104,8 @@ export async function runTerminalVaultCommand(
   const match = commandLine.trim().match(/^\/vault(?:@\w+)?(?:\s+([^\s]+))?/i);
   const subcommand = match?.[1]?.toLowerCase();
 
-  if (!subcommand || subcommand === "list") return { kind: "open-manager" };
-  if (subcommand !== "set" && subcommand !== "del") {
+  if (subcommand === "manage") return { kind: "open-manager" };
+  if (subcommand && subcommand !== "list" && subcommand !== "set" && subcommand !== "del") {
     return { kind: "notice", notice: TERMINAL_VAULT_USAGE };
   }
   if (!client.runVaultCommand) {

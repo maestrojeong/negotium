@@ -11,7 +11,8 @@ integration. No data migration or configuration change is required.
 
 ## Terminal Vault commands
 
-- `/vault` and `/vault list` open the interactive Vault manager.
+- `/vault` and `/vault list` show stored key names without leaving the conversation.
+- `/vault manage` opens the optional interactive Vault manager.
 - `/vault set KEY VALUE [description]` stores or updates a secret directly.
 - Use `/vault set KEY value with spaces | optional description` when the value contains spaces.
 - `/vault del KEY` deletes a secret directly.
