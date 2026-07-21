@@ -4,6 +4,7 @@ import {
   consumeMouseInput,
   ctrlCExitsTopicPicker,
   escapeStopsActiveTurn,
+  runTerminalVaultCommand,
   runtimeEventInvalidatesSelection,
   runtimeEventWaitsForMessageLoad,
   TerminalApp,
@@ -136,6 +137,66 @@ test("Vault secret entry keeps global shortcuts inside the masking overlay", () 
   expect(vaultFormBlocksOverlaySwitch({ ...state, vaultMode: "value" })).toBe(true);
   expect(vaultFormBlocksOverlaySwitch({ ...state, vaultMode: "description" })).toBe(true);
   expect(vaultFormBlocksOverlaySwitch({ ...state, vaultMode: "list" })).toBe(false);
+});
+
+test("bare Vault opens the manager while list, set, and del stay compact", async () => {
+  const commands: string[] = [];
+  const client = {
+    runVaultCommand(commandLine: string) {
+      commands.push(commandLine);
+      if (commandLine === "/vault list") return "Vault keys (1):\n- API_KEY: test credential";
+      return commandLine.includes(" set ") ? "Stored API_KEY." : "Deleted API_KEY.";
+    },
+  };
+
+  expect(await runTerminalVaultCommand(client, "/vault")).toEqual({ kind: "open-manager" });
+  expect(await runTerminalVaultCommand(client, "/vault list")).toEqual({
+    kind: "notice",
+    notice: "Vault keys (1): - API_KEY: test credential",
+  });
+  expect(await runTerminalVaultCommand(client, "/vault set API_KEY top-secret")).toEqual({
+    kind: "notice",
+    notice: "Stored API_KEY.",
+  });
+  expect(await runTerminalVaultCommand(client, "/vault del API_KEY")).toEqual({
+    kind: "notice",
+    notice: "Deleted API_KEY.",
+  });
+  expect(commands).toEqual(["/vault list", "/vault set API_KEY top-secret", "/vault del API_KEY"]);
+});
+
+test("compact Vault command failures never reflect plaintext command details", async () => {
+  const secret = "do-not-render-this-secret";
+  const outcome = await runTerminalVaultCommand(
+    {
+      runVaultCommand() {
+        throw new Error(`request failed: /vault set API_KEY ${secret}`);
+      },
+    },
+    `/vault set API_KEY ${secret}`,
+  );
+
+  expect(outcome).toEqual({
+    kind: "notice",
+    notice: "Vault command failed. Check the node connection.",
+  });
+  expect(JSON.stringify(outcome)).not.toContain(secret);
+});
+
+test("compact Vault command rejects unknown subcommands without contacting the client", async () => {
+  let calls = 0;
+  const outcome = await runTerminalVaultCommand(
+    {
+      runVaultCommand() {
+        calls += 1;
+        return null;
+      },
+    },
+    "/vault get API_KEY",
+  );
+
+  expect(outcome.kind).toBe("notice");
+  expect(calls).toBe(0);
 });
 
 test("stops a started client when terminal initialization fails", async () => {

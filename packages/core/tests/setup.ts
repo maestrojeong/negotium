@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,10 +6,15 @@ import { join } from "node:path";
 // test file's static imports evaluate `#platform/config` — registered via
 // `bunfig.toml` `[test].preload`.
 const testRoot = mkdtempSync(join(tmpdir(), "negotium-test-"));
+const codexHome = join(testRoot, ".codex");
+const codexAuthFile = join(codexHome, "auth.json");
+mkdirSync(codexHome, { recursive: true });
+writeFileSync(codexAuthFile, "{}", "utf8");
 process.env.NODE_ENV = "test";
 // Synthetic rollouts must never inspect or mutate the developer's real
 // ~/.codex tree during tests.
-process.env.CODEX_HOME = join(testRoot, ".codex");
+process.env.CODEX_HOME = codexHome;
+process.env.NEGOTIUM_CODEX_AUTH_FILE = codexAuthFile;
 delete process.env.DEFAULT_AGENT;
 delete process.env.DEFAULT_MODEL;
 delete process.env.FALLBACK_MODEL;

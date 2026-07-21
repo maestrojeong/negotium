@@ -27,8 +27,8 @@ export const TERMINAL_COMMANDS: readonly TerminalCommand[] = [
   { name: "copy", usage: "/copy [all]", description: "copy answer or transcript" },
   {
     name: "vault",
-    usage: "/vault",
-    description: "manage encrypted secrets",
+    usage: "/vault [list|set|del]",
+    description: "open the Vault editor or run a compact Vault command",
   },
   { name: "abort", usage: "/abort", description: "stop the active turn" },
   { name: "help", usage: "/help", description: "show keyboard help" },

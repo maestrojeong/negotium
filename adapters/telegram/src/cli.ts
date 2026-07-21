@@ -7,9 +7,15 @@ import {
   NODE_CONTROL_TOKEN,
   onShutdown,
   runShutdown,
+  setFileHooks,
   waitForRequiredRuntimeProcessLease,
 } from "@negotium/core";
-import { inspectNodeDaemon, NODE_CONTROL_BASE_PATH, waitForNodeDaemon } from "@negotium/node";
+import {
+  inspectNodeDaemon,
+  NODE_CONTROL_BASE_PATH,
+  nodeFileStore,
+  waitForNodeDaemon,
+} from "@negotium/node";
 import TelegramBot from "node-telegram-bot-api";
 import {
   startTelegramAdapter,
@@ -20,6 +26,11 @@ import {
 export interface TelegramEnvironmentHandle extends NegotiumAdapterHandle<"telegram"> {
   readonly adapter: TelegramAdapterHandle;
   readonly bot: TelegramBot;
+}
+
+/** Share the canonical node's filesystem-backed upload resolver in this adapter process. */
+export function installTelegramNodeFileHooks(): void {
+  setFileHooks(nodeFileStore.hooks);
 }
 
 /** Start only the Telegram channel. The embedding host owns the Negotium node. */
@@ -94,6 +105,7 @@ export async function runTelegramCli(args = process.argv.slice(2)): Promise<void
     throw new Error("TELEGRAM_BOT_TOKEN is required");
   }
   const initialNode = await ensureCanonicalNode();
+  installTelegramNodeFileHooks();
   const singleton = await waitForRequiredRuntimeProcessLease("adapter:telegram", {
     workloadName: "Telegram adapter",
     onLost: () => {

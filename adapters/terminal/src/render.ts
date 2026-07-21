@@ -770,27 +770,29 @@ function vaultOverlayLines(state: AppState, width: number, height: number): UiLi
   }
 
   const entries = state.vaultEntries;
-  const visibleCount = Math.max(1, height - 7);
-  const start = Math.min(
-    Math.max(0, entries.length - visibleCount),
-    Math.max(0, state.vaultPickerIndex - visibleCount + 1),
-  );
+  const visibleCount = Math.max(1, height - 13);
   return [
     ...header,
     ...(entries.length === 0
       ? [
           line("  No secrets stored", { bold: true }),
-          line("  Press N to add your first key.", { fg: theme.muted }),
+          line("  Add one with the command below.", { fg: theme.muted }),
         ]
-      : entries.slice(start, start + visibleCount).map((entry, visibleIndex) => {
-          const selected = start + visibleIndex === state.vaultPickerIndex;
-          const description = entry.description || "No description";
-          return line(`  ${selected ? "›" : " "} ${entry.key}  ${description}`, {
-            fg: selected ? theme.text : theme.muted,
-            bg: selected ? theme.selected : theme.canvas,
-            bold: selected,
-          });
-        })),
+      : entries.slice(0, visibleCount).map((entry) =>
+          line(`  • ${entry.key}  ${entry.description || "No description"}`, {
+            fg: theme.muted,
+          }),
+        )),
+    line(""),
+    line("  Add or update", { fg: theme.cyan, bold: true }),
+    line("  /vault set KEY VALUE | optional description", { fg: theme.text }),
+    line("  Example: /vault set GITHUB_TOKEN your-secret-value | GitHub access", {
+      fg: theme.muted,
+    }),
+    line("  Delete", { fg: theme.cyan, bold: true }),
+    line("  /vault del KEY", { fg: theme.text }),
+    line("  Example: /vault del GITHUB_TOKEN", { fg: theme.muted }),
+    line("  Vault commands are never saved to input history.", { fg: theme.muted }),
     ...(state.vaultNotice ? [line(""), line(`  ${state.vaultNotice}`, { fg: theme.green })] : []),
   ].slice(0, height);
 }
@@ -992,11 +994,13 @@ function inputVisualLines(state: AppState, width: number): InputVisual {
   if (!displayInput) {
     const placeholder =
       state.overlay === "vault"
-        ? state.vaultMode === "key"
-          ? "Type a key name…"
-          : state.vaultMode === "value"
-            ? "Type the secret value…"
-            : "Optional description…"
+        ? state.vaultMode === "list"
+          ? "Type /vault set … or /vault del …"
+          : state.vaultMode === "key"
+            ? "Type a key name…"
+            : state.vaultMode === "value"
+              ? "Type the secret value…"
+              : "Optional description…"
         : state.creatingTopic
           ? "Type a topic name…"
           : "Type a message or /command…";
@@ -1037,7 +1041,9 @@ function composerPane(state: AppState, width: number): ComposerPane {
   const title = state.creatingTopic
     ? "new topic · type a name · Enter create"
     : state.overlay === "vault"
-      ? `${state.vaultMode === "key" ? "key" : state.vaultMode === "value" ? "secret value" : "description"} · Enter continue · Esc cancel`
+      ? state.vaultMode === "list"
+        ? "Vault command · Enter run · Esc close"
+        : `${state.vaultMode === "key" ? "key" : state.vaultMode === "value" ? "secret value" : "description"} · Enter continue · Esc cancel`
       : "Ctrl-O topics";
   const visual = inputVisualLines(state, width);
   let inputStart = Math.max(0, visual.lines.length - 5);
@@ -1147,9 +1153,7 @@ function footerLines(state: AppState, width: number): string[] {
               ? "Esc back · read-only  "
               : state.overlay === "vault"
                 ? state.vaultMode === "list"
-                  ? state.vaultEntries.length > 0
-                    ? "↑↓ select · Enter edit · N add · D delete · Esc close  "
-                    : "N add · Esc close  "
+                  ? "Enter run · Esc close  "
                   : state.vaultMode === "confirm-delete"
                     ? "Y delete · N cancel  "
                     : "Enter continue · Esc cancel  "
@@ -1202,8 +1206,7 @@ export function renderAppFrame(
   const hideComposer =
     state.overlay === "background-session" ||
     state.overlay === "topics" ||
-    (state.overlay === "vault" &&
-      (state.vaultMode === "list" || state.vaultMode === "confirm-delete"));
+    (state.overlay === "vault" && state.vaultMode === "confirm-delete");
   const composer = hideComposer ? { lines: [], cursor: null } : composerPane(state, width);
   const bodyHeight = Math.max(3, height - footer.length - decision.length - composer.lines.length);
   const body = renderBody(

@@ -72,7 +72,7 @@ describe("terminal renderer", () => {
     expect(output.split("\n")).toHaveLength(30);
   });
 
-  test("shows Vault entries as a selectable settings view", () => {
+  test("shows Vault entries with set and del command guidance", () => {
     const state = {
       ...createInitialState("local"),
       overlay: "vault" as const,
@@ -82,13 +82,17 @@ describe("terminal renderer", () => {
       ],
       vaultPickerIndex: 1,
     };
-    const output = stripAnsi(renderApp(state, 80, 18));
+    const output = stripAnsi(renderApp(state, 80, 22));
 
     expect(output).toContain("Encrypted locally");
     expect(output).toContain("API_TOKEN  primary");
-    expect(output).toContain("› SIGNING_KEY  release");
-    expect(output).toContain("Enter edit · N add · D delete");
-    expect(output).not.toContain("Type a message");
+    expect(output).toContain("• SIGNING_KEY  release");
+    expect(output).toContain("/vault set KEY VALUE | optional description");
+    expect(output).toContain("Example: /vault set GITHUB_TOKEN your-secret-value | GitHub access");
+    expect(output).toContain("/vault del KEY");
+    expect(output).toContain("Example: /vault del GITHUB_TOKEN");
+    expect(output).toContain("Type /vault set … or /vault del …");
+    expect(output).not.toContain("N add");
   });
 
   test("masks Vault secret input while preserving the cursor position", () => {

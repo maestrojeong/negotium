@@ -1,4 +1,6 @@
 const ESC = "\u001b[";
+const DISABLE_AUTOWRAP = `${ESC}?7l`;
+const ENABLE_AUTOWRAP = `${ESC}?7h`;
 
 export function placeTerminalCursor(cursor: { x: number; y: number }): string {
   const x = Math.max(1, Math.trunc(cursor.x));
@@ -27,11 +29,13 @@ export class TerminalScreenRenderer {
     this.#invalidated = true;
   }
 
-  update(frame: string): string {
+  update(frame: string, terminalRows?: number): string {
     const lines = frame.split("\n");
     const previous = this.#previousLines;
     const redrawAll = this.#invalidated;
-    const rowCount = Math.max(lines.length, previous.length);
+    const storedRowCount = Math.max(lines.length, previous.length);
+    const physicalRowCount = Math.max(1, Math.trunc(terminalRows ?? storedRowCount));
+    const rowCount = Math.min(storedRowCount, physicalRowCount);
     let output = "";
 
     for (let index = 0; index < rowCount; index += 1) {
@@ -40,7 +44,17 @@ export class TerminalScreenRenderer {
 
       // Move before erasing. This also cancels a pending auto-wrap after a
       // full-width line without relying on newline behavior.
-      output += `${ESC}${index + 1};1H${ESC}2K${current ?? ""}`;
+      const row = index + 1;
+      const content = current ?? "";
+      output += `${ESC}${row};1H${ESC}2K`;
+      if (row === physicalRowCount) {
+        // A printable character in the terminal's final cell can leave VT
+        // autowrap pending. Keep the complete row, but prevent that state from
+        // escaping this write; the next cursor move is then repaint-only.
+        output += `${DISABLE_AUTOWRAP}${content}${ENABLE_AUTOWRAP}`;
+      } else {
+        output += content;
+      }
     }
 
     if (output) output += `${ESC}H`;

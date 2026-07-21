@@ -26,9 +26,9 @@ describe("terminal slash command completion", () => {
     expect(completeCommand("/ef", 0)).toBe("/effort");
   });
 
-  test("suggests the Vault settings screen command", () => {
+  test("suggests the Vault manager and compact command", () => {
     expect(commandSuggestions("/va").map((command) => command.name)).toEqual(["vault"]);
-    expect(completeCommand("/va", 0)).toBe("/vault");
+    expect(completeCommand("/va", 0)).toBe("/vault ");
   });
 
   test("suggests topic privacy commands", () => {
