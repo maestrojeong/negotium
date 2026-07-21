@@ -10,7 +10,7 @@
     },
     "adapters/otium": {
       "name": "@negotium/adapter-otium",
-      "version": "0.1.27",
+      "version": "0.1.28",
       "bin": {
         "negotium-otium": "dist/cli.js",
       },
@@ -27,7 +27,7 @@
     },
     "adapters/telegram": {
       "name": "@negotium/adapter-telegram",
-      "version": "0.1.27",
+      "version": "0.1.28",
       "bin": {
         "negotium-telegram": "dist/cli.js",
       },
@@ -45,7 +45,7 @@
     },
     "adapters/terminal": {
       "name": "@negotium/adapter-terminal",
-      "version": "0.1.27",
+      "version": "0.1.28",
       "bin": {
         "negotium-terminal": "dist/cli.js",
       },
@@ -62,7 +62,7 @@
     },
     "apps/cli": {
       "name": "@negotium/cli",
-      "version": "0.1.27",
+      "version": "0.1.28",
       "bin": {
         "negotium": "dist/main.js",
       },
@@ -84,7 +84,7 @@
     },
     "apps/negotium": {
       "name": "negotium",
-      "version": "0.1.27",
+      "version": "0.1.28",
       "bin": {
         "negotium": "dist/main.js",
       },
@@ -109,7 +109,7 @@
     },
     "packages/adapter-sdk": {
       "name": "@negotium/adapter-sdk",
-      "version": "0.1.27",
+      "version": "0.1.28",
       "devDependencies": {
         "@types/node": "^20",
         "bun-types": "^1.3.11",
@@ -118,7 +118,7 @@
     },
     "packages/adapter-testkit": {
       "name": "@negotium/adapter-testkit",
-      "version": "0.1.27",
+      "version": "0.1.28",
       "dependencies": {
         "@negotium/adapter-sdk": "0.1.9",
       },
@@ -130,7 +130,7 @@
     },
     "packages/core": {
       "name": "@negotium/core",
-      "version": "0.1.27",
+      "version": "0.1.28",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.210",
         "@anthropic-ai/sdk": "^0.111.0",
@@ -151,7 +151,7 @@
     },
     "packages/mcp": {
       "name": "@negotium/mcp",
-      "version": "0.1.27",
+      "version": "0.1.28",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@negotium/core": "0.1.9",
@@ -165,7 +165,7 @@
     },
     "packages/mcp-host": {
       "name": "@negotium/mcp-host",
-      "version": "0.1.27",
+      "version": "0.1.28",
       "dependencies": {
         "zod": "^4.3.6",
       },
@@ -177,7 +177,7 @@
     },
     "packages/module-cron": {
       "name": "@negotium/module-cron",
-      "version": "0.1.27",
+      "version": "0.1.28",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@negotium/core": "0.1.9",
@@ -191,7 +191,7 @@
     },
     "packages/node": {
       "name": "@negotium/node",
-      "version": "0.1.27",
+      "version": "0.1.28",
       "dependencies": {
         "@negotium/core": "0.1.9",
         "@negotium/mcp": "0.1.9",
