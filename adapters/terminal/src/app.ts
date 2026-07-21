@@ -734,7 +734,7 @@ export class TerminalApp {
       return;
     }
     if (this.#state.overlay === "vault") {
-      if (this.#state.vaultMode === "list" || this.#state.vaultMode === "confirm-delete") {
+      if (this.#state.vaultMode === "confirm-delete") {
         this.#handleVaultListInput(chunk);
         return;
       }
@@ -855,6 +855,18 @@ export class TerminalApp {
 
     const text = this.#input.text.trim();
     if (!text) return;
+    const inVaultCommandScreen =
+      this.#state.overlay === "vault" && this.#state.vaultMode === "list";
+    if (inVaultCommandScreen && !isVaultCommandLine(text)) {
+      this.#input.setText("");
+      this.#syncInput();
+      this.#state = {
+        ...this.#state,
+        vaultNotice: "Use /vault set KEY VALUE or /vault del KEY.",
+      };
+      this.#queueRender();
+      return;
+    }
     if (this.#state.creatingTopic) {
       this.#input.setText("");
       this.#syncInput();
@@ -870,9 +882,10 @@ export class TerminalApp {
     }
     this.#input.setText("");
     this.#syncInput();
+    const keepVaultOpen = this.#state.overlay === "vault";
     this.#state = {
       ...this.#state,
-      overlay: null,
+      overlay: keepVaultOpen ? "vault" : null,
       notice: undefined,
     };
     if (text.startsWith("/")) {
@@ -922,6 +935,7 @@ export class TerminalApp {
     if (isVaultCommandLine(commandLine)) {
       const outcome = await runTerminalVaultCommand(this.#client, commandLine);
       if (outcome.kind === "open-manager") await this.#openVault();
+      else if (this.#state.overlay === "vault") await this.#openVault(outcome.notice);
       else {
         this.#state = { ...this.#state, notice: outcome.notice };
         this.#queueRender();
@@ -1248,12 +1262,8 @@ export class TerminalApp {
     this.#queueRender();
   }
 
-  async #openVault(): Promise<void> {
-    if (
-      !this.#client.listVaultEntries ||
-      !this.#client.saveVaultEntry ||
-      !this.#client.deleteVaultEntry
-    ) {
+  async #openVault(vaultNotice?: string): Promise<void> {
+    if (!this.#client.listVaultEntries || !this.#client.runVaultCommand) {
       this.#state = { ...this.#state, notice: "Vault management is unavailable for this client." };
       this.#queueRender();
       return;
@@ -1271,7 +1281,7 @@ export class TerminalApp {
         vaultDraftKey: undefined,
         vaultDraftDescription: "",
         vaultEditing: false,
-        vaultNotice: undefined,
+        vaultNotice,
       };
     } catch (error) {
       this.#state = {
@@ -1293,65 +1303,11 @@ export class TerminalApp {
       return;
     }
 
-    const key = chunk.toLowerCase();
-    if (chunk === "\u001b[A") this.#moveVaultPicker(-1);
-    else if (chunk === "\u001b[B") this.#moveVaultPicker(1);
-    else if (key === "n" || key === "a") this.#beginVaultAdd();
-    else if (chunk === "\r" || key === "e") this.#beginVaultEdit();
-    else if (key === "d" || chunk === "\u001b[3~") this.#requestVaultDelete();
-    else if (chunk === "\u001b") {
+    if (chunk === "\u001b") {
       this.#vaultDraftValue = "";
       this.#state = { ...this.#state, overlay: null, vaultNotice: undefined };
       this.#queueRender();
     }
-  }
-
-  #moveVaultPicker(delta: number): void {
-    const count = this.#state.vaultEntries.length;
-    if (count === 0) return;
-    this.#state = {
-      ...this.#state,
-      vaultPickerIndex: (this.#state.vaultPickerIndex + delta + count) % count,
-      vaultNotice: undefined,
-    };
-    this.#queueRender();
-  }
-
-  #beginVaultAdd(): void {
-    this.#vaultDraftValue = "";
-    this.#state = {
-      ...this.#state,
-      vaultMode: "key",
-      vaultDraftKey: undefined,
-      vaultDraftDescription: "",
-      vaultEditing: false,
-      vaultNotice: undefined,
-    };
-    this.#replaceInput("");
-  }
-
-  #beginVaultEdit(): void {
-    const selected = this.#state.vaultEntries[this.#state.vaultPickerIndex];
-    if (!selected) {
-      this.#beginVaultAdd();
-      return;
-    }
-    this.#vaultDraftValue = "";
-    this.#state = {
-      ...this.#state,
-      vaultMode: "value",
-      vaultDraftKey: selected.key,
-      vaultDraftDescription: selected.description,
-      vaultEditing: true,
-      vaultNotice: undefined,
-    };
-    this.#replaceInput("");
-  }
-
-  #requestVaultDelete(): void {
-    if (!this.#state.vaultEntries[this.#state.vaultPickerIndex]) return;
-    this.#state = { ...this.#state, vaultMode: "confirm-delete", vaultNotice: undefined };
-    this.#queueRender();
   }
 
   #cancelVaultForm(): void {

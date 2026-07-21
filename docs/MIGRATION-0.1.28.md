@@ -5,9 +5,11 @@ No data migration or configuration change is required.
 
 ## Terminal Vault routing
 
-- `/vault` continues to open the interactive Vault manager.
+- `/vault` opens a dedicated Vault command screen with stored key names and English examples.
+- The old `N`/`D` add and delete shortcuts are removed.
+- Add or update a key with `/vault set KEY VALUE | optional description`.
+- Delete a key with `/vault del KEY`; the screen stays open and refreshes after each command.
 - `/vault list` now lists stored key names without leaving the conversation.
-- `/vault set KEY VALUE [description]` and `/vault del KEY` remain direct commands.
 - `/vault manage` is not required or supported.
 
 ## Upgrade checklist
