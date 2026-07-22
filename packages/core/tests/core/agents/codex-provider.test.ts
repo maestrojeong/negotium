@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { BUNDLED_CODEX_VERSION } from "#agents/codex-native-multi-agent";
 import type { AgentQueryOptions } from "#types";
 
 // `codexProvider` does an up-front `existsSync(codexAuthPath)` check
@@ -16,11 +17,18 @@ const codexAuthPath = join(codexAuthDir, "auth.json");
 writeFileSync(codexAuthPath, "{}", "utf8");
 writeFileSync(
   join(codexAuthDir, "models_cache.json"),
-  JSON.stringify({ models: [{ slug: "gpt-5.6-sol", multi_agent_version: "v1" }] }),
+  JSON.stringify({
+    client_version: BUNDLED_CODEX_VERSION,
+    models: [{ slug: "gpt-5.6-sol", multi_agent_version: "v1" }],
+  }),
   "utf8",
 );
 process.env.NEGOTIUM_CODEX_AUTH_FILE = codexAuthPath;
 process.env.CODEX_HOME = codexAuthDir;
+const codexModelCatalogPath = join(
+  codexAuthDir,
+  `negotium-model-catalog-${BUNDLED_CODEX_VERSION}.json`,
+);
 
 const resumeRunStreamed = mock(async (_prompt: string, _opts?: Record<string, unknown>) => {
   throw new Error("thread/resume failed: no rollout found");
@@ -112,7 +120,7 @@ describe("codexProvider stale rollout recovery", () => {
     expect(codexConstructor).toHaveBeenCalledWith({
       config: {
         features: { multi_agent: false, multi_agent_v2: false, enable_fanout: false },
-        model_catalog_json: join(codexAuthDir, "negotium-model-catalog.json"),
+        model_catalog_json: codexModelCatalogPath,
         mcp_servers: {
           playwright: expect.objectContaining({ enabled: false }),
           "browser-rs": expect.objectContaining({ enabled: false }),
@@ -120,9 +128,7 @@ describe("codexProvider stale rollout recovery", () => {
         },
       },
     });
-    const catalog = JSON.parse(
-      readFileSync(join(codexAuthDir, "negotium-model-catalog.json"), "utf8"),
-    );
+    const catalog = JSON.parse(readFileSync(codexModelCatalogPath, "utf8"));
     expect(catalog.models[0].multi_agent_version).toBe("disabled");
     expect(resumeRunStreamed.mock.calls[0]?.[0]).toBe("[System Instructions]\nsystem\n\nhello");
     expect(startRunStreamed.mock.calls[0]?.[0]).toBe("[System Instructions]\nsystem\n\nhello");

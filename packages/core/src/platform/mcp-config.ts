@@ -5,6 +5,7 @@ import { peerSessionBridgeIpcEnv } from "#mcp/session-comm/bridge-ipc-config";
 import { bgBashContextCapability } from "#platform/background-bash/manager";
 import {
   AGENT_HEALTH_SERVER,
+  BROWSER_MCP_SSE_PROXY_SERVER,
   CANONICAL_MCP_PROXY_SERVER,
   FALLBACK_AGENT,
   resolveTopicWorkspaceDir,
@@ -230,23 +231,26 @@ export function browserOwnerForContext(ctx: {
 function playwrightTransport(port: number, owner: string, capability: string, agent?: AgentKind) {
   const ownerCapability = browserOwnerCapability(capability, owner);
   if (agent === "codex") {
+    const query = new URLSearchParams({ owner });
     return {
-      url: `http://127.0.0.1:${port}/mcp`,
-      http_headers: { "X-Browser-Owner": owner },
+      url: `http://127.0.0.1:${port}/mcp?${query}`,
       env_http_headers: { "X-Browser-Capability": CODEX_BROWSER_CAPABILITY_ENV },
     };
   }
+  const query = new URLSearchParams({ owner });
   if (agent === "maestro") {
-    const query = new URLSearchParams({ owner, capability: ownerCapability });
-    return {
-      type: "sse" as const,
-      url: `http://127.0.0.1:${port}/sse?${query}`,
-    };
+    // maestro-agent-sdk 0.1.48 does not expose SSE headers. Route it through a
+    // tiny stdio bridge so the bearer capability stays in an environment
+    // variable rather than appearing in URLs and request logs.
+    return buildStdioMcpServer("maestro", BROWSER_MCP_SSE_PROXY_SERVER, [], {
+      NEGOTIUM_BROWSER_SSE_URL: `http://127.0.0.1:${port}/sse?${query}`,
+      NEGOTIUM_BROWSER_OWNER_CAPABILITY: ownerCapability,
+    });
   }
   return {
     type: "sse" as const,
-    url: `http://127.0.0.1:${port}/sse`,
-    headers: { "X-Browser-Owner": owner, "X-Browser-Capability": ownerCapability },
+    url: `http://127.0.0.1:${port}/sse?${query}`,
+    headers: { "X-Browser-Capability": ownerCapability },
   };
 }
 

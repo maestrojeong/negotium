@@ -73,7 +73,11 @@ function redactTextContent(entry, redact, boundary) {
     }
     return { ...entry, text: JSON.stringify(parsed, null, 2) };
   } catch {
-    return { ...entry, text: redact(entry.text) };
+    const redacted = redact(entry.text);
+    if (boundary && typeof redacted === "string" && redacted.length > boundary.limit) {
+      return { ...entry, text: `${redacted.slice(0, boundary.limit)}\n[truncated]` };
+    }
+    return { ...entry, text: redacted };
   }
 }
 

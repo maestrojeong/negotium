@@ -14,10 +14,21 @@ export function secureBrowserToolCatalog(tools) {
   });
 }
 
-/** Ignore an out-of-schema export request even if a model sends it manually. */
-export function secureBrowserToolInput(toolName, input) {
-  if (!PASSKEY_RESULT_TOOLS.has(toolName) || !input || typeof input !== "object") return input;
-  return { ...input, includePrivateKey: false };
+/**
+ * Enforce gateway-owned fields even if a model sends out-of-schema input.
+ * Both claim and release stay pinned to the authenticated gateway owner as
+ * defense in depth, even when the selected backend also enforces owner scope.
+ */
+export function secureBrowserToolInput(toolName, input, owner) {
+  if (!input || typeof input !== "object") return input;
+  let secured = input;
+  if (owner && (toolName === "browser_claim_page" || toolName === "browser_release_page")) {
+    secured = { ...secured, owner };
+  }
+  if (PASSKEY_RESULT_TOOLS.has(toolName)) {
+    secured = { ...secured, includePrivateKey: false };
+  }
+  return secured;
 }
 
 /** Defense in depth if an upstream handler ever returns passkey key material unexpectedly. */

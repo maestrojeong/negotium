@@ -9,14 +9,23 @@
  *   - codex: `~/.codex/auth.json` (override `NEGOTIUM_CODEX_AUTH_FILE`)
  *   - claude: `ANTHROPIC_API_KEY` env, else macOS keychain entry
  *     `Claude Code-credentials`, else `~/.claude/.credentials.json`
- *   - maestro: `DEEPSEEK_API_KEY` for DeepSeek models, or
- *     `MOONSHOT_API_KEY` for Kimi models
+ *   - maestro: `DEEPSEEK_API_KEY`/Vault `DEEPSEEK_API_KEY` for DeepSeek
+ *     models, or `MOONSHOT_API_KEY`/Vault `MOONSHOT_API_KEY` for Kimi
+ *     models
+ *
+ * Maestro credentials resolve per-user when `userId` is supplied: each
+ * topic owner's own Vault entry (`/vault set DEEPSEEK_API_KEY …`) is tried
+ * before the process-wide env var, so a shared Negotium deployment doesn't
+ * require every user to share one operator-configured `.env`. Callers that
+ * omit `userId` (system/CLI bootstrap paths with no per-user context) fall
+ * back to env-only, matching the pre-Vault behavior exactly.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { codexAuthFilePath } from "#platform/config";
+import { vaultGetValue } from "#storage/vault";
 import type { AgentKind } from "#types";
 
 export type AuthCheckResult = { ok: true } | { ok: false; error: string };
@@ -28,6 +37,7 @@ export interface AgentAuthHost {
   homeDirectory(): string;
   operatingSystem(): NodeJS.Platform;
   hasMacOsCredential(service: string): boolean;
+  getVaultValue(userId: string, key: string): string | undefined;
 }
 
 const defaultAgentAuthHost: AgentAuthHost = {
@@ -44,11 +54,23 @@ const defaultAgentAuthHost: AgentAuthHost = {
       return false;
     }
   },
+  getVaultValue: vaultGetValue,
 };
+
+/** True when `key` is available via the user's Vault entry or process env. */
+function hasMaestroCredential(
+  host: AgentAuthHost,
+  key: "DEEPSEEK_API_KEY" | "MOONSHOT_API_KEY",
+  userId: string | undefined,
+): boolean {
+  if (userId && host.getVaultValue(userId, key)?.trim()) return true;
+  return Boolean(host.environment[key]?.trim());
+}
 
 export function checkAgentAuth(
   agent: AgentKind,
   host: AgentAuthHost = defaultAgentAuthHost,
+  userId?: string,
 ): AuthCheckResult {
   switch (agent) {
     case "codex": {
@@ -79,13 +101,16 @@ export function checkAgentAuth(
       };
     }
     case "maestro": {
-      if (host.environment.DEEPSEEK_API_KEY || host.environment.MOONSHOT_API_KEY) {
+      if (
+        hasMaestroCredential(host, "DEEPSEEK_API_KEY", userId) ||
+        hasMaestroCredential(host, "MOONSHOT_API_KEY", userId)
+      ) {
         return { ok: true };
       }
       return {
         ok: false,
         error:
-          "maestro is not authenticated (neither DEEPSEEK_API_KEY nor MOONSHOT_API_KEY env var is set)",
+          "maestro is not authenticated (set DEEPSEEK_API_KEY or MOONSHOT_API_KEY via /vault set, or as an env var)",
       };
     }
   }
@@ -96,23 +121,24 @@ export function checkAgentModelAuth(
   agent: AgentKind,
   model: string,
   host: AgentAuthHost = defaultAgentAuthHost,
+  userId?: string,
 ): AuthCheckResult {
-  if (agent !== "maestro") return checkAgentAuth(agent, host);
+  if (agent !== "maestro") return checkAgentAuth(agent, host, userId);
   if (model.startsWith("kimi")) {
-    return host.environment.MOONSHOT_API_KEY
+    return hasMaestroCredential(host, "MOONSHOT_API_KEY", userId)
       ? { ok: true }
       : {
           ok: false,
-          error: `maestro is not authenticated for model '${model}' (MOONSHOT_API_KEY env var not set)`,
+          error: `maestro is not authenticated for model '${model}' (set MOONSHOT_API_KEY via /vault set, or as an env var)`,
         };
   }
   if (model.startsWith("deepseek")) {
-    return host.environment.DEEPSEEK_API_KEY
+    return hasMaestroCredential(host, "DEEPSEEK_API_KEY", userId)
       ? { ok: true }
       : {
           ok: false,
-          error: `maestro is not authenticated for model '${model}' (DEEPSEEK_API_KEY env var not set)`,
+          error: `maestro is not authenticated for model '${model}' (set DEEPSEEK_API_KEY via /vault set, or as an env var)`,
         };
   }
-  return checkAgentAuth(agent, host);
+  return checkAgentAuth(agent, host, userId);
 }

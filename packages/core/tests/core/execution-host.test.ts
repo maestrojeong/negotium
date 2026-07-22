@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   configureAgentExecutionHost,
+  hostedClaudeCodeExecutablePath,
   hostedMcpServers,
   redactHostedSecrets,
   referencesHostedSecretStorage,
@@ -29,6 +30,20 @@ function opts(): AgentQueryOptions {
 }
 
 describe("agent execution host", () => {
+  test("uses the Claude SDK bundled executable by default", () => {
+    expect(hostedClaudeCodeExecutablePath()).toBeUndefined();
+  });
+
+  test("allows an embedding host to opt into a custom Claude executable", () => {
+    disposers.push(
+      configureAgentExecutionHost({
+        claudeCodeExecutablePath: () => "/opt/custom/claude",
+      }),
+    );
+
+    expect(hostedClaudeCodeExecutablePath()).toBe("/opt/custom/claude");
+  });
+
   test("injects host-owned MCP and device-local secret services", () => {
     disposers.push(
       configureAgentExecutionHost({

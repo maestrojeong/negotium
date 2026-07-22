@@ -2,14 +2,29 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activeAtToken, completePathToken, pathSuggestions } from "@/path-suggest";
+import {
+  activeAtToken,
+  completePathToken,
+  isRecursivePathQuery,
+  pathSuggestions,
+  warmPathSuggestions,
+} from "@/path-suggest";
 
 const root = mkdtempSync(join(tmpdir(), "negotium-pathsuggest-"));
+const recursiveFiles = ["src/app/config.ts", "src/readme.md", "nested/alphabet/marker.txt"];
+const loadRecursiveFixture = async () => recursiveFiles;
 mkdirSync(join(root, "alpha"));
 mkdirSync(join(root, "beta"));
 writeFileSync(join(root, "app.ts"), "");
 writeFileSync(join(root, "apple.txt"), "");
 writeFileSync(join(root, ".hidden"), "");
+
+// Nested fixtures for recursive (ripgrep-backed) matching.
+mkdirSync(join(root, "src", "app"), { recursive: true });
+mkdirSync(join(root, "nested", "alphabet"), { recursive: true });
+writeFileSync(join(root, "src", "app", "config.ts"), "");
+writeFileSync(join(root, "src", "readme.md"), "");
+writeFileSync(join(root, "nested", "alphabet", "marker.txt"), "");
 
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
@@ -35,14 +50,48 @@ describe("pathSuggestions", () => {
     const result = pathSuggestions(`@${root}/`, `@${root}/`.length);
     expect(result).not.toBeNull();
     const labels = result?.items.map((item) => item.label) ?? [];
-    // dirs (alpha/, beta/) precede files (app.ts, apple.txt); .hidden excluded.
-    expect(labels).toEqual(["alpha/", "beta/", "app.ts", "apple.txt"]);
+    // Directories precede files; .hidden remains excluded.
+    expect(labels).toEqual(["alpha/", "beta/", "nested/", "src/", "app.ts", "apple.txt"]);
   });
 
   test("filters by the basename prefix", () => {
     const token = `@${root}/app`;
     const result = pathSuggestions(token, token.length);
     expect(result?.items.map((item) => item.label)).toEqual(["app.ts", "apple.txt"]);
+  });
+
+  test("matches a substring in the middle of a filename", () => {
+    // "ple" only occurs mid-word in apple.txt, not as a prefix.
+    const token = `@${root}/ple`;
+    const result = pathSuggestions(token, token.length);
+    expect(result?.items.map((item) => item.label)).toEqual(["apple.txt"]);
+  });
+
+  test("recurses into subdirectories once the fragment is long enough", async () => {
+    const token = `@${root}/conf`; // 4 chars → triggers recursive search
+    await warmPathSuggestions(token, token.length, loadRecursiveFixture);
+    const result = pathSuggestions(token, token.length);
+    expect(result?.items.map((item) => item.label)).toContain("src/app/config.ts");
+  });
+
+  test("offers matching nested directories", async () => {
+    const token = `@${root}/alph`;
+    await warmPathSuggestions(token, token.length, loadRecursiveFixture);
+    const result = pathSuggestions(token, token.length);
+    expect(result?.items.map((item) => item.label)).toContain("nested/alphabet/");
+  });
+
+  test("does not recurse for short fragments", () => {
+    const token = `@${root}/con`; // 3 chars → top-level only
+    const result = pathSuggestions(token, token.length);
+    expect(result?.items ?? []).toEqual([]);
+  });
+
+  test("only schedules recursive work for eligible @ queries", () => {
+    expect(isRecursivePathQuery("plain text", 10)).toBe(false);
+    expect(isRecursivePathQuery("@con", 4)).toBe(false);
+    expect(isRecursivePathQuery("@.git", 5)).toBe(false);
+    expect(isRecursivePathQuery("@config", 7)).toBe(true);
   });
 
   test("hides dotfiles unless the prefix is a dot", () => {

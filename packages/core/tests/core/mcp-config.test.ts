@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { registerCanonicalMcpBridgeEnvProvider } from "#mcp/canonical-bridge-config";
+import { BROWSER_MCP_SSE_PROXY_SERVER } from "#platform/config";
 import {
   browserOwnerCapability,
   consumePlaywrightUnavailable,
@@ -15,8 +16,9 @@ import {
 /**
  * Playwright MCP transport selection.
  *
- * Claude and Maestro use SSE; Codex uses streamable HTTP. Both connect to the
- * same long-lived Chromium/profile server with owner-scoped tabs.
+ * Claude uses authenticated SSE, Maestro uses a stdio-to-SSE credential
+ * bridge, and Codex uses streamable HTTP. All connect to the same long-lived
+ * Chromium/profile server with owner-scoped tabs.
  *
  * Fallback (no port allocated): playwright is omitted. This avoids spawning
  * a per-turn Chromium child that dies with the agent process tree; the host
@@ -36,13 +38,11 @@ describe("mcp-config: playwright transport selection per agent", () => {
       playwrightPort,
       playwrightCapability,
     });
+    const query = new URLSearchParams({ owner: "user:9999:coding" });
     expect(servers.playwright).toEqual({
       type: "sse",
-      url: `http://127.0.0.1:${playwrightPort}/sse`,
-      headers: {
-        "X-Browser-Owner": "user:9999:coding",
-        "X-Browser-Capability": capabilityFor("user:9999:coding"),
-      },
+      url: `http://127.0.0.1:${playwrightPort}/sse?${query}`,
+      headers: { "X-Browser-Capability": capabilityFor("user:9999:coding") },
     });
   });
 
@@ -54,13 +54,14 @@ describe("mcp-config: playwright transport selection per agent", () => {
       playwrightPort,
       playwrightCapability,
     });
-    const query = new URLSearchParams({
-      owner: "user:9999:coding",
-      capability: capabilityFor("user:9999:coding"),
-    });
+    const query = new URLSearchParams({ owner: "user:9999:coding" });
     expect(servers.playwright).toEqual({
-      type: "sse",
-      url: `http://127.0.0.1:${playwrightPort}/sse?${query}`,
+      command: "bun",
+      args: ["run", BROWSER_MCP_SSE_PROXY_SERVER],
+      env: {
+        NEGOTIUM_BROWSER_SSE_URL: `http://127.0.0.1:${playwrightPort}/sse?${query}`,
+        NEGOTIUM_BROWSER_OWNER_CAPABILITY: capabilityFor("user:9999:coding"),
+      },
     });
   });
 
@@ -72,9 +73,9 @@ describe("mcp-config: playwright transport selection per agent", () => {
       playwrightPort,
       playwrightCapability,
     });
+    const query = new URLSearchParams({ owner: "user:9999:coding" });
     expect(servers.playwright).toEqual({
-      url: `http://127.0.0.1:${playwrightPort}/mcp`,
-      http_headers: { "X-Browser-Owner": "user:9999:coding" },
+      url: `http://127.0.0.1:${playwrightPort}/mcp?${query}`,
       env_http_headers: { "X-Browser-Capability": "NEGOTIUM_BROWSER_CAPABILITY" },
     });
   });
@@ -86,9 +87,9 @@ describe("mcp-config: playwright transport selection per agent", () => {
       playwrightPort,
       playwrightCapability,
     });
+    const query = new URLSearchParams({ owner: "user:9999:dm" });
     expect(servers.playwright).toEqual({
-      url: `http://127.0.0.1:${playwrightPort}/mcp`,
-      http_headers: { "X-Browser-Owner": "user:9999:dm" },
+      url: `http://127.0.0.1:${playwrightPort}/mcp?${query}`,
       env_http_headers: { "X-Browser-Capability": "NEGOTIUM_BROWSER_CAPABILITY" },
     });
   });
@@ -100,14 +101,38 @@ describe("mcp-config: playwright transport selection per agent", () => {
       playwrightPort,
       playwrightCapability,
     });
+    const query = new URLSearchParams({ owner: "user:9999:dm" });
     expect(servers.playwright).toEqual({
       type: "sse",
-      url: `http://127.0.0.1:${playwrightPort}/sse`,
-      headers: {
-        "X-Browser-Owner": "user:9999:dm",
-        "X-Browser-Capability": capabilityFor("user:9999:dm"),
-      },
+      url: `http://127.0.0.1:${playwrightPort}/sse?${query}`,
+      headers: { "X-Browser-Capability": capabilityFor("user:9999:dm") },
     });
+  });
+
+  test("Unicode owners are percent-encoded for every agent transport", () => {
+    const owner = "user:9999:한국어 토픽";
+    for (const agent of ["claude", "maestro", "codex"] as const) {
+      const servers = getForumMcpServers({
+        userId,
+        session: "한국어 토픽",
+        agent,
+        playwrightPort,
+        playwrightCapability,
+      });
+      if (agent === "maestro") {
+        const spec = servers.playwright as { env: Record<string, string> };
+        const upstreamUrl = new URL(spec.env.NEGOTIUM_BROWSER_SSE_URL as string);
+        expect(upstreamUrl.searchParams.get("owner")).toBe(owner);
+        expect(upstreamUrl.searchParams.has("capability")).toBe(false);
+        continue;
+      }
+      const url = new URL((servers.playwright as { url: string }).url);
+      expect(url.searchParams.get("owner")).toBe(owner);
+      expect(url.searchParams.has("capability")).toBe(false);
+      expect(
+        () => new Headers((servers.playwright as { headers?: Record<string, string> }).headers),
+      ).not.toThrow();
+    }
   });
 
   test("a port without its capability does not expose browser tools", () => {
@@ -290,9 +315,9 @@ describe("mcp-config: playwright transport selection per agent", () => {
       playwrightPort,
       playwrightCapability,
     });
+    const query = new URLSearchParams({ owner: "topic:cron-topic-id" });
     expect(servers.playwright).toEqual({
-      url: `http://127.0.0.1:${playwrightPort}/mcp`,
-      http_headers: { "X-Browser-Owner": "topic:cron-topic-id" },
+      url: `http://127.0.0.1:${playwrightPort}/mcp?${query}`,
       env_http_headers: { "X-Browser-Capability": "NEGOTIUM_BROWSER_CAPABILITY" },
     });
     expect(servers.runtime).toEqual({

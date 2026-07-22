@@ -1,28 +1,106 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
+  mkdtempSync,
   readFileSync,
   renameSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { NEGOTIUM_VERSION } from "#version";
 
 type CodexModel = Record<string, unknown>;
 type CodexModelCache = {
+  client_version?: unknown;
   models?: unknown;
 };
 
-const NEGOTIUM_MODEL_CATALOG = "negotium-model-catalog.json";
 const moduleRequire = createRequire(import.meta.url);
+const codexSdkPackagePath = moduleRequire.resolve("@openai/codex-sdk/package.json");
+const codexSdkRequire = createRequire(codexSdkPackagePath);
+const bundledCodexPackagePath = codexSdkRequire.resolve("@openai/codex/package.json");
+
+function readPackageVersion(packageJsonPath: string): string {
+  const parsed = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { version?: unknown };
+  if (typeof parsed.version !== "string" || !parsed.version.trim()) {
+    throw new Error(`Codex package has no valid version: ${packageJsonPath}`);
+  }
+  return parsed.version;
+}
+
+export const BUNDLED_CODEX_VERSION = readPackageVersion(bundledCodexPackagePath);
+const SAFE_BUNDLED_CODEX_VERSION = BUNDLED_CODEX_VERSION.replace(/[^a-zA-Z0-9._-]/g, "_");
+const NEGOTIUM_MODEL_CACHE = `negotium-models-cache-${SAFE_BUNDLED_CODEX_VERSION}.json`;
+const NEGOTIUM_MODEL_CATALOG = `negotium-model-catalog-${SAFE_BUNDLED_CODEX_VERSION}.json`;
 
 function codexCliScriptPath(): string {
-  const sdkPackagePath = moduleRequire.resolve("@openai/codex-sdk/package.json");
-  const sdkRequire = createRequire(sdkPackagePath);
-  return join(dirname(sdkRequire.resolve("@openai/codex/package.json")), "bin", "codex.js");
+  return join(dirname(bundledCodexPackagePath), "bin", "codex.js");
+}
+
+function parseCodexModelCache(contents: string, sourcePath: string): CodexModelCache {
+  let parsed: CodexModelCache;
+  try {
+    parsed = JSON.parse(contents) as CodexModelCache;
+  } catch (error) {
+    throw new Error(`Codex model cache is invalid JSON: ${sourcePath}`, { cause: error });
+  }
+  if (!Array.isArray(parsed.models) || parsed.models.length === 0) {
+    throw new Error(`Codex model cache has no models: ${sourcePath}`);
+  }
+  return parsed;
+}
+
+function readCodexModelCache(cachePath: string): {
+  contents: string;
+  parsed: CodexModelCache;
+} {
+  const contents = readFileSync(cachePath, "utf8");
+  return { contents, parsed: parseCodexModelCache(contents, cachePath) };
+}
+
+function readCompatibleCodexModelCache(cachePath: string): {
+  contents: string;
+  parsed: CodexModelCache;
+} {
+  const cache = readCodexModelCache(cachePath);
+  if (cache.parsed.client_version !== BUNDLED_CODEX_VERSION) {
+    const found =
+      typeof cache.parsed.client_version === "string"
+        ? cache.parsed.client_version
+        : "missing or invalid";
+    throw new Error(
+      `Codex model cache version ${found} does not match Negotium's bundled Codex ${BUNDLED_CODEX_VERSION}: ${cachePath}`,
+    );
+  }
+  return cache;
+}
+
+function writePrivateFileAtomic(path: string, contents: string): void {
+  if (existsSync(path) && readFileSync(path, "utf8") === contents) return;
+
+  const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(tempPath, contents, { encoding: "utf8", mode: 0o600 });
+    renameSync(tempPath, path);
+    chmodSync(path, 0o600);
+  } finally {
+    try {
+      unlinkSync(tempPath);
+    } catch {
+      // renameSync normally consumed the temporary file.
+    }
+  }
+}
+
+export function bundledCodexModelCachePath(authFilePath: string): string {
+  return join(dirname(authFilePath), NEGOTIUM_MODEL_CACHE);
 }
 
 async function bootstrapCodexModelCache(codexHome: string, cachePath: string): Promise<void> {
@@ -114,64 +192,103 @@ async function bootstrapCodexModelCache(codexHome: string, cachePath: string): P
   });
 }
 
+async function bootstrapIsolatedCodexModelCache(
+  authFilePath: string,
+  bootstrap: (codexHome: string, cachePath: string) => Promise<void>,
+): Promise<string> {
+  const sourceHome = dirname(authFilePath);
+  const isolatedHome = mkdtempSync(join(tmpdir(), "negotium-codex-models-"));
+  const isolatedCachePath = join(isolatedHome, "models_cache.json");
+
+  try {
+    const isolatedAuthPath = join(isolatedHome, "auth.json");
+    copyFileSync(authFilePath, isolatedAuthPath);
+    chmodSync(isolatedAuthPath, 0o600);
+
+    // Preserve custom provider configuration while keeping the bundled CLI's
+    // cache write completely outside the user's shared CODEX_HOME.
+    const sourceConfigPath = join(sourceHome, "config.toml");
+    if (existsSync(sourceConfigPath)) {
+      const isolatedConfigPath = join(isolatedHome, "config.toml");
+      copyFileSync(sourceConfigPath, isolatedConfigPath);
+      chmodSync(isolatedConfigPath, 0o600);
+    }
+
+    await bootstrap(isolatedHome, isolatedCachePath);
+    return readCompatibleCodexModelCache(isolatedCachePath).contents;
+  } finally {
+    rmSync(isolatedHome, { recursive: true, force: true });
+  }
+}
+
 export async function ensureCodexModelCache(
   authFilePath: string,
   bootstrap: (codexHome: string, cachePath: string) => Promise<void> = bootstrapCodexModelCache,
-): Promise<void> {
+): Promise<string> {
   const codexHome = dirname(authFilePath);
-  const cachePath =
-    process.env.NEGOTIUM_CODEX_MODELS_CACHE_FILE ?? join(codexHome, "models_cache.json");
-  const hardenedCatalogPath = join(codexHome, NEGOTIUM_MODEL_CATALOG);
-  if (existsSync(cachePath) || existsSync(hardenedCatalogPath)) return;
-  if (process.env.NEGOTIUM_CODEX_MODELS_CACHE_FILE) {
-    throw new Error(`Configured Codex model cache does not exist: ${cachePath}`);
+  const configuredCachePath = process.env.NEGOTIUM_CODEX_MODELS_CACHE_FILE;
+  if (configuredCachePath) {
+    if (!existsSync(configuredCachePath)) {
+      throw new Error(`Configured Codex model cache does not exist: ${configuredCachePath}`);
+    }
+    readCompatibleCodexModelCache(configuredCachePath);
+    return configuredCachePath;
   }
-  await bootstrap(codexHome, cachePath);
+
+  // The global Codex CLI owns models_cache.json and may update it to a schema
+  // newer than the SDK bundled by Negotium. Snapshot a cache generated for our
+  // exact bundled version so later global CLI updates cannot break turns.
+  const bundledCachePath = bundledCodexModelCachePath(authFilePath);
+  const sharedCachePath = join(codexHome, "models_cache.json");
+  if (existsSync(sharedCachePath)) {
+    try {
+      const shared = readCompatibleCodexModelCache(sharedCachePath);
+      // Keep model metadata fresh while the global CLI remains compatible.
+      writePrivateFileAtomic(bundledCachePath, shared.contents);
+      return bundledCachePath;
+    } catch {
+      // A compatible private snapshot is safer than failing because another
+      // process briefly exposed an incomplete shared-cache write.
+    }
+  }
+
+  if (existsSync(bundledCachePath)) {
+    try {
+      readCompatibleCodexModelCache(bundledCachePath);
+      return bundledCachePath;
+    } catch {
+      // Re-bootstrap below instead of passing a corrupt or version-mismatched
+      // private snapshot into this SDK version.
+    }
+  }
+
+  const refreshedContents = await bootstrapIsolatedCodexModelCache(authFilePath, bootstrap);
+  writePrivateFileAtomic(bundledCachePath, refreshedContents);
+  return bundledCachePath;
 }
 
 /**
- * Codex 0.144 resolves model metadata before `features.multi_agent=false`, so
- * a model-advertised v1/v2 value still registers native collaboration tools.
+ * Codex can resolve model metadata before `features.multi_agent=false`, so a
+ * model-advertised v1/v2 value may still register native collaboration tools.
  * Feed Codex an authoritative copy of its own catalog with only that field
  * disabled. Runtime MCP delegation remains available independently.
  */
-export function writeCodexCatalogWithNativeMultiAgentDisabled(authFilePath: string): string {
+export function writeCodexCatalogWithNativeMultiAgentDisabled(
+  authFilePath: string,
+  sourcePath: string,
+): string {
   const codexHome = dirname(authFilePath);
-  const sourcePath =
-    process.env.NEGOTIUM_CODEX_MODELS_CACHE_FILE ??
-    (existsSync(join(codexHome, "models_cache.json"))
-      ? join(codexHome, "models_cache.json")
-      : join(codexHome, NEGOTIUM_MODEL_CATALOG));
   const outputPath = join(codexHome, NEGOTIUM_MODEL_CATALOG);
 
-  const parsed = JSON.parse(readFileSync(sourcePath, "utf8")) as CodexModelCache;
-  if (!Array.isArray(parsed.models) || parsed.models.length === 0) {
-    throw new Error(`Codex model cache has no models: ${sourcePath}`);
-  }
+  const parsed = readCodexModelCache(sourcePath).parsed;
 
-  const models = parsed.models.map((model, index): CodexModel => {
+  const models = (parsed.models as unknown[]).map((model, index): CodexModel => {
     if (!model || typeof model !== "object" || Array.isArray(model)) {
       throw new Error(`Codex model cache entry ${index} is invalid: ${sourcePath}`);
     }
     return { ...(model as CodexModel), multi_agent_version: "disabled" };
   });
   const contents = `${JSON.stringify({ models }, null, 2)}\n`;
-
-  if (existsSync(outputPath) && readFileSync(outputPath, "utf8") === contents) {
-    return outputPath;
-  }
-
-  const tempPath = `${outputPath}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    writeFileSync(tempPath, contents, { encoding: "utf8", mode: 0o600 });
-    renameSync(tempPath, outputPath);
-    chmodSync(outputPath, 0o600);
-  } finally {
-    try {
-      unlinkSync(tempPath);
-    } catch {
-      // renameSync normally consumed the temporary file.
-    }
-  }
+  writePrivateFileAtomic(outputPath, contents);
   return outputPath;
 }

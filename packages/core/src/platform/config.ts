@@ -1,5 +1,14 @@
+import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,9 +72,15 @@ export const CONTEXTS_DIR = resolve(WORKSPACE_DIR, "contexts");
 export const BROWSER_PROFILES_DIR = resolve(WORKSPACE_DIR, "browser-profiles");
 export const DM_WORKSPACE_DIR = resolve(WORKSPACE_DIR, "dm");
 export const SESSION_WORKSPACE_DIR = resolve(WORKSPACE_DIR, "sessions");
-export const CLAUDE_EXECUTABLE = resolve(HOME, ".local/bin/claude");
+// The Claude Agent SDK ships a platform-matched Claude Code binary. Keep that
+// SDK/CLI pair together by default; only use an external executable when an
+// operator explicitly opts in. This avoids silently pairing an older SDK with
+// a newer globally installed Claude Code release.
+const CLAUDE_EXECUTABLE_ENV = envText("NEGOTIUM_CLAUDE_EXECUTABLE");
+export const CLAUDE_EXECUTABLE = CLAUDE_EXECUTABLE_ENV ? resolve(CLAUDE_EXECUTABLE_ENV) : undefined;
 
-// Browser automation uses the authenticated local Patchright HTTP wrapper.
+// Browser automation uses the authenticated local gateway. The historical
+// wrapper filename is retained for compatibility with existing deployments.
 export function resolveBrowserMcpBin(envValue?: string): string {
   const override = envValue?.trim();
   if (override) {
@@ -81,6 +96,63 @@ export function resolveBrowserMcpBin(envValue?: string): string {
 
 export const PATCHRIGHT_MCP_BIN = resolve(PROJECT_ROOT, "scripts/mcp-patchright-http.mjs");
 export const PLAYWRIGHT_MCP_BIN = resolveBrowserMcpBin(envText("NEGOTIUM_BROWSER_MCP_BIN"));
+
+/** Browser.rs release tested with this Negotium version. */
+export const BROWSER_RS_VERSION = "v0.1.12";
+/** Old releases do not authenticate their internal HTTP listener. */
+export const BROWSER_RS_MIN_SECURE_VERSION = "0.1.12";
+
+function versionAtLeast(actualVersion: string, minimumVersion: string): boolean {
+  const actual = actualVersion.split(".").map(Number);
+  const minimum = minimumVersion.split(".").map(Number);
+  if (actual.some(Number.isNaN) || minimum.some(Number.isNaN)) return false;
+  for (let index = 0; index < minimum.length; index += 1) {
+    if ((actual[index] ?? 0) > (minimum[index] ?? 0)) return true;
+    if ((actual[index] ?? 0) < (minimum[index] ?? 0)) return false;
+  }
+  return true;
+}
+
+function browserRsMeetsMinimumVersion(candidate: string): boolean {
+  try {
+    const output = execFileSync(candidate, ["--version"], {
+      encoding: "utf8",
+      timeout: 2_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    const match = output.match(/^browser-rs (\d+)\.(\d+)\.(\d+)$/);
+    if (!match) return false;
+    return versionAtLeast(match.slice(1).join("."), BROWSER_RS_MIN_SECURE_VERSION);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve the preferred Browser.rs engine without consulting PATH. The
+ * versioned private location keeps different Negotium releases reproducible
+ * and avoids changing a user's global browser-rs installation.
+ */
+export function resolveBrowserRsBin(envValue?: string): string | undefined {
+  const override = envValue?.trim();
+  if (
+    !override &&
+    !versionAtLeast(BROWSER_RS_VERSION.replace(/^v/, ""), BROWSER_RS_MIN_SECURE_VERSION)
+  ) {
+    return undefined;
+  }
+  const candidate = override
+    ? resolve(override)
+    : resolve(STATE_DIR, "bin", "browser-rs", BROWSER_RS_VERSION, "browser-rs");
+  try {
+    accessSync(candidate, constants.X_OK);
+    return browserRsMeetsMinimumVersion(candidate) ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export const BROWSER_RS_BIN = resolveBrowserRsBin(envText("NEGOTIUM_BROWSER_RS_BIN"));
 
 // --- Browser egress proxy ---
 //
@@ -142,6 +214,10 @@ export const TSCONFIG_PATH = resolve(PROJECT_ROOT, "tsconfig.json");
 export const SESSION_COMM_SERVER = resolve(PROJECT_ROOT, "src/mcp/session-comm/server.ts");
 
 export const TASK_SERVER = resolve(PROJECT_ROOT, "src/mcp/task-server.ts");
+export const BROWSER_MCP_SSE_PROXY_SERVER = resolve(
+  PROJECT_ROOT,
+  "src/mcp/browser-sse-proxy-server.ts",
+);
 export const CANONICAL_MCP_PROXY_SERVER = resolve(
   PROJECT_ROOT,
   "src/mcp/canonical-proxy-server.ts",

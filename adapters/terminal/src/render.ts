@@ -1088,6 +1088,8 @@ function composerPane(state: AppState, width: number): ComposerPane {
     const hidden = (paths?.truncated ?? 0) + Math.max(0, items.length - suggestionLines.length);
     if (hidden > 0 && suggestionLines.length < cap) {
       suggestionLines.push(line(`      … +${hidden} more`, { fg: theme.muted, dim: true }));
+    } else if (paths?.searching && suggestionLines.length < cap) {
+      suggestionLines.push(line("      searching subfolders...", { fg: theme.muted, dim: true }));
     }
   } else {
     suggestionLines = [];

@@ -9,6 +9,7 @@ function host(overrides: Partial<AgentAuthHost> = {}): AgentAuthHost {
     homeDirectory: () => "/host/home",
     operatingSystem: () => "linux",
     hasMacOsCredential: () => false,
+    getVaultValue: () => undefined,
     ...overrides,
   };
 }
@@ -54,12 +55,48 @@ describe("checkAgentAuth host boundary", () => {
     expect(checkAgentModelAuth("maestro", "kimi-k2.7-code", deepSeekOnly)).toEqual({
       ok: false,
       error:
-        "maestro is not authenticated for model 'kimi-k2.7-code' (MOONSHOT_API_KEY env var not set)",
+        "maestro is not authenticated for model 'kimi-k2.7-code' (set MOONSHOT_API_KEY via /vault set, or as an env var)",
     });
     expect(checkAgentModelAuth("maestro", "deepseek-pro", moonshotOnly)).toEqual({
       ok: false,
       error:
-        "maestro is not authenticated for model 'deepseek-pro' (DEEPSEEK_API_KEY env var not set)",
+        "maestro is not authenticated for model 'deepseek-pro' (set DEEPSEEK_API_KEY via /vault set, or as an env var)",
+    });
+  });
+
+  test("accepts a per-user Vault credential in place of the env var", () => {
+    const vaultOnly = host({
+      getVaultValue: (userId, key) =>
+        userId === "user-1" && key === "DEEPSEEK_API_KEY" ? "deepseek" : undefined,
+    });
+
+    // No userId supplied → Vault is never consulted, matches pre-Vault behavior.
+    expect(checkAgentModelAuth("maestro", "deepseek-pro", vaultOnly)).toEqual({
+      ok: false,
+      error:
+        "maestro is not authenticated for model 'deepseek-pro' (set DEEPSEEK_API_KEY via /vault set, or as an env var)",
+    });
+    // Matching user's Vault entry → authenticated.
+    expect(checkAgentModelAuth("maestro", "deepseek-pro", vaultOnly, "user-1")).toEqual({
+      ok: true,
+    });
+    // A different user's Vault has no entry → still blocked.
+    expect(checkAgentModelAuth("maestro", "deepseek-pro", vaultOnly, "user-2")).toEqual({
+      ok: false,
+      error:
+        "maestro is not authenticated for model 'deepseek-pro' (set DEEPSEEK_API_KEY via /vault set, or as an env var)",
+    });
+  });
+
+  test("rejects whitespace-only Vault and environment credentials", () => {
+    const whitespaceOnly = host({
+      environment: { DEEPSEEK_API_KEY: "   " },
+      getVaultValue: () => "    ",
+    });
+    expect(checkAgentModelAuth("maestro", "deepseek-pro", whitespaceOnly, "user-1")).toEqual({
+      ok: false,
+      error:
+        "maestro is not authenticated for model 'deepseek-pro' (set DEEPSEEK_API_KEY via /vault set, or as an env var)",
     });
   });
 });

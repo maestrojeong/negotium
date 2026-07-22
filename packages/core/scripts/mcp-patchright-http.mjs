@@ -1,8 +1,12 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createRequire } from "node:module";
+import { createServer as createNetServer } from "node:net";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
@@ -22,6 +26,10 @@ import {
   prepareBrowserToolInputForRedaction,
 } from "./browser-vault-transform.mjs";
 import { createBrowserWebAuthnGuard } from "./browser-webauthn-policy.mjs";
+
+const expectedCapability = process.env.NEGOTIUM_BROWSER_CAPABILITY;
+if (!expectedCapability) throw new Error("NEGOTIUM_BROWSER_CAPABILITY is required");
+const browserRsCapability = randomBytes(32).toString("hex");
 
 function parseCli(argv = process.argv.slice(2)) {
   const options = { host: "127.0.0.1" };
@@ -56,6 +64,116 @@ function parseCli(argv = process.argv.slice(2)) {
   return options;
 }
 
+async function allocateLoopbackPort() {
+  const server = createNetServer();
+  await new Promise((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("failed to allocate backend port");
+  await new Promise((resolveClose, reject) => {
+    server.close((error) => (error ? reject(error) : resolveClose()));
+  });
+  return address.port;
+}
+
+function browserRsUrl(port, owner) {
+  const url = new URL(`http://127.0.0.1:${port}/mcp`);
+  url.searchParams.set("owner", owner);
+  return url;
+}
+
+async function connectBrowserRs(port, owner, capability) {
+  const client = new Client({ name: "negotium-browser-gateway", version: "1.0.0" });
+  const transport = new StreamableHTTPClientTransport(browserRsUrl(port, owner), {
+    requestInit: { headers: { "X-Browser-Capability": capability } },
+  });
+  try {
+    await client.connect(transport);
+    return client;
+  } catch (error) {
+    await client.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function waitForBrowserRs(port, child, capability, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && child.exitCode === null && !child.killed) {
+    let client;
+    try {
+      client = await connectBrowserRs(port, "__negotium_gateway_probe__", capability);
+      const result = await client.listTools();
+      if (result.tools.length > 0) return true;
+    } catch {
+      // Browser.rs may still be binding its HTTP listener.
+    } finally {
+      await client?.close().catch(() => undefined);
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+  }
+  return false;
+}
+
+async function startBrowserRs(options, capability) {
+  const binary = process.env.NEGOTIUM_BROWSER_RS_BIN?.trim();
+  if (!binary) return undefined;
+  // The Browser.rs integration does not yet accept Negotium's authenticated
+  // egress proxy configuration. Preserve proxy credentials and routing by
+  // selecting the Patchright backend whenever proxying is enabled.
+  if (process.env.NEGOTIUM_BROWSER_PROXY_SERVER) {
+    console.error("Browser.rs skipped because a browser egress proxy is configured");
+    return undefined;
+  }
+
+  const port = await allocateLoopbackPort();
+  const args = ["--host", "127.0.0.1", "--port", String(port)];
+  if (options.userDataDir) args.push("--user-data-dir", options.userDataDir);
+  args.push(options.headless ? "--headless" : "--headed");
+  // Browser.rs needs OS/session details to launch Chrome, but it must not
+  // inherit unrelated API keys or Vault credentials from the Negotium host.
+  const childEnv = { AB_HTTP_CAPABILITY: capability };
+  for (const key of [
+    "HOME",
+    "PATH",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_DATA_HOME",
+    "AB_CHROME",
+    "AB_CONNECT",
+    "RUST_LOG",
+    "RUST_BACKTRACE",
+  ]) {
+    if (process.env[key] !== undefined) childEnv[key] = process.env[key];
+  }
+  const child = spawn(binary, args, {
+    stdio: "ignore",
+    env: childEnv,
+  });
+  const spawnFailed = new Promise((resolveFailure) =>
+    child.once("error", () => resolveFailure(false)),
+  );
+  const ready = await Promise.race([waitForBrowserRs(port, child, capability), spawnFailed]);
+  if (!ready) {
+    child.kill("SIGTERM");
+    console.error("Browser.rs failed startup validation; using Patchright fallback");
+    return undefined;
+  }
+  return { child, port };
+}
+
 const require = createRequire(import.meta.url);
 const packageRoot = dirname(require.resolve("mcp-patchright/package.json"));
 const [{ BrowserManager }, { handleTool }, { tools }] = await Promise.all([
@@ -67,16 +185,73 @@ const [{ BrowserManager }, { handleTool }, { tools }] = await Promise.all([
 const vaultTransforms = await createBrowserVaultTransforms(
   process.env.NEGOTIUM_BROWSER_VAULT_USER_ID,
 );
-const exposedTools = secureBrowserToolCatalog(tools);
+const patchrightExposedTools = secureBrowserToolCatalog(tools);
 const webAuthnGuard = createBrowserWebAuthnGuard();
+const options = parseCli();
+let browserRsBackend = await startBrowserRs(options, browserRsCapability).catch((error) => {
+  console.error(`Browser.rs startup failed; using Patchright fallback: ${error}`);
+  return undefined;
+});
+const browserRsClients = new Set();
+let shuttingDown = false;
+
+function disableBrowserRs(reason) {
+  const backend = browserRsBackend;
+  if (!backend) return;
+  browserRsBackend = undefined;
+  console.error(`Browser.rs backend unavailable (${reason}); switching to Patchright`);
+  for (const client of browserRsClients) void client.close().catch(() => undefined);
+  browserRsClients.clear();
+  if (backend.child.exitCode === null && !backend.child.killed) backend.child.kill("SIGTERM");
+}
+
+if (browserRsBackend) {
+  browserRsBackend.child.once("error", (error) =>
+    disableBrowserRs(`spawn error: ${error.message}`),
+  );
+  browserRsBackend.child.once("exit", (code, signal) => {
+    if (!shuttingDown) disableBrowserRs(`exit code=${code ?? "null"} signal=${signal ?? "null"}`);
+  });
+}
 
 function createMcpServer(defaultStartOptions, sharedManager, owner) {
   const server = new Server(
-    { name: "mcp-patchright", version: "0.1.0" },
+    { name: "negotium-browser-gateway", version: "1.0.0" },
     { capabilities: { tools: {} } },
   );
   const manager = sharedManager ?? new BrowserManager(defaultStartOptions);
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: exposedTools }));
+  const callPatchrightTool = (toolName, toolInput) =>
+    manager.runAsOwner(owner, async () => {
+      await webAuthnGuard.beforeTool(toolName, manager);
+      const toolResult = await handleTool(manager, toolName, toolInput);
+      await webAuthnGuard.afterTool(toolName, manager);
+      return toolResult;
+    });
+  let upstreamClientPromise;
+  const upstreamClient = async () => {
+    if (!browserRsBackend) return undefined;
+    upstreamClientPromise ??= connectBrowserRs(
+      browserRsBackend.port,
+      owner,
+      browserRsCapability,
+    ).then((client) => {
+      browserRsClients.add(client);
+      return client;
+    });
+    return upstreamClientPromise;
+  };
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const client = await upstreamClient();
+    if (!client) return { tools: patchrightExposedTools };
+    try {
+      const result = await client.listTools();
+      return { tools: secureBrowserToolCatalog(result.tools) };
+    } catch (error) {
+      disableBrowserRs(error instanceof Error ? error.message : String(error));
+      return { tools: patchrightExposedTools };
+    }
+  });
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     let boundary;
     try {
@@ -84,16 +259,26 @@ function createMcpServer(defaultStartOptions, sharedManager, owner) {
       const securedInput = secureBrowserToolInput(
         toolName,
         vaultTransforms.substitute(request.params.arguments ?? {}),
+        owner,
       );
       const prepared = prepareBrowserToolInputForRedaction(toolName, securedInput);
       const toolInput = prepared.input;
       boundary = prepared.boundary;
-      const result = await manager.runAsOwner(owner, async () => {
-        await webAuthnGuard.beforeTool(toolName, manager);
-        const toolResult = await handleTool(manager, toolName, toolInput);
-        await webAuthnGuard.afterTool(toolName, manager);
-        return toolResult;
-      });
+      const client = await upstreamClient();
+      let result;
+      if (client) {
+        try {
+          result = await client.callTool({ name: toolName, arguments: toolInput });
+        } catch (error) {
+          // `isError` tool results are returned normally; an exception here is
+          // a transport/protocol failure. Retire the unhealthy backend and
+          // retry this call once through the policy-equivalent fallback.
+          disableBrowserRs(error instanceof Error ? error.message : String(error));
+          result = await callPatchrightTool(toolName, toolInput);
+        }
+      } else {
+        result = await callPatchrightTool(toolName, toolInput);
+      }
       return vaultTransforms.postprocess(secureBrowserToolOutput(toolName, result), boundary);
     } catch (error) {
       const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
@@ -111,11 +296,22 @@ function createMcpServer(defaultStartOptions, sharedManager, owner) {
       );
     }
   });
+  const closeServer = server.close.bind(server);
+  server.close = async () => {
+    const client = await upstreamClientPromise?.catch(() => undefined);
+    if (client) {
+      browserRsClients.delete(client);
+      await client.close().catch(() => undefined);
+    }
+    return closeServer();
+  };
   return server;
 }
 
-function requestOwner(req) {
-  const owner = req.header("x-browser-owner");
+function requestOwner(req, allowQuery = false) {
+  const owner =
+    req.header("x-browser-owner") ??
+    (allowQuery && typeof req.query.owner === "string" ? req.query.owner : undefined);
   if (!owner || owner.length > 256) return undefined;
   return owner;
 }
@@ -125,9 +321,6 @@ function sseRequestOwner(req) {
   if (!owner || owner.length > 256) return undefined;
   return owner;
 }
-
-const expectedCapability = process.env.NEGOTIUM_BROWSER_CAPABILITY;
-if (!expectedCapability) throw new Error("NEGOTIUM_BROWSER_CAPABILITY is required");
 
 function safeCapabilityEqual(provided, expectedValue) {
   if (!provided) return false;
@@ -153,12 +346,7 @@ function requireCapability(req, res) {
 }
 
 function requireOwnerCapability(req, res, owner) {
-  const queryCapability =
-    req.path === "/sse" && typeof req.query.capability === "string"
-      ? req.query.capability
-      : undefined;
-  const expected = createHmac("sha256", expectedCapability).update(owner).digest("hex");
-  if (hasOwnerCapability(req, owner) || safeCapabilityEqual(queryCapability, expected)) return true;
+  if (hasOwnerCapability(req, owner)) return true;
   res.status(401).json({ ok: false, error: "invalid browser owner capability" });
   return false;
 }
@@ -178,7 +366,6 @@ function proxyFromEnv() {
   return proxy;
 }
 
-const options = parseCli();
 const proxy = proxyFromEnv();
 const defaultStartOptions = {
   ...(options.userDataDir ? { userDataDir: options.userDataDir } : {}),
@@ -199,7 +386,8 @@ let httpServer;
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
-    name: "mcp-patchright",
+    name: "negotium-browser-gateway",
+    backend: browserRsBackend ? "browser-rs" : "mcp-patchright",
   });
 });
 
@@ -253,7 +441,7 @@ app.post("/message", async (req, res) => {
 
 app.all("/mcp", async (req, res) => {
   try {
-    const owner = requestOwner(req);
+    const owner = requestOwner(req, true);
     if (!owner) {
       res.status(400).json({
         jsonrpc: "2.0",
@@ -335,16 +523,36 @@ app.all("/mcp", async (req, res) => {
 
 app.delete("/owners", async (req, res) => {
   if (!requireCapability(req, res)) return;
-  const owner = requestOwner(req);
+  const owner = requestOwner(req, true);
   if (!owner) {
     res.status(400).json({ ok: false, error: "owner is required" });
     return;
   }
-  const closed = await sharedManager.closeOwnerPages(owner);
+  let closed;
+  if (browserRsBackend) {
+    const url = new URL(`http://127.0.0.1:${browserRsBackend.port}/owners`);
+    url.searchParams.set("owner", owner);
+    const response = await fetch(url, {
+      method: "DELETE",
+      headers: { "X-Browser-Capability": browserRsCapability },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) {
+      res
+        .status(502)
+        .json({ ok: false, error: `Browser.rs owner cleanup failed (${response.status})` });
+      return;
+    }
+    const result = await response.json();
+    closed = typeof result.closed === "number" ? result.closed : 0;
+  } else {
+    closed = await sharedManager.closeOwnerPages(owner);
+  }
   res.json({ ok: true, owner, closed });
 });
 
 async function shutdown() {
+  shuttingDown = true;
   for (const [sessionId, transport] of Object.entries(sseTransports)) {
     await transport.close().catch(() => undefined);
     delete sseTransports[sessionId];
@@ -363,13 +571,20 @@ async function shutdown() {
     await server.close().catch(() => undefined);
     delete servers[sessionId];
   }
+  for (const client of browserRsClients) await client.close().catch(() => undefined);
+  browserRsClients.clear();
+  if (browserRsBackend?.child.exitCode === null && !browserRsBackend.child.killed) {
+    browserRsBackend.child.kill("SIGTERM");
+  }
   await sharedManager.close().catch(() => undefined);
   await new Promise((resolveClose) => httpServer?.close(() => resolveClose()));
   process.exit(0);
 }
 
 httpServer = app.listen(options.port, options.host, () => {
-  console.error(`mcp-patchright listening on http://${options.host}:${options.port}`);
+  console.error(
+    `negotium browser gateway (${browserRsBackend ? "browser-rs" : "mcp-patchright"}) listening on http://${options.host}:${options.port}`,
+  );
   console.error(`  SSE:        http://${options.host}:${options.port}/sse`);
   console.error(`  Streamable: http://${options.host}:${options.port}/mcp`);
 });

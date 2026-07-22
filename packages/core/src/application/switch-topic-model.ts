@@ -34,7 +34,7 @@ export function switchTopicModel(params: SwitchTopicModelParams): SwitchTopicMod
 
   const target = selectableModel(params.model);
   if (!target) return { ok: false, error: `Unknown model: ${params.model.trim() || "(empty)"}` };
-  const auth = checkAgentModelAuth(target.agent, target.model);
+  const auth = checkAgentModelAuth(target.agent, target.model, undefined, params.userId);
   if (!auth.ok) return { ok: false, error: auth.error };
 
   const currentAgent = topic.agent;

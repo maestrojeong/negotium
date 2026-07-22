@@ -4,6 +4,7 @@ import {
   consumeMouseInput,
   ctrlCExitsTopicPicker,
   escapeStopsActiveTurn,
+  maestroVaultKeyForModel,
   runTerminalVaultCommand,
   runtimeEventInvalidatesSelection,
   runtimeEventWaitsForMessageLoad,
@@ -137,6 +138,13 @@ test("Vault secret entry keeps global shortcuts inside the masking overlay", () 
   expect(vaultFormBlocksOverlaySwitch({ ...state, vaultMode: "value" })).toBe(true);
   expect(vaultFormBlocksOverlaySwitch({ ...state, vaultMode: "description" })).toBe(true);
   expect(vaultFormBlocksOverlaySwitch({ ...state, vaultMode: "list" })).toBe(false);
+});
+
+test("Maestro model selection opens the matching provider key form", () => {
+  expect(maestroVaultKeyForModel("kimi-k3")).toBe("MOONSHOT_API_KEY");
+  expect(maestroVaultKeyForModel("kimi-k2.7-code")).toBe("MOONSHOT_API_KEY");
+  expect(maestroVaultKeyForModel("deepseek-pro")).toBe("DEEPSEEK_API_KEY");
+  expect(maestroVaultKeyForModel("gpt-5.6-sol")).toBeNull();
 });
 
 test("bare Vault opens the manager while list, set, and del stay compact", async () => {

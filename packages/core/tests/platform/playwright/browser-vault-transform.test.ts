@@ -112,6 +112,26 @@ describe("browser Vault transforms", () => {
     }
   });
 
+  test("bounds non-JSON Browser.rs text after redaction", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "negotium-browser-rs-boundary-"));
+    const dispose = configureVaultStorage({ dataDir: dir, masterKey: "browser-rs-boundary-key" });
+    cleanups.push(() => {
+      dispose();
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    vaultSet("browser-rs-user", "TOKEN", "browser-rs-secret");
+    const transforms = await createBrowserVaultTransforms("browser-rs-user");
+    const prepared = prepareBrowserToolInputForRedaction("browser_snapshot", { maxLength: 20 });
+    const secured = transforms.postprocess(
+      { content: [{ type: "text", text: `prefix browser-rs-secret ${"x".repeat(50)}` }] },
+      prepared.boundary,
+    );
+    const text = secured.content[0]?.text ?? "";
+    expect(text).not.toContain("browser-rs-secret");
+    expect(text).toContain("[truncated]");
+  });
+
   test("retains substituted values across Vault rotation and deletion", async () => {
     const dir = mkdtempSync(join(tmpdir(), "negotium-browser-retained-"));
     const dispose = configureVaultStorage({ dataDir: dir, masterKey: "retained-test-master-key" });

@@ -72,6 +72,7 @@ import {
   substituteHostedSecrets,
 } from "#agents/execution-host";
 import { shouldSubstituteVaultToolInput } from "#agents/vault-tool-policy";
+import { vaultGetValue } from "#storage/vault";
 import type { AgentQueryOptions, UnifiedEvent } from "#types";
 
 /**
@@ -156,6 +157,28 @@ function providerOwnedToolRedirect(toolName: string): string {
   );
 }
 
+/**
+ * Resolve per-user DeepSeek/Kimi credentials from Vault before falling back
+ * to the process-wide `DEEPSEEK_API_KEY` / `MOONSHOT_API_KEY` env vars (see
+ * `maestro-agent-sdk`'s `AgentQueryOptions.apiKeyOverrides`).
+ *
+ * Passed explicitly per call rather than written into `process.env` — this
+ * process serves every topic/user concurrently, so mutating the shared env
+ * would let one user's Maestro call race another's key onto the wire.
+ */
+export function resolveMaestroApiKeyOverrides(
+  userId: string,
+): { deepseek?: string; moonshot?: string } | undefined {
+  if (!userId) return undefined;
+  const deepseek = vaultGetValue(userId, "DEEPSEEK_API_KEY")?.trim();
+  const moonshot = vaultGetValue(userId, "MOONSHOT_API_KEY")?.trim();
+  if (!deepseek && !moonshot) return undefined;
+  return {
+    ...(deepseek ? { deepseek } : {}),
+    ...(moonshot ? { moonshot } : {}),
+  };
+}
+
 function buildProviderOwnedToolBlockHook(): HookRegistration {
   return {
     name: "provider-owned-tool-redirect",
@@ -194,6 +217,9 @@ export function maestroProvider(opts: AgentQueryOptions): AsyncGenerator<Unified
     maxTokens: MAESTRO_DEFAULT_MAX_TOKENS,
     enableToolSearch: true,
     ...opts,
+    // Resolve this after spreading caller options so untrusted runtime input
+    // cannot replace a topic owner's Vault credentials with another key.
+    apiKeyOverrides: resolveMaestroApiKeyOverrides(userId),
     // v0.1.39: SDK AgentQueryOptions.agent is narrowed to "maestro" only.
     // Otium's AgentKind is wider ("claude"|"codex"|"maestro"), so stamp
     // the literal to satisfy the SDK type.

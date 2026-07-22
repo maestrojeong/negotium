@@ -9,7 +9,6 @@ import type {
   SDKPartialAssistantMessage,
   SDKResultMessage,
   SDKSystemMessage,
-  SDKTaskStartedMessage,
   SDKToolProgressMessage,
   SDKToolUseSummaryMessage,
   SDKUserMessage,
@@ -345,10 +344,10 @@ function isAbortError(err: unknown): boolean {
  */
 export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<UnifiedEvent> {
   const claudeExecutable = hostedClaudeCodeExecutablePath();
-  // Up-front existence check — gives the user a clean, actionable error
-  // instead of waiting for the SDK to spawn the binary and fail mid-stream
-  // with an opaque ENOENT. The SDK's own resolution path runs after spawn,
-  // so if CLAUDE_EXECUTABLE points nowhere we want to surface it now.
+  // The default host returns undefined so the Agent SDK selects its bundled,
+  // version-matched Claude Code binary. If a host explicitly overrides the
+  // executable, validate it up front and return an actionable error instead
+  // of letting process spawn fail mid-stream with an opaque ENOENT.
   if (claudeExecutable && !existsSync(claudeExecutable)) {
     yield {
       type: "error",
@@ -606,12 +605,6 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
         const m = message as SDKSystemMessage;
         if (m.subtype === "init") {
           yield { type: "session", sessionId: m.session_id };
-        } else if (m.subtype === "task_started") {
-          const t = m as unknown as SDKTaskStartedMessage;
-          if (t.subagent_type && !t.skip_transcript) {
-            const desc = t.description ? ` ${t.description.slice(0, 60)}` : "";
-            yield { type: "status", content: `▶ [${t.subagent_type}]${desc}` };
-          }
         } else {
           // Log all other system messages (task_updated, task_progress,
           // task_notification, etc.) so we can observe lifecycle events.

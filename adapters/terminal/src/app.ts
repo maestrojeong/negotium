@@ -21,7 +21,13 @@ import {
 import { copyToClipboard } from "@/clipboard";
 import { terminalNowMs } from "@/clock";
 import { commandSuggestions, completeCommand } from "@/commands";
-import { completePathToken, type PathSuggestion, pathSuggestions } from "@/path-suggest";
+import {
+  completePathToken,
+  isRecursivePathQuery,
+  type PathSuggestion,
+  pathSuggestions,
+  warmPathSuggestions,
+} from "@/path-suggest";
 import {
   maxConversationScrollOffset,
   plainTranscript,
@@ -75,6 +81,20 @@ const SGR_MOUSE_PATTERN = new RegExp("\\u001b\\[<(\\d+);(\\d+);(\\d+)([mM])", "g
 
 function selectableEfforts(topic: TopicDto | null) {
   return topic?.agent ? getRegistry(topic.agent).validEfforts : EFFORT_VALUES;
+}
+
+/**
+ * Vault key a Maestro model needs before it can be selected. `null` when the
+ * model isn't Maestro-owned (no vault-backed credential to prompt for).
+ * Kimi models resolve to `MOONSHOT_API_KEY` automatically — the picker
+ * doesn't ask the user to name the provider, only to paste the key.
+ */
+export function maestroVaultKeyForModel(
+  model: string,
+): "DEEPSEEK_API_KEY" | "MOONSHOT_API_KEY" | null {
+  if (model.startsWith("kimi")) return "MOONSHOT_API_KEY";
+  if (model.startsWith("deepseek")) return "DEEPSEEK_API_KEY";
+  return null;
 }
 
 export function vaultFormBlocksOverlaySwitch(
@@ -203,9 +223,12 @@ export class TerminalApp {
   readonly #screen = new TerminalScreenRenderer();
   #history = new InputHistory();
   #vaultDraftValue = "";
+  #pendingModelSwitch: { topicId: string; model: string } | undefined;
   #pasting = false;
   #renderQueued = false;
   #renderTimer: ReturnType<typeof setTimeout> | undefined;
+  #pathSearchTimer: ReturnType<typeof setTimeout> | undefined;
+  #pathSearchGeneration = 0;
   #animationTimer: ReturnType<typeof setInterval> | undefined;
   #backgroundRefreshTimer: ReturnType<typeof setInterval> | undefined;
   #backgroundRefreshRunning = false;
@@ -524,6 +547,32 @@ export class TerminalApp {
       inputCursor: this.#input.cursor,
       suggestionIndex: count === 0 ? 0 : Math.min(this.#state.suggestionIndex, count - 1),
     };
+    this.#schedulePathSearch();
+  }
+
+  #schedulePathSearch(): void {
+    if (this.#pathSearchTimer) clearTimeout(this.#pathSearchTimer);
+    const generation = ++this.#pathSearchGeneration;
+    const cursor = this.#input.cursor;
+    const lineText = this.#input.text.split("\n")[cursor.row] ?? "";
+    if (!isRecursivePathQuery(lineText, cursor.col)) {
+      this.#pathSearchTimer = undefined;
+      return;
+    }
+    this.#pathSearchTimer = setTimeout(() => {
+      this.#pathSearchTimer = undefined;
+      const search = warmPathSuggestions(lineText, cursor.col);
+      if (pathSuggestions(lineText, cursor.col)?.searching) this.#queueRender();
+      void search.then((changed) => {
+        if (!changed || !this.#running || generation !== this.#pathSearchGeneration) return;
+        const count = this.#suggestionCount();
+        this.#state = {
+          ...this.#state,
+          suggestionIndex: count === 0 ? 0 : Math.min(this.#state.suggestionIndex, count - 1),
+        };
+        this.#queueRender();
+      });
+    }, 120);
   }
 
   #replaceInput(value: string): void {
@@ -1292,6 +1341,45 @@ export class TerminalApp {
     this.#queueRender();
   }
 
+  /**
+   * Jump straight to the Vault "paste the secret" step for `key`, skipping
+   * the key-name prompt. Used when a model switch fails auth so the user
+   * isn't left staring at a bare error — they land directly on the form for
+   * the exact credential that's missing.
+   */
+  async #openVaultForKey(key: string, notice: string): Promise<void> {
+    if (!this.#client.listVaultEntries || !this.#client.saveVaultEntry) {
+      this.#pendingModelSwitch = undefined;
+      this.#state = { ...this.#state, notice };
+      this.#queueRender();
+      return;
+    }
+    try {
+      const entries = await this.#client.listVaultEntries();
+      this.#vaultDraftValue = "";
+      this.#state = {
+        ...this.#state,
+        overlay: "vault",
+        notice: undefined,
+        vaultEntries: entries,
+        vaultPickerIndex: Math.min(this.#state.vaultPickerIndex, Math.max(0, entries.length - 1)),
+        vaultMode: "value",
+        vaultDraftKey: key,
+        vaultDraftDescription: "",
+        vaultEditing: false,
+        vaultNotice: notice,
+      };
+      this.#replaceInput("");
+    } catch (error) {
+      this.#pendingModelSwitch = undefined;
+      this.#state = {
+        ...this.#state,
+        notice: error instanceof Error ? error.message : String(error),
+      };
+    }
+    this.#queueRender();
+  }
+
   #handleVaultListInput(chunk: string): void {
     if (this.#state.vaultMode === "confirm-delete") {
       const key = chunk.toLowerCase();
@@ -1305,6 +1393,7 @@ export class TerminalApp {
 
     if (chunk === "\u001b") {
       this.#vaultDraftValue = "";
+      this.#pendingModelSwitch = undefined;
       this.#state = { ...this.#state, overlay: null, vaultNotice: undefined };
       this.#queueRender();
     }
@@ -1312,6 +1401,7 @@ export class TerminalApp {
 
   #cancelVaultForm(): void {
     this.#vaultDraftValue = "";
+    this.#pendingModelSwitch = undefined;
     this.#input.setText("");
     this.#syncInput();
     this.#state = {
@@ -1384,8 +1474,37 @@ export class TerminalApp {
 
     this.#input.setText("");
     this.#syncInput();
+    const pending = this.#pendingModelSwitch;
     try {
       const result = await this.#client.saveVaultEntry(key, this.#vaultDraftValue, raw);
+      this.#vaultDraftValue = "";
+
+      // If this key was saved to unblock a model switch (see
+      // `#selectPickedModel`), retry that switch right away instead of
+      // leaving the user back on the Vault list to redo it manually.
+      if (pending && maestroVaultKeyForModel(pending.model) === result.key) {
+        this.#pendingModelSwitch = undefined;
+        const topic = this.#state.topics.find((candidate) => candidate.id === pending.topicId);
+        if (topic) {
+          try {
+            const notice = await this.#client.setModel(topic, pending.model);
+            await this.#refreshTopics(topic.title);
+            this.#state = { ...this.#state, overlay: null, vaultNotice: undefined, notice };
+            this.#queueRender();
+            return;
+          } catch (error) {
+            this.#state = {
+              ...this.#state,
+              overlay: null,
+              vaultNotice: undefined,
+              notice: error instanceof Error ? error.message : String(error),
+            };
+            this.#queueRender();
+            return;
+          }
+        }
+      }
+
       const entries = this.#client.listVaultEntries ? await this.#client.listVaultEntries() : [];
       const selectedIndex = Math.max(
         0,
@@ -1447,10 +1566,17 @@ export class TerminalApp {
       await this.#refreshTopics(topic.title);
       this.#state = { ...this.#state, notice };
     } catch (error) {
-      this.#state = {
-        ...this.#state,
-        notice: error instanceof Error ? error.message : String(error),
-      };
+      const message = error instanceof Error ? error.message : String(error);
+      const vaultKey = maestroVaultKeyForModel(selected.model);
+      if (vaultKey && /not authenticated/i.test(message)) {
+        this.#pendingModelSwitch = { topicId: topic.id, model: selected.model };
+        await this.#openVaultForKey(
+          vaultKey,
+          `${selected.model} needs ${vaultKey}. Paste the key below to continue.`,
+        );
+        return;
+      }
+      this.#state = { ...this.#state, notice: message };
     }
     this.#queueRender();
   }
@@ -1766,9 +1892,11 @@ export class TerminalApp {
 
   async #cleanup(clientStartAttempted: boolean, uiActive: boolean): Promise<void> {
     if (this.#renderTimer) clearTimeout(this.#renderTimer);
+    if (this.#pathSearchTimer) clearTimeout(this.#pathSearchTimer);
     if (this.#animationTimer) clearInterval(this.#animationTimer);
     if (this.#backgroundRefreshTimer) clearInterval(this.#backgroundRefreshTimer);
     this.#renderTimer = undefined;
+    this.#pathSearchTimer = undefined;
     this.#animationTimer = undefined;
     this.#backgroundRefreshTimer = undefined;
     this.#renderQueued = false;

@@ -78,7 +78,7 @@ export function switchTopicAgent(
   // fails inside the provider with an opaque per-turn error.
   const registry = getRegistry(agent);
   const targetModel = resolveModelForAgent(agent, undefined, registry);
-  const auth = checkAgentModelAuth(agent, targetModel);
+  const auth = checkAgentModelAuth(agent, targetModel, undefined, String(userId));
   if (!auth.ok) return { ok: false, error: auth.error };
 
   const oldAgent = topic.agent;

@@ -386,8 +386,11 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
 
   let codexModelCatalogPath: string;
   try {
-    await ensureCodexModelCache(codexAuthPath);
-    codexModelCatalogPath = writeCodexCatalogWithNativeMultiAgentDisabled(codexAuthPath);
+    const codexModelCachePath = await ensureCodexModelCache(codexAuthPath);
+    codexModelCatalogPath = writeCodexCatalogWithNativeMultiAgentDisabled(
+      codexAuthPath,
+      codexModelCachePath,
+    );
     if (opts.sessionId) migrateCodexRolloutNativeMultiAgentMetadata(opts.sessionId);
   } catch (err) {
     yield {
@@ -441,7 +444,7 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
       // global config by default; explicitly turn that feature off so tools
       // such as spawn_agent/send_message cannot bypass Otium's orchestration
       // and so subagent rooms cannot recursively fan out through Codex.
-      // Codex 0.144 lets model metadata override these flags. The authoritative
+      // Codex model metadata can override these flags. The authoritative
       // catalog above sets multi_agent_version=disabled as the hard stop; keep
       // all feature switches off as a second layer and for future CLI versions.
       features: { multi_agent: false, multi_agent_v2: false, enable_fanout: false },

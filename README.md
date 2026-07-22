@@ -312,8 +312,11 @@ Important environment variables:
 | `NEGOTIUM_STATE_DIR` | `~/.negotium` | Node state root |
 | `NEGOTIUM_LOG_DIR` | `<state>/logs` | Activity and token-usage logs |
 | `NEGOTIUM_PORT` | `7777` | Loopback runtime/MCP port |
+| `NEGOTIUM_BROWSER_RS_BIN` | managed Browser.rs | Optional preferred browser-engine executable override |
+| `NEGOTIUM_SKIP_BROWSER_RS_INSTALL` | unset | Set to `1` during package installation to use Patchright only |
 | `FALLBACK_AGENT` | `maestro` | Agent for newly created topics |
 | `FALLBACK_MODEL` | provider default | Optional model override for the fallback session agent |
+| `NEGOTIUM_CLAUDE_EXECUTABLE` | SDK bundled | Optional external Claude Code executable override |
 | `NEGOTIUM_CRON` | `1` | Set to `0` to omit the Cron module |
 | `NEGOTIUM_CRON_POLL_INTERVAL_MS` | `1000` | Scheduler polling interval |
 | `NEGOTIUM_CRON_RUN_TIMEOUT_MS` | `600000` | Maximum scheduled-turn duration |

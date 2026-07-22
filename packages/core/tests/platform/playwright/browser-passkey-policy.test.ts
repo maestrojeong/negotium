@@ -38,6 +38,19 @@ describe("browser passkey policy", () => {
     ).toEqual({ credentials: [{ id: "credential", nested: {} }] });
   });
 
+  test("pins Browser.rs ownership mutations to the authenticated gateway owner", () => {
+    expect(
+      secureBrowserToolInput(
+        "browser_claim_page",
+        { page: "p1", owner: "other-topic" },
+        "한국어-owner",
+      ),
+    ).toEqual({ page: "p1", owner: "한국어-owner" });
+    expect(
+      secureBrowserToolInput("browser_release_page", { owner: "other-topic" }, "한국어-owner"),
+    ).toEqual({ owner: "한국어-owner" });
+  });
+
   test("leaves unrelated tools untouched", () => {
     const input = { includePrivateKey: true };
     const output = { privateKey: "page-data" };

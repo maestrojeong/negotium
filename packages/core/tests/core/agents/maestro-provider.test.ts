@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { buildMaestroDisallowedTools, buildMaestroToolHooks } from "#agents/maestro-provider";
+import {
+  buildMaestroDisallowedTools,
+  buildMaestroToolHooks,
+  resolveMaestroApiKeyOverrides,
+} from "#agents/maestro-provider";
 import { vaultDel, vaultSet } from "#storage/vault";
 
 describe("maestroProvider host tool policy", () => {
@@ -115,5 +119,17 @@ describe("maestroProvider host tool policy", () => {
       input: {},
     });
     expect(allowed).toEqual({ decision: "allow" });
+  });
+
+  test("passes trimmed per-user provider keys and ignores whitespace-only values", () => {
+    const userId = `maestro-provider-keys-${randomUUID()}`;
+    vaultSet(userId, "DEEPSEEK_API_KEY", "  deepseek-key  ");
+    vaultSet(userId, "MOONSHOT_API_KEY", "    ");
+    try {
+      expect(resolveMaestroApiKeyOverrides(userId)).toEqual({ deepseek: "deepseek-key" });
+    } finally {
+      vaultDel(userId, "DEEPSEEK_API_KEY");
+      vaultDel(userId, "MOONSHOT_API_KEY");
+    }
   });
 });

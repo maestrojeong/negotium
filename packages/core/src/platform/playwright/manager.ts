@@ -11,9 +11,10 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import {
   BROWSER_PROFILES_DIR,
+  BROWSER_RS_BIN,
   PATCHRIGHT_MCP_BIN,
   PLAYWRIGHT_BASE_PORT,
   PLAYWRIGHT_MAX_PORT,
@@ -337,7 +338,7 @@ export function extractUserDataDirArg(cmdline: string): string | null {
 
 async function killPlaywrightOnPort(port: number, expectedUserDataDir?: string) {
   try {
-    // Only kill mcp-patchright processes on this port, not arbitrary services
+    // Only kill Negotium browser gateway processes on this port, not arbitrary services.
     const pids = execFileSync("lsof", ["-i", `:${port}`, "-t"], { stdio: "pipe" })
       .toString()
       .trim();
@@ -347,7 +348,7 @@ async function killPlaywrightOnPort(port: number, expectedUserDataDir?: string) 
         const cmdline = execFileSync("ps", ["-p", pid, "-o", "command="], { stdio: "pipe" })
           .toString()
           .trim();
-        if (!cmdline.includes("mcp-patchright")) {
+        if (!cmdline.includes("mcp-patchright-http.mjs")) {
           logger.warn(
             { port, pid, cmdline: cmdline.slice(0, 80) },
             "Port occupied by non-browser-MCP process, skipping",
@@ -408,15 +409,18 @@ export function browserProcessMatchesExpectedProfile(
 }
 
 /**
- * Kill all leftover browser-MCP processes from previous bot runs.
- * Call once at startup. Matches mcp-patchright and the legacy playwright-mcp
- * so upgrades reap orphaned servers holding ports.
+ * Kill all leftover browser-MCP processes from previous bot runs. The gateway
+ * may own a Browser.rs child, so match both layers plus the legacy server.
  */
 export function cleanupZombiePlaywright(): void {
   try {
-    const pids = execFileSync("pgrep", ["-f", "mcp-patchright|playwright-mcp"], {
-      stdio: "pipe",
-    })
+    const pids = execFileSync(
+      "pgrep",
+      ["-f", "mcp-patchright-http\\.mjs|browser-rs|playwright-mcp"],
+      {
+        stdio: "pipe",
+      },
+    )
       .toString()
       .trim();
     if (pids) {
@@ -431,7 +435,12 @@ export function cleanupZombiePlaywright(): void {
               .toString()
               .trim();
             const userDataDir = extractUserDataDirArg(cmdline);
-            if (!userDataDir || !resolve(userDataDir).startsWith(resolve(BROWSER_PROFILES_DIR))) {
+            const resolvedProfilesDir = resolve(BROWSER_PROFILES_DIR);
+            const resolvedUserDataDir = userDataDir ? resolve(userDataDir) : undefined;
+            const isManagedProfile =
+              resolvedUserDataDir === resolvedProfilesDir ||
+              resolvedUserDataDir?.startsWith(`${resolvedProfilesDir}${sep}`);
+            if (!isManagedProfile) {
               logger.warn(
                 { pid: pidNum, userDataDir },
                 "Skipping browser-MCP cleanup outside Otium browser profile dir",
@@ -771,6 +780,7 @@ async function spawnPlaywright(
     ...process.env,
     NEGOTIUM_BROWSER_CAPABILITY: capability,
     NEGOTIUM_BROWSER_VAULT_USER_ID: userId,
+    ...(BROWSER_RS_BIN && !proxy ? { NEGOTIUM_BROWSER_RS_BIN: BROWSER_RS_BIN } : {}),
     ...(proxy
       ? {
           NEGOTIUM_BROWSER_PROXY_SERVER: proxy.server,
@@ -882,10 +892,10 @@ async function spawnPlaywright(
 
 async function supportsOwnerCleanup(port: number, capability: string): Promise<boolean> {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/owners`, {
+    const query = new URLSearchParams({ owner: "__negotium_capability_probe__" });
+    const response = await fetch(`http://127.0.0.1:${port}/owners?${query}`, {
       method: "DELETE",
       headers: {
-        "X-Browser-Owner": "__negotium_capability_probe__",
         "X-Browser-Capability": capability,
       },
       signal: AbortSignal.timeout(2000),
@@ -1020,10 +1030,10 @@ export async function closeBrowserOwnerTabs(
   if (!instance) return 0;
   const port = instance.port;
 
-  const response = await fetch(`http://127.0.0.1:${port}/owners`, {
+  const query = new URLSearchParams({ owner });
+  const response = await fetch(`http://127.0.0.1:${port}/owners?${query}`, {
     method: "DELETE",
     headers: {
-      "X-Browser-Owner": owner,
       "X-Browser-Capability": instance.capability,
     },
     signal: AbortSignal.timeout(5000),

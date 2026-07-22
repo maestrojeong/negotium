@@ -1,6 +1,6 @@
 {
   "name": "negotium",
-  "version": "0.1.28",
+  "version": "0.1.29",
   "type": "module",
   "description": "Install the Negotium multi-agent runtime and CLI with one package",
   "license": "Apache-2.0",
@@ -101,6 +101,7 @@
   },
   "files": [
     "dist",
+    "install-browser-rs.mjs",
     "README.md",
     "LICENSE"
   ],
@@ -123,14 +124,15 @@
     "build": "bun ../../scripts/build-negotium-package.ts",
     "check": "bunx tsc --noEmit",
     "lint": "biome check",
+    "postinstall": "node install-browser-rs.mjs",
     "prepack": "bun run build"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.210",
     "@anthropic-ai/sdk": "^0.111.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openai/codex-sdk": "0.144.4",
-    "maestro-agent-sdk": "0.1.47",
+    "@openai/codex-sdk": "0.145.0",
+    "maestro-agent-sdk": "0.1.48",
     "mcp-patchright": "0.1.11",
     "node-telegram-bot-api": "^1.1.2",
     "pino": "^10.3.1",

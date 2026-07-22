@@ -138,7 +138,7 @@ export function setSelfConfigModel(ctx: SelfConfigContext, model: string): SelfC
     );
   }
   const resolvedModel = resolveModelForAgent(agent, model, registry);
-  const auth = checkAgentModelAuth(agent, resolvedModel);
+  const auth = checkAgentModelAuth(agent, resolvedModel, undefined, ctx.userId);
   if (!auth.ok) return err(auth.error);
 
   setApiTopicConfig(topic.id, { ...cfg, model: resolvedModel });

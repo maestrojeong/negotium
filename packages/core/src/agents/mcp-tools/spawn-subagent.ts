@@ -379,7 +379,7 @@ async function spawnSubagent(
     const { checkAgentModelAuth } = await import("#agents/auth-check");
     const { getRegistry } = await import("#agents/registry");
     const targetModel = resolvedModelOverride ?? getRegistry(targetAgent).defaultModel;
-    const auth = checkAgentModelAuth(targetAgent, targetModel);
+    const auth = checkAgentModelAuth(targetAgent, targetModel, undefined, ctx.userId);
     if (!auth.ok) {
       return errorResult(`Error: agent '${targetAgent}' is not available: ${auth.error}`);
     }

@@ -71,7 +71,7 @@ export function switchApiTopicAgent(opts: SwitchApiTopicAgentOptions): ApiTopicS
     opts.config.model ?? opts.defaultModel,
     targetRegistry,
   );
-  const auth = checkAgentModelAuth(opts.agent, targetModel);
+  const auth = checkAgentModelAuth(opts.agent, targetModel, undefined, opts.userId);
   if (!auth.ok) return { ok: false, error: auth.error };
 
   const entries = readConversation(opts.userId, opts.topicTitle);

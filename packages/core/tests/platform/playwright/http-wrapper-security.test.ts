@@ -4,6 +4,8 @@ import { createServer } from "node:net";
 import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const capability = "wrapper-security-test-capability";
 let port = 0;
@@ -55,6 +57,15 @@ describe("authenticated browser HTTP wrapper", () => {
     await processHandle?.exited;
   });
 
+  test("reports the active browser engine behind the authenticated gateway", async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/health`);
+    const health = (await response.json()) as { name?: string; backend?: string };
+    expect(health.name).toBe("negotium-browser-gateway");
+    expect(health.backend).toBe(
+      process.env.NEGOTIUM_BROWSER_RS_BIN ? "browser-rs" : "mcp-patchright",
+    );
+  });
+
   test("exposes SSE only with owner-scoped header authentication", async () => {
     const baseUrl = `http://127.0.0.1:${port}`;
     const ownerCapability = createHmac("sha256", capability).update("topic:victim").digest("hex");
@@ -87,20 +98,63 @@ describe("authenticated browser HTTP wrapper", () => {
     await messages.body?.cancel();
   });
 
-  test("completes the Maestro-style SSE handshake with signed query auth", async () => {
+  test("completes an SSE handshake with signed header auth", async () => {
     const owner = "topic:maestro";
     const ownerCapability = createHmac("sha256", capability).update(owner).digest("hex");
-    const query = new URLSearchParams({ owner, capability: ownerCapability });
+    const query = new URLSearchParams({ owner });
+    const authenticatedFetch = (input: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      headers.set("X-Browser-Capability", ownerCapability);
+      return fetch(input, { ...init, headers });
+    };
     const client = new Client({ name: "sse-wrapper-test", version: "1.0.0" });
-    const transport = new SSEClientTransport(new URL(`http://127.0.0.1:${port}/sse?${query}`));
+    const transport = new SSEClientTransport(new URL(`http://127.0.0.1:${port}/sse?${query}`), {
+      eventSourceInit: { fetch: authenticatedFetch },
+      requestInit: { headers: { "X-Browser-Capability": ownerCapability } },
+    });
 
     await client.connect(transport);
     const result = await client.listTools();
     expect(result.tools.length).toBeGreaterThan(0);
+    expect(result.tools.some((tool) => tool.name === "browser_status")).toBe(true);
+    const status = await client.callTool({ name: "browser_status", arguments: {} });
+    expect(status.isError).not.toBe(true);
     await client.close();
   });
 
-  test("rejects capabilities and owners supplied through URL queries", async () => {
+  test("keeps Maestro browser credentials out of URLs through the stdio bridge", async () => {
+    const owner = "topic:마에스트로";
+    const ownerCapability = createHmac("sha256", capability).update(owner).digest("hex");
+    const query = new URLSearchParams({ owner });
+    const proxy = resolve(import.meta.dir, "../../../src/mcp/browser-sse-proxy-server.ts");
+    const client = new Client({ name: "maestro-browser-proxy-test", version: "1.0.0" });
+    const transport = new StdioClientTransport({
+      command: "bun",
+      args: ["run", proxy],
+      env: {
+        PATH: process.env.PATH ?? "",
+        NEGOTIUM_BROWSER_SSE_URL: `http://127.0.0.1:${port}/sse?${query}`,
+        NEGOTIUM_BROWSER_OWNER_CAPABILITY: ownerCapability,
+      },
+      stderr: "pipe",
+    });
+
+    await client.connect(transport);
+    const result = await client.listTools();
+    expect(result.tools.some((tool) => tool.name === "browser_status")).toBe(true);
+    await client.close();
+  });
+
+  test("rejects owner capabilities supplied through SSE URL queries", async () => {
+    const owner = "topic:query-leak";
+    const ownerCapability = createHmac("sha256", capability).update(owner).digest("hex");
+    const query = new URLSearchParams({ owner, capability: ownerCapability });
+    const response = await fetch(`http://127.0.0.1:${port}/sse?${query}`);
+    expect(response.status).toBe(401);
+    await response.body?.cancel();
+  });
+
+  test("rejects capabilities supplied through URL queries", async () => {
     const response = await fetch(
       `http://127.0.0.1:${port}/mcp?owner=topic%3Avictim&capability=${encodeURIComponent(capability)}`,
       {
@@ -114,18 +168,22 @@ describe("authenticated browser HTTP wrapper", () => {
     );
     expect(response.status).toBe(401);
     await response.body?.cancel();
+  });
 
-    const ownerCapability = createHmac("sha256", capability).update("topic:victim").digest("hex");
-    const ownerInQuery = await fetch(`http://127.0.0.1:${port}/mcp?owner=topic%3Avictim`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "X-Browser-Capability": ownerCapability,
-      },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
+  test("accepts a Unicode owner in the authenticated HTTP URL", async () => {
+    const owner = "topic:한국어 브라우저";
+    const ownerCapability = createHmac("sha256", capability).update(owner).digest("hex");
+    const url = new URL(`http://127.0.0.1:${port}/mcp`);
+    url.searchParams.set("owner", owner);
+    const client = new Client({ name: "http-wrapper-test", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(url, {
+      requestInit: { headers: { "X-Browser-Capability": ownerCapability } },
     });
-    expect(ownerInQuery.status).toBe(400);
-    await ownerInQuery.body?.cancel();
+
+    await client.connect(transport);
+    const result = await client.listTools();
+    expect(result.tools.length).toBeGreaterThan(0);
+    await client.close();
   });
 
   test("rejects a capability derived for a different browser owner", async () => {
@@ -143,5 +201,18 @@ describe("authenticated browser HTTP wrapper", () => {
     });
     expect(response.status).toBe(401);
     await response.body?.cancel();
+  });
+
+  test("cleans up a Unicode owner through the authenticated gateway", async () => {
+    const owner = "topic:정리할 브라우저";
+    const query = new URLSearchParams({ owner });
+    const response = await fetch(`http://127.0.0.1:${port}/owners?${query}`, {
+      method: "DELETE",
+      headers: {
+        "X-Browser-Capability": capability,
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, owner, closed: 0 });
   });
 });

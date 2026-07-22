@@ -23,6 +23,7 @@ instead of copying the explanation.
 | [Migration 0.1.26](./MIGRATION-0.1.26.md) | Automatic Xvfb launch for headed browser automation on displayless Linux |
 | [Migration 0.1.27](./MIGRATION-0.1.27.md) | Telegram file delivery, compact Terminal Vault commands, and stable final-row rendering |
 | [Migration 0.1.28](./MIGRATION-0.1.28.md) | Terminal Vault list routing follow-up |
+| [Migration 0.1.29](./MIGRATION-0.1.29.md) | Browser.rs, agent SDK isolation, provider Vault keys, and recursive path completion |
 
 The root [README](../README.md) is the user-facing entry point. Package-specific setup belongs in
 the package README beside the code it describes.
