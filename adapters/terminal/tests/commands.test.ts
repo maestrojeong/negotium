@@ -13,8 +13,9 @@ describe("terminal slash command completion", () => {
     expect(completeCommand("/he", 0)).toBe("/help");
   });
 
-  test("does not suggest after argument entry starts", () => {
+  test("does not suggest after an unsupported copy argument starts", () => {
     expect(commandSuggestions("/copy all")).toEqual([]);
+    expect(completeCommand("/cop", 0)).toBe("/copy");
   });
 
   test("suggests context parity commands", () => {

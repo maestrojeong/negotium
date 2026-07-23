@@ -400,6 +400,90 @@ describe("writeCodexRollout", () => {
     });
   });
 
+  test("extracts exact native Codex patch lines and skips consumed calls", async () => {
+    const { extractCodexPatchCallIds, extractLatestCodexPatchPreview } = await import(
+      "#agents/rollout/codex"
+    );
+    const path = join(TMP_CWD, "native-preview.ts");
+    const jsonl = [
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "patch_apply_end",
+          call_id: "old-call",
+          changes: {
+            [path]: {
+              type: "update",
+              unified_diff: "@@ -1 +1 @@\n-const value = 'older';\n+const value = 'old';\n",
+            },
+          },
+        },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "patch_apply_end",
+          call_id: "new-call",
+          changes: {
+            [path]: {
+              type: "update",
+              unified_diff:
+                "@@ -2,3 +2,3 @@\n const kept = true;\n-const value = 'old';\n+const value = 'new';\n const tail = true;\n",
+            },
+          },
+        },
+      }),
+    ].join("\n");
+
+    expect(extractCodexPatchCallIds(jsonl)).toEqual(["old-call", "new-call"]);
+    expect(extractLatestCodexPatchPreview(jsonl, [path], new Set(["old-call"]))).toEqual({
+      callId: "new-call",
+      changes: [
+        {
+          path,
+          before: "const value = 'old';",
+          after: "const value = 'new';",
+          diffPreview:
+            "2  const kept = true;\n3 -const value = 'old';\n3 +const value = 'new';\n4  const tail = true;",
+        },
+      ],
+    });
+    expect(
+      extractLatestCodexPatchPreview(jsonl, [path], new Set(["old-call", "new-call"])),
+    ).toBeUndefined();
+    expect(extractLatestCodexPatchPreview(jsonl, [path], new Set(), "new-call")?.callId).toBe(
+      "new-call",
+    );
+    expect(
+      extractLatestCodexPatchPreview(jsonl, [path], new Set(), "missing-call"),
+    ).toBeUndefined();
+
+    const markerContent = JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "patch_apply_end",
+        call_id: "marker-content",
+        changes: {
+          [path]: {
+            type: "update",
+            unified_diff: "@@ -1 +1 @@\n--- old heading\n+++ new heading\n",
+          },
+        },
+      },
+    });
+    expect(extractLatestCodexPatchPreview(markerContent, [path])).toEqual({
+      callId: "marker-content",
+      changes: [
+        {
+          path,
+          before: "-- old heading",
+          after: "++ new heading",
+          diffPreview: "1 --- old heading\n1 +++ new heading",
+        },
+      ],
+    });
+  });
+
   test("produces a valid JSONL containing the supplied dialogue", async () => {
     const { writeCodexRollout } = await import("#agents/rollout/codex");
     const result = writeCodexRollout({

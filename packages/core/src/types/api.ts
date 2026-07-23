@@ -399,6 +399,8 @@ export type WsServerMessage =
       topicId: string;
       toolUseId: string;
       content: string;
+      /** True when the tool call failed; absent/false means success. */
+      isError?: boolean;
     }
   | {
       type: "tool_status";

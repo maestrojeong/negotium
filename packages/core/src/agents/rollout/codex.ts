@@ -15,9 +15,9 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   assertUuidLike,
   type ChatPair,
@@ -142,6 +142,202 @@ export interface CodexRolloutResult {
 export interface CodexContextUsage {
   contextTokens: number;
   contextWindow: number;
+}
+
+export interface CodexPatchChangePreview {
+  path: string;
+  before?: string;
+  after?: string;
+  diffPreview?: string;
+}
+
+export interface CodexPatchPreview {
+  callId: string;
+  changes: CodexPatchChangePreview[];
+}
+
+function canonicalFilePath(path: string): string {
+  const absolute = resolve(path);
+  try {
+    return realpathSync(absolute);
+  } catch {
+    try {
+      return join(realpathSync(dirname(absolute)), basename(absolute));
+    } catch {
+      return absolute;
+    }
+  }
+}
+
+function changedPatchLines(value: string): Omit<CodexPatchChangePreview, "path"> {
+  const removed: string[] = [];
+  const added: string[] = [];
+  const diffPreview: string[] = [];
+  let oldLine = 0;
+  let newLine = 0;
+  let sawHunk = false;
+  for (const line of value.split("\n")) {
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (hunk) {
+      if (sawHunk) diffPreview.push("…");
+      sawHunk = true;
+      oldLine = Number.parseInt(hunk[1] ?? "0", 10);
+      newLine = Number.parseInt(hunk[2] ?? "0", 10);
+      continue;
+    }
+    if (!sawHunk && (line.startsWith("--- ") || line.startsWith("+++ "))) continue;
+    if (line.startsWith("\\ No newline")) continue;
+    if (line.startsWith("-")) {
+      removed.push(line.slice(1));
+      diffPreview.push(`${oldLine} -${line.slice(1)}`);
+      oldLine += 1;
+      continue;
+    }
+    if (line.startsWith("+")) {
+      added.push(line.slice(1));
+      diffPreview.push(`${newLine} +${line.slice(1)}`);
+      newLine += 1;
+      continue;
+    }
+    if (line.startsWith(" ")) {
+      diffPreview.push(`${newLine}  ${line.slice(1)}`);
+      oldLine += 1;
+      newLine += 1;
+    }
+  }
+  return {
+    ...(removed.length > 0 ? { before: removed.join("\n") } : {}),
+    ...(added.length > 0 ? { after: added.join("\n") } : {}),
+    ...(diffPreview.length > 0 ? { diffPreview: diffPreview.join("\n") } : {}),
+  };
+}
+
+/**
+ * Extract the newest native apply_patch result matching a Codex file_change.
+ *
+ * The public SDK intentionally reduces file changes to path + kind, while the
+ * native rollout keeps the exact unified diff in patch_apply_end. Reading that
+ * payload preserves the real per-edit +/- lines even when the topic cwd itself
+ * is not a Git repository.
+ */
+export function extractLatestCodexPatchPreview(
+  jsonl: string,
+  expectedPaths: string[],
+  consumedCallIds: ReadonlySet<string> = new Set(),
+  expectedCallId?: string,
+): CodexPatchPreview | undefined {
+  const expected = expectedPaths.map(canonicalFilePath);
+  const lines = jsonl.trimEnd().split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    try {
+      const entry = JSON.parse(lines[index] ?? "") as {
+        type?: string;
+        payload?: {
+          type?: string;
+          call_id?: string;
+          changes?: Record<
+            string,
+            { type?: string; unified_diff?: string; content?: string; move_path?: string | null }
+          >;
+        };
+      };
+      if (entry.type !== "event_msg" || entry.payload?.type !== "patch_apply_end") continue;
+      const callId = entry.payload.call_id;
+      const rawChanges = entry.payload.changes;
+      if (
+        !callId ||
+        consumedCallIds.has(callId) ||
+        (expectedCallId !== undefined && callId !== expectedCallId) ||
+        !rawChanges
+      ) {
+        continue;
+      }
+
+      const entries = Object.entries(rawChanges);
+      const matched = expected.map((path) =>
+        entries.find(([candidate]) => canonicalFilePath(candidate) === path),
+      );
+      const complete = matched.filter(
+        (change): change is NonNullable<typeof change> => change !== undefined,
+      );
+      if (complete.length !== expected.length) continue;
+
+      return {
+        callId,
+        changes: complete.map(([path, change]) => {
+          if (typeof change.unified_diff === "string") {
+            return { path, ...changedPatchLines(change.unified_diff) };
+          }
+          const content =
+            typeof change.content === "string" ? change.content.replace(/\n$/, "") : undefined;
+          return {
+            path,
+            ...(change.type === "delete" && content !== undefined ? { before: content } : {}),
+            ...(change.type === "add" && content !== undefined ? { after: content } : {}),
+          };
+        }),
+      };
+    } catch {
+      // A concurrently appended final line may be incomplete; keep scanning.
+    }
+  }
+  return undefined;
+}
+
+export function extractCodexPatchCallIds(jsonl: string): string[] {
+  const callIds: string[] = [];
+  for (const line of jsonl.trimEnd().split("\n")) {
+    try {
+      const entry = JSON.parse(line) as {
+        type?: string;
+        payload?: { type?: string; call_id?: string };
+      };
+      if (
+        entry.type === "event_msg" &&
+        entry.payload?.type === "patch_apply_end" &&
+        typeof entry.payload.call_id === "string"
+      ) {
+        callIds.push(entry.payload.call_id);
+      }
+    } catch {
+      // A concurrently appended final line may be incomplete.
+    }
+  }
+  return callIds;
+}
+
+/** List native patch calls that already existed before a resumed turn. */
+export function readCodexPatchCallIds(threadId: string): string[] {
+  const path = latestCodexRolloutPath(threadId);
+  if (!path) return [];
+  try {
+    return extractCodexPatchCallIds(readFileSync(path, "utf8"));
+  } catch (error) {
+    logger.debug({ error, threadId }, "codex patch ids: rollout read failed");
+    return [];
+  }
+}
+
+/** Resolve a thread's newest native apply_patch preview. */
+export function readLatestCodexPatchPreview(
+  threadId: string,
+  expectedPaths: string[],
+  consumedCallIds: ReadonlySet<string> = new Set(),
+  expectedCallId?: string,
+): CodexPatchPreview | undefined {
+  const path = latestCodexRolloutPath(threadId);
+  if (!path) return undefined;
+  try {
+    return extractLatestCodexPatchPreview(
+      readFileSync(path, "utf8"),
+      expectedPaths,
+      consumedCallIds,
+      expectedCallId,
+    );
+  } catch (error) {
+    logger.debug({ error, threadId }, "codex patch preview: rollout read failed");
+    return undefined;
+  }
 }
 
 /** Read the latest per-request context measurement from a Codex rollout. */

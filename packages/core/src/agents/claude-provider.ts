@@ -175,6 +175,7 @@ interface ToolResultBlock {
   type: "tool_result";
   tool_use_id: string;
   content: string | unknown;
+  is_error?: boolean;
 }
 type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | { type: string };
 
@@ -726,6 +727,7 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
             type: "tool_result",
             toolUseId: trBlock.tool_use_id || "",
             content: trContent,
+            ...(trBlock.is_error ? { isError: true } : {}),
           };
         }
       }

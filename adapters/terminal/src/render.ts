@@ -16,6 +16,7 @@ import {
   activeTaskPanel,
   activeTopic,
   pickedBackgroundSession,
+  type TerminalMessage,
 } from "@/state";
 
 type Rgb = readonly [number, number, number];
@@ -27,19 +28,24 @@ const theme = {
   selected: [42, 37, 69] as Rgb,
   border: [48, 52, 67] as Rgb,
   borderActive: [119, 103, 239] as Rgb,
+  taskBorder: [151, 118, 56] as Rgb,
   text: [232, 233, 239] as Rgb,
   muted: [137, 141, 158] as Rgb,
   subtle: [91, 95, 112] as Rgb,
   accent: [139, 124, 246] as Rgb,
   cyan: [87, 205, 220] as Rgb,
+  tool: [196, 181, 253] as Rgb,
   green: [94, 211, 142] as Rgb,
+  diffAddBg: [18, 43, 32] as Rgb,
   amber: [241, 190, 91] as Rgb,
   red: [245, 116, 128] as Rgb,
+  diffRemoveBg: [45, 22, 28] as Rgb,
 };
 
 // cli-spinners' compact "dots" pattern: fast, stable-width, and reads as
 // active computation rather than a slow mechanical wheel.
 const WORKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+const CODE_COPY_MARKER = "⧉";
 export const WORKING_FRAME_INTERVAL_MS = 50;
 
 export function workingFrame(frame: number): string {
@@ -83,7 +89,7 @@ function effectiveTopicEffort(topic: TopicDto | null): string {
   return topic?.effectiveEffort ?? topic?.defaultEffort ?? "-";
 }
 
-interface UiLine {
+interface UiSpan {
   text: string;
   fg?: Rgb;
   bg?: Rgb;
@@ -91,9 +97,27 @@ interface UiLine {
   dim?: boolean;
 }
 
+interface UiLine {
+  text: string;
+  fg?: Rgb;
+  bg?: Rgb;
+  bold?: boolean;
+  dim?: boolean;
+  spans?: UiSpan[];
+  codeCopy?: string;
+}
+
+export interface CodeCopyTarget {
+  xStart: number;
+  xEnd: number;
+  y: number;
+  text: string;
+}
+
 export interface RenderedTerminalApp {
   frame: string;
   cursor: { x: number; y: number } | null;
+  codeCopyTargets: CodeCopyTarget[];
 }
 
 const ESC = "\u001b[";
@@ -250,13 +274,22 @@ export function renderMarkdown(value: string, width: number): UiLine[] {
   const result: UiLine[] = [];
   let codeLanguage = "";
   let inCode = false;
+  let codeHeaderIndex = -1;
+  let codeLines: string[] = [];
+  const finishCodeBlock = () => {
+    const header = result[codeHeaderIndex];
+    if (header) header.codeCopy = codeLines.join("\n");
+    codeHeaderIndex = -1;
+    codeLines = [];
+  };
   for (const rawLine of safeText(value).split("\n")) {
     const fence = rawLine.match(/^\s*```([^`]*)$/);
     if (fence) {
       if (!inCode) {
         codeLanguage = fence[1]?.trim() ?? "";
+        codeHeaderIndex = result.length;
         result.push(
-          line(`  ┌─ code${codeLanguage ? ` · ${codeLanguage}` : ""}`, {
+          line(`  ┌─ code${codeLanguage ? ` · ${codeLanguage}` : ""}  ${CODE_COPY_MARKER}`, {
             fg: theme.cyan,
             bg: theme.surfaceRaised,
             bold: true,
@@ -264,11 +297,13 @@ export function renderMarkdown(value: string, width: number): UiLine[] {
         );
       } else {
         result.push(line("  └─", { fg: theme.subtle, bg: theme.surfaceRaised }));
+        finishCodeBlock();
       }
       inCode = !inCode;
       continue;
     }
     if (inCode) {
+      codeLines.push(rawLine);
       for (const wrapped of wrapText(rawLine || " ", Math.max(4, width - 4))) {
         result.push(line(`  │ ${wrapped}`, { fg: theme.text, bg: theme.surfaceRaised }));
       }
@@ -321,7 +356,10 @@ export function renderMarkdown(value: string, width: number): UiLine[] {
       result.push(line(`  ${wrapped}`, { fg: theme.text }));
     }
   }
-  if (inCode) result.push(line("  └─", { fg: theme.subtle, bg: theme.surfaceRaised }));
+  if (inCode) {
+    result.push(line("  └─", { fg: theme.subtle, bg: theme.surfaceRaised }));
+    finishCodeBlock();
+  }
   return result;
 }
 
@@ -345,7 +383,91 @@ function isVisibleSystemMessage(message: MessageDto): boolean {
   return message.sourceAdapter === "session-comm" || message.id.startsWith("tell-");
 }
 
-function messageLines(message: MessageDto, width: number, userId: string): UiLine[] {
+function toolDetailSign(detail: string): "-" | "+" | undefined {
+  // Numbered diff markers have exactly one separator space (`12 -old`).
+  // Context lines use two (`12  - list item`), where the following sign is
+  // ordinary file content and must not be colored as an addition/removal.
+  const marker = /^(?:\d+ )?([+-])/.exec(detail)?.[1];
+  return marker === "-" || marker === "+" ? marker : undefined;
+}
+
+function toolDetailColor(detail: string): Rgb {
+  if (detail.startsWith("!")) return theme.red;
+  if (toolDetailSign(detail) === "-") return theme.red;
+  if (toolDetailSign(detail) === "+") return theme.green;
+  if (detail.startsWith("~")) return theme.amber;
+  return theme.muted;
+}
+
+function toolDetailBackground(detail: string): Rgb | undefined {
+  if (toolDetailSign(detail) === "-") return theme.diffRemoveBg;
+  if (toolDetailSign(detail) === "+") return theme.diffAddBg;
+  return undefined;
+}
+
+function toolHeaderColor(failed: boolean): Rgb {
+  if (failed) return theme.red;
+  return theme.tool;
+}
+
+/** Visual-line budget for a file change preview before "… +N more lines". */
+const FILE_PREVIEW_MAX_LINES = 12;
+
+function toolMessageLines(message: TerminalMessage, width: number): UiLine[] {
+  const [title = "Tool", ...details] = safeText(message.text).split("\n");
+  const failed = message.toolResult === "error";
+  const done = failed || Boolean(message.editedAt);
+  const fileMutation = /^(?:Edit|Write|Delete) · /.test(title);
+  const wrapWidth = Math.max(4, width - 6);
+  const marker = failed ? "!" : done ? "✓" : "●";
+  const headerText = `  ${marker} ${title}`;
+  const stats = title.match(/^(.*?)(\(\+(\d+) -(\d+)\))$/);
+  const headerColor = toolHeaderColor(failed);
+  const header = line(headerText, {
+    fg: headerColor,
+    spans: stats
+      ? [
+          { text: `  ${marker} ${stats[1] ?? ""}(`, fg: headerColor },
+          { text: `+${stats[3] ?? "0"}`, fg: theme.green },
+          { text: " " },
+          { text: `-${stats[4] ?? "0"}`, fg: theme.red },
+          { text: ")" },
+        ]
+      : [{ text: headerText, fg: headerColor }],
+  });
+  if (!fileMutation) {
+    return [
+      header,
+      ...details.slice(0, 2).flatMap((detail) =>
+        wrapText(detail, wrapWidth)
+          .slice(0, 1)
+          .map((text) => line(`    ${text}`, { fg: toolDetailColor(detail), dim: !failed })),
+      ),
+    ];
+  }
+  // File change previews keep every logical line's +/- marker and truncate
+  // only on total visual height, with an explicit count of what was hidden.
+  const wrapped = details.flatMap((detail) =>
+    wrapText(detail, wrapWidth).map((text) => ({ detail, text })),
+  );
+  const visible = wrapped.slice(0, FILE_PREVIEW_MAX_LINES);
+  const hidden = wrapped.length - visible.length;
+  return [
+    header,
+    ...visible.map(({ detail, text }) =>
+      line(`    ${text}`, {
+        fg: toolDetailColor(detail),
+        bg: toolDetailBackground(detail),
+        dim: toolDetailSign(detail) === "-",
+      }),
+    ),
+    ...(hidden > 0
+      ? [line(`    … +${hidden} more line${hidden === 1 ? "" : "s"}`, { fg: theme.muted })]
+      : []),
+  ];
+}
+
+function messageLines(message: TerminalMessage, width: number, userId: string): UiLine[] {
   if (
     message.kind === "system" ||
     (message.authorId === "system" && !isVisibleSystemMessage(message))
@@ -353,30 +475,7 @@ function messageLines(message: MessageDto, width: number, userId: string): UiLin
     return [];
   }
   if (message.kind === "subagent" && message.subagentCard) return subagentLines(message, width);
-  if (message.kind === "tool") {
-    const [title = "Tool", ...details] = safeText(message.text).split("\n");
-    const done = Boolean(message.editedAt);
-    return [
-      line(`  ${done ? "✓" : "●"} ${title}`, {
-        fg: done ? theme.green : theme.cyan,
-        dim: done,
-      }),
-      ...details.slice(0, 2).flatMap((detail) =>
-        wrapText(detail, Math.max(4, width - 6))
-          .slice(0, 1)
-          .map((text) =>
-            line(`    ${text}`, {
-              fg: detail.startsWith("-")
-                ? theme.red
-                : detail.startsWith("+")
-                  ? theme.green
-                  : theme.muted,
-              dim: true,
-            }),
-          ),
-      ),
-    ];
-  }
+  if (message.kind === "tool") return toolMessageLines(message, width);
   const own = message.authorId === userId;
   const ai = message.authorId === "ai";
   const icon = own ? "›" : ai ? "●" : "•";
@@ -392,10 +491,12 @@ function messageLines(message: MessageDto, width: number, userId: string): UiLin
     const firstContent = body.findIndex((item) => item.text.trim().length > 0);
     if (firstContent >= 0) {
       const first = body[firstContent];
-      body[firstContent] = {
-        ...first,
-        text: `  ${icon} ${first.text.trimStart()}`,
-      };
+      if (first.codeCopy === undefined) {
+        body[firstContent] = {
+          ...first,
+          text: `  ${icon} ${first.text.trimStart()}`,
+        };
+      }
     }
   }
   if (!ai) {
@@ -437,22 +538,97 @@ function activityLines(state: AppState, animationFrame = 0, nowMs = terminalNowM
   return result;
 }
 
-function taskLines(state: AppState, width: number): UiLine[] {
+function taskItems(state: AppState): string[] {
   const taskPanel = activeTaskPanel(state);
   if (!taskPanel) return [];
   const tasks = safeText(taskPanel.text).split("\n").slice(1);
-  const pending = tasks.filter((task) => !/^\s*(?:\[x\]|☒|✓|✅)/i.test(task));
+  const active = tasks.filter((task) => /^\s*\[->\]/i.test(task));
+  const pending = tasks.filter(
+    (task) => !/^\s*\[->\]/i.test(task) && !/^\s*(?:\[x\]|☒|✓|✅)/i.test(task),
+  );
   const completed = tasks.filter((task) => /^\s*(?:\[x\]|☒|✓|✅)/i.test(task));
-  const visibleTasks = [...pending, ...completed.reverse()].slice(0, 5);
+  return [...active, ...pending, ...completed.reverse()];
+}
+
+const INLINE_TASK_LIMIT = 5;
+
+function taskLines(state: AppState, width: number): UiLine[] {
+  const tasks = taskItems(state);
+  if (tasks.length === 0) return [];
+  const visibleTasks = tasks.slice(0, INLINE_TASK_LIMIT);
+  const hidden = tasks.length - visibleTasks.length;
   return [
-    line("  ◫ Tasks", { fg: theme.amber, bold: true }),
+    line("  ◫ Tasks · Ctrl-T sidebar", { fg: theme.amber, bold: true }),
     ...visibleTasks.flatMap((task) =>
       wrapText(task.trimStart(), Math.max(4, width - 6)).map((text) =>
         line(`    ${text}`, { fg: theme.muted }),
       ),
     ),
+    ...(hidden > 0 ? [line(`    +${hidden} more`, { fg: theme.muted, dim: true })] : []),
     line(""),
   ];
+}
+
+const TASK_SIDEBAR_MIN_WIDTH = 110;
+const TASK_SIDEBAR_WIDTH = 36;
+const TASK_SIDEBAR_GAP = 1;
+
+interface TerminalBodyLayout {
+  conversationWidth: number;
+  taskWidth: number;
+  showTaskSidebar: boolean;
+}
+
+function terminalBodyLayout(state: AppState, width: number): TerminalBodyLayout {
+  const showTaskSidebar =
+    width >= TASK_SIDEBAR_MIN_WIDTH &&
+    state.taskSidebarEnabled &&
+    !state.overlay &&
+    !state.creatingTopic &&
+    taskItems(state).length > 0;
+  return {
+    conversationWidth: showTaskSidebar ? width - TASK_SIDEBAR_WIDTH - TASK_SIDEBAR_GAP : width,
+    taskWidth: showTaskSidebar ? TASK_SIDEBAR_WIDTH : 0,
+    showTaskSidebar,
+  };
+}
+
+/**
+ * Sidebar task list clipped to the pane height. taskItems() already orders
+ * current work first (then pending and latest completed), so overflow drops the
+ * oldest finished tasks and is announced with an explicit "+N more" row
+ * instead of silently disappearing below the frame.
+ */
+function taskSidebarLines(state: AppState, width: number, height: number): UiLine[] {
+  const items = taskItems(state);
+  const groups = items.map((task) => {
+    const completed = /^\s*(?:\[x\]|☒|✓|✅)/i.test(task);
+    return wrapText(task.trimStart(), Math.max(4, width - 4)).map((text) =>
+      line(` ${text}`, {
+        fg: completed ? theme.muted : theme.text,
+        dim: completed,
+      }),
+    );
+  });
+  const capacity = Math.max(1, height);
+  const total = groups.reduce((sum, group) => sum + group.length, 0);
+  if (total <= capacity) return groups.flat();
+  if (capacity === 1) return groups[0]?.slice(0, 1) ?? [];
+  const rows: UiLine[] = [];
+  let shown = 0;
+  for (const group of groups) {
+    if (rows.length + group.length > capacity - 1) {
+      if (shown === 0) {
+        rows.push(...group.slice(0, capacity - 1));
+        shown = 1;
+      }
+      break;
+    }
+    rows.push(...group);
+    shown += 1;
+  }
+  rows.push(line(` +${items.length - shown} more`, { fg: theme.muted, dim: true }));
+  return rows;
 }
 
 function helpLines(): UiLine[] {
@@ -462,7 +638,7 @@ function helpLines(): UiLine[] {
     line("  Alt-Enter newline"),
     line("  ← → move · Ctrl/Alt-← → move by word · ↑ ↓ history"),
     line("  Ctrl-W delete word · Ctrl-U/K clear before/after cursor"),
-    line("  Mouse wheel / PgUp/PgDn scroll · Ctrl-E load older · Ctrl-T transcript"),
+    line("  Mouse wheel / PgUp/PgDn scroll · Ctrl-E load older · Ctrl-T tasks"),
     line("  Ctrl-O topics · Ctrl-P/N previous/next topic"),
     line("  Esc/Ctrl-C stop active turn · Ctrl-C twice when idle to quit"),
     line(""),
@@ -514,27 +690,6 @@ function statusLines(state: AppState): UiLine[] {
     line(""),
     line("  Esc close", { fg: theme.muted }),
   ];
-}
-
-export function plainTranscript(state: AppState): string {
-  const topic = activeTopic(state);
-  const rows = [`# ${topic?.title ?? "Conversation"}`];
-  for (const message of activeMessages(state).filter(
-    (item) =>
-      !item.id.startsWith("tasks-") &&
-      item.kind !== "tool" &&
-      item.kind !== "system" &&
-      (item.authorId !== "system" || isVisibleSystemMessage(item)),
-  )) {
-    const author =
-      message.authorId === state.userId
-        ? "You"
-        : message.authorId === "ai"
-          ? state.aiName
-          : "System";
-    rows.push("", `${author}:`, safeText(message.text));
-  }
-  return rows.join("\n");
 }
 
 type TopicOverlayEntry =
@@ -822,6 +977,7 @@ function conversationContentLines(
   width: number,
   animationFrame = 0,
   nowMs = terminalNowMs(),
+  includeTasks = true,
 ): UiLine[] {
   const all: UiLine[] = [];
   for (const message of activeMessages(state).filter(
@@ -832,7 +988,8 @@ function conversationContentLines(
   )) {
     all.push(...messageLines(message, width, state.userId));
   }
-  all.push(...activityLines(state, animationFrame, nowMs), ...taskLines(state, width));
+  all.push(...activityLines(state, animationFrame, nowMs));
+  if (includeTasks) all.push(...taskLines(state, width));
   if (all.length === 0) {
     all.push(
       line(""),
@@ -849,6 +1006,7 @@ function conversationLines(
   height: number,
   animationFrame = 0,
   nowMs = terminalNowMs(),
+  includeTasks = true,
 ): UiLine[] {
   if (state.overlay === "help") return helpLines().slice(0, height);
   if (state.overlay === "status") return statusLines(state).slice(0, height);
@@ -868,15 +1026,6 @@ function conversationLines(
       line("  Enter create · Esc cancel", { fg: theme.muted }),
     ].slice(0, height);
   }
-  if (state.overlay === "transcript") {
-    return [
-      line("  Transcript · Ctrl-T close", { fg: theme.accent, bold: true }),
-      line(""),
-      ...plainTranscript(state)
-        .split("\n")
-        .flatMap((text) => wrapText(text, Math.max(4, width - 4)).map((part) => line(`  ${part}`))),
-    ].slice(0, height);
-  }
   if (state.overlay === "confirm-delete") {
     const topic = state.topics.find((candidate) => candidate.id === state.pendingDeleteTopicId);
     return [
@@ -888,7 +1037,7 @@ function conversationLines(
     ].slice(0, height);
   }
 
-  const all = conversationContentLines(state, width, animationFrame, nowMs);
+  const all = conversationContentLines(state, width, animationFrame, nowMs, includeTasks);
   const { contentHeight, maxOffset, offset } = conversationViewport(
     all.length,
     height,
@@ -1175,6 +1324,25 @@ function footerLines(state: AppState, width: number): string[] {
 function renderBody(lines: UiLine[], width: number, height: number): string[] {
   return Array.from({ length: height }, (_, index) => {
     const item = lines[index] ?? line("");
+    if (item.spans) {
+      let remaining = width;
+      const rendered = item.spans
+        .map((span) => {
+          if (remaining <= 0) return "";
+          const text = sliceWidth(safeText(span.text).replaceAll("\n", " "), remaining);
+          remaining -= displayWidth(text);
+          return paint(text, {
+            fg: span.fg ?? item.fg ?? theme.text,
+            bg: span.bg ?? item.bg ?? theme.canvas,
+            bold: span.bold ?? item.bold,
+            dim: span.dim ?? item.dim,
+          });
+        })
+        .join("");
+      return `${rendered}${paint(" ".repeat(Math.max(0, remaining)), {
+        bg: item.bg ?? theme.canvas,
+      })}`;
+    }
     return paint(fit(item.text, width), {
       fg: item.fg ?? theme.text,
       bg: item.bg ?? theme.canvas,
@@ -1211,17 +1379,46 @@ export function renderAppFrame(
     (state.overlay === "vault" && state.vaultMode === "confirm-delete");
   const composer = hideComposer ? { lines: [], cursor: null } : composerPane(state, width);
   const bodyHeight = Math.max(3, height - footer.length - decision.length - composer.lines.length);
-  const body = renderBody(
-    conversationLines(state, width, bodyHeight, animationFrame, nowMs),
-    width,
+  const layout = terminalBodyLayout(state, width);
+  const conversation = conversationLines(
+    state,
+    layout.conversationWidth,
     bodyHeight,
+    animationFrame,
+    nowMs,
+    !layout.showTaskSidebar,
   );
+  const conversationBody = renderBody(conversation, layout.conversationWidth, bodyHeight);
+  const body = layout.showTaskSidebar
+    ? (() => {
+        const taskPane = framePane(
+          "Tasks · Ctrl-T",
+          taskSidebarLines(state, layout.taskWidth, Math.max(0, bodyHeight - 2)),
+          layout.taskWidth,
+          bodyHeight,
+          { active: true, accent: theme.taskBorder },
+        );
+        const gap = paint(" ".repeat(TASK_SIDEBAR_GAP), { bg: theme.canvas });
+        return conversationBody.map((row, index) => `${row}${gap}${taskPane[index] ?? ""}`);
+      })()
+    : conversationBody;
+  const codeCopyTargets = conversation.flatMap((item, index): CodeCopyTarget[] => {
+    if (item.codeCopy === undefined || index >= bodyHeight) return [];
+    // The whole visible header ("┌─ code · lang  ⧉") is one click target, not
+    // just the single marker cell.
+    const trimmed = item.text.trimEnd();
+    const leading = trimmed.length - trimmed.trimStart().length;
+    const xStart = displayWidth(trimmed.slice(0, leading)) + 1;
+    const xEnd = Math.min(displayWidth(trimmed), layout.conversationWidth);
+    return xEnd >= xStart ? [{ xStart, xEnd, y: index + 1, text: item.codeCopy }] : [];
+  });
   const cursorY = composer.cursor
     ? body.length + decision.length + composer.cursor.y
     : Number.POSITIVE_INFINITY;
   return {
     frame: [...body, ...decision, ...composer.lines, ...footer].slice(0, height).join("\n"),
     cursor: composer.cursor && cursorY <= height ? { x: composer.cursor.x, y: cursorY } : null,
+    codeCopyTargets,
   };
 }
 
@@ -1240,6 +1437,13 @@ export function maxConversationScrollOffset(
       decisionPane(state, width).length -
       composerPane(state, width).lines.length,
   );
-  const lineCount = conversationContentLines(state, width).length;
+  const layout = terminalBodyLayout(state, width);
+  const lineCount = conversationContentLines(
+    state,
+    layout.conversationWidth,
+    0,
+    terminalNowMs(),
+    !layout.showTaskSidebar,
+  ).length;
   return conversationViewport(lineCount, bodyHeight, state.scrollOffset).maxOffset;
 }

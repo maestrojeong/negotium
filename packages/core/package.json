@@ -1,6 +1,6 @@
 {
   "name": "@negotium/core",
-  "version": "0.1.29",
+  "version": "0.1.30",
   "private": true,
   "type": "module",
   "description": "Multi-agent AI runtime — Claude/Codex/Maestro providers, unified event stream, sessions, wiki/skills, local-first storage",
@@ -61,6 +61,7 @@
     "@anthropic-ai/sdk": "^0.111.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex-sdk": "0.145.0",
+    "diff": "^9.0.0",
     "maestro-agent-sdk": "0.1.48",
     "pino": "^10.3.1",
     "pino-pretty": "^13.1.3",

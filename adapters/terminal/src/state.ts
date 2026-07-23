@@ -16,9 +16,17 @@ type Overlay =
   | "models"
   | "effort"
   | "vault"
-  | "transcript"
   | "confirm-delete"
   | null;
+
+/**
+ * Terminal-local message shape: tool timeline messages carry an explicit
+ * success/failure outcome so the renderer never has to parse text to tell a
+ * failed file change from an applied one. Absent on server messages and on
+ * providers that do not flag failures (e.g. Claude), where `editedAt` alone
+ * keeps meaning "tool finished".
+ */
+export type TerminalMessage = MessageDto & { toolResult?: "ok" | "error" };
 
 interface ToolActivity {
   id: string;
@@ -50,7 +58,7 @@ export interface AppState {
   topics: TopicDto[];
   backgroundSessions: BackgroundSessionDto[];
   activeTopicId: string | null;
-  messages: Record<string, MessageDto[]>;
+  messages: Record<string, TerminalMessage[]>;
   messageHistory: Record<string, MessageHistoryStatus>;
   activity: Record<string, TopicActivity>;
   input: string;
@@ -64,6 +72,7 @@ export interface AppState {
   creatingTopic: boolean;
   scrollOffset: number;
   askChoiceIndex: number;
+  taskSidebarEnabled: boolean;
   overlay: Overlay;
   topicPickerRoot: boolean;
   notice?: string;
@@ -95,6 +104,7 @@ export function createInitialState(userId: string): AppState {
     creatingTopic: false,
     scrollOffset: 0,
     askChoiceIndex: 0,
+    taskSidebarEnabled: true,
     overlay: null,
     topicPickerRoot: false,
     vaultEntries: [],
@@ -105,15 +115,19 @@ export function createInitialState(userId: string): AppState {
   };
 }
 
+export function toggleTaskSidebar(state: AppState): AppState {
+  return { ...state, taskSidebarEnabled: !state.taskSidebarEnabled };
+}
+
 export function activeTopic(state: AppState): TopicDto | null {
   return state.topics.find((topic) => topic.id === state.activeTopicId) ?? null;
 }
 
-export function activeMessages(state: AppState): MessageDto[] {
+export function activeMessages(state: AppState): TerminalMessage[] {
   return state.activeTopicId ? (state.messages[state.activeTopicId] ?? []) : [];
 }
 
-export function activeQuestion(state: AppState): MessageDto | null {
+export function activeQuestion(state: AppState): TerminalMessage | null {
   return (
     activeMessages(state)
       .slice()
@@ -128,7 +142,7 @@ export function activeQuestion(state: AppState): MessageDto | null {
   );
 }
 
-export function activeTaskPanel(state: AppState): MessageDto | null {
+export function activeTaskPanel(state: AppState): TerminalMessage | null {
   return (
     activeMessages(state)
       .slice()
@@ -385,13 +399,13 @@ function patchMessage(
   state: AppState,
   topicId: string,
   messageId: string,
-  patch: Partial<MessageDto>,
+  patch: Partial<TerminalMessage>,
 ): AppState {
   const current = state.messages[topicId] ?? [];
   const index = current.findIndex((message) => message.id === messageId);
   if (index < 0) return state;
   const next = [...current];
-  next[index] = { ...next[index], ...patch } as MessageDto;
+  next[index] = { ...next[index], ...patch } as TerminalMessage;
   return { ...state, messages: { ...state.messages, [topicId]: next } };
 }
 
@@ -432,6 +446,22 @@ function compactToolLabel(value: string): string {
   return match ? `${match[1]} · ${match[2]}` : value;
 }
 
+/**
+ * Prefix every logical line of a diff snippet so each keeps its +/- meaning
+ * when rendered (and colored) independently. Blank lines stay marked too.
+ */
+function diffLines(text: string, sign: "-" | "+"): string[] {
+  if (!text) return [];
+  return text.split("\n").map((line) => `${sign} ${line}`);
+}
+
+function logicalLineCount(text: string): number {
+  if (!text) return 0;
+  const normalized = text.replace(/\r\n?/g, "\n");
+  const withoutFinalTerminator = normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized;
+  return withoutFinalTerminator ? withoutFinalTerminator.split("\n").length : 0;
+}
+
 function toolTimelineText(status: Record<string, unknown>): string {
   const name = String(status.name ?? "tool");
   const shortName = name.split("__").at(-1)?.toLowerCase() ?? name.toLowerCase();
@@ -449,16 +479,76 @@ function toolTimelineText(status: Record<string, unknown>): string {
   if (shortName === "edit") {
     const before = typeof input.before === "string" ? input.before : "";
     const after = typeof input.after === "string" ? input.after : "";
-    return [`Edit · ${path}`, before ? `- ${before}` : "", after ? `+ ${after}` : ""]
+    const diffPreview = typeof input.diff_preview === "string" ? input.diff_preview : "";
+    const added = logicalLineCount(after);
+    const removed = logicalLineCount(before);
+    const stats = before || after ? ` (+${added} -${removed})` : "";
+    const changed = input.change_kind === "update" ? "~ modified" : "";
+    return [
+      `Edit · ${path}${stats}`,
+      ...(diffPreview
+        ? diffPreview.split("\n")
+        : [...diffLines(before, "-"), ...diffLines(after, "+")]),
+      !before && !after && changed ? changed : "",
+    ]
       .filter(Boolean)
       .join("\n");
   }
   if (shortName === "write") {
-    const lines = typeof input.lines === "number" ? ` · ${input.lines} lines` : "";
     const preview = typeof input.preview === "string" ? input.preview : "";
-    return [`Write · ${path}${lines}`, preview ? `+ ${preview}` : ""].filter(Boolean).join("\n");
+    const diffPreview = typeof input.diff_preview === "string" ? input.diff_preview : "";
+    const added =
+      typeof input.lines === "number" ? input.lines : preview ? logicalLineCount(preview) : 0;
+    const stats = preview || typeof input.lines === "number" ? ` (+${added} -0)` : "";
+    const created = input.change_kind === "add" ? "+ created" : "";
+    return [
+      `Write · ${path}${stats}`,
+      ...(diffPreview ? diffPreview.split("\n") : preview ? diffLines(preview, "+") : [created]),
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (shortName === "delete") {
+    const before = typeof input.before === "string" ? input.before : "";
+    const diffPreview = typeof input.diff_preview === "string" ? input.diff_preview : "";
+    const removed = logicalLineCount(before);
+    const stats = before ? ` (+0 -${removed})` : "";
+    return [
+      `Delete · ${path}${stats}`,
+      ...(diffPreview
+        ? diffPreview.split("\n")
+        : before
+          ? diffLines(before, "-")
+          : [input.change_kind === "delete" ? "- removed" : ""]),
+    ]
+      .filter(Boolean)
+      .join("\n");
   }
   return compactToolLabel(String(status.label ?? status.name ?? "tool"));
+}
+
+/**
+ * Rewrite a tool timeline message for a failed result: the optimistic
+ * change-kind line ("~ modified" / "+ created" / "- removed") becomes an
+ * explicit failure line, and messages without one (e.g. diff previews) gain
+ * a trailing failure line instead.
+ */
+function failedToolText(text: string): string {
+  const [title = "Tool", ...details] = text.split("\n");
+  const failureByMarker: Record<string, string> = {
+    "~ modified": "! update failed",
+    "+ created": "! create failed",
+    "- removed": "! delete failed",
+  };
+  let marked = false;
+  const mapped = details.map((detail) => {
+    const failure = failureByMarker[detail];
+    if (!failure) return detail;
+    marked = true;
+    return failure;
+  });
+  if (!marked && !mapped.some((detail) => detail.startsWith("!"))) mapped.push("! failed");
+  return [title, ...mapped].join("\n");
 }
 
 function toolMessageId(status: Record<string, unknown>, toolUseId: string): string {
@@ -549,12 +639,21 @@ function applyAiStatus(
   if (kind === "tool_output") {
     if (isStaleTerminalStatus(current, status)) return state;
     const id = String(status.toolUseId ?? "");
+    const failed = status.isError === true;
     const tools = current.tools.map((tool) =>
-      tool.id === id ? { ...tool, output: String(status.content ?? ""), status: "done" } : tool,
+      tool.id === id
+        ? { ...tool, output: String(status.content ?? ""), status: failed ? "error" : "done" }
+        : tool,
     );
     const withActivity = setActivity(state, topicId, { ...liveCurrent, tools });
-    return patchMessage(withActivity, topicId, toolMessageId(status, id), {
+    const messageId = toolMessageId(status, id);
+    const existing = (withActivity.messages[topicId] ?? []).find(
+      (message) => message.id === messageId,
+    );
+    return patchMessage(withActivity, topicId, messageId, {
       editedAt: createdAt ?? new Date().toISOString(),
+      toolResult: failed ? "error" : "ok",
+      ...(failed && existing ? { text: failedToolText(existing.text) } : {}),
     });
   }
   if (kind === "tool_status") {

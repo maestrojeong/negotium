@@ -126,12 +126,21 @@ describe("translateBusEvent — golden WsServerMessage shapes", () => {
       label: "Bash(ls)",
       toolUseId: "t1",
     });
-    expect(status({ kind: "tool_output", queryId: "q1", toolUseId: "t1", content: "ok" })).toEqual({
+    expect(
+      status({
+        kind: "tool_output",
+        queryId: "q1",
+        toolUseId: "t1",
+        content: "failed",
+        isError: true,
+      }),
+    ).toEqual({
       type: "tool_output",
       topicId,
       queryId: "q1",
       toolUseId: "t1",
-      content: "ok",
+      content: "failed",
+      isError: true,
     });
     // bus.ts stores the WS-level `kind` as `statusKind` — must be restored.
     expect(

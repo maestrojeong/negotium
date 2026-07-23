@@ -120,6 +120,8 @@ export type UnifiedEvent =
       type: "tool_result";
       toolUseId: string;
       content: string;
+      /** True when the tool call failed; absent/false means success. */
+      isError?: boolean;
       metadata?: {
         truncatedForModel: boolean;
         originalBytes: number;

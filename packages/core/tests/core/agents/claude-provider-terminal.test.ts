@@ -18,6 +18,49 @@ mock.module("#platform/mcp-config", () => ({
 }));
 
 describe("claudeProvider terminal handling", () => {
+  test("preserves the SDK error flag on tool results", async () => {
+    mock.module("@anthropic-ai/claude-agent-sdk", () => ({
+      query: async function* () {
+        yield { type: "system", subtype: "init", session_id: "sess-tool-error" };
+        yield {
+          type: "user",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tool-error",
+                content: "permission denied",
+                is_error: true,
+              },
+            ],
+          },
+        };
+        yield { type: "result", subtype: "success", result: "done", stop_reason: "end_turn" };
+      },
+    }));
+
+    const { claudeProvider } = await import("#agents/claude-provider");
+    const events = [];
+    for await (const event of claudeProvider({
+      agent: "claude",
+      prompt: "do work",
+      session: "dev",
+      sessionType: "forum",
+      systemPrompt: "system",
+      cwd: "/tmp",
+      userId: "test-user",
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toContainEqual({
+      type: "tool_result",
+      toolUseId: "tool-error",
+      content: "permission denied",
+      isError: true,
+    });
+  });
+
   test("emits completed assistant blocks in canonical text/tool order", async () => {
     mock.module("@anthropic-ai/claude-agent-sdk", () => ({
       query: async function* () {

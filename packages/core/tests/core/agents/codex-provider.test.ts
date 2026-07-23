@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BUNDLED_CODEX_VERSION } from "#agents/codex-native-multi-agent";
@@ -178,6 +179,332 @@ describe("codexProvider stale rollout recovery", () => {
       name: "Delete",
       input: { file_path: "src/old.ts", change_kind: "delete" },
       toolUseId: "patch-1:2",
+    });
+    expect(events).toContainEqual({
+      type: "tool_result",
+      toolUseId: "patch-1:1",
+      content: "update applied: src/app.ts",
+    });
+  });
+
+  test("keeps fallback baselines current after a native preview of the same file", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "negotium-codex-diff-"));
+    const path = join(cwd, "app.ts");
+    const threadId = "019dee65-ffff-7aaa-8aaa-eeeeeeeeeeee";
+    const rolloutDir = join(codexAuthDir, "sessions", "2026", "07", "22");
+    const rolloutPath = join(rolloutDir, `rollout-test-${threadId}.jsonl`);
+    execFileSync("git", ["init", "-q", cwd]);
+    writeFileSync(path, "const kept = true;\nconst value = 'old';\n", "utf8");
+    streamedEvents = async function* fileChangesWithContent() {
+      yield { type: "thread.started", thread_id: threadId };
+      writeFileSync(path, "const kept = true;\nconst value = 'new';\n", "utf8");
+      mkdirSync(rolloutDir, { recursive: true });
+      writeFileSync(
+        rolloutPath,
+        `${JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "patch_apply_end",
+            // Native rollout call IDs are independent from SDK item IDs.
+            call_id: "native-call-1",
+            changes: {
+              [path]: {
+                type: "update",
+                unified_diff:
+                  "@@ -1,2 +1,2 @@\n const kept = true;\n-const value = 'old';\n+const value = 'new';\n",
+              },
+            },
+          },
+        })}\n`,
+        "utf8",
+      );
+      yield {
+        type: "item.completed",
+        item: {
+          id: "patch-preview-1",
+          type: "file_change",
+          status: "completed",
+          changes: [{ path: "app.ts", kind: "update" }],
+        },
+      };
+      writeFileSync(
+        path,
+        "const kept = true;\nconst value = 'newer';\nconst extra = true;\n",
+        "utf8",
+      );
+      yield {
+        type: "item.completed",
+        item: {
+          id: "patch-preview-2",
+          type: "file_change",
+          status: "completed",
+          changes: [{ path: "app.ts", kind: "update" }],
+        },
+      };
+      yield { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } };
+    };
+
+    try {
+      const events = [];
+      for await (const event of codexProvider(opts({ sessionId: null, cwd }))) events.push(event);
+
+      expect(events).toContainEqual({
+        type: "tool_use",
+        name: "Edit",
+        toolUseId: "patch-preview-1:0",
+        input: {
+          file_path: "app.ts",
+          change_kind: "update",
+          before: "const value = 'old';",
+          after: "const value = 'new';",
+          diff_preview: "1  const kept = true;\n2 -const value = 'old';\n2 +const value = 'new';",
+        },
+      });
+      expect(events).toContainEqual({
+        type: "tool_use",
+        name: "Edit",
+        toolUseId: "patch-preview-2:0",
+        input: {
+          file_path: "app.ts",
+          change_kind: "update",
+          before: "const value = 'new';",
+          after: "const value = 'newer';\nconst extra = true;",
+          diff_preview:
+            "2 -const value = 'new';\n2 +const value = 'newer';\n3 +const extra = true;",
+        },
+      });
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(rolloutPath, { force: true });
+    }
+  });
+
+  test("canonicalizes symlinked file paths before filesystem fallback", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "negotium-codex-symlink-root-"));
+    const linkParent = mkdtempSync(join(tmpdir(), "negotium-codex-symlink-link-"));
+    const linkedCwd = join(linkParent, "workspace");
+    const path = join(cwd, "app.ts");
+    const linkedPath = join(linkedCwd, "app.ts");
+    execFileSync("git", ["init", "-q", cwd]);
+    writeFileSync(path, "const value = 'old';\n", "utf8");
+    symlinkSync(cwd, linkedCwd, "dir");
+    streamedEvents = async function* symlinkedFileChange() {
+      yield { type: "thread.started", thread_id: "019dee65-ffff-7aaa-8aaa-eeeeeeeeeeea" };
+      writeFileSync(path, "const value = 'new';\n", "utf8");
+      yield {
+        type: "item.completed",
+        item: {
+          id: "patch-symlink",
+          type: "file_change",
+          status: "completed",
+          changes: [{ path: linkedPath, kind: "update" }],
+        },
+      };
+      yield { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } };
+    };
+
+    try {
+      const events = [];
+      for await (const event of codexProvider(opts({ sessionId: null, cwd: linkedCwd }))) {
+        events.push(event);
+      }
+      expect(events).toContainEqual({
+        type: "tool_use",
+        name: "Edit",
+        toolUseId: "patch-symlink:0",
+        input: {
+          file_path: linkedPath,
+          change_kind: "update",
+          before: "const value = 'old';",
+          after: "const value = 'new';",
+          diff_preview: "1 -const value = 'old';\n1 +const value = 'new';",
+        },
+      });
+    } finally {
+      rmSync(linkParent, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("bounds dirty baseline contents and omits unsafe overflow previews", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "negotium-codex-baseline-limit-"));
+    execFileSync("git", ["init", "-q", cwd]);
+    for (let index = 0; index <= 200; index += 1) {
+      writeFileSync(join(cwd, `file-${String(index).padStart(3, "0")}.txt`), "old\n", "utf8");
+    }
+    const overflowPath = join(cwd, "file-200.txt");
+    streamedEvents = async function* overflowFileChange() {
+      yield { type: "thread.started", thread_id: "019dee65-ffff-7aaa-8aaa-eeeeeeeeeeeb" };
+      writeFileSync(overflowPath, "new\n", "utf8");
+      yield {
+        type: "item.completed",
+        item: {
+          id: "patch-overflow",
+          type: "file_change",
+          status: "completed",
+          changes: [{ path: overflowPath, kind: "update" }],
+        },
+      };
+      yield { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } };
+    };
+
+    try {
+      const events = [];
+      for await (const event of codexProvider(opts({ sessionId: null, cwd }))) events.push(event);
+      expect(events).toContainEqual({
+        type: "tool_use",
+        name: "Edit",
+        toolUseId: "patch-overflow:0",
+        input: { file_path: overflowPath, change_kind: "update" },
+      });
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("waits for native +/- previews when rollout flushing trails file_change", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "negotium-codex-nongit-"));
+    const path = join(cwd, "app.ts");
+    const threadId = "019dee65-ffff-7aaa-8aaa-eeeeeeeeeeef";
+    const rolloutDir = join(codexAuthDir, "sessions", "2026", "07", "22");
+    const rolloutPath = join(rolloutDir, `rollout-test-${threadId}.jsonl`);
+    writeFileSync(path, "const value = 'old';\n", "utf8");
+    streamedEvents = async function* fileChangeWithNativeDiff() {
+      yield { type: "thread.started", thread_id: threadId };
+      writeFileSync(path, "const value = 'new';\n", "utf8");
+      setTimeout(() => {
+        mkdirSync(rolloutDir, { recursive: true });
+        writeFileSync(
+          rolloutPath,
+          `${JSON.stringify({
+            type: "event_msg",
+            payload: {
+              type: "patch_apply_end",
+              // Native rollout call IDs are independent from SDK item IDs.
+              call_id: "native-call-delayed",
+              changes: {
+                [path]: {
+                  type: "update",
+                  unified_diff: "@@ -1 +1 @@\n-const value = 'old';\n+const value = 'new';\n",
+                },
+              },
+            },
+          })}\n`,
+          "utf8",
+        );
+      }, 120);
+      yield {
+        type: "item.completed",
+        item: {
+          id: "patch-preview-native",
+          type: "file_change",
+          status: "completed",
+          changes: [{ path, kind: "update" }],
+        },
+      };
+      yield { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } };
+    };
+
+    try {
+      const events = [];
+      for await (const event of codexProvider(opts({ sessionId: null, cwd }))) events.push(event);
+
+      expect(events).toContainEqual({
+        type: "tool_use",
+        name: "Edit",
+        toolUseId: "patch-preview-native:0",
+        input: {
+          file_path: path,
+          change_kind: "update",
+          before: "const value = 'old';",
+          after: "const value = 'new';",
+          diff_preview: "1 -const value = 'old';\n1 +const value = 'new';",
+        },
+      });
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(rolloutPath, { force: true });
+    }
+  });
+
+  test("flags failed apply_patch changes with an explicit error result", async () => {
+    streamedEvents = async function* failedFileChange() {
+      yield { type: "thread.started", thread_id: "019dee65-ffff-7aaa-8aaa-dddddddddddd" };
+      yield {
+        type: "item.completed",
+        item: {
+          id: "patch-2",
+          type: "file_change",
+          status: "failed",
+          changes: [{ path: "src/app.ts", kind: "update" }],
+        },
+      };
+      yield { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } };
+    };
+
+    const events = [];
+    for await (const event of codexProvider(opts({ sessionId: null }))) events.push(event);
+
+    expect(events).toContainEqual({
+      type: "tool_result",
+      toolUseId: "patch-2:0",
+      content: "update failed: src/app.ts",
+      isError: true,
+    });
+  });
+
+  test("flags failed command and MCP results with explicit errors", async () => {
+    streamedEvents = async function* failedTools() {
+      yield { type: "thread.started", thread_id: "019dee65-ffff-7aaa-8aaa-eeeeeeeeeeed" };
+      yield {
+        type: "item.started",
+        item: { id: "command-failed", type: "command_execution", command: "false" },
+      };
+      yield {
+        type: "item.completed",
+        item: {
+          id: "command-failed",
+          type: "command_execution",
+          status: "failed",
+          exit_code: 1,
+          aggregated_output: "command failed",
+        },
+      };
+      yield {
+        type: "item.started",
+        item: {
+          id: "mcp-failed",
+          type: "mcp_tool_call",
+          tool: "example",
+          arguments: {},
+        },
+      };
+      yield {
+        type: "item.completed",
+        item: {
+          id: "mcp-failed",
+          type: "mcp_tool_call",
+          status: "failed",
+          error: { message: "tool failed" },
+        },
+      };
+      yield { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } };
+    };
+
+    const events = [];
+    for await (const event of codexProvider(opts({ sessionId: null }))) events.push(event);
+
+    expect(events).toContainEqual({
+      type: "tool_result",
+      toolUseId: "command-failed",
+      content: "command failed",
+      isError: true,
+    });
+    expect(events).toContainEqual({
+      type: "tool_result",
+      toolUseId: "mcp-failed",
+      content: "tool failed",
+      isError: true,
     });
   });
 

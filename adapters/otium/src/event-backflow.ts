@@ -146,6 +146,7 @@ export function translateBusEvent(event: RuntimeBusEvent): RawEvent | null {
         queryId: status.queryId,
         toolUseId: status.toolUseId,
         content: status.content,
+        isError: status.isError,
       });
     case "tool_status":
       // bus.ts stores the WS `kind` field as `statusKind` (the outer `kind`

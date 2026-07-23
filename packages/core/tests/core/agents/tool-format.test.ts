@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { formatToolUse, summarizeShellCommand, summarizeToolInput } from "#agents/tool-format";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  classifyShellToolName,
+  formatToolUse,
+  summarizeShellCommand,
+  summarizeToolInput,
+} from "#agents/tool-format";
 
 describe("formatToolUse", () => {
   test("View shows the question before the image path", () => {
@@ -33,6 +41,30 @@ describe("formatToolUse", () => {
     ).toBe("bun test 2 files");
   });
 
+  test("classifies only simple read-only shell commands as Read or Search", () => {
+    expect(classifyShellToolName("sed -n '1,80p' src/app.ts")).toBe("Read");
+    expect(classifyShellToolName("cat package.json")).toBe("Read");
+    expect(classifyShellToolName("rg -n 'needle' src")).toBe("Search");
+    expect(classifyShellToolName("find src -name '*.ts'")).toBe("Search");
+    expect(classifyShellToolName("sed -i '' 's/a/b/' src/app.ts")).toBe("Bash");
+    expect(classifyShellToolName("sed --in-place=.bak 's/a/b/' src/app.ts")).toBe("Bash");
+    expect(classifyShellToolName("sed -n -e 'w output' input")).toBe("Bash");
+    expect(classifyShellToolName("find src -delete")).toBe("Bash");
+    expect(classifyShellToolName("find src -fprint output")).toBe("Bash");
+    expect(classifyShellToolName("cat input.txt > output.txt")).toBe("Bash");
+    expect(classifyShellToolName("rg needle src | head")).toBe("Bash");
+    expect(classifyShellToolName("cat notes.txt\nrm -rf /tmp/example")).toBe("Bash");
+    expect(classifyShellToolName('bash -lc "cat notes.txt\nrm -rf /tmp/example"')).toBe("Bash");
+
+    expect(formatToolUse("Read", { command: "sed -n '1,80p' src/app.ts" })).toBe("Read(app.ts)");
+    expect(formatToolUse("Search", { command: "rg -n 'needle' src" })).toBe("Search(needle +1)");
+    expect(formatToolUse("Bash", { command: "cat package.json" })).toBe("Read(package.json)");
+    expect(formatToolUse("Bash", { command: "rg -n 'needle' src" })).toBe("Search(needle +1)");
+    expect(formatToolUse("Bash", { command: "cat input.txt > output.txt" })).toBe(
+      "Bash(cat input.txt +1)",
+    );
+  });
+
   test("uses the compact shell summary in labels and client-safe input", () => {
     const command = `/bin/zsh -lc "pwd && rg --files attachments /Users/me/wiki"`;
     expect(formatToolUse("Bash", { command })).toBe("Bash(pwd · rg files attachments +1)");
@@ -62,7 +94,7 @@ describe("formatToolUse", () => {
       lines: 1,
     });
     expect(String(write?.preview)).toStartWith("large body");
-    expect(String(write?.preview).length).toBeLessThanOrEqual(90);
+    expect(String(write?.preview).length).toBeLessThanOrEqual(4_000);
 
     expect(
       summarizeToolInput("Edit", {
@@ -75,6 +107,84 @@ describe("formatToolUse", () => {
       before: "const status = 'old';",
       after: "const status = 'new';",
     });
+
+    expect(
+      summarizeToolInput("Edit", {
+        file_path: "/workspace/example.py",
+        before: "  old_value  \n",
+        after: "  new_value  \n",
+      }),
+    ).toMatchObject({
+      before: "  old_value  \n",
+      after: "  new_value  \n",
+    });
+
+    expect(
+      summarizeToolInput("Edit", {
+        file_path: "/workspace/src/app.ts",
+        change_kind: "update",
+        before: "const first = 1;\nconst second = 2;",
+        after: "const first = 10;\nconst second = 20;",
+        diff_preview:
+          "12 -const first = 1;\n12 +const first = 10;\n13 -const second = 2;\n13 +const second = 20;",
+      }),
+    ).toEqual({
+      file_path: "/workspace/src/app.ts",
+      change_kind: "update",
+      before: "const first = 1;\nconst second = 2;",
+      after: "const first = 10;\nconst second = 20;",
+      diff_preview:
+        "12 -const first = 1;\n12 +const first = 10;\n13 -const second = 2;\n13 +const second = 20;",
+    });
+
+    expect(
+      summarizeToolInput("Write", {
+        file_path: "/workspace/src/new.ts",
+        after: "first line\nsecond line\n",
+        diff_preview: "1 +first line\n2 +second line",
+      }),
+    ).toEqual({
+      file_path: "/workspace/src/new.ts",
+      preview: "first line\nsecond line\n",
+      lines: 2,
+      diff_preview: "1 +first line\n2 +second line",
+    });
+
+    expect(
+      summarizeToolInput("Delete", {
+        file_path: "/workspace/src/old.ts",
+        before: "first line\nsecond line",
+        diff_preview: "1 -first line\n2 -second line",
+      }),
+    ).toEqual({
+      file_path: "/workspace/src/old.ts",
+      before: "first line\nsecond line",
+      diff_preview: "1 -first line\n2 -second line",
+    });
+  });
+
+  test("generates one numbered file diff for Claude and Maestro tool inputs", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "negotium-tool-diff-"));
+    try {
+      writeFileSync(join(cwd, "example.py"), "first\nsecond\n  new_value  \nfourth\n");
+      expect(
+        summarizeToolInput(
+          "Edit",
+          {
+            file_path: "example.py",
+            old_string: "  old_value  \n",
+            new_string: "  new_value  \n",
+          },
+          { cwd },
+        ),
+      ).toMatchObject({
+        before: "  old_value  \n",
+        after: "  new_value  \n",
+        diff_preview: "3 -  old_value  \n3 +  new_value  ",
+      });
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   test("keeps AskUserQuestion fields needed by the client choice card", () => {

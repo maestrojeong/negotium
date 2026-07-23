@@ -70,7 +70,13 @@ export interface RuntimeBus {
     label: string,
     toolUseId: string,
   ): void;
-  broadcastToolOutput(topicId: string, queryId: string, toolUseId: string, content: string): void;
+  broadcastToolOutput(
+    topicId: string,
+    queryId: string,
+    toolUseId: string,
+    content: string,
+    isError?: boolean,
+  ): void;
   broadcastToolStatus(
     topicId: string,
     queryId: string,
@@ -246,9 +252,21 @@ export class SqliteRuntimeBus implements RuntimeBus {
     });
   }
 
-  broadcastToolOutput(topicId: string, queryId: string, toolUseId: string, content: string): void {
+  broadcastToolOutput(
+    topicId: string,
+    queryId: string,
+    toolUseId: string,
+    content: string,
+    isError?: boolean,
+  ): void {
     const id = toolUseId.trim() || `${queryId}:tool`;
-    this.broadcastAiStatus(topicId, { kind: "tool_output", queryId, toolUseId: id, content });
+    this.broadcastAiStatus(topicId, {
+      kind: "tool_output",
+      queryId,
+      toolUseId: id,
+      content,
+      ...(isError ? { isError: true } : {}),
+    });
   }
 
   broadcastToolStatus(

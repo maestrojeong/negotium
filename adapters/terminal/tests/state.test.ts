@@ -12,6 +12,7 @@ import {
   setMessages,
   setTopics,
   startTopicCreation,
+  toggleTaskSidebar,
 } from "@/state";
 
 function topic(id: string, title: string): TopicDto {
@@ -29,6 +30,14 @@ function topic(id: string, title: string): TopicDto {
 }
 
 describe("terminal adapter state", () => {
+  test("toggles the Tasks sidebar without hiding inline tasks", () => {
+    const visible = createInitialState("local");
+    const inline = toggleTaskSidebar(visible);
+    expect(visible.taskSidebarEnabled).toBe(true);
+    expect(inline.taskSidebarEnabled).toBe(false);
+    expect(toggleTaskSidebar(inline).taskSidebarEnabled).toBe(true);
+  });
+
   test("keeps a selected topic while refreshing the topic list", () => {
     let state = setTopics(createInitialState("local"), [topic("a", "A"), topic("b", "B")]);
     state = { ...state, activeTopicId: "b" };
@@ -509,6 +518,161 @@ describe("terminal adapter state", () => {
     ]);
     expect(state.messages.a?.[0]?.text).toContain("- const oldValue");
     expect(state.messages.a?.[0]?.text).toContain("+ const newValue");
+  });
+
+  test("describes Codex file changes when the SDK does not provide a diff", () => {
+    let state = setTopics(createInitialState("local"), [topic("a", "A")]);
+    for (const [toolUseId, name, changeKind, path] of [
+      ["update", "Edit", "update", "/workspace/src/app.ts"],
+      ["add", "Write", "add", "/workspace/src/new.ts"],
+      ["delete", "Delete", "delete", "/workspace/src/old.ts"],
+    ] as const) {
+      state = applyRuntimeEvent(state, {
+        type: "ai-status",
+        topicId: "a",
+        payload: {
+          kind: "tool_call",
+          queryId: "q",
+          toolUseId,
+          name,
+          label: `${name}(${path})`,
+          input: { file_path: path, change_kind: changeKind },
+        },
+      });
+    }
+
+    expect(state.messages.a?.map((message) => message.text)).toEqual([
+      "Edit · …/src/app.ts\n~ modified",
+      "Write · …/src/new.ts\n+ created",
+      "Delete · …/src/old.ts\n- removed",
+    ]);
+  });
+
+  test("keeps the tool result outcome explicit for success and failure", () => {
+    let state = setTopics(createInitialState("local"), [topic("a", "A")]);
+    for (const [toolUseId, name, changeKind, path] of [
+      ["ok", "Write", "add", "/workspace/src/ok.ts"],
+      ["bad", "Write", "add", "/workspace/src/bad.ts"],
+    ] as const) {
+      state = applyRuntimeEvent(state, {
+        type: "ai-status",
+        topicId: "a",
+        payload: {
+          kind: "tool_call",
+          queryId: "q",
+          toolUseId,
+          name,
+          label: `${name}(${path})`,
+          input: { file_path: path, change_kind: changeKind },
+        },
+      });
+    }
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      payload: {
+        kind: "tool_output",
+        queryId: "q",
+        toolUseId: "ok",
+        content: "add applied: /workspace/src/ok.ts",
+      },
+    });
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      payload: {
+        kind: "tool_output",
+        queryId: "q",
+        toolUseId: "bad",
+        content: "add failed: /workspace/src/bad.ts",
+        isError: true,
+      },
+    });
+
+    const [ok, bad] = state.messages.a ?? [];
+    expect(ok?.toolResult).toBe("ok");
+    expect(ok?.text).toBe("Write · …/src/ok.ts\n+ created");
+    expect(bad?.toolResult).toBe("error");
+    expect(bad?.text).toBe("Write · …/src/bad.ts\n! create failed");
+  });
+
+  test("keeps each logical diff line marked when Claude edits span lines", () => {
+    let state = setTopics(createInitialState("local"), [topic("a", "A")]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      payload: {
+        kind: "tool_call",
+        queryId: "q",
+        toolUseId: "edit",
+        name: "Edit",
+        label: "Edit(/workspace/src/app.ts)",
+        input: { file_path: "/workspace/src/app.ts", before: "one\ntwo", after: "uno\ndos" },
+      },
+    });
+
+    expect(state.messages.a?.[0]?.text).toBe(
+      "Edit · …/src/app.ts (+2 -2)\n- one\n- two\n+ uno\n+ dos",
+    );
+
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      payload: {
+        kind: "tool_call",
+        queryId: "q",
+        toolUseId: "edit-lines",
+        name: "Edit",
+        input: {
+          file_path: "/workspace/src/app.ts",
+          before: "old one\nold two",
+          after: "new one\nnew two",
+          diff_preview: "12 -old one\n12 +new one\n13  unchanged\n14 -old two\n14 +new two",
+        },
+      },
+    });
+    expect(state.messages.a?.at(-1)?.text).toBe(
+      "Edit · …/src/app.ts (+2 -2)\n12 -old one\n12 +new one\n13  unchanged\n14 -old two\n14 +new two",
+    );
+
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      payload: {
+        kind: "tool_call",
+        queryId: "q",
+        toolUseId: "write-lines",
+        name: "Write",
+        input: {
+          file_path: "/workspace/src/new.ts",
+          preview: "first line\nsecond line",
+          lines: 2,
+          diff_preview: "1 +first line\n2 +second line",
+        },
+      },
+    });
+    expect(state.messages.a?.at(-1)?.text).toBe(
+      "Write · …/src/new.ts (+2 -0)\n1 +first line\n2 +second line",
+    );
+
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      payload: {
+        kind: "tool_call",
+        queryId: "q",
+        toolUseId: "delete-lines",
+        name: "Delete",
+        input: {
+          file_path: "/workspace/src/old.ts",
+          before: "first line\nsecond line",
+          diff_preview: "1 -first line\n2 -second line",
+        },
+      },
+    });
+    expect(state.messages.a?.at(-1)?.text).toBe(
+      "Delete · …/src/old.ts (+0 -2)\n1 -first line\n2 -second line",
+    );
   });
 
   test("does not jump to the live edge while the user is reading history", () => {

@@ -29,8 +29,8 @@ import {
   warmPathSuggestions,
 } from "@/path-suggest";
 import {
+  type CodeCopyTarget,
   maxConversationScrollOffset,
-  plainTranscript,
   renderAppFrame,
   stripAnsi,
   WORKING_FRAME_INTERVAL_MS,
@@ -60,6 +60,7 @@ import {
   setMessages,
   setTopics,
   startTopicCreation,
+  toggleTaskSidebar,
   upsertMessage,
 } from "@/state";
 import { InputHistory, TextBuffer } from "@/text-buffer";
@@ -199,6 +200,15 @@ export function consumeMouseInput(raw: string): {
   return { input, scrollDelta, events };
 }
 
+export function codeCopyTargetAt(
+  targets: CodeCopyTarget[],
+  point: ScreenPoint,
+): CodeCopyTarget | undefined {
+  return targets.find(
+    (target) => target.y === point.y && point.x >= target.xStart && point.x <= target.xEnd,
+  );
+}
+
 export interface TerminalAppOptions {
   userId: string;
   preferredTopic?: string;
@@ -242,6 +252,7 @@ export class TerminalApp {
   readonly #queuedRuntimeEvents = new Map<string, RuntimeBusEvent[]>();
   #selection: ScreenSelection | null = null;
   #plainFrameLines: string[] = [];
+  #codeCopyTargets: CodeCopyTarget[] = [];
   #lastInterruptAt = 0;
   #running = false;
   #stopRequested = false;
@@ -528,6 +539,7 @@ export class TerminalApp {
     const columns = process.stdout.columns ?? 100;
     const rows = process.stdout.rows ?? 30;
     const rendered = renderAppFrame(this.#state, columns, rows, this.#animationFrame);
+    this.#codeCopyTargets = rendered.codeCopyTargets;
     const baseFrame = rendered.frame;
     this.#plainFrameLines = stripAnsi(baseFrame).split("\n");
     const frame = this.#selection
@@ -651,15 +663,12 @@ export class TerminalApp {
     }
     if (chunk === "\u0014") {
       if (editingVaultSecret) return;
-      this.#state = {
-        ...this.#state,
-        overlay: this.#state.overlay === "transcript" ? null : "transcript",
-      };
+      this.#state = toggleTaskSidebar(this.#state);
       this.#queueRender();
       return;
     }
     if (chunk === "\u0019") {
-      void this.#copy(false); // Ctrl-Y
+      void this.#copy(); // Ctrl-Y
       return;
     }
     if (chunk === "\u0005") {
@@ -1179,7 +1188,12 @@ export class TerminalApp {
       return;
     }
     if (command === "copy") {
-      void this.#copy(args[0]?.toLowerCase() === "all");
+      if (args.length > 0) {
+        this.#state = { ...this.#state, notice: "Usage: /copy" };
+        this.#queueRender();
+        return;
+      }
+      void this.#copy();
       return;
     }
     this.#state = { ...this.#state, notice: `Unknown command: /${command}` };
@@ -1697,17 +1711,15 @@ export class TerminalApp {
     this.#queueRender();
   }
 
-  async #copy(all: boolean): Promise<void> {
-    const text = all
-      ? plainTranscript(this.#state)
-      : activeMessages(this.#state)
-          .slice()
-          .reverse()
-          .find((message) => message.authorId === "ai" && message.text.trim())?.text;
+  async #copy(): Promise<void> {
+    const text = activeMessages(this.#state)
+      .slice()
+      .reverse()
+      .find((message) => message.authorId === "ai" && message.text.trim())?.text;
     if (!text) {
       this.#state = {
         ...this.#state,
-        notice: all ? "Nothing to copy" : "No agent response to copy",
+        notice: "No agent response to copy",
       };
       this.#queueRender();
       return;
@@ -1716,7 +1728,7 @@ export class TerminalApp {
       const result = await copyToClipboard(text);
       this.#state = {
         ...this.#state,
-        notice: `${all ? "Transcript" : "Last response"} copied via ${result.method}${result.truncated ? " (truncated)" : ""}`,
+        notice: `Last response copied via ${result.method}${result.truncated ? " (truncated)" : ""}`,
       };
     } catch (error) {
       this.#state = {
@@ -1731,6 +1743,12 @@ export class TerminalApp {
     if ((event.button & 3) !== 0 && event.kind !== "release") return;
     const point: ScreenPoint = { x: event.x, y: event.y };
     if (event.kind === "press") {
+      const codeTarget = codeCopyTargetAt(this.#codeCopyTargets, point);
+      if (codeTarget) {
+        this.#selection = null;
+        void this.#copyCodeBlock(codeTarget.text);
+        return;
+      }
       this.#selection = { anchor: point, focus: point };
       this.#queueRender();
       return;
@@ -1764,6 +1782,22 @@ export class TerminalApp {
       this.#state = {
         ...this.#state,
         notice: `Selection copied via ${result.method}${result.truncated ? " (truncated)" : ""}`,
+      };
+    } catch (error) {
+      this.#state = {
+        ...this.#state,
+        notice: `Copy failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    this.#queueRender();
+  }
+
+  async #copyCodeBlock(text: string): Promise<void> {
+    try {
+      const result = await copyToClipboard(text);
+      this.#state = {
+        ...this.#state,
+        notice: `Code block copied via ${result.method}${result.truncated ? " (truncated)" : ""}`,
       };
     } catch (error) {
       this.#state = {

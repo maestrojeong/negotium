@@ -24,7 +24,7 @@ export const TERMINAL_COMMANDS: readonly TerminalCommand[] = [
     description: "spawn a new topic from this one's config (fresh session)",
   },
   { name: "del", usage: "/del", description: "delete the current topic" },
-  { name: "copy", usage: "/copy [all]", description: "copy answer or transcript" },
+  { name: "copy", usage: "/copy", description: "copy the last answer" },
   {
     name: "vault",
     usage: "/vault [list|set|del]",

@@ -269,6 +269,9 @@ export async function streamAgentEvents(
   const providerToolIds = new Map<string, string>();
   const anonymousToolIds: string[] = [];
   const handledVisualToolResultIds = new Set<string>();
+  const toolSummaryOptions = {
+    cwd: control.injectParams?.cwd ?? workspaceCwdFor(topicId),
+  };
   const nextSyntheticToolUseId = () => `tool-${queryId}-${++syntheticToolCounter}`;
   const bindToolUseId = (providerToolUseId?: string, fallback?: string): string => {
     const providerId = normalizeToolUseId(providerToolUseId);
@@ -348,7 +351,7 @@ export async function streamAgentEvents(
       topicId,
       queryId,
       event.name,
-      summarizeToolInput(event.name, event.input),
+      summarizeToolInput(event.name, event.input, toolSummaryOptions),
       formatToolUse(event.name, event.input),
       toolUseId,
     );
@@ -381,6 +384,7 @@ export async function streamAgentEvents(
       queryId,
       bindToolUseId(event.toolUseId),
       `Failed to display ${kind}: ${reason}`,
+      true,
     );
     markVisualToolResultHandled(event.toolUseId);
   };
@@ -429,7 +433,7 @@ export async function streamAgentEvents(
                   topicId,
                   queryId,
                   event.name,
-                  summarizeToolInput(event.name, event.input),
+                  summarizeToolInput(event.name, event.input, toolSummaryOptions),
                   formatToolUse(event.name, event.input),
                   bindToolUseId(event.toolUseId),
                 );
@@ -474,7 +478,7 @@ export async function streamAgentEvents(
                   topicId,
                   queryId,
                   event.name,
-                  summarizeToolInput(event.name, event.input),
+                  summarizeToolInput(event.name, event.input, toolSummaryOptions),
                   formatToolUse(event.name, event.input),
                   bindToolUseId(event.toolUseId),
                 );
@@ -528,6 +532,7 @@ export async function streamAgentEvents(
                   queryId,
                   toolUseId,
                   `Failed to display ${kind}: ${reason}`,
+                  true,
                 );
                 markVisualToolResultHandled(event.toolUseId);
               }
@@ -537,7 +542,7 @@ export async function streamAgentEvents(
                 topicId,
                 queryId,
                 event.name,
-                summarizeToolInput(event.name, event.input),
+                summarizeToolInput(event.name, event.input, toolSummaryOptions),
                 label,
                 toolUseId,
               );
@@ -615,7 +620,7 @@ export async function streamAgentEvents(
                 topicId,
                 queryId,
                 event.name,
-                summarizeToolInput(event.name, event.input),
+                summarizeToolInput(event.name, event.input, toolSummaryOptions),
                 label,
                 toolUseId,
               );
@@ -630,6 +635,7 @@ export async function streamAgentEvents(
               queryId,
               resolveToolResultId(event.toolUseId),
               event.content,
+              event.isError,
             );
           }
           break;

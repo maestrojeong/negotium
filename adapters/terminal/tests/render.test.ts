@@ -485,8 +485,48 @@ describe("terminal renderer", () => {
     state = setMessages(state, "topic", [message]);
     const output = stripAnsi(renderApp(state, 100, 30));
     expect(output).toContain("• first");
-    expect(output).toContain("code · ts");
+    expect(output).toContain("code · ts  ⧉");
     expect(output).toContain("const ok = true;");
+  });
+
+  test("exposes clickable copy targets with the original fenced code", () => {
+    const message: MessageDto = {
+      id: "message",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text: "Before\n```sh\nprintf 'wide line'\necho done\n```\nAfter",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [message]);
+
+    const rendered = renderAppFrame(state, 100, 30);
+    expect(rendered.codeCopyTargets).toHaveLength(1);
+    const target = rendered.codeCopyTargets[0];
+    expect(target?.text).toBe("printf 'wide line'\necho done");
+    expect(target?.y).toBeGreaterThan(0);
+    // The whole visible header is clickable: from "┌" through the ⧉ marker.
+    const header = "┌─ code · sh  ⧉";
+    expect(target?.xStart).toBe(3);
+    expect((target?.xEnd ?? 0) - (target?.xStart ?? 0) + 1).toBe(header.length);
+  });
+
+  test("does not inject the speaker marker into a leading code block", () => {
+    const message: MessageDto = {
+      id: "message",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text: "```markdown\n# PR body\n```",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [message]);
+
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("  ┌─ code · markdown  ⧉");
+    expect(output).not.toContain("● ┌─ code");
   });
 
   test("hides system messages from the Terminal conversation", () => {
@@ -554,10 +594,176 @@ describe("terminal renderer", () => {
       topicId: "topic",
       payload: { kind: "tool_output", queryId: "query", toolUseId: "tool", content: "ok" },
     });
-    const output = stripAnsi(renderApp(state, 100, 30));
+    const rendered = renderApp(state, 100, 30);
+    const output = stripAnsi(rendered);
     expect(output).toContain("Bash · test");
     expect(output).not.toContain("ok");
     expect(output).toContain("Working");
+    expect(rendered).toContain("\u001b[38;2;196;181;253m");
+  });
+
+  test("keeps file mutations prominent and shows more Claude edit context", () => {
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: {
+        kind: "tool_call",
+        queryId: "query",
+        toolUseId: "edit",
+        name: "Edit",
+        label: "Edit(/workspace/src/app.ts)",
+        input: {
+          file_path: "/workspace/src/app.ts",
+          before: "old line one\nold line two\nold line three",
+          after: "new line one\nnew line two\nnew line three",
+        },
+      },
+    });
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: { kind: "tool_output", queryId: "query", toolUseId: "edit", content: "ok" },
+    });
+
+    const rendered = renderApp(state, 100, 30);
+    const output = stripAnsi(rendered);
+    expect(output).toContain("✓ Edit · …/src/app.ts (+3 -3)");
+    // Every logical diff line keeps its +/- marker, not just the first one.
+    expect(output).toContain("- old line one");
+    expect(output).toContain("- old line three");
+    expect(output).toContain("+ new line one");
+    expect(output).toContain("+ new line three");
+    expect(rendered).toContain("\u001b[38;2;196;181;253m");
+    expect(rendered).toContain("\u001b[48;2;45;22;28m");
+    expect(rendered).toContain("\u001b[48;2;18;43;32m");
+    expect(rendered).toContain("\u001b[38;2;94;211;142m\u001b[48;2;10;11;15m+3");
+    expect(rendered).toContain("\u001b[38;2;245;116;128m\u001b[48;2;10;11;15m-3");
+  });
+
+  test("marks a failed Codex file change instead of pretending it succeeded", () => {
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: {
+        kind: "tool_call",
+        queryId: "query",
+        toolUseId: "edit",
+        name: "Edit",
+        label: "Edit(/workspace/src/app.ts)",
+        input: { file_path: "/workspace/src/app.ts", change_kind: "update" },
+      },
+    });
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: {
+        kind: "tool_output",
+        queryId: "query",
+        toolUseId: "edit",
+        content: "update failed: /workspace/src/app.ts",
+        isError: true,
+      },
+    });
+
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("! Edit · …/src/app.ts");
+    expect(output).toContain("! update failed");
+    expect(output).not.toContain("✓ Edit · …/src/app.ts");
+    expect(output).not.toContain("~ modified");
+  });
+
+  test("marks a failed Claude-style edit while preserving its diff", () => {
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: {
+        kind: "tool_call",
+        queryId: "query",
+        toolUseId: "edit",
+        name: "Edit",
+        label: "Edit(/workspace/src/app.ts)",
+        input: {
+          file_path: "/workspace/src/app.ts",
+          before: "const value = 1;",
+          after: "const value = 2;",
+        },
+      },
+    });
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: {
+        kind: "tool_output",
+        queryId: "query",
+        toolUseId: "edit",
+        content: "String to replace not found",
+        isError: true,
+      },
+    });
+
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("! Edit · …/src/app.ts (+1 -1)");
+    expect(output).toContain("- const value = 1;");
+    expect(output).toContain("+ const value = 2;");
+    expect(output).toContain("! failed");
+    expect(output).not.toContain("✓ Edit · …/src/app.ts");
+  });
+
+  test("does not color diff context that starts with a list marker", () => {
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: {
+        kind: "tool_call",
+        queryId: "query",
+        toolUseId: "edit",
+        name: "Edit",
+        label: "Edit(/workspace/list.md)",
+        input: {
+          file_path: "/workspace/list.md",
+          diff_preview: "12  - unchanged item\n13  + unchanged item",
+        },
+      },
+    });
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: { kind: "tool_output", queryId: "query", toolUseId: "edit", content: "ok" },
+    });
+
+    const rendered = renderApp(state, 100, 30);
+    const output = stripAnsi(rendered);
+    expect(output).toContain("12  - unchanged item");
+    expect(output).toContain("13  + unchanged item");
+    expect(rendered).not.toContain("\u001b[48;2;45;22;28m");
+    expect(rendered).not.toContain("\u001b[48;2;18;43;32m");
+  });
+
+  test("announces hidden preview lines instead of silently truncating", () => {
+    const before = Array.from({ length: 10 }, (_, i) => `old ${i + 1}`).join("\n");
+    const after = Array.from({ length: 10 }, (_, i) => `new ${i + 1}`).join("\n");
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: {
+        kind: "tool_call",
+        queryId: "query",
+        toolUseId: "edit",
+        name: "Edit",
+        label: "Edit(/workspace/src/app.ts)",
+        input: { file_path: "/workspace/src/app.ts", before, after },
+      },
+    });
+
+    const output = stripAnsi(renderApp(state, 100, 40));
+    expect(output).toContain("- old 1");
+    expect(output).toContain("… +8 more lines");
+    expect(output).not.toContain("+ new 10");
   });
 
   test("shows what an ask session sends and where", () => {
@@ -596,6 +802,105 @@ describe("terminal renderer", () => {
     expect(output).toContain("◫ Tasks");
     expect(output).toContain("☐ Verify the result");
     expect(output).not.toContain("Shared tasks");
+  });
+
+  test("moves Tasks into a right sidebar on wide terminals", () => {
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [
+      {
+        id: "tasks-sidebar",
+        topicId: "topic",
+        authorId: "system",
+        text: "📋 Tasks (0/2)\n[->] Implement sidebar\n[ ] Verify layout",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+
+    const rendered = renderApp(state, 120, 30);
+    const output = stripAnsi(rendered);
+    const taskHeader = output.split("\n").find((row) => row.includes("Tasks"));
+    expect(taskHeader?.indexOf("Tasks")).toBeGreaterThan(80);
+    expect(taskHeader).toContain("Tasks · Ctrl-T");
+    expect(rendered).toContain("\u001b[38;2;151;118;56m");
+    expect(output).toContain("[->] Implement sidebar");
+    expect(output).toContain("[ ] Verify layout");
+    expect(output).not.toContain("◫ Tasks");
+
+    const inline = stripAnsi(renderApp({ ...state, taskSidebarEnabled: false }, 120, 30));
+    expect(inline).toContain("◫ Tasks · Ctrl-T sidebar");
+    expect(
+      inline
+        .split("\n")
+        .find((row) => row.includes("Tasks"))
+        ?.indexOf("Tasks"),
+    ).toBeLessThan(20);
+  });
+
+  test("keeps current work visible and counts overflow in the Tasks sidebar", () => {
+    const done = Array.from({ length: 30 }, (_, i) => `[x] Done task ${i + 1}`);
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [
+      {
+        id: "tasks-overflow",
+        topicId: "topic",
+        authorId: "system",
+        text: ["📋 Tasks (30/31)", "[->] Current work", ...done].join("\n"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+
+    const output = stripAnsi(renderApp(state, 120, 30));
+    expect(output).toContain("[->] Current work");
+    const more = output.match(/\+(\d+) more/);
+    expect(more).not.toBeNull();
+    expect(Number(more?.[1])).toBeGreaterThan(0);
+    // Oldest completed tasks are the ones that overflow.
+    expect(output).not.toContain("[x] Done task 1 ");
+  });
+
+  test("prioritizes active work over queued tasks in a short Tasks sidebar", () => {
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [
+      {
+        id: "tasks-active-first",
+        topicId: "topic",
+        authorId: "system",
+        text: [
+          "Tasks (0/4)",
+          "[ ] Queued first",
+          "[ ] Queued second",
+          "[->] Active now",
+          "[ ] Queued last",
+        ].join("\n"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+
+    const output = stripAnsi(renderApp(state, 120, 14));
+    const activeIndex = output.indexOf("[->] Active now");
+    const queuedIndex = output.indexOf("[ ] Queued first");
+    expect(activeIndex).toBeGreaterThanOrEqual(0);
+    expect(queuedIndex < 0 || activeIndex < queuedIndex).toBe(true);
+  });
+
+  test("counts hidden tasks in the inline Tasks panel on narrow terminals", () => {
+    const tasks = Array.from({ length: 8 }, (_, i) => `[ ] Task ${i + 1}`);
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [
+      {
+        id: "tasks-inline",
+        topicId: "topic",
+        authorId: "system",
+        text: ["📋 Tasks (0/8)", ...tasks].join("\n"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("◫ Tasks");
+    expect(output).toContain("[ ] Task 5");
+    expect(output).not.toContain("[ ] Task 6");
+    expect(output).toContain("+3 more");
   });
 
   test("shows unfinished tasks before the most recently completed tasks", () => {

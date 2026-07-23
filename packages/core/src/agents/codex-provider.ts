@@ -1,4 +1,6 @@
-import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
 import type {
   FileChangeItem,
   McpToolCallItem,
@@ -22,8 +24,11 @@ import {
 import { hostedCodexAuthFilePath, hostedMcpServers } from "#agents/execution-host";
 import {
   migrateCodexRolloutNativeMultiAgentMetadata,
+  readCodexPatchCallIds,
   readLatestCodexContextUsage,
+  readLatestCodexPatchPreview,
 } from "#agents/rollout/codex";
+import { buildNumberedDiffSummary } from "#agents/tool-format";
 import { extractFileEvents } from "#media/file-events";
 import { errMsg } from "#platform/error";
 import { logger } from "#platform/logger";
@@ -185,16 +190,173 @@ function summarizeMcpToolCallResult(item: McpToolCallItem): string {
   return JSON.stringify(item.result.structured_content ?? "").slice(0, 200);
 }
 
-function fileChangeEvents(item: FileChangeItem): UnifiedEvent[] {
+const CODEX_DIFF_FILE_LIMIT = 512 * 1024;
+const CODEX_DIFF_BASELINE_FILE_LIMIT = 200;
+const CODEX_DIFF_BASELINE_BYTE_LIMIT = 16 * 1024 * 1024;
+
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync(resolve(path));
+  } catch {
+    return resolve(path);
+  }
+}
+
+function textFile(path: string, maxBytes = CODEX_DIFF_FILE_LIMIT): string | null | undefined {
+  if (!existsSync(path)) return null;
+  try {
+    const byteLimit = Math.min(CODEX_DIFF_FILE_LIMIT, Math.max(0, maxBytes));
+    if (statSync(path).size > byteLimit) return undefined;
+    const content = readFileSync(path);
+    if (content.byteLength > byteLimit || content.includes(0)) return undefined;
+    return content.toString("utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+interface CodexFilePreview {
+  before?: string;
+  after?: string;
+  diff_preview?: string;
+}
+
+/**
+ * Codex's SDK exposes only path + change kind, not the patch body. Capture the
+ * dirty worktree at turn start and compare each completed file_change against
+ * that moving baseline. This preserves user edits that already existed before
+ * the turn and gives repeated edits to the same file their own +/- preview.
+ */
+class CodexFilePreviewTracker {
+  readonly #cwd: string;
+  readonly #root: string | null;
+  readonly #baseline = new Map<string, string | null | undefined>();
+  #baselineAvailable = false;
+
+  constructor(cwd: string) {
+    this.#cwd = canonicalPath(cwd);
+    const root = this.#git(["rev-parse", "--show-toplevel"], this.#cwd)?.trim();
+    this.#root = root ? canonicalPath(root) : null;
+    if (!this.#root) return;
+    const status = this.#git(["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+    if (status === undefined) return;
+    this.#baselineAvailable = true;
+    let loadedFiles = 0;
+    let loadedBytes = 0;
+    const records = status.split("\0");
+    for (let index = 0; index < records.length; index += 1) {
+      const record = records[index];
+      if (!record || record.length < 4) continue;
+      const code = record.slice(0, 2);
+      const path = record.slice(3);
+      const remainingBytes = CODEX_DIFF_BASELINE_BYTE_LIMIT - loadedBytes;
+      const content =
+        loadedFiles < CODEX_DIFF_BASELINE_FILE_LIMIT && remainingBytes > 0
+          ? textFile(resolve(this.#root, path), remainingBytes)
+          : undefined;
+      this.#baseline.set(path, content);
+      if (typeof content === "string") {
+        loadedFiles += 1;
+        loadedBytes += Buffer.byteLength(content);
+      }
+      if (/[RC]/.test(code)) index += 1;
+    }
+  }
+
+  preview(path: string, succeeded: boolean): CodexFilePreview {
+    if (!this.#root || !this.#baselineAvailable || !succeeded) return {};
+    const absolute = canonicalPath(isAbsolute(path) ? path : resolve(this.#cwd, path));
+    const relativePath = relative(this.#root, absolute);
+    if (!relativePath || relativePath.startsWith("..") || isAbsolute(relativePath)) return {};
+
+    const before = this.#baseline.has(relativePath)
+      ? this.#baseline.get(relativePath)
+      : this.#headFile(relativePath);
+    const after = textFile(absolute);
+    this.#baseline.set(relativePath, after);
+    if (before === undefined || after === undefined) return {};
+
+    const diff = buildNumberedDiffSummary(before ?? "", after ?? "");
+    return {
+      ...(diff.before !== undefined ? { before: diff.before } : {}),
+      ...(diff.after !== undefined ? { after: diff.after } : {}),
+      ...(diff.diffPreview !== undefined ? { diff_preview: diff.diffPreview } : {}),
+    };
+  }
+
+  #headFile(path: string): string | null | undefined {
+    const content = this.#git(["show", `HEAD:${path}`]);
+    if (content === undefined) return null;
+    return Buffer.byteLength(content) > CODEX_DIFF_FILE_LIMIT || content.includes("\0")
+      ? undefined
+      : content;
+  }
+
+  #git(args: string[], cwd = this.#root ?? undefined): string | undefined {
+    try {
+      return execFileSync("git", ["-C", cwd ?? ".", ...args], {
+        encoding: "utf8",
+        maxBuffer: CODEX_DIFF_FILE_LIMIT * 4,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+// Codex emits file_change only after the patch finishes, so surface the
+// completed changes immediately as paired tool_use/tool_result events.
+async function fileChangeEvents(
+  item: FileChangeItem,
+  previews: CodexFilePreviewTracker,
+  cwd: string,
+  threadId: string | null | undefined,
+  consumedPatchCallIds: Set<string>,
+): Promise<UnifiedEvent[]> {
+  const expectedPaths = item.changes.map((change) =>
+    isAbsolute(change.path) ? change.path : resolve(cwd, change.path),
+  );
+  let nativePreview: ReturnType<typeof readLatestCodexPatchPreview>;
+  // The SDK can emit item.completed a few milliseconds before Codex flushes
+  // patch_apply_end to its rollout. Give that write a brief head start before
+  // the first lookup, which also avoids matching an older patch for the same
+  // path on resumed threads.
+  if (threadId && item.status === "completed") {
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+    nativePreview = readLatestCodexPatchPreview(threadId, expectedPaths, consumedPatchCallIds);
+  }
+  for (const delayMs of [20, 40, 80, 120]) {
+    if (nativePreview || !threadId || item.status !== "completed") break;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+    nativePreview = readLatestCodexPatchPreview(threadId, expectedPaths, consumedPatchCallIds);
+  }
+  if (nativePreview) consumedPatchCallIds.add(nativePreview.callId);
+
   return item.changes.flatMap((change, index) => {
     const name = change.kind === "add" ? "Write" : change.kind === "delete" ? "Delete" : "Edit";
     const toolUseId = `${item.id}:${index}`;
     const success = item.status === "completed";
+    const nativeChange = nativePreview?.changes[index];
+    // Keep the moving filesystem baseline current even when the native patch
+    // supplies the display preview. A later edit to the same file may need the
+    // filesystem fallback, which must compare against this edit—not turn start.
+    const fallbackPreview = previews.preview(change.path, success);
+    const preview =
+      success && nativeChange
+        ? {
+            ...(nativeChange.before !== undefined ? { before: nativeChange.before } : {}),
+            ...(nativeChange.after !== undefined ? { after: nativeChange.after } : {}),
+            ...(nativeChange.diffPreview !== undefined
+              ? { diff_preview: nativeChange.diffPreview }
+              : {}),
+          }
+        : fallbackPreview;
     return [
       {
         type: "tool_use" as const,
         name,
-        input: { file_path: change.path, change_kind: change.kind },
+        input: { file_path: change.path, change_kind: change.kind, ...preview },
         toolUseId,
       },
       {
@@ -203,6 +365,9 @@ function fileChangeEvents(item: FileChangeItem): UnifiedEvent[] {
         content: success
           ? `${change.kind} applied: ${change.path}`
           : `${change.kind} failed: ${change.path}`,
+        // Explicit failure flag so clients don't have to parse the content
+        // string to tell a failed file change from an applied one.
+        ...(success ? {} : { isError: true as const }),
       },
     ];
   });
@@ -370,6 +535,11 @@ function prependFirstEvent(
  *     event when the assistant message completes.
  */
 export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<UnifiedEvent> {
+  const filePreviews = new CodexFilePreviewTracker(opts.cwd);
+  // A resumed rollout may already contain patches for the same file. Mark
+  // those calls consumed before this turn starts so a delayed new flush can
+  // never be mistaken for the previous turn's edit.
+  const consumedPatchCallIds = new Set(opts.sessionId ? readCodexPatchCallIds(opts.sessionId) : []);
   // Up-front auth file check — gives the user an actionable message
   // ("`codex login` 으로 다시 로그인해주세요") immediately instead of waiting
   // for the @openai/codex-sdk to spawn the codex binary and surface an
@@ -588,7 +758,10 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
               text?: string;
               id?: string;
               aggregated_output?: string;
+              exit_code?: number;
               message?: string;
+              status?: "in_progress" | "completed" | "failed";
+              error?: { message?: string };
             };
             usage?: {
               input_tokens: number;
@@ -611,10 +784,11 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
               const item = event.item;
               if (!item) break;
               if (item.type === "command_execution") {
+                const command = String(item.command ?? "");
                 yield {
                   type: "tool_use",
                   name: "Bash",
-                  input: { command: String(item.command ?? "") },
+                  input: { command },
                   toolUseId: String(item.id ?? ""),
                 };
               } else if (item.type === "mcp_tool_call") {
@@ -662,19 +836,32 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
                 const reasoning = String(item.text ?? "").trim();
                 if (reasoning) yield { type: "reasoning", content: reasoning };
               } else if (item.type === "mcp_tool_call") {
+                const isError = item.status === "failed" || Boolean(item.error);
                 yield {
                   type: "tool_result",
                   toolUseId: String(item.id ?? ""),
                   content: summarizeMcpToolCallResult(item as unknown as McpToolCallItem),
+                  ...(isError ? { isError: true } : {}),
                 };
               } else if (item.type === "command_execution") {
+                const isError =
+                  item.status === "failed" ||
+                  (typeof item.exit_code === "number" && item.exit_code !== 0);
                 yield {
                   type: "tool_result",
                   toolUseId: String(item.id ?? ""),
                   content: String(item.aggregated_output ?? "").slice(0, 200),
+                  ...(isError ? { isError: true } : {}),
                 };
               } else if (item.type === "file_change") {
-                for (const fileEvent of fileChangeEvents(item as unknown as FileChangeItem)) {
+                const fileEvents = await fileChangeEvents(
+                  item as unknown as FileChangeItem,
+                  filePreviews,
+                  opts.cwd,
+                  currentSessionId,
+                  consumedPatchCallIds,
+                );
+                for (const fileEvent of fileEvents) {
                   yield fileEvent;
                 }
               } else if (item.type === "error") {

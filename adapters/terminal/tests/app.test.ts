@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   animationFrameAt,
+  codeCopyTargetAt,
   consumeMouseInput,
   ctrlCExitsTopicPicker,
   escapeStopsActiveTurn,
@@ -102,6 +103,14 @@ test("parses left-button drag selection events", () => {
       { button: 0, x: 8, y: 4, kind: "release" },
     ],
   });
+});
+
+test("hits the visible code copy header bounds", () => {
+  const target = { xStart: 20, xEnd: 25, y: 7, text: "echo copied" };
+  expect(codeCopyTargetAt([target], { x: 20, y: 7 })?.text).toBe("echo copied");
+  expect(codeCopyTargetAt([target], { x: 25, y: 7 })?.text).toBe("echo copied");
+  expect(codeCopyTargetAt([target], { x: 19, y: 7 })).toBeUndefined();
+  expect(codeCopyTargetAt([target], { x: 20, y: 8 })).toBeUndefined();
 });
 
 test("extracts and highlights screen-column selections with wide glyphs", () => {
