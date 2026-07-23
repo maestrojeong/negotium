@@ -396,8 +396,11 @@ export function completePathToken(
   // Completing from inside an already-typed token: extend past the non-space
   // chars after the cursor so the whole token is replaced. Otherwise the tail
   // survives and the path is duplicated (e.g. `@/tmp/alp|ha/x` → `…/alpha/ha/x`).
-  let end = col;
-  while (end < lineText.length && !/\s/.test(lineText[end] ?? " ")) end += 1;
+  let tokenEnd = col;
+  while (tokenEnd < lineText.length && !/\s/.test(lineText[tokenEnd] ?? " ")) tokenEnd += 1;
+  const trailingText = lineText.slice(col, tokenEnd);
+  const pathTail = trailingText.replace(TRAILING_PUNCT, "");
+  const end = col + pathTail.length;
   const replacement = options.keepTrigger ? suggestion.value : suggestion.value.slice(1);
   const line = lineText.slice(0, token.start) + replacement + lineText.slice(end);
   return { line, col: token.start + replacement.length };

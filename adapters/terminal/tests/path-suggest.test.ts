@@ -164,6 +164,15 @@ describe("completePathToken", () => {
     expect(completed?.line).toBe(`see ${root}/beta/${suffix}`);
   });
 
+  test("preserves punctuation after the active path fragment", () => {
+    const line = `see @${root}/be, thanks`;
+    const col = `see @${root}/be`.length;
+    const result = pathSuggestions(`@${root}/be`, `@${root}/be`.length);
+    const beta = result?.items.find((item) => item.label === "beta/");
+    const completed = completePathToken(line, col, beta!, { keepTrigger: true });
+    expect(completed?.line).toBe(`see @${root}/beta/, thanks`);
+  });
+
   describe("stripResolvedPathTriggers", () => {
     test("drops the @ only for tokens that resolve to an existing path", () => {
       expect(stripResolvedPathTriggers(`open @${root}/app.ts please`)).toBe(
