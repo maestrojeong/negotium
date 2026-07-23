@@ -45,6 +45,7 @@ import {
   topicService,
 } from "@negotium/core";
 import { nodeFileStore } from "./files";
+import { createPollingSseStream } from "./polling-sse";
 
 export const NODE_CONTROL_PROTOCOL_VERSION = 1;
 export const NODE_CONTROL_BASE_PATH = "/api/v1/control";
@@ -149,166 +150,53 @@ function runtimeEvent(event: StoredRuntimeEvent): RuntimeBusEvent {
 }
 
 function createRuntimeContractEventStream(req: Request, after: number, topicId?: string): Response {
-  const encoder = new TextEncoder();
   let cursor = Math.max(0, after);
-  let closed = false;
-  let pumping = false;
-  let pollTimer: ReturnType<typeof setInterval> | undefined;
-  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      const send = (event: string, data: unknown, id?: number) => {
-        if (closed) return;
-        const lines = [
-          id === undefined ? "" : `id: ${id}`,
-          `event: ${event}`,
-          `data: ${JSON.stringify(data)}`,
-        ]
-          .filter(Boolean)
-          .join("\n");
-        controller.enqueue(encoder.encode(`${lines}\n\n`));
-      };
-      const close = () => {
-        if (closed) return;
-        closed = true;
-        if (pollTimer) clearInterval(pollTimer);
-        if (heartbeatTimer) clearInterval(heartbeatTimer);
-        try {
-          controller.close();
-        } catch {
-          // The peer may already have closed the stream.
-        }
-      };
-      const pump = () => {
-        if (closed || pumping) return;
-        pumping = true;
-        try {
-          while (!closed) {
-            const events = listRuntimeEventsAfter(cursor, 500);
-            if (events.length === 0) break;
-            for (const event of events) {
-              cursor = event.seq;
-              if (!topicId || event.topicId === topicId)
-                send("runtime", runtimeEvent(event), event.seq);
-            }
-            // A cursor is global because RuntimeBus ordering is global. This
-            // lets a topic-filtered subscriber resume without rescanning it.
-            send("cursor", { cursor }, cursor);
-            if (events.length < 500) break;
+  return createPollingSseStream(req, {
+    ready: { v: NODE_RUNTIME_CONTRACT_VERSION, cursor },
+    pump(send) {
+      while (true) {
+        const events = listRuntimeEventsAfter(cursor, 500);
+        if (events.length === 0) break;
+        for (const event of events) {
+          cursor = event.seq;
+          if (!topicId || event.topicId === topicId) {
+            send("runtime", runtimeEvent(event), event.seq);
           }
-        } finally {
-          pumping = false;
         }
-      };
-
-      send("ready", { v: NODE_RUNTIME_CONTRACT_VERSION, cursor });
-      pump();
-      pollTimer = setInterval(pump, 100);
-      heartbeatTimer = setInterval(() => {
-        if (!closed) controller.enqueue(encoder.encode(`: heartbeat ${Date.now()}\n\n`));
-      }, 15_000);
-      req.signal.addEventListener("abort", close, { once: true });
-    },
-    cancel() {
-      closed = true;
-      if (pollTimer) clearInterval(pollTimer);
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-      "content-type": "text/event-stream; charset=utf-8",
-      "x-accel-buffering": "no",
+        // A cursor is global because RuntimeBus ordering is global. This
+        // lets a topic-filtered subscriber resume without rescanning it.
+        send("cursor", { cursor }, cursor);
+        if (events.length < 500) break;
+      }
     },
   });
 }
 
 function createEventStream(req: Request, userId: string, after: number): Response {
-  const encoder = new TextEncoder();
   const allowedTopics = new Set(topicsForUser(userId).map((topic) => topic.id));
   let cursor = Math.max(0, after);
-  let closed = false;
-  let pumping = false;
-  let pollTimer: ReturnType<typeof setInterval> | undefined;
-  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      const send = (event: string, data: unknown, id?: number) => {
-        if (closed) return;
-        const lines = [
-          id === undefined ? "" : `id: ${id}`,
-          `event: ${event}`,
-          `data: ${JSON.stringify(data)}`,
-        ]
-          .filter(Boolean)
-          .join("\n");
-        controller.enqueue(encoder.encode(`${lines}\n\n`));
-      };
-      const close = () => {
-        if (closed) return;
-        closed = true;
-        if (pollTimer) clearInterval(pollTimer);
-        if (heartbeatTimer) clearInterval(heartbeatTimer);
-        try {
-          controller.close();
-        } catch {
-          // The peer may already have closed the stream.
-        }
-      };
-      const pump = () => {
-        if (closed || pumping) return;
-        pumping = true;
-        try {
-          while (!closed) {
-            const events = listRuntimeEventsAfter(cursor, 500);
-            if (events.length === 0) break;
-            for (const event of events) {
-              cursor = event.seq;
-              if (event.type === "topic-created" || event.type === "topic-updated") {
-                const topic = getTopic(event.topicId);
-                if (topic && isParticipant(topic, userId)) allowedTopics.add(event.topicId);
-                else allowedTopics.delete(event.topicId);
-              }
-              const visible = allowedTopics.has(event.topicId);
-              if (visible) send("runtime", runtimeEvent(event), event.seq);
-              if (event.type === "topic-deleted") allowedTopics.delete(event.topicId);
-            }
-            // Advance reconnect cursors even when a batch only contained topics
-            // that are not visible to this user.
-            send("cursor", { cursor }, cursor);
-            if (events.length < 500) break;
+  return createPollingSseStream(req, {
+    ready: { protocolVersion: NODE_CONTROL_PROTOCOL_VERSION, cursor },
+    pump(send) {
+      while (true) {
+        const events = listRuntimeEventsAfter(cursor, 500);
+        if (events.length === 0) break;
+        for (const event of events) {
+          cursor = event.seq;
+          if (event.type === "topic-created" || event.type === "topic-updated") {
+            const topic = getTopic(event.topicId);
+            if (topic && isParticipant(topic, userId)) allowedTopics.add(event.topicId);
+            else allowedTopics.delete(event.topicId);
           }
-        } finally {
-          pumping = false;
+          const visible = allowedTopics.has(event.topicId);
+          if (visible) send("runtime", runtimeEvent(event), event.seq);
+          if (event.type === "topic-deleted") allowedTopics.delete(event.topicId);
         }
-      };
-
-      send("ready", { protocolVersion: NODE_CONTROL_PROTOCOL_VERSION, cursor });
-      pump();
-      pollTimer = setInterval(pump, 100);
-      heartbeatTimer = setInterval(() => {
-        if (!closed) controller.enqueue(encoder.encode(`: heartbeat ${Date.now()}\n\n`));
-      }, 15_000);
-      req.signal.addEventListener("abort", close, { once: true });
-    },
-    cancel() {
-      closed = true;
-      if (pollTimer) clearInterval(pollTimer);
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-      "content-type": "text/event-stream; charset=utf-8",
-      "x-accel-buffering": "no",
+        // Advance reconnect cursors even when a batch only contained topics
+        // that are not visible to this user.
+        send("cursor", { cursor }, cursor);
+        if (events.length < 500) break;
+      }
     },
   });
 }
