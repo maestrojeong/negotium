@@ -183,5 +183,15 @@ describe("completePathToken", () => {
       const input = `both @${root}/app.ts and @${root}/missing.ts`;
       expect(stripResolvedPathTriggers(input)).toBe(`both ${root}/app.ts and @${root}/missing.ts`);
     });
+
+    test("tolerates trailing punctuation, preserving it in the output", () => {
+      // Comma / period after a real path.
+      expect(stripResolvedPathTriggers(`see @${root}/app.ts, ok`)).toBe(`see ${root}/app.ts, ok`);
+      expect(stripResolvedPathTriggers(`edit @${root}/app.ts.`)).toBe(`edit ${root}/app.ts.`);
+      // Enclosing punctuation around a directory token.
+      expect(stripResolvedPathTriggers(`(@${root}/alpha/)`)).toBe(`(${root}/alpha/)`);
+      // Non-existent path plus punctuation stays fully untouched.
+      expect(stripResolvedPathTriggers(`no @${root}/missing.ts,`)).toBe(`no @${root}/missing.ts,`);
+    });
   });
 });

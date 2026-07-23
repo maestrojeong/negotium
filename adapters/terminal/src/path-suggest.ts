@@ -342,23 +342,41 @@ function fragmentToAbsolutePath(frag: string): string {
   return join(home, frag);
 }
 
-// A `@path` token: preceded by line-start or whitespace, then `@` + a run of
-// non-space chars. Kept in sync with `activeAtToken`'s single-token pattern.
-const AT_PATH_TOKEN = /(^|\s)@([^\s]+)/g;
+// A submitted `@path` token may also sit immediately inside opening punctuation,
+// e.g. `(@~/notes.md)`. Keep the opening delimiter in the replacement.
+const AT_PATH_TOKEN = /(^|[\s([{<])@([^\s]+)/g;
+
+// Trailing sentence/enclosing punctuation that is almost never part of a real
+// path in prose, e.g. `see @~/notes.md.` or `(@~/dir)`. Stripped off before the
+// existence check, then preserved in the output.
+const TRAILING_PUNCT = /[.,;:!?)\]}>"'`]+$/;
+
+function fragmentResolves(frag: string): boolean {
+  try {
+    return existsSync(fragmentToAbsolutePath(frag));
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Strip the leading `@` from every `@path` token whose target actually exists
  * on disk, leaving `@mentions` and other non-path `@` tokens untouched. Called
  * at submit time so referenced paths are delivered clean while the `@` trigger
  * stays live during composition (letting the user re-search by returning to it).
+ *
+ * Trailing punctuation is tolerated: `@~/a.txt,` strips the `@` and keeps the
+ * comma. The full fragment is tried first, so a path that genuinely ends in a
+ * punctuation char is still matched as-is.
  */
 export function stripResolvedPathTriggers(text: string): string {
   return text.replaceAll(AT_PATH_TOKEN, (whole, lead: string, frag: string) => {
-    try {
-      return existsSync(fragmentToAbsolutePath(frag)) ? `${lead}${frag}` : whole;
-    } catch {
-      return whole;
+    if (fragmentResolves(frag)) return `${lead}${frag}`;
+    const pathPart = frag.replace(TRAILING_PUNCT, "");
+    if (pathPart && pathPart !== frag && fragmentResolves(pathPart)) {
+      return `${lead}${pathPart}${frag.slice(pathPart.length)}`;
     }
+    return whole;
   });
 }
 
