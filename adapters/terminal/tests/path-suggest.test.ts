@@ -7,6 +7,7 @@ import {
   completePathToken,
   isRecursivePathQuery,
   pathSuggestions,
+  stripResolvedPathTriggers,
   warmPathSuggestions,
 } from "@/path-suggest";
 
@@ -139,6 +140,18 @@ describe("completePathToken", () => {
     expect(drilling?.line).toBe(`@${root}/alpha/`);
   });
 
+  test("replaces the whole token when completing from inside it", () => {
+    // Cursor sits in the middle of an already-typed token: `@${root}/al|pha`.
+    const line = `@${root}/alpha`;
+    const col = `@${root}/al`.length; // cursor right after "al"
+    const result = pathSuggestions(line, col);
+    const dir = result?.items.find((item) => item.isDir);
+    expect(dir).toBeDefined();
+    const completed = completePathToken(line, col, dir!, { keepTrigger: true });
+    // The trailing "pha" must not survive as `@${root}/alpha/pha`.
+    expect(completed?.line).toBe(`@${root}/alpha/`);
+  });
+
   test("keeps surrounding text intact when completing mid-line", () => {
     const prefix = "see @";
     const suffix = " thanks";
@@ -149,5 +162,26 @@ describe("completePathToken", () => {
     const beta = result?.items.find((item) => item.label === "beta/");
     const completed = completePathToken(line, col, beta!);
     expect(completed?.line).toBe(`see ${root}/beta/${suffix}`);
+  });
+
+  describe("stripResolvedPathTriggers", () => {
+    test("drops the @ only for tokens that resolve to an existing path", () => {
+      expect(stripResolvedPathTriggers(`open @${root}/app.ts please`)).toBe(
+        `open ${root}/app.ts please`,
+      );
+      expect(stripResolvedPathTriggers(`dir @${root}/alpha/ here`)).toBe(`dir ${root}/alpha/ here`);
+    });
+
+    test("leaves non-existent paths and @mentions untouched", () => {
+      expect(stripResolvedPathTriggers(`ping @${root}/nope.ts`)).toBe(`ping @${root}/nope.ts`);
+      expect(stripResolvedPathTriggers("hey @teammate over here")).toBe("hey @teammate over here");
+      // An email-style @ is not a standalone token, so it is never touched.
+      expect(stripResolvedPathTriggers("mail a@b.com now")).toBe("mail a@b.com now");
+    });
+
+    test("strips multiple resolved tokens independently", () => {
+      const input = `both @${root}/app.ts and @${root}/missing.ts`;
+      expect(stripResolvedPathTriggers(input)).toBe(`both ${root}/app.ts and @${root}/missing.ts`);
+    });
   });
 });

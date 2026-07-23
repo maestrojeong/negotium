@@ -26,6 +26,7 @@ import {
   isRecursivePathQuery,
   type PathSuggestion,
   pathSuggestions,
+  stripResolvedPathTriggers,
   warmPathSuggestions,
 } from "@/path-suggest";
 import {
@@ -834,13 +835,17 @@ export class TerminalApp {
       return;
     }
     if (chunk === "\r") {
+      // Enter completes the highlighted path (keeping the `@` trigger live so
+      // the user can keep drilling or return to re-search). When completion is
+      // a no-op — the token already equals a fully resolved path — fall through
+      // to submit so a second Enter sends the message.
       if (
         this.#state.overlay !== "vault" &&
         !activeQuestion(this.#state) &&
         commandSuggestions(this.#input.text).length === 0 &&
-        this.#pathItems().length > 0
+        this.#pathItems().length > 0 &&
+        this.#applyPathCompletion(true)
       ) {
-        this.#applyPathCompletion(false);
         return;
       }
       void this.#submit();
@@ -967,7 +972,7 @@ export class TerminalApp {
     );
     this.#queueRender();
     try {
-      const message = await this.#client.sendMessage(topic, text);
+      const message = await this.#client.sendMessage(topic, stripResolvedPathTriggers(text));
       this.#state = upsertMessage(this.#state, message);
     } catch (error) {
       if (this.#state.activity[topic.id]?.queryId === optimisticQueryId) {
@@ -1635,19 +1640,23 @@ export class TerminalApp {
     return commands > 0 ? commands : this.#pathItems().length;
   }
 
-  #applyPathCompletion(keepTrigger: boolean): void {
+  /** Apply the highlighted path suggestion. Returns false when nothing changed. */
+  #applyPathCompletion(keepTrigger: boolean): boolean {
     const items = this.#pathItems();
-    if (items.length === 0) return;
+    if (items.length === 0) return false;
     const cursor = this.#input.cursor;
     const lines = this.#input.text.split("\n");
     const lineText = lines[cursor.row] ?? "";
     const selected = items[(this.#state.suggestionIndex + items.length) % items.length];
     const result = completePathToken(lineText, cursor.col, selected, { keepTrigger });
-    if (!result) return;
+    if (!result) return false;
+    // No-op: the token already equals the selected path (e.g. a completed leaf).
+    if (result.line === lineText && result.col === cursor.col) return false;
     lines[cursor.row] = result.line;
     this.#input.setText(lines.join("\n"), { row: cursor.row, col: result.col });
     this.#syncInput();
     this.#queueRender();
+    return true;
   }
 
   #moveSuggestion(delta: number): void {

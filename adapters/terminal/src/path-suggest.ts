@@ -8,7 +8,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { type Dirent, readdirSync, statSync } from "node:fs";
+import { type Dirent, existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { promisify } from "node:util";
@@ -333,6 +333,35 @@ export function pathSuggestions(lineText: string, col: number): PathSuggestResul
   };
 }
 
+/** Resolve a fragment (text after `@`) to an absolute path, mirroring `resolveFragment`. */
+function fragmentToAbsolutePath(frag: string): string {
+  const home = homedir();
+  if (frag === "~" || frag === "~/") return home;
+  if (frag.startsWith("~/")) return join(home, frag.slice(2));
+  if (frag.startsWith("/")) return frag;
+  return join(home, frag);
+}
+
+// A `@path` token: preceded by line-start or whitespace, then `@` + a run of
+// non-space chars. Kept in sync with `activeAtToken`'s single-token pattern.
+const AT_PATH_TOKEN = /(^|\s)@([^\s]+)/g;
+
+/**
+ * Strip the leading `@` from every `@path` token whose target actually exists
+ * on disk, leaving `@mentions` and other non-path `@` tokens untouched. Called
+ * at submit time so referenced paths are delivered clean while the `@` trigger
+ * stays live during composition (letting the user re-search by returning to it).
+ */
+export function stripResolvedPathTriggers(text: string): string {
+  return text.replaceAll(AT_PATH_TOKEN, (whole, lead: string, frag: string) => {
+    try {
+      return existsSync(fragmentToAbsolutePath(frag)) ? `${lead}${frag}` : whole;
+    } catch {
+      return whole;
+    }
+  });
+}
+
 /**
  * Replace the active `@` token on `lineText` with `suggestion`. Directory
  * suggestions keep the cursor right after the trailing `/` so the user can
@@ -346,7 +375,12 @@ export function completePathToken(
 ): { line: string; col: number } | null {
   const token = activeAtToken(lineText, col);
   if (!token) return null;
+  // Completing from inside an already-typed token: extend past the non-space
+  // chars after the cursor so the whole token is replaced. Otherwise the tail
+  // survives and the path is duplicated (e.g. `@/tmp/alp|ha/x` → `…/alpha/ha/x`).
+  let end = col;
+  while (end < lineText.length && !/\s/.test(lineText[end] ?? " ")) end += 1;
   const replacement = options.keepTrigger ? suggestion.value : suggestion.value.slice(1);
-  const line = lineText.slice(0, token.start) + replacement + lineText.slice(col);
+  const line = lineText.slice(0, token.start) + replacement + lineText.slice(end);
   return { line, col: token.start + replacement.length };
 }
