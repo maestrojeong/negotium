@@ -455,9 +455,14 @@ function saveWikiEntry(args: Record<string, unknown>): CallToolResult {
 
   const now = new Date();
   const dateStr = now.toISOString().slice(0, 10);
-  const summaryName = wikiSummaryFilename(dateStr, rawTopic, runtime().topicId);
-  const storageKey = wikiBriefStorageKey(rawTopic, runtime().topicId);
-  const name = slugify(storageKey);
+  const topicId = runtime().topicId;
+  const summaryName = wikiSummaryFilename(dateStr, rawTopic, topicId);
+  // Human-readable slug for the on-disk .md mirrors only. The SQLite brief is
+  // keyed by the canonical topic id below — never by this title-based slug —
+  // because every DB reader (resolveTopicBrief, session.ts) looks up by id, so
+  // a title-keyed row would be written but never read.
+  const fileSlug = wikiBriefStorageKey(rawTopic, topicId);
+  const name = slugify(fileSlug);
 
   // Save to summaries directory
   ensureDir(runtime().summariesDir);
@@ -466,7 +471,7 @@ function saveWikiEntry(args: Record<string, unknown>): CallToolResult {
 
   // Also update SQLite brief if in topicId mode
   const setTopicBrief = runtime().host.setTopicBrief;
-  if (runtime().topicId && setTopicBrief) {
+  if (topicId && setTopicBrief) {
     try {
       // Extract a brief from the first paragraph (non-heading)
       const bodyStart = content.indexOf("\n\n");
@@ -474,7 +479,7 @@ function saveWikiEntry(args: Record<string, unknown>): CallToolResult {
         bodyStart > 0
           ? (content.slice(bodyStart).trim().split("\n\n")[0]?.slice(0, 600) ?? "")
           : content.slice(0, 600);
-      setTopicBrief(storageKey, {
+      setTopicBrief(topicId, {
         latestSummaryMd: content,
         summaryDate: dateStr,
         briefMd: briefParagraph,
