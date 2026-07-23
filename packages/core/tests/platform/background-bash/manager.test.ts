@@ -136,17 +136,20 @@ describe("shared background-bash runtime", () => {
       expect(started.bash_id).toMatch(/^bash_[0-9a-f]{12}$/);
       expect(started.status).toBe("started");
 
-      let firstOutput = "";
-      for (let attempt = 0; attempt < 20 && !firstOutput.includes("first"); attempt++) {
+      let observedStdout = "";
+      for (let attempt = 0; attempt < 20 && !observedStdout.includes("first"); attempt++) {
         await delay(25);
-        firstOutput = toolText(
-          await client.callTool({
-            name: "background_bash_output",
-            arguments: { bash_id: started.bash_id },
-          }),
-        );
+        const output = JSON.parse(
+          toolText(
+            await client.callTool({
+              name: "background_bash_output",
+              arguments: { bash_id: started.bash_id },
+            }),
+          ),
+        ) as { stdout: string };
+        observedStdout += output.stdout;
       }
-      expect(JSON.parse(firstOutput).stdout).toBe("first");
+      expect(observedStdout).toContain("first");
 
       let finalOutput = "";
       let exited = false;
@@ -158,14 +161,16 @@ describe("shared background-bash runtime", () => {
             arguments: { bash_id: started.bash_id },
           }),
         );
-        exited = (JSON.parse(finalOutput) as { exited: boolean }).exited;
+        const output = JSON.parse(finalOutput) as { exited: boolean; stdout: string };
+        observedStdout += output.stdout;
+        exited = output.exited;
       }
       const final = JSON.parse(finalOutput) as {
         exited: boolean;
         exitCode: number | null;
-        stdout: string;
       };
-      expect(final).toMatchObject({ exited: true, exitCode: 0, stdout: "second" });
+      expect(final).toMatchObject({ exited: true, exitCode: 0 });
+      expect(observedStdout).toBe("firstsecond");
 
       for (let attempt = 0; attempt < 20 && !existsSync(inboxFile); attempt++) await delay(25);
       const completion = readFileSync(inboxFile, "utf-8");
