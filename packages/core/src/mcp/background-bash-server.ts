@@ -22,14 +22,13 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { deriveBgBashContextCapability } from "#platform/background-bash/context";
-import { SESSION_INBOX_DIR } from "#platform/config";
 import { appendJsonlEntry } from "#platform/jsonl";
+import { sessionInboxPath } from "#query/session-inbox-path";
 import { mcpError, mcpOk } from "./mcp-helpers";
 
 // --- CLI args ---
@@ -113,9 +112,13 @@ function injectCompletion(proc: BgProc): void {
     `종료 코드: ${proc.exitCode ?? "unknown"}\n` +
     output;
 
-  const dir = join(SESSION_INBOX_DIR, proc.userId);
+  // `proc.topic` is the canonical topic id (see mcp-config background-bash
+  // build: `topicId ?? session`). Route through the shared helper so the
+  // filename is the `topic-id-{base64url}` form the session-inbox worker
+  // decodes back to a topic id — a bare `${topic}.jsonl` is misread as a
+  // topic *title* and silently dropped when no topic has that title.
   try {
-    appendJsonlEntry(join(dir, `${proc.topic}.jsonl`), {
+    appendJsonlEntry(sessionInboxPath(proc.userId, proc.topic), {
       type: "tell",
       from: "__bg_bash__",
       message,

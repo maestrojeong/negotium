@@ -444,10 +444,15 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   },
   "background-bash": {
     ...commonRuntimeMcpPolicy("background-bash"),
-    build({ agent, bgBashPort, userId, topicId, session }) {
-      const topic = topicId ?? session;
-      if (bgBashPort === undefined || !topic) return null;
-      return backgroundBashTransport(agent, bgBashPort, userId, topic);
+    build({ agent, bgBashPort, userId, topicId }) {
+      // Key the whole pipeline by the canonical topic id: it flows through the
+      // capability, the request context, and the completion inbox filename
+      // (sessionInboxPath) so the exiting process's output is routed back to
+      // the exact originating topic. A title/session fallback would be encoded
+      // as if it were an id and the inbox worker would fail to resolve it, so
+      // background-bash is simply unavailable without a topic id.
+      if (bgBashPort === undefined || !topicId) return null;
+      return backgroundBashTransport(agent, bgBashPort, userId, topicId);
     },
   },
   "agent-health": {

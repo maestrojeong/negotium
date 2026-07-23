@@ -198,6 +198,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
     const servers = getForumMcpServers({
       userId,
       session: "coding",
+      topicId: "topic-coding-1",
       agent: "claude",
       bgBashPort: 9500,
     });
@@ -206,7 +207,8 @@ describe("mcp-config: playwright transport selection per agent", () => {
       url: "http://127.0.0.1:9500/sse",
       headers: {
         "X-Background-Bash-User": userId,
-        "X-Background-Bash-Topic": "coding",
+        // Routed by canonical topic id, never the session/title.
+        "X-Background-Bash-Topic": "topic-coding-1",
         "X-Background-Bash-Capability": expect.any(String),
       },
     });
@@ -216,6 +218,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
     const servers = getForumMcpServers({
       userId,
       session: "coding",
+      topicId: "topic-coding-1",
       agent: "codex",
       bgBashPort: 9500,
     });
@@ -223,7 +226,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
       url: "http://127.0.0.1:9500/mcp",
       http_headers: {
         "X-Background-Bash-User": userId,
-        "X-Background-Bash-Topic": "coding",
+        "X-Background-Bash-Topic": "topic-coding-1",
         "X-Background-Bash-Capability": expect.any(String),
       },
     });
@@ -233,7 +236,18 @@ describe("mcp-config: playwright transport selection per agent", () => {
     const servers = getForumMcpServers({
       userId,
       session: "coding",
+      topicId: "topic-coding-1",
       agent: "claude",
+    });
+    expect(servers["background-bash"]).toBeUndefined();
+  });
+
+  test("background-bash is omitted without a topic id (completions can't be routed)", () => {
+    const servers = getForumMcpServers({
+      userId,
+      session: "coding",
+      agent: "claude",
+      bgBashPort: 9500,
     });
     expect(servers["background-bash"]).toBeUndefined();
   });
@@ -352,6 +366,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
     const servers = getForumMcpServers({
       userId,
       session: "coding",
+      topicId: "topic-coding-1",
       agent: "codex",
       bgBashPort: 9500,
       enabled: ["wiki"],

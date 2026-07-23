@@ -15,6 +15,7 @@ import {
 } from "#platform/background-bash/manager";
 import { SESSION_INBOX_DIR } from "#platform/config";
 import { delay } from "#platform/delay";
+import { sessionInboxPath } from "#query/session-inbox-path";
 
 function toolText(result: Awaited<ReturnType<Client["callTool"]>>): string {
   return (result.content as Array<{ type: string; text?: string }>)
@@ -107,7 +108,9 @@ describe("shared background-bash runtime", () => {
     const userId = `bg-bash-${randomUUID()}`;
     const topic = `topic-${randomUUID()}`;
     const inboxDir = join(SESSION_INBOX_DIR, userId);
-    const inboxFile = join(inboxDir, `${topic}.jsonl`);
+    // Completion is delivered through the canonical topic-id-keyed inbox file
+    // so the session-inbox worker can resolve it back to a topic id.
+    const inboxFile = sessionInboxPath(userId, topic);
     const port = await ensureBgBash(userId, topic);
     const client = new Client({ name: "background-bash-test", version: "1.0.0" });
     const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
