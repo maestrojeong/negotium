@@ -1,6 +1,6 @@
 {
   "name": "@negotium/mcp",
-  "version": "0.1.30",
+  "version": "0.1.31",
   "private": true,
   "type": "module",
   "description": "The negotium MCP server — mount this one MCP to give any agent host sessions, subagents, tasks, wiki/skills, vault and MCP management",

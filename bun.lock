@@ -10,7 +10,7 @@
     },
     "adapters/otium": {
       "name": "@negotium/adapter-otium",
-      "version": "0.1.30",
+      "version": "0.1.31",
       "bin": {
         "negotium-otium": "dist/cli.js",
       },
@@ -28,7 +28,7 @@
     },
     "adapters/telegram": {
       "name": "@negotium/adapter-telegram",
-      "version": "0.1.30",
+      "version": "0.1.31",
       "bin": {
         "negotium-telegram": "dist/cli.js",
       },
@@ -46,7 +46,7 @@
     },
     "adapters/terminal": {
       "name": "@negotium/adapter-terminal",
-      "version": "0.1.30",
+      "version": "0.1.31",
       "bin": {
         "negotium-terminal": "dist/cli.js",
       },
@@ -63,7 +63,7 @@
     },
     "apps/cli": {
       "name": "@negotium/cli",
-      "version": "0.1.30",
+      "version": "0.1.31",
       "bin": {
         "negotium": "dist/main.js",
       },
@@ -84,7 +84,7 @@
     },
     "apps/negotium": {
       "name": "negotium",
-      "version": "0.1.30",
+      "version": "0.1.31",
       "bin": {
         "negotium": "dist/main.js",
       },
@@ -110,7 +110,7 @@
     },
     "packages/adapter-sdk": {
       "name": "@negotium/adapter-sdk",
-      "version": "0.1.30",
+      "version": "0.1.31",
       "devDependencies": {
         "@types/node": "^20",
         "bun-types": "^1.3.11",
@@ -119,7 +119,7 @@
     },
     "packages/core": {
       "name": "@negotium/core",
-      "version": "0.1.30",
+      "version": "0.1.31",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.210",
         "@anthropic-ai/sdk": "^0.111.0",
@@ -141,7 +141,7 @@
     },
     "packages/mcp": {
       "name": "@negotium/mcp",
-      "version": "0.1.30",
+      "version": "0.1.31",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@negotium/core": "workspace:*",
@@ -155,7 +155,7 @@
     },
     "packages/mcp-host": {
       "name": "@negotium/mcp-host",
-      "version": "0.1.30",
+      "version": "0.1.31",
       "dependencies": {
         "zod": "^4.3.6",
       },
@@ -167,7 +167,7 @@
     },
     "packages/module-cron": {
       "name": "@negotium/module-cron",
-      "version": "0.1.30",
+      "version": "0.1.31",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@negotium/core": "workspace:*",
@@ -181,7 +181,7 @@
     },
     "packages/node": {
       "name": "@negotium/node",
-      "version": "0.1.30",
+      "version": "0.1.31",
       "dependencies": {
         "@negotium/core": "workspace:*",
         "@negotium/mcp": "workspace:*",

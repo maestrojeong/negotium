@@ -25,6 +25,7 @@ instead of copying the explanation.
 | [Migration 0.1.28](./MIGRATION-0.1.28.md) | Terminal Vault list routing follow-up |
 | [Migration 0.1.29](./MIGRATION-0.1.29.md) | Browser.rs, agent SDK isolation, provider Vault keys, and recursive path completion |
 | [Migration 0.1.30](./MIGRATION-0.1.30.md) | Terminal tool timelines, reliable Codex diffs, Tasks sidebar, and code-block copy |
+| [Migration 0.1.31](./MIGRATION-0.1.31.md) | Live path references, stable background delivery, and readable collision-safe Wiki mirrors |
 
 The root [README](../README.md) is the user-facing entry point. Package-specific setup belongs in
 the package README beside the code it describes.
