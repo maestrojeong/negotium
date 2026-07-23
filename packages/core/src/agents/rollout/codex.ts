@@ -377,27 +377,10 @@ export function extractLatestCodexContextUsage(jsonl: string): CodexContextUsage
 
 /** Resolve a thread's current rollout and return its latest context measurement. */
 export function readLatestCodexContextUsage(threadId: string): CodexContextUsage | undefined {
-  const sessionsDir = codexSessionsDir();
-  const candidates: string[] = [];
-  const buckets = candidateDateBuckets(threadId);
+  const path = latestCodexRolloutPath(threadId);
+  if (!path) return undefined;
   try {
-    if (buckets) {
-      for (const bucket of buckets) {
-        const dir = join(sessionsDir, bucket);
-        if (!existsSync(dir)) continue;
-        const glob = new Bun.Glob(`rollout-*-${threadId}.jsonl`);
-        for (const rel of glob.scanSync({ cwd: dir, onlyFiles: true })) {
-          candidates.push(join(dir, rel));
-        }
-      }
-    } else {
-      const glob = new Bun.Glob(`**/rollout-*-${threadId}.jsonl`);
-      for (const rel of glob.scanSync({ cwd: sessionsDir, onlyFiles: true })) {
-        candidates.push(join(sessionsDir, rel));
-      }
-    }
-    const path = candidates.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
-    return path ? extractLatestCodexContextUsage(readFileSync(path, "utf8")) : undefined;
+    return extractLatestCodexContextUsage(readFileSync(path, "utf8"));
   } catch (error) {
     logger.debug({ error, threadId }, "codex context usage: rollout read failed");
     return undefined;

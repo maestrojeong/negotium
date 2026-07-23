@@ -367,6 +367,44 @@ describe("writeCodexRollout", () => {
     }
   });
 
+  test("finds context usage outside a valid UUIDv7 thread's expected date buckets", async () => {
+    const { readLatestCodexContextUsage } = await import("#agents/rollout/codex");
+    const utcMs = Date.UTC(2026, 6, 17, 2, 0, 0);
+    const hex = utcMs.toString(16).padStart(12, "0");
+    const threadId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-7abc-8abc-abcdef012345`;
+
+    const codexHome = mkdtempSync(join(WORKSPACE_DIR, "test-codex-home-"));
+    const previousEnv = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexHome;
+    try {
+      const unexpectedDir = join(codexHome, "sessions", "2025", "01", "02");
+      mkdirSync(unexpectedDir, { recursive: true });
+      const rolloutPath = join(unexpectedDir, `rollout-2025-01-02T00-00-00-${threadId}.jsonl`);
+      writeFileSync(
+        rolloutPath,
+        `${JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              last_token_usage: { total_tokens: 654 },
+              model_context_window: 128_000,
+            },
+          },
+        })}\n`,
+      );
+
+      expect(readLatestCodexContextUsage(threadId)).toEqual({
+        contextTokens: 654,
+        contextWindow: 128_000,
+      });
+    } finally {
+      if (previousEnv === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousEnv;
+      rmSync(codexHome, { recursive: true, force: true });
+    }
+  });
+
   test("extracts the latest per-request context usage from token-count events", async () => {
     const { extractLatestCodexContextUsage } = await import("#agents/rollout/codex");
     const jsonl = [
