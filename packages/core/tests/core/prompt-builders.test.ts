@@ -177,7 +177,7 @@ describe("session system prompt builders", () => {
 
   test("builds memory prompt section", () => {
     const memory = buildMemoryPromptSection({
-      topicId: "general",
+      briefFile: "/tmp/wiki/topic/general.md",
       wikiDir: "/tmp/wiki",
       hasFiles: true,
       latestSummaryFile: "/tmp/wiki/summaries/2026-06-25-general.md",

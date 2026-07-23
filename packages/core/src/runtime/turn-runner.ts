@@ -7,8 +7,8 @@
  * back through the placement adapter.
  */
 import { randomUUID } from "node:crypto";
-import { mkdirSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import { cleanupAgentFork, type ForkHandle } from "#agents/fork";
 import { scheduleIdleArchiveForTopic } from "#agents/idle-archiver";
 import { runAgent } from "#agents/index";
@@ -130,7 +130,12 @@ import {
 import type { PendingAskUserId } from "#storage/session-asks";
 import { recordUsage } from "#storage/token-stats";
 import { getSharedWikiDir } from "#storage/wiki";
-import { wikiSummaryFilename } from "#storage/wiki-summary-names";
+import {
+  isTopicBriefFile,
+  isTopicSummaryFile,
+  wikiBriefStorageKey,
+  wikiSummaryFilename,
+} from "#storage/wiki-summary-names";
 import { getTopics } from "#topics/derive";
 import type { AgentKind, EffortLevel, PeerRuntimeBridgeContext, UnifiedEvent } from "#types";
 import type { MessageDto, TopicDto } from "#types/api";
@@ -215,6 +220,37 @@ type StreamAgentOutcome =
   | { kind: "aborted" }
   | { kind: "session-expired"; error: string }
   | { kind: "provider-error"; error: string };
+
+function resolveWikiMirrorPath(
+  directory: string,
+  preferredFilename: string,
+  matchesStableId: (filename: string) => boolean,
+  matchesLegacyTitle: (filename: string) => boolean,
+): string {
+  const preferred = join(directory, preferredFilename);
+  if (existsSync(preferred)) return preferred;
+
+  let newestStableId: { path: string; mtimeMs: number } | null = null;
+  let newestLegacyTitle: { path: string; mtimeMs: number } | null = null;
+  try {
+    for (const filename of readdirSync(directory)) {
+      const stableIdMatch = matchesStableId(filename);
+      if (!stableIdMatch && !matchesLegacyTitle(filename)) continue;
+      const path = join(directory, filename);
+      const mtimeMs = statSync(path).mtimeMs;
+      if (stableIdMatch) {
+        if (!newestStableId || mtimeMs > newestStableId.mtimeMs) {
+          newestStableId = { path, mtimeMs };
+        }
+      } else if (!newestLegacyTitle || mtimeMs > newestLegacyTitle.mtimeMs) {
+        newestLegacyTitle = { path, mtimeMs };
+      }
+    }
+  } catch {
+    // The mirror is best-effort; callers can still use the SQLite brief.
+  }
+  return newestStableId?.path ?? newestLegacyTitle?.path ?? preferred;
+}
 
 function sessionEventMatchesCurrentExecution(
   topicId: string,
@@ -1924,22 +1960,34 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     try {
       const resolvedBrief = resolveTopicBrief(memoryTopic.id, memoryTopic.title);
       if (resolvedBrief) {
-        const { brief, storageKey } = resolvedBrief;
+        const { brief } = resolvedBrief;
         // #General is the workspace memory hub: its brief is the rolling digest the
         // archiver accumulates across ALL archived topics, and its files live in the
         // SHARED wiki root (getSharedWikiDir), not this topic's per-room workspace.
         const wikiDir = getSharedWikiDir();
+        const briefFile = resolveWikiMirrorPath(
+          join(wikiDir, "topic"),
+          `${wikiBriefStorageKey(memoryTopic.title, memoryTopic.id)}.md`,
+          (filename) => isTopicBriefFile(filename, memoryTopic.id),
+          (filename) => isTopicBriefFile(filename, memoryTopic.id, memoryTopic.title),
+        );
+        const latestSummaryFile = brief.summaryDate
+          ? resolveWikiMirrorPath(
+              join(wikiDir, "summaries"),
+              wikiSummaryFilename(brief.summaryDate, memoryTopic.title, memoryTopic.id),
+              (filename) =>
+                filename.startsWith(`${brief.summaryDate}-`) &&
+                isTopicSummaryFile(filename, memoryTopic.id),
+              (filename) =>
+                filename.startsWith(`${brief.summaryDate}-`) &&
+                isTopicSummaryFile(filename, memoryTopic.id, memoryTopic.title),
+            )
+          : null;
         systemPrompt += buildMemoryPromptSection({
-          topicId: storageKey,
+          briefFile,
           wikiDir,
           hasFiles: true,
-          latestSummaryFile: brief.summaryDate
-            ? `${wikiDir}/summaries/${wikiSummaryFilename(
-                brief.summaryDate,
-                memoryTopic.title,
-                storageKey,
-              )}`
-            : null,
+          latestSummaryFile,
           hasArchive: Boolean(brief.latestSummaryMd),
           isManager,
         });

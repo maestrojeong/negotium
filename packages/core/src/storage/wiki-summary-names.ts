@@ -8,37 +8,23 @@ export function isEphemeralWikiTopicId(topicId: string | undefined): boolean {
   return topicId?.startsWith("__") ?? false;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 /**
- * Returns true when the given string is just a raw UUID with no human-readable
- * title component — typically cron/spawn topics that were never given a name.
- */
-function isBareUuidTopic(rawTopic: string): boolean {
-  return UUID_RE.test(rawTopic);
-}
-
-/**
- * Resolve the canonical storage slug for a topic summary file. Prefers the
- * human-readable topic title so wiki files are named after their topic rather
- * than an opaque UUID. Falls back to UUID only for bare-UUID topics (cron,
- * spawn) that have no readable title.
+ * Resolve a readable, collision-safe storage slug. Stable topic ids remain in
+ * the suffix so equal titles and slug collisions cannot overwrite each other.
  */
 export function wikiSummaryStorageSlug(rawTopic: string, topicId?: string): string {
-  if (!isBareUuidTopic(rawTopic)) return wikiSummarySlug(rawTopic);
-  return topicId && !isEphemeralWikiTopicId(topicId)
-    ? wikiSummarySlug(topicId)
-    : wikiSummarySlug(rawTopic);
+  const titleSlug = wikiSummarySlug(rawTopic);
+  if (!topicId || isEphemeralWikiTopicId(topicId)) return titleSlug;
+  const idSlug = wikiSummarySlug(topicId);
+  return titleSlug === idSlug ? idSlug : `${titleSlug}--${idSlug}`;
 }
 
 /**
- * Resolve the canonical storage key for a topic brief. Prefers the
- * human-readable topic title as the DB key; only bare-UUID topics use their
- * raw UUID, and ephemeral archiver sessions fall through to the title.
+ * Resolve the canonical filename key for a topic brief mirror. SQLite remains
+ * keyed by the full topic id; the title prefix only makes the mirror readable.
  */
 export function wikiBriefStorageKey(rawTopic: string, topicId?: string): string {
-  if (!isBareUuidTopic(rawTopic)) return rawTopic;
-  return topicId && !isEphemeralWikiTopicId(topicId) ? topicId : rawTopic;
+  return wikiSummaryStorageSlug(rawTopic, topicId);
 }
 
 export function wikiSummaryFilename(date: string, rawTopic: string, topicId?: string): string {
@@ -51,6 +37,17 @@ export function isTopicSummaryFile(
   legacyTopicTitle?: string,
 ): boolean {
   if (!WIKI_SUMMARY_DATE_PREFIX.test(filename)) return false;
-  if (filename.endsWith(`-${wikiSummarySlug(topicId)}.md`)) return true;
+  const idSlug = wikiSummarySlug(topicId);
+  if (filename.endsWith(`--${idSlug}.md`) || filename.endsWith(`-${idSlug}.md`)) return true;
   return legacyTopicTitle ? filename.endsWith(`-${wikiSummarySlug(legacyTopicTitle)}.md`) : false;
+}
+
+export function isTopicBriefFile(
+  filename: string,
+  topicId: string,
+  legacyTopicTitle?: string,
+): boolean {
+  const idSlug = wikiSummarySlug(topicId);
+  if (filename === `${idSlug}.md` || filename.endsWith(`--${idSlug}.md`)) return true;
+  return legacyTopicTitle ? filename === `${wikiSummarySlug(legacyTopicTitle)}.md` : false;
 }

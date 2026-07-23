@@ -457,12 +457,10 @@ function saveWikiEntry(args: Record<string, unknown>): CallToolResult {
   const dateStr = now.toISOString().slice(0, 10);
   const topicId = runtime().topicId;
   const summaryName = wikiSummaryFilename(dateStr, rawTopic, topicId);
-  // Human-readable slug for the on-disk .md mirrors only. The SQLite brief is
-  // keyed by the canonical topic id below — never by this title-based slug —
-  // because every DB reader (resolveTopicBrief, session.ts) looks up by id, so
-  // a title-keyed row would be written but never read.
+  // Human-readable title + stable id for on-disk mirrors. SQLite remains keyed
+  // by the canonical topic id below.
   const fileSlug = wikiBriefStorageKey(rawTopic, topicId);
-  const name = slugify(fileSlug);
+  const name = fileSlug;
 
   // Save to summaries directory
   ensureDir(runtime().summariesDir);

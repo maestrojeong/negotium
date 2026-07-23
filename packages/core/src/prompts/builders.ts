@@ -359,7 +359,7 @@ export function buildManagerSystemPrompt(opts: SessionSystemPromptOpts): string 
 }
 
 export function buildMemoryPromptSection(opts: {
-  topicId: string;
+  briefFile: string;
   wikiDir: string;
   hasFiles: boolean;
   latestSummaryFile?: string | null;
@@ -367,9 +367,8 @@ export function buildMemoryPromptSection(opts: {
   isManager: boolean;
 }): string {
   const parts: string[] = ["\n\n## Memory"];
-  const briefFile = `${opts.wikiDir}/topic/${opts.topicId}.md`;
   parts.push(`Memory directory: ${opts.wikiDir}/topic`);
-  parts.push(`Files: ${opts.hasFiles ? briefFile : "(none)"}`);
+  parts.push(`Files: ${opts.hasFiles ? opts.briefFile : "(none)"}`);
   if (opts.latestSummaryFile) {
     parts.push(`Latest summary: ${opts.latestSummaryFile}`);
   }
