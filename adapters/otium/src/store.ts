@@ -157,15 +157,6 @@ export function isPeerDetached(hubNodeId: string): boolean {
   return row?.status === "detached";
 }
 
-export function setPeerDetached(hubNodeId: string, detached: boolean): void {
-  db.run(
-    `INSERT INTO otium_peer_lifecycle (hub_node_id, status, updated_at)
-     VALUES (?, ?, ?)
-     ON CONFLICT(hub_node_id) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at`,
-    [hubNodeId, detached ? "detached" : "attached", new Date().toISOString()],
-  );
-}
-
 export interface SharedMessageOutboxRow {
   local_topic_id: string;
   source_message_id: string;
@@ -206,15 +197,6 @@ export function deleteSharedMessage(localTopicId: string, sourceMessageId: strin
       [localTopicId, sourceMessageId],
     ).changes === 1
   );
-}
-
-export function clearSharedMessages(localTopicId: string): number {
-  return db.run("DELETE FROM otium_shared_message_outbox WHERE local_topic_id = ?", [localTopicId])
-    .changes;
-}
-
-export function clearAllSharedMessages(): number {
-  return db.run("DELETE FROM otium_shared_message_outbox").changes;
 }
 
 export interface SharedTopicStateRow {
@@ -345,10 +327,6 @@ export function unbindSharedPeerSessionsForLocalTopic(localTopicId: string): num
     "DELETE FROM otium_peer_sessions WHERE local_topic_id = ? AND binding_mode = 'shared'",
     [localTopicId],
   ).changes;
-}
-
-export function unbindAllSharedPeerSessions(): number {
-  return db.run("DELETE FROM otium_peer_sessions WHERE binding_mode = 'shared'").changes;
 }
 
 /** Atomically enforce the local privacy boundary for this Hub connection. */

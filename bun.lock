@@ -20,6 +20,7 @@
         "@negotium/node": "workspace:*",
       },
       "devDependencies": {
+        "@modelcontextprotocol/sdk": "^1.29.0",
         "@types/node": "^20",
         "bun-types": "^1.3.11",
         "typescript": "^5",
@@ -76,7 +77,6 @@
         "@negotium/node": "workspace:*",
       },
       "devDependencies": {
-        "@negotium/adapter-sdk": "workspace:*",
         "@types/node": "^20",
         "bun-types": "^1.3.11",
         "typescript": "^5",
@@ -111,18 +111,6 @@
     "packages/adapter-sdk": {
       "name": "@negotium/adapter-sdk",
       "version": "0.1.30",
-      "devDependencies": {
-        "@types/node": "^20",
-        "bun-types": "^1.3.11",
-        "typescript": "^5",
-      },
-    },
-    "packages/adapter-testkit": {
-      "name": "@negotium/adapter-testkit",
-      "version": "0.1.30",
-      "dependencies": {
-        "@negotium/adapter-sdk": "workspace:*",
-      },
       "devDependencies": {
         "@types/node": "^20",
         "bun-types": "^1.3.11",
@@ -201,6 +189,7 @@
         "@negotium/module-cron": "workspace:*",
       },
       "devDependencies": {
+        "@modelcontextprotocol/sdk": "^1.29.0",
         "@types/node": "^20",
         "bun-types": "^1.3.11",
         "typescript": "^5",
@@ -339,8 +328,6 @@
     "@negotium/adapter-telegram": ["@negotium/adapter-telegram@workspace:adapters/telegram"],
 
     "@negotium/adapter-terminal": ["@negotium/adapter-terminal@workspace:adapters/terminal"],
-
-    "@negotium/adapter-testkit": ["@negotium/adapter-testkit@workspace:packages/adapter-testkit"],
 
     "@negotium/cli": ["@negotium/cli@workspace:apps/cli"],
 

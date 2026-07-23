@@ -36,7 +36,6 @@ const privatePackages: ReleasePackage[] = [
   { name: "@negotium/module-cron", directory: "packages/module-cron" },
   { name: "@negotium/mcp", directory: "packages/mcp" },
   { name: "@negotium/node", directory: "packages/node" },
-  { name: "@negotium/adapter-testkit", directory: "packages/adapter-testkit" },
   { name: "@negotium/adapter-terminal", directory: "adapters/terminal" },
   { name: "@negotium/adapter-telegram", directory: "adapters/telegram" },
   { name: "@negotium/adapter-otium", directory: "adapters/otium" },

@@ -20,8 +20,6 @@
  */
 
 export const PROTOCOL_VERSION = 2;
-/** Oldest node protocol version the relay still accepts. */
-export const MIN_PROTOCOL_VERSION = 2;
 
 /** Header list as ordered pairs — preserves duplicates (e.g. set-cookie). */
 export type HeaderPairs = Array<[string, string]>;
@@ -321,31 +319,4 @@ export function sanitizeCloseCode(code: number | undefined): number | undefined 
   if (code === undefined) return undefined;
   if (code === 1000 || (code >= 3000 && code <= 4999)) return code;
   return 1000;
-}
-
-/** Hop-by-hop headers never forwarded in either direction. `content-length`
- *  and `content-encoding` are dropped too: fetch() transparently decompresses
- *  bodies and re-chunks streams, so both would lie after transit. */
-const DROPPED_HEADERS = new Set([
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "proxy-connection",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-  "host",
-  "accept-encoding",
-  "content-length",
-  "content-encoding",
-]);
-
-export function forwardableHeaders(headers: Headers): HeaderPairs {
-  const pairs: HeaderPairs = [];
-  headers.forEach((value, name) => {
-    if (!DROPPED_HEADERS.has(name.toLowerCase())) pairs.push([name, value]);
-  });
-  return pairs;
 }

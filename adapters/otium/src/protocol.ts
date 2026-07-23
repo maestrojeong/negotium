@@ -8,13 +8,6 @@
 
 export const PEER_PROTOCOL_VERSION = 1;
 
-export interface PeerFeatureCapabilities {
-  remoteAsk: boolean;
-  inputFiles: boolean;
-  outputFiles: boolean;
-  visualBridge: boolean;
-}
-
 export const MAX_PEER_MESSAGE_LENGTH = 10_000;
 export const MAX_PEER_INPUT_FILE_BYTES = 2 * 1024 * 1024 * 1024;
 export const MAX_PEER_INPUT_REQUEST_BYTES = MAX_PEER_INPUT_FILE_BYTES + 8 * 1024 * 1024;

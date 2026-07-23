@@ -42,7 +42,6 @@
     "@negotium/node": "workspace:*"
   },
   "devDependencies": {
-    "@negotium/adapter-sdk": "workspace:*",
     "@types/node": "^20",
     "bun-types": "^1.3.11",
     "typescript": "^5"

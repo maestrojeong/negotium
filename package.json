@@ -10,7 +10,7 @@
   "scripts": {
     "build": "bun run build:runtime && bun run build:adapters",
     "build:runtime": "bun run --filter @negotium/core build && bun run --filter @negotium/mcp-host build && bun run --filter @negotium/mcp build && bun run --filter @negotium/module-cron build && bun run --filter @negotium/adapter-sdk build && bun run --filter @negotium/node build",
-    "build:adapters": "bun run --filter @negotium/adapter-testkit build && bun run --filter @negotium/adapter-terminal build && bun run --filter @negotium/adapter-telegram build && bun run --filter @negotium/adapter-otium build && bun run --filter @negotium/cli build && bun run --filter negotium build",
+    "build:adapters": "bun run --filter @negotium/adapter-terminal build && bun run --filter @negotium/adapter-telegram build && bun run --filter @negotium/adapter-otium build && bun run --filter @negotium/cli build && bun run --filter negotium build",
     "check": "bun run lint && bun run build",
     "lint": "biome check",
     "lint:fix": "biome check --write",
