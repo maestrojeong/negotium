@@ -1,14 +1,25 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { errorResult, type SharedMcpTool, textResult } from "#agents/mcp-tools/common";
 import { WsHub } from "#bus";
-import {
-  appendApiMessage,
-  getApiMessage,
-  updateApiMessageAskUserQuestion,
-} from "#storage/api-messages";
+import { appendApiMessage, getApiMessage } from "#storage/api-messages";
 import { getApiTopicConfig } from "#storage/api-topic-config";
 import { getTopic } from "#storage/api-topics";
+import {
+  type AskUserGateCardUpdate,
+  cancelAskUserGate,
+  claimAskUserGateAndSelect,
+  prepareAskUserGate,
+  quarantineAskUserGate,
+  quarantineForeignAskUserGates,
+} from "#storage/ask-user-gates";
+import {
+  acquireRuntimeProcessLease,
+  isRuntimeProcessLeaseAlive,
+  listRuntimeProcessLeases,
+  type RuntimeProcessLeaseHandle,
+  removeDeadRuntimeProcessLeases,
+} from "#storage/runtime-process-leases";
 import type { AgentKind } from "#types";
 import type { MessageDto } from "#types/api";
 
@@ -16,6 +27,10 @@ const MAX_QUESTION_CHARS = 2000;
 const MAX_CHOICE_LABEL_CHARS = 128;
 const MAX_CHOICE_DESCRIPTION_CHARS = 500;
 const MAX_CHOICES = 12;
+const MAX_IDEMPOTENCY_KEY_CHARS = 200;
+const ASK_GATE_OWNER_ID = `ask-user-${process.pid}-${randomUUID()}`;
+const ASK_GATE_LEASE_ROLE_PREFIX = "ask-user-gate:";
+const ASK_GATE_LEASE_ROLE = `${ASK_GATE_LEASE_ROLE_PREFIX}${ASK_GATE_OWNER_ID}`;
 
 export type AskUserChoice = { label: string; description?: string };
 
@@ -27,12 +42,6 @@ export interface AskUserToolContext {
   model?: string;
 }
 
-export type ClaimedAskUserAnswer = {
-  choice: AskUserChoice;
-  queryId?: string;
-  resolve: (userId: string) => void;
-};
-
 export type AnswerAskUserQuestionResult =
   | { ok: true; queryId?: string; answerMessage: MessageDto }
   | { ok: false; error: string };
@@ -43,10 +52,25 @@ type PendingAsk = {
   messageId: string;
   question: string;
   choices: AskUserChoice[];
+  promise: Promise<AskUserChoice & { userId: string }>;
   resolve: (answer: AskUserChoice & { userId: string }) => void;
 };
 
 const pendingAsks = new Map<string, PendingAsk>();
+let askGateOwnerLease: RuntimeProcessLeaseHandle | null = null;
+
+export function startAskUserQuestionGateOwner(): void {
+  if (askGateOwnerLease) return;
+  askGateOwnerLease = acquireRuntimeProcessLease(ASK_GATE_LEASE_ROLE, {
+    ownerId: ASK_GATE_OWNER_ID,
+  });
+  if (!askGateOwnerLease) throw new Error("failed to acquire the ask-user gate owner lease");
+}
+
+export function stopAskUserQuestionGateOwner(): void {
+  askGateOwnerLease?.stop();
+  askGateOwnerLease = null;
+}
 
 function normalizeAskText(value: unknown, maxChars: number): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -91,21 +115,42 @@ export function hasPendingAskUserQuestion(topicId: string, messageId: string): b
   return Boolean(pending && pending.topicId === topicId);
 }
 
-export function claimPendingAskUserQuestion(
-  topicId: string,
-  messageId: string,
-  label: string,
-): ClaimedAskUserAnswer | null {
-  const pending = pendingAsks.get(messageId);
-  if (!pending || pending.topicId !== topicId) return null;
-  const choice = pending.choices.find((item) => item.label === label);
-  if (!choice) return null;
-  pendingAsks.delete(messageId);
-  return {
-    choice,
-    queryId: pending.queryId,
-    resolve: (userId: string) => pending.resolve({ ...choice, userId }),
-  };
+function askBodyHash(question: string, choices: AskUserChoice[]): string {
+  return createHash("sha256").update(JSON.stringify({ question, choices })).digest("hex");
+}
+
+function broadcastGateUpdates(updates: AskUserGateCardUpdate[]): void {
+  for (const update of updates) {
+    WsHub.get().broadcastMessageUpdated(update.topicId, update.messageId, {
+      askUserQuestion: update.askUserQuestion,
+      editedAt: update.editedAt,
+    });
+  }
+}
+
+export function reconcilePendingAskUserQuestionGates(): number {
+  startAskUserQuestionGateOwner();
+  removeDeadRuntimeProcessLeases(ASK_GATE_LEASE_ROLE_PREFIX);
+  const liveOwners = new Set(
+    listRuntimeProcessLeases(ASK_GATE_LEASE_ROLE_PREFIX)
+      .filter(isRuntimeProcessLeaseAlive)
+      .map((lease) => lease.ownerId),
+  );
+  const updates = quarantineForeignAskUserGates(liveOwners);
+  broadcastGateUpdates(updates);
+  return updates.length;
+}
+
+function reconcileForeignGates(): void {
+  reconcilePendingAskUserQuestionGates();
+}
+
+function answerToolResult(answer: AskUserChoice & { userId: string }) {
+  if (!answer.userId) return errorResult("The AI turn ended before the user answered.");
+  const description = answer.description ? `\nDescription: ${answer.description}` : "";
+  return textResult(
+    `User selected: ${answer.label}${description}\nContinue from this selection and finish the current turn.`,
+  );
 }
 
 /**
@@ -120,6 +165,7 @@ export function answerPendingAskUserQuestion(
   label: string,
   userId: string,
 ): AnswerAskUserQuestionResult {
+  reconcileForeignGates();
   const topic = getTopic(topicId);
   if (!topic?.participants.some((participant) => participant.userId === userId)) {
     return { ok: false, error: "User is not a member of this topic." };
@@ -136,57 +182,61 @@ export function answerPendingAskUserQuestion(
     return { ok: false, error: "Invalid choice." };
   }
 
-  const claimed = claimPendingAskUserQuestion(topicId, messageId, label);
-  if (!claimed) return { ok: false, error: "This question is no longer awaiting an answer." };
+  const pending = pendingAsks.get(messageId);
+  if (!pending || pending.topicId !== topicId) {
+    return { ok: false, error: "This question is no longer awaiting an answer." };
+  }
+  const choice = pending.choices.find((item) => item.label === label);
+  if (!choice) return { ok: false, error: "Invalid choice." };
 
+  let claim: ReturnType<typeof claimAskUserGateAndSelect>;
   try {
-    const editedAt = new Date().toISOString();
-    const nextAsk = { ...ask, selectedLabel: label };
-    const updated = updateApiMessageAskUserQuestion(topicId, messageId, nextAsk, editedAt);
-    if (!updated) {
-      claimed.resolve("");
-      return { ok: false, error: "Ask card not found." };
-    }
-    WsHub.get().broadcastMessageUpdated(topicId, messageId, {
-      askUserQuestion: nextAsk,
-      editedAt,
-    });
-
-    const answerMessage: MessageDto = {
-      id: randomUUID(),
+    claim = claimAskUserGateAndSelect({
       topicId,
-      authorId: userId,
-      text: label,
-      parentId: messageId,
-      createdAt: new Date().toISOString(),
-    };
+      messageId,
+      label,
+      userId,
+      ownerId: ASK_GATE_OWNER_ID,
+      source: "host-control",
+      now: new Date().toISOString(),
+    });
+  } catch {
+    return { ok: false, error: "This question could not be claimed safely. Retry once." };
+  }
+  if (claim.outcome !== "claimed") {
+    return { ok: false, error: "This question is no longer awaiting an answer." };
+  }
+  pendingAsks.delete(messageId);
+
+  const answerMessage: MessageDto = {
+    id: randomUUID(),
+    topicId,
+    authorId: userId,
+    text: label,
+    parentId: messageId,
+    createdAt: new Date().toISOString(),
+  };
+  try {
+    WsHub.get().broadcastMessageUpdated(topicId, messageId, {
+      askUserQuestion: claim.askUserQuestion,
+      editedAt: claim.editedAt,
+    });
     appendApiMessage(answerMessage);
     WsHub.get().broadcastMessage(topicId, answerMessage);
-    claimed.resolve(userId);
-    return { ok: true, queryId: claimed.queryId, answerMessage };
-  } catch (error) {
-    claimed.resolve("");
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  } catch {
+    // The durable selection is authoritative. Adapter broadcasts and the
+    // convenience child message are best-effort after the atomic answer.
   }
+  pending.resolve({ ...choice, userId });
+  return { ok: true, queryId: pending.queryId, answerMessage };
 }
 
 export function cancelPendingAskUserQuestions(topicId: string, queryId: string): void {
   for (const [messageId, pending] of pendingAsks) {
     if (pending.topicId === topicId && pending.queryId === queryId) {
       pendingAsks.delete(messageId);
-      const editedAt = new Date().toISOString();
-      const expiredAsk = {
-        question: pending.question,
-        choices: pending.choices,
-        expired: true,
-      } satisfies NonNullable<MessageDto["askUserQuestion"]>;
-      const updated = updateApiMessageAskUserQuestion(topicId, messageId, expiredAsk, editedAt);
-      if (updated) {
-        WsHub.get().broadcastMessageUpdated(topicId, messageId, {
-          askUserQuestion: expiredAsk,
-          editedAt,
-        });
-      }
+      const update = cancelAskUserGate(topicId, messageId, ASK_GATE_OWNER_ID);
+      if (update) broadcastGateUpdates([update]);
       pending.resolve({
         label: "No answer",
         description: "The AI turn ended before the user answered.",
@@ -200,10 +250,11 @@ function appendAskMessage(
   ctx: AskUserToolContext,
   question: string,
   choices: AskUserChoice[],
+  messageId: string,
 ): MessageDto {
   const cfg = getApiTopicConfig(ctx.topicId);
   const msg: MessageDto = {
-    id: `ask-${ctx.queryId ?? "runtime"}-${randomUUID()}`,
+    id: messageId,
     topicId: ctx.topicId,
     authorId: "ai",
     text: question,
@@ -220,8 +271,9 @@ function appendAskMessage(
 
 async function askUserQuestion(
   ctx: AskUserToolContext,
-  input: { question?: unknown; choices?: unknown },
+  input: { question?: unknown; choices?: unknown; idempotency_key?: unknown },
 ) {
+  reconcileForeignGates();
   const topic = getTopic(ctx.topicId);
   if (!topic) return errorResult(`Error: topic '${ctx.topicId}' not found.`);
   if (!topic.participants.some((p: { userId: string }) => p.userId === ctx.userId)) {
@@ -230,29 +282,105 @@ async function askUserQuestion(
 
   const normalized = normalizeAskUserQuestionInput(input);
   if ("error" in normalized) return errorResult(`Error: ${normalized.error}.`);
+  if (
+    input.idempotency_key !== undefined &&
+    (typeof input.idempotency_key !== "string" || !input.idempotency_key.trim())
+  ) {
+    return errorResult("Error: idempotency_key must be a non-empty string.");
+  }
 
   const { question, choices } = normalized;
-  const msg = appendAskMessage(ctx, question, choices);
+  const rawIdempotencyKey =
+    typeof input.idempotency_key === "string" ? input.idempotency_key.trim() : randomUUID();
+  if (rawIdempotencyKey.length > MAX_IDEMPOTENCY_KEY_CHARS) {
+    return errorResult(
+      `Error: idempotency_key must be at most ${MAX_IDEMPOTENCY_KEY_CHARS} characters.`,
+    );
+  }
+  const bodyHash = askBodyHash(question, choices);
 
-  const answer = await new Promise<AskUserChoice & { userId: string }>((resolve) => {
-    pendingAsks.set(msg.id, {
+  const createGate = () => {
+    const suffix = randomUUID();
+    return prepareAskUserGate({
+      gateId: `ask-gate-${suffix}`,
       topicId: ctx.topicId,
       queryId: ctx.queryId,
-      messageId: msg.id,
-      question,
-      choices,
-      resolve,
+      idempotencyKey: rawIdempotencyKey,
+      bodyHash,
+      messageId: `ask-${ctx.queryId ?? "runtime"}-${suffix}`,
+      ownerId: ASK_GATE_OWNER_ID,
+      now: new Date().toISOString(),
     });
-    WsHub.get().broadcastMessage(ctx.topicId, msg);
-  });
+  };
 
-  if (!answer.userId) {
-    return errorResult("The AI turn ended before the user answered.");
+  let prepared = createGate();
+  if (prepared.outcome === "conflict") {
+    return errorResult(
+      "Error: idempotency_conflict. The same idempotency_key was already used with a different question or choices.",
+    );
   }
-  const description = answer.description ? `\nDescription: ${answer.description}` : "";
-  return textResult(
-    `User selected: ${answer.label}${description}\nContinue from this selection and finish the current turn.`,
-  );
+  if (prepared.outcome === "replay") {
+    const choice = choices.find((candidate) => candidate.label === prepared.gate.selectedLabel);
+    if (!choice || !prepared.gate.answeredBy) {
+      return errorResult("Error: the stored ask_user_question replay is incomplete.");
+    }
+    return answerToolResult({ ...choice, userId: prepared.gate.answeredBy });
+  }
+  if (prepared.outcome === "pending") {
+    if (prepared.gate.ownerId !== ASK_GATE_OWNER_ID) {
+      return errorResult(
+        "Error: this ask_user_question is pending in another healthy runtime process.",
+      );
+    }
+    const existingPending = pendingAsks.get(prepared.gate.messageId);
+    if (existingPending) return answerToolResult(await existingPending.promise);
+    if (prepared.gate.state === "claimed") {
+      return errorResult("Error: this ask_user_question is already being finalized.");
+    }
+    const update = quarantineAskUserGate(prepared.gate.gateId, ASK_GATE_OWNER_ID);
+    if (update) broadcastGateUpdates([update]);
+    prepared = createGate();
+  }
+  if (prepared.outcome !== "created") {
+    return errorResult("Error: failed to create a durable ask_user_question gate.");
+  }
+
+  let msg: MessageDto;
+  try {
+    msg = appendAskMessage(ctx, question, choices, prepared.gate.messageId);
+  } catch (error) {
+    quarantineAskUserGate(prepared.gate.gateId, ASK_GATE_OWNER_ID);
+    return errorResult(
+      `Error: failed to persist ask_user_question: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  let resolveAnswer!: (answer: AskUserChoice & { userId: string }) => void;
+  const promise = new Promise<AskUserChoice & { userId: string }>((resolve) => {
+    resolveAnswer = resolve;
+  });
+  pendingAsks.set(msg.id, {
+    topicId: ctx.topicId,
+    queryId: ctx.queryId,
+    messageId: msg.id,
+    question,
+    choices,
+    promise,
+    resolve: resolveAnswer,
+  });
+  try {
+    WsHub.get().broadcastMessage(ctx.topicId, msg);
+  } catch (error) {
+    pendingAsks.delete(msg.id);
+    try {
+      quarantineAskUserGate(prepared.gate.gateId, ASK_GATE_OWNER_ID);
+    } catch {
+      // A retry can recover the owner-local gate after the storage fault clears.
+    }
+    return errorResult(
+      `Error: failed to publish ask_user_question: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return answerToolResult(await promise);
 }
 
 export function createAskUserToolDefinition(ctx: AskUserToolContext): SharedMcpTool {
@@ -272,6 +400,13 @@ export function createAskUserToolDefinition(ctx: AskUserToolContext): SharedMcpT
         .min(1)
         .max(MAX_CHOICES)
         .describe("Choices the user can select."),
+      idempotency_key: z
+        .string()
+        .max(MAX_IDEMPOTENCY_KEY_CHARS)
+        .optional()
+        .describe(
+          "Optional retry key. Reusing it with the same question replays the existing result; reusing it with different content fails.",
+        ),
     },
     async handler(input) {
       return askUserQuestion(ctx, input);

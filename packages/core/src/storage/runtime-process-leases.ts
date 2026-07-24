@@ -76,6 +76,10 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+export function isRuntimeProcessLeaseAlive(lease: RuntimeProcessLease): boolean {
+  return Date.now() - lease.heartbeatAt <= PROCESS_LEASE_STALE_MS && isProcessAlive(lease.pid);
+}
+
 function removeDeadRuntimeProcessLease(role: string): void {
   const row = db
     .query<RuntimeProcessLeaseRow, [string]>("SELECT * FROM runtime_process_leases WHERE role = ?")
@@ -118,6 +122,30 @@ export function listRuntimeProcessLeases(
         .query<RuntimeProcessLeaseRow, []>("SELECT * FROM runtime_process_leases ORDER BY role")
         .all();
   return rows.map(rowToLease).filter((lease) => now - lease.heartbeatAt <= staleMs);
+}
+
+/** Remove crash leftovers without evicting a live process whose heartbeat is delayed. */
+export function removeDeadRuntimeProcessLeases(rolePrefix = ""): number {
+  const rows = rolePrefix
+    ? db
+        .query<RuntimeProcessLeaseRow, [string]>(
+          "SELECT * FROM runtime_process_leases WHERE role LIKE ?",
+        )
+        .all(`${rolePrefix}%`)
+    : db.query<RuntimeProcessLeaseRow, []>("SELECT * FROM runtime_process_leases").all();
+  let removed = 0;
+  for (const row of rows) {
+    const lease = rowToLease(row);
+    if (isProcessAlive(lease.pid)) continue;
+    const result = db
+      .query(
+        `DELETE FROM runtime_process_leases
+         WHERE role = ? AND owner_id = ? AND pid = ? AND heartbeat_at = ?`,
+      )
+      .run(lease.role, lease.ownerId, lease.pid, lease.heartbeatAt);
+    removed += Number(result.changes ?? 0);
+  }
+  return removed;
 }
 
 export function heartbeatRuntimeProcessLease(

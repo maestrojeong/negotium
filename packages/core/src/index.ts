@@ -18,6 +18,9 @@ export type { AnswerAskUserQuestionResult } from "#agents/mcp-tools/ask-user";
 export {
   answerPendingAskUserQuestion,
   createAskUserToolDefinition,
+  reconcilePendingAskUserQuestionGates,
+  startAskUserQuestionGateOwner,
+  stopAskUserQuestionGateOwner,
 } from "#agents/mcp-tools/ask-user";
 export type { McpToolResult, SharedMcpTool } from "#agents/mcp-tools/common";
 export { errorResult, textResult } from "#agents/mcp-tools/common";

@@ -25,6 +25,7 @@ import {
   nodeRequestHandlerNames,
   onShutdown,
   RUN_DIR,
+  reconcilePendingAskUserQuestionGates,
   runNodeRequestHandlers,
   runShutdown,
   runtimeBus,
@@ -33,9 +34,11 @@ import {
   setFileHooks,
   setNodeMcpServers,
   setRuntimeMcpPort,
+  startAskUserQuestionGateOwner,
   startDurableTurnRequestWorker,
   startNegotiumNodeModules,
   startSessionInboxWorker,
+  stopAskUserQuestionGateOwner,
   sweepStaleSubagentCards,
   WORKSPACE_DIR,
 } from "@negotium/core";
@@ -152,6 +155,14 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   if (opts.singleton && !processLease) {
     throw new Error(`a Negotium node is already running for ${STATE_DIR}`);
   }
+  try {
+    startAskUserQuestionGateOwner();
+    reconcilePendingAskUserQuestionGates();
+  } catch (error) {
+    processLease?.stop();
+    stopAskUserQuestionGateOwner();
+    throw error;
+  }
 
   let requestStop = () => {
     void runShutdown("test");
@@ -192,11 +203,13 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     });
   } catch (error) {
     processLease?.stop();
+    stopAskUserQuestionGateOwner();
     throw error;
   }
   const port = server.port;
   if (!port) {
     processLease?.stop();
+    stopAskUserQuestionGateOwner();
     throw new Error("negotium node failed to bind a port");
   }
   setRuntimeMcpPort(port);
@@ -217,6 +230,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     stopInbox();
     server.stop(true);
     processLease?.stop();
+    stopAskUserQuestionGateOwner();
     throw error;
   }
 
@@ -239,6 +253,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     stopInbox();
     server.stop(true);
     processLease?.stop();
+    stopAskUserQuestionGateOwner();
     void modules.stop();
     void mcpHost.stopAll();
     throw error;
@@ -262,6 +277,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     abortAllRooms();
     await killOwnedCodexTreesForShutdown();
   });
+  onShutdown("ask-user-gate-owner", 119, stopAskUserQuestionGateOwner);
   onShutdown("node-modules", 110, () => modules.stop());
   onShutdown("node-mcp-host", 50, async () => {
     stopSweeper();

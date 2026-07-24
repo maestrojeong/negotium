@@ -3,6 +3,7 @@ import {
   acquireRuntimeProcessLease,
   getRuntimeProcessLease,
   PROCESS_LEASE_STALE_MS,
+  removeDeadRuntimeProcessLeases,
   waitForRequiredRuntimeProcessLease,
   waitForRuntimeProcessLease,
 } from "#storage/runtime-process-leases";
@@ -79,6 +80,31 @@ describe("runtime process leases", () => {
 
     expect(replacement).not.toBeNull();
     expect(getRuntimeProcessLease(role)?.ownerId).toBe("owner-restarted");
+  });
+
+  test("sweeps dead prefixed leases without removing live owners", async () => {
+    const prefix = `ask-user-gate:test:${crypto.randomUUID()}:`;
+    const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 60_000)"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    const dead = acquireRuntimeProcessLease(`${prefix}dead`, {
+      ownerId: `dead-${crypto.randomUUID()}`,
+      pid: child.pid,
+      heartbeatMs: 60_000,
+    });
+    const live = acquireRuntimeProcessLease(`${prefix}live`, {
+      ownerId: `live-${crypto.randomUUID()}`,
+      heartbeatMs: 60_000,
+    });
+    if (dead) handles.push(dead);
+    if (live) handles.push(live);
+    child.kill("SIGKILL");
+    await child.exited;
+
+    expect(removeDeadRuntimeProcessLeases(prefix)).toBe(1);
+    expect(getRuntimeProcessLease(`${prefix}dead`)).toBeNull();
+    expect(getRuntimeProcessLease(`${prefix}live`)?.ownerId).toBe(live?.ownerId);
   });
 
   test("waits for a fresh lease to become stale before acquiring it", async () => {
