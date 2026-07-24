@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { registerPeerRuntimeBridge } from "#mcp/peer-bridge";
 import { LOG_DIR, resolveTopicWorkspaceDir } from "#platform/config";
-import type { RoomQueryControl } from "#query/active-rooms";
+import { deferInject, type RoomQueryControl, takeDeferredInject } from "#query/active-rooms";
 import { AbortReason } from "#query/types";
 import { fileHooks, setFileHooks } from "#runtime/file-hooks";
 import { streamAgentEvents, wasLocallyRequeuedAfterUserPreemption } from "#runtime/turn-runner";
@@ -64,7 +64,12 @@ async function* eventStream(): AsyncGenerator<UnifiedEvent> {
 }
 
 afterEach(() => {
-  for (const topicId of topicIds) deleteTopic(topicId);
+  for (const topicId of topicIds) {
+    while (takeDeferredInject(topicId)) {
+      // Keep tests isolated if an assertion fails before consuming the queue.
+    }
+    deleteTopic(topicId);
+  }
   topicIds.clear();
 });
 
@@ -837,5 +842,60 @@ describe("turn stream ordering", () => {
       kind: "provider-error",
       error: "session expired",
     });
+  });
+
+  test("session expiry preserves fork state and deferred work for the retry", async () => {
+    const topicId = seedTopic();
+    const queryId = randomUUID();
+    const workspace = resolveTopicWorkspaceDir(topicId);
+    const rolloutPath = join(workspace, "retry-rollout.jsonl");
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(rolloutPath, "{}\n");
+    const control: RoomQueryControl = {
+      topicId,
+      queryId,
+      origin: "ask-session",
+      prompt: "current inject",
+      abortController: new AbortController(),
+      abortReason: AbortReason.None,
+      injectParams: {
+        topicId,
+        userId: "owner",
+        prompt: "current inject",
+        origin: "ask-session",
+        forkHandle: {
+          agent: "codex",
+          forkId: randomUUID(),
+          rolloutPath,
+        },
+      },
+    };
+    deferInject({
+      topicId,
+      userId: "owner",
+      prompt: "queued inject",
+      origin: "ask-session",
+      requestId: randomUUID(),
+    });
+    async function* expiredStream(): AsyncGenerator<UnifiedEvent> {
+      yield { type: "error", content: "session expired" };
+    }
+
+    const outcome = await streamAgentEvents(
+      topicId,
+      "stream order",
+      queryId,
+      expiredStream(),
+      control,
+      "codex",
+      "gpt-5.6-luna",
+      "medium",
+      "owner",
+    );
+
+    expect(outcome.kind).toBe("session-expired");
+    expect(existsSync(rolloutPath)).toBe(true);
+    expect(takeDeferredInject(topicId)?.prompt).toBe("queued inject");
+    rmSync(rolloutPath, { force: true });
   });
 });
