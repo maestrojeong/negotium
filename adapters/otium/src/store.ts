@@ -486,7 +486,7 @@ export function markPeerTurnRequestRunning(hostNodeId: string, requestId: string
   setPeerTurnRequestStatus(hostNodeId, requestId, "running");
 }
 
-export function markPeerTurnRequestFinished(hostNodeId: string, requestId: string): void {
+function markPeerTurnRequestFinished(hostNodeId: string, requestId: string): void {
   setPeerTurnRequestStatus(hostNodeId, requestId, "finished");
 }
 

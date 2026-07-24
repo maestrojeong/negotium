@@ -17,7 +17,7 @@ process.argv = [
   `--topic-id=${currentTopicId}`,
 ];
 
-const { getTopicsForUser } = await import("#mcp/session-comm/topics");
+const { getTopicsForUser, listSessionTargetsForUser } = await import("#mcp/session-comm/topics");
 
 function makeTopic(patch: Partial<TopicDto>): TopicDto {
   const now = new Date().toISOString();
@@ -76,6 +76,9 @@ describe("session-comm topic listing", () => {
     expect(topics[`manager:${manager.title}`]).toBeUndefined();
     expect(topics[target.title]?.topicId).toBe(target.id);
     expect(topics[`agent:${target.title}`]?.topicId).toBe(target.id);
+    expect(listSessionTargetsForUser().filter(({ topic }) => topic.topicId === target.id)).toEqual([
+      { key: target.title, topic: topics[target.title] },
+    ]);
   });
 
   test("current-topic MCP config uses topic id when duplicate titles exist", async () => {
@@ -101,5 +104,12 @@ describe("session-comm topic listing", () => {
     expect(getApiTopicConfig(current.id)?.mcp).toEqual([]);
     expect(getApiTopicConfig(duplicate.id)).toBeUndefined();
     expect(getMcpConfig().enabled).toEqual([]);
+
+    const targets = listSessionTargetsForUser();
+    expect(targets.find(({ topic }) => topic.topicId === current.id)).toBeUndefined();
+    expect(targets.find(({ topic }) => topic.topicId === duplicate.id)?.key).toBe(
+      `channel:${duplicate.title}`,
+    );
+    expect(getTopicsForUser()[`channel:${duplicate.title}`]?.topicId).toBe(duplicate.id);
   });
 });

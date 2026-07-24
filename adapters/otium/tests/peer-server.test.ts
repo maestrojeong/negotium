@@ -334,6 +334,35 @@ describe("sessions / abort / stubs", () => {
     expect(sessions.some((s) => s.name === privateTopic.title)).toBe(false);
   });
 
+  test("sessions qualifies same-title agent and channel targets", async () => {
+    const title = `peer-duplicate-${Date.now()}`;
+    registerTopic({
+      title,
+      userId: USER,
+      kind: "agent",
+      agent: "maestro",
+      accessMode: "shared",
+    });
+    registerTopic({
+      title,
+      userId: USER,
+      kind: "channel",
+      agent: "none",
+      accessMode: "shared",
+    });
+
+    const { status, body } = await call("/api/v1/peer/sessions", {
+      token: HUB_TOKEN,
+      body: { v: PEER_PROTOCOL_VERSION, userId: USER },
+    });
+
+    expect(status).toBe(200);
+    const names = (body.sessions as Array<{ name: string }>).map((session) => session.name);
+    expect(names).toContain(`agent:${title}`);
+    expect(names).toContain(`channel:${title}`);
+    expect(names).not.toContain(title);
+  });
+
   test("Otium tell and topic-scoped abort cannot address private topics", async () => {
     const privateTopic = registerTopic({
       title: `peer-private-route-${Date.now()}`,

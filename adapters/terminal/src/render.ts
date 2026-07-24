@@ -53,10 +53,7 @@ export function workingFrame(frame: number): string {
   return WORKING_FRAMES[index] ?? WORKING_FRAMES[0];
 }
 
-export function workingElapsedSeconds(
-  startedAtMs: number | undefined,
-  nowMs = terminalNowMs(),
-): number {
+function workingElapsedSeconds(startedAtMs: number | undefined, nowMs = terminalNowMs()): number {
   if (startedAtMs === undefined || !Number.isFinite(startedAtMs)) return 0;
   return Math.max(0, Math.floor((nowMs - startedAtMs) / 1_000));
 }
@@ -270,7 +267,7 @@ function cleanInlineMarkdown(value: string): string {
 }
 
 /** Lightweight block renderer adapted to agent replies: headings, lists, quotes and fenced code. */
-export function renderMarkdown(value: string, width: number): UiLine[] {
+function renderMarkdown(value: string, width: number): UiLine[] {
   const result: UiLine[] = [];
   let codeLanguage = "";
   let inCode = false;

@@ -145,8 +145,8 @@ const roomQueryRegistry = createRoomQueryRegistry<RoomQueryControl, RuntimeTurnL
   requestAbort: requestRuntimeTurnAbort,
 });
 
-export function getRoomQuery(topicId: string): RoomQueryControl | undefined {
-  return roomQueryRegistry.get(topicId);
+export function getRoomQuery(roomId: string): RoomQueryControl | undefined {
+  return roomQueryRegistry.get(roomId);
 }
 
 /** Topic ids and query ids with an in-flight turn in this or another runtime process. */
@@ -177,14 +177,14 @@ export function setRoomQuery(control: RoomQueryControl): boolean {
  * turn's cleanup must not clobber its successor. Mirrors Otium's
  * "Only delete our own entry" guard.
  */
-export function clearRoomQuery(topicId: string, queryId: string): void {
-  roomQueryRegistry.clear(topicId, queryId);
+export function clearRoomQuery(roomId: string, queryId: string): void {
+  roomQueryRegistry.clear(roomId, queryId);
 }
 
 /** Abort the currently-running turn in a room, if any. Cleanup is still owned by
  *  the streaming turn's finally block so deferred injects drain in order. */
-export function abortRoom(topicId: string, reason: AbortReason = AbortReason.External): boolean {
-  return roomQueryRegistry.abort(topicId, reason);
+export function abortRoom(roomId: string, reason: AbortReason = AbortReason.External): boolean {
+  return roomQueryRegistry.abort(roomId, reason);
 }
 
 /** Abort every in-flight provider turn before the node tears down its resources. */

@@ -254,8 +254,10 @@ export interface AgentQueryOptions {
   silent?: boolean;
 }
 
-/** State file written to data/users/{userId}/active-queries/{topic}.json while a query is running. */
+/** State file written to data/users/{userId}/active-queries/{topicId}.json while a query is running. */
 export interface QueryState {
+  topicId?: string;
+  topicName?: string;
   task?: string; // first 100 chars of prompt, newlines normalized
   since: string; // ISO timestamp
 }

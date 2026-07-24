@@ -286,7 +286,7 @@ server.tool(
       if (now - sinceMs > ACTIVE_QUERY_STALE_MS) continue;
 
       const base = file.slice(0, -5); // remove .json
-      const topicName = base;
+      const topicName = state.topicName ?? base;
 
       entries.push({
         topicName,

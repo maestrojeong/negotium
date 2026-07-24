@@ -31,11 +31,17 @@ export interface TopicEntry {
   sessionId: string;
   messageThreadId: number;
   name: string;
+  kind: "agent" | "channel";
   description?: string;
   /** api_topics id (UUID) — delivery target for tell/ask. */
   topicId?: string;
   /** REST topics can be human-only. ask_session/tell_session require an AI target. */
   agent?: AgentKind;
+}
+
+export interface SessionTarget {
+  key: string;
+  topic: TopicEntry;
 }
 
 export interface McpTopicEntry {
@@ -86,13 +92,18 @@ export function validateTarget(to: string): ValidateTargetResult {
   return { ok: true, target };
 }
 
-export function getTopicsForUser(): { [name: string]: TopicEntry } {
-  if (!existsSync(SESSIONS_DB)) return {};
+function sessionTargetRows(): Array<{
+  id: string;
+  title: string;
+  kind: string | null;
+  agent: string | null;
+  session_id: string | null;
+  description: string | null;
+}> {
+  if (!existsSync(SESSIONS_DB)) return [];
   try {
     return withDb((db) => {
-      // Otium topics live in `api_topics`; membership is normalized in
-      // `topic_members`. Expose the current user's rooms keyed by title.
-      const rows = db
+      return db
         .query<
           {
             id: string;
@@ -110,37 +121,49 @@ export function getTopicsForUser(): { [name: string]: TopicEntry } {
            WHERE m.user_id = ?`,
         )
         .all(userId);
-      const entries: Array<{ key: string; entry: TopicEntry }> = [];
-      const titleCounts = new Map<string, number>();
-      for (const row of rows) {
-        if (row.kind === "manager") continue;
-        if (currentTopicId && row.id === currentTopicId) continue;
-        if (row.title === currentTopic) continue;
-        const agent = isAgentKind(row.agent) ? row.agent : undefined;
-        const kind = row.kind === "agent" ? "agent" : "channel";
-        const entry = {
-          sessionId: row.session_id ?? "",
-          messageThreadId: 0,
-          name: row.title,
-          topicId: row.id,
-          ...(agent && { agent }),
-          ...(row.description && { description: row.description }),
-        };
-        entries.push({ key: `${kind}:${row.title}`, entry });
-        titleCounts.set(row.title, (titleCounts.get(row.title) ?? 0) + 1);
-      }
-
-      const result: { [name: string]: TopicEntry } = {};
-      for (const { key, entry } of entries) {
-        result[key] = entry;
-        if ((titleCounts.get(entry.name) ?? 0) === 1) result[entry.name] = entry;
-      }
-      return result;
     });
   } catch (e) {
     process.stderr.write(`warn: session-comm: failed to load topics from DB: ${e}\n`);
-    return {};
+    return [];
   }
+}
+
+/** Canonical, deduplicated targets for display and status inspection. */
+export function listSessionTargetsForUser(): SessionTarget[] {
+  const eligibleRows = sessionTargetRows().filter((row) => row.kind !== "manager");
+  const titleCounts = new Map<string, number>();
+  for (const row of eligibleRows) {
+    const normalized = row.title.toLowerCase();
+    titleCounts.set(normalized, (titleCounts.get(normalized) ?? 0) + 1);
+  }
+  const rows = eligibleRows.filter((row) =>
+    currentTopicId ? row.id !== currentTopicId : row.title !== currentTopic,
+  );
+  return rows.map((row) => {
+    const agent = isAgentKind(row.agent) ? row.agent : undefined;
+    const kind = row.kind === "agent" ? "agent" : "channel";
+    const topic: TopicEntry = {
+      sessionId: row.session_id ?? "",
+      messageThreadId: 0,
+      name: row.title,
+      kind,
+      topicId: row.id,
+      ...(agent && { agent }),
+      ...(row.description && { description: row.description }),
+    };
+    const collision = (titleCounts.get(row.title.toLowerCase()) ?? 0) > 1;
+    return { key: collision ? `${kind}:${row.title}` : row.title, topic };
+  });
+}
+
+/** Lookup index with qualified aliases for every target and plain aliases when unambiguous. */
+export function getTopicsForUser(): { [name: string]: TopicEntry } {
+  const result: { [name: string]: TopicEntry } = {};
+  for (const { key, topic } of listSessionTargetsForUser()) {
+    result[`${topic.kind}:${topic.name}`] = topic;
+    result[key] = topic;
+  }
+  return result;
 }
 
 export function getMcpUserConfig(): McpUserConfig | null {

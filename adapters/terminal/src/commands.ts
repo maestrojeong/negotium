@@ -4,7 +4,7 @@ export interface TerminalCommand {
   description: string;
 }
 
-export const TERMINAL_COMMANDS: readonly TerminalCommand[] = [
+const TERMINAL_COMMANDS: readonly TerminalCommand[] = [
   { name: "new", usage: "/new", description: "reset the current session" },
   { name: "compact", usage: "/compact", description: "summarize and shrink context" },
   { name: "status", usage: "/status", description: "show model and token usage" },

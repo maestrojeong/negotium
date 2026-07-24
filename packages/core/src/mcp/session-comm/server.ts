@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { ACTIVE_QUERY_STALE_MS, USERS_LOG_DIR } from "#platform/config";
@@ -12,6 +12,7 @@ import {
   REQUIRED_FORUM_MCP_SERVERS,
 } from "#platform/mcp-config";
 import { closeBrowserOwnerTabs } from "#platform/playwright/manager";
+import { sanitizeId } from "#security/sanitize";
 import { getTopic } from "#storage/api-topics";
 import {
   assignTopicBrowserProfile,
@@ -45,7 +46,13 @@ import {
   setCurrentTopicDescription,
   setMcpConfig,
 } from "./topic-config";
-import { buildInboxPath, getTopicsForUser, type QueryState, validateTarget } from "./topics";
+import {
+  buildInboxPath,
+  getTopicsForUser,
+  listSessionTargetsForUser,
+  type QueryState,
+  validateTarget,
+} from "./topics";
 
 /** Addressing: "<nodeName>/<topicTitle>". Node names never contain "/", so
  *  the first slash splits reliably (kept for future cross-node adapters). */
@@ -75,12 +82,28 @@ const server = new McpServer({
   version: "1.0.0",
 });
 
-function queryStateFileName(topicName: string): string {
-  return `${topicName}.json`;
+function queryStateFileName(topicId: string): string {
+  return `${sanitizeId(topicId)}.json`;
 }
 
-function readQueryState(activeQueriesDir: string, topicName: string): QueryState | null {
-  return readJsonFile<QueryState>(join(activeQueriesDir, queryStateFileName(topicName)));
+function readQueryState(
+  activeQueriesDir: string,
+  topicId: string | undefined,
+  legacyTopicName: string,
+): QueryState | null {
+  if (topicId) {
+    const current = readJsonFile<QueryState>(join(activeQueriesDir, queryStateFileName(topicId)));
+    if (current) return current;
+  }
+  if (
+    !legacyTopicName ||
+    legacyTopicName === "." ||
+    legacyTopicName === ".." ||
+    basename(legacyTopicName) !== legacyTopicName
+  ) {
+    return null;
+  }
+  return readJsonFile<QueryState>(join(activeQueriesDir, `${legacyTopicName}.json`));
 }
 
 function currentTopicRef(): { key: string; title: string; topicId?: string } {
@@ -112,10 +135,9 @@ server.tool(
   "List all available Claude sessions (forum topics) for inter-session communication. Topics without an active session are still valid targets — ask_session / tell_session will wake them with a fresh session on first delivery.",
   {},
   async () => {
-    const topics = getTopicsForUser();
-    const entries = Object.entries(topics)
-      .filter(([name, topic]) => name !== currentTopic && Boolean(topic.agent))
-      .map(([name, t]) => {
+    const entries = listSessionTargetsForUser()
+      .filter(({ topic }) => Boolean(topic.agent))
+      .map(({ key, topic: t }) => {
         const status = !t.agent
           ? "no AI invited"
           : t.sessionId
@@ -124,7 +146,7 @@ server.tool(
         const desc = t.description
           ? `\n    description: ${t.description.slice(0, 80)}${t.description.length > 80 ? "..." : ""}`
           : "";
-        return `- ${name}: ${status}${desc}`;
+        return `- ${key}: ${status}${desc}`;
       });
 
     // Multi-node: append each peer node's rooms, addressed as "node/topic".
@@ -287,13 +309,12 @@ server.tool(
   "Check which sessions are currently running a query (busy) vs idle. Useful before abort_session.",
   {},
   async () => {
-    const topics = getTopicsForUser();
-    const topicNames = Object.keys(topics);
+    const targets = listSessionTargetsForUser();
     const activeQueriesDir = join(USERS_LOG_DIR, userId, "active-queries");
 
     // Read own query state for consistent display
     let selfLabel = `${currentTopic} (자신 — 실행 중)`;
-    const selfState = readQueryState(activeQueriesDir, currentTopic);
+    const selfState = readQueryState(activeQueriesDir, currentTopicId || undefined, currentTopic);
     if (selfState) {
       const selfElapsed = Date.now() - new Date(selfState.since).getTime();
       const selfMins = Math.floor(selfElapsed / 60000);
@@ -305,10 +326,9 @@ server.tool(
     const running: string[] = [selfLabel];
     const idle: string[] = [];
 
-    for (const name of topicNames) {
-      if (name === currentTopic) continue;
+    for (const { key: name, topic } of targets) {
       let isRunning = false;
-      const state = readQueryState(activeQueriesDir, name);
+      const state = readQueryState(activeQueriesDir, topic.topicId, topic.name);
       if (state) {
         const elapsed = Date.now() - new Date(state.since).getTime();
         if (elapsed <= ACTIVE_QUERY_STALE_MS) {

@@ -101,7 +101,7 @@ async function cleanupParticipantResources(
     }
 
     cleanupSessionInboxFiles(participantUserId, topic.id, topic.title);
-    clearQueryState(participantUserId, topic.title);
+    clearQueryState(participantUserId, topic.id, topic.title);
     clearQueryUsageAlert(participantUserId, topic.id);
     deletePendingAsksForTopic({ userId: participantUserId, topicName: topic.title });
   }

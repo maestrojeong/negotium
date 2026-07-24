@@ -479,21 +479,29 @@ async function handleSessions(req: Request): Promise<Response> {
   const userId = str(body, "userId");
   if (!userId) return jsonError("userId is required", 400);
 
-  const sessions: PeerSessionEntry[] = listTopics()
-    .filter(
-      (topic) =>
-        topic.kind !== "manager" &&
-        !topic.isSubagent &&
-        isTopicShared(topic) &&
-        topic.participants.some((p) => p.userId === userId),
-    )
-    .map((topic) => ({
+  const topics = listTopics().filter(
+    (topic) =>
+      topic.kind !== "manager" &&
+      !topic.isSubagent &&
+      isTopicShared(topic) &&
+      topic.participants.some((p) => p.userId === userId),
+  );
+  const titleCounts = new Map<string, number>();
+  for (const topic of topics) {
+    const normalized = topic.title.toLowerCase();
+    titleCounts.set(normalized, (titleCounts.get(normalized) ?? 0) + 1);
+  }
+  const sessions: PeerSessionEntry[] = topics.map((topic) => {
+    const collision = (titleCounts.get(topic.title.toLowerCase()) ?? 0) > 1;
+    const kind = topic.kind === "agent" ? "agent" : "channel";
+    return {
       topicId: topic.id,
-      name: topic.title,
+      name: collision ? `${kind}:${topic.title}` : topic.title,
       agent: topic.agent ?? null,
       hasSession: Boolean(getTopicSessionId(topic.id)),
       ...(topic.description ? { description: topic.description } : {}),
-    }));
+    };
+  });
   return Response.json({ ok: true, sessions });
 }
 

@@ -918,7 +918,7 @@ export async function streamAgentEvents(
     const stillCurrent = getRoomQuery(roomId)?.queryId === queryId;
     clearRoomQuery(roomId, queryId);
     cancelPendingAskUserQuestions(topicId, queryId);
-    if (stillCurrent && roomId === topicId) clearQueryState(userId, topicTitle);
+    if (stillCurrent && roomId === topicId) clearQueryState(userId, topicId, topicTitle);
     // Stop typing only if this turn still owns the room. A superseded turn may
     // finish cleanup after its replacement already broadcast a fresh start.
     if (!silent && stillCurrent) hub.broadcastTyping(topicId, "");
@@ -1847,7 +1847,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   }
   if (turnConcurrency === "topic") {
     try {
-      writeQueryState(userId, topic.title, prompt);
+      writeQueryState(userId, topic.id, topic.title, prompt);
     } catch (err) {
       logger.warn({ err, topicId, userId }, "ai: failed to write active query state");
     }

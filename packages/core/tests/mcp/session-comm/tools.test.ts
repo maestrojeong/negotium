@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SESSION_COMM_SERVER } from "#platform/config";
+import { clearQueryState, writeQueryState } from "#query/state";
 import { registerTopic } from "#topics/create";
 import { ensurePersonalGeneral } from "#topics/personal-general";
 
@@ -77,6 +78,42 @@ async function listSessionsText(args: {
   }
 }
 
+async function peekSessionsText(args: {
+  title: string;
+  topicId: string;
+  agent: "claude" | "codex" | "maestro";
+}): Promise<string> {
+  const client = new Client({ name: "session-comm-peek-test", version: "1.0.0" });
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] => {
+      return typeof entry[1] === "string";
+    }),
+  );
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [
+      "run",
+      SESSION_COMM_SERVER,
+      `--user-id=${USER_ID}`,
+      `--topic=${args.title}`,
+      `--topic-id=${args.topicId}`,
+      "--depth=0",
+      `--agent=${args.agent}`,
+    ],
+    env,
+  });
+
+  await client.connect(transport);
+  try {
+    const result = await client.callTool({ name: "peek_session", arguments: {} });
+    return (result.content as Array<{ type: string; text?: string }>)
+      .map((entry) => entry.text ?? "")
+      .join("\n");
+  } finally {
+    await client.close();
+  }
+}
+
 function expectCommunicationContract(names: string[]): void {
   expect(names).toEqual(
     expect.arrayContaining([
@@ -141,5 +178,32 @@ describe("session-comm tool exposure", () => {
     });
     expect(listed).toContain(target.title);
     expect(listed).not.toContain(humanOnly.title);
+    expect(listed.match(new RegExp(`^- ${target.title}:`, "gm"))).toHaveLength(1);
+    expect(listed).not.toContain(`agent:${target.title}`);
+  });
+
+  test("peek_session reads ID-addressed state and lists each target once", async () => {
+    const current = registerTopic({
+      title: `peek-current-${randomUUID()}`,
+      userId: USER_ID,
+      agent: "maestro",
+    });
+    const target = registerTopic({
+      title: `peek-target-${randomUUID()}`,
+      userId: USER_ID,
+      agent: "codex",
+    });
+    writeQueryState(USER_ID, target.id, target.title, "review");
+    try {
+      const peeked = await peekSessionsText({
+        title: current.title,
+        topicId: current.id,
+        agent: current.agent ?? "maestro",
+      });
+      expect(peeked.match(new RegExp(target.title, "g"))).toHaveLength(1);
+      expect(peeked).not.toContain(`agent:${target.title}`);
+    } finally {
+      clearQueryState(USER_ID, target.id, target.title);
+    }
   });
 });
