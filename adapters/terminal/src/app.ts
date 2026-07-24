@@ -17,10 +17,12 @@ import {
   ctrlCExitsTopicPicker,
   escapeStopsActiveTurn,
   maestroVaultKeyForModel,
+  pasteCollapseDisabled,
   runtimeEventInvalidatesSelection,
   runtimeEventWaitsForMessageLoad,
   selectableEfforts,
   type TerminalMouseEvent,
+  terminalDeletionShortcut,
   vaultFormBlocksOverlaySwitch,
 } from "@/app-helpers";
 import {
@@ -30,6 +32,7 @@ import {
   type NegotiumClient,
 } from "@/client";
 import { copyToClipboard } from "@/clipboard";
+import { CollapsedPasteStore, cursorForTextOffset, textOffsetForCursor } from "@/collapsed-pastes";
 import { runTerminalCommand } from "@/command-router";
 import { commandSuggestions, completeCommand } from "@/commands";
 import {
@@ -93,9 +96,11 @@ export {
   ctrlCExitsTopicPicker,
   escapeStopsActiveTurn,
   maestroVaultKeyForModel,
+  pasteCollapseDisabled,
   runTerminalVaultCommand,
   runtimeEventInvalidatesSelection,
   runtimeEventWaitsForMessageLoad,
+  terminalDeletionShortcut,
   vaultFormBlocksOverlaySwitch,
 } from "@/app-helpers";
 
@@ -115,6 +120,8 @@ export class TerminalApp {
   #vaultDraftValue = "";
   #pendingModelSwitch: { topicId: string; model: string } | undefined;
   #pasting = false;
+  #pasteChunks: string[] = [];
+  readonly #collapsedPastes = new CollapsedPasteStore();
   #renderQueued = false;
   #renderTimer: ReturnType<typeof setTimeout> | undefined;
   #pathSearchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -432,6 +439,7 @@ export class TerminalApp {
   }
 
   #syncInput(): void {
+    this.#collapsedPastes.reconcile(this.#input.text);
     const count = this.#suggestionCount();
     this.#state = {
       ...this.#state,
@@ -468,6 +476,7 @@ export class TerminalApp {
   }
 
   #replaceInput(value: string): void {
+    this.#collapsedPastes.clear();
     this.#input.setText(value);
     this.#syncInput();
     this.#queueRender();
@@ -489,12 +498,25 @@ export class TerminalApp {
     if (this.#pasting) {
       const end = chunk.indexOf(pasteEnd);
       if (end < 0) {
-        this.#input.insert(chunk);
-        this.#syncInput();
-        this.#queueRender();
+        this.#pasteChunks.push(chunk);
         return;
       }
-      this.#input.insert(chunk.slice(0, end));
+      this.#pasteChunks.push(chunk.slice(0, end));
+      const pasted = this.#pasteChunks.join("");
+      this.#pasteChunks = [];
+      if (pasteCollapseDisabled(this.#state)) {
+        this.#input.insert(pasted);
+      } else {
+        const inserted = this.#collapsedPastes.insert(
+          pasted,
+          this.#input.text,
+          textOffsetForCursor(this.#input.text, this.#input.cursor),
+        );
+        this.#input.setText(
+          inserted.text,
+          cursorForTextOffset(inserted.text, inserted.cursorOffset),
+        );
+      }
       this.#pasting = false;
       chunk = chunk.slice(end + pasteEnd.length);
       this.#syncInput();
@@ -508,6 +530,7 @@ export class TerminalApp {
       const before = chunk.slice(0, start);
       if (before) this.#handleInput(before);
       this.#pasting = true;
+      this.#pasteChunks = [];
       this.#handleInput(chunk.slice(start + pasteStart.length));
       return;
     }
@@ -602,14 +625,10 @@ export class TerminalApp {
       this.#queueRender();
       return;
     }
-    if (chunk === "\u0017") {
-      this.#input.deleteWordLeft(); // Ctrl-W
-      this.#syncInput();
-      this.#queueRender();
-      return;
-    }
-    if (chunk === "\u0015") {
-      this.#input.clearBeforeCursor(); // Ctrl-U
+    const deletionShortcut = terminalDeletionShortcut(chunk);
+    if (deletionShortcut) {
+      if (deletionShortcut === "word-left") this.#input.deleteWordLeft();
+      else this.#input.clearBeforeCursor();
       this.#syncInput();
       this.#queueRender();
       return;
@@ -795,12 +814,14 @@ export class TerminalApp {
       return;
     }
 
-    const text = this.#input.text.trim();
+    const displayText = this.#input.text.trim();
+    const text = this.#collapsedPastes.expand(displayText).trim();
     if (!text) return;
     const inVaultCommandScreen =
       this.#state.overlay === "vault" && this.#state.vaultMode === "list";
     if (inVaultCommandScreen && !isVaultCommandLine(text)) {
       this.#input.setText("");
+      this.#collapsedPastes.clear();
       this.#syncInput();
       this.#state = {
         ...this.#state,
@@ -811,6 +832,7 @@ export class TerminalApp {
     }
     if (this.#state.creatingTopic) {
       this.#input.setText("");
+      this.#collapsedPastes.clear();
       this.#syncInput();
       this.#state = { ...this.#state, creatingTopic: false, notice: undefined };
       await this.#createTopic(text);
@@ -823,6 +845,7 @@ export class TerminalApp {
       this.#client.appendInputHistory?.(text);
     }
     this.#input.setText("");
+    this.#collapsedPastes.clear();
     this.#syncInput();
     const keepVaultOpen = this.#state.overlay === "vault";
     this.#state = {

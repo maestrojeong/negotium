@@ -10,6 +10,7 @@ import {
   runtimeEventInvalidatesSelection,
   runtimeEventWaitsForMessageLoad,
   TerminalApp,
+  terminalDeletionShortcut,
   vaultFormBlocksOverlaySwitch,
 } from "@/app";
 import {
@@ -147,6 +148,21 @@ test("Vault secret entry keeps global shortcuts inside the masking overlay", () 
   expect(vaultFormBlocksOverlaySwitch({ ...state, vaultMode: "value" })).toBe(true);
   expect(vaultFormBlocksOverlaySwitch({ ...state, vaultMode: "description" })).toBe(true);
   expect(vaultFormBlocksOverlaySwitch({ ...state, vaultMode: "list" })).toBe(false);
+});
+
+test("recognizes word and line deletion shortcuts across terminal protocols", () => {
+  expect(terminalDeletionShortcut("\u001b\u007f")).toBe("word-left");
+  expect(terminalDeletionShortcut("\u001b\b")).toBe("word-left");
+  expect(terminalDeletionShortcut("\u001b[127;3u")).toBe("word-left");
+  expect(terminalDeletionShortcut("\u001b[8;3u")).toBe("word-left");
+  expect(terminalDeletionShortcut("\u001b[27;3;127~")).toBe("word-left");
+  expect(terminalDeletionShortcut("\u0017")).toBe("word-left");
+
+  expect(terminalDeletionShortcut("\u001b[127;9u")).toBe("line-left");
+  expect(terminalDeletionShortcut("\u001b[8;9u")).toBe("line-left");
+  expect(terminalDeletionShortcut("\u001b[27;9;127~")).toBe("line-left");
+  expect(terminalDeletionShortcut("\u0015")).toBe("line-left");
+  expect(terminalDeletionShortcut("\u007f")).toBeNull();
 });
 
 test("Maestro model selection opens the matching provider key form", () => {

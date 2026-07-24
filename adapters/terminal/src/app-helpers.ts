@@ -32,6 +32,36 @@ export function vaultFormBlocksOverlaySwitch(
   );
 }
 
+export function pasteCollapseDisabled(state: Pick<AppState, "creatingTopic" | "overlay">): boolean {
+  return state.creatingTopic || state.overlay === "vault";
+}
+
+export type TerminalDeletionShortcut = "word-left" | "line-left";
+
+export function terminalDeletionShortcut(chunk: string): TerminalDeletionShortcut | null {
+  if (
+    chunk === "\u0017" ||
+    chunk === "\u001b\u007f" ||
+    chunk === "\u001b\b" ||
+    chunk === "\u001b[127;3u" ||
+    chunk === "\u001b[8;3u" ||
+    chunk === "\u001b[27;3;127~" ||
+    chunk === "\u001b[27;3;8~"
+  ) {
+    return "word-left";
+  }
+  if (
+    chunk === "\u0015" ||
+    chunk === "\u001b[127;9u" ||
+    chunk === "\u001b[8;9u" ||
+    chunk === "\u001b[27;9;127~" ||
+    chunk === "\u001b[27;9;8~"
+  ) {
+    return "line-left";
+  }
+  return null;
+}
+
 export type TerminalVaultCommandOutcome =
   | { kind: "open-manager" }
   | { kind: "notice"; notice: string };
