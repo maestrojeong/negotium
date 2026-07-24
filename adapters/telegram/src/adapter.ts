@@ -43,20 +43,14 @@ import { createDurableOutboxWorker } from "@negotium/adapter-sdk/outbox";
 import {
   type AgentKind,
   claimDeliveryAck,
-  composeAttachmentPrompt,
   ensurePersonalGeneral,
   errMsg,
-  executeVaultCommand,
   extractFileTagPaths,
   getTopic,
   getTopicByNameForUser,
-  type IngestedAttachment,
-  ingestAttachment,
-  isAgentKind,
   isSensitivePath,
   isTopicVisible,
   isTranscriptionConfigured,
-  isVaultCommandLine,
   listTopics,
   logger,
   type MessageDto,
@@ -68,19 +62,17 @@ import {
   startAiTurn,
   stripFileTags,
   submitUserMessage,
-  TopicArchiveRequiredError,
   type TopicDto,
-  TopicTitleConflictError,
-  TopicValidationError,
   topicService,
   transcribeAudio,
 } from "@negotium/core";
+import { createTelegramCommandRouter } from "@/commands";
 import { type OutboxEntry, openMappingStore, type PersistedMapping } from "@/mapping-store";
+import { createTelegramMediaIntake } from "@/media-intake";
 import { renderOutbound } from "@/render";
 import {
   canManageTopics,
   defaultTopicTitle,
-  extractCommandArg,
   isChatAdmin,
   isForumTopicAlreadyGone,
   isHtmlParseError,
@@ -1692,455 +1684,36 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     if (queryId) rememberTarget(queryId);
   }
 
-  // Preserve Telegram arrival order per chat/thread even when attachment
-  // downloads or album debounce complete later than a following text message.
-  const inboundQueues = new Map<string, Promise<void>>();
-  function enqueueInbound(
-    chatId: number,
-    threadId: number | undefined,
-    task: () => Promise<void> | void,
-  ): void {
-    const key = mappingKey(chatId, threadId);
-    const previous = inboundQueues.get(key);
-    const run = async (): Promise<void> => {
-      if (stopped) return;
-      await task();
-    };
-    // Keep the first task's synchronous prefix synchronous (topic creation,
-    // mapping and plain-text persistence historically happened before the
-    // Telegram callback returned). Only later arrivals need a promise hop.
-    const next = (previous ? previous.catch(() => {}).then(run) : run()).catch((err) =>
-      logger.warn({ err, chatId, threadId }, "telegram adapter: inbound task failed"),
-    );
-    inboundQueues.set(key, next);
-    void next.then(() => {
-      if (inboundQueues.get(key) === next) inboundQueues.delete(key);
-    });
-  }
+  const mediaIntake = createTelegramMediaIntake({
+    client,
+    mediaGroup: opts.mediaGroup,
+    isStopped: () => stopped,
+    mappingKey,
+    resolveTopic: resolveMapping,
+    runTurn,
+    reply,
+    transcribe: opts.transcribe ?? ((filePath: string) => transcribeAudio(filePath)),
+    transcriptionAvailable: () => opts.transcribe !== undefined || isTranscriptionConfigured(),
+  });
 
-  // ── inbound attachments ─────────────────────────────────────────────
-  const transcriber = opts.transcribe ?? ((filePath: string) => transcribeAudio(filePath));
-  const transcriptionAvailable = (): boolean =>
-    opts.transcribe !== undefined || isTranscriptionConfigured();
-
-  /** Download a Telegram file into the topic workspace via core's intake. */
-  async function downloadToTopic(
-    topicId: string,
-    fileId: string,
-    filename: string,
-  ): Promise<IngestedAttachment> {
-    // getFileLink presence is checked by the caller.
-    const url = await client.getFileLink!(fileId);
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`attachment download failed: HTTP ${res.status}`);
-    return ingestAttachment({
-      topicId,
-      filename,
-      bytes: new Uint8Array(await res.arrayBuffer()),
-    });
-  }
-
-  /** Ingest one message's photo/document into the topic workspace and return
-   *  the canonical prompt lines (shared by single-media and album paths). */
-  async function ingestMessageFiles(
-    topicId: string,
-    msg: TelegramIncomingMessage,
-  ): Promise<string[]> {
-    const lines: string[] = [];
-    if (msg.photo && msg.photo.length > 0) {
-      // Highest-resolution variant is last (Telegram API contract).
-      const photo = msg.photo[msg.photo.length - 1]!;
-      lines.push((await downloadToTopic(topicId, photo.file_id, "photo.jpg")).promptLine);
-    }
-    if (msg.document) {
-      const filename = msg.document.file_name || "file";
-      lines.push((await downloadToTopic(topicId, msg.document.file_id, filename)).promptLine);
-    }
-    return lines;
-  }
-
-  /** Media message → download attachments → core prompt convention → turn.
-   *  Mirrors clawgram's buildPromptFromMessage, minus PII/video. */
-  async function handleMediaMessage(
-    msg: TelegramIncomingMessage,
-    chatId: number,
-    threadId: number | undefined,
-  ): Promise<void> {
-    const caption = (msg.text ?? msg.caption ?? "").trim();
-    const topic = resolveMapping(chatId, threadId);
-
-    if (typeof client.getFileLink !== "function") {
-      logger.warn(
-        { chatId },
-        "telegram adapter: media message but client lacks getFileLink — caption only",
-      );
-      if (caption) runTurn(topic, caption, chatId, threadId);
-      else reply(chatId, threadId, "this bot cannot download attachments");
-      return;
-    }
-
-    let promptLines: string[] = [];
-    let voiceText = "";
-    try {
-      promptLines = await ingestMessageFiles(topic.id, msg);
-      if (msg.voice) {
-        if (!transcriptionAvailable()) {
-          reply(
-            chatId,
-            threadId,
-            "voice transcription is not configured on this bot — please send text",
-          );
-        } else {
-          const ingested = await downloadToTopic(topic.id, msg.voice.file_id, "voice.ogg");
-          const transcript = (await transcriber(ingested.path))?.trim();
-          if (transcript) {
-            voiceText = `[Voice transcript]\n${transcript}`;
-          } else {
-            reply(chatId, threadId, "voice transcription failed — please send text");
-          }
-        }
-      }
-    } catch (err) {
-      logger.warn({ err, chatId, topicId: topic.id }, "telegram adapter: attachment intake failed");
-      reply(chatId, threadId, errMsg(err, "attachment download failed"));
-    }
-    if (stopped) return;
-
-    const userText = voiceText ? (caption ? `${voiceText}\n\n${caption}` : voiceText) : caption;
-    if (!userText && promptLines.length === 0) return;
-    runTurn(topic, composeAttachmentPrompt(userText, promptLines), chatId, threadId);
-  }
-
-  // ── media groups (albums) ───────────────────────────────────────────
-  // Telegram splits a multi-photo upload into separate messages sharing one
-  // `media_group_id`, arriving over ~1s. Without buffering each item would
-  // start its own turn and abort-on-new-message would keep only the last.
-  // Clawgram's bufferMediaGroup semantics: buffer per (chatId, groupId), a
-  // debounce timer resets on every new item, then ONE flush combines every
-  // caption + attachment into a single turn. On top of clawgram we add a
-  // hard cap (maxWaitMs) so a trickling group can't defer its turn forever.
-  const mediaGroupCfg = {
-    debounceMs: opts.mediaGroup?.debounceMs ?? 1_000,
-    maxWaitMs: opts.mediaGroup?.maxWaitMs ?? 3_000,
-  };
-  interface MediaGroupEntry {
-    messages: TelegramIncomingMessage[];
-    chatId: number;
-    threadId?: number;
-    firstSeenAt: number;
-    timer: ReturnType<typeof setTimeout>;
-    ready: Promise<void>;
-    release: () => void;
-  }
-  const mediaGroups = new Map<string, MediaGroupEntry>(); // `${chatId}:${media_group_id}`
-
-  function flushMediaGroup(key: string): void {
-    const entry = mediaGroups.get(key);
-    if (!entry) return;
-    mediaGroups.delete(key);
-    entry.release();
-  }
-
-  function bufferMediaGroup(
-    msg: TelegramIncomingMessage,
-    chatId: number,
-    threadId: number | undefined,
-  ): void {
-    const key = `${chatId}:${msg.media_group_id}`;
-    const existing = mediaGroups.get(key);
-    if (existing) {
-      existing.messages.push(msg);
-      clearTimeout(existing.timer);
-      // Debounce resets per item, but never beyond the cap from first sight.
-      const remaining = existing.firstSeenAt + mediaGroupCfg.maxWaitMs - Date.now();
-      const wait = Math.max(0, Math.min(mediaGroupCfg.debounceMs, remaining));
-      existing.timer = setTimeout(() => flushMediaGroup(key), wait);
-      return;
-    }
-    let releaseReady!: () => void;
-    const ready = new Promise<void>((resolve) => {
-      releaseReady = resolve;
-    });
-    const entry: MediaGroupEntry = {
-      messages: [msg],
-      chatId,
-      ...(threadId !== undefined ? { threadId } : {}),
-      firstSeenAt: Date.now(),
-      timer: setTimeout(
-        () => flushMediaGroup(key),
-        Math.min(mediaGroupCfg.debounceMs, mediaGroupCfg.maxWaitMs),
-      ),
-      ready,
-      release: releaseReady,
-    };
-    mediaGroups.set(key, entry);
-    // Reserve the first album item's arrival position. Later items can still
-    // extend the buffer while this queue entry waits for the debounce signal.
-    enqueueInbound(chatId, threadId, async () => {
-      await entry.ready;
-      if (stopped) return;
-      await handleMediaGroupFlush(entry);
-    });
-  }
-
-  /** One combined turn for a whole album: every caption + every attachment. */
-  async function handleMediaGroupFlush(entry: MediaGroupEntry): Promise<void> {
-    const { messages, chatId, threadId } = entry;
-    const topic = resolveMapping(chatId, threadId);
-    const captions = messages
-      .map((m) => (m.text ?? m.caption ?? "").trim())
-      .filter((caption) => caption.length > 0);
-
-    if (typeof client.getFileLink !== "function") {
-      logger.warn(
-        { chatId },
-        "telegram adapter: media group but client lacks getFileLink — captions only",
-      );
-      if (captions.length > 0) runTurn(topic, captions.join("\n"), chatId, threadId);
-      else reply(chatId, threadId, "this bot cannot download attachments");
-      return;
-    }
-
-    const promptLines: string[] = [];
-    for (const msg of messages) {
-      try {
-        promptLines.push(...(await ingestMessageFiles(topic.id, msg)));
-      } catch (err) {
-        logger.warn(
-          { err, chatId, topicId: topic.id },
-          "telegram adapter: media group attachment intake failed",
-        );
-        reply(chatId, threadId, errMsg(err, "attachment download failed"));
-      }
-    }
-    if (stopped) return;
-    const userText = captions.join("\n");
-    if (!userText && promptLines.length === 0) return;
-    runTurn(topic, composeAttachmentPrompt(userText, promptLines), chatId, threadId);
-  }
-
-  // ── commands ────────────────────────────────────────────────────────
-  /** Handle a leading-slash command. Commands never start an AI turn. */
-  async function handleCommand(
-    text: string,
-    chatId: number,
-    threadId?: number,
-    telegramUserId?: number,
-  ): Promise<void> {
-    const [rawCmd = ""] = text.split(/\s+/);
-    const addressedUsername = rawCmd.match(/@(\w+)$/)?.[1];
-    if (addressedUsername) {
-      const bot = await resolveBotIdentity();
-      if (!bot?.username || bot.username.toLowerCase() !== addressedUsername.toLowerCase()) return;
-    }
-
-    if (isVaultCommandLine(text)) {
-      if (!isVaultOwner(telegramUserId)) return;
-      const vaultResponse = executeVaultCommand(userId, text);
-      if (vaultResponse !== null) reply(chatId, threadId, vaultResponse);
-      return;
-    }
-    const cmd = rawCmd.replace(/@\w+$/, ""); // tolerate "/abort@MyBot" in groups
-    const arg = extractCommandArg(text);
-    switch (cmd) {
-      case "/start": {
-        await sendOnboardingGuide(chatId, threadId);
-        return;
-      }
-      case "/abort": {
-        const mapping = byKey.get(mappingKey(chatId, threadId));
-        const aborted = mapping
-          ? await (opts.abortTurn?.(mapping.topicId, userId) ??
-              topicService.abortTurn(mapping.topicId, userId))
-          : false;
-        reply(chatId, threadId, aborted ? "aborted" : "nothing running");
-        return;
-      }
-      case "/agent": {
-        if (!isAgentKind(arg)) {
-          reply(chatId, threadId, "usage: /agent <claude|codex|maestro>");
-          return;
-        }
-        // Agent switch = remap to an agent-suffixed sibling topic (e.g.
-        // `tg-123-claude`) so each agent keeps its own session history.
-        try {
-          const topic = getOrCreateTopic(`${titleFor(chatId, threadId)}-${arg}`, arg);
-          bindMapping(chatId, threadId, topic.id);
-          reply(chatId, threadId, `agent set to ${arg} — topic "${topic.title}"`);
-        } catch (err) {
-          reply(chatId, threadId, errMsg(err, "agent switch failed"));
-        }
-        return;
-      }
-      case "/topics": {
-        const mine = listTopics().filter(
-          (t) => isTopicVisible(t) && t.participants.some((p) => p.userId === userId),
-        );
-        reply(
-          chatId,
-          threadId,
-          mine.length
-            ? mine.map((t) => `- ${t.title}${t.agent ? ` (${t.agent})` : ""}`).join("\n")
-            : "no topics",
-        );
-        return;
-      }
-      case "/new": {
-        if (!arg) {
-          const mapping = byKey.get(mappingKey(chatId, threadId));
-          const topic = mapping ? getTopic(mapping.topicId) : null;
-          if (!topic) {
-            reply(chatId, threadId, "nothing to reset — this chat has no topic yet");
-            return;
-          }
-          try {
-            const result = await topicService.reset({
-              topicId: topic.id,
-              userId,
-              reason: "telegram-session-reset",
-            });
-            reply(chatId, threadId, result.text);
-          } catch (err) {
-            reply(chatId, threadId, errMsg(err, "session reset failed"));
-          }
-          return;
-        }
-        try {
-          const createOptions: RegisterTopicOptions = {
-            title: arg,
-            userId,
-            kind: "agent",
-            ...(opts.defaultAgent ? { agent: opts.defaultAgent } : {}),
-          };
-          const fromForumGeneral = forumMode && chatId === forumChat && threadId === undefined;
-          // General is the forum's control surface. Keep it bound to Personal
-          // General and let topic-created materialize a real Telegram thread.
-          // DM chats and existing forum threads retain their switch-in-place
-          // behavior.
-          const topic = fromForumGeneral
-            ? topicService.create(createOptions)
-            : registerTopicLocal(createOptions);
-          if (fromForumGeneral) {
-            reply(chatId, threadId, `creating new topic "${topic.title}"`);
-            return;
-          }
-          bindMapping(chatId, threadId, topic.id);
-          reply(chatId, threadId, `switched to new topic "${topic.title}"`);
-        } catch (err) {
-          if (err instanceof TopicValidationError) {
-            reply(chatId, threadId, err.message);
-          } else {
-            reply(chatId, threadId, errMsg(err, "topic create failed"));
-          }
-        }
-        return;
-      }
-      case "/load": {
-        if (!arg) {
-          reply(chatId, threadId, "usage: /load <topic>");
-          return;
-        }
-        const candidate = getTopicByNameForUser(arg, userId) ?? getTopic(arg);
-        const topic = candidate && isTopicVisible(candidate) ? candidate : null;
-        if (!topic || !loadExistingTopic(chatId, topic.id, threadId)) {
-          reply(chatId, threadId, `no visible topic matching "${arg}"`);
-          return;
-        }
-        reply(chatId, threadId, `loaded topic "${topic.title}"`);
-        return;
-      }
-      case "/unload": {
-        if (!unloadMapping(chatId, threadId)) {
-          reply(chatId, threadId, "this chat has no loaded topic");
-          return;
-        }
-        reply(chatId, threadId, "unloaded topic; the Negotium topic was preserved");
-        return;
-      }
-      case "/fork":
-      case "/spawn": {
-        const label = cmd.slice(1);
-        const mapping = byKey.get(mappingKey(chatId, threadId));
-        if (!mapping) {
-          reply(chatId, threadId, `nothing to ${label} — this chat has no topic yet`);
-          return;
-        }
-        // fork = config + history copy; spawn = config only, fresh session.
-        const copyHistory = cmd === "/fork";
-        void topicService
-          .derive({
-            sourceTopicId: mapping.topicId,
-            userId,
-            copyHistory,
-            ...(arg ? { name: arg } : {}),
-          })
-          .then((derived) => {
-            if (!derived) {
-              reply(chatId, threadId, `${label} failed`);
-              return;
-            }
-            // Forum mode materializes the new topic's thread via its
-            // topic-created broadcast — nothing else to do here.
-            reply(
-              chatId,
-              threadId,
-              `${copyHistory ? "forked into" : "spawned"} "${derived.title}"`,
-            );
-          })
-          .catch((err) => {
-            reply(
-              chatId,
-              threadId,
-              err instanceof TopicTitleConflictError ? err.message : errMsg(err, `${label} failed`),
-            );
-          });
-        return;
-      }
-      case "/del":
-      case "/del!": {
-        const force = cmd === "/del!";
-        const mapping = byKey.get(mappingKey(chatId, threadId));
-        const topic = arg
-          ? getTopicByNameForUser(arg, userId)
-          : mapping
-            ? getTopic(mapping.topicId)
-            : null;
-        if (!topic) {
-          reply(
-            chatId,
-            threadId,
-            arg ? `no topic named "${arg}"` : "this chat has no topic — usage: /del [name]",
-          );
-          return;
-        }
-        // Notice BEFORE the cascade — if the target is this forum thread, the
-        // thread is gone right after (clawgram's ordering quirk).
-        reply(chatId, threadId, `deleting topic "${topic.title}"…`);
-        // Mapping/thread cleanup rides the core topic-deleted bus event.
-        void topicService.delete({ topicId: topic.id, userId, force }).catch((err) => {
-          if (err instanceof TopicArchiveRequiredError) {
-            reply(
-              chatId,
-              threadId,
-              `delete blocked: archiving "${topic.title}" failed and deleting now would lose its history. ` +
-                `Retry after fixing the archive, or force with: /del!${arg ? ` ${arg}` : ""}`,
-            );
-          } else {
-            reply(chatId, threadId, errMsg(err, "delete failed"));
-          }
-        });
-        return;
-      }
-      default:
-        reply(
-          chatId,
-          threadId,
-          "commands: /new [name], /topics, /agent <claude|codex|maestro>, " +
-            "/load <topic>, /unload, /fork [name], /spawn [name], " +
-            "/del [name], /del! [name], /abort, /vault <list|set|del>",
-        );
-    }
-  }
+  const handleCommand = createTelegramCommandRouter({
+    userId,
+    defaultAgent: opts.defaultAgent,
+    forum: forumMode ? { enabled: true, chatId: forumChat } : undefined,
+    resolveBotUsername: async () => (await resolveBotIdentity())?.username,
+    isVaultOwner,
+    reply,
+    sendOnboardingGuide,
+    currentTopicId: (chatId, threadId) => byKey.get(mappingKey(chatId, threadId))?.topicId,
+    titleFor,
+    getOrCreateTopic,
+    bindMapping,
+    registerTopic: registerTopicLocal,
+    loadTopic: loadExistingTopic,
+    unloadTopic: unloadMapping,
+    abortTurn: async (topicId) =>
+      Boolean(await (opts.abortTurn?.(topicId, userId) ?? topicService.abortTurn(topicId, userId))),
+  });
 
   function handleIncomingMessage(msg: TelegramIncomingMessage): void {
     if (stopped) return;
@@ -2171,20 +1744,22 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       if (command === "/abort") {
         void handleCommand(text, chatId, threadId, msg.from?.id);
       } else {
-        enqueueInbound(chatId, threadId, () => handleCommand(text, chatId, threadId, msg.from?.id));
+        mediaIntake.enqueue(chatId, threadId, () =>
+          handleCommand(text, chatId, threadId, msg.from?.id),
+        );
       }
       return;
     }
     if (hasMedia) {
       if (msg.media_group_id) {
-        bufferMediaGroup(msg, chatId, threadId); // album item — one turn on flush
+        mediaIntake.bufferGroup(msg, chatId, threadId); // album item — one turn on flush
         return;
       }
-      enqueueInbound(chatId, threadId, () => handleMediaMessage(msg, chatId, threadId));
+      mediaIntake.enqueue(chatId, threadId, () => mediaIntake.handleMessage(msg, chatId, threadId));
       return;
     }
     if (!text) return;
-    enqueueInbound(chatId, threadId, () =>
+    mediaIntake.enqueue(chatId, threadId, () =>
       runTurn(resolveMapping(chatId, threadId), text, chatId, threadId),
     );
   }
@@ -2366,14 +1941,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       for (const timer of typingHeartbeatByQueryId.values()) clearInterval(timer);
       typingHeartbeatByQueryId.clear();
       for (const queryId of toolStatusByQueryId.keys()) closeToolStatus(queryId);
-      // Clawgram's clearMediaGroupBuffer behavior: cancel timers and DROP
-      // buffered album items — a flush must not fire into a stopped adapter.
-      for (const entry of mediaGroups.values()) {
-        clearTimeout(entry.timer);
-        entry.release();
-      }
-      mediaGroups.clear();
-      inboundQueues.clear();
+      mediaIntake.stop();
       unsubscribe();
       store.close();
     },

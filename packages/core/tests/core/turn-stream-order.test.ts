@@ -706,4 +706,68 @@ describe("turn stream ordering", () => {
         .some((event) => (event.payload as { patch?: { deleted?: boolean } }).patch?.deleted),
     ).toBe(false);
   });
+
+  test("returns provider errors and removes incomplete assistant segments", async () => {
+    const topicId = seedTopic();
+    const queryId = randomUUID();
+    const control: RoomQueryControl = {
+      topicId,
+      queryId,
+      origin: "user",
+      prompt: "test",
+      abortController: new AbortController(),
+      abortReason: AbortReason.None,
+    };
+    async function* failedStream(): AsyncGenerator<UnifiedEvent> {
+      yield { type: "text", content: "incomplete answer" };
+      yield { type: "error", content: "provider unavailable" };
+    }
+
+    const outcome = await streamAgentEvents(
+      topicId,
+      "stream order",
+      queryId,
+      failedStream(),
+      control,
+      "codex",
+      "gpt-5.6-luna",
+      "medium",
+      "owner",
+    );
+
+    expect(outcome).toEqual({ kind: "provider-error", error: "provider unavailable" });
+    expect(listApiMessages(topicId).page).toHaveLength(0);
+  });
+
+  test("returns retryable session expiry and removes incomplete assistant segments", async () => {
+    const topicId = seedTopic();
+    const queryId = randomUUID();
+    const control: RoomQueryControl = {
+      topicId,
+      queryId,
+      origin: "user",
+      prompt: "test",
+      abortController: new AbortController(),
+      abortReason: AbortReason.None,
+    };
+    async function* expiredStream(): AsyncGenerator<UnifiedEvent> {
+      yield { type: "text", content: "stale answer" };
+      yield { type: "error", content: "session expired" };
+    }
+
+    const outcome = await streamAgentEvents(
+      topicId,
+      "stream order",
+      queryId,
+      expiredStream(),
+      control,
+      "codex",
+      "gpt-5.6-luna",
+      "medium",
+      "owner",
+    );
+
+    expect(outcome).toEqual({ kind: "session-expired", error: "session expired" });
+    expect(listApiMessages(topicId).page).toHaveLength(0);
+  });
 });

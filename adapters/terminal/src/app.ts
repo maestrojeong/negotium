@@ -17,7 +17,6 @@ import {
   ctrlCExitsTopicPicker,
   escapeStopsActiveTurn,
   maestroVaultKeyForModel,
-  runTerminalVaultCommand,
   runtimeEventInvalidatesSelection,
   runtimeEventWaitsForMessageLoad,
   selectableEfforts,
@@ -31,6 +30,7 @@ import {
   type NegotiumClient,
 } from "@/client";
 import { copyToClipboard } from "@/clipboard";
+import { runTerminalCommand } from "@/command-router";
 import { commandSuggestions, completeCommand } from "@/commands";
 import {
   completePathToken,
@@ -874,214 +874,25 @@ export class TerminalApp {
   }
 
   async #runCommand(commandLine: string): Promise<void> {
-    if (isVaultCommandLine(commandLine)) {
-      const outcome = await runTerminalVaultCommand(this.#client, commandLine);
-      if (outcome.kind === "open-manager") await this.#openVault();
-      else if (this.#state.overlay === "vault") await this.#openVault(outcome.notice);
-      else {
-        this.#state = { ...this.#state, notice: outcome.notice };
-        this.#queueRender();
-      }
-      return;
-    }
-    const [command = "", ...args] = commandLine.slice(1).trim().split(/\s+/);
-    if (command === "quit" || command === "exit") {
-      this.#requestExit();
-      return;
-    }
-    if (command === "abort") {
-      await this.#abort();
-      return;
-    }
-    if (command === "help") {
-      this.#state = { ...this.#state, overlay: "help" };
-      this.#queueRender();
-      return;
-    }
-    if (command === "status") {
-      this.#state = { ...this.#state, overlay: "status" };
-      this.#queueRender();
-      return;
-    }
-    if (command === "model") {
-      if (args.length > 0) {
-        this.#state = { ...this.#state, notice: "Usage: /model" };
-        this.#queueRender();
-        return;
-      }
-      const topic = activeTopic(this.#state);
-      if (!topic) {
-        this.#state = { ...this.#state, notice: "No topic selected" };
-        this.#queueRender();
-        return;
-      }
-      const currentModel = topic.effectiveModel ?? topic.defaultModel;
-      const currentIndex = SELECTABLE_MODELS.findIndex(
-        (candidate) => candidate.model === currentModel,
-      );
-      this.#state = {
-        ...this.#state,
-        overlay: "models",
-        modelPickerIndex: Math.max(0, currentIndex),
-      };
-      this.#queueRender();
-      return;
-    }
-    if (command === "effort") {
-      if (args.length > 0) {
-        this.#state = { ...this.#state, notice: "Usage: /effort" };
-        this.#queueRender();
-        return;
-      }
-      const topic = activeTopic(this.#state);
-      if (!topic) {
-        this.#state = { ...this.#state, notice: "No topic selected" };
-        this.#queueRender();
-        return;
-      }
-      const currentEffort = topic.effectiveEffort ?? topic.defaultEffort;
-      const currentIndex = selectableEfforts(topic).indexOf(currentEffort);
-      this.#state = {
-        ...this.#state,
-        overlay: "effort",
-        effortPickerIndex: Math.max(0, currentIndex),
-      };
-      this.#queueRender();
-      return;
-    }
-    if (command === "public" || command === "private") {
-      if (args.length > 0) {
-        this.#state = { ...this.#state, notice: `Usage: /${command}` };
-        this.#queueRender();
-        return;
-      }
-      const topic = activeTopic(this.#state);
-      if (!topic) {
-        this.#state = { ...this.#state, notice: "No topic selected" };
-        this.#queueRender();
-        return;
-      }
-      try {
-        const notice = await this.#client.setAccessMode(
-          topic,
-          command === "public" ? "shared" : "private",
-        );
-        await this.#refreshTopics(topic.title);
-        this.#state = { ...this.#state, notice };
-      } catch (error) {
-        this.#state = {
-          ...this.#state,
-          notice: error instanceof Error ? error.message : String(error),
-        };
-      }
-      this.#queueRender();
-      return;
-    }
-    if (command === "compact") {
-      const topic = activeTopic(this.#state);
-      if (!topic) {
-        this.#state = { ...this.#state, notice: "No topic selected" };
-        this.#queueRender();
-        return;
-      }
-      const queryId = `terminal-compact-${Date.now()}`;
-      this.#state = applyRuntimeEvent(
-        { ...this.#state, notice: "Compacting context…" },
-        {
-          type: "ai-status",
-          topicId: topic.id,
-          payload: { kind: "ai_active", queryId },
-        },
-      );
-      this.#queueRender();
-      try {
-        const notice = await this.#client.compactTopic(topic);
-        this.#state = applyRuntimeEvent(
-          { ...this.#state, notice },
-          {
-            type: "ai-status",
-            topicId: topic.id,
-            payload: { kind: "ai_done", queryId },
-          },
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.#state = applyRuntimeEvent(
-          { ...this.#state, notice: message },
-          {
-            type: "ai-status",
-            topicId: topic.id,
-            payload: { kind: "ai_error", queryId, error: message },
-          },
-        );
-      }
-      this.#queueRender();
-      return;
-    }
-    if (command === "topics") {
-      this.#toggleTopics(true);
-      return;
-    }
-    if (command === "new") {
-      if (args.length > 0) {
-        this.#state = { ...this.#state, notice: "Usage: /new" };
-        this.#queueRender();
-        return;
-      }
-      const topic = activeTopic(this.#state);
-      if (!topic) {
-        this.#state = { ...this.#state, notice: "No topic selected" };
-        this.#queueRender();
-        return;
-      }
-      try {
-        const notice = await this.#client.resetTopic(topic);
-        this.#state = { ...this.#state, notice };
-      } catch (error) {
-        this.#state = {
-          ...this.#state,
-          notice: error instanceof Error ? error.message : String(error),
-        };
-      }
-      this.#queueRender();
-      return;
-    }
-    if (command === "fork" || command === "spawn") {
-      const topic = activeTopic(this.#state);
-      if (!topic) {
-        this.#state = { ...this.#state, notice: "No topic selected" };
-        this.#queueRender();
-        return;
-      }
-      await this.#deriveTopic(topic, command === "fork", args.join(" ") || undefined);
-      return;
-    }
-    if (command === "del") {
-      if (args.length > 0) {
-        this.#state = { ...this.#state, notice: "Usage: /del" };
-        this.#queueRender();
-        return;
-      }
-      const topic = activeTopic(this.#state);
-      if (!topic) {
-        this.#state = { ...this.#state, notice: "No topic selected" };
-        this.#queueRender();
-        return;
-      }
-      this.#requestTopicDelete(topic);
-      return;
-    }
-    if (command === "copy") {
-      if (args.length > 0) {
-        this.#state = { ...this.#state, notice: "Usage: /copy" };
-        this.#queueRender();
-        return;
-      }
-      void this.#copy();
-      return;
-    }
-    this.#state = { ...this.#state, notice: `Unknown command: /${command}` };
-    this.#queueRender();
+    const app = this;
+    await runTerminalCommand(commandLine, {
+      client: this.#client,
+      get state() {
+        return app.#state;
+      },
+      set state(value) {
+        app.#state = value;
+      },
+      queueRender: () => this.#queueRender(),
+      requestExit: () => this.#requestExit(),
+      abort: () => this.#abort(),
+      openVault: (notice) => this.#openVault(notice),
+      refreshTopics: (preferredTitle) => this.#refreshTopics(preferredTitle),
+      toggleTopics: (forceOpen) => this.#toggleTopics(forceOpen),
+      deriveTopic: (topic, copyHistory, name) => this.#deriveTopic(topic, copyHistory, name),
+      requestTopicDelete: (topic) => this.#requestTopicDelete(topic),
+      copy: () => this.#copy(),
+    });
   }
 
   async #activateTopic(topicId: string): Promise<void> {
