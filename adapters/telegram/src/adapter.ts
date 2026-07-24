@@ -77,6 +77,19 @@ import {
 } from "@negotium/core";
 import { type OutboxEntry, openMappingStore, type PersistedMapping } from "@/mapping-store";
 import { renderOutbound } from "@/render";
+import {
+  canManageTopics,
+  defaultTopicTitle,
+  extractCommandArg,
+  isChatAdmin,
+  isForumTopicAlreadyGone,
+  isHtmlParseError,
+  isManageTopicsPermissionError,
+  isRetryableSendError,
+  onboardingGuide,
+  type TelegramErrorInfo,
+  telegramErrorInfo,
+} from "@/telegram-api";
 import type {
   TelegramChatMember,
   TelegramClientLike,
@@ -230,106 +243,6 @@ const MAX_PARENT_HOPS = 5;
 const DEFAULT_SEND_TIMEOUT_MS = 60_000;
 /** Extensions delivered via sendPhoto (mirrors clawgram's IMAGE_EXTS). */
 const PHOTO_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp"]);
-
-function onboardingGuide(botUsername?: string): string {
-  const identity = botUsername ? `\nBot username: @${botUsername.replace(/^@/, "")}\n` : "\n";
-  return (
-    "Welcome to Negotium. This DM is your General manager: chat naturally here to create, " +
-    "delegate work to, stop, or delete topics.\n\n" +
-    "Connect a Telegram workspace:\n" +
-    "1. Create a supergroup and enable Topics.\n" +
-    "2. Add this bot to the group.\n" +
-    '3. Promote the bot to administrator and enable "Manage Topics".\n' +
-    "4. The group connects automatically; no /connect command is needed.\n" +
-    identity +
-    "After connection, use the group's General topic as the manager and each forum topic as " +
-    "an independent agent conversation."
-  );
-}
-
-function isChatAdmin(member: TelegramChatMember): boolean {
-  return member.status === "administrator" || member.status === "creator";
-}
-
-function canManageTopics(member: TelegramChatMember): boolean {
-  return (
-    member.status === "creator" ||
-    (member.status === "administrator" && member.can_manage_topics === true)
-  );
-}
-
-function isManageTopicsPermissionError(info: TelegramErrorInfo): boolean {
-  return /not enough rights|need administrator rights|chat_admin_required|manage topics/i.test(
-    info.description,
-  );
-}
-
-function defaultTopicTitle(chatId: number, threadId?: number): string {
-  return threadId === undefined ? `tg-${chatId}` : `tg-${chatId}-${threadId}`;
-}
-
-/** Extract the argument portion of a bot command, e.g. "/new foo bar" → "foo bar" */
-function extractCommandArg(text: string): string {
-  return text.split(/\s+/).slice(1).join(" ").trim();
-}
-
-/** The parts of a Telegram API error the adapter classifies on.
- *  `node-telegram-bot-api` throws errors with `response.statusCode` (Bot API
- *  HTTP status) and `response.body` = the API's `{ description, parameters }`
- *  payload; `message` repeats the description ("ETELEGRAM: 400 Bad Request:
- *  can't parse entities…") and network failures carry `code` ("EFATAL",
- *  "ETIMEDOUT", …). All fields are read defensively. */
-interface TelegramErrorInfo {
-  status?: number;
-  code?: string;
-  description: string;
-  retryAfterSec?: number;
-}
-
-function telegramErrorInfo(err: unknown): TelegramErrorInfo {
-  const e = err as {
-    message?: unknown;
-    code?: unknown;
-    response?: {
-      statusCode?: unknown;
-      body?: { description?: unknown; parameters?: { retry_after?: unknown } };
-    };
-  };
-  const status = typeof e?.response?.statusCode === "number" ? e.response.statusCode : undefined;
-  const description = [e?.response?.body?.description, e?.message]
-    .filter((s): s is string => typeof s === "string")
-    .join(" ");
-  const retryRaw = e?.response?.body?.parameters?.retry_after;
-  return {
-    status,
-    ...(typeof e?.code === "string" ? { code: e.code } : {}),
-    description,
-    ...(typeof retryRaw === "number" ? { retryAfterSec: retryRaw } : {}),
-  };
-}
-
-/** Conservative "Telegram rejected the HTML entities" check: only a 400 (or an
- *  error without a status code at all) whose description matches Telegram's
- *  parse-rejection text warrants the plain-text resend. */
-function isHtmlParseError(info: TelegramErrorInfo): boolean {
-  if (info.status !== undefined && info.status !== 400) return false;
-  return /can't parse entities/i.test(info.description);
-}
-
-function isForumTopicAlreadyGone(info: TelegramErrorInfo): boolean {
-  if (info.status !== undefined && info.status !== 400) return false;
-  return /(?:message thread|forum topic).*not found|topic_id_invalid/i.test(info.description);
-}
-
-/** Transient failures worth a durable retry: rate limits, server errors, and
- *  network-level failures. Everything else (403 blocked, 400 bad request…)
- *  would fail identically on retry. */
-const RETRYABLE_CODES = new Set(["EFATAL", "ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EAI_AGAIN"]);
-function isRetryableSendError(info: TelegramErrorInfo): boolean {
-  if (info.status === 429) return true;
-  if (info.status !== undefined && info.status >= 500 && info.status < 600) return true;
-  return info.code !== undefined && RETRYABLE_CODES.has(info.code);
-}
 
 export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdapterHandle {
   const { client, forumChatId } = opts;

@@ -71,6 +71,11 @@ import { classifyAgentError, isSessionExpiredError, stringifyError } from "#runt
 import { withTurnSilenceHeartbeat } from "#runtime/event-heartbeat";
 import { upsertTaskPanelMessage } from "#runtime/tasks";
 import { getTopicConfig } from "#runtime/topic-config";
+import {
+  type AiTurnTopic,
+  resolveTopicTurnExecution,
+  resolveTopicTurnSession,
+} from "#runtime/turn-session";
 import { nextUsageAlert } from "#runtime/usage-alert";
 import {
   getActiveVisualForPrompt,
@@ -146,6 +151,7 @@ export * from "#runtime/attachments";
 export * from "#runtime/channel-context";
 export * from "#runtime/errors";
 export * from "#runtime/tasks";
+export * from "#runtime/turn-session";
 export * from "#runtime/visuals";
 
 // In-flight AI turns are tracked room-keyed (topicId → control) in
@@ -1229,18 +1235,6 @@ function resolveSessionRetryId(opts: {
   return null;
 }
 
-export interface AiTurnTopic {
-  id: string;
-  title: string;
-  kind?: TopicDto["kind"];
-  description?: string | null;
-  agent?: AgentKind | null;
-  defaultModel?: string;
-  defaultEffort?: EffortLevel;
-  aiMode?: TopicDto["aiMode"];
-  aiMention?: boolean;
-}
-
 export interface AiTurnSettlement {
   queryId: string;
   kind: "completed" | "aborted" | "error";
@@ -1320,98 +1314,6 @@ export interface TriggerTopicAiTurnOptions extends AiTurnExecutionOptions {
   injectSourceAdapter?: string;
   injectSourceNode?: string;
   injectSourceMessageId?: string;
-}
-
-export interface ResolvedTopicTurnExecution {
-  agent: AgentKind;
-  model: string;
-  effort?: EffortLevel;
-}
-
-/** One canonical resolver for provider execution and user-visible metadata. */
-export function resolveTopicTurnExecution(
-  topic: AiTurnTopic,
-  overrides: Pick<AiTurnExecutionOptions, "modelOverride" | "effortOverride"> & {
-    agentOverride?: AgentKind;
-  } = {},
-): ResolvedTopicTurnExecution {
-  const config = getTopicConfig(topic.id);
-  const agent = (overrides.agentOverride ?? topic.agent ?? "maestro") as AgentKind;
-  const registry = getRegistry(agent);
-  const usesTopicDefaults = !overrides.agentOverride || overrides.agentOverride === topic.agent;
-  const model = resolveModelForAgent(
-    agent,
-    overrides.modelOverride ??
-      (usesTopicDefaults ? (config?.model ?? topic.defaultModel) : undefined),
-    registry,
-  );
-  const requestedEffort = (overrides.effortOverride ??
-    (usesTopicDefaults ? (config?.effort ?? topic.defaultEffort) : undefined)) as
-    | EffortLevel
-    | undefined;
-  const effort =
-    requestedEffort && registry.validateEffort(requestedEffort)
-      ? requestedEffort
-      : registry.defaultEffort;
-  return { agent, model, ...(effort ? { effort } : {}) };
-}
-
-export interface ResolvedTopicTurnSession {
-  sessionId: string | null | undefined;
-  isolated: boolean;
-}
-
-/**
- * Resolve topic-session ownership from execution compatibility, rather than
- * asking each adapter to remember when a provider session is safe to reuse.
- */
-export function resolveTopicTurnSession(
-  topic: AiTurnTopic,
-  requestedSessionId: string | null | undefined,
-  options: Pick<
-    AiTurnExecutionOptions,
-    "silent" | "sessionScope" | "sessionName" | "sessionType" | "modelOverride" | "effortOverride"
-  > & {
-    agentOverride?: AgentKind;
-    hasFork?: boolean;
-    preparesSession?: boolean;
-    externalSessionOwner?: boolean;
-  } = {},
-): ResolvedTopicTurnSession {
-  const main = resolveTopicTurnExecution(topic);
-  const requested = resolveTopicTurnExecution(topic, options);
-  const incompatibleWithMain = requested.agent !== main.agent || requested.model !== main.model;
-  const alternateNamespace =
-    (options.sessionName !== undefined && options.sessionName !== topic.title) ||
-    options.sessionType === "cron";
-  const isolated = Boolean(
-    options.sessionScope === "isolated" ||
-      options.silent ||
-      options.hasFork ||
-      options.preparesSession ||
-      options.externalSessionOwner ||
-      incompatibleWithMain ||
-      alternateNamespace,
-  );
-  return {
-    sessionId: resolveInitialTurnSessionId(topic.id, requestedSessionId, isolated),
-    isolated,
-  };
-}
-
-/**
- * Resolve the provider resume key for a new turn. Direct user/channel turns
- * inherit the topic's durable session unless a caller explicitly supplies a
- * key (including null for an intentional fresh start). Isolated ask/cron
- * sessions remain owned by their caller and never borrow the main topic key.
- */
-export function resolveInitialTurnSessionId(
-  topicId: string,
-  requestedSessionId: string | null | undefined,
-  isolated: boolean,
-): string | null | undefined {
-  if (requestedSessionId !== undefined) return requestedSessionId;
-  return isolated ? undefined : getTopicSessionId(topicId);
 }
 
 const remoteInjectWaiters = new Map<string, ReturnType<typeof setInterval>>();

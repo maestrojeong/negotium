@@ -44,6 +44,8 @@ is required.
   `channel:Title`, including targets on remote Otium nodes.
 - Codex context usage and rollout migration now share the same whole-tree fallback lookup.
 - Node control SSE endpoints share one polling, heartbeat, abort, and response-header implementation.
+- SSE polling now closes cleanly for pre-aborted requests, stops timers on cancellation, and contains
+  polling failures inside the affected stream instead of leaking them into the Node process.
 - The deprecated private `@negotium/adapter-testkit` workspace was removed. Adapter authors should
   continue importing test utilities from `@negotium/adapter-sdk/testkit`.
 
