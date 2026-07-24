@@ -133,7 +133,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex-sdk": "0.145.0",
     "diff": "^9.0.0",
-    "maestro-agent-sdk": "0.1.49",
+    "maestro-agent-sdk": "0.1.50",
     "mcp-patchright": "0.1.11",
     "node-telegram-bot-api": "^1.1.2",
     "pino": "^10.3.1",
