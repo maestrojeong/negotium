@@ -1459,10 +1459,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
             topicId,
             `${classifyAgentError(outcome.error, agentKind)}\n\n다른 등록된 모델을 쓰려면 /model <model>로 바꾼 뒤 다시 보내세요.`,
           );
-          WsHub.get().broadcastDone(topicId, queryId, undefined, {
-            agent: agentKind,
-            model: resolvedModel,
-          });
+          WsHub.get().broadcastError(topicId, queryId, outcome.error);
         }
         await deliverAskError(queryId, topic.title, outcome.error);
         await settleSubagentFailure(queryId, classifyAgentError(outcome.error, agentKind));

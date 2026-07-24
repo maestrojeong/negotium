@@ -202,4 +202,48 @@ describe("turn session resolution", () => {
     expect(statuses).toContainEqual({ kind: "ai_aborted", queryId, reason: "superseded" });
     expect(statuses).toContainEqual({ kind: "ai_active", queryId: replacementQueryId });
   });
+
+  test("provider failures terminate the dispatched turn with ai_error only", async () => {
+    const topicId = seedTopic();
+    const topic = getTopic(topicId)!;
+    let settle: ((result: { kind: string; error?: string }) => void) | undefined;
+    const settled = new Promise<{ kind: string; error?: string }>((resolve) => {
+      settle = resolve;
+    });
+
+    const queryId = startAiTurn({
+      topic,
+      userId: "owner",
+      prompt: "fail before provider dispatch",
+      allowAutoContinue: true,
+      prepareSession: async () => {
+        throw new Error("provider unavailable");
+      },
+      onSettled: (result) => settle?.(result),
+    });
+
+    expect(queryId).toBeString();
+    if (!queryId) throw new Error("turn did not dispatch");
+    expect(await settled).toMatchObject({
+      kind: "error",
+      error: "failed to prepare isolated session: provider unavailable",
+    });
+
+    const statuses = listRecentRuntimeEventsForTopic(topicId)
+      .map((event) => event.payload)
+      .filter(
+        (payload): payload is { kind: string; queryId: string; error?: string } =>
+          typeof payload === "object" &&
+          payload !== null &&
+          "queryId" in payload &&
+          payload.queryId === queryId,
+      );
+    expect(statuses).toContainEqual({ kind: "ai_active", queryId });
+    expect(statuses).toContainEqual({
+      kind: "ai_error",
+      queryId,
+      error: "failed to prepare isolated session: provider unavailable",
+    });
+    expect(statuses.some((status) => status.kind === "ai_done")).toBe(false);
+  });
 });

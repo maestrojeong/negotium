@@ -239,7 +239,7 @@ function playwrightTransport(port: number, owner: string, capability: string, ag
   }
   const query = new URLSearchParams({ owner });
   if (agent === "maestro") {
-    // maestro-agent-sdk 0.1.48 does not expose SSE headers. Route it through a
+    // maestro-agent-sdk does not expose SSE headers. Route it through a
     // tiny stdio bridge so the bearer capability stays in an environment
     // variable rather than appearing in URLs and request logs.
     return buildStdioMcpServer("maestro", BROWSER_MCP_SSE_PROXY_SERVER, [], {

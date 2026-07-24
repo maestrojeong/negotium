@@ -1,6 +1,6 @@
 {
   "name": "@negotium/cli",
-  "version": "0.1.31",
+  "version": "0.1.32",
   "private": true,
   "type": "module",
   "description": "Negotium CLI for node management and Terminal, Telegram, and Otium clients",

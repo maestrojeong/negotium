@@ -8,15 +8,6 @@
  * we want every maestro call to inherit gets stamped here before reaching
  * the SDK.
  *
- * v0.1.19 host overrides:
- *   - `enableBackgroundBash: false` — the SDK's Claude-Code-style triad
- *     (`Bash(run_in_background:true)` + `BashOutput` + `KillBash`) is OFF.
- *     It was briefly always-on, but in this headless setup a background
- *     bash's completion never triggers a new model turn — the process runs
- *     in the bot but nobody polls it once the turn ends. Topics use
- *     `mcp__background-bash__background_bash_run` instead, which injects a
- *     session-inbox tell entry on exit so the loop actually closes.
- *
  * v0.1.21 host overrides:
  *   - `maxTokens: 32_768` — global default for the per-API-call output
  *     ceiling. Pre-v0.1.21 the SDK silently fell back to 4096, which
@@ -208,12 +199,6 @@ export function maestroProvider(opts: AgentQueryOptions): AsyncGenerator<Unified
   // maestro-agent-sdk's type does not yet include Otium's "cron" sessionType;
   // keep the runtime value intact so the host MCP resolver can choose cron scope.
   const sdkOpts = {
-    // Built-in background bash (Bash/BashOutput/KillBash triad) is disabled
-    // because its completion never triggers a new model turn in this headless
-    // setup — the bash runs in the bot process but when the turn ends nobody
-    // polls it. Use mcp__background-bash__background_bash_run instead, which
-    // injects a session-inbox tell entry on exit so the loop closes properly.
-    enableBackgroundBash: false,
     maxTokens: MAESTRO_DEFAULT_MAX_TOKENS,
     enableToolSearch: true,
     ...opts,
