@@ -710,6 +710,7 @@ describe("turn stream ordering", () => {
   test("returns provider errors and removes incomplete assistant segments", async () => {
     const topicId = seedTopic();
     const queryId = randomUUID();
+    const after = latestRuntimeEventSeq();
     const control: RoomQueryControl = {
       topicId,
       queryId,
@@ -737,11 +738,20 @@ describe("turn stream ordering", () => {
 
     expect(outcome).toEqual({ kind: "provider-error", error: "provider unavailable" });
     expect(listApiMessages(topicId).page).toHaveLength(0);
+    expect(
+      listRuntimeEventsAfter(after).some(
+        (event) =>
+          event.topicId === topicId &&
+          event.type === "ai-status" &&
+          (event.payload as { kind?: string }).kind === "ai_done",
+      ),
+    ).toBe(false);
   });
 
   test("returns retryable session expiry and removes incomplete assistant segments", async () => {
     const topicId = seedTopic();
     const queryId = randomUUID();
+    const after = latestRuntimeEventSeq();
     const control: RoomQueryControl = {
       topicId,
       queryId,
@@ -769,5 +779,63 @@ describe("turn stream ordering", () => {
 
     expect(outcome).toEqual({ kind: "session-expired", error: "session expired" });
     expect(listApiMessages(topicId).page).toHaveLength(0);
+    expect(
+      listRuntimeEventsAfter(after).some(
+        (event) =>
+          event.topicId === topicId &&
+          event.type === "ai-status" &&
+          (event.payload as { kind?: string }).kind === "ai_done",
+      ),
+    ).toBe(false);
+  });
+
+  test("classifies thrown provider failures and thrown session expiry consistently", async () => {
+    async function runThrownFailure(
+      message: string,
+      retryableSessionExpired = true,
+    ): Promise<Awaited<ReturnType<typeof streamAgentEvents>>> {
+      const topicId = seedTopic();
+      const queryId = randomUUID();
+      const control: RoomQueryControl = {
+        topicId,
+        queryId,
+        origin: "user",
+        prompt: "test",
+        abortController: new AbortController(),
+        abortReason: AbortReason.None,
+      };
+      async function* throwingStream(): AsyncGenerator<UnifiedEvent> {
+        yield { type: "text", content: "discarded partial answer" };
+        throw new Error(message);
+      }
+
+      const outcome = await streamAgentEvents(
+        topicId,
+        "stream order",
+        queryId,
+        throwingStream(),
+        control,
+        "codex",
+        "gpt-5.6-luna",
+        "medium",
+        "owner",
+        retryableSessionExpired,
+      );
+      expect(listApiMessages(topicId).page).toHaveLength(0);
+      return outcome;
+    }
+
+    expect(await runThrownFailure("provider disconnected")).toEqual({
+      kind: "provider-error",
+      error: "provider disconnected",
+    });
+    expect(await runThrownFailure("session expired")).toEqual({
+      kind: "session-expired",
+      error: "session expired",
+    });
+    expect(await runThrownFailure("session expired", false)).toEqual({
+      kind: "provider-error",
+      error: "session expired",
+    });
   });
 });

@@ -245,6 +245,73 @@ describe("commands: /del and /del!", () => {
 });
 
 describe("inbound attachments", () => {
+  test("slow media preserves mapping-command order while /abort remains out of band", async () => {
+    const USER = freshUser();
+    const aborted: string[] = [];
+    const startedTopics: string[] = [];
+    const { fake, adapter } = startAdapter({
+      userId: USER,
+      abortTurn: async (topicId) => {
+        aborted.push(topicId);
+        return true;
+      },
+      startTurn: ({ topic }) => {
+        startedTopics.push(topic.id);
+        return null;
+      },
+    });
+    const chatId = freshChat();
+    const initialTitle = room("slow-media-initial");
+    const nextTitle = room("slow-media-next");
+    let releaseDownload!: () => void;
+    const downloadGate = new Promise<void>((resolve) => {
+      releaseDownload = resolve;
+    });
+    let downloadStarted = false;
+
+    try {
+      await mapChat(fake, chatId, initialTitle);
+      const initialTopic = getTopicByNameForUser(initialTitle, USER)!;
+      served.set("slow-photo", "SLOW-PHOTO");
+      fake.fileLinks.set("slow-photo", servedUrl("slow-photo"));
+      const resolveFileLink = fake.getFileLink.bind(fake);
+      fake.getFileLink = async (fileId) => {
+        downloadStarted = true;
+        await downloadGate;
+        return resolveFileLink(fileId);
+      };
+
+      fake.emit({
+        chat: { id: chatId },
+        from: { id: 1 },
+        caption: "slow media prompt",
+        photo: [{ file_id: "slow-photo" }],
+      });
+      await waitFor(() => downloadStarted);
+
+      fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: "/abort" });
+      await waitFor(() => aborted.length === 1);
+      expect(aborted).toEqual([initialTopic.id]);
+
+      fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: `/new ${nextTitle}` });
+      await Bun.sleep(20);
+      expect(getTopicByNameForUser(nextTitle, USER)).toBeNull();
+
+      releaseDownload();
+      await waitFor(() => getTopicByNameForUser(nextTitle, USER) !== null);
+      await waitFor(() => startedTopics.length === 1);
+      expect(startedTopics).toEqual([initialTopic.id]);
+      expect(
+        getAllMessagesForTopic(initialTopic.id).some(
+          (row) => row.author_id === USER && row.text.startsWith("slow media prompt"),
+        ),
+      ).toBe(true);
+    } finally {
+      releaseDownload();
+      adapter.stop();
+    }
+  });
+
   test("photo + caption: downloads the highest-resolution variant into the topic workspace and prompts with the core convention", async () => {
     const USER = freshUser();
     const { fake, adapter } = startAdapter({ userId: USER });
