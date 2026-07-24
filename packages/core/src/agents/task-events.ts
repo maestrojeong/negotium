@@ -45,6 +45,9 @@ export async function* withTaskSnapshots(
   host: TaskEventHost = defaultTaskEventHost,
 ): AsyncGenerator<UnifiedEvent> {
   let lastMtime = host.taskFileMtimeNs(scope.userId, scope.scopeKey);
+  if (host.readTasks(scope.userId, scope.scopeKey).length === 0) {
+    yield { type: "tasks", tasks: [] };
+  }
   for await (const event of inner) {
     yield event;
     if (event.type !== "tool_result" && event.type !== "result") continue;

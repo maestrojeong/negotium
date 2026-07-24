@@ -374,6 +374,24 @@ export function softDeleteApiMessage(topicId: string, messageId: string): Messag
   return getApiMessage(topicId, messageId);
 }
 
+/** Soft-delete every live message whose id starts with a caller-owned prefix. */
+export function softDeleteApiMessagesByIdPrefix(topicId: string, prefix: string): string[] {
+  if (!prefix) return [];
+  const rows = db
+    .query(
+      `SELECT id FROM api_messages
+       WHERE topic_id = ? AND deleted = 0 AND substr(id, 1, ?) = ?`,
+    )
+    .all(topicId, prefix.length, prefix) as { id: string }[];
+  if (rows.length === 0) return [];
+  db.query(
+    `UPDATE api_messages
+     SET deleted = 1, text = ''
+     WHERE topic_id = ? AND deleted = 0 AND substr(id, 1, ?) = ?`,
+  ).run(topicId, prefix.length, prefix);
+  return rows.map((row) => row.id);
+}
+
 export interface MessagePage {
   page: MessageDto[];
   cursor?: string;

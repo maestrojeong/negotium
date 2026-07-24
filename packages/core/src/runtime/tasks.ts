@@ -1,6 +1,11 @@
 import { WsHub } from "#bus";
 import { renderTaskPanel, taskPanelMessageId } from "#runtime/task-format";
-import { appendApiMessage, getApiMessage, updateApiMessageText } from "#storage/api-messages";
+import {
+  appendApiMessage,
+  getApiMessage,
+  softDeleteApiMessagesByIdPrefix,
+  updateApiMessageText,
+} from "#storage/api-messages";
 import type { TaskSnapshot } from "#types";
 import type { MessageDto } from "#types/api";
 
@@ -12,7 +17,13 @@ export function upsertTaskPanelMessage(
   tasks: TaskSnapshot[],
   lastRenderedText: string | null,
 ): string | null {
-  if (tasks.length === 0) return lastRenderedText;
+  if (tasks.length === 0) {
+    const hub = WsHub.get();
+    for (const messageId of softDeleteApiMessagesByIdPrefix(topicId, "tasks-")) {
+      hub.broadcastMessageUpdated(topicId, messageId, { deleted: true, text: "" });
+    }
+    return null;
+  }
   const text = renderTaskPanel(tasks);
   if (text === lastRenderedText) return lastRenderedText;
 

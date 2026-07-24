@@ -36,6 +36,8 @@ is required.
 
 ## Runtime maintenance
 
+- Clearing a topic's shared task list now removes all persisted task panels. After upgrading, the
+  next visible turn also clears panels left behind by older versions when the task store is empty.
 - Codex context usage and rollout migration now share the same whole-tree fallback lookup.
 - Node control SSE endpoints share one polling, heartbeat, abort, and response-header implementation.
 - The deprecated private `@negotium/adapter-testkit` workspace was removed. Adapter authors should

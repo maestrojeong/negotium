@@ -78,6 +78,25 @@ async function collect(gen: AsyncGenerator<UnifiedEvent>): Promise<UnifiedEvent[
 }
 
 describe("withTaskSnapshots", () => {
+  test("emits an initial empty snapshot to clear stale persisted panels", async () => {
+    const host: TaskEventHost = {
+      readTasks: () => [],
+      taskFileMtimeNs: () => BigInt(0),
+      taskScopeKey: ({ topicId, session }) => topicId ?? session,
+    };
+    const events = await collect(
+      withTaskSnapshots(
+        fakeStream([{ type: "result", content: "done", stopReason: "end_turn" }]),
+        { userId: "caller", scopeKey: "topic" },
+        host,
+      ),
+    );
+    expect(events).toEqual([
+      { type: "tasks", tasks: [] },
+      { type: "result", content: "done", stopReason: "end_turn" },
+    ]);
+  });
+
   test("isolates snapshot state through the caller-owned host", async () => {
     let mtime = BigInt(0);
     const host = {
@@ -142,12 +161,13 @@ describe("withTaskSnapshots", () => {
       ),
     );
     expect(events.map((event) => event.type)).toEqual([
+      "tasks",
       "tool_use",
       "tool_result",
       "tasks",
       "result",
     ]);
-    const tasksEvent = events[2] as Extract<UnifiedEvent, { type: "tasks" }>;
+    const tasksEvent = events[3] as Extract<UnifiedEvent, { type: "tasks" }>;
     expect(tasksEvent.tasks).toEqual([{ id: "1", subject: "a", status: "pending" }]);
   });
 
@@ -175,6 +195,6 @@ describe("withTaskSnapshots", () => {
         { userId: "52", scopeKey: "bridge-c" },
       ),
     );
-    expect(events.map((event) => event.type)).toEqual(["result", "tasks"]);
+    expect(events.map((event) => event.type)).toEqual(["tasks", "result", "tasks"]);
   });
 });

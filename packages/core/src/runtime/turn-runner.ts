@@ -825,7 +825,7 @@ export async function streamAgentEvents(
           if (!silent) hub.broadcastReasoning(topicId, queryId, event.content);
           break;
         case "tasks":
-          if (!silent) {
+          if (!silent && getRoomQuery(topicId)?.queryId === queryId) {
             lastTaskPanelText = upsertTaskPanelMessage(
               topicId,
               queryId,
