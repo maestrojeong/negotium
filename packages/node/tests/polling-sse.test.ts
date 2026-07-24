@@ -37,6 +37,65 @@ test("polling SSE turns pump exceptions into a stream error", async () => {
   abort.abort();
 });
 
+test("polling SSE contains interval pump exceptions", async () => {
+  const abort = new AbortController();
+  let pumps = 0;
+  const response = createPollingSseStream(requestWithSignal(abort.signal), {
+    ready: { ok: true },
+    pump: () => {
+      pumps += 1;
+      if (pumps > 1) throw new Error("interval pump failed");
+    },
+    pollIntervalMs: 5,
+  });
+  const reader = response.body!.getReader();
+
+  expect(decoder.decode((await reader.read()).value)).toContain("event: ready");
+  await expect(reader.read()).rejects.toThrow("interval pump failed");
+});
+
+test("polling SSE contains async pump rejection", async () => {
+  const abort = new AbortController();
+  const response = createPollingSseStream(requestWithSignal(abort.signal), {
+    ready: { ok: true },
+    pump: async () => {
+      await Bun.sleep(1);
+      throw new Error("async pump failed");
+    },
+  });
+  const reader = response.body!.getReader();
+
+  expect(decoder.decode((await reader.read()).value)).toContain("event: ready");
+  await expect(reader.read()).rejects.toThrow("async pump failed");
+});
+
+test("polling SSE does not overlap async pumps", async () => {
+  const abort = new AbortController();
+  let active = 0;
+  let maxActive = 0;
+  let pumps = 0;
+  const response = createPollingSseStream(requestWithSignal(abort.signal), {
+    ready: { ok: true },
+    pump: async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      pumps += 1;
+      await Bun.sleep(15);
+      active -= 1;
+    },
+    pollIntervalMs: 2,
+    heartbeatIntervalMs: 100,
+  });
+  const reader = response.body!.getReader();
+
+  await reader.read();
+  await Bun.sleep(40);
+  await reader.cancel();
+
+  expect(pumps).toBeGreaterThan(1);
+  expect(maxActive).toBe(1);
+});
+
 test("polling SSE stops polling after the reader cancels", async () => {
   const abort = new AbortController();
   let pumps = 0;
@@ -59,4 +118,26 @@ test("polling SSE stops polling after the reader cancels", async () => {
 
   expect(pumpsAtCancel).toBeGreaterThan(1);
   expect(pumps).toBe(pumpsAtCancel);
+});
+
+test("polling SSE stops polling when the request aborts", async () => {
+  const abort = new AbortController();
+  let pumps = 0;
+  const response = createPollingSseStream(requestWithSignal(abort.signal), {
+    ready: { ok: true },
+    pump: () => {
+      pumps += 1;
+    },
+    pollIntervalMs: 5,
+  });
+  const reader = response.body!.getReader();
+
+  await reader.read();
+  await Bun.sleep(15);
+  abort.abort();
+  const pumpsAtAbort = pumps;
+  expect(await reader.read()).toEqual({ done: true, value: undefined });
+  await Bun.sleep(15);
+
+  expect(pumps).toBe(pumpsAtAbort);
 });

@@ -2,7 +2,7 @@ type SseSend = (event: string, data: unknown, id?: number) => void;
 
 export interface PollingSseOptions {
   ready: unknown;
-  pump: (send: SseSend) => void;
+  pump: (send: SseSend) => void | Promise<void>;
   pollIntervalMs?: number;
   heartbeatIntervalMs?: number;
 }
@@ -69,12 +69,23 @@ export function createPollingSseStream(req: Request, options: PollingSseOptions)
         if (closed || pumping) return;
         pumping = true;
         try {
-          options.pump(send);
+          const result = options.pump(send);
+          if (result) {
+            void Promise.resolve(result).then(
+              () => {
+                pumping = false;
+              },
+              (error) => {
+                pumping = false;
+                fail(error);
+              },
+            );
+            return;
+          }
         } catch (error) {
           fail(error);
-        } finally {
-          pumping = false;
         }
+        pumping = false;
       };
 
       if (req.signal.aborted) {
