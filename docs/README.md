@@ -27,6 +27,7 @@ instead of copying the explanation.
 | [Migration 0.1.30](./MIGRATION-0.1.30.md) | Terminal tool timelines, reliable Codex diffs, Tasks sidebar, and code-block copy |
 | [Migration 0.1.31](./MIGRATION-0.1.31.md) | Live path references, stable background delivery, and readable collision-safe Wiki mirrors |
 | [Migration 0.1.32](./MIGRATION-0.1.32.md) | Topic-state isolation, reliable task panels, streaming lifecycle fixes, and ordered Telegram media |
+| [Migration 0.1.33](./MIGRATION-0.1.33.md) | Durable user questions, compact terminal pastes, deletion shortcuts, and Maestro SDK 0.1.50 |
 
 The root [README](../README.md) is the user-facing entry point. Package-specific setup belongs in
 the package README beside the code it describes.
