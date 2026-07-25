@@ -27,6 +27,8 @@ export { errorResult, textResult } from "#agents/mcp-tools/common";
 export type { SelfConfigContext } from "#agents/mcp-tools/self-config";
 export { createSelfConfigToolDefinitions } from "#agents/mcp-tools/self-config";
 export {
+  canSpawnSubagentsFromTopic,
+  createPrepareSubagentToolDefinition,
   createSpawnSubagentToolDefinition,
   createSubagentManagementToolDefinitions,
   sweepStaleSubagentCards,
@@ -271,9 +273,12 @@ export {
   getTopic,
   getTopicByNameForUser,
   getTopicSessionId,
+  grantSubagentTellTarget,
   isTopicShared,
   isTopicVisible,
+  listSubagentTellTargetIds,
   listTopics,
+  revokeSubagentTellTarget,
   setTopicSessionId,
   upsertTopic,
 } from "#storage/api-topics";
@@ -355,6 +360,8 @@ export type {
   MessageDto,
   ResponsePolicy,
   SubagentCardDto,
+  SubagentCardStatus,
+  SubagentReportMode,
   TopicAccessMode,
   TopicDto,
   TopicKind,

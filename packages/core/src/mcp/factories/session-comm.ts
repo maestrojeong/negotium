@@ -2,6 +2,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { McpErrorResponse, McpResponse } from "#mcp/mcp-helpers";
 import type { SessionCommContext } from "#mcp/session-comm/context";
+import {
+  canSubagentTellTargetByName,
+  resolveSubagentTellIdentity,
+} from "#mcp/session-comm/tell-permissions";
 
 type MaybePromise<T> = T | Promise<T>;
 export type SessionCommMcpResult = McpResponse | McpErrorResponse;
@@ -48,6 +52,10 @@ export function createSessionCommMcpServer(
   const server = new McpServer({ name: "session-comm", version: "2.0.0" });
   const required = options.requiredMcpServers?.join(", ") || "none";
   const optional = options.optionalMcpServers?.join(", ") || "none";
+  const subagentIdentity = resolveSubagentTellIdentity(
+    context.currentTopicId,
+    context.subagentParentTopicId,
+  );
 
   server.tool(
     "list_sessions",
@@ -96,23 +104,46 @@ export function createSessionCommMcpServer(
   );
 
   if (!context.replyOnly) {
-    server.tool(
-      "ask_session",
-      "Ask another local or remote session a question and wait for its answer.",
-      { to: z.string(), message: z.string() },
-      async (input) => host.askSession(context, input),
-    );
-    server.tool(
-      "abort_session",
-      "Abort the active query in another session.",
-      { to: z.string() },
-      async ({ to }) => host.abortSession(context, to),
-    );
+    if (!subagentIdentity.restricted) {
+      server.tool(
+        "ask_session",
+        "Ask another local or remote session a question and wait for its answer.",
+        { to: z.string(), message: z.string() },
+        async (input) => host.askSession(context, input),
+      );
+    }
+    if (!subagentIdentity.restricted) {
+      server.tool(
+        "abort_session",
+        "Abort the active query in another session.",
+        { to: z.string() },
+        async ({ to }) => host.abortSession(context, to),
+      );
+    }
     server.tool(
       "tell_session",
       "Send a one-way message to another local or remote session.",
       { to: z.string(), message: z.string() },
-      async (input) => host.tellSession(context, input),
+      async (input) => {
+        // Same invariant as the standalone session-comm server: subagents may
+        // tell only their direct parent, direct children, or granted targets.
+        // Plain rooms skip the check so the factory stays storage-free for them.
+        if (
+          subagentIdentity.restricted &&
+          !canSubagentTellTargetByName(subagentIdentity, input.to)
+        ) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "Error: subagents can tell_session only direct parents, direct children, or topics explicitly granted by an ancestor.",
+              },
+            ],
+            isError: true as const,
+          };
+        }
+        return host.tellSession(context, input);
+      },
     );
   }
 

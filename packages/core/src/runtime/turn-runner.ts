@@ -11,7 +11,11 @@ import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { cleanupAgentFork, type ForkHandle } from "#agents/fork";
 import { runAgent } from "#agents/index";
-import { settleSubagentFailure } from "#agents/mcp-tools/spawn-subagent";
+import {
+  canSpawnSubagentsFromTopic,
+  settleSubagentFailure,
+  subagentReportMode,
+} from "#agents/mcp-tools/spawn-subagent";
 import { getRegistry } from "#agents/registry";
 import { WsHub } from "#bus";
 import { ensureBgBash } from "#platform/background-bash/manager";
@@ -1135,8 +1139,13 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     currentModel: resolvedModel,
     currentEffort: resolvedEffort,
     description: topic.description,
-    canSpawnSubagents:
-      peerBridge?.canSpawnSubagents ?? (topicRecord?.kind === "agent" && !topicRecord.isSubagent),
+    canSpawnSubagents: peerBridge?.canSpawnSubagents ?? canSpawnSubagentsFromTopic(topicId),
+    canStageSubagents: !peerBridge && canSpawnSubagentsFromTopic(topicId),
+    subagentParentTitle:
+      topicRecord?.isSubagent && topicRecord.parentTopicId
+        ? getTopic(topicRecord.parentTopicId)?.title
+        : undefined,
+    subagentReportMode: topicRecord?.isSubagent ? subagentReportMode(topicId) : undefined,
     visualTools,
     fileDeliveryTools,
   };
@@ -1340,6 +1349,10 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         playwrightCapability,
         bgBashPort,
         topicId,
+        subagentParentTopicId:
+          topicRecord?.isSubagent && topicRecord.parentTopicId
+            ? topicRecord.parentTopicId
+            : undefined,
         queryId,
         wikiTopicId: memoryTopic.id,
         autoContinue: allowAutoContinue && !silent,
@@ -1485,23 +1498,21 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         logger.warn({ err, topicId, queryId }, "ai: turn settlement hook failed");
       }
     })
-    .catch((err) => {
+    .catch(async (err) => {
+      const error = err instanceof Error ? err.message : "Agent process crashed";
       logger.warn(
         { err, topicId, queryId, agent: agentKind, model: resolvedModel, silent },
         "ai: background stream task failed",
       );
       if (!silent) {
-        WsHub.get().broadcastError(
-          topicId,
-          queryId,
-          err instanceof Error ? err.message : "Agent process crashed",
-        );
+        WsHub.get().broadcastError(topicId, queryId, error);
       }
+      await settleSubagentFailure(queryId, classifyAgentError(error, agentKind));
       try {
         onSettled?.({
           queryId,
           kind: "error",
-          error: err instanceof Error ? err.message : "Agent process crashed",
+          error,
         });
       } catch (hookErr) {
         logger.warn({ err: hookErr, topicId, queryId }, "ai: turn settlement hook failed");

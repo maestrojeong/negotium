@@ -38,8 +38,10 @@ import {
   MAX_MESSAGE_LENGTH,
   MAX_TELL_DEPTH,
   peerHostQueryId,
+  subagentParentTopicId,
   userId,
 } from "./runtime";
+import { canSubagentTellTarget, resolveSubagentTellIdentity } from "./tell-permissions";
 import {
   currentApiTopicId,
   getMcpConfig,
@@ -128,6 +130,13 @@ function currentTopicRef(): { key: string; title: string; topicId?: string } {
   };
 }
 
+const currentSubagentIdentity = resolveSubagentTellIdentity(currentTopicId, subagentParentTopicId);
+const currentSubagentRestricted = currentSubagentIdentity.restricted;
+
+function canCurrentSubagentTell(targetTopicId: string): boolean {
+  return canSubagentTellTarget(currentSubagentIdentity, targetTopicId);
+}
+
 // --- always available ---
 
 server.tool(
@@ -136,6 +145,11 @@ server.tool(
   {},
   async () => {
     const entries = listSessionTargetsForUser()
+      .filter(
+        ({ topic }) =>
+          !currentSubagentRestricted ||
+          Boolean(topic.topicId && canCurrentSubagentTell(topic.topicId)),
+      )
       .filter(({ topic }) => Boolean(topic.agent))
       .map(({ key, topic: t }) => {
         const status = !t.agent
@@ -153,7 +167,9 @@ server.tool(
     // Disabled or unattached nodes answer with an error — skip silently so
     // single-node behavior is untouched.
     const remoteSections: string[] = [];
-    const peers = await peerSessionsForUser(userId, peerHostQueryId || undefined);
+    const peers = currentSubagentRestricted
+      ? { ok: true as const, nodes: [] }
+      : await peerSessionsForUser(userId, peerHostQueryId || undefined);
     if (peers.ok && peers.nodes) {
       for (const node of peers.nodes) {
         if (!node.node) continue;
@@ -309,7 +325,11 @@ server.tool(
   "Check which sessions are currently running a query (busy) vs idle. Useful before abort_session.",
   {},
   async () => {
-    const targets = listSessionTargetsForUser();
+    const targets = listSessionTargetsForUser().filter(
+      ({ topic }) =>
+        !currentSubagentRestricted ||
+        Boolean(topic.topicId && canCurrentSubagentTell(topic.topicId)),
+    );
     const activeQueriesDir = join(USERS_LOG_DIR, userId, "active-queries");
 
     // Read own query state for consistent display
@@ -393,31 +413,78 @@ server.tool(
 // ask_session reply — such a fork has no reason to initiate further calls.
 
 if (!isReplyOnly) {
-  server.tool(
-    "ask_session",
-    "ASK — Delegate to another session and pull the result back INTO YOUR CONTEXT. Target forks (no history pollution), processes with full tools, and the answer is auto-injected into your conversation. Use ONLY when YOU need the output to drive your next action (code reviews whose verdict determines your next edit, fact checks you'll cite, lookups that decide your next step). If the user can just read the result in the target topic, use tell_session — ask burns your context window with content you don't actually need. Decision rule: 'Do I need this output in MY context to proceed?' Yes → ask. No (result lives in target topic, user reads it there) → tell_session.",
-    {
-      to: z.string().describe("Target session/topic name (e.g. '회의록', '신건')"),
-      message: z.string().describe("Message to send to the target session"),
-    },
-    async ({ to, message }) => {
-      if (message.length > MAX_MESSAGE_LENGTH) {
-        return mcpError(
-          `Error: message too long (${message.length} chars, max ${MAX_MESSAGE_LENGTH})`,
-        );
-      }
-
-      // Remote target ("node/topic") — hand to the runtime's peer forwarder.
-      const remote = remotePeerTarget(to);
-      if (remote) {
-        const fromRef = currentTopicRef();
-        if (!fromRef.topicId) {
+  if (!currentSubagentRestricted) {
+    server.tool(
+      "ask_session",
+      "ASK — Delegate to another session and pull the result back INTO YOUR CONTEXT. Target forks (no history pollution), processes with full tools, and the answer is auto-injected into your conversation. Use ONLY when YOU need the output to drive your next action (code reviews whose verdict determines your next edit, fact checks you'll cite, lookups that decide your next step). If the user can just read the result in the target topic, use tell_session — ask burns your context window with content you don't actually need. Decision rule: 'Do I need this output in MY context to proceed?' Yes → ask. No (result lives in target topic, user reads it there) → tell_session.",
+      {
+        to: z.string().describe("Target session/topic name (e.g. '회의록', '신건')"),
+        message: z.string().describe("Message to send to the target session"),
+      },
+      async ({ to, message }) => {
+        if (message.length > MAX_MESSAGE_LENGTH) {
           return mcpError(
-            "Error: 이 세션은 원격 ask_session을 사용할 수 없습니다 (topic id 없음).",
+            `Error: message too long (${message.length} chars, max ${MAX_MESSAGE_LENGTH})`,
           );
         }
+
+        // Remote target ("node/topic") — hand to the runtime's peer forwarder.
+        const remote = remotePeerTarget(to);
+        if (remote) {
+          const fromRef = currentTopicRef();
+          if (!fromRef.topicId) {
+            return mcpError(
+              "Error: 이 세션은 원격 ask_session을 사용할 수 없습니다 (topic id 없음).",
+            );
+          }
+          const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const pending = createPendingAsk({ userId, from: fromRef.key, to, requestId });
+          if (!pending.ok) {
+            const detail = pending.existing
+              ? `${describePendingAskState(pending.existing.state)} (request_id: ${pending.existing.requestId})`
+              : "상태 파일 확인 중";
+            return mcpError(
+              `"${to}"에 이미 진행 중인 ask_session 요청이 있습니다: ${detail}. 응답이 이 세션에 자동으로 돌아올 때까지 기다리세요.`,
+            );
+          }
+          const result = await forwardToPeer({
+            action: "ask",
+            toNode: remote.node,
+            toTopic: remote.topic,
+            userId,
+            fromKey: fromRef.key,
+            fromTitle: fromRef.title,
+            fromTopicId: fromRef.topicId,
+            message,
+            requestId,
+            fromDepth: currentDepth,
+            ...(peerHostQueryId ? { sourceQueryId: peerHostQueryId } : {}),
+          });
+          if (!result.ok) {
+            clearPendingAsk({ userId, from: fromRef.key, to, requestId });
+            return mcpError(`Error: "${to}" 원격 세션에 전송 실패: ${result.error}`);
+          }
+          return mcpOk(
+            `"${to}" 세션(노드 ${remote.node})에 참조 요청을 보냈습니다.\n\nrequest_id: ${requestId}\n\n응답은 '[Reply from ${remote.node}/${remote.topic}]' 형식으로 이 세션에 자동으로 돌아옵니다. 응답이 도착할 때까지 같은 요청으로 ask_session을 재호출하지 마세요.`,
+          );
+        }
+
+        const validation = validateTarget(to);
+        if (!validation.ok) return validation.error;
+        if (!validation.target.agent) {
+          return mcpError(
+            `Error: "${to}" 토픽에는 AI가 초대되어 있지 않아 ask_session을 실행할 수 없습니다.`,
+          );
+        }
+
+        const fromRef = currentTopicRef();
         const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const pending = createPendingAsk({ userId, from: fromRef.key, to, requestId });
+        const pending = createPendingAsk({
+          userId,
+          from: fromRef.key,
+          to,
+          requestId,
+        });
         if (!pending.ok) {
           const detail = pending.existing
             ? `${describePendingAskState(pending.existing.state)} (request_id: ${pending.existing.requestId})`
@@ -426,149 +493,106 @@ if (!isReplyOnly) {
             `"${to}"에 이미 진행 중인 ask_session 요청이 있습니다: ${detail}. 응답이 이 세션에 자동으로 돌아올 때까지 기다리세요.`,
           );
         }
-        const result = await forwardToPeer({
-          action: "ask",
-          toNode: remote.node,
-          toTopic: remote.topic,
-          userId,
-          fromKey: fromRef.key,
-          fromTitle: fromRef.title,
-          fromTopicId: fromRef.topicId,
-          message,
-          requestId,
-          fromDepth: currentDepth,
-          ...(peerHostQueryId ? { sourceQueryId: peerHostQueryId } : {}),
-        });
-        if (!result.ok) {
-          clearPendingAsk({ userId, from: fromRef.key, to, requestId });
-          return mcpError(`Error: "${to}" 원격 세션에 전송 실패: ${result.error}`);
+
+        try {
+          const targetTopicId = validation.target.topicId;
+          if (!targetTopicId) {
+            clearPendingAsk({ userId, from: fromRef.key, to, requestId });
+            return mcpError(`Error: "${to}" 세션의 토픽 ID를 찾을 수 없습니다.`);
+          }
+          const inboxFile = buildInboxPath(targetTopicId);
+          const entry = {
+            type: "ask" as const,
+            requestId,
+            from: fromRef.key,
+            fromTitle: fromRef.title,
+            ...(fromRef.topicId ? { fromTopicId: fromRef.topicId } : {}),
+            message,
+            // Caller's depth — used to resume this session at the correct depth
+            // when the fork's reply is injected back.
+            fromDepth: currentDepth,
+            timestamp: new Date().toISOString(),
+          };
+          appendJsonlEntry(inboxFile, entry);
+          process.stderr.write(
+            `[session-comm] ask_session: ${fromRef.key} → ${to} requestId=${requestId}\n`,
+          );
+        } catch (err) {
+          clearPendingAsk({
+            userId,
+            from: fromRef.key,
+            to,
+            requestId,
+          });
+          const e = err as { message?: string };
+          process.stderr.write(
+            `[session-comm] ask_session: failed ${currentTopic} → ${to} requestId=${requestId}: ${e?.message || "Unknown"}\n`,
+          );
+          return mcpError(`Error: "${to}" 세션에 메시지 전송 실패: ${e?.message || "Unknown"}`);
         }
+
         return mcpOk(
-          `"${to}" 세션(노드 ${remote.node})에 참조 요청을 보냈습니다.\n\nrequest_id: ${requestId}\n\n응답은 '[Reply from ${remote.node}/${remote.topic}]' 형식으로 이 세션에 자동으로 돌아옵니다. 응답이 도착할 때까지 같은 요청으로 ask_session을 재호출하지 마세요.`,
+          `"${to}" 세션에 참조 요청을 보냈습니다.\n\nrequest_id: ${requestId}\n\n"${to}"의 응답은 '[ask_session 응답 ← ${to} | request_id: ${requestId}]' 형식으로 이 세션에 자동으로 돌아옵니다. 응답이 도착할 때까지 같은 요청으로 ask_session을 재호출하지 마세요.`,
         );
-      }
+      },
+    );
+  }
 
-      const validation = validateTarget(to);
-      if (!validation.ok) return validation.error;
-      if (!validation.target.agent) {
-        return mcpError(
-          `Error: "${to}" 토픽에는 AI가 초대되어 있지 않아 ask_session을 실행할 수 없습니다.`,
-        );
-      }
-
-      const fromRef = currentTopicRef();
-      const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const pending = createPendingAsk({
-        userId,
-        from: fromRef.key,
-        to,
-        requestId,
-      });
-      if (!pending.ok) {
-        const detail = pending.existing
-          ? `${describePendingAskState(pending.existing.state)} (request_id: ${pending.existing.requestId})`
-          : "상태 파일 확인 중";
-        return mcpError(
-          `"${to}"에 이미 진행 중인 ask_session 요청이 있습니다: ${detail}. 응답이 이 세션에 자동으로 돌아올 때까지 기다리세요.`,
-        );
-      }
-
-      try {
-        const targetTopicId = validation.target.topicId;
-        if (!targetTopicId) {
-          clearPendingAsk({ userId, from: fromRef.key, to, requestId });
-          return mcpError(`Error: "${to}" 세션의 토픽 ID를 찾을 수 없습니다.`);
+  if (!currentSubagentRestricted) {
+    server.tool(
+      "abort_session",
+      "Abort the currently running query in another session. Use peek_session first to confirm it is busy.",
+      {
+        to: z.string().describe("Target session/topic name to abort"),
+      },
+      async ({ to }) => {
+        const remote = remotePeerTarget(to);
+        if (remote) {
+          const result = await forwardToPeer({
+            action: "abort",
+            toNode: remote.node,
+            toTopic: remote.topic,
+            userId,
+            ...(peerHostQueryId ? { sourceQueryId: peerHostQueryId } : {}),
+          });
+          if (!result.ok) {
+            return mcpError(`Error: "${to}" 원격 abort 실패: ${result.error}`);
+          }
+          return mcpOk(`"${to}" 세션(노드 ${remote.node})에 abort 신호를 보냈습니다.`);
         }
-        const inboxFile = buildInboxPath(targetTopicId);
-        const entry = {
-          type: "ask" as const,
-          requestId,
-          from: fromRef.key,
-          fromTitle: fromRef.title,
-          ...(fromRef.topicId ? { fromTopicId: fromRef.topicId } : {}),
-          message,
-          // Caller's depth — used to resume this session at the correct depth
-          // when the fork's reply is injected back.
-          fromDepth: currentDepth,
-          timestamp: new Date().toISOString(),
-        };
-        appendJsonlEntry(inboxFile, entry);
-        process.stderr.write(
-          `[session-comm] ask_session: ${fromRef.key} → ${to} requestId=${requestId}\n`,
-        );
-      } catch (err) {
-        clearPendingAsk({
-          userId,
-          from: fromRef.key,
-          to,
-          requestId,
-        });
-        const e = err as { message?: string };
-        process.stderr.write(
-          `[session-comm] ask_session: failed ${currentTopic} → ${to} requestId=${requestId}: ${e?.message || "Unknown"}\n`,
-        );
-        return mcpError(`Error: "${to}" 세션에 메시지 전송 실패: ${e?.message || "Unknown"}`);
-      }
 
-      return mcpOk(
-        `"${to}" 세션에 참조 요청을 보냈습니다.\n\nrequest_id: ${requestId}\n\n"${to}"의 응답은 '[ask_session 응답 ← ${to} | request_id: ${requestId}]' 형식으로 이 세션에 자동으로 돌아옵니다. 응답이 도착할 때까지 같은 요청으로 ask_session을 재호출하지 마세요.`,
-      );
-    },
-  );
+        const validation = validateTarget(to);
+        if (!validation.ok) return validation.error;
 
-  server.tool(
-    "abort_session",
-    "Abort the currently running query in another session. Use peek_session first to confirm it is busy.",
-    {
-      to: z.string().describe("Target session/topic name to abort"),
-    },
-    async ({ to }) => {
-      const remote = remotePeerTarget(to);
-      if (remote) {
-        const result = await forwardToPeer({
-          action: "abort",
-          toNode: remote.node,
-          toTopic: remote.topic,
-          userId,
-          ...(peerHostQueryId ? { sourceQueryId: peerHostQueryId } : {}),
-        });
-        if (!result.ok) {
-          return mcpError(`Error: "${to}" 원격 abort 실패: ${result.error}`);
+        if (to === currentTopic) {
+          return mcpError(`Error: 자기 자신은 abort할 수 없습니다.`);
         }
-        return mcpOk(`"${to}" 세션(노드 ${remote.node})에 abort 신호를 보냈습니다.`);
-      }
 
-      const validation = validateTarget(to);
-      if (!validation.ok) return validation.error;
-
-      if (to === currentTopic) {
-        return mcpError(`Error: 자기 자신은 abort할 수 없습니다.`);
-      }
-
-      try {
-        const targetTopicId = validation.target.topicId;
-        if (!targetTopicId) {
-          return mcpError(`Error: "${to}" 세션의 토픽 ID를 찾을 수 없습니다.`);
+        try {
+          const targetTopicId = validation.target.topicId;
+          if (!targetTopicId) {
+            return mcpError(`Error: "${to}" 세션의 토픽 ID를 찾을 수 없습니다.`);
+          }
+          const inboxFile = buildInboxPath(targetTopicId);
+          mkdirSync(dirname(inboxFile), { recursive: true });
+          // Send query abort signal via inbox
+          appendJsonlEntry(inboxFile, {
+            type: "abort",
+            timestamp: new Date().toISOString(),
+          });
+          process.stderr.write(`[session-comm] abort_session: ${currentTopic} → ${to}\n`);
+        } catch (err) {
+          const e = err as { message?: string };
+          process.stderr.write(
+            `[session-comm] abort_session: failed ${currentTopic} → ${to}: ${e?.message || "Unknown"}\n`,
+          );
+          return mcpError(`Error: abort 신호 전송 실패: ${e?.message || "Unknown"}`);
         }
-        const inboxFile = buildInboxPath(targetTopicId);
-        mkdirSync(dirname(inboxFile), { recursive: true });
-        // Send query abort signal via inbox
-        appendJsonlEntry(inboxFile, {
-          type: "abort",
-          timestamp: new Date().toISOString(),
-        });
-        process.stderr.write(`[session-comm] abort_session: ${currentTopic} → ${to}\n`);
-      } catch (err) {
-        const e = err as { message?: string };
-        process.stderr.write(
-          `[session-comm] abort_session: failed ${currentTopic} → ${to}: ${e?.message || "Unknown"}\n`,
-        );
-        return mcpError(`Error: abort 신호 전송 실패: ${e?.message || "Unknown"}`);
-      }
 
-      return mcpOk(`"${to}" 세션에 abort 신호를 보냈습니다. 실행 중인 쿼리가 있으면 중단됩니다.`);
-    },
-  );
+        return mcpOk(`"${to}" 세션에 abort 신호를 보냈습니다. 실행 중인 쿼리가 있으면 중단됩니다.`);
+      },
+    );
+  }
 
   server.tool(
     "tell_session",
@@ -593,6 +617,9 @@ if (!isReplyOnly) {
       // Remote target ("node/topic") — hand to the runtime's peer forwarder.
       const remote = remotePeerTarget(to);
       if (remote) {
+        if (currentSubagentRestricted) {
+          return mcpError("Error: subagent tell_session cannot target remote topics.");
+        }
         const fromRef = currentTopicRef();
         const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const result = await forwardToPeer({
@@ -627,6 +654,11 @@ if (!isReplyOnly) {
       const targetTopicId = validation.target.topicId;
       if (!targetTopicId) {
         return mcpError(`Error: "${to}" 세션의 토픽 ID를 찾을 수 없습니다.`);
+      }
+      if (!canCurrentSubagentTell(targetTopicId)) {
+        return mcpError(
+          "Error: subagents can tell_session only direct parents, direct children, or topics explicitly granted by an ancestor.",
+        );
       }
 
       // Write to inbox — the Otium consumer will persist the DB message

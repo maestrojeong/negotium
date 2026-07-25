@@ -186,6 +186,9 @@ describe("storage host", () => {
     databases.push(first, second);
 
     const disposeFirst = configureStorageHost({ database: first });
+    expect(
+      first.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()?.foreign_keys,
+    ).toBe(1);
     expect(getAllUserIds()).toEqual([]);
     expect(
       first

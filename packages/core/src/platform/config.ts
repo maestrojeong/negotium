@@ -367,7 +367,7 @@ export const FILE_TAG_REGEX = /\[FILE:(\/[^\]]+)\]/gi;
 
 // Canonical Claude model IDs — update here when Anthropic releases new versions
 export const MODEL_SONNET = "claude-sonnet-5";
-export const MODEL_OPUS = "claude-opus-4-8";
+export const MODEL_OPUS = "claude-opus-5";
 export const MODEL_HAIKU = "claude-haiku-4-5-20251001";
 export const MODEL_FABLE = "claude-fable-5"; // Mythos-class, announced 2026-06-09
 

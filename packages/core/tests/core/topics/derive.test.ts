@@ -13,9 +13,41 @@ import {
   getConversationPath,
   readConversation,
 } from "#storage/conversations";
-import { createDerivedTopic } from "#topics/derive";
+import { beginRuntimeTopicMaintenance } from "#storage/runtime-topic-state";
+import { createDerivedTopic, TopicDeriveBusyError } from "#topics/derive";
 
 describe("createDerivedTopic", () => {
+  test("rejects subagent creation while the parent is under maintenance", async () => {
+    const sourceTopicId = randomUUID();
+    const userId = `maintenance-user-${randomUUID()}`;
+    const now = new Date().toISOString();
+    upsertTopic({
+      id: sourceTopicId,
+      title: `maintenance-source-${randomUUID()}`,
+      kind: "agent",
+      agent: "maestro",
+      defaultModel: "deepseek-pro",
+      defaultEffort: "medium",
+      aiMode: "always",
+      participants: [{ userId, role: "owner" }],
+      createdAt: now,
+      lastMessageAt: now,
+    });
+    const maintenance = beginRuntimeTopicMaintenance(sourceTopicId, { heartbeatMs: 60_000 });
+    expect(maintenance).not.toBeNull();
+    try {
+      await expect(
+        createDerivedTopic(sourceTopicId, userId, false, {
+          name: `blocked-child-${randomUUID()}`,
+          subagent: { agent: "codex" },
+        }),
+      ).rejects.toBeInstanceOf(TopicDeriveBusyError);
+    } finally {
+      maintenance?.finish();
+      deleteTopic(sourceTopicId);
+    }
+  });
+
   test("inherits hidden visibility so internal topics cannot derive visible children", async () => {
     const sourceTopicId = randomUUID();
     const sourceTitle = `hidden-source-${randomUUID()}`;

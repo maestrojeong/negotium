@@ -4,6 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SESSION_COMM_SERVER } from "#platform/config";
 import { clearQueryState, writeQueryState } from "#query/state";
+import { upsertTopic } from "#storage/api-topics";
 import { registerTopic } from "#topics/create";
 import { ensurePersonalGeneral } from "#topics/personal-general";
 
@@ -12,6 +13,7 @@ const USER_ID = `session-tools-${randomUUID()}`;
 async function listSessionCommTools(args: {
   title: string;
   topicId: string;
+  subagentParentTopicId?: string;
   agent: "claude" | "codex" | "maestro";
 }): Promise<string[]> {
   const client = new Client({ name: "session-comm-tools-test", version: "1.0.0" });
@@ -28,6 +30,9 @@ async function listSessionCommTools(args: {
       `--user-id=${USER_ID}`,
       `--topic=${args.title}`,
       `--topic-id=${args.topicId}`,
+      ...(args.subagentParentTopicId
+        ? [`--subagent-parent-topic-id=${args.subagentParentTopicId}`]
+        : []),
       "--depth=0",
       `--agent=${args.agent}`,
     ],
@@ -114,6 +119,45 @@ async function peekSessionsText(args: {
   }
 }
 
+async function callSessionCommTool(args: {
+  title: string;
+  topicId: string;
+  agent: "claude" | "codex" | "maestro";
+  name: string;
+  input: Record<string, unknown>;
+}): Promise<{ text: string; isError?: boolean }> {
+  const client = new Client({ name: "session-comm-call-test", version: "1.0.0" });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [
+      "run",
+      SESSION_COMM_SERVER,
+      `--user-id=${USER_ID}`,
+      `--topic=${args.title}`,
+      `--topic-id=${args.topicId}`,
+      "--depth=0",
+      `--agent=${args.agent}`,
+    ],
+    env: Object.fromEntries(
+      Object.entries(process.env).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    ),
+  });
+  await client.connect(transport);
+  try {
+    const result = await client.callTool({ name: args.name, arguments: args.input });
+    return {
+      text: (result.content as Array<{ type: string; text?: string }>)
+        .map((entry) => entry.text ?? "")
+        .join("\n"),
+      isError: result.isError === true,
+    };
+  } finally {
+    await client.close();
+  }
+}
+
 function expectCommunicationContract(names: string[]): void {
   expect(names).toEqual(
     expect.arrayContaining([
@@ -152,6 +196,159 @@ describe("session-comm tool exposure", () => {
         agent: topic.agent ?? "maestro",
       }),
     );
+  });
+
+  test("missing topic records fail closed instead of exposing ask and abort", async () => {
+    const names = await listSessionCommTools({
+      title: "missing-subagent",
+      topicId: `missing-${randomUUID()}`,
+      subagentParentTopicId: `parent-${randomUUID()}`,
+      agent: "maestro",
+    });
+    expect(names).toContain("tell_session");
+    expect(names).not.toContain("ask_session");
+    expect(names).not.toContain("abort_session");
+  });
+
+  test("subagent rooms expose one-way tell but not ask", async () => {
+    const parent = registerTopic({
+      title: `session-parent-${randomUUID()}`,
+      userId: USER_ID,
+      agent: "maestro",
+    });
+    const child = registerTopic({
+      title: `session-child-${randomUUID()}`,
+      userId: USER_ID,
+      agent: "maestro",
+    });
+    child.parentTopicId = parent.id;
+    child.isSubagent = true;
+    upsertTopic(child);
+    const names = await listSessionCommTools({
+      title: child.title,
+      topicId: child.id,
+      agent: child.agent ?? "maestro",
+    });
+    expect(names).toContain("tell_session");
+    expect(names).not.toContain("ask_session");
+
+    const unrelated = registerTopic({
+      title: `session-unrelated-${randomUUID()}`,
+      userId: USER_ID,
+      agent: "codex",
+    });
+    const listed = await listSessionsText({
+      title: child.title,
+      topicId: child.id,
+      agent: child.agent ?? "maestro",
+    });
+    expect(listed).toContain(parent.title);
+    expect(listed).not.toContain(unrelated.title);
+    const denied = await callSessionCommTool({
+      title: child.title,
+      topicId: child.id,
+      agent: child.agent ?? "maestro",
+      name: "tell_session",
+      input: { to: unrelated.title, message: "should not pass" },
+    });
+    expect(denied.isError).toBe(true);
+    expect(denied.text).toContain("direct parent");
+  });
+
+  test("report mode controls whether a subagent can tell its parent", async () => {
+    const parent = registerTopic({
+      title: `report-parent-${randomUUID()}`,
+      userId: USER_ID,
+      agent: "maestro",
+    });
+    const tellChild = registerTopic({
+      title: `report-tell-${randomUUID()}`,
+      userId: USER_ID,
+      agent: "codex",
+    });
+    tellChild.parentTopicId = parent.id;
+    tellChild.isSubagent = true;
+    tellChild.subagentReportMode = "tell";
+    upsertTopic(tellChild);
+
+    const tellListed = await listSessionsText({
+      title: tellChild.title,
+      topicId: tellChild.id,
+      agent: tellChild.agent ?? "codex",
+    });
+    expect(tellListed).toContain(parent.title);
+    const delivered = await callSessionCommTool({
+      title: tellChild.title,
+      topicId: tellChild.id,
+      agent: tellChild.agent ?? "codex",
+      name: "tell_session",
+      input: { to: parent.title, message: "explicit report" },
+    });
+    expect(delivered.isError).not.toBe(true);
+
+    const statusOnlyChild = registerTopic({
+      title: `report-status-only-${randomUUID()}`,
+      userId: USER_ID,
+      agent: "codex",
+    });
+    statusOnlyChild.parentTopicId = parent.id;
+    statusOnlyChild.isSubagent = true;
+    statusOnlyChild.subagentReportMode = "status-only";
+    upsertTopic(statusOnlyChild);
+
+    const statusOnlyListed = await listSessionsText({
+      title: statusOnlyChild.title,
+      topicId: statusOnlyChild.id,
+      agent: statusOnlyChild.agent ?? "codex",
+    });
+    expect(statusOnlyListed).not.toContain(parent.title);
+    const denied = await callSessionCommTool({
+      title: statusOnlyChild.title,
+      topicId: statusOnlyChild.id,
+      agent: statusOnlyChild.agent ?? "codex",
+      name: "tell_session",
+      input: { to: parent.title, message: "must stay disconnected" },
+    });
+    expect(denied.isError).toBe(true);
+  });
+
+  test("a nested subagent manager can tell its direct child", async () => {
+    const root = registerTopic({
+      title: `nested-root-${randomUUID()}`,
+      userId: USER_ID,
+      agent: "maestro",
+    });
+    const manager = registerTopic({
+      title: `nested-manager-${randomUUID()}`,
+      userId: USER_ID,
+      agent: "maestro",
+    });
+    manager.parentTopicId = root.id;
+    manager.isSubagent = true;
+    upsertTopic(manager);
+    const child = registerTopic({
+      title: `nested-child-${randomUUID()}`,
+      userId: USER_ID,
+      agent: "codex",
+    });
+    child.parentTopicId = manager.id;
+    child.isSubagent = true;
+    upsertTopic(child);
+
+    const listed = await listSessionsText({
+      title: manager.title,
+      topicId: manager.id,
+      agent: manager.agent ?? "maestro",
+    });
+    expect(listed).toContain(child.title);
+    const delivered = await callSessionCommTool({
+      title: manager.title,
+      topicId: manager.id,
+      agent: manager.agent ?? "maestro",
+      name: "tell_session",
+      input: { to: child.title, message: "continue" },
+    });
+    expect(delivered.isError).toBe(false);
   });
 
   test("list_sessions omits topics that tell/ask cannot address", async () => {

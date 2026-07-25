@@ -8,6 +8,7 @@ import type { AgentKind, EffortLevel } from "#types";
 import type {
   AiMode,
   ParticipantDto,
+  SubagentReportMode,
   TopicAccessMode,
   TopicDto,
   TopicKind,
@@ -213,6 +214,7 @@ function initializeApiTopicsSchema(): void {
       created_at TEXT NOT NULL,
       last_message_at TEXT,
       parent_topic_id TEXT,
+      memory_topic_id TEXT,
       is_fork INTEGER NOT NULL DEFAULT 0 CHECK (is_fork IN (0,1)),
       is_subagent INTEGER NOT NULL DEFAULT 0 CHECK (is_subagent IN (0,1)),
       visibility TEXT NOT NULL DEFAULT 'visible' CHECK (visibility IN ('visible','hidden')),
@@ -285,8 +287,8 @@ function initializeApiTopicsSchema(): void {
           db.query(
             `INSERT INTO api_topics_next
              (id,title,kind,description,agent,base_model,base_effort,response_policy,
-              created_at,last_message_at,parent_topic_id,is_fork,is_subagent,visibility,access_mode,session_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+              created_at,last_message_at,parent_topic_id,memory_topic_id,is_fork,is_subagent,visibility,access_mode,session_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           ).run(
             String(row.id),
             String(row.title),
@@ -299,6 +301,7 @@ function initializeApiTopicsSchema(): void {
             String(row.created_at),
             typeof row.last_message_at === "string" ? row.last_message_at : null,
             typeof row.parent_topic_id === "string" ? row.parent_topic_id : null,
+            typeof row.memory_topic_id === "string" ? row.memory_topic_id : null,
             Number(row.is_fork ?? 0) !== 0 ? 1 : 0,
             Number(row.is_subagent ?? 0) !== 0 ? 1 : 0,
             row.visibility === "hidden" ? "hidden" : "visible",
@@ -346,6 +349,23 @@ function initializeApiTopicsSchema(): void {
     createTopicMembersTable();
   }
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS subagent_tell_grants (
+      subagent_topic_id TEXT NOT NULL REFERENCES api_topics(id) ON DELETE CASCADE,
+      target_topic_id TEXT NOT NULL REFERENCES api_topics(id) ON DELETE CASCADE,
+      granted_by_topic_id TEXT NOT NULL REFERENCES api_topics(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (subagent_topic_id, target_topic_id)
+    )
+  `);
+  db.exec(`
+    DELETE FROM subagent_tell_grants
+    WHERE subagent_topic_id NOT IN (SELECT id FROM api_topics)
+       OR target_topic_id NOT IN (SELECT id FROM api_topics)
+       OR granted_by_topic_id NOT IN (SELECT id FROM api_topics)
+  `);
+  db.exec("DELETE FROM topic_members WHERE topic_id NOT IN (SELECT id FROM api_topics)");
+
   // Canonical databases created before explicit adapter visibility need a
   // lightweight additive migration; fresh/rebuilt databases already have it.
   if (!tableColumns("api_topics").has("visibility")) {
@@ -359,6 +379,12 @@ function initializeApiTopicsSchema(): void {
   }
   if (!tableColumns("api_topics").has("browser_profile_owner")) {
     db.exec("ALTER TABLE api_topics ADD COLUMN browser_profile_owner TEXT");
+  }
+  if (!tableColumns("api_topics").has("subagent_report_mode")) {
+    db.exec("ALTER TABLE api_topics ADD COLUMN subagent_report_mode TEXT NOT NULL DEFAULT 'auto'");
+  }
+  if (!tableColumns("api_topics").has("memory_topic_id")) {
+    db.exec("ALTER TABLE api_topics ADD COLUMN memory_topic_id TEXT");
   }
   db.exec(`
   UPDATE api_topics
@@ -389,8 +415,10 @@ export interface TopicRow {
   created_at: string;
   last_message_at: string | null;
   parent_topic_id: string | null;
+  memory_topic_id: string | null;
   is_fork: number;
   is_subagent: number;
+  subagent_report_mode: string | null;
   visibility: string | null;
   access_mode: string | null;
   browser_profile_owner: string | null;
@@ -431,7 +459,26 @@ function getAllTopicParticipants(): Map<string, ParticipantDto[]> {
   return grouped;
 }
 
-function rowToDto(r: TopicRow, participants = getTopicParticipants(r.id)): TopicDto {
+function getAllSubagentTellTargets(): Map<string, string[]> {
+  const rows = db
+    .query(
+      "SELECT subagent_topic_id, target_topic_id FROM subagent_tell_grants ORDER BY created_at",
+    )
+    .all() as Array<{ subagent_topic_id: string; target_topic_id: string }>;
+  const grouped = new Map<string, string[]>();
+  for (const row of rows) {
+    const targets = grouped.get(row.subagent_topic_id) ?? [];
+    targets.push(row.target_topic_id);
+    grouped.set(row.subagent_topic_id, targets);
+  }
+  return grouped;
+}
+
+function rowToDto(
+  r: TopicRow,
+  participants = getTopicParticipants(r.id),
+  tellTargets?: Map<string, string[]>,
+): TopicDto {
   const normalized = normalizeTopicState({
     id: r.id,
     kind: normalizeTopicKind(r.kind),
@@ -452,8 +499,24 @@ function rowToDto(r: TopicRow, participants = getTopicParticipants(r.id)): Topic
     createdAt: r.created_at,
     lastMessageAt: r.last_message_at ?? new Date().toISOString(),
     parentTopicId: r.parent_topic_id ?? undefined,
+    memoryTopicId: r.memory_topic_id ?? undefined,
     isFork: r.is_fork !== 0,
     ...(r.is_subagent !== 0 ? { isSubagent: true } : {}),
+    ...(r.is_subagent !== 0
+      ? {
+          subagentTellTargetIds: tellTargets
+            ? (tellTargets.get(r.id) ?? [])
+            : listSubagentTellTargetIds(r.id),
+        }
+      : {}),
+    ...(r.is_subagent !== 0
+      ? {
+          subagentReportMode: (r.subagent_report_mode === "tell" ||
+          r.subagent_report_mode === "status-only"
+            ? r.subagent_report_mode
+            : "auto") as SubagentReportMode,
+        }
+      : {}),
     visibility: normalizeTopicVisibility(r.visibility),
     accessMode: normalizeTopicAccessMode(r.access_mode),
   };
@@ -573,8 +636,9 @@ export function upsertTopic(t: TopicDto): void {
     db.query(
       `INSERT INTO api_topics
        (id,title,kind,description,agent,base_model,base_effort,response_policy,
-        created_at,last_message_at,parent_topic_id,is_fork,is_subagent,visibility,access_mode)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        created_at,last_message_at,parent_topic_id,memory_topic_id,is_fork,is_subagent,visibility,access_mode,
+        subagent_report_mode)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(id) DO UPDATE SET
        title = excluded.title,
        kind = excluded.kind,
@@ -586,10 +650,12 @@ export function upsertTopic(t: TopicDto): void {
        created_at = excluded.created_at,
        last_message_at = excluded.last_message_at,
        parent_topic_id = excluded.parent_topic_id,
+       memory_topic_id = excluded.memory_topic_id,
        is_fork = excluded.is_fork,
        is_subagent = excluded.is_subagent,
        visibility = excluded.visibility,
-       access_mode = excluded.access_mode`,
+       access_mode = excluded.access_mode,
+       subagent_report_mode = excluded.subagent_report_mode`,
     ).run(
       t.id,
       t.title,
@@ -602,10 +668,12 @@ export function upsertTopic(t: TopicDto): void {
       t.createdAt,
       t.lastMessageAt ?? null,
       t.parentTopicId ?? null,
+      t.memoryTopicId ?? null,
       t.isFork ? 1 : 0,
       t.isSubagent ? 1 : 0,
       normalizeTopicVisibility(t.visibility),
       normalizeTopicAccessMode(t.accessMode),
+      t.subagentReportMode ?? "auto",
     );
     db.query("DELETE FROM topic_members WHERE topic_id = ?").run(t.id);
     for (const participant of t.participants) {
@@ -633,7 +701,12 @@ export function listTopics(): TopicDto[] {
     .query("SELECT * FROM api_topics ORDER BY last_message_at DESC")
     .all() as TopicRow[];
   const participants = getAllTopicParticipants();
-  return rows.map((row) => rowToDto(row, participants.get(row.id) ?? []));
+  // Batch-load tell grants once: per-row queries would make every listTopics()
+  // call O(N) extra statements as subagent counts grow.
+  const tellTargets = rows.some((row) => row.is_subagent !== 0)
+    ? getAllSubagentTellTargets()
+    : undefined;
+  return rows.map((row) => rowToDto(row, participants.get(row.id) ?? [], tellTargets));
 }
 
 export function getTopic(id: string): TopicDto | null {
@@ -661,19 +734,32 @@ export function getManagerTopicForUser(userId: string): TopicDto | null {
 /**
  * Resolve the topic whose wiki memory should be used for this topic.
  *
- * Derived rooms keep `parentTopicId` as an immediate UI link, but memory follows
- * Otium's `forkOrigin` semantics: a fork/spawn chain writes to and reads from
- * the original root topic.
+ * Derived rooms keep `parentTopicId` as an immediate UI link. Memory normally
+ * follows the chain to its original root, while `memoryTopicId` can redirect a
+ * subagent to another accessible topic's accumulated knowledge.
  */
 export function getTopicMemoryOrigin(id: string): TopicDto | null {
   let current = getTopic(id);
   if (!current) return null;
 
   const seen = new Set<string>([current.id]);
-  while (current.parentTopicId && !seen.has(current.parentTopicId)) {
-    const parent = getTopic(current.parentTopicId);
-    if (!parent) break;
-    current = parent;
+  while (true) {
+    const nextId = current.memoryTopicId ?? current.parentTopicId;
+    if (!nextId || seen.has(nextId)) break;
+    const next = getTopic(nextId);
+    if (!next) {
+      // An explicitly selected memory topic that no longer resolves must not
+      // silently fall back to the parent chain — that would leak the parent
+      // room's memory to a subagent that asked for something else. Stop at the
+      // current topic instead so the broken source is visible.
+      if (current.memoryTopicId) {
+        console.warn(
+          `[topics] memory topic ${current.memoryTopicId} for ${current.id} is unresolvable; using the topic's own memory`,
+        );
+      }
+      break;
+    }
+    current = next;
     seen.add(current.id);
   }
 
@@ -807,8 +893,44 @@ export function deleteTopic(id: string, options: { allowManager?: boolean } = {}
     .get(id);
   if (!r) return false;
   if (id === GENERAL_TOPIC_ID || (r.kind === "manager" && !options.allowManager)) return false;
+  db.query(
+    `DELETE FROM subagent_tell_grants
+     WHERE subagent_topic_id = ? OR target_topic_id = ? OR granted_by_topic_id = ?`,
+  ).run(id, id, id);
+  db.query("DELETE FROM topic_members WHERE topic_id = ?").run(id);
   db.query("DELETE FROM api_topics WHERE id = ?").run(id);
   return true;
+}
+
+export function listSubagentTellTargetIds(subagentTopicId: string): string[] {
+  return db
+    .query<{ target_topic_id: string }, string>(
+      "SELECT target_topic_id FROM subagent_tell_grants WHERE subagent_topic_id = ? ORDER BY created_at",
+    )
+    .all(subagentTopicId)
+    .map((row) => row.target_topic_id);
+}
+
+export function grantSubagentTellTarget(
+  subagentTopicId: string,
+  targetTopicId: string,
+  grantedByTopicId: string,
+): void {
+  db.query(
+    `INSERT INTO subagent_tell_grants
+       (subagent_topic_id,target_topic_id,granted_by_topic_id,created_at)
+     VALUES (?,?,?,?)
+     ON CONFLICT(subagent_topic_id,target_topic_id) DO UPDATE SET
+       granted_by_topic_id = excluded.granted_by_topic_id`,
+  ).run(subagentTopicId, targetTopicId, grantedByTopicId, new Date().toISOString());
+}
+
+export function revokeSubagentTellTarget(subagentTopicId: string, targetTopicId: string): boolean {
+  return (
+    db
+      .query("DELETE FROM subagent_tell_grants WHERE subagent_topic_id = ? AND target_topic_id = ?")
+      .run(subagentTopicId, targetTopicId).changes > 0
+  );
 }
 
 /**
@@ -828,6 +950,13 @@ export function reparentTopicChildren(
     replacementParentTopicId,
     deletedTopicId,
   );
+  // Reparenting can move a topic out of the subtree whose manager granted its
+  // tell edges; purge involved grants (fail closed) — an ancestor can re-grant.
+  for (const row of rows) {
+    db.query(
+      "DELETE FROM subagent_tell_grants WHERE subagent_topic_id = ? OR target_topic_id = ?",
+    ).run(row.id, row.id);
+  }
   return rows.map((row) => row.id);
 }
 

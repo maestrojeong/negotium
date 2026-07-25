@@ -178,6 +178,8 @@ export interface RuntimeMcpBuildContext {
   session: string;
   /** REST/WS topic id when known. Prefer for authorization/scope checks. */
   topicId?: string;
+  /** Direct parent topic id when the current topic is a subagent room. */
+  subagentParentTopicId?: string;
   /** REST/WS query id when known. */
   queryId?: string;
   /** Topic id whose wiki memory should be read/written. */
@@ -383,12 +385,22 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
     // create_topic. Without this, a newly-created topic would stay in the
     // "fresh-start ready" state until the user manually visits it.
     ...commonRuntimeMcpPolicy("session-comm"),
-    build({ userId, session, topicId, agent, depth = 0, silent, peerBridge }) {
+    build({
+      userId,
+      session,
+      topicId,
+      subagentParentTopicId,
+      agent,
+      depth = 0,
+      silent,
+      peerBridge,
+    }) {
       const effectiveAgent = agent ?? FALLBACK_AGENT;
       const args = [
         `--user-id=${userId}`,
         `--topic=${session}`,
         ...(topicId ? [`--topic-id=${topicId}`] : []),
+        ...(subagentParentTopicId ? [`--subagent-parent-topic-id=${subagentParentTopicId}`] : []),
         `--depth=${depth}`,
         `--agent=${effectiveAgent}`,
         ...(silent ? ["--reply-only=true"] : []),
@@ -704,6 +716,7 @@ export function getForumMcpServers(opts: {
   userId: string;
   session: string;
   topicId?: string;
+  subagentParentTopicId?: string;
   queryId?: string;
   wikiTopicId?: string;
   agent: AgentKind;
@@ -726,6 +739,7 @@ export function getForumMcpServers(opts: {
     userId,
     session,
     topicId,
+    subagentParentTopicId,
     queryId,
     wikiTopicId,
     agent,
@@ -759,6 +773,7 @@ export function getForumMcpServers(opts: {
       userId,
       session,
       topicId,
+      subagentParentTopicId,
       queryId,
       wikiTopicId,
       agent,
@@ -874,6 +889,7 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
     userId: opts.userId || "default",
     session: opts.session || "default",
     topicId: opts.topicId,
+    subagentParentTopicId: opts.subagentParentTopicId,
     queryId: opts.queryId,
     wikiTopicId: opts.wikiTopicId,
     agent: opts.agent,

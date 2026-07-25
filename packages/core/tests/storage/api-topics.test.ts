@@ -4,7 +4,9 @@ import { GENERAL_TOPIC_ID } from "#platform/constants";
 import {
   deleteTopic,
   getTopic,
+  getTopicMemoryOrigin,
   getTopicSessionId,
+  grantSubagentTellTarget,
   listTopics,
   normalizeTopicState,
   setTopicSessionId,
@@ -52,6 +54,8 @@ describe("api topic storage", () => {
     expect(topicColumns).toContain("base_model");
     expect(topicColumns).toContain("visibility");
     expect(topicColumns).toContain("access_mode");
+    expect(topicColumns).toContain("subagent_report_mode");
+    expect(topicColumns).toContain("memory_topic_id");
     expect(topicColumns).not.toContain("runtime_agent");
     expect(topicColumns).not.toContain("participants");
     expect(topicColumns).not.toContain("ai_mention");
@@ -90,6 +94,57 @@ describe("api topic storage", () => {
 
     expect(listed.get(first.id)?.participants).toEqual(first.participants);
     expect(listed.get(second.id)?.participants).toEqual(second.participants);
+  });
+
+  test("hydrates explicit tell targets for subagent topics", () => {
+    const parent = makeTopic();
+    const child = {
+      ...makeTopic(),
+      isSubagent: true,
+      parentTopicId: parent.id,
+    };
+    const target = makeTopic();
+    createdTopicIds.push(parent.id, child.id, target.id);
+    upsertTopic(parent);
+    upsertTopic(child);
+    upsertTopic(target);
+    grantSubagentTellTarget(child.id, target.id, parent.id);
+
+    expect(getTopic(child.id)?.subagentTellTargetIds).toEqual([target.id]);
+    expect(getTopic(parent.id)?.subagentTellTargetIds).toBeUndefined();
+  });
+
+  test("persists a subagent report mode for graph and authorization clients", () => {
+    const parent = makeTopic();
+    const child = {
+      ...makeTopic(),
+      isSubagent: true,
+      parentTopicId: parent.id,
+      subagentReportMode: "status-only" as const,
+    };
+    createdTopicIds.push(parent.id, child.id);
+    upsertTopic(parent);
+    upsertTopic(child);
+
+    expect(getTopic(child.id)?.subagentReportMode).toBe("status-only");
+  });
+
+  test("persists an explicit memory topic and resolves it ahead of the parent chain", () => {
+    const parent = makeTopic();
+    const memorySource = makeTopic();
+    const child = {
+      ...makeTopic(),
+      isSubagent: true,
+      parentTopicId: parent.id,
+      memoryTopicId: memorySource.id,
+    };
+    createdTopicIds.push(parent.id, memorySource.id, child.id);
+    upsertTopic(parent);
+    upsertTopic(memorySource);
+    upsertTopic(child);
+
+    expect(getTopic(child.id)?.memoryTopicId).toBe(memorySource.id);
+    expect(getTopicMemoryOrigin(child.id)?.id).toBe(memorySource.id);
   });
 
   test("persists explicit topic visibility while defaulting ordinary topics to visible", () => {

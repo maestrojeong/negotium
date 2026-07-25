@@ -103,10 +103,19 @@ export interface TopicDto {
   lastReadMessageId?: string;
   /** ID of the parent topic, set when this topic was spawned or forked. */
   parentTopicId?: string;
+  /**
+   * Explicit wiki-memory source for this topic.
+   * When omitted, derived topics inherit memory through their parent chain.
+   */
+  memoryTopicId?: string;
   /** True when the topic was created via fork (copies history). */
   isFork?: boolean;
   /** True when this topic was spawned by an agent as a subagent worker room. */
   isSubagent?: boolean;
+  /** Extra tell_session targets granted to this subagent; direct parent is implicit. */
+  subagentTellTargetIds?: string[];
+  /** Completion/reporting policy for this subagent's direct parent connection. */
+  subagentReportMode?: SubagentReportMode;
   /** Hidden topics remain executable/addressable by id but stay out of adapter pickers. */
   visibility?: TopicVisibility;
   /** Private stays on local adapters; shared may be exposed through Otium too. */
@@ -241,7 +250,8 @@ export interface AskUserQuestionDto {
   expired?: boolean;
 }
 
-export type SubagentCardStatus = "spawned" | "running" | "completed" | "failed";
+export type SubagentCardStatus = "ready" | "spawned" | "running" | "completed" | "failed";
+export type SubagentReportMode = "auto" | "tell" | "status-only";
 
 /** Live-updating subagent delegation card, persisted on a parent-room message. */
 export interface SubagentCardDto {
@@ -254,11 +264,14 @@ export interface SubagentCardDto {
   /** Runtime process instance that owns completion tracking for this child. */
   runtimeOwnerId?: string;
   status: SubagentCardStatus;
+  /** How completion content is delivered to the parent room. */
+  reportMode?: SubagentReportMode;
   /** Truncated final response (set when completed). */
   resultSummary?: string;
   /** Failure reason (set when failed). */
   errorMessage?: string;
-  startedAt: string;
+  createdAt?: string;
+  startedAt?: string;
   finishedAt?: string;
 }
 export interface ReactionDto {

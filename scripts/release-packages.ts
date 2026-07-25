@@ -964,17 +964,17 @@ try {
     );
 
     const bin = join(smokeRoot, "node_modules", ".bin", "negotium");
-    const help = await run("bun", [bin, "--help"], smokeRoot, false, smokeEnv);
+    const help = await run(bin, ["--help"], smokeRoot, false, smokeEnv);
     if (!help.includes("usage: negotium")) fail("packed negotium binary did not render CLI help");
     if (help.includes("chat [topic]") || help.includes("start <terminal|telegram|otium>")) {
       fail("packed negotium binary exposed removed CLI commands");
     }
     const expectedVersion = packages.find((pkg) => pkg.name === "negotium")?.manifest?.version;
-    const version = (await run("bun", [bin, "--version"], smokeRoot, false, smokeEnv)).trim();
+    const version = (await run(bin, ["--version"], smokeRoot, false, smokeEnv)).trim();
     if (!expectedVersion || version !== expectedVersion) {
       fail(`packed negotium binary reported version ${version}, expected ${expectedVersion}`);
     }
-    const otiumHelp = await run("bun", [bin, "otium", "--help"], smokeRoot, false, smokeEnv);
+    const otiumHelp = await run(bin, ["otium", "--help"], smokeRoot, false, smokeEnv);
     if (!otiumHelp.includes("usage: negotium otium")) {
       fail("packed negotium binary did not load the Otium adapter CLI");
     }

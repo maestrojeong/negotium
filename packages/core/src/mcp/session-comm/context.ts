@@ -5,6 +5,8 @@ export interface SessionCommContext {
   userId: string;
   currentTopic: string;
   currentTopicId?: string;
+  /** Present for a subagent room; outbound ask_session is not exposed. */
+  subagentParentTopicId?: string;
   peerHostQueryId?: string;
   depth: number;
   replyOnly: boolean;
@@ -39,6 +41,7 @@ export function parseSessionCommContext(
     userId: value(args, "user-id") ?? defaults.userId,
     currentTopic: value(args, "topic") ?? "",
     currentTopicId: value(args, "topic-id") || undefined,
+    subagentParentTopicId: value(args, "subagent-parent-topic-id") || undefined,
     peerHostQueryId: value(args, "peer-host-query-id") || undefined,
     depth,
     replyOnly: value(args, "reply-only") === "true",

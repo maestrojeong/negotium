@@ -67,6 +67,8 @@ describe("placed-room runtime bridge", () => {
       );
       const names = (await client.listTools()).tools.map((tool) => tool.name);
       expect(names).toContain("spawn_subagent");
+      expect(names).not.toContain("create_subagent");
+      expect(names).not.toContain("list_subagents");
       expect(names).toContain("spawn_topic");
       expect(names).toContain("fork_topic");
 

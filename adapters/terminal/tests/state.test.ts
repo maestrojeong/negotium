@@ -129,6 +129,28 @@ describe("terminal adapter state", () => {
     expect(state.topics.map((candidate) => candidate.id)).toEqual(["parent", "child", "other"]);
   });
 
+  test("orders nested subagents as a depth-first ownership tree", () => {
+    const parent = topic("parent", "Parent");
+    const child = {
+      ...topic("child", "Child"),
+      isSubagent: true,
+      parentTopicId: parent.id,
+    };
+    const grandchild = {
+      ...topic("grandchild", "Grandchild"),
+      isSubagent: true,
+      parentTopicId: child.id,
+    };
+
+    const state = setTopics(createInitialState("local"), [grandchild, child, parent]);
+
+    expect(state.topics.map((candidate) => candidate.id)).toEqual([
+      "parent",
+      "child",
+      "grandchild",
+    ]);
+  });
+
   test("uses the same Manager-first order for rendering and keyboard navigation", () => {
     const work = topic("work", "Work");
     const general = {
@@ -480,6 +502,10 @@ describe("terminal adapter state", () => {
     expect(state.messages.a?.[1]?.text).toBe(
       "Tell session · research\nInvestigate this independently.",
     );
+    expect(state.activity.a?.tools.at(-1)).toMatchObject({
+      sessionAction: "tell",
+      sessionTarget: "research",
+    });
   });
 
   test("keeps tool calls inline before the agent message that follows", () => {

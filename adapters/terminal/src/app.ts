@@ -78,6 +78,11 @@ import {
   toggleTaskSidebar,
   upsertMessage,
 } from "@/state";
+import {
+  adjustSubagentGraphSpacing,
+  buildSubagentGraph,
+  layoutSubagentGraph,
+} from "@/subagent-graph";
 import { InputHistory, TextBuffer } from "@/text-buffer";
 
 export const ENTER_ALT_SCREEN =
@@ -103,6 +108,16 @@ export {
   terminalDeletionShortcut,
   vaultFormBlocksOverlaySwitch,
 } from "@/app-helpers";
+
+export function terminalNeedsAnimation(state: AppState): boolean {
+  const activeRunning = Boolean(
+    state.activeTopicId && state.activity[state.activeTopicId]?.running,
+  );
+  const overlayRunning =
+    (state.overlay === "topics" || state.overlay === "subagents") &&
+    state.topics.some((topic) => state.activity[topic.id]?.running);
+  return activeRunning || overlayRunning || state.backgroundSessions.length > 0;
+}
 
 export interface TerminalAppOptions {
   userId: string;
@@ -138,9 +153,14 @@ export class TerminalApp {
   >();
   readonly #queuedRuntimeEvents = new Map<string, RuntimeBusEvent[]>();
   #selection: ScreenSelection | null = null;
+  #subagentGraphDragPoint: ScreenPoint | null = null;
   #plainFrameLines: string[] = [];
   #codeCopyTargets: CodeCopyTarget[] = [];
   #lastInterruptAt = 0;
+  #subagentGraphGeneration = 0;
+  #subagentGraphAbortController: AbortController | null = null;
+  #subagentGraphSpacingTimer: ReturnType<typeof setTimeout> | null = null;
+  #pendingSubagentGraphSpacing: number | null = null;
   #running = false;
   #stopRequested = false;
   #finishRun: (() => void) | null = null;
@@ -203,13 +223,7 @@ export class TerminalApp {
       process.once("SIGTERM", this.#onSignal);
       this.#render();
       this.#animationTimer = setInterval(() => {
-        const activeRunning = Boolean(
-          this.#state.activeTopicId && this.#state.activity[this.#state.activeTopicId]?.running,
-        );
-        const pickerRunning =
-          this.#state.overlay === "topics" &&
-          this.#state.topics.some((topic) => this.#state.activity[topic.id]?.running);
-        if (!activeRunning && !pickerRunning && this.#state.backgroundSessions.length === 0) return;
+        if (!terminalNeedsAnimation(this.#state)) return;
         // Derive the frame from elapsed time so a delayed timer callback does
         // not make the larger topic-picker render appear to spin slowly.
         this.#animationFrame = animationFrameAt();
@@ -259,16 +273,33 @@ export class TerminalApp {
       event.type === "topic-deleted"
     ) {
       const previous = this.#state.activeTopicId;
-      void this.#refreshTopicsAfterEvent(previous);
+      const refreshSubagentGraph = this.#state.overlay === "subagents";
+      if (refreshSubagentGraph) {
+        this.#subagentGraphGeneration += 1;
+        this.#subagentGraphAbortController?.abort();
+        this.#subagentGraphAbortController = null;
+        this.#state = {
+          ...this.#state,
+          subagentGraph: undefined,
+          subagentGraphLoading: true,
+        };
+      }
+      void this.#refreshTopicsAfterEvent(previous, refreshSubagentGraph);
     }
     this.#queueRender();
   }
 
-  async #refreshTopicsAfterEvent(previous: string | null): Promise<void> {
+  async #refreshTopicsAfterEvent(
+    previous: string | null,
+    refreshSubagentGraph = false,
+  ): Promise<void> {
     try {
       await this.#refreshTopics();
       if (this.#state.activeTopicId && this.#state.activeTopicId !== previous) {
         await this.#loadActiveMessages();
+      }
+      if (refreshSubagentGraph && this.#state.overlay === "subagents") {
+        await this.#reloadSubagentGraphAfterTopicEvent();
       }
     } catch (error) {
       this.#state = {
@@ -277,6 +308,42 @@ export class TerminalApp {
       };
     }
     this.#queueRender();
+  }
+
+  async #reloadSubagentGraphAfterTopicEvent(): Promise<void> {
+    const topicId = this.#state.activeTopicId;
+    if (!topicId || this.#state.overlay !== "subagents") return;
+    const runningTopicIds = new Set(
+      Object.entries(this.#state.activity)
+        .filter(([, activity]) => activity.running)
+        .map(([candidateId]) => candidateId),
+    );
+    const graph = buildSubagentGraph(this.#state.topics, topicId, runningTopicIds);
+    const generation = ++this.#subagentGraphGeneration;
+    this.#subagentGraphAbortController?.abort();
+    const layoutController = new AbortController();
+    this.#subagentGraphAbortController = layoutController;
+    try {
+      const canvas = await layoutSubagentGraph(
+        graph,
+        this.#state.subagentGraphSpacing,
+        layoutController.signal,
+      );
+      if (generation !== this.#subagentGraphGeneration || this.#state.overlay !== "subagents") {
+        return;
+      }
+      this.#subagentGraphAbortController = null;
+      this.#state = { ...this.#state, subagentGraph: canvas, subagentGraphLoading: false };
+    } catch (error) {
+      if (generation !== this.#subagentGraphGeneration) return;
+      this.#subagentGraphAbortController = null;
+      this.#state = {
+        ...this.#state,
+        overlay: null,
+        subagentGraphLoading: false,
+        notice: `Graph layout failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   }
 
   async #refreshTopics(preferredTitle?: string): Promise<void> {
@@ -438,6 +505,131 @@ export class TerminalApp {
     if (patch || cursor) process.stdout.write(`${patch}${cursor}`);
   }
 
+  async #toggleSubagentGraph(): Promise<void> {
+    const topicId = this.#state.activeTopicId;
+    if (!topicId) return;
+    if (this.#state.overlay === "subagents") {
+      this.#subagentGraphGeneration += 1;
+      this.#subagentGraphAbortController?.abort();
+      this.#subagentGraphAbortController = null;
+      this.#subagentGraphDragPoint = null;
+      this.#state = { ...this.#state, overlay: null, subagentGraphLoading: false };
+      this.#queueRender();
+      return;
+    }
+
+    const runningTopicIds = new Set(
+      Object.entries(this.#state.activity)
+        .filter(([, activity]) => activity.running)
+        .map(([candidateId]) => candidateId),
+    );
+    const graph = buildSubagentGraph(this.#state.topics, topicId, runningTopicIds);
+    if (graph.nodes.length === 0) {
+      this.#state = { ...this.#state, notice: "No subagents in this topic" };
+      this.#queueRender();
+      return;
+    }
+
+    const generation = ++this.#subagentGraphGeneration;
+    this.#subagentGraphAbortController?.abort();
+    const layoutController = new AbortController();
+    this.#subagentGraphAbortController = layoutController;
+    this.#subagentGraphDragPoint = null;
+    this.#state = {
+      ...this.#state,
+      overlay: "subagents",
+      subagentGraph: undefined,
+      subagentGraphLoading: true,
+      subagentGraphOffset: { x: 0, y: 0 },
+      notice: undefined,
+    };
+    this.#queueRender();
+    try {
+      const canvas = await layoutSubagentGraph(
+        graph,
+        this.#state.subagentGraphSpacing,
+        layoutController.signal,
+      );
+      if (generation !== this.#subagentGraphGeneration || this.#state.overlay !== "subagents") {
+        return;
+      }
+      this.#state = { ...this.#state, subagentGraph: canvas, subagentGraphLoading: false };
+      this.#subagentGraphAbortController = null;
+    } catch (error) {
+      if (generation !== this.#subagentGraphGeneration) return;
+      this.#subagentGraphAbortController = null;
+      this.#state = {
+        ...this.#state,
+        overlay: null,
+        subagentGraphLoading: false,
+        notice: `Graph layout failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    this.#queueRender();
+  }
+
+  #changeSubagentGraphSpacing(delta: number): void {
+    // Debounce key-repeat: each relayout spawns a Node subprocess, so batch
+    // rapid [ / ] presses into one layout run after the burst settles.
+    const previousSpacing = this.#pendingSubagentGraphSpacing ?? this.#state.subagentGraphSpacing;
+    const spacing = adjustSubagentGraphSpacing(previousSpacing, delta);
+    if (spacing === previousSpacing) return;
+    this.#pendingSubagentGraphSpacing = spacing;
+    if (this.#subagentGraphSpacingTimer) clearTimeout(this.#subagentGraphSpacingTimer);
+    this.#subagentGraphSpacingTimer = setTimeout(() => {
+      this.#subagentGraphSpacingTimer = null;
+      const target = this.#pendingSubagentGraphSpacing;
+      this.#pendingSubagentGraphSpacing = null;
+      if (target !== null && target !== this.#state.subagentGraphSpacing) {
+        void this.#applySubagentGraphSpacing(target);
+      }
+    }, 120);
+  }
+
+  async #applySubagentGraphSpacing(spacing: number): Promise<void> {
+    const topicId = this.#state.activeTopicId;
+    if (!topicId || this.#state.overlay !== "subagents") return;
+    const previousSpacing = this.#state.subagentGraphSpacing;
+    if (spacing === previousSpacing) return;
+
+    const runningTopicIds = new Set(
+      Object.entries(this.#state.activity)
+        .filter(([, activity]) => activity.running)
+        .map(([candidateId]) => candidateId),
+    );
+    const graph = buildSubagentGraph(this.#state.topics, topicId, runningTopicIds);
+    const generation = ++this.#subagentGraphGeneration;
+    this.#subagentGraphAbortController?.abort();
+    const layoutController = new AbortController();
+    this.#subagentGraphAbortController = layoutController;
+    this.#state = {
+      ...this.#state,
+      subagentGraphSpacing: spacing,
+      subagentGraphLoading: true,
+      notice: undefined,
+    };
+    this.#queueRender();
+
+    try {
+      const canvas = await layoutSubagentGraph(graph, spacing, layoutController.signal);
+      if (generation !== this.#subagentGraphGeneration || this.#state.overlay !== "subagents") {
+        return;
+      }
+      this.#state = { ...this.#state, subagentGraph: canvas, subagentGraphLoading: false };
+      this.#subagentGraphAbortController = null;
+    } catch (error) {
+      if (generation !== this.#subagentGraphGeneration) return;
+      this.#subagentGraphAbortController = null;
+      this.#state = {
+        ...this.#state,
+        subagentGraphSpacing: previousSpacing,
+        subagentGraphLoading: false,
+        notice: `Graph layout failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    this.#queueRender();
+  }
+
   #syncInput(): void {
     this.#collapsedPastes.reconcile(this.#input.text);
     const count = this.#suggestionCount();
@@ -485,11 +677,18 @@ export class TerminalApp {
   #handleInput(raw: string): void {
     if (!this.#running) return;
     const mouse = consumeMouseInput(raw);
+    if (mouse.horizontalScrollDelta !== 0 && this.#state.overlay === "subagents") {
+      this.#selection = null;
+      this.#panSubagentGraph(-mouse.horizontalScrollDelta, 0);
+    }
     if (mouse.scrollDelta !== 0) {
       this.#selection = null;
       this.#scroll(mouse.scrollDelta);
     }
-    for (const event of mouse.events) this.#handleMouseSelection(event);
+    for (const event of mouse.events) {
+      if (this.#state.overlay === "subagents") this.#handleSubagentGraphMouse(event);
+      else this.#handleMouseSelection(event);
+    }
     let chunk = mouse.input;
     if (!chunk) return;
     this.#selection = null;
@@ -564,6 +763,11 @@ export class TerminalApp {
       this.#toggleTopics();
       return;
     }
+    if (chunk === "\u0007") {
+      if (editingVaultSecret) return;
+      void this.#toggleSubagentGraph();
+      return;
+    }
     if (chunk === "\u0014") {
       if (editingVaultSecret) return;
       this.#state = toggleTaskSidebar(this.#state);
@@ -581,6 +785,38 @@ export class TerminalApp {
     if (chunk === "\u000c") {
       this.#screen.invalidate();
       this.#render(); // Ctrl-L
+      return;
+    }
+    if (this.#state.overlay === "subagents") {
+      if (chunk === "\u001b") {
+        this.#subagentGraphGeneration += 1;
+        this.#subagentGraphAbortController?.abort();
+        this.#subagentGraphAbortController = null;
+        this.#subagentGraphDragPoint = null;
+        this.#state = { ...this.#state, overlay: null, subagentGraphLoading: false };
+      } else if (chunk === "\u001b[A" || chunk === "k") {
+        this.#panSubagentGraph(0, -2);
+        return;
+      } else if (chunk === "\u001b[B" || chunk === "j") {
+        this.#panSubagentGraph(0, 2);
+        return;
+      } else if (chunk === "\u001b[D" || chunk === "h") {
+        this.#panSubagentGraph(-4, 0);
+        return;
+      } else if (chunk === "\u001b[C" || chunk === "l") {
+        this.#panSubagentGraph(4, 0);
+        return;
+      } else if (chunk === "\u001b[5~") {
+        this.#panSubagentGraph(0, -8);
+        return;
+      } else if (chunk === "\u001b[6~") {
+        this.#panSubagentGraph(0, 8);
+        return;
+      } else if (chunk === "[" || chunk === "]") {
+        this.#changeSubagentGraphSpacing(chunk === "[" ? -1 : 1);
+        return;
+      }
+      this.#queueRender();
       return;
     }
     if (chunk === "\u0001" || chunk === "\u001b[H" || chunk === "\u001b[1~") {
@@ -1498,6 +1734,24 @@ export class TerminalApp {
     this.#queueRender();
   }
 
+  #handleSubagentGraphMouse(event: TerminalMouseEvent): void {
+    if ((event.button & 3) !== 0 && event.kind !== "release") return;
+    const point: ScreenPoint = { x: event.x, y: event.y };
+    if (event.kind === "press") {
+      this.#selection = null;
+      this.#subagentGraphDragPoint = point;
+      return;
+    }
+    if (event.kind === "release") {
+      this.#subagentGraphDragPoint = null;
+      return;
+    }
+    const previous = this.#subagentGraphDragPoint;
+    this.#subagentGraphDragPoint = point;
+    if (!previous) return;
+    this.#panSubagentGraph(previous.x - point.x, previous.y - point.y);
+  }
+
   async #copySelection(text: string): Promise<void> {
     try {
       const result = await copyToClipboard(text);
@@ -1559,6 +1813,10 @@ export class TerminalApp {
   }
 
   #scroll(delta: number): void {
+    if (this.#state.overlay === "subagents") {
+      this.#panSubagentGraph(0, -delta);
+      return;
+    }
     const maxOffset = maxConversationScrollOffset(
       this.#state,
       process.stdout.columns ?? 100,
@@ -1568,6 +1826,27 @@ export class TerminalApp {
     this.#state = {
       ...this.#state,
       scrollOffset: Math.min(maxOffset, Math.max(0, desiredOffset)),
+    };
+    this.#queueRender();
+  }
+
+  #panSubagentGraph(deltaX: number, deltaY: number): void {
+    const canvas = this.#state.subagentGraph;
+    const viewportWidth = Math.max(1, (process.stdout.columns ?? 100) - 4);
+    const viewportHeight = Math.max(1, (process.stdout.rows ?? 30) - 8);
+    const current = this.#state.subagentGraphOffset;
+    this.#state = {
+      ...this.#state,
+      subagentGraphOffset: {
+        x: Math.min(
+          Math.max(0, (canvas?.width ?? 0) - viewportWidth),
+          Math.max(0, current.x + deltaX),
+        ),
+        y: Math.min(
+          Math.max(0, (canvas?.height ?? 0) - viewportHeight),
+          Math.max(0, current.y + deltaY),
+        ),
+      },
     };
     this.#queueRender();
   }
@@ -1647,6 +1926,9 @@ export class TerminalApp {
   }
 
   async #cleanup(clientStartAttempted: boolean, uiActive: boolean): Promise<void> {
+    this.#subagentGraphGeneration += 1;
+    this.#subagentGraphAbortController?.abort();
+    this.#subagentGraphAbortController = null;
     if (this.#renderTimer) clearTimeout(this.#renderTimer);
     if (this.#pathSearchTimer) clearTimeout(this.#pathSearchTimer);
     if (this.#animationTimer) clearInterval(this.#animationTimer);

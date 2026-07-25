@@ -18,6 +18,9 @@ import {
   pickedBackgroundSession,
   type TerminalMessage,
 } from "@/state";
+import { displayWidth, runeWidth, stripAnsi } from "@/terminal-width";
+
+export { displayWidth, stripAnsi } from "@/terminal-width";
 
 type Rgb = readonly [number, number, number];
 
@@ -129,11 +132,6 @@ function paint(
   return `${options.fg ? fg(options.fg) : ""}${options.bg ? bg(options.bg) : ""}${options.bold ? `${ESC}1m` : ""}${options.dim ? `${ESC}2m` : ""}${value}${RESET}`;
 }
 
-export function stripAnsi(value: string): string {
-  // biome-ignore lint/complexity/useRegexLiterals: avoids literal terminal control bytes in source.
-  return value.replace(new RegExp("\\u001b\\[[0-?]*[ -/]*[@-~]", "g"), "");
-}
-
 function safeText(value: string): string {
   return [...stripAnsi(value).replaceAll("\r", "")]
     .filter((character) => {
@@ -141,31 +139,6 @@ function safeText(value: string): string {
       return code === 0x09 || code === 0x0a || (code >= 0x20 && code !== 0x7f);
     })
     .join("");
-}
-
-function runeWidth(char: string): number {
-  const code = char.codePointAt(0) ?? 0;
-  if (code === 0x200d || (code >= 0xfe00 && code <= 0xfe0f)) return 0;
-  if (
-    code >= 0x1100 &&
-    (code <= 0x115f ||
-      code === 0x2329 ||
-      code === 0x232a ||
-      (code >= 0x2e80 && code <= 0xa4cf) ||
-      (code >= 0xac00 && code <= 0xd7a3) ||
-      (code >= 0xf900 && code <= 0xfaff) ||
-      (code >= 0xfe10 && code <= 0xfe6f) ||
-      (code >= 0xff00 && code <= 0xff60) ||
-      (code >= 0x1f300 && code <= 0x1faff) ||
-      code >= 0x20000)
-  ) {
-    return 2;
-  }
-  return 1;
-}
-
-export function displayWidth(value: string): number {
-  return [...stripAnsi(value)].reduce((width, char) => width + runeWidth(char), 0);
 }
 
 function sliceWidth(value: string, width: number): string {
@@ -178,6 +151,75 @@ function sliceWidth(value: string, width: number): string {
     used += next;
   }
   return out;
+}
+
+function sliceWidthRange(value: string, start: number, width: number): string {
+  let out = "";
+  let column = 0;
+  for (const char of [...safeText(value)]) {
+    const charWidth = runeWidth(char);
+    const end = column + charWidth;
+    if (end > start && column < start + width) {
+      if (column < start) out += " ".repeat(Math.min(charWidth, start - column));
+      else if (end <= start + width) out += char;
+    }
+    column = end;
+    if (column >= start + width) break;
+  }
+  return sliceWidth(out, width);
+}
+
+function replaceAtDisplayColumn(value: string, targetColumn: number, replacement: string): string {
+  let out = "";
+  let column = 0;
+  let replaced = false;
+  for (const char of [...safeText(value)]) {
+    const charWidth = runeWidth(char);
+    if (!replaced && column === targetColumn) {
+      out += replacement;
+      replaced = true;
+    } else {
+      out += char;
+    }
+    column += charWidth;
+  }
+  return out;
+}
+
+function graphLineSpans(
+  value: string,
+  start: number,
+  width: number,
+  highlightedColumns: ReadonlySet<number>,
+  baseColor: Rgb,
+): UiSpan[] {
+  const visible = sliceWidthRange(value, start, width);
+  const spans: UiSpan[] = [{ text: "  ", fg: baseColor }];
+  let column = 0;
+  let currentText = "";
+  let currentHighlighted: boolean | undefined;
+  const flush = (): void => {
+    if (!currentText) return;
+    spans.push({
+      text: currentText,
+      fg: currentHighlighted ? theme.amber : baseColor,
+      bold: currentHighlighted,
+    });
+    currentText = "";
+  };
+  for (const char of [...visible]) {
+    const charWidth = runeWidth(char);
+    const highlighted = Array.from(
+      { length: Math.max(1, charWidth) },
+      (_, offset) => start + column + offset,
+    ).some((candidate) => highlightedColumns.has(candidate));
+    if (currentHighlighted !== undefined && highlighted !== currentHighlighted) flush();
+    currentHighlighted = highlighted;
+    currentText += char;
+    column += charWidth;
+  }
+  flush();
+  return spans;
 }
 
 function fit(value: string, width: number): string {
@@ -637,7 +679,7 @@ function helpLines(): UiLine[] {
     line("  Alt-Backspace delete word · Ctrl-U clear before cursor"),
     line("  Cmd-Backspace works when forwarded · Ctrl-W/K aliases"),
     line("  Mouse wheel / PgUp/PgDn scroll · Ctrl-E load older · Ctrl-T tasks"),
-    line("  Ctrl-O topics · Ctrl-P/N previous/next topic"),
+    line("  Ctrl-O topics · Ctrl-G subagents · Ctrl-P/N previous/next topic"),
     line("  Esc/Ctrl-C stop active turn · Ctrl-C twice when idle to quit"),
     line(""),
     line("  Commands", { fg: theme.cyan, bold: true }),
@@ -701,6 +743,40 @@ type TopicOverlayEntry =
       status: string;
       active: boolean;
     };
+
+function subagentTreePrefix(topic: TopicDto, topics: TopicDto[], rootTopicId?: string): string {
+  if (!topic.isSubagent || topic.id === rootTopicId) return "";
+  const byId = new Map(topics.map((candidate) => [candidate.id, candidate]));
+  const childrenByParent = new Map<string, TopicDto[]>();
+  for (const candidate of topics) {
+    if (!candidate.isSubagent || !candidate.parentTopicId) continue;
+    const children = childrenByParent.get(candidate.parentTopicId) ?? [];
+    children.push(candidate);
+    childrenByParent.set(candidate.parentTopicId, children);
+  }
+
+  const lineage = [topic];
+  const visited = new Set([topic.id]);
+  let current = topic;
+  while (current.isSubagent && current.id !== rootTopicId) {
+    if (!current.parentTopicId) return "?─ ";
+    const parent = byId.get(current.parentTopicId);
+    if (!parent || visited.has(parent.id)) return "?─ ";
+    visited.add(parent.id);
+    lineage.unshift(parent);
+    current = parent;
+  }
+
+  let prefix = "";
+  for (let index = 1; index < lineage.length; index += 1) {
+    const node = lineage[index];
+    const parent = lineage[index - 1];
+    const siblings = childrenByParent.get(parent.id) ?? [];
+    const isLast = siblings.at(-1)?.id === node.id;
+    prefix += index === lineage.length - 1 ? (isLast ? "└─ " : "├─ ") : isLast ? "   " : "│  ";
+  }
+  return prefix;
+}
 
 function topicOverlayLines(
   state: AppState,
@@ -792,7 +868,7 @@ function topicOverlayLines(
           const { topic, topicIndex } = entry;
           const selected = topicIndex === state.topicPickerIndex;
           const running = state.activity[topic.id]?.running;
-          const childPrefix = topic.isSubagent ? "  ↳ " : "";
+          const childPrefix = subagentTreePrefix(topic, state.topics);
           return line(
             `  ${selected ? "›" : " "} ${childPrefix}${running ? workingFrame(animationFrame) : "○"} ${topic.title}  ·  ${topic.agent ?? "no agent"}  ·  ${effectiveTopicModel(topic)}  ·  ${effectiveTopicEffort(topic)}`,
             {
@@ -851,6 +927,115 @@ function backgroundSessionLines(state: AppState, width: number, nowMs = terminal
       ? session.steps.map((step) => line(`  ○ ${safeText(step)}`, { fg: theme.muted }))
       : [line("  ○ Waiting for runtime activity", { fg: theme.muted })]),
   ];
+}
+
+function subagentGraphLines(
+  state: AppState,
+  width: number,
+  height: number,
+  animationFrame: number,
+): UiLine[] {
+  const headerHeight = 6;
+  const canvas = state.subagentGraph;
+  const offset = state.subagentGraphOffset;
+  const viewportWidth = Math.max(1, width - 4);
+  const viewportHeight = Math.max(1, height - headerHeight);
+  const maxX = Math.max(0, (canvas?.width ?? 0) - viewportWidth);
+  const maxY = Math.max(0, (canvas?.height ?? 0) - viewportHeight);
+  const x = Math.min(maxX, offset.x);
+  const y = Math.min(maxY, offset.y);
+  const position = maxX > 0 || maxY > 0 ? ` · view ${x + 1},${y + 1}/${maxX + 1},${maxY + 1}` : "";
+  const graphNodes = canvas?.nodes ?? [];
+  const graphEdges = canvas?.edges ?? [];
+  const runningNodes = graphNodes.filter((node) => state.activity[node.topicId]?.running);
+  const nodeTitleById = new Map(graphNodes.map((node) => [node.topicId, node.title]));
+  const hasActiveTell = (sourceTopicId: string, targetTopicId: string): boolean => {
+    const targetTitle = nodeTitleById.get(targetTopicId);
+    const activity = state.activity[sourceTopicId];
+    return Boolean(
+      activity?.running &&
+        activity.tools.some(
+          (tool) =>
+            tool.sessionAction === "tell" &&
+            (tool.sessionTarget === targetTopicId || tool.sessionTarget === targetTitle),
+        ),
+    );
+  };
+  const activeEdges = graphEdges.filter(
+    (edge) =>
+      hasActiveTell(edge.sourceTopicId, edge.targetTopicId) ||
+      ((edge.kind === "owns" || edge.kind === "tell-bidirectional") &&
+        hasActiveTell(edge.targetTopicId, edge.sourceTopicId)),
+  );
+  const highlightedCellsByRow = new Map<number, Set<number>>();
+  for (const edge of activeEdges) {
+    for (const cell of edge.cells) {
+      const columns = highlightedCellsByRow.get(cell.y) ?? new Set<number>();
+      columns.add(cell.x);
+      highlightedCellsByRow.set(cell.y, columns);
+    }
+  }
+  const rootTopicId = graphNodes[0]?.topicId;
+  const rootRunning = rootTopicId
+    ? Boolean(state.activity[rootTopicId]?.running)
+    : Boolean(canvas?.rootRunning);
+
+  const header = [
+    line("  Agent graph", {
+      fg: theme.accent,
+      bold: true,
+    }),
+    line(
+      canvas
+        ? `  ${rootRunning ? workingFrame(animationFrame) : "○"} ${canvas.title}${canvas.rootDetail ? ` · ${canvas.rootDetail}` : ""}`
+        : "  Current topic",
+      { fg: rootRunning ? theme.green : theme.text, bold: true },
+    ),
+    line(
+      runningNodes.length > 0
+        ? `  Working: ${runningNodes.map((node) => node.title).join(", ")}`
+        : "  Working: none",
+      { fg: runningNodes.length > 0 ? theme.green : theme.muted },
+    ),
+    line(
+      `  [/] spacing ${state.subagentGraphSpacing} · drag: all directions · wheel: up/down · arrows/hjkl move · Ctrl-G/Esc close${position}`,
+      {
+        fg: theme.muted,
+      },
+    ),
+    line("  solid ↕: parent/child mutual · solid ↓: status-only · dotted: tell_session", {
+      fg: theme.subtle,
+    }),
+    line(""),
+  ];
+  if (state.subagentGraphLoading) {
+    return [...header, line("  Laying out graph with ELK…", { fg: theme.cyan })].slice(0, height);
+  }
+  if (!canvas || canvas.lines.length === 0) {
+    return [...header, line("  No graph data", { fg: theme.muted })].slice(0, height);
+  }
+
+  return [
+    ...header,
+    ...Array.from({ length: viewportHeight }, (_, index) => {
+      const canvasY = y + index;
+      let canvasLine = canvas.lines[canvasY] ?? "";
+      for (const node of graphNodes) {
+        if (node.markerY !== canvasY) continue;
+        const marker = state.activity[node.topicId]?.running ? workingFrame(animationFrame) : "○";
+        canvasLine = replaceAtDisplayColumn(canvasLine, node.markerX, marker);
+      }
+      const text = sliceWidthRange(canvasLine, x, viewportWidth);
+      const baseColor = /[╭╮╰╯]/.test(text) ? theme.cyan : theme.muted;
+      const highlightedColumns = highlightedCellsByRow.get(canvasY);
+      return highlightedColumns?.size
+        ? line(`  ${text}`, {
+            fg: baseColor,
+            spans: graphLineSpans(canvasLine, x, viewportWidth, highlightedColumns, baseColor),
+          })
+        : line(`  ${text}`, { fg: baseColor });
+    }),
+  ].slice(0, height);
 }
 
 function modelOverlayLines(state: AppState, height: number): UiLine[] {
@@ -1010,6 +1195,8 @@ function conversationLines(
   if (state.overlay === "status") return statusLines(state).slice(0, height);
   if (state.overlay === "topics")
     return topicOverlayLines(state, width, height, animationFrame).slice(0, height);
+  if (state.overlay === "subagents")
+    return subagentGraphLines(state, width, height, animationFrame);
   if (state.overlay === "background-session")
     return backgroundSessionLines(state, width, nowMs).slice(0, height);
   if (state.overlay === "models") return modelOverlayLines(state, height).slice(0, height);
@@ -1191,7 +1378,7 @@ function composerPane(state: AppState, width: number): ComposerPane {
       ? state.vaultMode === "list"
         ? "Vault command · Enter run · Esc close"
         : `${state.vaultMode === "key" ? "key" : state.vaultMode === "value" ? "secret value" : "description"} · Enter continue · Esc cancel`
-      : "Ctrl-O topics";
+      : "Ctrl-O topics · Ctrl-G subagents";
   const visual = inputVisualLines(state, width);
   let inputStart = Math.max(0, visual.lines.length - 5);
   if (visual.cursorLine < inputStart) inputStart = visual.cursorLine;
@@ -1279,7 +1466,7 @@ function footerLines(state: AppState, width: number): string[] {
   return [
     paint(
       joinSides(
-        `  ${topic?.agent ?? "-"} · ${effectiveTopicModel(topic)} · ${effectiveTopicEffort(topic)}`,
+        `  ${topic?.title ?? "no topic"} · ${topic?.agent ?? "-"} · ${effectiveTopicModel(topic)} · ${effectiveTopicEffort(topic)}`,
         "",
         width,
       ),
@@ -1300,15 +1487,17 @@ function footerLines(state: AppState, width: number): string[] {
               : "Esc close · Ctrl-C exit; work continues  "
             : state.overlay === "background-session"
               ? "Esc back · read-only  "
-              : state.overlay === "vault"
-                ? state.vaultMode === "list"
-                  ? "Enter run · Esc close  "
-                  : state.vaultMode === "confirm-delete"
-                    ? "Y delete · N cancel  "
-                    : "Enter continue · Esc cancel  "
-                : running
-                  ? "Esc/Ctrl-C stop  "
-                  : "Ctrl-C twice to quit  ",
+              : state.overlay === "subagents"
+                ? "arrows/hjkl/wheel move · Esc close  "
+                : state.overlay === "vault"
+                  ? state.vaultMode === "list"
+                    ? "Enter run · Esc close  "
+                    : state.vaultMode === "confirm-delete"
+                      ? "Y delete · N cancel  "
+                      : "Enter continue · Esc cancel  "
+                  : running
+                    ? "Esc/Ctrl-C stop  "
+                    : "Ctrl-C twice to quit  ",
         width,
       ),
       {
@@ -1374,6 +1563,7 @@ export function renderAppFrame(
   const hideComposer =
     state.overlay === "background-session" ||
     state.overlay === "topics" ||
+    state.overlay === "subagents" ||
     (state.overlay === "vault" && state.vaultMode === "confirm-delete");
   const composer = hideComposer ? { lines: [], cursor: null } : composerPane(state, width);
   const bodyHeight = Math.max(3, height - footer.length - decision.length - composer.lines.length);

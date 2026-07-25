@@ -118,16 +118,21 @@ export function animationFrameAt(nowMs = terminalNowMs()): number {
 export function consumeMouseInput(raw: string): {
   input: string;
   scrollDelta: number;
+  horizontalScrollDelta: number;
   events: TerminalMouseEvent[];
 } {
   let scrollDelta = 0;
+  let horizontalScrollDelta = 0;
   const events: TerminalMouseEvent[] = [];
   const input = raw.replace(
     SGR_MOUSE_PATTERN,
     (_sequence, rawButton: string, rawX: string, rawY: string, suffix: string) => {
       const button = Number.parseInt(rawButton, 10);
       if (Number.isFinite(button) && (button & 64) !== 0) {
-        scrollDelta += (button & 1) === 0 ? 3 : -3;
+        const delta = (button & 1) === 0 ? 3 : -3;
+        const horizontal = (button & 2) !== 0 || (button & 4) !== 0;
+        if (horizontal) horizontalScrollDelta += delta;
+        else scrollDelta += delta;
       } else {
         const x = Number.parseInt(rawX, 10);
         const y = Number.parseInt(rawY, 10);
@@ -143,7 +148,7 @@ export function consumeMouseInput(raw: string): {
       return "";
     },
   );
-  return { input, scrollDelta, events };
+  return { input, scrollDelta, horizontalScrollDelta, events };
 }
 
 export function codeCopyTargetAt(

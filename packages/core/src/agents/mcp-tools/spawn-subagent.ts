@@ -17,15 +17,26 @@ import {
   listApiMessagesByKind,
   updateApiMessageSubagentCard,
 } from "#storage/api-messages";
-import { getTopic, listTopics } from "#storage/api-topics";
+import {
+  getTopic,
+  getTopicMemoryOrigin,
+  grantSubagentTellTarget,
+  listSubagentTellTargetIds,
+  listTopics,
+  revokeSubagentTellTarget,
+  upsertTopic,
+} from "#storage/api-topics";
 import { getRuntimeTurnLease, RUNTIME_INSTANCE_ID } from "#storage/runtime-leases";
 import { getRuntimeUserTurnRequest } from "#storage/runtime-turn-requests";
+import { wikiBriefStorageKey, wikiSummarySlug } from "#storage/wiki-summary-names";
 import { type AgentKind, isAgentKind } from "#types";
-import type { MessageDto, SubagentCardDto } from "#types/api";
+import type { MessageDto, SubagentCardDto, SubagentReportMode } from "#types/api";
 
 const MAX_TASK_CHARS = 8000;
 const MAX_NAME_CHARS = 80;
 const MAX_LIVE_CHILDREN_PER_PARENT = 5;
+const MAX_PREPARED_CHILDREN_PER_PARENT = 10;
+export const MAX_SUBAGENT_DEPTH = 2;
 const RESULT_SUMMARY_CHARS = 300;
 
 export interface SpawnSubagentToolContext {
@@ -45,6 +56,7 @@ export interface SubagentWatch {
   name: string;
   userId: string;
   startedAt: string;
+  reportMode: SubagentReportMode;
   queryId?: string;
   running: boolean;
 }
@@ -52,12 +64,90 @@ export interface SubagentWatch {
 const watchesByChild = new Map<string, SubagentWatch>();
 const childByQueryId = new Map<string, string>();
 
+function resolveMemoryTopicSelection(
+  rawSelection: unknown,
+  userId: string,
+): { topicId?: string; error?: string } {
+  if (rawSelection === undefined || rawSelection === null) return {};
+  if (typeof rawSelection !== "string" || !rawSelection.trim()) {
+    return { error: "Error: memory_topic must be a topic id, title, or topic/*.md path." };
+  }
+
+  const selection = rawSelection.trim();
+  if (
+    selection.includes("\\") ||
+    selection.startsWith("/") ||
+    selection.split("/").some((part) => part === "..") ||
+    (selection.includes("/") && !selection.startsWith("topic/"))
+  ) {
+    return { error: "Error: memory_topic must name a file under topic/." };
+  }
+  const key = selection.startsWith("topic/") ? selection.slice("topic/".length) : selection;
+  if (!key || key.includes("/")) {
+    return { error: "Error: memory_topic must name one topic/*.md file." };
+  }
+
+  const accessible = listTopics().filter((topic) =>
+    topic.participants.some((participant) => participant.userId === userId),
+  );
+  const matches = accessible.filter((topic) => {
+    const canonicalFilename = `${wikiBriefStorageKey(topic.title, topic.id)}.md`;
+    const legacyFilename = `${wikiSummarySlug(topic.title)}.md`;
+    return (
+      key === topic.id ||
+      key.toLowerCase() === topic.title.toLowerCase() ||
+      key === canonicalFilename ||
+      key === legacyFilename
+    );
+  });
+  if (matches.length === 0) {
+    return { error: `Error: memory topic '${selection}' was not found or is not accessible.` };
+  }
+  if (matches.length > 1) {
+    return {
+      error: `Error: memory topic '${selection}' is ambiguous; use its topic id or canonical topic/*.md filename.`,
+    };
+  }
+  const origin = getTopicMemoryOrigin(matches[0]!.id) ?? matches[0]!;
+  // The matched topic is accessible, but its memory chain may resolve to a
+  // root origin the user does not participate in; fail closed like
+  // listMemoryTopicNames instead of granting memory access transitively.
+  if (!origin.participants.some((participant) => participant.userId === userId)) {
+    return { error: `Error: memory topic '${selection}' was not found or is not accessible.` };
+  }
+  return { topicId: origin.id };
+}
+
 function countLiveChildren(parentTopicId: string): number {
   let n = 0;
   for (const watch of watchesByChild.values()) {
     if (watch.parentTopicId === parentTopicId) n += 1;
   }
   return n;
+}
+
+/**
+ * Walk the parent chain and count how many subagent ancestors this topic has.
+ * Runs on every turn/MCP build, so it walks per-parent lookups (depth-capped)
+ * instead of scanning the whole topic table.
+ */
+export function computeSubagentDepth(topicId: string): number {
+  let depth = 0;
+  let current = getTopic(topicId);
+  const visited = new Set<string>();
+  while (current) {
+    if (visited.has(current.id)) return MAX_SUBAGENT_DEPTH;
+    visited.add(current.id);
+    if (current.isSubagent) depth += 1;
+    if (!current.parentTopicId || current.parentTopicId === current.id) break;
+    current = getTopic(current.parentTopicId);
+  }
+  return depth;
+}
+
+export function canSpawnSubagentsFromTopic(topicId: string): boolean {
+  const topic = getTopic(topicId);
+  return topic?.kind === "agent" && computeSubagentDepth(topicId) < MAX_SUBAGENT_DEPTH;
 }
 
 /** Read-merge-write the parent card and broadcast the patch. */
@@ -148,7 +238,8 @@ function watchFromPersistedCard(
     cardMessageId: message.id,
     name: card.name,
     userId,
-    startedAt: card.startedAt,
+    startedAt: card.startedAt ?? card.createdAt ?? message.createdAt,
+    reportMode: card.reportMode ?? "auto",
     queryId,
     running: card.status === "running",
   };
@@ -267,11 +358,13 @@ export async function settleSubagentSuccess(
       "subagent: completed-card update failed",
     );
   }
-  await notifyParent(
-    watch,
-    `[Subagent completed ← ${watch.name}]\n이 메시지는 spawn_subagent로 위임한 작업의 자동 완료 회신입니다. 결과를 확인하고 필요하면 이어서 진행하세요.\n\n${finalText || "(no text response)"}`,
-    "done",
-  );
+  if (watch.reportMode === "auto") {
+    await notifyParent(
+      watch,
+      `[Subagent completed ← ${watch.name}]\n이 메시지는 spawn_subagent로 위임한 작업의 자동 완료 회신입니다. 결과를 확인하고 필요하면 이어서 진행하세요.\n\n${finalText || "(no text response)"}`,
+      "done",
+    );
+  }
 }
 
 /** Settle a failed child run. NEVER rejects — call sites fire-and-forget. */
@@ -290,11 +383,13 @@ export async function settleSubagentFailure(queryId: string, reason: string): Pr
       "subagent: failed-card update failed",
     );
   }
-  await notifyParent(
-    watch,
-    `[Subagent failed ← ${watch.name}]\nspawn_subagent로 위임한 작업이 실패했습니다: ${reason}`,
-    "fail",
-  );
+  if (watch.reportMode === "auto") {
+    await notifyParent(
+      watch,
+      `[Subagent failed ← ${watch.name}]\nspawn_subagent로 위임한 작업이 실패했습니다: ${reason}`,
+      "fail",
+    );
+  }
 }
 
 /**
@@ -325,17 +420,119 @@ export function sweepStaleSubagentCards(): void {
   }
 }
 
-async function spawnSubagent(
+function reportModeFromInput(input: { report_mode?: unknown }): SubagentReportMode {
+  return input.report_mode === "tell" || input.report_mode === "status-only"
+    ? input.report_mode
+    : "auto";
+}
+
+function findSubagentCardMessage(childTopicId: string): MessageDto | undefined {
+  return listApiMessagesByKind("subagent")
+    .filter((message) => message.subagentCard?.subagentTopicId === childTopicId)
+    .at(-1);
+}
+
+export function subagentReportMode(childTopicId: string): SubagentReportMode {
+  return (
+    getTopic(childTopicId)?.subagentReportMode ??
+    findSubagentCardMessage(childTopicId)?.subagentCard?.reportMode ??
+    "auto"
+  );
+}
+
+async function startSubagentCard(
+  ctx: SubagentToolContext,
+  cardMessage: MessageDto,
+): Promise<ReturnType<typeof textResult>> {
+  const card = cardMessage.subagentCard;
+  if (!card) return errorResult("Error: subagent card is missing.");
+  if (card.status !== "ready") {
+    return errorResult(`Error: subagent cannot start from status '${card.status}'.`);
+  }
+  const child = getTopic(card.subagentTopicId);
+  const parent = getTopic(cardMessage.topicId);
+  if (!child || !parent)
+    return errorResult("Error: subagent room or its direct parent is missing.");
+  if (countLiveChildren(cardMessage.topicId) >= MAX_LIVE_CHILDREN_PER_PARENT) {
+    return errorResult(
+      `Error: this room already has ${MAX_LIVE_CHILDREN_PER_PARENT} subagents running.`,
+    );
+  }
+
+  const startedAt = new Date().toISOString();
+  const watch: SubagentWatch = {
+    parentTopicId: cardMessage.topicId,
+    childTopicId: child.id,
+    cardMessageId: cardMessage.id,
+    name: child.title,
+    userId: ctx.userId,
+    startedAt,
+    reportMode: card.reportMode ?? "auto",
+    running: false,
+  };
+  watchesByChild.set(child.id, watch);
+  patchSubagentCard(cardMessage.topicId, cardMessage.id, {
+    runtimeOwnerId: RUNTIME_INSTANCE_ID,
+    status: "spawned",
+    startedAt,
+    finishedAt: undefined,
+    errorMessage: undefined,
+    resultSummary: undefined,
+  });
+
+  const reportInstruction =
+    watch.reportMode === "tell"
+      ? `\n\nReport your result to "${parent.title}" with tell_session; your final response will not be forwarded automatically.`
+      : watch.reportMode === "status-only"
+        ? "\n\nDo not send a completion report to the parent; only the lifecycle card will be updated."
+        : "";
+  const childPrompt = `[Delegated task from ${parent.title}]\n\n${card.task}${reportInstruction}`;
+  const { triggerTopicAiTurn } = await import("#runtime/turn-runner");
+  const { getRoomQuery } = await import("#query/active-rooms");
+  const childQueryId = triggerTopicAiTurn(child.id, ctx.userId, childPrompt, undefined, {
+    origin: `subagent-task:${parent.title}`,
+    requestId: `subagent-task-${child.id}-${startedAt}`,
+    injectAuthorId: "ai",
+    onDispatched: (qid: string) => registerWatchDispatch(watch, qid),
+  });
+  const locallyQueued = Boolean(getRoomQuery(child.id));
+  if (!childQueryId && !watch.queryId && !locallyQueued) {
+    dropWatch(watch);
+    patchSubagentCard(cardMessage.topicId, cardMessage.id, {
+      status: "failed",
+      errorMessage: "the subagent turn could not be dispatched",
+      finishedAt: new Date().toISOString(),
+    });
+    return errorResult("Error: subagent room exists but its AI turn could not start.");
+  }
+  return textResult(`Subagent started: ${child.title} (${child.id})`);
+}
+
+async function createSubagent(
   ctx: SpawnSubagentToolContext,
-  input: { task?: unknown; name?: unknown; agent?: unknown; model?: unknown },
+  input: {
+    task?: unknown;
+    name?: unknown;
+    agent?: unknown;
+    model?: unknown;
+    report_mode?: unknown;
+    memory_topic?: unknown;
+  },
+  startImmediately: boolean,
 ) {
   const parent = getTopic(ctx.topicId);
   if (!parent) return errorResult(`Error: topic '${ctx.topicId}' not found.`);
   if (!parent.participants.some((p) => p.userId === ctx.userId)) {
     return errorResult("Error: user is not a member of this topic.");
   }
-  if (parent.kind !== "agent" || parent.isSubagent) {
-    return errorResult("Error: spawn_subagent is only available in top-level agent rooms.");
+  if (parent.kind !== "agent") {
+    return errorResult("Error: spawn_subagent is only available in agent rooms.");
+  }
+  const depth = computeSubagentDepth(ctx.topicId);
+  if (depth >= MAX_SUBAGENT_DEPTH) {
+    return errorResult(
+      `Error: subagent depth limit reached (current ${depth}, max ${MAX_SUBAGENT_DEPTH}).`,
+    );
   }
 
   const task = typeof input.task === "string" ? input.task.trim() : "";
@@ -353,11 +550,29 @@ async function spawnSubagent(
   const agentOverride = isAgentKind(input.agent) ? input.agent : undefined;
   const modelOverride =
     typeof input.model === "string" && input.model.trim() ? input.model.trim() : undefined;
+  const reportMode = reportModeFromInput(input);
+  const memorySelection = resolveMemoryTopicSelection(input.memory_topic, ctx.userId);
+  if (memorySelection.error) return errorResult(memorySelection.error);
 
-  if (countLiveChildren(ctx.topicId) >= MAX_LIVE_CHILDREN_PER_PARENT) {
+  if (startImmediately && countLiveChildren(ctx.topicId) >= MAX_LIVE_CHILDREN_PER_PARENT) {
     return errorResult(
       `Error: this room already has ${MAX_LIVE_CHILDREN_PER_PARENT} subagents running. Wait for one to finish before spawning another.`,
     );
+  }
+  if (!startImmediately) {
+    // Prepared-but-unstarted rooms consume real topics/workspaces; cap them so
+    // a create_subagent loop cannot allocate unbounded resources.
+    const preparedChildren = listTopics().filter(
+      (topic) =>
+        topic.parentTopicId === ctx.topicId &&
+        topic.isSubagent &&
+        subagentStatus(ctx.topicId, topic.id) === "ready",
+    ).length;
+    if (preparedChildren >= MAX_PREPARED_CHILDREN_PER_PARENT) {
+      return errorResult(
+        `Error: this room already has ${MAX_PREPARED_CHILDREN_PER_PARENT} prepared subagents. Start or delete one before creating another.`,
+      );
+    }
   }
 
   // Preflight the overrides before creating anything — a bad agent/model would
@@ -385,16 +600,27 @@ async function spawnSubagent(
     }
   }
 
-  const { createDerivedTopic, TopicTitleConflictError } = await import("#topics/derive");
+  const { createDerivedTopic, TopicDeriveBusyError, TopicTitleConflictError } = await import(
+    "#topics/derive"
+  );
   let child: Awaited<ReturnType<typeof createDerivedTopic>>;
   try {
     child = await createDerivedTopic(ctx.topicId, ctx.userId, false, {
       name,
-      subagent: { agent: agentOverride, model: resolvedModelOverride },
+      subagent: {
+        agent: agentOverride,
+        model: resolvedModelOverride,
+        memoryTopicId: memorySelection.topicId,
+      },
     });
   } catch (e) {
     if (e instanceof TopicTitleConflictError) {
       return errorResult(`Error: ${e.message}. Try a different name.`);
+    }
+    if (e instanceof TopicDeriveBusyError) {
+      return errorResult(
+        "Error: the source topic is busy (active turn or maintenance). Retry shortly.",
+      );
     }
     throw e;
   }
@@ -403,15 +629,17 @@ async function spawnSubagent(
       "Error: failed to create the subagent room (restricted or missing source topic).",
     );
   }
+  child.subagentReportMode = reportMode;
+  upsertTopic(child);
 
   const now = new Date().toISOString();
   const card: SubagentCardDto = {
     subagentTopicId: child.id,
     name: child.title,
     task,
-    runtimeOwnerId: RUNTIME_INSTANCE_ID,
-    status: "spawned",
-    startedAt: now,
+    status: "ready",
+    reportMode,
+    createdAt: now,
   };
   const cardMsg: MessageDto = {
     id: `subagent-${child.id}`,
@@ -428,42 +656,13 @@ async function spawnSubagent(
   appendApiMessage(cardMsg, { notify: false });
   WsHub.get().broadcastMessage(ctx.topicId, cardMsg);
 
-  const watch: SubagentWatch = {
-    parentTopicId: ctx.topicId,
-    childTopicId: child.id,
-    cardMessageId: cardMsg.id,
-    name: child.title,
-    userId: ctx.userId,
-    startedAt: now,
-    running: false,
-  };
-  watchesByChild.set(child.id, watch);
-
-  let childQueryId: string | null = null;
-  let locallyQueued = false;
-  const childPrompt = `[Delegated task from ${parent.title}]\n\n${task}`;
-  {
-    const { triggerTopicAiTurn } = await import("#runtime/turn-runner");
-    const { getRoomQuery } = await import("#query/active-rooms");
-    childQueryId = triggerTopicAiTurn(child.id, ctx.userId, childPrompt, agentOverride, {
-      origin: `subagent-task:${parent.title}`,
-      // Required by the defer queue: if a user message preempts the task turn,
-      // the re-queue path drops injects that have no requestId.
-      requestId: `subagent-task-${child.id}`,
-      injectAuthorId: "ai",
-      onDispatched: (qid: string) => registerWatchDispatch(watch, qid),
-    });
-    locallyQueued = Boolean(getRoomQuery(child.id));
+  if (!startImmediately) {
+    return textResult(
+      `Subagent prepared: ${child.title} (${child.id}). Use start_subagent to run it.`,
+    );
   }
-  if (!childQueryId && !watch.queryId && !locallyQueued) {
-    dropWatch(watch);
-    patchSubagentCard(ctx.topicId, cardMsg.id, {
-      status: "failed",
-      errorMessage: "the subagent turn could not be dispatched",
-      finishedAt: new Date().toISOString(),
-    });
-    return errorResult("Error: subagent room was created but its AI turn could not start.");
-  }
+  const started = await startSubagentCard(ctx, cardMsg);
+  if (started.isError) return started;
 
   logger.info(
     { parentTopicId: ctx.topicId, childTopicId: child.id, name: child.title },
@@ -472,35 +671,60 @@ async function spawnSubagent(
   return textResult(
     [
       `Subagent "${child.title}" spawned (room id: ${child.id}) and is now working in the background.`,
-      "Its final result will be delivered back into this room automatically when it finishes.",
+      reportMode === "auto"
+        ? "Its final result will be delivered back into this room automatically when it finishes."
+        : reportMode === "tell"
+          ? "It must report with tell_session; its final response is not forwarded automatically."
+          : "Only lifecycle status will be reported.",
       "Do NOT wait or poll — finish your current turn normally.",
     ].join("\n"),
   );
 }
 
-function ownedDirectSubagents(ctx: SubagentToolContext) {
+function ownedSubagentTree(ctx: SubagentToolContext) {
   const parent = getTopic(ctx.topicId);
   if (!parent) return { ok: false, error: `Error: topic '${ctx.topicId}' not found.` } as const;
   if (!parent.participants.some((participant) => participant.userId === ctx.userId)) {
     return { ok: false, error: "Error: user is not a member of this topic." } as const;
   }
-  if (parent.kind !== "agent" || parent.isSubagent) {
+  if (parent.kind !== "agent") {
     return {
       ok: false,
-      error: "Error: subagent management is only available in top-level agent rooms.",
+      error: "Error: subagent management is only available in agent rooms.",
     } as const;
   }
   return {
     ok: true,
     parent,
-    children: listTopics().filter(
-      (topic) =>
-        topic.parentTopicId === ctx.topicId &&
-        topic.isSubagent &&
-        topic.participants.some(
-          (participant) => participant.userId === ctx.userId && participant.role === "owner",
-        ),
-    ),
+    children: (() => {
+      const topics = listTopics();
+      const byParent = new Map<string, typeof topics>();
+      for (const topic of topics) {
+        if (!topic.parentTopicId || !topic.isSubagent) continue;
+        const siblings = byParent.get(topic.parentTopicId) ?? [];
+        siblings.push(topic);
+        byParent.set(topic.parentTopicId, siblings);
+      }
+      const descendants: typeof topics = [];
+      const visited = new Set<string>([ctx.topicId]);
+      const visit = (parentId: string) => {
+        for (const child of byParent.get(parentId) ?? []) {
+          if (visited.has(child.id)) continue;
+          visited.add(child.id);
+          if (
+            !child.participants.some(
+              (participant) => participant.userId === ctx.userId && participant.role === "owner",
+            )
+          ) {
+            continue;
+          }
+          descendants.push(child);
+          visit(child.id);
+        }
+      };
+      visit(ctx.topicId);
+      return descendants;
+    })(),
   } as const;
 }
 
@@ -519,32 +743,83 @@ function subagentStatus(
   return card?.status ?? "unknown";
 }
 
+function listMemoryTopicNames(ctx: SubagentToolContext): { names?: string[]; error?: string } {
+  const current = getTopic(ctx.topicId);
+  if (!current) return { error: `Error: topic '${ctx.topicId}' not found.` };
+  if (!current.participants.some((participant) => participant.userId === ctx.userId)) {
+    return { error: "Error: user is not a member of this topic." };
+  }
+
+  const sources = new Map<string, string>();
+  for (const topic of listTopics()) {
+    if (!topic.participants.some((participant) => participant.userId === ctx.userId)) continue;
+    const origin = getTopicMemoryOrigin(topic.id) ?? topic;
+    if (!origin.participants.some((participant) => participant.userId === ctx.userId)) continue;
+    sources.set(origin.id, origin.title);
+  }
+  return {
+    names: [...sources.values()].sort((left, right) =>
+      left.localeCompare(right, undefined, { sensitivity: "base" }),
+    ),
+  };
+}
+
 export function createSubagentManagementToolDefinitions(ctx: SubagentToolContext): SharedMcpTool[] {
   return [
     {
-      name: "list_subagents",
+      name: "list_memory_topics",
       description:
-        "List the direct subagent rooms created by this user from the current parent room. " +
-        "Use this to decide whether a completed subagent should be retained for follow-up work or deleted.",
+        "List the names of accessible topic-memory sources. Pass one returned name as memory_topic when creating or spawning a subagent.",
       schema: {},
       async handler() {
-        const result = ownedDirectSubagents(ctx);
+        const result = listMemoryTopicNames(ctx);
+        if (result.error) return errorResult(result.error);
+        return textResult(result.names?.length ? result.names.join("\n") : "(no memory topics)");
+      },
+    },
+    {
+      name: "list_subagents",
+      description:
+        "List the full descendant subagent tree, statuses, and tell_session connections managed by this room.",
+      schema: {},
+      async handler() {
+        const result = ownedSubagentTree(ctx);
         if (!result.ok) return errorResult(result.error);
         const children = result.children.map((child) => ({
           topic_id: child.id,
           name: child.title,
-          status: subagentStatus(ctx.topicId, child.id),
+          parent_topic_id: child.parentTopicId,
+          status: subagentStatus(child.parentTopicId ?? ctx.topicId, child.id),
           agent: child.agent ?? null,
           model: child.defaultModel ?? null,
+          tell_target_topic_ids: listSubagentTellTargetIds(child.id),
           created_at: child.createdAt,
         }));
         return textResult(JSON.stringify({ subagents: children }, null, 2));
       },
     },
     {
+      name: "start_subagent",
+      description: "Start a prepared descendant subagent task.",
+      schema: {
+        topic_id: z.string().describe("Prepared subagent room id."),
+      },
+      async handler(input) {
+        const result = ownedSubagentTree(ctx);
+        if (!result.ok) return errorResult(result.error);
+        const topicId = String(input.topic_id ?? "").trim();
+        if (!result.children.some((child) => child.id === topicId)) {
+          return errorResult("Error: topic is not a descendant subagent managed by this room.");
+        }
+        const cardMessage = findSubagentCardMessage(topicId);
+        if (!cardMessage) return errorResult("Error: no lifecycle card exists for this subagent.");
+        return startSubagentCard(ctx, cardMessage);
+      },
+    },
+    {
       name: "delete_subagent",
       description:
-        "Permanently delete one direct subagent room created by this user from the current parent room. " +
+        "Permanently delete one descendant subagent room managed by the current room. " +
         "This removes its conversation, workspace, runtime state, and topic. Keep it when follow-up work is likely.",
       schema: {
         topic_id: z
@@ -552,13 +827,13 @@ export function createSubagentManagementToolDefinitions(ctx: SubagentToolContext
           .describe("Exact subagent room id returned by list_subagents; names are not accepted."),
       },
       async handler(input) {
-        const result = ownedDirectSubagents(ctx);
+        const result = ownedSubagentTree(ctx);
         if (!result.ok) return errorResult(result.error);
         const topicId = typeof input.topic_id === "string" ? input.topic_id.trim() : "";
         const child = result.children.find((candidate) => candidate.id === topicId);
         if (!child) {
           return errorResult(
-            "Error: no owned direct subagent with that topic_id exists under this room.",
+            "Error: no owned descendant subagent with that topic_id exists under this room.",
           );
         }
         try {
@@ -571,6 +846,60 @@ export function createSubagentManagementToolDefinitions(ctx: SubagentToolContext
         }
       },
     },
+    {
+      name: "grant_subagent_tell",
+      description:
+        "Allow one descendant subagent to tell_session another topic in this managed subagent tree. " +
+        "Direct-parent reporting is always allowed and does not need a grant.",
+      schema: {
+        subagent_topic_id: z.string().describe("Source descendant subagent topic id."),
+        target_topic_id: z
+          .string()
+          .describe("Target topic id: this manager room or another descendant in its tree."),
+      },
+      async handler(input) {
+        const result = ownedSubagentTree(ctx);
+        if (!result.ok) return errorResult(result.error);
+        const sourceId = String(input.subagent_topic_id ?? "").trim();
+        const targetId = String(input.target_topic_id ?? "").trim();
+        const descendantIds = new Set(result.children.map((child) => child.id));
+        if (!descendantIds.has(sourceId)) {
+          return errorResult("Error: source is not a descendant subagent managed by this room.");
+        }
+        if (targetId !== ctx.topicId && !descendantIds.has(targetId)) {
+          return errorResult("Error: target is outside this room's managed subagent tree.");
+        }
+        if (getTopic(sourceId)?.parentTopicId === targetId) {
+          return textResult("No grant needed: a subagent can always report to its direct parent.");
+        }
+        grantSubagentTellTarget(sourceId, targetId, ctx.topicId);
+        return textResult(`tell_session grant added: ${sourceId} -> ${targetId}`);
+      },
+    },
+    {
+      name: "revoke_subagent_tell",
+      description:
+        "Remove an extra tell_session connection previously granted to a descendant subagent.",
+      schema: {
+        subagent_topic_id: z.string().describe("Source descendant subagent topic id."),
+        target_topic_id: z.string().describe("Granted target topic id."),
+      },
+      async handler(input) {
+        const result = ownedSubagentTree(ctx);
+        if (!result.ok) return errorResult(result.error);
+        const sourceId = String(input.subagent_topic_id ?? "").trim();
+        const targetId = String(input.target_topic_id ?? "").trim();
+        const descendantIds = new Set(result.children.map((child) => child.id));
+        if (!descendantIds.has(sourceId)) {
+          return errorResult("Error: source is not a descendant subagent managed by this room.");
+        }
+        if (targetId !== ctx.topicId && !descendantIds.has(targetId)) {
+          return errorResult("Error: target is outside this room's managed subagent tree.");
+        }
+        const removed = revokeSubagentTellTarget(sourceId, targetId);
+        return textResult(removed ? "tell_session grant removed." : "No matching grant existed.");
+      },
+    },
   ];
 }
 
@@ -579,14 +908,14 @@ export function createSpawnSubagentToolDefinition(ctx: SpawnSubagentToolContext)
     name: "spawn_subagent",
     description:
       "Delegate a self-contained task to a subagent that works in its own new agent room. " +
-      "Returns immediately; the subagent runs in the background and its final result is injected back into this room when it finishes. " +
-      "The subagent starts with ONLY the task text — include all necessary context, file paths, and acceptance criteria in it. " +
+      "Returns immediately; the subagent runs in the background and reports according to report_mode. " +
+      "The fresh room has no parent conversation history; it receives the task plus the selected or inherited topic memory. " +
       "Use for parallelizable or long-running side work. Do not use provider built-in Task/Agent subagents.",
     schema: {
       task: z
         .string()
         .describe(
-          "Self-contained task brief for the subagent. It sees nothing else — include all context.",
+          "Self-contained task brief. The worker has topic memory but no parent conversation history, so include all task-specific context.",
         ),
       name: z
         .string()
@@ -602,9 +931,46 @@ export function createSpawnSubagentToolDefinition(ctx: SpawnSubagentToolContext)
         .describe(
           `Best-fit model override from the system prompt catalog. Omit agent+model to inherit ${ctx.agent}/${ctx.model ?? "default"}; overriding agent without model uses that agent's default.`,
         ),
+      memory_topic: z
+        .string()
+        .optional()
+        .describe(
+          "Optional knowledge source: an accessible topic id/title or topic/*.md brief. Defaults to the parent room's effective topic brief.",
+        ),
+      report_mode: z
+        .enum(["auto", "tell", "status-only"])
+        .optional()
+        .describe(
+          "Completion reporting: auto injects the final result, tell requires tell_session, status-only updates only the lifecycle card.",
+        ),
     },
     async handler(input) {
-      return spawnSubagent(ctx, input);
+      return createSubagent(ctx, input, true);
+    },
+  };
+}
+
+export function createPrepareSubagentToolDefinition(ctx: SpawnSubagentToolContext): SharedMcpTool {
+  return {
+    name: "create_subagent",
+    description:
+      "Create a prepared subagent room and task definition without starting its AI turn. " +
+      "Use start_subagent when the team is ready to run it.",
+    schema: {
+      task: z.string().describe("Self-contained task brief for the subagent."),
+      name: z.string().optional().describe("Short room name. Auto-generated when omitted."),
+      agent: z.enum(["claude", "codex", "maestro"]).optional(),
+      model: z.string().optional(),
+      memory_topic: z
+        .string()
+        .optional()
+        .describe(
+          "Optional accessible topic id/title or topic/*.md brief to use as this worker's knowledge source. Defaults to the parent.",
+        ),
+      report_mode: z.enum(["auto", "tell", "status-only"]).optional(),
+    },
+    async handler(input) {
+      return createSubagent(ctx, input, false);
     },
   };
 }

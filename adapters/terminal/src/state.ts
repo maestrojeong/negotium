@@ -7,17 +7,40 @@ import {
   type VaultEntry,
 } from "@negotium/core";
 import { terminalNowMs } from "@/clock";
+import { DEFAULT_SUBAGENT_GRAPH_SPACING } from "@/subagent-graph";
 
 type Overlay =
   | "help"
   | "status"
   | "topics"
+  | "subagents"
   | "background-session"
   | "models"
   | "effort"
   | "vault"
   | "confirm-delete"
   | null;
+
+export interface SubagentGraphCanvas {
+  title: string;
+  rootDetail?: string;
+  rootRunning?: boolean;
+  nodes?: Array<{
+    topicId: string;
+    title: string;
+    markerX: number;
+    markerY: number;
+  }>;
+  edges?: Array<{
+    sourceTopicId: string;
+    targetTopicId: string;
+    kind: "owns" | "owns-parent-only" | "tell" | "tell-bidirectional";
+    cells: Array<{ x: number; y: number }>;
+  }>;
+  lines: string[];
+  width: number;
+  height: number;
+}
 
 /**
  * Terminal-local message shape: tool timeline messages carry an explicit
@@ -33,6 +56,8 @@ interface ToolActivity {
   label: string;
   output?: string;
   status?: string;
+  sessionAction?: "ask" | "tell";
+  sessionTarget?: string;
 }
 
 interface TopicActivity {
@@ -71,6 +96,10 @@ export interface AppState {
   pendingDeleteTopicId?: string;
   creatingTopic: boolean;
   scrollOffset: number;
+  subagentGraph?: SubagentGraphCanvas;
+  subagentGraphLoading: boolean;
+  subagentGraphOffset: { x: number; y: number };
+  subagentGraphSpacing: number;
   askChoiceIndex: number;
   taskSidebarEnabled: boolean;
   overlay: Overlay;
@@ -103,6 +132,9 @@ export function createInitialState(userId: string): AppState {
     effortPickerIndex: 0,
     creatingTopic: false,
     scrollOffset: 0,
+    subagentGraphLoading: false,
+    subagentGraphOffset: { x: 0, y: 0 },
+    subagentGraphSpacing: DEFAULT_SUBAGENT_GRAPH_SPACING,
     askChoiceIndex: 0,
     taskSidebarEnabled: true,
     overlay: null,
@@ -610,10 +642,28 @@ function applyAiStatus(
   if (kind === "tool_call") {
     if (isStaleTerminalStatus(current, status)) return state;
     const queryId = String(status.queryId ?? "");
+    const toolName = String(status.name ?? "");
+    const shortToolName = toolName.split("__").at(-1)?.toLowerCase() ?? toolName.toLowerCase();
+    const input =
+      status.input && typeof status.input === "object"
+        ? (status.input as Record<string, unknown>)
+        : {};
+    const sessionAction =
+      shortToolName === "ask_session"
+        ? "ask"
+        : shortToolName === "tell_session"
+          ? "tell"
+          : undefined;
+    const sessionTarget =
+      sessionAction && typeof input.to === "string" && input.to.trim()
+        ? input.to.trim()
+        : undefined;
     const tool: ToolActivity = {
       id: String(status.toolUseId ?? `${queryId || "query"}:tool`),
       label: String(status.label ?? status.name ?? "tool"),
       status: "running",
+      ...(sessionAction ? { sessionAction } : {}),
+      ...(sessionTarget ? { sessionTarget } : {}),
     };
     const withActivity = setActivity(state, topicId, {
       ...liveCurrent,

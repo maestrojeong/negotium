@@ -281,6 +281,19 @@ describe("mcp-config: playwright transport selection per agent", () => {
     );
   });
 
+  test("session-comm receives the subagent parent id in forum scope", () => {
+    const servers = getForumMcpServers({
+      userId,
+      session: "child",
+      topicId: "child-topic",
+      subagentParentTopicId: "parent-topic",
+      agent: "claude",
+    });
+    expect((servers["session-comm"] as { args: string[] }).args).toContain(
+      "--subagent-parent-topic-id=parent-topic",
+    );
+  });
+
   test("runtime uses SSE for maestro", () => {
     const servers = getForumMcpServers({
       userId,

@@ -114,6 +114,7 @@ describe("negotium MCP endpoint", () => {
       "delete_topic",
       "ask_user_question",
       "spawn_subagent",
+      "list_memory_topics",
       "list_subagents",
       "delete_subagent",
       "send_file",
@@ -154,6 +155,35 @@ describe("negotium MCP endpoint", () => {
       expect(names).not.toContain("send_files");
     } finally {
       await visualClient.close();
+    }
+  });
+
+  test("does not expose ask_user_question in a subagent room", async () => {
+    const child = registerTopic({
+      title: `ask-disabled-subagent-${randomUUID()}`,
+      userId: USER_ID,
+      agent: "codex",
+    });
+    child.parentTopicId = mainTopic.id;
+    child.isSubagent = true;
+    upsertTopic(child);
+
+    const childClient = new Client({ name: "negotium-subagent-mcp-test", version: "1.0.0" });
+    const token = issueRuntimeMcpToken({
+      ...ctx,
+      topicId: child.id,
+      topicTitle: child.title,
+    });
+    const url = new URL(
+      `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+    );
+
+    try {
+      await childClient.connect(new StreamableHTTPClientTransport(url));
+      const names = (await childClient.listTools()).tools.map((tool) => tool.name);
+      expect(names).not.toContain("ask_user_question");
+    } finally {
+      await childClient.close();
     }
   });
 

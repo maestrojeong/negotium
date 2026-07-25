@@ -175,6 +175,8 @@ export interface AgentQueryOptions {
   sessionType?: "dm" | "forum" | "ephemeral" | "manager" | "cron";
   /** API topic id (REST/WS world). Carries per-query topic context for MCP servers. */
   topicId?: string;
+  /** Direct parent topic id when this query runs inside a subagent room. */
+  subagentParentTopicId?: string;
   /** API query id for the currently running turn. Used by runtime MCP tools. */
   queryId?: string;
   /** Optional wiki-memory topic id. Derived topics use their root origin here

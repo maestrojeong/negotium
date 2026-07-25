@@ -21,7 +21,9 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import {
   appendApiMessage,
   appendJsonlEntry,
+  canSpawnSubagentsFromTopic,
   createAskUserToolDefinition,
+  createPrepareSubagentToolDefinition,
   createSelfConfigToolDefinitions,
   createSpawnSubagentToolDefinition,
   createSubagentManagementToolDefinitions,
@@ -250,42 +252,43 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
     server.tool(def.name, def.description, def.schema as any, handler as any);
   }
 
-  const askUserTool = createAskUserToolDefinition({
-    userId: ctx.userId,
-    topicId: ctx.topicId,
-    queryId: ctx.queryId,
-    agent: ctx.agent,
-    model: ctx.model,
-  });
-  const askHandler = ctx.peerBridge
-    ? async (input: Record<string, unknown>) => {
-        const dispatched = dispatchPeerRuntimeAskUser({
-          bridge: ctx.peerBridge!,
-          userId: ctx.userId,
-          agent: ctx.agent,
-          model: ctx.model,
-          input,
-        });
-        if (!dispatched) {
-          return errorResult("Error: the peer ask-user bridge is not available on this node.");
-        }
-        return dispatched;
-      }
-    : askUserTool.handler;
-  server.tool(
-    askUserTool.name,
-    askUserTool.description,
-    askUserTool.schema as any,
-    askHandler as any,
-  );
-
-  // Delegation is for top-level agent rooms only: subagent rooms never get the
-  // tool (recursion guard by construction), nor do channels/manager rooms.
   const topic = getTopic(ctx.topicId);
+  if (!topic?.isSubagent) {
+    const askUserTool = createAskUserToolDefinition({
+      userId: ctx.userId,
+      topicId: ctx.topicId,
+      queryId: ctx.queryId,
+      agent: ctx.agent,
+      model: ctx.model,
+    });
+    const askHandler = ctx.peerBridge
+      ? async (input: Record<string, unknown>) => {
+          const dispatched = dispatchPeerRuntimeAskUser({
+            bridge: ctx.peerBridge!,
+            userId: ctx.userId,
+            agent: ctx.agent,
+            model: ctx.model,
+            input,
+          });
+          if (!dispatched) {
+            return errorResult("Error: the peer ask-user bridge is not available on this node.");
+          }
+          return dispatched;
+        }
+      : askUserTool.handler;
+    server.tool(
+      askUserTool.name,
+      askUserTool.description,
+      askUserTool.schema as any,
+      askHandler as any,
+    );
+  }
+
+  // Local subagents may recurse up to the runtime depth limit.
   const peerBridge = ctx.peerBridge;
   const canSpawnSubagents = peerBridge
     ? peerBridge.canSpawnSubagents
-    : topic?.kind === "agent" && !topic.isSubagent;
+    : canSpawnSubagentsFromTopic(ctx.topicId);
   if (canSpawnSubagents) {
     const spawnTool = createSpawnSubagentToolDefinition({
       userId: ctx.userId,
@@ -316,12 +319,27 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
       spawnHandler as any,
     );
     if (!peerBridge) {
-      for (const def of createSubagentManagementToolDefinitions({
+      const createTool = createPrepareSubagentToolDefinition({
         userId: ctx.userId,
         topicId: ctx.topicId,
-      })) {
-        server.tool(def.name, def.description, def.schema as any, def.handler as any);
-      }
+        queryId: ctx.queryId,
+        agent: ctx.agent,
+        model: ctx.model,
+      });
+      server.tool(
+        createTool.name,
+        createTool.description,
+        createTool.schema as any,
+        createTool.handler as any,
+      );
+    }
+  }
+  if (!peerBridge && topic?.kind === "agent" && ctx.topicId) {
+    for (const def of createSubagentManagementToolDefinitions({
+      userId: ctx.userId,
+      topicId: ctx.topicId,
+    })) {
+      server.tool(def.name, def.description, def.schema as any, def.handler as any);
     }
   }
 

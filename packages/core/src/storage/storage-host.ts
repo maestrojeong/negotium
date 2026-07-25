@@ -129,7 +129,10 @@ const STORAGE_PATH_KEYS = [
 
 function normalizeStorageHostPatch(options: StorageHostConfig): Readonly<StorageHostConfig> {
   const patch: StorageHostConfig = {};
-  if (options.database !== undefined) patch.database = options.database;
+  if (options.database !== undefined) {
+    options.database.exec("PRAGMA foreign_keys = ON");
+    patch.database = options.database;
+  }
   for (const key of STORAGE_PATH_KEYS) {
     const value = options[key];
     if (value === undefined) continue;

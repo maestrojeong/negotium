@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
+  canSpawnSubagentsFromTopic,
+  createPrepareSubagentToolDefinition,
   createSpawnSubagentToolDefinition,
   createSubagentManagementToolDefinitions,
+  settleSubagentSuccess,
   sweepStaleSubagentCards,
   takeSubagentWatch,
 } from "#agents/mcp-tools/spawn-subagent";
@@ -10,11 +13,13 @@ import {
   appendApiMessage,
   deleteMessagesForTopic,
   getApiMessage,
+  listApiMessages,
   listApiMessagesByKind,
   updateApiMessageSubagentCard,
 } from "#storage/api-messages";
-import { deleteTopic, getTopic, upsertTopic } from "#storage/api-topics";
+import { deleteTopic, getTopic, getTopicMemoryOrigin, upsertTopic } from "#storage/api-topics";
 import { claimRuntimeTurnLease, releaseRuntimeTurnLease } from "#storage/runtime-leases";
+import { wikiBriefStorageKey } from "#storage/wiki-summary-names";
 import type { MessageDto, SubagentCardDto, TopicDto } from "#types/api";
 
 const createdTopicIds: string[] = [];
@@ -103,13 +108,27 @@ describe("spawn_subagent guards", () => {
     expect(result.content[0]?.text).toContain("agent rooms");
   });
 
-  test("rejects subagent rooms (no recursive spawning)", async () => {
-    const topic = makeTopic("user-1", { isSubagent: true, parentTopicId: "some-parent" });
-    expect(getTopic(topic.id)?.isSubagent).toBe(true);
-    const tool = toolFor(topic.id, "user-1");
+  test("allows nested subagents up to depth two", async () => {
+    const root = makeTopic("user-1");
+    const depth1 = makeTopic("user-1", { isSubagent: true, parentTopicId: root.id });
+    const depth2 = makeTopic("user-1", { isSubagent: true, parentTopicId: depth1.id });
+
+    expect(canSpawnSubagentsFromTopic(root.id)).toBe(true);
+    expect(canSpawnSubagentsFromTopic(depth1.id)).toBe(true);
+    expect(canSpawnSubagentsFromTopic(depth2.id)).toBe(false);
+
+    const tool = toolFor(depth2.id, "user-1");
     const result = await tool.handler({ task: "do something" });
     expect(result.isError).toBe(true);
-    expect(result.content[0]?.text).toContain("agent rooms");
+    expect(result.content[0]?.text).toContain("depth limit");
+  });
+
+  test("fails closed instead of looping on a cyclic parent chain", () => {
+    const first = makeTopic("user-1", { isSubagent: true });
+    const second = makeTopic("user-1", { isSubagent: true, parentTopicId: first.id });
+    upsertTopic({ ...first, parentTopicId: second.id });
+
+    expect(canSpawnSubagentsFromTopic(first.id)).toBe(false);
   });
 
   test("rejects an empty task", async () => {
@@ -139,11 +158,39 @@ describe("spawn_subagent guards", () => {
 });
 
 describe("subagent management tools", () => {
-  test("lists only direct subagents owned by the current user", async () => {
+  test("lists only accessible effective memory topic names", async () => {
+    const parent = makeTopic("user-1", { title: `parent-${randomUUID()}` });
+    const knowledge = makeTopic("user-1", { title: `knowledge-${randomUUID()}` });
+    makeTopic("other-user", { title: `private-${randomUUID()}` });
+    makeTopic("user-1", {
+      title: `derived-${randomUUID()}`,
+      parentTopicId: knowledge.id,
+    });
+    const listMemoryTopics = createSubagentManagementToolDefinitions({
+      userId: "user-1",
+      topicId: parent.id,
+    }).find((tool) => tool.name === "list_memory_topics");
+
+    const result = await listMemoryTopics?.handler({});
+    expect(result?.isError).toBeUndefined();
+    const text = result?.content[0]?.text ?? "";
+    expect(text).toContain(parent.title);
+    expect(text).toContain(knowledge.title);
+    expect(text).not.toContain("private-");
+    expect(text).not.toContain("derived-");
+    expect(text.split("\n").filter((name) => name === knowledge.title)).toHaveLength(1);
+  });
+
+  test("lists the owned descendant tree and renders tell connections", async () => {
     const parent = makeTopic("user-1");
     const owned = makeTopic("user-1", {
       title: `owned-${randomUUID()}`,
       parentTopicId: parent.id,
+      isSubagent: true,
+    });
+    const grandchild = makeTopic("user-1", {
+      title: `grandchild-${randomUUID()}`,
+      parentTopicId: owned.id,
       isSubagent: true,
     });
     makeTopic("user-2", {
@@ -162,13 +209,179 @@ describe("subagent management tools", () => {
     }).find((tool) => tool.name === "list_subagents");
     expect(listTool).toBeDefined();
     const result = await listTool?.handler({});
-    const payload = JSON.parse(result?.content[0]?.text ?? "{}") as {
-      subagents?: Array<{ topic_id: string }>;
+    const text = result?.content[0]?.text ?? "";
+    const payload = JSON.parse(text) as {
+      subagents?: Array<{ topic_id: string; tell_target_topic_ids: string[] }>;
     };
-    expect(payload.subagents?.map((child) => child.topic_id)).toEqual([owned.id]);
+    expect(payload.subagents?.map((child) => child.topic_id)).toEqual([owned.id, grandchild.id]);
+    expect(payload.subagents?.every((child) => child.tell_target_topic_ids.length === 0)).toBe(
+      true,
+    );
   });
 
-  test("deletes an owned direct subagent and rejects unrelated topics", async () => {
+  test("an ancestor can connect descendant subagents with tell grants", async () => {
+    const parent = makeTopic("user-1");
+    const source = makeTopic("user-1", {
+      parentTopicId: parent.id,
+      isSubagent: true,
+    });
+    const target = makeTopic("user-1", {
+      parentTopicId: source.id,
+      isSubagent: true,
+    });
+    const tools = createSubagentManagementToolDefinitions({
+      userId: "user-1",
+      topicId: parent.id,
+    });
+    const grant = tools.find((tool) => tool.name === "grant_subagent_tell");
+    const listed = tools.find((tool) => tool.name === "list_subagents");
+
+    const granted = await grant?.handler({
+      subagent_topic_id: source.id,
+      target_topic_id: target.id,
+    });
+    expect(granted?.isError).toBeUndefined();
+    const listedText = (await listed?.handler({}))?.content[0]?.text ?? "";
+    const listedPayload = JSON.parse(listedText) as {
+      subagents?: Array<{ topic_id: string; tell_target_topic_ids: string[] }>;
+    };
+    const sourceEntry = listedPayload.subagents?.find((child) => child.topic_id === source.id);
+    expect(sourceEntry?.tell_target_topic_ids).toEqual([target.id]);
+  });
+
+  test("a lower manager cannot revoke an ancestor grant outside its tree", async () => {
+    const root = makeTopic("user-1");
+    const manager = makeTopic("user-1", { parentTopicId: root.id, isSubagent: true });
+    const source = makeTopic("user-1", { parentTopicId: manager.id, isSubagent: true });
+    const sibling = makeTopic("user-1", { parentTopicId: root.id, isSubagent: true });
+    const rootTools = createSubagentManagementToolDefinitions({
+      userId: "user-1",
+      topicId: root.id,
+    });
+    await rootTools
+      .find((tool) => tool.name === "grant_subagent_tell")
+      ?.handler({
+        subagent_topic_id: source.id,
+        target_topic_id: sibling.id,
+      });
+
+    const managerTools = createSubagentManagementToolDefinitions({
+      userId: "user-1",
+      topicId: manager.id,
+    });
+    const revoked = await managerTools
+      .find((tool) => tool.name === "revoke_subagent_tell")
+      ?.handler({
+        subagent_topic_id: source.id,
+        target_topic_id: sibling.id,
+      });
+
+    expect(revoked?.isError).toBe(true);
+  });
+
+  test("creates a prepared subagent that remains ready until started", async () => {
+    const parent = makeTopic("user-1");
+    const create = createPrepareSubagentToolDefinition({
+      userId: "user-1",
+      topicId: parent.id,
+      queryId: `query-${randomUUID()}`,
+      agent: "claude",
+      model: "sonnet",
+    });
+    const created = await create.handler({
+      task: "wait for the team",
+      name: `prepared-${randomUUID().slice(0, 8)}`,
+      report_mode: "tell",
+    });
+    expect(created.isError).toBeUndefined();
+    const cardMessage = listApiMessagesByKind("subagent")
+      .filter((message) => message.topicId === parent.id)
+      .at(-1);
+    const childId = cardMessage?.subagentCard?.subagentTopicId;
+    expect(childId).toBeTruthy();
+    if (!childId) return;
+    createdTopicIds.push(childId);
+    expect(cardMessage?.subagentCard).toMatchObject({ status: "ready", reportMode: "tell" });
+
+    const tools = createSubagentManagementToolDefinitions({
+      userId: "user-1",
+      topicId: parent.id,
+    });
+    expect(tools.map((tool) => tool.name)).toContain("start_subagent");
+    expect(tools.map((tool) => tool.name)).not.toContain("pause_subagent");
+    expect(tools.map((tool) => tool.name)).not.toContain("resume_subagent");
+  });
+
+  test("uses the parent memory by default and accepts an explicit topic/*.md source", async () => {
+    const parent = makeTopic("user-1");
+    const memorySource = makeTopic("user-1", { title: `knowledge-${randomUUID()}` });
+    const create = createPrepareSubagentToolDefinition({
+      userId: "user-1",
+      topicId: parent.id,
+      queryId: `query-${randomUUID()}`,
+      agent: "claude",
+      model: "sonnet",
+    });
+
+    const inherited = await create.handler({
+      task: "use parent knowledge",
+      name: `parent-memory-${randomUUID().slice(0, 8)}`,
+    });
+    expect(inherited.isError).toBeUndefined();
+    const inheritedChildId = listApiMessagesByKind("subagent")
+      .filter((message) => message.topicId === parent.id)
+      .at(-1)?.subagentCard?.subagentTopicId;
+    expect(inheritedChildId).toBeTruthy();
+    if (inheritedChildId) {
+      createdTopicIds.push(inheritedChildId);
+      expect(getTopic(inheritedChildId)?.memoryTopicId).toBeUndefined();
+      expect(getTopicMemoryOrigin(inheritedChildId)?.id).toBe(parent.id);
+    }
+
+    const explicit = await create.handler({
+      task: "use accumulated domain knowledge",
+      name: `explicit-memory-${randomUUID().slice(0, 8)}`,
+      memory_topic: `topic/${wikiBriefStorageKey(memorySource.title, memorySource.id)}.md`,
+    });
+    expect(explicit.isError).toBeUndefined();
+    const explicitChildId = listApiMessagesByKind("subagent")
+      .filter((message) => message.topicId === parent.id)
+      .at(-1)?.subagentCard?.subagentTopicId;
+    expect(explicitChildId).toBeTruthy();
+    if (explicitChildId) {
+      createdTopicIds.push(explicitChildId);
+      expect(getTopic(explicitChildId)?.memoryTopicId).toBe(memorySource.id);
+      expect(getTopicMemoryOrigin(explicitChildId)?.id).toBe(memorySource.id);
+    }
+  });
+
+  test("rejects inaccessible or unsafe memory topic selectors", async () => {
+    const parent = makeTopic("user-1");
+    const privateSource = makeTopic("other-user");
+    const create = createPrepareSubagentToolDefinition({
+      userId: "user-1",
+      topicId: parent.id,
+      queryId: `query-${randomUUID()}`,
+      agent: "claude",
+      model: "sonnet",
+    });
+
+    const inaccessible = await create.handler({
+      task: "read another user's memory",
+      memory_topic: privateSource.id,
+    });
+    expect(inaccessible.isError).toBe(true);
+    expect(inaccessible.content[0]?.text).toContain("not found or is not accessible");
+
+    const traversal = await create.handler({
+      task: "escape the topic directory",
+      memory_topic: "topic/../secrets.md",
+    });
+    expect(traversal.isError).toBe(true);
+    expect(traversal.content[0]?.text).toContain("under topic/");
+  });
+
+  test("deletes an owned descendant subagent and rejects unrelated topics", async () => {
     const parent = makeTopic("user-1");
     const child = makeTopic("user-1", {
       title: `child-${randomUUID()}`,
@@ -324,6 +537,65 @@ describe("subagent card storage", () => {
       });
     } finally {
       releaseRuntimeTurnLease(child.id, queryId);
+    }
+  });
+});
+
+describe("subagent report_mode settlement", () => {
+  function watchFor(
+    parent: TopicDto,
+    child: TopicDto,
+    reportMode: "auto" | "tell" | "status-only",
+  ) {
+    makeCardMessage(parent.id, {
+      subagentTopicId: child.id,
+      name: child.title,
+      task: "settle test",
+      status: "running",
+      reportMode,
+      startedAt: new Date().toISOString(),
+    });
+    return {
+      parentTopicId: parent.id,
+      childTopicId: child.id,
+      cardMessageId: `subagent-${child.id}`,
+      name: child.title,
+      userId: "user-1",
+      startedAt: new Date().toISOString(),
+      reportMode,
+      running: false,
+    };
+  }
+
+  function parentSystemNotes(parentTopicId: string): MessageDto[] {
+    return listApiMessages(parentTopicId).page.filter(
+      (message) => message.kind === "system" && message.id.startsWith("subagent-note-"),
+    );
+  }
+
+  test("auto report mode notifies the parent room on completion", async () => {
+    // Agentless parent (channel/off keeps agent unset through normalization) →
+    // notifyParent falls back to an observable system note instead of an AI turn.
+    const parent = makeTopic("user-1", { kind: "channel", aiMode: "off", agent: undefined });
+    const child = makeTopic("user-1", { parentTopicId: parent.id, isSubagent: true });
+    await settleSubagentSuccess(watchFor(parent, child, "auto"), "all done");
+    const notes = parentSystemNotes(parent.id);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.text).toContain("all done");
+    expect(getApiMessage(parent.id, `subagent-${child.id}`)?.subagentCard?.status).toBe(
+      "completed",
+    );
+  });
+
+  test("tell and status-only report modes never notify the parent room", async () => {
+    for (const reportMode of ["tell", "status-only"] as const) {
+      const parent = makeTopic("user-1", { kind: "channel", aiMode: "off", agent: undefined });
+      const child = makeTopic("user-1", { parentTopicId: parent.id, isSubagent: true });
+      await settleSubagentSuccess(watchFor(parent, child, reportMode), "quiet result");
+      expect(parentSystemNotes(parent.id)).toHaveLength(0);
+      expect(getApiMessage(parent.id, `subagent-${child.id}`)?.subagentCard?.status).toBe(
+        "completed",
+      );
     }
   });
 });

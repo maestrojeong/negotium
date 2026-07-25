@@ -11,6 +11,7 @@ import {
   runtimeEventWaitsForMessageLoad,
   TerminalApp,
   terminalDeletionShortcut,
+  terminalNeedsAnimation,
   vaultFormBlocksOverlaySwitch,
 } from "@/app";
 import {
@@ -48,6 +49,18 @@ test("translates SGR mouse wheel events into conversation scrolling", () => {
   expect(consumeMouseInput("\u001b[<64;10;5M\u001b[<64;10;5M\u001b[<65;10;5Mtext")).toEqual({
     input: "text",
     scrollDelta: 3,
+    horizontalScrollDelta: 0,
+    events: [],
+  });
+});
+
+test("preserves horizontal and Shift-wheel mouse movement", () => {
+  expect(
+    consumeMouseInput("\u001b[<66;10;5M\u001b[<67;10;5M\u001b[<68;10;5M\u001b[<68;10;5M"),
+  ).toEqual({
+    input: "",
+    scrollDelta: 0,
+    horizontalScrollDelta: 6,
     events: [],
   });
 });
@@ -94,10 +107,35 @@ test("derives animation frames from elapsed time instead of callback count", () 
   expect(animationFrameAt(WORKING_FRAME_INTERVAL_MS * 7)).toBe(7);
 });
 
+test("keeps graph animation active while only a child agent is working", () => {
+  const child = {
+    ...TOPIC,
+    id: "child",
+    title: "Child",
+    parentTopicId: TOPIC.id,
+    isSubagent: true,
+  };
+  const state = applyRuntimeEvent(
+    {
+      ...setTopics(createInitialState("local"), [TOPIC, child]),
+      overlay: "subagents" as const,
+    },
+    {
+      type: "ai-status",
+      topicId: child.id,
+      payload: { kind: "ai_active", queryId: "child-query" },
+    },
+  );
+
+  expect(terminalNeedsAnimation(state)).toBe(true);
+  expect(terminalNeedsAnimation({ ...state, overlay: null })).toBe(false);
+});
+
 test("parses left-button drag selection events", () => {
   expect(consumeMouseInput("\u001b[<0;3;4M\u001b[<32;8;4M\u001b[<0;8;4m")).toEqual({
     input: "",
     scrollDelta: 0,
+    horizontalScrollDelta: 0,
     events: [
       { button: 0, x: 3, y: 4, kind: "press" },
       { button: 32, x: 8, y: 4, kind: "drag" },

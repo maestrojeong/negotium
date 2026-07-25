@@ -1,4 +1,4 @@
-import { displayWidth, stripAnsi } from "@/render";
+import { displayWidth, stripAnsi } from "@/terminal-width";
 
 export interface ScreenPoint {
   /** One-based terminal column. */

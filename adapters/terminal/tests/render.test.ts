@@ -199,6 +199,13 @@ describe("terminal renderer", () => {
     expect(output).toContain("codex · gpt-5.6-sol · medium");
   });
 
+  test("shows the active topic title in the footer", () => {
+    const current = { ...topic(), title: "Release Planning" };
+    const state = setTopics(createInitialState("local"), [current]);
+    const output = stripAnsi(renderApp(state, 120, 30));
+    expect(output).toContain("Release Planning · codex ·");
+  });
+
   test("shows both the agent and effective model in the topic picker", () => {
     const state = {
       ...setTopics(createInitialState("local"), [topic()]),
@@ -417,7 +424,7 @@ describe("terminal renderer", () => {
     expect(output).toContain("max");
   });
 
-  test("indents subagent topics with a child arrow in the topic picker", () => {
+  test("renders subagent ownership branches in the topic picker", () => {
     const parent = { ...topic(), id: "parent", title: "Parent" };
     const child = {
       ...topic(),
@@ -435,10 +442,117 @@ describe("terminal renderer", () => {
     const parentLine = output.split("\n").find((row) => row.includes("Parent"));
     const childLine = output.split("\n").find((row) => row.includes("Child"));
 
-    expect(parentLine).not.toContain("↳");
-    expect(childLine).toContain("↳ ○ Child");
+    expect(parentLine).not.toContain("└─");
+    expect(childLine).toContain("└─ ○ Child");
     expect(output.indexOf("Parent")).toBeLessThan(output.indexOf("Child"));
     expect(output).not.toContain("SUBAGENT");
+  });
+
+  test("renders the ELK subagent canvas through a movable viewport", () => {
+    const canvasLines = [
+      "╭──────────╮                   ",
+      "│ ○ Root   │                   ",
+      "╰──────────╯                   ",
+      "     │                         ",
+      "     ▼                         ",
+      "                    ╭─────────╮",
+      "                    │ ○ Child │",
+      "                    ╰─BOTTOM──╯",
+    ];
+    const base = {
+      ...setTopics(createInitialState("local"), [topic()]),
+      overlay: "subagents" as const,
+      subagentGraphLoading: false,
+      subagentGraph: {
+        title: "Root",
+        rootDetail: "codex · gpt-5.6-luna · medium",
+        rootRunning: false,
+        nodes: [
+          { topicId: "topic", title: "Root", markerX: 2, markerY: 1 },
+          { topicId: "child", title: "Child", markerX: 22, markerY: 6 },
+        ],
+        lines: canvasLines,
+        width: 31,
+        height: canvasLines.length,
+      },
+    };
+
+    const start = stripAnsi(renderApp(base, 32, 14));
+    const shifted = stripAnsi(renderApp({ ...base, subagentGraphOffset: { x: 16, y: 4 } }, 32, 14));
+
+    expect(start).toContain("Agent graph");
+    expect(start).toContain("○ Root · codex · gpt-5.6-luna");
+    expect(start).toContain("[/] spacing 4");
+    expect(start).toContain("○ Root");
+    expect(start).not.toContain("○ Child");
+    expect(shifted).toContain("○ Child");
+    expect(shifted).toContain("BOTTOM");
+    expect(shifted).toContain("solid ↕: parent/child");
+  });
+
+  test("shows and animates agents that start working while the graph is open", () => {
+    const canvasLines = [
+      "╭──────────╮",
+      "│ ○ Root   │",
+      "╰──────────╯",
+      "     │      ",
+      "     ▼      ",
+      "╭──────────╮",
+      "│ ○ Child  │",
+      "╰──────────╯",
+    ];
+    const state = {
+      ...setTopics(createInitialState("local"), [topic()]),
+      overlay: "subagents" as const,
+      subagentGraphLoading: false,
+      activity: {
+        child: {
+          running: true,
+          status: "Working",
+          tools: [
+            {
+              id: "tell",
+              label: "tell_session",
+              status: "done",
+              sessionAction: "tell" as const,
+              sessionTarget: "Root",
+            },
+          ],
+        },
+      },
+      subagentGraph: {
+        title: "Root",
+        rootDetail: "codex · gpt-5.6-luna · medium",
+        nodes: [
+          { topicId: "topic", title: "Root", markerX: 2, markerY: 1 },
+          { topicId: "child", title: "Child", markerX: 2, markerY: 6 },
+        ],
+        edges: [
+          {
+            sourceTopicId: "topic",
+            targetTopicId: "child",
+            kind: "owns" as const,
+            cells: [
+              { x: 5, y: 3 },
+              { x: 5, y: 4 },
+            ],
+          },
+        ],
+        lines: canvasLines,
+        width: 12,
+        height: canvasLines.length,
+      },
+    };
+
+    const firstRaw = renderApp(state, 48, 18, 0);
+    const first = stripAnsi(firstRaw);
+    const second = stripAnsi(renderApp(state, 48, 18, 1));
+
+    expect(first).toContain("Working: Child");
+    expect(first).toContain(`${workingFrame(0)} Child`);
+    expect(second).toContain(`${workingFrame(1)} Child`);
+    expect(firstRaw).toContain("\u001b[38;2;241;190;91m");
+    expect(first).toContain("▼");
   });
 
   test("separates latest context occupancy from aggregate turn spend", () => {

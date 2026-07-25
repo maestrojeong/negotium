@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
+import { claudeRegistry } from "#agents/claude-registry";
 import {
   FALLBACK_MODEL,
   GATEWAY_MODEL,
+  MODEL_OPUS,
   resolveDefaultModel,
   SESSION_MODEL,
   TSX_BIN,
@@ -34,6 +36,11 @@ function restoreEnv(snapshot: Record<string, string | undefined>) {
 }
 
 describe("role default models", () => {
+  test("maps the Claude opus alias to Opus 5", () => {
+    expect(MODEL_OPUS).toBe("claude-opus-5");
+    expect(claudeRegistry.expandModelAlias("opus")).toBe("claude-opus-5");
+  });
+
   test("tsx executable resolves across hoisted workspace installs", () => {
     expect(existsSync(TSX_BIN)).toBe(true);
   });

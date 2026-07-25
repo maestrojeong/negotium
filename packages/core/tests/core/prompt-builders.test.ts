@@ -134,6 +134,48 @@ describe("session system prompt builders", () => {
     expect(prompt).not.toContain('"Task", "Agent"');
   });
 
+  test("documents staged subagent lifecycle and report modes", () => {
+    const parentPrompt = buildTopicSystemPrompt({
+      aiLabel: "Otium",
+      topicTitle: "Manager",
+      workspaceCwd: "/otium/workspace/topics/manager",
+      agentKind: "codex",
+      canSpawnSubagents: true,
+    });
+    expect(parentPrompt).toContain("create_subagent");
+    expect(parentPrompt).toContain("start_subagent");
+    expect(parentPrompt).toContain("list_memory_topics");
+    expect(parentPrompt).toContain('memory_topic?: "topic/<brief>.md"');
+    expect(parentPrompt).toContain("parent's effective topic brief");
+    expect(parentPrompt).toContain('report_mode?: "auto"|"tell"|"status-only"');
+    expect(parentPrompt).toContain("status-only only updates lifecycle state");
+
+    const peerPrompt = buildTopicSystemPrompt({
+      aiLabel: "Otium",
+      topicTitle: "Remote worker",
+      workspaceCwd: "/otium/workspace/topics/remote-worker",
+      agentKind: "codex",
+      canSpawnSubagents: true,
+      canStageSubagents: false,
+    });
+    expect(peerPrompt).toContain("spawn_subagent");
+    expect(peerPrompt).not.toContain("create_subagent");
+    expect(peerPrompt).not.toContain("start_subagent");
+
+    const childPrompt = buildTopicSystemPrompt({
+      aiLabel: "Otium",
+      topicTitle: "Worker",
+      workspaceCwd: "/otium/workspace/topics/worker",
+      agentKind: "codex",
+      subagentParentTitle: "Manager",
+      subagentReportMode: "status-only",
+    });
+    expect(childPrompt).toContain("do not send completion content to its direct parent");
+    expect(childPrompt).not.toContain("Use one-way `tell_session` reporting instead");
+    expect(childPrompt).toContain("cannot ask the user questions directly");
+    expect(childPrompt).not.toContain("runtime ask_user_question tool instead");
+  });
+
   test("builds mention-only channel prompt with participant identity", () => {
     const prompt = buildChannelSystemPrompt({
       aiLabel: "Otium",

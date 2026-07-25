@@ -50,6 +50,7 @@ export const sessionCommContext = parseSessionCommContext(args, {
 export const userId = sessionCommContext.userId;
 export const currentTopic = sessionCommContext.currentTopic;
 export const currentTopicId = sessionCommContext.currentTopicId ?? "";
+export const subagentParentTopicId = sessionCommContext.subagentParentTopicId ?? "";
 export const peerHostQueryId = sessionCommContext.peerHostQueryId ?? "";
 export const currentDepth = sessionCommContext.depth;
 // When true, the session is a silent fork generating an ask_session reply —

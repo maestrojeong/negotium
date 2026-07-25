@@ -35,7 +35,10 @@ import {
   readConversation,
 } from "#storage/conversations";
 import { db } from "#storage/forum-db";
-import { beginRuntimeTopicMaintenance } from "#storage/runtime-topic-state";
+import {
+  beginRuntimeTopicMaintenance,
+  isRuntimeTopicMaintenance,
+} from "#storage/runtime-topic-state";
 import { isLegacySharedGeneral } from "#topics/personal-general";
 import type { AgentKind } from "#types";
 import type { TopicDto } from "#types/api";
@@ -128,7 +131,7 @@ export class TopicDeriveBusyError extends Error {
 
 interface DerivedTopicOptions {
   name?: string;
-  subagent?: { agent?: AgentKind; model?: string };
+  subagent?: { agent?: AgentKind; model?: string; memoryTopicId?: string };
   allowActiveSource?: boolean;
 }
 
@@ -162,6 +165,9 @@ export async function createDerivedTopic(
   if (!isParticipant(topic, userId)) return null;
 
   const subagent = copyHistory ? undefined : opts?.subagent;
+  if (subagent && isRuntimeTopicMaintenance(sourceTopicId)) {
+    throw new TopicDeriveBusyError();
+  }
   let maintenance: ReturnType<typeof beginRuntimeTopicMaintenance> = null;
   if (!subagent && !opts?.allowActiveSource) {
     if (isTopicRunning(sourceTopicId)) throw new TopicDeriveBusyError();
@@ -236,6 +242,7 @@ async function createDerivedTopicUnderFence(
     createdAt: now,
     lastMessageAt: now,
     parentTopicId: sourceTopicId,
+    ...(subagent?.memoryTopicId ? { memoryTopicId: subagent.memoryTopicId } : {}),
     isFork: copyHistory,
     ...(subagent ? { isSubagent: true } : {}),
     visibility: topic.visibility,
@@ -314,7 +321,8 @@ async function createDerivedTopicUnderFence(
         if (
           !currentSource ||
           currentSource.kind === "manager" ||
-          !isParticipant(currentSource, userId)
+          !isParticipant(currentSource, userId) ||
+          (subagent && isRuntimeTopicMaintenance(sourceTopicId))
         ) {
           throw new TopicDeriveBusyError("Source topic changed while deriving; try again");
         }

@@ -8,6 +8,7 @@ import {
 import { AGENTS_PROMPTS_DIR, PROJECT_ROOT, RESOURCES_DIR } from "#platform/config";
 import { logger } from "#platform/logger";
 import type { AgentKind, EffortLevel } from "#types";
+import type { SubagentReportMode } from "#types/api";
 
 const PROMPTS_DIR = resolve(PROJECT_ROOT, "src/prompts");
 const SESSIONS_DIR = resolve(PROMPTS_DIR, "sessions");
@@ -161,22 +162,43 @@ export interface SessionSystemPromptOpts {
   /** Resolved effort actually used for this turn; absent means provider default/off. */
   currentEffort?: EffortLevel;
   description?: string | null;
-  /** True only for top-level agent rooms — the runtime spawn_subagent tool is registered there. */
+  /** True for agent rooms below the configured subagent depth limit. */
   canSpawnSubagents?: boolean;
+  /** True when create_subagent/start_subagent management tools are exposed. */
+  canStageSubagents?: boolean;
+  /** Direct parent title for subagent-only session communication policy. */
+  subagentParentTitle?: string;
+  subagentReportMode?: SubagentReportMode;
   /** True only when the current adapter renders Otium visual cards. */
   visualTools?: boolean;
   /** True only when the current adapter can deliver files to its chat. */
   fileDeliveryTools?: boolean;
 }
 
-function buildRuntimeToolSection(
-  agentKind: AgentKind,
-  canSpawnSubagents = false,
-  visualTools = false,
-  fileDeliveryTools = false,
-  currentModel?: string,
-  currentEffort?: EffortLevel,
-): string {
+interface RuntimeToolSectionOpts {
+  agentKind: AgentKind;
+  canSpawnSubagents?: boolean;
+  canStageSubagents?: boolean;
+  visualTools?: boolean;
+  fileDeliveryTools?: boolean;
+  currentModel?: string;
+  currentEffort?: EffortLevel;
+  subagentParentTitle?: string;
+  subagentReportMode?: SubagentReportMode;
+}
+
+function buildRuntimeToolSection(opts: RuntimeToolSectionOpts): string {
+  const {
+    agentKind,
+    canSpawnSubagents = false,
+    canStageSubagents = canSpawnSubagents,
+    visualTools = false,
+    fileDeliveryTools = false,
+    currentModel,
+    currentEffort,
+    subagentParentTitle,
+    subagentReportMode = "auto",
+  } = opts;
   const runtimeNamespace = "mcp__runtime";
   const taskNamespace = "mcp__task";
   const visualToolLine =
@@ -209,15 +231,18 @@ function buildRuntimeToolSection(
       : `For task tracking, use MCP tools "${taskNamespace}__task_create", "${taskNamespace}__task_update", "${taskNamespace}__task_list", "${taskNamespace}__task_get", and "${taskNamespace}__task_delete".`;
   const spawnSubagentToolLine =
     agentKind === "codex"
-      ? `To delegate a self-contained task to a background subagent, call the \`spawn_subagent\` function in the \`${runtimeNamespace}\` namespace with { task: "...", name?: "...", agent?: "claude"|"codex"|"maestro", model?: "..." }.`
-      : `To delegate a self-contained task to a background subagent, call the MCP tool "${runtimeNamespace}__spawn_subagent" with { task: "...", name?: "...", agent?: "claude"|"codex"|"maestro", model?: "..." }.`;
+      ? `To delegate a self-contained task to a background subagent, call the \`spawn_subagent\` function in the \`${runtimeNamespace}\` namespace with { task: "...", name?: "...", agent?: "claude"|"codex"|"maestro", model?: "...", memory_topic?: "topic/<brief>.md", report_mode?: "auto"|"tell"|"status-only" }.`
+      : `To delegate a self-contained task to a background subagent, call the MCP tool "${runtimeNamespace}__spawn_subagent" with { task: "...", name?: "...", agent?: "claude"|"codex"|"maestro", model?: "...", memory_topic?: "topic/<brief>.md", report_mode?: "auto"|"tell"|"status-only" }.`;
+  const lifecycleToolLine =
+    "For staged delegation, use create_subagent to prepare a room and start_subagent to run it. Use list_memory_topics to discover accessible knowledge-source names. memory_topic optionally selects one of those topics; otherwise the parent's effective topic brief is used. report_mode is auto, tell, or status-only.";
   const spawnSubagentSection = canSpawnSubagents
     ? [
         "",
         "## Subagent Delegation",
         spawnSubagentToolLine,
-        "The subagent works in its own new agent room and starts with ONLY the task text — include all needed context, file paths, and acceptance criteria in it.",
-        "The call returns immediately (fire-and-forget); the subagent's final result is delivered back into this room automatically when it finishes. End your turn normally — never wait or poll for it.",
+        ...(canStageSubagents ? [lifecycleToolLine] : []),
+        "The subagent works in a fresh room with no parent conversation history. It receives the task plus the selected or inherited topic memory, so include all task-specific context, file paths, and acceptance criteria.",
+        "The call returns immediately (fire-and-forget). report_mode=auto delivers the final result here, tell requires the child to report with tell_session, and status-only only updates lifecycle state. End your turn normally — never wait or poll for it.",
         "Use it for parallelizable or long-running side work; keep quick inline work in this room.",
       ]
     : [];
@@ -225,7 +250,7 @@ function buildRuntimeToolSection(
     agentKind === "claude"
       ? `Do not use provider-native todo/task/subagent tools such as "TodoWrite", "Task", "Agent", "TaskCreate", "TaskUpdate", "TaskList", "TaskOutput", or "TaskStop"; they are disabled or not shared across agents.${canSpawnSubagents ? " For delegation, use the runtime spawn_subagent tool instead." : ""}`
       : agentKind === "maestro"
-        ? `Do not use provider-native task-store tools such as "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput", or "TaskStop"; they are disabled or not shared across agents. Do not use the Maestro "Agent" sub-agent tool either; it is disabled.${canSpawnSubagents ? " Use the runtime spawn_subagent tool for delegation so work is visible in its own room and the result returns here automatically." : " Delegation is unavailable in this room."}`
+        ? `Do not use provider-native task-store tools such as "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput", or "TaskStop"; they are disabled or not shared across agents. Do not use the Maestro "Agent" sub-agent tool either; it is disabled.${canSpawnSubagents ? " Use the runtime spawn_subagent tool for delegation so work is visible in its own room and reporting follows report_mode." : " Delegation is unavailable in this room."}`
         : 'Do not use provider-native todo/plan surfaces such as "todo_list" or "update_plan"; they are ignored or not shared across agents.';
   const visualSection = visualTools
     ? [
@@ -250,8 +275,15 @@ function buildRuntimeToolSection(
     "",
     "## Runtime Tools",
     ...visualSection,
-    askUserToolLine,
-    'Do not use provider built-in "AskUserQuestion"; it is disabled or unsupported in this headless chat runtime. Use the runtime ask_user_question tool instead.',
+    ...(subagentParentTitle
+      ? [
+          "This subagent cannot ask the user questions directly. If blocked, state the blocker clearly and report it to the direct parent when report_mode permits.",
+          'Do not use provider built-in "AskUserQuestion"; it is disabled for subagents.',
+        ]
+      : [
+          askUserToolLine,
+          'Do not use provider built-in "AskUserQuestion"; it is disabled or unsupported in this headless chat runtime. Use the runtime ask_user_question tool instead.',
+        ]),
     scheduleSelfToolLine,
     ...(visualTools ? ["", visualDesignGuide()] : []),
     "",
@@ -262,11 +294,24 @@ function buildRuntimeToolSection(
     ...fileDeliverySection,
     "",
     "## Session Communication",
-    "The session-comm MCP server is the only cross-topic messaging surface. Its canonical tools are `list_sessions`, `peek_session`, `tell_session`, `ask_session`, and `abort_session`.",
-    "Use `list_sessions` to inspect available topics. Use `ask_session` for read-only questions whose result you need back in your own context. Use `tell_session` for one-way delegation or context handoff where no reply should return here. Do not describe `tell_session` as bidirectional and do not claim `ask_session` is unavailable without first checking the session-comm tools.",
+    ...(subagentParentTitle
+      ? [
+          subagentReportMode === "status-only"
+            ? `This subagent is status-only: do not send completion content to its direct parent, \`${subagentParentTitle}\`.`
+            : `This subagent may report with \`tell_session\` to its direct parent, \`${subagentParentTitle}\`, and to any extra topics explicitly granted by an ancestor.`,
+          subagentReportMode === "status-only"
+            ? "`ask_session` is unavailable in subagent rooms. `tell_session` remains available only for non-completion communication to permitted targets."
+            : "`ask_session` is unavailable in subagent rooms. Use one-way `tell_session` reporting instead.",
+        ]
+      : [
+          "The session-comm MCP server is the only cross-topic messaging surface. Its canonical tools are `list_sessions`, `peek_session`, `tell_session`, `ask_session`, and `abort_session`.",
+          "Use `list_sessions` to inspect available topics. Use `ask_session` for read-only questions whose result you need back in your own context. Use `tell_session` for one-way delegation or context handoff where no reply should return here. Do not describe `tell_session` as bidirectional and do not claim `ask_session` is unavailable without first checking the session-comm tools.",
+        ]),
     ...(agentKind === "maestro"
       ? [
-          'Session-comm schemas may initially be deferred. Before using or judging availability, call ToolSearch("select:mcp__session-comm__list_sessions,mcp__session-comm__peek_session,mcp__session-comm__tell_session,mcp__session-comm__ask_session,mcp__session-comm__abort_session") to activate the exact tools. Never substitute a similarly described runtime tool.',
+          subagentParentTitle
+            ? "Session-comm schemas may initially be deferred. Activate `mcp__session-comm__list_sessions` and `mcp__session-comm__tell_session` with ToolSearch before use."
+            : 'Session-comm schemas may initially be deferred. Before using or judging availability, call ToolSearch("select:mcp__session-comm__list_sessions,mcp__session-comm__peek_session,mcp__session-comm__tell_session,mcp__session-comm__ask_session,mcp__session-comm__abort_session") to activate the exact tools. Never substitute a similarly described runtime tool.',
         ]
       : []),
     "Do not use session communication to make another topic perform destructive changes without the user's clear intent.",
@@ -320,14 +365,17 @@ export function buildTopicSystemPrompt(opts: SessionSystemPromptOpts): string {
       WORKSPACE_CWD: opts.workspaceCwd,
       UPLOADS_DIR: uploadsDir,
     }) +
-    buildRuntimeToolSection(
-      opts.agentKind,
-      opts.canSpawnSubagents,
-      opts.visualTools,
-      opts.fileDeliveryTools,
-      opts.currentModel,
-      opts.currentEffort,
-    );
+    buildRuntimeToolSection({
+      agentKind: opts.agentKind,
+      canSpawnSubagents: opts.canSpawnSubagents,
+      canStageSubagents: opts.canStageSubagents,
+      visualTools: opts.visualTools,
+      fileDeliveryTools: opts.fileDeliveryTools,
+      currentModel: opts.currentModel,
+      currentEffort: opts.currentEffort,
+      subagentParentTitle: opts.subagentParentTitle,
+      subagentReportMode: opts.subagentReportMode,
+    });
   if (opts.description?.trim()) {
     prompt += `\n\n## Topic-Specific Instructions\n${opts.description.trim()}`;
   }
@@ -343,14 +391,17 @@ export function buildChannelSystemPrompt(opts: SessionSystemPromptOpts): string 
       WORKSPACE_CWD: opts.workspaceCwd,
       UPLOADS_DIR: uploadsDir,
     }) +
-    buildRuntimeToolSection(
-      opts.agentKind,
-      false,
-      opts.visualTools,
-      opts.fileDeliveryTools,
-      opts.currentModel,
-      opts.currentEffort,
-    )
+    buildRuntimeToolSection({
+      agentKind: opts.agentKind,
+      canSpawnSubagents: false,
+      canStageSubagents: false,
+      visualTools: opts.visualTools,
+      fileDeliveryTools: opts.fileDeliveryTools,
+      currentModel: opts.currentModel,
+      currentEffort: opts.currentEffort,
+      subagentParentTitle: opts.subagentParentTitle,
+      subagentReportMode: opts.subagentReportMode,
+    })
   );
 }
 
