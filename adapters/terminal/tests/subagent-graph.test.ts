@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import type { TopicDto } from "@negotium/core";
 import {
   adjustSubagentGraphSpacing,
-  appendElkOutput,
   buildSubagentGraph,
   layoutSubagentGraph,
   MAX_SUBAGENT_GRAPH_SPACING,
@@ -36,11 +35,6 @@ describe("subagent graph", () => {
     );
   });
 
-  test("rejects oversized ELK process output", () => {
-    expect(appendElkOutput("1234", "56", 6)).toBe("123456");
-    expect(() => appendElkOutput("1234", "567", 6)).toThrow("ELK output exceeded 6 bytes");
-  });
-
   test("includes ownership and tell edges below the current topic", () => {
     const root = topic("root", "Review");
     const scope = {
@@ -52,13 +46,15 @@ describe("subagent graph", () => {
 
     const graph = buildSubagentGraph([mapper, scope, safety, root], root.id, new Set([scope.id]));
 
-    expect(graph.nodes.map(({ id, title, running }) => ({ id, title, running }))).toEqual([
-      { id: "root", title: "Review", running: false },
-      { id: "scope", title: "Scope Lead", running: true },
-      { id: "mapper", title: "Diff Mapper", running: false },
-      { id: "safety", title: "Safety Lead", running: false },
+    expect(graph.nodes.map(({ id, label, state }) => ({ id, label, state }))).toEqual([
+      { id: "root", label: "Review", state: "idle" },
+      { id: "scope", label: "Scope Lead", state: "running" },
+      { id: "mapper", label: "Diff Mapper", state: "idle" },
+      { id: "safety", label: "Safety Lead", state: "idle" },
     ]);
-    expect(graph.edges).toEqual([
+    expect(
+      graph.edges.map(({ id, source, target, kind }) => ({ id, source, target, kind })),
+    ).toEqual([
       { id: "owns:root:scope", source: "root", target: "scope", kind: "owns" },
       { id: "tell:scope:safety", source: "scope", target: "safety", kind: "tell" },
       { id: "owns:scope:mapper", source: "scope", target: "mapper", kind: "owns" },
@@ -75,9 +71,9 @@ describe("subagent graph", () => {
     const graph = buildSubagentGraph([root, current, child, sibling], current.id);
 
     expect(graph.nodes.map((node) => node.id)).toEqual(["current", "child"]);
-    expect(graph.edges).toEqual([
-      { id: "owns:current:child", source: "current", target: "child", kind: "owns" },
-    ]);
+    expect(
+      graph.edges.map(({ id, source, target, kind }) => ({ id, source, target, kind })),
+    ).toEqual([{ id: "owns:current:child", source: "current", target: "child", kind: "owns" }]);
   });
 
   test("shows status-only ownership as parent-to-child communication", async () => {
@@ -95,6 +91,9 @@ describe("subagent graph", () => {
         source: "root",
         target: "child",
         kind: "owns-parent-only",
+        direction: "forward",
+        style: "solid",
+        label: "status only ↓",
       },
     ]);
     const output = (await layoutSubagentGraph(graph)).lines.join("\n");
@@ -118,6 +117,9 @@ describe("subagent graph", () => {
       source: "current",
       target: "sibling",
       kind: "tell",
+      direction: "forward",
+      style: "dashed",
+      label: "tell",
     });
   });
 
@@ -141,12 +143,15 @@ describe("subagent graph", () => {
         source: "first",
         target: "second",
         kind: "tell-bidirectional",
+        direction: "both",
+        style: "dashed",
+        label: "tell ↔",
       },
     ]);
     expect((await layoutSubagentGraph(graph)).lines.join("\n")).toContain("tell ↔");
   });
 
-  test("renders an ELK layout into a terminal canvas", async () => {
+  test("renders an Orchgraph layout into a terminal canvas", async () => {
     const root = topic("root", "루트");
     const child = topic("child", "Child", root.id);
 
@@ -176,7 +181,7 @@ describe("subagent graph", () => {
     expect(output).toContain("AAAAAAAAAAAAAAAA");
   });
 
-  test("expands the ELK canvas when graph spacing increases", async () => {
+  test("expands the Orchgraph canvas when graph spacing increases", async () => {
     const root = topic("root", "Root");
     const child = topic("child", "Child", root.id);
     const graph = buildSubagentGraph([root, child], root.id);
@@ -187,7 +192,7 @@ describe("subagent graph", () => {
     expect(spacious.height).toBeGreaterThan(compact.height);
   });
 
-  test("cancels an ELK layout through AbortSignal", async () => {
+  test("cancels an Orchgraph layout through AbortSignal", async () => {
     const controller = new AbortController();
     controller.abort();
     const graph = buildSubagentGraph([topic("root", "Root")], "root");

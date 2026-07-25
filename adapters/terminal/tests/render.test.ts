@@ -448,7 +448,7 @@ describe("terminal renderer", () => {
     expect(output).not.toContain("SUBAGENT");
   });
 
-  test("renders the ELK subagent canvas through a movable viewport", () => {
+  test("renders the Orchgraph subagent canvas through a movable viewport", () => {
     const canvasLines = [
       "╭──────────╮                   ",
       "│ ○ Root   │                   ",
@@ -468,9 +468,30 @@ describe("terminal renderer", () => {
         rootDetail: "codex · gpt-5.6-luna · medium",
         rootRunning: false,
         nodes: [
-          { topicId: "topic", title: "Root", markerX: 2, markerY: 1 },
-          { topicId: "child", title: "Child", markerX: 22, markerY: 6 },
+          {
+            id: "topic",
+            label: "Root",
+            state: "idle" as const,
+            x: 0,
+            y: 0,
+            width: 12,
+            height: 3,
+            markerX: 2,
+            markerY: 1,
+          },
+          {
+            id: "child",
+            label: "Child",
+            state: "idle" as const,
+            x: 20,
+            y: 5,
+            width: 11,
+            height: 3,
+            markerX: 22,
+            markerY: 6,
+          },
         ],
+        edges: [],
         lines: canvasLines,
         width: 31,
         height: canvasLines.length,
@@ -524,13 +545,34 @@ describe("terminal renderer", () => {
         title: "Root",
         rootDetail: "codex · gpt-5.6-luna · medium",
         nodes: [
-          { topicId: "topic", title: "Root", markerX: 2, markerY: 1 },
-          { topicId: "child", title: "Child", markerX: 2, markerY: 6 },
+          {
+            id: "topic",
+            label: "Root",
+            state: "idle" as const,
+            x: 0,
+            y: 0,
+            width: 12,
+            height: 3,
+            markerX: 2,
+            markerY: 1,
+          },
+          {
+            id: "child",
+            label: "Child",
+            state: "idle" as const,
+            x: 0,
+            y: 5,
+            width: 12,
+            height: 3,
+            markerX: 2,
+            markerY: 6,
+          },
         ],
         edges: [
           {
-            sourceTopicId: "topic",
-            targetTopicId: "child",
+            id: "owns:topic:child",
+            source: "topic",
+            target: "child",
             kind: "owns" as const,
             cells: [
               { x: 5, y: 3 },
@@ -714,6 +756,25 @@ describe("terminal renderer", () => {
     expect(output).not.toContain("ok");
     expect(output).toContain("Working");
     expect(rendered).toContain("\u001b[38;2;196;181;253m");
+  });
+
+  test("keeps the SSH destination and remote action visible in tool calls", () => {
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: {
+        kind: "tool_call",
+        queryId: "query",
+        toolUseId: "ssh",
+        name: "Bash",
+        label: "Bash(ssh · deploy@example.com · git status)",
+      },
+    });
+
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("Bash · ssh · deploy@example.com · git status");
+    expect(output).not.toContain("BatchMode=yes");
   });
 
   test("keeps file mutations prominent and shows more Claude edit context", () => {

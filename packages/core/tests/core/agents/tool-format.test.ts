@@ -41,6 +41,20 @@ describe("formatToolUse", () => {
     ).toBe("bun test 2 files");
   });
 
+  test("shows the SSH destination and remote action instead of an option value", () => {
+    expect(summarizeShellCommand("ssh -o BatchMode=yes deploy@example.com uname -a")).toBe(
+      "ssh · deploy@example.com · uname",
+    );
+    expect(
+      summarizeShellCommand(
+        `ssh -i ~/.ssh/deploy -p 2222 deploy@example.com "cd /srv/app && git status --short"`,
+      ),
+    ).toBe("ssh · deploy@example.com · cd app · git status");
+    expect(formatToolUse("Bash", { command: "ssh -o BatchMode=yes app-host uptime" })).toBe(
+      "Bash(ssh · app-host · uptime)",
+    );
+  });
+
   test("classifies only simple read-only shell commands as Read or Search", () => {
     expect(classifyShellToolName("sed -n '1,80p' src/app.ts")).toBe("Read");
     expect(classifyShellToolName("cat package.json")).toBe("Read");

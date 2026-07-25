@@ -1,6 +1,6 @@
 {
   "name": "@negotium/adapter-terminal",
-  "version": "0.1.34",
+  "version": "0.1.35",
   "private": true,
   "type": "module",
   "description": "Responsive local TUI channel adapter for Negotium",
@@ -50,7 +50,7 @@
     "@negotium/adapter-sdk": "workspace:*",
     "@negotium/core": "workspace:*",
     "@negotium/node": "workspace:*",
-    "elkjs": "0.10.2"
+    "orchgraph": "0.1.1"
   },
   "devDependencies": {
     "@types/node": "^20",

@@ -24,6 +24,29 @@ const TOOL_SUMMARY_TAIL_CHARS = 28;
 const TOOL_DIFF_MAX_CHARS = 4_000;
 const TOOL_DIFF_SOURCE_MAX_BYTES = 2_000_000;
 const SHELL_SUMMARY_MAX_PARTS = 3;
+const SSH_OPTIONS_WITH_VALUE = new Set([
+  "-B",
+  "-b",
+  "-c",
+  "-D",
+  "-E",
+  "-e",
+  "-F",
+  "-I",
+  "-i",
+  "-J",
+  "-L",
+  "-l",
+  "-m",
+  "-O",
+  "-o",
+  "-p",
+  "-Q",
+  "-R",
+  "-S",
+  "-W",
+  "-w",
+]);
 
 const SUMMARY_KEYS = [
   "command",
@@ -177,6 +200,30 @@ function summarizeTargets(values: string[]): string {
   return `${targets[0]} +${targets.length - 1}`;
 }
 
+function summarizeSsh(words: string[]): string {
+  let destination = "";
+  let index = 0;
+  while (index < words.length) {
+    const word = words[index] ?? "";
+    if (word === "--") {
+      destination = words[index + 1] ?? "";
+      index += 2;
+      break;
+    }
+    if (!word.startsWith("-")) {
+      destination = word;
+      index += 1;
+      break;
+    }
+    index += SSH_OPTIONS_WITH_VALUE.has(word) ? 2 : 1;
+  }
+
+  if (!destination) return "ssh";
+  const remoteCommand = words.slice(index).join(" ");
+  const remoteSummary = remoteCommand ? summarizeShellCommand(remoteCommand) : "";
+  return ["ssh", destination, remoteSummary].filter(Boolean).join(" · ");
+}
+
 function summarizeShellPart(value: string): string {
   const words = shellWords(value).filter((word) => !/^\d*>/.test(word));
   while (words[0] === "sudo") words.shift();
@@ -195,6 +242,7 @@ function summarizeShellPart(value: string): string {
   if (executable === "command" && words[0] === "-v") {
     return words[1] ? `find ${commandName(words[1])}` : "find command";
   }
+  if (executable === "ssh") return summarizeSsh(words);
   if (executable === "git") {
     while (words[0]?.startsWith("-")) {
       const option = words.shift();

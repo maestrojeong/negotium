@@ -6,6 +6,7 @@ import {
   type TopicDto,
   type VaultEntry,
 } from "@negotium/core";
+import type { TerminalCanvas, TerminalEdge } from "orchgraph";
 import { terminalNowMs } from "@/clock";
 import { DEFAULT_SUBAGENT_GRAPH_SPACING } from "@/subagent-graph";
 
@@ -21,25 +22,13 @@ type Overlay =
   | "confirm-delete"
   | null;
 
-export interface SubagentGraphCanvas {
+export type SubagentGraphEdgeKind = "owns" | "owns-parent-only" | "tell" | "tell-bidirectional";
+
+export interface SubagentGraphCanvas extends Omit<TerminalCanvas, "title" | "edges"> {
   title: string;
   rootDetail?: string;
   rootRunning?: boolean;
-  nodes?: Array<{
-    topicId: string;
-    title: string;
-    markerX: number;
-    markerY: number;
-  }>;
-  edges?: Array<{
-    sourceTopicId: string;
-    targetTopicId: string;
-    kind: "owns" | "owns-parent-only" | "tell" | "tell-bidirectional";
-    cells: Array<{ x: number; y: number }>;
-  }>;
-  lines: string[];
-  width: number;
-  height: number;
+  edges: Array<TerminalEdge & { kind?: SubagentGraphEdgeKind }>;
 }
 
 /**

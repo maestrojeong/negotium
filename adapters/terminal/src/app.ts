@@ -569,8 +569,7 @@ export class TerminalApp {
   }
 
   #changeSubagentGraphSpacing(delta: number): void {
-    // Debounce key-repeat: each relayout spawns a Node subprocess, so batch
-    // rapid [ / ] presses into one layout run after the burst settles.
+    // Batch rapid [ / ] key-repeat into one worker layout after the burst settles.
     const previousSpacing = this.#pendingSubagentGraphSpacing ?? this.#state.subagentGraphSpacing;
     const spacing = adjustSubagentGraphSpacing(previousSpacing, delta);
     if (spacing === previousSpacing) return;

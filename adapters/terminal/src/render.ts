@@ -947,8 +947,8 @@ function subagentGraphLines(
   const position = maxX > 0 || maxY > 0 ? ` · view ${x + 1},${y + 1}/${maxX + 1},${maxY + 1}` : "";
   const graphNodes = canvas?.nodes ?? [];
   const graphEdges = canvas?.edges ?? [];
-  const runningNodes = graphNodes.filter((node) => state.activity[node.topicId]?.running);
-  const nodeTitleById = new Map(graphNodes.map((node) => [node.topicId, node.title]));
+  const runningNodes = graphNodes.filter((node) => state.activity[node.id]?.running);
+  const nodeTitleById = new Map(graphNodes.map((node) => [node.id, node.label]));
   const hasActiveTell = (sourceTopicId: string, targetTopicId: string): boolean => {
     const targetTitle = nodeTitleById.get(targetTopicId);
     const activity = state.activity[sourceTopicId];
@@ -963,9 +963,9 @@ function subagentGraphLines(
   };
   const activeEdges = graphEdges.filter(
     (edge) =>
-      hasActiveTell(edge.sourceTopicId, edge.targetTopicId) ||
+      hasActiveTell(edge.source, edge.target) ||
       ((edge.kind === "owns" || edge.kind === "tell-bidirectional") &&
-        hasActiveTell(edge.targetTopicId, edge.sourceTopicId)),
+        hasActiveTell(edge.target, edge.source)),
   );
   const highlightedCellsByRow = new Map<number, Set<number>>();
   for (const edge of activeEdges) {
@@ -975,7 +975,7 @@ function subagentGraphLines(
       highlightedCellsByRow.set(cell.y, columns);
     }
   }
-  const rootTopicId = graphNodes[0]?.topicId;
+  const rootTopicId = graphNodes[0]?.id;
   const rootRunning = rootTopicId
     ? Boolean(state.activity[rootTopicId]?.running)
     : Boolean(canvas?.rootRunning);
@@ -993,7 +993,7 @@ function subagentGraphLines(
     ),
     line(
       runningNodes.length > 0
-        ? `  Working: ${runningNodes.map((node) => node.title).join(", ")}`
+        ? `  Working: ${runningNodes.map((node) => node.label).join(", ")}`
         : "  Working: none",
       { fg: runningNodes.length > 0 ? theme.green : theme.muted },
     ),
@@ -1009,7 +1009,10 @@ function subagentGraphLines(
     line(""),
   ];
   if (state.subagentGraphLoading) {
-    return [...header, line("  Laying out graph with ELK…", { fg: theme.cyan })].slice(0, height);
+    return [...header, line("  Laying out graph with Orchgraph…", { fg: theme.cyan })].slice(
+      0,
+      height,
+    );
   }
   if (!canvas || canvas.lines.length === 0) {
     return [...header, line("  No graph data", { fg: theme.muted })].slice(0, height);
@@ -1022,7 +1025,7 @@ function subagentGraphLines(
       let canvasLine = canvas.lines[canvasY] ?? "";
       for (const node of graphNodes) {
         if (node.markerY !== canvasY) continue;
-        const marker = state.activity[node.topicId]?.running ? workingFrame(animationFrame) : "○";
+        const marker = state.activity[node.id]?.running ? workingFrame(animationFrame) : "○";
         canvasLine = replaceAtDisplayColumn(canvasLine, node.markerX, marker);
       }
       const text = sliceWidthRange(canvasLine, x, viewportWidth);
