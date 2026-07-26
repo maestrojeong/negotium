@@ -1638,3 +1638,30 @@ export function maxConversationScrollOffset(
   ).length;
   return conversationViewport(lineCount, bodyHeight, state.scrollOffset).maxOffset;
 }
+
+/**
+ * Keep the same topmost conversation content visible when live events add or
+ * resize lines below a user who has scrolled into history.
+ */
+export function preserveConversationScrollAnchor(
+  previous: AppState,
+  next: AppState,
+  columns: number,
+  rows: number,
+): AppState {
+  if (
+    previous.scrollOffset <= 0 ||
+    previous.activeTopicId !== next.activeTopicId ||
+    previous.overlay ||
+    next.overlay
+  ) {
+    return next;
+  }
+  const previousMax = maxConversationScrollOffset(previous, columns, rows);
+  const nextMax = maxConversationScrollOffset(next, columns, rows);
+  const scrollOffset = Math.min(
+    nextMax,
+    Math.max(0, previous.scrollOffset + (nextMax - previousMax)),
+  );
+  return scrollOffset === next.scrollOffset ? next : { ...next, scrollOffset };
+}

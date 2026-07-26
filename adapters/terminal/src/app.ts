@@ -46,6 +46,7 @@ import {
 import {
   type CodeCopyTarget,
   maxConversationScrollOffset,
+  preserveConversationScrollAnchor,
   renderAppFrame,
   stripAnsi,
   WORKING_FRAME_INTERVAL_MS,
@@ -252,6 +253,16 @@ export class TerminalApp {
     this.#requestExit();
   }
 
+  #applyRuntimeEvent(event: RuntimeBusEvent): void {
+    const previousState = this.#state;
+    this.#state = preserveConversationScrollAnchor(
+      previousState,
+      applyRuntimeEvent(previousState, event),
+      process.stdout.columns ?? 100,
+      process.stdout.rows ?? 30,
+    );
+  }
+
   #handleRuntimeEvent(event: RuntimeBusEvent): void {
     // Background topics can emit progress events every few seconds. They do
     // not change the active conversation, so they must not interrupt a drag
@@ -266,7 +277,7 @@ export class TerminalApp {
       this.#queuedRuntimeEvents.set(event.topicId, queued);
       return;
     }
-    this.#state = applyRuntimeEvent(this.#state, event);
+    this.#applyRuntimeEvent(event);
     if (
       event.type === "topic-created" ||
       event.type === "topic-updated" ||
@@ -393,7 +404,7 @@ export class TerminalApp {
         this.#messageLoadGeneration.delete(topic.id);
         const queued = this.#queuedRuntimeEvents.get(topic.id) ?? [];
         this.#queuedRuntimeEvents.delete(topic.id);
-        for (const event of queued) this.#state = applyRuntimeEvent(this.#state, event);
+        for (const event of queued) this.#applyRuntimeEvent(event);
       }
       throw error;
     }
@@ -409,12 +420,12 @@ export class TerminalApp {
       loading: false,
     });
     for (const event of recentEvents) {
-      this.#state = applyRuntimeEvent(this.#state, event);
+      this.#applyRuntimeEvent(event);
     }
     this.#messageLoadGeneration.delete(topic.id);
     const queued = this.#queuedRuntimeEvents.get(topic.id) ?? [];
     this.#queuedRuntimeEvents.delete(topic.id);
-    for (const event of queued) this.#state = applyRuntimeEvent(this.#state, event);
+    for (const event of queued) this.#applyRuntimeEvent(event);
   }
 
   async #loadOlderMessages(topicId: string, targetOffset: number): Promise<void> {

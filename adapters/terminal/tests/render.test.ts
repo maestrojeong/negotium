@@ -5,6 +5,7 @@ import {
   displayWidth,
   effectiveTopicModel,
   formatElapsedDuration,
+  preserveConversationScrollAnchor,
   renderApp,
   renderAppFrame,
   stripAnsi,
@@ -1237,5 +1238,39 @@ describe("terminal renderer", () => {
       messageHistory: { topic: { hasMore: false, loading: false } },
     };
     expect(stripAnsi(renderApp(state, 100, 16))).toContain("Start of conversation");
+  });
+
+  test("keeps the visible history anchored while live output grows below it", () => {
+    const messages: MessageDto[] = Array.from({ length: 24 }, (_, index) => ({
+      id: `message-${index}`,
+      topicId: "topic",
+      authorId: "local",
+      text: `conversation-${index}`,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }));
+    let previous = setTopics(createInitialState("local"), [topic()]);
+    previous = setMessages(previous, "topic", messages);
+    previous = { ...previous, scrollOffset: 8 };
+    const before = stripAnsi(renderApp(previous, 100, 16))
+      .split("\n")
+      .filter((value) => value.includes("conversation-"));
+
+    const next = setMessages(previous, "topic", [
+      ...messages,
+      {
+        id: "live-message",
+        topicId: "topic",
+        authorId: "ai",
+        text: "live-line-1\nlive-line-2\nlive-line-3",
+        createdAt: "2026-01-01T00:01:00.000Z",
+      },
+    ]);
+    const anchored = preserveConversationScrollAnchor(previous, next, 100, 16);
+    const after = stripAnsi(renderApp(anchored, 100, 16))
+      .split("\n")
+      .filter((value) => value.includes("conversation-"));
+
+    expect(anchored.scrollOffset).toBeGreaterThan(previous.scrollOffset);
+    expect(after).toEqual(before);
   });
 });
