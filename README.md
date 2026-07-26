@@ -103,7 +103,7 @@ negotium -v|--version
 
 negotium mcp list|add|remove|enable|disable
 negotium vault list|set|get|del
-negotium cron list|create|inspect|logs|run|pause|resume|restart|kill|reset|delete
+negotium cron list|create|edit|inspect|logs|run|pause|resume|restart|kill|reset|delete
 ```
 
 Inside Terminal, `/vault` opens the interactive encrypted-secret manager, while
@@ -123,12 +123,20 @@ descriptions only.
 Inside terminal chat:
 
 ```text
-/new                  reset the current topic's AI context, including personal General
+/new                  reset this topic's AI context, including personal General
+/compact              summarize and shrink the current provider context
+/status               show the active model and token usage
+/model                choose this topic's model
+/effort               choose its reasoning effort
 /topics               open the topic picker
+/public | /private    change Otium Hub visibility
+/fork [name]          copy config and history into a new topic
+/spawn [name]         copy config into a fresh topic
 /del                  archive and delete the current topic
-/copy [all]           copy the last answer or transcript
+/copy                 copy the last agent answer
 /vault                open the encrypted-secret manager
 /abort                stop the current turn
+/help                 show keyboard help
 /quit                 close the terminal host
 ```
 
@@ -136,6 +144,21 @@ Terminal opens on the topic picker, with personal `General` separated from other
 enter a topic name, and press `Enter` to create and open it. Use `Ctrl-O` to return to the picker;
 deleting a topic returns there automatically. On the startup picker, `Ctrl-C` or `Esc` exits
 immediately instead of opening `General` underneath it.
+
+Useful Terminal controls:
+
+| Action | Keys |
+|---|---|
+| Scroll loaded conversation history | Mouse wheel or `PgUp` / `PgDn` |
+| Load the next older history page | `Ctrl-E` |
+| Open the topic picker | `Ctrl-O` |
+| Move to the previous or next topic | `Ctrl-P` / `Ctrl-N` |
+| Toggle the durable Tasks panel | `Ctrl-T` |
+| Open the live subagent graph | `Ctrl-G` |
+
+The `Ctrl-G` view projects Negotium's ownership and session-communication edges through
+[`orchgraph`](https://github.com/maestrojeong/orchgraph). It updates while agents work; use
+arrow keys or `h`/`j`/`k`/`l` to pan, `[`/`]` to change spacing, and `Esc` or `Ctrl-G` to close.
 
 ### Run the node and Terminal clients
 
