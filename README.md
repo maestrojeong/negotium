@@ -1,7 +1,7 @@
 <div align="center">
   <h1>Negotium</h1>
-  <p><strong>Your local multi-agent OS.</strong></p>
-  <p>Give Claude, Codex, and Maestro persistent rooms, shared tools, memory, and schedules.</p>
+  <p><strong>A self-hosted AI worker for your Otium workspace.</strong></p>
+  <p>Run Claude, Codex, or Maestro with local tools, memory, and schedules.</p>
   <p>
     <a href="./LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-4c1.svg"></a>
     <img alt="Bun 1.2.15+" src="https://img.shields.io/badge/runtime-Bun_1.2.15%2B-000000?logo=bun&logoColor=white">
@@ -10,42 +10,43 @@
   </p>
 </div>
 
+![How Negotium joins an Otium workspace](./assets/negotium-worker.svg)
+
 > *Negotium* is Latin for “work” — literally *nec otium*, the absence of
 > leisure. Your machines do the negotium so you can keep the otium.
 
-Negotium is a local-first workspace for directing multiple AI agents. It is
-designed for people who want an AI team that keeps working context over time,
-not another collection of disposable chat windows.
+Negotium turns one computer into a durable AI worker. Invite that worker into
+an Otium workspace as a member, then give it work backed by Claude Code, Codex,
+or Maestro. Its topics, conversations, tools, memory, files, schedules, and
+secrets remain on the machine where it runs.
 
-Create a room for each project, choose the best agent for the job, let agents
-delegate to one another, schedule recurring work, and come back later. Topics,
-conversations, tasks, memory, files, and secrets stay on your computer.
+Otium is the workspace; Negotium is a worker that joins it. Negotium can also
+be operated directly through Terminal or Telegram when an Otium workspace is
+not needed.
 
-Negotium is currently an early-stage terminal application and runtime. “OS”
-describes the product model—one place that coordinates agents and their
-resources—not a replacement for macOS or Linux. Public APIs may change during
-the `0.x` series.
+The project is early-stage. Public APIs may change during the `0.x` series.
 
 ## What can I do with it?
 
-- Keep separate, long-lived rooms for research, operations, writing, or code
-- Use Claude Code, Codex, or Maestro per room without losing the room's history
+- Invite a self-hosted worker into an Otium workspace
+- Keep separate, long-lived topics for research, operations, writing, or code
+- Use Claude Code, Codex, or Maestro per topic without losing its history
 - Ask several agents to investigate in parallel and report back
 - Track shared tasks and watch active subagents in a live graph
 - Run daily or weekly agent jobs with durable schedules
 - Give agents browser, file, shell, wiki, and MCP tools
 - Store API keys in an encrypted vault and reference them as `{{KEY}}`
-- Continue the same work from Terminal, Telegram, Otium, or a custom adapter
+- Reach the same worker from Terminal, Telegram, Otium, or a custom adapter
 
-The basic mental model is small:
+The core runtime concepts are:
 
-| Negotium concept | Think of it as |
+| Concept | Role |
 |---|---|
-| **Node** | One computer running your agent workspace |
-| **Topic** | A durable room for one area of work |
-| **Agent** | The AI worker assigned to that room |
-| **Tools** | Capabilities the worker can use |
-| **Task** | Shared work state visible to you and the agents |
+| **Node** | The Negotium worker runtime and state on one machine |
+| **Topic** | A durable context for one area of work |
+| **Agent backend** | Claude Code, Codex, or Maestro |
+| **Otium binding** | Membership in an Otium workspace |
+| **Tools and tasks** | The worker's capabilities and durable work state |
 
 ## Quick start
 
@@ -78,13 +79,13 @@ Choose one or more:
 Environment variables can be exported in your shell or placed in a `.env` in
 the directory where you run Negotium. Bun loads that file automatically.
 
-### 3. Open your workspace
+### 3. Start the worker
 
 ```bash
 negotium
 ```
 
-Press `N` to create a topic, choose an available agent, and start chatting.
+Press `N` to create a topic, choose an available agent backend, and start.
 Closing the terminal does not erase the topic or its history.
 
 ## Everyday controls
@@ -117,7 +118,7 @@ Useful chat commands:
 /quit         close the Terminal client
 ```
 
-The `Ctrl-G` graph shows which agent owns each room and how subagents or
+The `Ctrl-G` graph shows which agent owns each topic and how subagents or
 cross-topic requests connect them. Pan with arrow keys or `h`/`j`/`k`/`l`,
 change spacing with `[`/`]`, and close with `Esc` or `Ctrl-G`.
 
@@ -128,14 +129,14 @@ Agents receive a shared collaboration surface:
 | Tool | What it does |
 |---|---|
 | `spawn_subagent` | Start an independent worker and report its result |
-| `ask_session` | Ask another room a read-only question |
-| `tell_session` | Queue one-way work or context for another room |
+| `ask_session` | Ask another topic a read-only question |
+| `tell_session` | Queue one-way work or context for another topic |
 | `task_*` | Create and update durable shared tasks |
 | `wiki_*` / `skill_*` | Read and extend long-term knowledge |
 | `vault_*` | Use encrypted credentials through controlled tool paths |
 
 Each topic runs one turn at a time. New user input takes priority; background
-agent messages wait safely in the room's queue instead of interrupting work.
+agent messages wait safely in the topic's queue instead of interrupting work.
 
 ## Scheduled work
 
@@ -199,15 +200,15 @@ directory.
 ## How it works
 
 ```text
-Terminal / Telegram / Otium / custom adapter
-                      │
-                      ▼
-              Negotium local node
-       topics · queues · tasks · memory
-          │          │          │
-       Claude      Codex      Maestro
-                      │
-           MCP and built-in tools
+Otium workspace ── invites ──▶ Negotium worker
+                                  │
+Terminal / Telegram ──────────────┤
+                                  ▼
+                    topics · queues · tasks · memory
+                       │          │          │
+                    Claude      Codex      Maestro
+                                  │
+                       MCP and built-in tools
 ```
 
 Hosts only send input and render events. The core owns execution, durable state,

@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">
+  <title id="title">How Negotium joins an Otium workspace</title>
+  <desc id="desc">Otium invites a self-hosted Negotium worker as a workspace member. Terminal and Telegram can reach the same worker. Topics, tasks, memory, schedules, vault data, agents, and tools remain on the user's machine.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8f7ff"/>
+      <stop offset="1" stop-color="#f4f7fb"/>
+    </linearGradient>
+    <linearGradient id="worker" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff3c4"/>
+      <stop offset="1" stop-color="#ffdf8a"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#25213b" flood-opacity=".12"/>
+    </filter>
+    <marker id="violet-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6e59c9"/>
+    </marker>
+    <marker id="gold-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#bd8400"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="650" rx="30" fill="url(#bg)"/>
+  <rect x="1" y="1" width="1198" height="648" rx="29" fill="none" stroke="#dddbea" stroke-width="2"/>
+
+  <text x="58" y="68" fill="#201d2e" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="34" font-weight="780">Otium is the workspace. Negotium is the worker.</text>
+  <text x="58" y="105" fill="#6c6879" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">Invite one self-hosted worker, then reach the same durable state from every surface.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="58" y="154" width="282" height="174" rx="22" fill="#ffffff" stroke="#afa2e8" stroke-width="2"/>
+    <rect x="58" y="358" width="282" height="184" rx="22" fill="#ffffff" stroke="#d9dce5" stroke-width="2"/>
+    <rect x="395" y="137" width="747" height="434" rx="28" fill="#ffffff" stroke="#cfd5df" stroke-width="2"/>
+    <rect x="443" y="202" width="310" height="238" rx="24" fill="url(#worker)" stroke="#d49a00" stroke-width="3"/>
+    <rect x="802" y="202" width="292" height="112" rx="18" fill="#f4f8ff" stroke="#9bb9df" stroke-width="2"/>
+    <rect x="802" y="338" width="292" height="102" rx="18" fill="#f7f5ff" stroke="#b6a8df" stroke-width="2"/>
+  </g>
+
+  <text x="90" y="193" fill="#6e59c9" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="780" letter-spacing="1.5">AI WORKSPACE</text>
+  <text x="90" y="232" fill="#272238" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="27" font-weight="760">Otium</text>
+  <text x="90" y="264" fill="#6c647e" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16">Invite Negotium as a member.</text>
+  <rect x="90" y="282" width="182" height="28" rx="14" fill="#eeeaff"/>
+  <text x="181" y="301" fill="#5f4db3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="680" text-anchor="middle">workspace membership</text>
+
+  <text x="90" y="397" fill="#777d88" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="780" letter-spacing="1.5">DIRECT SURFACES</text>
+  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="680">
+    <rect x="90" y="420" width="218" height="42" rx="12" fill="#f7f8fa" stroke="#d8dce3"/>
+    <text x="199" y="447" fill="#3d424b" text-anchor="middle">Terminal</text>
+    <rect x="90" y="478" width="218" height="42" rx="12" fill="#f7f8fa" stroke="#d8dce3"/>
+    <text x="199" y="505" fill="#3d424b" text-anchor="middle">Telegram / adapters</text>
+  </g>
+
+  <text x="429" y="176" fill="#747985" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="780" letter-spacing="1.5">YOUR MACHINE · SELF-HOSTED</text>
+
+  <text x="475" y="242" fill="#855f00" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="780" letter-spacing="1.5">TEAM MEMBER</text>
+  <text x="475" y="282" fill="#251f12" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="29" font-weight="790">Negotium worker</text>
+  <text x="475" y="312" fill="#715b24" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16">Durable work, running where you choose.</text>
+
+  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="680" text-anchor="middle">
+    <rect x="475" y="341" width="76" height="34" rx="10" fill="#fffdf6" stroke="#d8b85f"/>
+    <text x="513" y="363" fill="#5e4d1c">Topics</text>
+    <rect x="561" y="341" width="76" height="34" rx="10" fill="#fffdf6" stroke="#d8b85f"/>
+    <text x="599" y="363" fill="#5e4d1c">Tasks</text>
+    <rect x="647" y="341" width="76" height="34" rx="10" fill="#fffdf6" stroke="#d8b85f"/>
+    <text x="685" y="363" fill="#5e4d1c">Memory</text>
+    <rect x="475" y="385" width="112" height="34" rx="10" fill="#fffdf6" stroke="#d8b85f"/>
+    <text x="531" y="407" fill="#5e4d1c">Schedules</text>
+    <rect x="597" y="385" width="126" height="34" rx="10" fill="#fffdf6" stroke="#d8b85f"/>
+    <text x="660" y="407" fill="#5e4d1c">Vault + files</text>
+  </g>
+
+  <text x="830" y="237" fill="#3e6d9f" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="780" letter-spacing="1.3">AGENT BACKENDS</text>
+  <text x="830" y="274" fill="#263d56" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="22" font-weight="740">Claude · Codex · Maestro</text>
+  <text x="830" y="298" fill="#62788e" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">Choose the backend per topic.</text>
+
+  <text x="830" y="373" fill="#6e59a6" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="780" letter-spacing="1.3">LOCAL CAPABILITIES</text>
+  <text x="830" y="407" fill="#403654" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="720">Browser · files · shell · MCP</text>
+  <text x="830" y="429" fill="#746888" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">Tools stay under worker control.</text>
+
+  <path d="M340 242 C365 242, 374 259, 421 259" fill="none" stroke="#6e59c9" stroke-width="3" marker-end="url(#violet-arrow)"/>
+  <text x="382" y="226" fill="#6959a5" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="670" text-anchor="middle">invite</text>
+  <path d="M340 450 C370 450, 384 396, 421 396" fill="none" stroke="#8a909a" stroke-width="3" marker-end="url(#violet-arrow)"/>
+  <path d="M753 258 L790 258" fill="none" stroke="#bd8400" stroke-width="3" marker-end="url(#gold-arrow)"/>
+  <path d="M753 390 L790 390" fill="none" stroke="#bd8400" stroke-width="3" marker-end="url(#gold-arrow)"/>
+
+  <rect x="443" y="475" width="651" height="58" rx="16" fill="#f4f6f9" stroke="#d9dee6"/>
+  <text x="768" y="499" fill="#4d535d" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="690" text-anchor="middle">Local by default</text>
+  <text x="768" y="520" fill="#737984" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" text-anchor="middle">Conversations, files, schedules, browser profiles, and secrets stay on the worker's machine.</text>
+
+  <text x="600" y="615" fill="#777584" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" text-anchor="middle">One durable worker · many topics · multiple agent backends · every surface</text>
+</svg>
