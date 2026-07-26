@@ -1,9 +1,7 @@
 <div align="center">
   <h1>Negotium</h1>
-  <p><strong>Turn one computer into a durable, multi-agent node.</strong></p>
-  <p>
-    Claude Code · Codex · Maestro · MCP · local-first state · scheduled turns
-  </p>
+  <p><strong>Your local multi-agent OS.</strong></p>
+  <p>Give Claude, Codex, and Maestro persistent rooms, shared tools, memory, and schedules.</p>
   <p>
     <a href="./LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-4c1.svg"></a>
     <img alt="Bun 1.2.15+" src="https://img.shields.io/badge/runtime-Bun_1.2.15%2B-000000?logo=bun&logoColor=white">
@@ -12,30 +10,42 @@
   </p>
 </div>
 
-> *Negotium* is Latin for “work” — literally *nec otium*, the absence of leisure.
-> Your machines do the negotium so you can keep the otium.
+> *Negotium* is Latin for “work” — literally *nec otium*, the absence of
+> leisure. Your machines do the negotium so you can keep the otium.
 
-Negotium is a host-agnostic runtime for long-lived AI agents. A node owns its topics,
-provider sessions, MCP tools, workspace, memory, queues, and encrypted secrets. A terminal,
-Telegram bot, or workspace app is only a thin host around that same runtime.
+Negotium is a local-first workspace for directing multiple AI agents. It is
+designed for people who want an AI team that keeps working context over time,
+not another collection of disposable chat windows.
 
-The project is early-stage. The complete runtime ships as `negotium`; adapter authors use the
-lockstep-versioned `@negotium/adapter-sdk`. Public APIs may change during the `0.x` series.
+Create a room for each project, choose the best agent for the job, let agents
+delegate to one another, schedule recurring work, and come back later. Topics,
+conversations, tasks, memory, files, and secrets stay on your computer.
 
-## Why Negotium?
+Negotium is currently an early-stage terminal application and runtime. “OS”
+describes the product model—one place that coordinates agents and their
+resources—not a replacement for macOS or Linux. Public APIs may change during
+the `0.x` series.
 
-- **Three agent backends, one runtime** — run Claude Code, Codex, or Maestro per topic and
-  preserve provider-native sessions across turns.
-- **Durable collaboration** — agents can `tell_session`, `ask_session`, and delegate through
-  `spawn_subagent`; busy rooms queue work instead of dropping it.
-- **Local-first state** — SQLite, JSONL conversations, workspaces, wiki memory, and an
-  encrypted vault live under one node directory.
-- **MCP-native tools** — tasks, wiki/skills, vault, browser automation, background shell,
-  health, files, and node controls are mounted for each turn.
-- **Composable modules** — hosts explicitly opt into features such as persistent Cron jobs;
-  disabled modules install no timer, listener, or schema.
-- **One adapter boundary** — hosts send messages through the core API and render everything
-  from `runtimeBus()`.
+## What can I do with it?
+
+- Keep separate, long-lived rooms for research, operations, writing, or code
+- Use Claude Code, Codex, or Maestro per room without losing the room's history
+- Ask several agents to investigate in parallel and report back
+- Track shared tasks and watch active subagents in a live graph
+- Run daily or weekly agent jobs with durable schedules
+- Give agents browser, file, shell, wiki, and MCP tools
+- Store API keys in an encrypted vault and reference them as `{{KEY}}`
+- Continue the same work from Terminal, Telegram, Otium, or a custom adapter
+
+The basic mental model is small:
+
+| Negotium concept | Think of it as |
+|---|---|
+| **Node** | One computer running your agent workspace |
+| **Topic** | A durable room for one area of work |
+| **Agent** | The AI worker assigned to that room |
+| **Tools** | Capabilities the worker can use |
+| **Task** | Shared work state visible to you and the agents |
 
 ## Quick start
 
@@ -44,167 +54,92 @@ lockstep-versioned `@negotium/adapter-sdk`. Public APIs may change during the `0
 Requirements:
 
 - [Bun](https://bun.sh/) 1.2.15 or newer
+- macOS or Linux
 - Node.js 20+ when using Codex's stdio MCP tools
-- macOS or Linux; the runtime currently expects POSIX process controls
-- credentials for at least one supported agent
-- Xvfb (`xvfb-run`) on Linux nodes without `DISPLAY`/`WAYLAND_DISPLAY` when using browser tools
+- Credentials for at least one supported agent
 
 ```bash
 npm install --global negotium
+negotium init
 ```
 
-### 2. Authenticate an agent
+On a headless Linux machine, browser tools also need `xvfb-run`.
 
-Choose at least one:
+### 2. Connect an agent
+
+Choose one or more:
 
 | Agent | Authentication |
 |---|---|
 | Claude | Run `claude` and finish login, or set `ANTHROPIC_API_KEY` |
 | Codex | Run `codex login` |
-| Maestro | Set `DEEPSEEK_API_KEY` for DeepSeek or `MOONSHOT_API_KEY` for Kimi; `GEMINI_API_KEY` is optional for image QA |
+| Maestro | Set `DEEPSEEK_API_KEY` or `MOONSHOT_API_KEY` |
 
-For environment-based credentials and node settings, create a `.env` in the directory where you
-run Negotium or export the variables in your shell. Bun loads `.env` automatically.
+Environment variables can be exported in your shell or placed in a `.env` in
+the directory where you run Negotium. Bun loads that file automatically.
 
-```bash
-DEEPSEEK_API_KEY=your-key
-# MOONSHOT_API_KEY=your-key
-# MOONSHOT_BASE_URL=https://api.moonshot.ai/v1
-# FALLBACK_AGENT=maestro
-```
-
-### 3. Start chatting
+### 3. Open your workspace
 
 ```bash
-negotium init
 negotium
 ```
 
-Pick or create a topic in Terminal, then choose `claude`, `codex`, or `maestro` according to the
-auth check printed by `init`.
+Press `N` to create a topic, choose an available agent, and start chatting.
+Closing the terminal does not erase the topic or its history.
 
-The `negotium` package contains the CLI, runtime, MCP services, Cron module, and first-party
-Terminal, Telegram, and Otium adapters.
+## Everyday controls
 
-## CLI
-
-```text
-negotium
-negotium init
-negotium serve
-negotium serve otium
-negotium status
-negotium stop [otium|telegram|--all]
-negotium topics
-negotium terminal
-negotium telegram
-negotium otium join|bindings|share|private|leave
-negotium -v|--version
-
-negotium mcp list|add|remove|enable|disable
-negotium vault list|set|get|del
-negotium cron list|create|edit|inspect|logs|run|pause|resume|restart|kill|reset|delete
-```
-
-Inside Terminal, `/vault` opens the interactive encrypted-secret manager, while
-`/vault list`, `/vault set KEY VALUE [description]`, and `/vault del KEY` run directly
-without leaving the conversation. Secret input is masked in the manager and Vault commands
-never enter the agent conversation or Terminal input history. Telegram retains `/vault list`,
-`/vault set KEY VALUE [description]`, and `/vault del KEY` for chat-based management.
-Telegram still transports the original command to the bot, so prefer a private DM
-or Terminal for high-value credentials.
-
-Agents reference stored values as `{{KEY}}` in normal tool inputs. Claude and Maestro
-resolve placeholders immediately before execution; the authenticated browser wrapper
-does the same for Playwright calls from every provider, including Codex. Tool results
-are scrubbed before returning to the model. The default Vault MCP exposes key names and
-descriptions only.
-
-Inside terminal chat:
-
-```text
-/new                  reset this topic's AI context, including personal General
-/compact              summarize and shrink the current provider context
-/status               show the active model and token usage
-/model                choose this topic's model
-/effort               choose its reasoning effort
-/topics               open the topic picker
-/public | /private    change Otium Hub visibility
-/fork [name]          copy config and history into a new topic
-/spawn [name]         copy config into a fresh topic
-/del                  archive and delete the current topic
-/copy                 copy the last agent answer
-/vault                open the encrypted-secret manager
-/abort                stop the current turn
-/help                 show keyboard help
-/quit                 close the terminal host
-```
-
-Terminal opens on the topic picker, with personal `General` separated from other topics. Press `N`,
-enter a topic name, and press `Enter` to create and open it. Use `Ctrl-O` to return to the picker;
-deleting a topic returns there automatically. On the startup picker, `Ctrl-C` or `Esc` exits
-immediately instead of opening `General` underneath it.
-
-Useful Terminal controls:
+The most useful Terminal shortcuts are:
 
 | Action | Keys |
 |---|---|
-| Scroll loaded conversation history | Mouse wheel or `PgUp` / `PgDn` |
-| Load the next older history page | `Ctrl-E` |
+| Create a topic from the picker | `N` |
 | Open the topic picker | `Ctrl-O` |
-| Move to the previous or next topic | `Ctrl-P` / `Ctrl-N` |
-| Toggle the durable Tasks panel | `Ctrl-T` |
+| Previous / next topic | `Ctrl-P` / `Ctrl-N` |
+| Scroll loaded history | Mouse wheel or `PgUp` / `PgDn` |
+| Load older history | `Ctrl-E` |
+| Toggle shared tasks | `Ctrl-T` |
 | Open the live subagent graph | `Ctrl-G` |
+| Abort the current turn | `Ctrl-C` |
 
-The `Ctrl-G` view projects Negotium's ownership and session-communication edges through
-[`orchgraph`](https://github.com/maestrojeong/orchgraph). It updates while agents work; use
-arrow keys or `h`/`j`/`k`/`l` to pan, `[`/`]` to change spacing, and `Esc` or `Ctrl-G` to close.
+Useful chat commands:
 
-### Run the node and Terminal clients
-
-```bash
-negotium serve
+```text
+/new          reset the topic's AI context
+/compact      summarize and shrink provider context
+/status       show model and token usage
+/model        choose the model for this topic
+/effort       choose reasoning effort
+/fork [name]  copy config and history into a new topic
+/spawn [name] copy config into a fresh topic
+/vault        open the encrypted-secret manager
+/help         show all shortcuts
+/quit         close the Terminal client
 ```
 
-The foreground node binds to `127.0.0.1:7777` by default and serves the runtime MCP endpoint,
-durable inbox worker, configured MCP processes, enabled modules, and authenticated control API.
-Keep it alive with a process supervisor such as `launchd`, systemd, or pm2.
+The `Ctrl-G` graph shows which agent owns each room and how subagents or
+cross-topic requests connect them. Pan with arrow keys or `h`/`j`/`k`/`l`,
+change spacing with `[`/`]`, and close with `Esc` or `Ctrl-G`.
 
-`negotium terminal` needs no separate setup: it discovers or auto-starts one long-lived local
-node for the current state directory, then connects over REST and a cursor-based SSE event stream.
-Closing or crashing the TUI only disconnects that client; active agent turns and the node continue.
+## Agent collaboration
 
-```bash
-negotium status
-negotium stop
-negotium terminal --embedded   # explicit in-process recovery/development mode
-```
+Agents receive a shared collaboration surface:
 
-Channel processes share one canonical Node and do not need a common parent process. Terminal clients
-may be opened more than once; Telegram submits turns through the Node control API; Otium keeps only
-its public peer listener and relay tunnel in a sidecar:
+| Tool | What it does |
+|---|---|
+| `spawn_subagent` | Start an independent worker and report its result |
+| `ask_session` | Ask another room a read-only question |
+| `tell_session` | Queue one-way work or context for another room |
+| `task_*` | Create and update durable shared tasks |
+| `wiki_*` / `skill_*` | Read and extend long-term knowledge |
+| `vault_*` | Use encrypted credentials through controlled tool paths |
 
-Run `negotium` or `negotium terminal` for each Terminal client, `negotium telegram` for the
-Telegram adapter, and `negotium serve otium` for the Otium sidecar.
+Each topic runs one turn at a time. New user input takes priority; background
+agent messages wait safely in the room's queue instead of interrupting work.
 
-`negotium serve otium` is the supervisor form: it ensures the canonical daemon, then runs the Otium
-sidecar in the foreground. `negotium otium serve` remains a deprecated migration alias and is
-scheduled for removal in a future cleanup release. `negotium status`
-shows the Node and adapter PIDs; `negotium stop` stops only the Node, while `negotium stop otium`,
-`negotium stop telegram`, and `negotium stop --all` make the wider scope explicit.
+## Scheduled work
 
-The Terminal node publishes an ephemeral authenticated loopback control endpoint and holds a
-state-directory singleton lease. Topics, messages, runtime events, pending turn requests, leases,
-and input history are coordinated through the state database. The cron module also uses a
-cross-process lease so only one process schedules jobs.
-
-Resetting a topic preserves its visible message history, but cancels every active or queued turn
-accepted before the reset. Requests accepted afterward start against a fresh provider context.
-
-## Scheduled agent turns
-
-Cron is an optional in-process module enabled by the reference CLI host. Create the target
-topic first, create a schedule, and keep a node host running:
+Create the topic first, add a schedule, and keep the Negotium node running:
 
 ```bash
 negotium cron create \
@@ -214,198 +149,97 @@ negotium cron create \
   'Review open work and write a concise status report.' \
   --timezone=America/Los_Angeles
 
-negotium cron list
 negotium serve
 ```
 
-Every job belongs to a topic. Jobs in the same topic execute serially and share one Cron
-conversation, so a later job can use conclusions and state produced by earlier scheduled runs.
-That Cron conversation is separate from the topic's live human conversation. Provider-native
-resume IDs are kept per agent under the shared topic context; when a different agent runs, the
-runtime rebuilds its rollout from the provider-neutral Cron log. After every five successful
-topic Cron runs, Negotium rotates the native provider sessions and carries the latest five
-conversation turns into the replacement session. The cadence is topic-wide rather than
-per-job, so several schedules cannot unexpectedly reset each other's context, and the shared
-history stays useful without growing forever.
+Jobs in the same topic run serially and share a separate Cron conversation.
+Schedules survive restarts in SQLite; missed runs are coalesced instead of
+replaying an unlimited backlog. Use `negotium cron --help` for management
+commands and script-backed prompts.
 
-Jobs can also use a Python script whose stdout becomes the task prompt:
+## Running continuously
+
+`negotium` automatically discovers or starts the local node. For an always-on
+machine, run the node under launchd, systemd, or pm2:
 
 ```bash
-# Put daily-report.py in ~/.negotium/workspace/cron/jobs first.
-negotium cron create operations daily-report '0 9 * * *' \
-  --script=daily-report.py \
-  --timezone=America/Los_Angeles
+negotium serve
 ```
 
-The scheduler uses one timer and an indexed `next_run_at`; it does not create one pm2 process
-per job. Scheduled work waits behind an active human turn and never preempts it. If the node
-process stops, execution stops too, but schedules and manual requests remain in SQLite. Run the
-whole node under `launchd`, systemd, or pm2; after restart a missed schedule is coalesced into one
-run instead of replaying an unbounded backlog.
+Then connect any number of clients:
 
-Set `NEGOTIUM_CRON=0` to keep the module completely unloaded.
-
-## Agent collaboration
-
-Every topic is a room with one selected agent and at most one active turn. The runtime gives
-agents a shared collaboration surface:
-
-| Tool | Behavior |
-|---|---|
-| `tell_session` | Queue fire-and-forget work for another topic |
-| `ask_session` | Fork another topic's session read-only and route the answer back |
-| `spawn_subagent` | Create a child room with its own session and report completion to the parent |
-| `task_*` | Maintain shared durable tasks |
-| `wiki_query` / `skill_*` | Read and extend long-term memory and skills |
-| `vault_*` | Use encrypted credentials without exposing plaintext to normal tool paths |
-
-User turns take priority: a new user message supersedes a running turn, while agent-to-agent
-injections wait in the target room's queue.
-
-Negotium does not preload a fixed skill catalog. Agents and users create or update reusable skills
-through `skill_save`, and the wiki archiver compounds them under the node's shared `wiki/skills/`
-directory over time.
-
-## Architecture
-
-```text
-                         one machine = one node
-
-  CLI / Telegram / Otium host / custom adapter
-              │ input API            ▲ RuntimeBus events
-              ▼                      │
-  ┌─────────────────────────────────────────────────────────┐
-  │ @negotium/core                                         │
-  │ topics · turns · providers · queues · storage · memory │
-  │                                                        │
-  │ Claude Code ─┐                                         │
-  │ Codex ───────┼─ provider-neutral event stream          │
-  │ Maestro ─────┘                                         │
-  └──────────────┬──────────────────────┬───────────────────┘
-                 │                      │
-       @negotium/mcp          optional node modules
-       runtime/node tools     @negotium/module-cron · …
-                 │
-       @negotium/mcp-host
-       managed MCP processes
-
-  ~/.negotium/{data,run,workspace}
+```bash
+negotium terminal
+negotium telegram
+negotium serve otium
 ```
 
-The core invariants are intentionally small:
+The node binds to `127.0.0.1:7777` by default. Use `negotium status` to inspect
+it and `negotium stop --all` to stop the node and channel processes.
 
-1. At most one active turn per topic.
-2. Human input outranks background injection.
-3. Queue delivery is at-least-once and deduplicated by request ID.
-4. Hosts own channel identity and rendering; core owns execution and local state.
-5. Optional features enter through explicit node modules, not product-specific branches.
+## Local data and secrets
 
-For the detailed design, read [Architecture](./docs/ARCHITECTURE.md).
-
-## Runtime internals
-
-A channel adapter persists inbound messages, starts a turn, and subscribes to outbound runtime
-events. The implementation remains split into private workspaces for development, but those
-workspaces are bundled into `negotium` and are not public npm APIs. External adapters should depend
-only on `@negotium/adapter-sdk`.
-
-Modules advertise stable capability IDs such as `scheduler.cron.v1` and
-`scheduler.cron.v2`. A disabled module is not
-imported and cannot migrate a table or install background work.
-
-## Node state
-
-The default state root is `~/.negotium`; override it with `NEGOTIUM_STATE_DIR`.
+State lives under `~/.negotium` by default:
 
 ```text
 ~/.negotium/
-├── data/       SQLite databases, MCP manifest, generated node secrets
-├── run/        transient inbox queues, progress state, MCP port files
-├── workspace/  topic workspaces, shared wiki, skills, browser profiles, Cron scripts
-├── logs/       rotating activity and token-usage JSONL
-├── runtime-mcp-secret
-├── node-control-token
-└── vault-master-key
+├── data/       SQLite databases and generated node secrets
+├── run/        transient queues and process state
+├── workspace/  topic files, wiki, skills, browser profiles, Cron scripts
+└── logs/       activity and token-usage logs
 ```
 
-Important environment variables:
+Set `NEGOTIUM_STATE_DIR` to move the state root.
 
-| Variable | Default | Purpose |
-|---|---:|---|
-| `NEGOTIUM_STATE_DIR` | `~/.negotium` | Node state root |
-| `NEGOTIUM_LOG_DIR` | `<state>/logs` | Activity and token-usage logs |
-| `NEGOTIUM_PORT` | `7777` | Loopback runtime/MCP port |
-| `NEGOTIUM_BROWSER_RS_BIN` | managed Browser.rs | Optional preferred browser-engine executable override |
-| `NEGOTIUM_SKIP_BROWSER_RS_INSTALL` | unset | Set to `1` during package installation to use Patchright only |
-| `FALLBACK_AGENT` | `maestro` | Agent for newly created topics |
-| `FALLBACK_MODEL` | provider default | Optional model override for the fallback session agent |
-| `NEGOTIUM_CLAUDE_EXECUTABLE` | SDK bundled | Optional external Claude Code executable override |
-| `NEGOTIUM_CRON` | `1` | Set to `0` to omit the Cron module |
-| `NEGOTIUM_CRON_POLL_INTERVAL_MS` | `1000` | Scheduler polling interval |
-| `NEGOTIUM_CRON_RUN_TIMEOUT_MS` | `600000` | Maximum scheduled-turn duration |
-| `NEGOTIUM_CRON_QUEUE_TIMEOUT_MS` | `300000` | Maximum wait behind a busy topic |
-| `NEGOTIUM_CRON_SCRIPT_TIMEOUT_MS` | `600000` | Maximum Python prompt-script duration |
-| `NEGOTIUM_CRON_JOBS_DIR` | `workspace/cron/jobs` | Python prompt-script directory |
-| `NEGOTIUM_CRON_PYTHON` | `uv` or `python3` | Optional Python executable override |
-| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`, or `fatal` |
+The vault encrypts values at rest and keeps plaintext out of normal agent
+messages and tool results. Manage it with `/vault` in Terminal or
+`negotium vault --help`. Do not commit `.env`, vault keys, or a live state
+directory.
 
-The vault stores row-bound authenticated ciphertext in `data/vault.db`; its node master key is
-created with mode `0600`. Do not commit `.env` or copy a live state directory between running
-nodes.
+## How it works
 
-## Published packages
+```text
+Terminal / Telegram / Otium / custom adapter
+                      │
+                      ▼
+              Negotium local node
+       topics · queues · tasks · memory
+          │          │          │
+       Claude      Codex      Maestro
+                      │
+           MCP and built-in tools
+```
 
-| Package | Responsibility |
-|---|---|
-| [`negotium`](./apps/negotium) | CLI, runtime, MCP services, Cron, and first-party adapters |
-| [`@negotium/adapter-sdk`](./packages/adapter-sdk) | Adapter API v3 lifecycle, durable outbox, and `./testkit` contract assertions |
+Hosts only send input and render events. The core owns execution, durable state,
+provider sessions, and queueing. Optional features such as Cron are explicit
+modules and stay unloaded when disabled.
 
-`packages/core`, `packages/node`, MCP/Cron workspaces, `apps/cli`, and first-party adapter
-directories remain private source boundaries. They are built and tested independently but are not
-published or supported as standalone npm dependencies.
-
-Embedding hosts can use stable subpaths such as `negotium/hosted-agent`, `negotium/cron`,
-`negotium/vault`, and `negotium/storage`. The storage facade accepts a borrowed SQLite connection
-plus host-owned data, log, session-ask, and workspace roots through `configureStorageHost()`; all
-resolution and schema initialization is lazy.
+For implementation details, see [Architecture](./docs/ARCHITECTURE.md).
+Adapter authors should use the lockstep-versioned
+[`@negotium/adapter-sdk`](./packages/adapter-sdk) rather than private workspace
+packages.
 
 ## Development
 
 ```bash
-git clone git@github.com:maestrojeong/negotium.git
+git clone https://github.com/maestrojeong/negotium.git
 cd negotium
 bun install
 
-bun test          # all core, MCP, host, adapter, and Cron tests
-bun run build     # build private workspaces and the two public packages
-bun run lint      # Biome formatter/linter checks
-bun run check     # Biome checks followed by the full build
-bun run release:dry-run  # inspect both npm packages without publishing
+bun test
+bun run check
+bun run release:dry-run
 ```
 
-New app and adapter packages use package-local `@/` source aliases. The build resolves those
-aliases into portable JavaScript and declaration paths; cross-package code goes through each
-package's public export.
-
-## Documentation
-
-Start with the [documentation index](./docs/README.md). Each document owns one concern so runtime
-architecture, adapter behavior, Otium protocol details, review criteria, and release steps are not
-maintained in several places.
+Start with the [documentation index](./docs/README.md), then see:
 
 - [Architecture and invariants](./docs/ARCHITECTURE.md)
-- [Adapter lifecycle and projection](./docs/ADAPTERS.md)
-- [Otium worker coupling contract](./docs/OTIUM-COUPLING.md)
+- [Adapter lifecycle](./docs/ADAPTERS.md)
 - [Feature review guide](./docs/FEATURE-REVIEW.md)
-- [npm release guide](./docs/RELEASING.md)
+- [Release guide](./docs/RELEASING.md)
 
-## Contributing
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for the development workflow and pull-request checks.
-
-## Security
-
-Please report vulnerabilities privately as described in [SECURITY.md](./SECURITY.md).
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution checks and
+[SECURITY.md](./SECURITY.md) for private vulnerability reporting.
 
 ## License
 
