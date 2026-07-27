@@ -98,9 +98,9 @@ export const PATCHRIGHT_MCP_BIN = resolve(PROJECT_ROOT, "scripts/mcp-patchright-
 export const PLAYWRIGHT_MCP_BIN = resolveBrowserMcpBin(envText("NEGOTIUM_BROWSER_MCP_BIN"));
 
 /** Browser.rs release tested with this Negotium version. */
-export const BROWSER_RS_VERSION = "v0.1.12";
-/** Old releases do not authenticate their internal HTTP listener. */
-export const BROWSER_RS_MIN_SECURE_VERSION = "0.1.12";
+export const BROWSER_RS_VERSION = "v0.1.13";
+/** Require the authenticated listener and the current Browser.rs tool contract. */
+export const BROWSER_RS_MIN_SECURE_VERSION = "0.1.13";
 
 function versionAtLeast(actualVersion: string, minimumVersion: string): boolean {
   const actual = actualVersion.split(".").map(Number);

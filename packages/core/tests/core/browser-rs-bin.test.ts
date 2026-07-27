@@ -19,15 +19,15 @@ afterEach(() => {
 
 describe("Browser.rs executable resolution", () => {
   test("keeps the tested Browser.rs release pinned", () => {
-    expect(BROWSER_RS_VERSION).toBe("v0.1.12");
-    expect(BROWSER_RS_MIN_SECURE_VERSION).toBe("0.1.12");
+    expect(BROWSER_RS_VERSION).toBe("v0.1.13");
+    expect(BROWSER_RS_MIN_SECURE_VERSION).toBe("0.1.13");
   });
 
   test("accepts only an executable explicit override", () => {
     const dir = mkdtempSync(join(tmpdir(), "negotium-browser-rs-bin-"));
     temporaryDirs.push(dir);
     const binary = resolve(dir, "browser-rs");
-    writeFileSync(binary, "#!/bin/sh\necho 'browser-rs 0.1.12'\n");
+    writeFileSync(binary, "#!/bin/sh\necho 'browser-rs 0.1.13'\n");
 
     expect(resolveBrowserRsBin(binary)).toBeUndefined();
     chmodSync(binary, 0o755);
@@ -38,7 +38,7 @@ describe("Browser.rs executable resolution", () => {
     const dir = mkdtempSync(join(tmpdir(), "negotium-browser-rs-old-bin-"));
     temporaryDirs.push(dir);
     const binary = resolve(dir, "browser-rs");
-    writeFileSync(binary, "#!/bin/sh\necho 'browser-rs 0.1.11'\n");
+    writeFileSync(binary, "#!/bin/sh\necho 'browser-rs 0.1.12'\n");
     chmodSync(binary, 0o755);
 
     expect(resolveBrowserRsBin(binary)).toBeUndefined();
