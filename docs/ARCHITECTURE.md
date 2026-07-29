@@ -79,7 +79,7 @@ it must not create an unbounded retry loop.
 The default state root is `~/.negotium`:
 
 ```text
-data/        SQLite state, vault data, and MCP manifest
+data/        SQLite state, vault data, MCP manifest, and conversation streams
 run/         Ephemeral leases, inbox claims, port files, and progress state
 workspace/   Topic workspaces, shared wiki, skills, summaries, and browser profiles
 logs/        Rotated structured activity logs
@@ -91,15 +91,17 @@ Terminal clients and channel adapters coordinate through that node and the share
 | State | Owner |
 | --- | --- |
 | Topics, messages, topic configuration | Core storage |
-| Provider session IDs and neutral conversation log | Core runtime |
+| Provider session IDs, raw conversation history, and active provider context | Core runtime |
 | Tasks, wiki, skills, and vault | Built-in runtime services |
 | Channel chat, thread, or room IDs | The corresponding adapter |
 | Workspace membership and remote node placement | The external control plane |
 | Terminal selection, scroll, and composer state | One Terminal client process |
 
 Topic deletion archives the conversation before deleting live rows. A failed archive leaves the
-source intact. Secrets are encrypted at rest and bound to the local state root; normal tool output
-must never reveal vault plaintext or authentication tokens.
+source intact. Reset and deletion also stop when provider context cleanup fails, so a recreated
+topic cannot inherit stale raw, active, or provider-native rollout state. Secrets are encrypted at
+rest and bound to the local state root; normal tool output must never reveal vault plaintext or
+authentication tokens.
 
 ## Collaboration
 

@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type {
   FileChangeItem,
   McpToolCallItem,
@@ -97,6 +97,36 @@ const CODEX_MCP_SERVER_NAME_OVERRIDES: Record<string, string> = {
 
 function codexMcpServerName(name: string): string {
   return CODEX_MCP_SERVER_NAME_OVERRIDES[name] ?? name;
+}
+
+function globalCodexMcpServerNames(authFilePath: string): string[] {
+  const configPath = join(dirname(authFilePath), "config.toml");
+  if (!existsSync(configPath)) return [];
+  try {
+    const names = new Set<string>();
+    for (const line of readFileSync(configPath, "utf8").split("\n")) {
+      const match = line.match(
+        /^\s*\[\s*mcp_servers\.((?:"(?:\\.|[^"])*")|(?:'[^']*')|[^.\]\s]+)(?:[.\]])/,
+      );
+      const raw = match?.[1];
+      if (!raw) continue;
+      if (raw.startsWith('"')) {
+        try {
+          names.add(JSON.parse(raw));
+        } catch {
+          // Ignore malformed TOML; Codex itself will report the config error.
+        }
+      } else if (raw.startsWith("'")) {
+        names.add(raw.slice(1, -1));
+      } else {
+        names.add(raw);
+      }
+    }
+    return [...names];
+  } catch (error) {
+    logger.warn({ err: error, configPath }, "codexProvider: failed to inspect global MCP config");
+    return [];
+  }
 }
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
@@ -571,6 +601,17 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
   }
 
   const codexMcpServers = toCodexMcpServers(hostedMcpServers(opts));
+  if (opts.toolPolicy) {
+    const allowed = new Set(Object.keys(codexMcpServers));
+    for (const name of globalCodexMcpServerNames(codexAuthPath)) {
+      if (allowed.has(name)) continue;
+      codexMcpServers[name] = {
+        command: process.execPath,
+        args: ["-e", "process.exit(0)"],
+        enabled: false,
+      };
+    }
+  }
   const browserOwner = browserOwnerForContext(opts);
   const scopedBrowserCapability =
     opts.playwrightCapability && browserOwner
@@ -620,6 +661,7 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
       features: { multi_agent: false, multi_agent_v2: false, enable_fanout: false },
       model_catalog_json: codexModelCatalogPath,
       mcp_servers: codexMcpServers,
+      ...(opts.toolPolicy ? { sandbox_permissions: [] } : {}),
     },
   });
 
@@ -630,8 +672,15 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
     // workspace cwd for the turn, and the bot is expected to act on it freely on
     // the user's behalf. SDK-level sandboxing would only constrain reach inside
     // that already-owned directory, which is not the threat model.
-    sandboxMode: "danger-full-access" as SandboxMode,
+    sandboxMode: (opts.toolPolicy ? "read-only" : "danger-full-access") as SandboxMode,
     approvalPolicy: "never",
+    ...(opts.toolPolicy
+      ? {
+          networkAccessEnabled: false,
+          webSearchMode: "disabled" as const,
+          webSearchEnabled: false,
+        }
+      : {}),
     ...(opts.model ? { model: opts.model } : {}),
     ...(opts.effort ? { modelReasoningEffort: mapEffort(opts.effort) } : {}),
   };

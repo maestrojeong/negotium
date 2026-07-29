@@ -144,11 +144,14 @@ describe("session system prompt builders", () => {
     });
     expect(parentPrompt).toContain("create_subagent");
     expect(parentPrompt).toContain("start_subagent");
+    expect(parentPrompt).toContain("list_subagents");
+    expect(parentPrompt).toContain("delete_subagent");
+    expect(parentPrompt).toContain("grant_subagent_tell");
+    expect(parentPrompt).toContain("revoke_subagent_tell");
     expect(parentPrompt).toContain("list_memory_topics");
-    expect(parentPrompt).toContain('memory_topic?: "topic/<brief>.md"');
-    expect(parentPrompt).toContain("parent's effective topic brief");
-    expect(parentPrompt).toContain('report_mode?: "auto"|"tell"|"status-only"');
-    expect(parentPrompt).toContain("status-only only updates lifecycle state");
+    expect(parentPrompt).toContain("effective topic memory");
+    expect(parentPrompt).toContain("status-only` updates lifecycle only");
+    expect(parentPrompt).toContain("Do not wait or poll");
 
     const peerPrompt = buildTopicSystemPrompt({
       aiLabel: "Otium",
@@ -161,6 +164,10 @@ describe("session system prompt builders", () => {
     expect(peerPrompt).toContain("spawn_subagent");
     expect(peerPrompt).not.toContain("create_subagent");
     expect(peerPrompt).not.toContain("start_subagent");
+    expect(peerPrompt).not.toContain("list_subagents");
+    expect(peerPrompt).not.toContain("delete_subagent");
+    expect(peerPrompt).not.toContain("grant_subagent_tell");
+    expect(peerPrompt).not.toContain("revoke_subagent_tell");
 
     const childPrompt = buildTopicSystemPrompt({
       aiLabel: "Otium",

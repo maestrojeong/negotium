@@ -134,7 +134,7 @@ export interface TopicDto {
 /** Read-only internal work shown by operational clients. */
 export interface BackgroundSessionDto {
   id: string;
-  kind: "memory" | "cron";
+  kind: "memory" | "cron" | "compact";
   title: string;
   startedAt: string;
   topicId?: string;
@@ -147,6 +147,8 @@ export interface BackgroundSessionDto {
   /** User/task prompt that started the displayed run. Never includes system instructions. */
   prompt?: string;
   promptTitle?: string;
+  /** Final read-only model output, when the background run produced one. */
+  output?: string;
   steps: string[];
 }
 

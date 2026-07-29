@@ -28,7 +28,7 @@ wiki/
 
 ## Steps (must run in order)
 
-1. **Iterative chunked read.** archive `.jsonl` 파일은 매우 클 수 있어 한 번에 다 못 들어올 수 있다. 각 줄은 `{ line, role, speaker, text, message }` 형태의 transcript record이며, `line`을 우선 읽고 원본 DB 필드가 필요할 때만 `message`를 참고한다. 다음 루프로 끝까지 훑어라:
+1. **Iterative chunked read.** archive `.jsonl` 파일은 매우 클 수 있어 한 번에 다 못 들어올 수 있다. `archive_path`의 각 줄은 `{ line, role, speaker, text, message }` 형태의 화면 transcript record다. 프롬프트에 `raw_archive_path`가 있으면 compact 전 원본을 포함한 `{ line, role, speaker, text, event }` 이벤트 기록이므로 같은 방식으로 모든 파일을 끝까지 읽고, 도구·reasoning·오류·에이전트 전환에서 기억할 가치가 있는 사실을 보완하라. `line`을 우선 읽고 상세 필드가 필요할 때만 `message` 또는 `event`를 참고한다.
 
    - `Read(archive_path, offset: 1, limit: 2000)` 로 첫 청크를 읽는다.
    - 결과 끝에 `lines X-Y of N` 같은 truncation 안내가 보이면 `offset = Y + 1` 로 다음 청크를 호출한다. 안내가 없거나 `Y == N` 이면 끝.

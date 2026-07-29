@@ -585,7 +585,7 @@ test("POST derive rejects a name that collides with an existing topic", async ()
   expect(response?.status).toBe(409);
 });
 
-test("POST derive validates mode, membership, and active source state", async () => {
+test("POST derive validates mode and membership while allowing an active source snapshot", async () => {
   const topic = registerTopic({ title: `Derive guarded ${randomUUID()}`, userId });
 
   const malformed = await handler(
@@ -607,13 +607,16 @@ test("POST derive validates mode, membership, and active source state", async ()
   const queryId = randomUUID();
   claimRuntimeTurnLease({ topicId: topic.id, queryId, origin: "user" });
   try {
-    const busy = await handler(
+    const derived = await handler(
       request(`/topics/${encodeURIComponent(topic.id)}/derive`, {
         method: "POST",
         body: JSON.stringify({ userId, copyHistory: true }),
       }),
     );
-    expect(busy?.status).toBe(409);
+    expect(derived?.status).toBe(201);
+    const body = (await derived?.json()) as { topic: { id: string; isFork: boolean } };
+    expect(body.topic.id).not.toBe(topic.id);
+    expect(body.topic.isFork).toBe(true);
   } finally {
     releaseRuntimeTurnLease(topic.id, queryId);
   }

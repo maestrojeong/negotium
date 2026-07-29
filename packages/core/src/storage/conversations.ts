@@ -19,15 +19,16 @@ import type { AgentKind, UnifiedEvent } from "#types";
  *
  * Storage layout:
  *   {DATA_DIR}/conversations/{userId}/{sanitizedTopicName}.jsonl
+ *   {DATA_DIR}/conversations/{userId}/{sanitizedTopicName}.active.jsonl
  *
- * Each line is a `ConversationEntry` JSON object. Append-only: every yielded
- * UnifiedEvent during a `runAgent()` turn is captured here by the recording
- * wrapper, so on agent switch we can rebuild a synthetic native rollout for
- * the target SDK and preserve the conversation across providers.
+ * The first file is append-only and retains every yielded UnifiedEvent for
+ * archive and teardown. The optional active file is a replaceable provider
+ * projection: compaction writes its summary there and later turns append to
+ * both streams. Agent switches and rollout repair read the active projection.
  *
  * The Claude/Codex SDK rollouts (~/.claude/projects/, ~/.codex/sessions/) are
- * intentionally treated as opaque side-effects of the SDKs only this file
- * is canonical.
+ * intentionally treated as opaque side-effects of the SDKs. The raw stream
+ * remains the forensic source of truth.
  */
 export interface ConversationEntry {
   ts: string;
@@ -69,6 +70,18 @@ function topicFilename(topicName: string): string {
 /** Compute the absolute path for a given user/topic conversation log. */
 export function getConversationPath(userId: number | string, topicName: string): string {
   return join(conversationDir(userId), topicFilename(topicName));
+}
+
+/** Replaceable provider context derived from the append-only raw conversation log. */
+export function getActiveConversationPath(userId: number | string, topicName: string): string {
+  const rawPath = getConversationPath(userId, topicName);
+  return rawPath.endsWith(".jsonl")
+    ? `${rawPath.slice(0, -".jsonl".length)}.active.jsonl`
+    : `${rawPath}.active`;
+}
+
+export function hasActiveConversation(userId: number | string, topicName: string): boolean {
+  return existsSync(getActiveConversationPath(userId, topicName));
 }
 
 /**
@@ -125,22 +138,35 @@ export function appendConversationEventStrict(
     agent,
     event,
   };
+  const line = JSON.stringify(entry);
+  mkdirSync(dirname(path), { recursive: true });
+  appendJsonlLine(path, line);
+  const activePath = getActiveConversationPath(userId, topicName);
+  if (existsSync(activePath)) appendJsonlLine(activePath, line);
+}
+
+/** Append lifecycle metadata to the raw manifest without changing active context. */
+export function appendRawConversationEventStrict(
+  userId: number | string,
+  topicName: string,
+  agent: AgentKind,
+  event: UnifiedEvent,
+): void {
+  const path = getConversationPath(userId, topicName);
+  const entry: ConversationEntry = {
+    ts: new Date().toISOString(),
+    agent,
+    event,
+  };
   mkdirSync(dirname(path), { recursive: true });
   appendJsonlLine(path, JSON.stringify(entry));
 }
 
 /**
- * Read all entries for a topic in chronological order. Returns an empty array
- * if the file does not exist. Malformed lines are skipped with a warning so a
- * single corrupted entry does not poison the whole conversation.
- *
- * NOTE(perf): reads the whole file each call. Topics in the kilobyte range
- * are fine; if a single topic ever grows into multi-megabyte territory,
- * consider a streaming reader (`readline`/`Bun.file().stream()`) and a
- * size-bounded tail.
+ * Read one JSONL conversation stream. Malformed lines are skipped so one
+ * damaged event does not poison the remaining history.
  */
-export function readConversation(userId: number | string, topicName: string): ConversationEntry[] {
-  const path = getConversationPath(userId, topicName);
+function readConversationPath(path: string): ConversationEntry[] {
   const out: ConversationEntry[] = [];
   if (!existsSync(path)) return out;
   let raw: string;
@@ -164,13 +190,50 @@ export function readConversation(userId: number | string, topicName: string): Co
   return out;
 }
 
-/** Atomically replace a provider-neutral topic log with an explicit event set. */
+/**
+ * Read the context the next provider turn should receive. Before the first
+ * compaction this is the raw stream. Afterwards the replaceable active stream
+ * contains the compacted summary plus every subsequently recorded event.
+ *
+ * NOTE(perf): reads the whole file each call. Topics in the kilobyte range
+ * are fine; if a single topic ever grows into multi-megabyte territory,
+ * consider a streaming reader (`readline`/`Bun.file().stream()`) and a
+ * size-bounded tail.
+ */
+export function readConversation(userId: number | string, topicName: string): ConversationEntry[] {
+  const activePath = getActiveConversationPath(userId, topicName);
+  return readConversationPath(
+    existsSync(activePath) ? activePath : getConversationPath(userId, topicName),
+  );
+}
+
+/** Read the immutable full-fidelity stream used for archive and teardown. */
+export function readRawConversation(
+  userId: number | string,
+  topicName: string,
+): ConversationEntry[] {
+  return readConversationPath(getConversationPath(userId, topicName));
+}
+
+/** Atomically replace only the provider's active context projection. */
 export function replaceConversationStrict(
   userId: number | string,
   topicName: string,
   entries: ConversationEntry[],
 ): void {
-  const path = getConversationPath(userId, topicName);
+  replaceConversationPathStrict(getActiveConversationPath(userId, topicName), entries);
+}
+
+/** Atomically seed or restore the append-only stream before it becomes live. */
+export function replaceRawConversationStrict(
+  userId: number | string,
+  topicName: string,
+  entries: ConversationEntry[],
+): void {
+  replaceConversationPathStrict(getConversationPath(userId, topicName), entries);
+}
+
+function replaceConversationPathStrict(path: string, entries: ConversationEntry[]): void {
   const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
   mkdirSync(dirname(path), { recursive: true });
   try {
@@ -198,9 +261,8 @@ export function replaceConversationStrict(
  * the new agent would start from zero — see the bug report from 2026-05-24.
  *
  * Semantics:
- *   - Reads the parent via `readConversation`, matching the history an in-place
- *     `set_agent` on the parent would have seen.
- *   - Writes a single file at the child's canonical path.
+ *   - Copies the parent's raw stream and its active projection when present.
+ *   - Writes independent files so parent and child can diverge after the fork.
  *   - Refuses to overwrite a non-empty destination (returns `{copied:false}`).
  *     `/fork`'s only caller runs this immediately after topic creation when
  *     the dst file is guaranteed empty, so a non-empty dst means a programmer
@@ -222,13 +284,18 @@ export function cloneConversationLog(opts: {
     );
     return { copied: false, entries: 0 };
   }
-  const entries = readConversation(userId, srcTopic);
+  const entries = readRawConversation(userId, srcTopic);
   if (entries.length === 0) {
     return { copied: false, entries: 0 };
   }
   const body = `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`;
   mkdirSync(dirname(dstPath), { recursive: true });
   writeFileSync(dstPath, body);
+  const srcActivePath = getActiveConversationPath(userId, srcTopic);
+  if (existsSync(srcActivePath)) {
+    const dstActivePath = getActiveConversationPath(userId, dstTopic);
+    writeFileSync(dstActivePath, readFileSync(srcActivePath));
+  }
   return { copied: true, entries: entries.length };
 }
 

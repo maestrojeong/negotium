@@ -40,6 +40,7 @@ import {
   switchTopicModel,
   TopicDeriveBusyError,
   type TopicDto,
+  TopicForkCompactionError,
   TopicServiceError,
   TopicTitleConflictError,
   topicService,
@@ -586,6 +587,7 @@ export function createNodeControlHandler(
       }
       if (error instanceof TopicServiceError) return topicServiceError(error);
       if (error instanceof TopicDeriveBusyError) return jsonError(409, error.message);
+      if (error instanceof TopicForkCompactionError) return jsonError(503, error.message);
       if (error instanceof TopicTitleConflictError) return jsonError(409, error.message);
       return jsonError(400, error instanceof Error ? error.message : String(error));
     }

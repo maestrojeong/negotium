@@ -140,6 +140,81 @@ describe("codexProvider stale rollout recovery", () => {
     expect(events).toContainEqual({ type: "text", content: "fresh answer" });
   });
 
+  test("isolates no-tool auxiliary calls from MCP, network, and writable sandbox access", async () => {
+    const configPath = join(codexAuthDir, "config.toml");
+    writeFileSync(
+      configPath,
+      '[mcp_servers.global_filesystem]\ncommand = "filesystem-server"\n',
+      "utf8",
+    );
+    try {
+      const events = [];
+      for await (const event of codexProvider(
+        opts({ sessionId: null, sessionType: "ephemeral", toolPolicy: "none" }),
+      )) {
+        events.push(event);
+      }
+    } finally {
+      rmSync(configPath, { force: true });
+    }
+
+    expect(codexConstructor).toHaveBeenCalledWith({
+      config: {
+        features: { multi_agent: false, multi_agent_v2: false, enable_fanout: false },
+        model_catalog_json: codexModelCatalogPath,
+        mcp_servers: {
+          playwright: expect.objectContaining({ enabled: false }),
+          "browser-rs": expect.objectContaining({ enabled: false }),
+          patchright: expect.objectContaining({ enabled: false }),
+          global_filesystem: expect.objectContaining({ enabled: false }),
+        },
+        sandbox_permissions: [],
+      },
+    });
+    expect(startThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sandboxMode: "read-only",
+        approvalPolicy: "never",
+        networkAccessEnabled: false,
+        webSearchMode: "disabled",
+        webSearchEnabled: false,
+      }),
+    );
+  });
+
+  test("keeps compaction-log calls in the read-only provider sandbox", async () => {
+    const events = [];
+    for await (const event of codexProvider(
+      opts({
+        sessionId: null,
+        sessionType: "ephemeral",
+        toolPolicy: "compaction-log",
+      }),
+    )) {
+      events.push(event);
+    }
+
+    expect(codexConstructor).toHaveBeenCalledWith({
+      config: {
+        features: { multi_agent: false, multi_agent_v2: false, enable_fanout: false },
+        model_catalog_json: codexModelCatalogPath,
+        mcp_servers: {
+          playwright: expect.objectContaining({ enabled: false }),
+          "browser-rs": expect.objectContaining({ enabled: false }),
+          patchright: expect.objectContaining({ enabled: false }),
+        },
+        sandbox_permissions: [],
+      },
+    });
+    expect(startThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sandboxMode: "read-only",
+        networkAccessEnabled: false,
+        webSearchMode: "disabled",
+      }),
+    );
+  });
+
   test("surfaces native apply_patch changes as Write/Edit/Delete tool events", async () => {
     streamedEvents = async function* fileChanges() {
       yield { type: "thread.started", thread_id: "019dee65-ffff-7aaa-8aaa-bbbbbbbbbbbb" };

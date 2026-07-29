@@ -44,7 +44,7 @@ import {
 } from "#storage/runtime-turn-requests";
 import { deleteSelfSchedulesForTopic } from "#storage/self-schedules";
 import { deletePendingAsksForTopic } from "#storage/session-asks";
-import { archiveTopicMessages } from "#storage/topic-archive";
+import { archiveConversationEvents, archiveTopicMessages } from "#storage/topic-archive";
 import { deleteTopicArchiveState } from "#storage/topic-archive-state";
 import type { TopicDto } from "#types/api";
 
@@ -81,10 +81,12 @@ async function cleanupParticipantResources(
   userIds: string[],
   sessionId: string | null,
   cwd: string,
-): Promise<void> {
+  purgeLogs: typeof purgeTopicLogs,
+): Promise<boolean> {
   for (const [index, participantUserId] of userIds.entries()) {
+    let purged = false;
     try {
-      await purgeTopicLogs({
+      purged = await purgeLogs({
         userId: participantUserId,
         topicName: topic.title,
         cwd,
@@ -99,12 +101,16 @@ async function cleanupParticipantResources(
         "deleteTopicCascade: participant rollout cleanup failed",
       );
     }
+    if (!purged) return false;
+  }
 
+  for (const participantUserId of userIds) {
     cleanupSessionInboxFiles(participantUserId, topic.id, topic.title);
     clearQueryState(participantUserId, topic.id, topic.title);
     clearQueryUsageAlert(participantUserId, topic.id);
     deletePendingAsksForTopic({ userId: participantUserId, topicName: topic.title });
   }
+  return true;
 }
 
 export class TopicArchiveRequiredError extends Error {
@@ -132,12 +138,25 @@ export class TopicTurnStillActiveError extends Error {
   }
 }
 
+export class TopicCleanupRequiredError extends Error {
+  readonly code = "TOPIC_CLEANUP_FAILED";
+  readonly topicId: string;
+
+  constructor(topicId: string) {
+    super("Topic context cleanup failed; deletion was blocked to prevent context reuse.");
+    this.name = "TopicCleanupRequiredError";
+    this.topicId = topicId;
+  }
+}
+
 export interface DeleteTopicCascadeOptions {
   force?: boolean;
   /** Account deletion may remove that account's otherwise-protected private General. */
   allowManager?: boolean;
   /** Account deletion must not recreate a private General via the archiver. */
   skipArchive?: boolean;
+  /** Override used by embedded hosts and deterministic cleanup-failure tests. */
+  purgeLogs?: typeof purgeTopicLogs;
 }
 
 /**
@@ -192,10 +211,18 @@ async function deleteTopicCascadeImpl(
     if (!turnStopped && !force) throw new TopicTurnStillActiveError(topicId);
     if (!maintenance.isOwned()) throw new Error("Topic maintenance ownership was lost.");
     let archived: ReturnType<typeof archiveTopicMessages> = null;
+    const rawArchives: string[] = [];
 
     if (!options.skipArchive) {
       try {
         archived = archiveTopicMessages(topicId, topic.title);
+        for (const participantUserId of new Set([
+          userId,
+          ...topic.participants.map((participant) => participant.userId),
+        ])) {
+          const rawArchive = archiveConversationEvents(topicId, topic.title, participantUserId);
+          if (rawArchive) rawArchives.push(rawArchive.path);
+        }
       } catch (err) {
         if (!force) {
           logger.warn(
@@ -224,6 +251,7 @@ async function deleteTopicCascadeImpl(
             : {}),
           topicTitle: memoryTopic.title,
           archivePath: archived.path,
+          ...(rawArchives.length > 0 ? { rawArchivePaths: rawArchives } : {}),
           messageCount: archived.messageCount,
         });
       } catch (err) {
@@ -233,6 +261,20 @@ async function deleteTopicCascadeImpl(
         );
       }
     }
+
+    const sessionId = getTopicSessionId(topicId);
+    const cwd = resolveTopicWorkspaceDir(topicId);
+    const participantUserIds = Array.from(
+      new Set([userId, ...topic.participants.map((participant) => participant.userId)]),
+    );
+    const resourcesCleaned = await cleanupParticipantResources(
+      topic,
+      participantUserIds,
+      sessionId,
+      cwd,
+      options.purgeLogs ?? purgeTopicLogs,
+    );
+    if (!resourcesCleaned) throw new TopicCleanupRequiredError(topicId);
 
     cancelSubagentWatchForDeletedTopic(topicId);
 
@@ -251,12 +293,6 @@ async function deleteTopicCascadeImpl(
       await deleteTopicCascadeImpl(child, userId, options, deletingTopicIds);
     }
 
-    const sessionId = getTopicSessionId(topicId);
-    const cwd = resolveTopicWorkspaceDir(topicId);
-    const participantUserIds = Array.from(
-      new Set([userId, ...topic.participants.map((participant) => participant.userId)]),
-    );
-
     // Background shells remain topic-owned. Browser profiles are shared, so
     // deletion closes this topic's tabs without deleting login state.
     killBgBash(userId, topicId);
@@ -271,7 +307,6 @@ async function deleteTopicCascadeImpl(
     cancelAskCallbacksForTopic(topicId);
     deleteSelfSchedulesForTopic(topicId);
 
-    await cleanupParticipantResources(topic, participantUserIds, sessionId, cwd);
     try {
       await deleteFilesForTopic(topicId);
     } catch (err) {

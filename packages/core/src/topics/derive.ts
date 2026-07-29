@@ -7,22 +7,25 @@
  * so ported call sites keep working.
  */
 
-import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { cleanupAgentFork, type ForkHandle, forkAgentSession } from "#agents/fork";
-import { resolveModelForAgent } from "#agents/model-catalog";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, rmSync, unlinkSync } from "node:fs";
+import { cleanupAgentFork, type ForkHandle } from "#agents/fork";
+import { resolveCompactionExecution, resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
 import { WsHub } from "#bus";
 import { resolveTopicWorkspaceDir } from "#platform/config";
 import { logger } from "#platform/logger";
 import { cloneProfileForChild } from "#platform/playwright/manager";
 import { isTopicRunning } from "#query/active-rooms";
-import { copyMessagesForTopic } from "#storage/api-messages";
+import {
+  captureMessageSnapshotForTopic,
+  copyMessageSnapshotToTopic,
+  type TopicMessageSnapshot,
+} from "#storage/api-messages";
 import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
 import {
   findTopicTitleConflict,
   getTopic,
-  getTopicSessionId,
   inferTopicKind,
   isTopicVisible,
   listTopics,
@@ -31,15 +34,23 @@ import {
 } from "#storage/api-topics";
 import {
   appendConversationEventStrict,
-  cloneConversationLog,
+  type ConversationEntry,
+  getActiveConversationPath,
+  getConversationPath,
+  hasActiveConversation,
   readConversation,
+  readRawConversation,
+  replaceConversationStrict,
+  replaceRawConversationStrict,
 } from "#storage/conversations";
 import { db } from "#storage/forum-db";
-import {
-  beginRuntimeTopicMaintenance,
-  isRuntimeTopicMaintenance,
-} from "#storage/runtime-topic-state";
+import { isRuntimeTopicMaintenance } from "#storage/runtime-topic-state";
 import { isLegacySharedGeneral } from "#topics/personal-general";
+import {
+  type CompactSummaryRequest,
+  createCompactedRolloutEntries,
+  shouldCompactForkEntries,
+} from "#topics/session";
 import type { AgentKind } from "#types";
 import type { TopicDto } from "#types/api";
 
@@ -129,10 +140,58 @@ export class TopicDeriveBusyError extends Error {
   }
 }
 
+export class TopicForkCompactionError extends Error {
+  constructor(
+    message: string,
+    readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = "TopicForkCompactionError";
+  }
+}
+
+interface ForkSnapshot {
+  entries: ConversationEntry[];
+  rawEntries: ConversationEntry[];
+  hadActiveProjection: boolean;
+  messages: TopicMessageSnapshot;
+  active: boolean;
+  canonicalDigest: string;
+}
+
+function captureForkSnapshot(
+  sourceTopicId: string,
+  userId: string,
+  topicTitle: string,
+): ForkSnapshot {
+  const capturedAt = new Date().toISOString();
+  const entries = readConversation(userId, topicTitle).filter((entry) => entry.ts <= capturedAt);
+  const rawEntries = readRawConversation(userId, topicTitle).filter(
+    (entry) => entry.ts <= capturedAt,
+  );
+  const messageSnapshot = captureMessageSnapshotForTopic(sourceTopicId);
+  const messageRows = messageSnapshot.rows.filter((row) => row.created_at <= capturedAt);
+  return {
+    entries,
+    rawEntries,
+    hadActiveProjection: hasActiveConversation(userId, topicTitle),
+    messages: {
+      ...messageSnapshot,
+      rows: messageRows,
+      capturedAt,
+      maxRowid: messageRows.at(-1)?.rowid ?? 0,
+    },
+    active: isTopicRunning(sourceTopicId),
+    canonicalDigest: createHash("sha256")
+      .update(entries.map((entry) => JSON.stringify(entry)).join("\n"))
+      .digest("hex"),
+  };
+}
+
 interface DerivedTopicOptions {
   name?: string;
   subagent?: { agent?: AgentKind; model?: string; memoryTopicId?: string };
-  allowActiveSource?: boolean;
+  summarizeFork?: (request: CompactSummaryRequest) => Promise<string>;
 }
 
 /**
@@ -150,7 +209,7 @@ interface DerivedTopicOptions {
  * @param copyHistory - true for fork, false for spawn
  * @param opts - optional custom name and subagent overrides
  * @returns the newly created TopicDto or null on error
- * @throws TopicDeriveBusyError when user-triggered derivation races active work or maintenance
+ * @throws TopicDeriveBusyError when subagent creation races parent maintenance
  * @throws TopicTitleConflictError when the requested name is already taken
  */
 export async function createDerivedTopic(
@@ -168,26 +227,11 @@ export async function createDerivedTopic(
   if (subagent && isRuntimeTopicMaintenance(sourceTopicId)) {
     throw new TopicDeriveBusyError();
   }
-  let maintenance: ReturnType<typeof beginRuntimeTopicMaintenance> = null;
-  if (!subagent && !opts?.allowActiveSource) {
-    if (isTopicRunning(sourceTopicId)) throw new TopicDeriveBusyError();
-    maintenance = beginRuntimeTopicMaintenance(sourceTopicId);
-    if (!maintenance) throw new TopicDeriveBusyError();
-    if (isTopicRunning(sourceTopicId)) {
-      maintenance.finish();
-      maintenance = null;
-      throw new TopicDeriveBusyError();
-    }
-  }
 
-  try {
-    return await createDerivedTopicUnderFence(topic, sourceTopicId, userId, copyHistory, opts);
-  } finally {
-    maintenance?.finish();
-  }
+  return await createDerivedTopicImpl(topic, sourceTopicId, userId, copyHistory, opts);
 }
 
-async function createDerivedTopicUnderFence(
+async function createDerivedTopicImpl(
   topic: TopicDto,
   sourceTopicId: string,
   userId: string,
@@ -251,10 +295,16 @@ async function createDerivedTopicUnderFence(
 
   let sessionId: string | undefined;
   let rollbackHandle: ForkHandle | undefined;
+  let compactedForkEntries: ConversationEntry[] | undefined;
+  let wroteDerivedConversation = false;
+  const forkSnapshot = copyHistory
+    ? captureForkSnapshot(sourceTopicId, userId, topic.title)
+    : undefined;
+  const derivedWorkspace = resolveTopicWorkspaceDir(derived.id);
 
   try {
     if (agent) {
-      const cwd = resolveTopicWorkspaceDir(derived.id);
+      const cwd = derivedWorkspace;
       mkdirSync(cwd, { recursive: true });
       const registry = getRegistry(agent);
       const requestedRolloutModel =
@@ -269,39 +319,70 @@ async function createDerivedTopicUnderFence(
         requestedRolloutEffort && registry.validateEffort(requestedRolloutEffort)
           ? requestedRolloutEffort
           : registry.defaultEffort;
+      const compactionExecution = resolveCompactionExecution(agent, registry);
 
       if (copyHistory) {
-        const parentSessionId = getTopicSessionId(sourceTopicId);
-        if (parentSessionId) {
+        if (!forkSnapshot) throw new Error("fork snapshot was not captured");
+        const compactionRequired = shouldCompactForkEntries(forkSnapshot.entries);
+        if (compactionRequired) {
           try {
-            const fork = await forkAgentSession({
-              agent,
-              parentSessionId,
+            compactedForkEntries = await createCompactedRolloutEntries(
+              {
+                topicId: sourceTopicId,
+                topicTitle: topic.title,
+                userId,
+                entries: forkSnapshot.entries,
+                visibleMessages: forkSnapshot.messages.rows,
+                agent,
+                model: rolloutModel,
+                ...(rolloutEffort ? { effort: rolloutEffort } : {}),
+                summaryModel: compactionExecution.model,
+                ...(compactionExecution.effort
+                  ? { summaryEffort: compactionExecution.effort }
+                  : {}),
+                cwd,
+              },
+              opts?.summarizeFork,
+            );
+            const rollout = registry.writeRollout({
               cwd,
-              userId,
-              topicName: topic.title,
-              title,
+              entries: compactedForkEntries,
               model: rolloutModel,
               ...(rolloutEffort ? { effort: rolloutEffort } : {}),
             });
-            sessionId = fork.forkId;
-            rollbackHandle = fork;
+            sessionId = rollout.sessionId;
+            rollbackHandle = rollbackHandleFor(agent, rollout.sessionId, rollout.rolloutPath);
           } catch (err) {
-            logger.warn(
-              { err, sourceTopicId, title: topic.title, agent, parentSessionId },
-              "createDerivedTopic: native fork failed; synthesizing from unified history",
+            compactedForkEntries = undefined;
+            throw new TopicForkCompactionError(
+              `Fork compaction failed for "${title}"; the fork was not created`,
+              err,
             );
           }
         }
         if (!sessionId) {
           const rollout = registry.writeRollout({
             cwd,
-            entries: readConversation(userId, topic.title),
+            entries: forkSnapshot.entries,
             model: rolloutModel,
             ...(rolloutEffort ? { effort: rolloutEffort } : {}),
           });
           sessionId = rollout.sessionId;
           rollbackHandle = rollbackHandleFor(agent, rollout.sessionId, rollout.rolloutPath);
+          logger.info(
+            {
+              sourceTopicId,
+              derivedTopicId: derived.id,
+              activeSnapshot: forkSnapshot.active,
+              entries: forkSnapshot.entries.length,
+              visibleRows: forkSnapshot.messages.rows.length,
+              visibleMaxRowid: forkSnapshot.messages.maxRowid,
+              snapshotCapturedAt: forkSnapshot.messages.capturedAt,
+              canonicalDigest: forkSnapshot.canonicalDigest,
+              compacted: Boolean(compactedForkEntries),
+            },
+            "createDerivedTopic: synthetic fork materialized from immutable snapshot",
+          );
         }
       } else {
         const rollout = registry.writeRollout({
@@ -348,12 +429,15 @@ async function createDerivedTopicUnderFence(
           setApiTopicConfig(derived.id, sourceConfig);
         }
         if (copyHistory) {
-          copyMessagesForTopic(sourceTopicId, derived.id);
-          cloneConversationLog({
-            userId,
-            srcTopic: topic.title,
-            dstTopic: derived.title,
-          });
+          if (!forkSnapshot) throw new Error("fork snapshot was not captured");
+          copyMessageSnapshotToTopic(forkSnapshot.messages, derived.id);
+          replaceRawConversationStrict(userId, derived.title, forkSnapshot.rawEntries);
+          if (compactedForkEntries) {
+            replaceConversationStrict(userId, derived.title, compactedForkEntries);
+          } else if (forkSnapshot.hadActiveProjection) {
+            replaceConversationStrict(userId, derived.title, forkSnapshot.entries);
+          }
+          wroteDerivedConversation = true;
         }
         if (sessionId && agent) {
           setTopicSessionId(derived.id, sessionId, {
@@ -401,7 +485,24 @@ async function createDerivedTopicUnderFence(
     return created;
   } catch (err) {
     if (rollbackHandle) cleanupAgentFork(rollbackHandle);
-    if (err instanceof TopicDeriveBusyError || err instanceof TopicTitleConflictError) throw err;
+    if (wroteDerivedConversation) {
+      for (const path of [
+        getActiveConversationPath(userId, derived.title),
+        getConversationPath(userId, derived.title),
+      ]) {
+        try {
+          unlinkSync(path);
+        } catch {}
+      }
+    }
+    rmSync(derivedWorkspace, { recursive: true, force: true });
+    if (
+      err instanceof TopicDeriveBusyError ||
+      err instanceof TopicTitleConflictError ||
+      err instanceof TopicForkCompactionError
+    ) {
+      throw err;
+    }
     logger.warn(
       { err, sourceTopicId, derivedTopicId: derived.id, copyHistory },
       "createDerivedTopic: failed to create derived topic",

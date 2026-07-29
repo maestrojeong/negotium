@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { claudeRegistry } from "#agents/claude-registry";
+import { codexRegistry } from "#agents/codex-registry";
+import { maestroRegistry } from "#agents/maestro-registry";
+import { resolveCompactionExecution } from "#agents/model-catalog";
 import {
   FALLBACK_MODEL,
   GATEWAY_MODEL,
@@ -36,6 +39,21 @@ function restoreEnv(snapshot: Record<string, string | undefined>) {
 }
 
 describe("role default models", () => {
+  test("pins compact workers to the intended model and medium effort", () => {
+    expect(resolveCompactionExecution("claude", claudeRegistry)).toEqual({
+      model: "claude-sonnet-5",
+      effort: "medium",
+    });
+    expect(resolveCompactionExecution("codex", codexRegistry)).toEqual({
+      model: "gpt-5.6-terra",
+      effort: "medium",
+    });
+    expect(resolveCompactionExecution("maestro", maestroRegistry)).toEqual({
+      model: "deepseek-v4-pro",
+      effort: "medium",
+    });
+  });
+
   test("maps the Claude opus alias to Opus 5", () => {
     expect(MODEL_OPUS).toBe("claude-opus-5");
     expect(claudeRegistry.expandModelAlias("opus")).toBe("claude-opus-5");

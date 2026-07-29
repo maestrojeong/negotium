@@ -227,6 +227,8 @@ export const WIKI_SERVER = resolve(PROJECT_ROOT, "src/mcp/wiki-server.ts");
 
 export const TOKEN_STATS_SERVER = resolve(PROJECT_ROOT, "src/mcp/token-stats-server.ts");
 
+export const COMPACTION_LOG_SERVER = resolve(PROJECT_ROOT, "src/mcp/compaction-log-server.ts");
+
 export const SYSTEM_HEALTH_SERVER = resolve(PROJECT_ROOT, "src/mcp/system-health-server.ts");
 
 export const AGENT_HEALTH_SERVER = resolve(PROJECT_ROOT, "src/mcp/agent-health-server.ts");

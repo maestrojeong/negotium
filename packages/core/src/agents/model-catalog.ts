@@ -1,5 +1,5 @@
 import { resolveDefaultModel } from "#platform/config";
-import type { AgentKind } from "#types";
+import type { AgentKind, EffortLevel } from "#types";
 
 /**
  * Models/prefixes that belong exclusively to one agent backend. When the
@@ -229,6 +229,23 @@ export function resolveModelForAgent(
   const owner = modelOwner(candidate);
   if (owner && owner !== agent) return defaultModel; // cross-agent stale
   return registry.validateModel(candidate) ? candidate : defaultModel;
+}
+
+/** Fixed execution policy for bounded context-compaction workers. */
+export function resolveCompactionExecution(
+  agent: AgentKind,
+  registry: {
+    defaultModel: string;
+    defaultEffort?: EffortLevel;
+    expandModelAlias(s: string): string;
+    validateModel(s: string): boolean;
+    validateEffort(s: string): boolean;
+  },
+): { model: string; effort?: EffortLevel } {
+  const requestedModel = agent === "codex" ? "gpt-5.6-terra" : registry.defaultModel;
+  const model = registry.expandModelAlias(resolveModelForAgent(agent, requestedModel, registry));
+  const effort = registry.validateEffort("medium") ? "medium" : registry.defaultEffort;
+  return { model, ...(effort ? { effort } : {}) };
 }
 
 /**

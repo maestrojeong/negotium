@@ -606,10 +606,37 @@ export function listTopicIdsForAttachment(fileId: string): string[] {
  * Returns the number of messages copied.
  */
 export function copyMessagesForTopic(sourceTopicId: string, targetTopicId: string): number {
-  const rows = db
-    .query("SELECT * FROM api_messages WHERE topic_id = ? AND deleted = 0 ORDER BY rowid ASC")
-    .all(sourceTopicId) as ApiMessageRow[];
+  return copyMessageSnapshotToTopic(captureMessageSnapshotForTopic(sourceTopicId), targetTopicId);
+}
 
+export interface TopicMessageSnapshot {
+  sourceTopicId: string;
+  rows: ApiMessageRow[];
+  capturedAt: string;
+  maxRowid: number;
+}
+
+/** Capture immutable message rows for point-in-time fork/compaction work. */
+export function captureMessageSnapshotForTopic(topicId: string): TopicMessageSnapshot {
+  const rows = db
+    .query(
+      "SELECT *, rowid AS rowid FROM api_messages WHERE topic_id = ? AND deleted = 0 ORDER BY rowid ASC",
+    )
+    .all(topicId) as ApiMessageRow[];
+  return {
+    sourceTopicId: topicId,
+    rows: rows.map((row) => ({ ...row })),
+    capturedAt: new Date().toISOString(),
+    maxRowid: rows.at(-1)?.rowid ?? 0,
+  };
+}
+
+/** Copy only rows captured by captureMessageSnapshotForTopic; never re-read the source. */
+export function copyMessageSnapshotToTopic(
+  snapshot: TopicMessageSnapshot,
+  targetTopicId: string,
+): number {
+  const { rows } = snapshot;
   if (rows.length === 0) return 0;
 
   const idMap = new Map(rows.map((r) => [r.id, crypto.randomUUID()]));

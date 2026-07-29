@@ -8,6 +8,7 @@ import {
   getDmMcpServers,
   getForumMcpServers,
   getManagerMcpServers,
+  getMcpServersForQuery,
   markPlaywrightUnavailable,
   OPTIONAL_FORUM_MCP_SERVERS,
   registerRuntimeMcpServer,
@@ -29,6 +30,41 @@ describe("mcp-config: playwright transport selection per agent", () => {
   const playwrightPort = 39001;
   const playwrightCapability = "test-capability";
   const capabilityFor = (owner: string) => browserOwnerCapability(playwrightCapability, owner);
+
+  test("no-tool auxiliary calls receive no MCP servers", () => {
+    expect(
+      getMcpServersForQuery({
+        agent: "codex",
+        prompt: "summarize untrusted transcript",
+        cwd: "/tmp/compact",
+        systemPrompt: "return text only",
+        userId,
+        session: "compact",
+        sessionType: "ephemeral",
+        toolPolicy: "none",
+      }),
+    ).toEqual({});
+  });
+
+  test("compaction-log calls receive only the scoped reader MCP", () => {
+    const compactLog = { command: "bun", args: ["run", "/tmp/compact-log-server.ts"] };
+    expect(
+      getMcpServersForQuery({
+        agent: "claude",
+        prompt: "summarize a long transcript",
+        cwd: "/tmp/compact",
+        systemPrompt: "read only the scoped compact log",
+        userId,
+        session: "compact",
+        sessionType: "ephemeral",
+        toolPolicy: "compaction-log",
+        mcpExtra: {
+          compact_log: compactLog,
+          vault: { command: "forbidden" },
+        },
+      }),
+    ).toEqual({ compact_log: compactLog });
+  });
 
   test("forum/claude with port → owner-scoped SSE", () => {
     const servers = getForumMcpServers({

@@ -229,21 +229,18 @@ function buildRuntimeToolSection(opts: RuntimeToolSectionOpts): string {
     agentKind === "codex"
       ? `For task tracking, use \`task_create\`, \`task_update\`, \`task_list\`, \`task_get\`, and \`task_delete\` functions in the \`${taskNamespace}\` namespace.`
       : `For task tracking, use MCP tools "${taskNamespace}__task_create", "${taskNamespace}__task_update", "${taskNamespace}__task_list", "${taskNamespace}__task_get", and "${taskNamespace}__task_delete".`;
-  const spawnSubagentToolLine =
-    agentKind === "codex"
-      ? `To delegate a self-contained task to a background subagent, call the \`spawn_subagent\` function in the \`${runtimeNamespace}\` namespace with { task: "...", name?: "...", agent?: "claude"|"codex"|"maestro", model?: "...", memory_topic?: "topic/<brief>.md", report_mode?: "auto"|"tell"|"status-only" }.`
-      : `To delegate a self-contained task to a background subagent, call the MCP tool "${runtimeNamespace}__spawn_subagent" with { task: "...", name?: "...", agent?: "claude"|"codex"|"maestro", model?: "...", memory_topic?: "topic/<brief>.md", report_mode?: "auto"|"tell"|"status-only" }.`;
-  const lifecycleToolLine =
-    "For staged delegation, use create_subagent to prepare a room and start_subagent to run it. Use list_memory_topics to discover accessible knowledge-source names. memory_topic optionally selects one of those topics; otherwise the parent's effective topic brief is used. report_mode is auto, tell, or status-only.";
+  const runtimeToolRef = (name: string): string =>
+    agentKind === "codex" ? `\`${name}\`` : `"${runtimeNamespace}__${name}"`;
+  const spawnSubagentToolLine = `Use ${runtimeToolRef("spawn_subagent")} for self-contained parallel or long-running background work; keep quick work inline.`;
+  const lifecycleToolLine = `For staged work, call ${runtimeToolRef("create_subagent")} then ${runtimeToolRef("start_subagent")}. Manage descendants with ${runtimeToolRef("list_subagents")} and ${runtimeToolRef("delete_subagent")}; manage extra non-parent \`tell_session\` routes within this tree with ${runtimeToolRef("grant_subagent_tell")} and ${runtimeToolRef("revoke_subagent_tell")}. Direct-parent reporting needs no grant. Use ${runtimeToolRef("list_memory_topics")} when selecting \`memory_topic\`.`;
   const spawnSubagentSection = canSpawnSubagents
     ? [
         "",
         "## Subagent Delegation",
         spawnSubagentToolLine,
         ...(canStageSubagents ? [lifecycleToolLine] : []),
-        "The subagent works in a fresh room with no parent conversation history. It receives the task plus the selected or inherited topic memory, so include all task-specific context, file paths, and acceptance criteria.",
-        "The call returns immediately (fire-and-forget). report_mode=auto delivers the final result here, tell requires the child to report with tell_session, and status-only only updates lifecycle state. End your turn normally — never wait or poll for it.",
-        "Use it for parallelizable or long-running side work; keep quick inline work in this room.",
+        "A subagent starts in a fresh room with no parent conversation history and otherwise inherits this room's agent, model, and effective topic memory; include required context, paths, and acceptance criteria in `task`.",
+        "Started subagents run asynchronously: `auto` injects the final result here, `tell` requires child `tell_session`, and `status-only` updates lifecycle only. Do not wait or poll; continue or finish the current turn.",
       ]
     : [];
   const nativeTaskPolicyLine =

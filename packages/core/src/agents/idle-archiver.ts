@@ -33,6 +33,7 @@ export interface ActiveTopicArchiveOptions {
   isBusy?: (topicId: string) => boolean;
   onBusy?: (topicId: string, userId: string) => void;
   archiveMessages?: typeof archiveTopicMessages;
+  rawArchivePaths?: string[];
   launchArchiver?: typeof runArchiverTurn;
   settleArchiveJob?: typeof settleTopicArchiveJob;
   /** Called once when a launched memory turn finishes, successfully or not. */
@@ -177,6 +178,7 @@ export function archiveActiveTopicForMemory(
     topicId: memoryTopic.id,
     topicTitle: memoryTopic.title,
     archivePath: job.archivePath,
+    ...(options.rawArchivePaths ? { rawArchivePaths: options.rawArchivePaths } : {}),
     messageCount: job.messageCount,
     mode: "active-topic",
     onSettled: (success) => {

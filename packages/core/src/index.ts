@@ -334,6 +334,7 @@ export {
   getVisibleTopics,
   isParticipant,
   TopicDeriveBusyError,
+  TopicForkCompactionError,
   TopicTitleConflictError,
   updateTopic,
 } from "#topics/derive";
@@ -341,6 +342,7 @@ export type { DeleteTopicCascadeOptions } from "#topics/lifecycle";
 export {
   deleteTopicCascade,
   TopicArchiveRequiredError,
+  TopicCleanupRequiredError,
   TopicTurnStillActiveError,
 } from "#topics/lifecycle";
 export { ensurePersonalGeneral } from "#topics/personal-general";

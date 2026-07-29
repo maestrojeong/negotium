@@ -28,6 +28,7 @@ import {
   restartTopicSession,
   sessionInboxPath,
   TopicArchiveRequiredError,
+  TopicCleanupRequiredError,
   type TopicDto,
   TopicValidationError,
   textResult,
@@ -212,6 +213,11 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
               `Error: deleting "${target.title}" was blocked because its conversation history could not be archived.`,
               "Topics are archived before deletion so no history is lost. Fix the archive failure and retry, or pass force: true to delete anyway and accept losing the history.",
             ].join("\n"),
+          );
+        }
+        if (err instanceof TopicCleanupRequiredError) {
+          return errorResult(
+            `Error: deleting "${target.title}" was blocked because its provider context could not be fully removed. Fix the cleanup failure and retry.`,
           );
         }
         logger.error({ err, topicId: target.id }, "negotium MCP: delete_topic failed");

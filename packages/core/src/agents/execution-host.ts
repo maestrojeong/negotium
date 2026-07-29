@@ -84,6 +84,11 @@ export function configureAgentExecutionHost(overrides: Partial<AgentExecutionHos
 }
 
 export function hostedMcpServers(opts: AgentQueryOptions): Record<string, unknown> {
+  if (opts.toolPolicy === "none") return {};
+  if (opts.toolPolicy === "compaction-log") {
+    const compactLog = opts.mcpExtra?.compact_log;
+    return compactLog ? { compact_log: compactLog } : {};
+  }
   return activeHost().getMcpServersForQuery(opts);
 }
 

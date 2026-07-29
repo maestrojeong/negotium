@@ -32,6 +32,31 @@ describe("maestroProvider host tool policy", () => {
     ]);
   });
 
+  test("removes every built-in tool for no-tool auxiliary calls", () => {
+    const allBuiltIns = [
+      "Bash",
+      "Read",
+      "ReadToolOutput",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "GeminiImageQA",
+      "ToolSearch",
+      "AskUserQuestion",
+      "Agent",
+      "TaskCreate",
+      "TaskUpdate",
+      "TaskList",
+      "TaskGet",
+      "TaskOutput",
+      "TaskStop",
+    ];
+    expect(buildMaestroDisallowedTools([], "none")).toEqual(allBuiltIns);
+    expect(buildMaestroDisallowedTools([], "compaction-log")).toEqual(allBuiltIns);
+  });
+
   test("keeps vault access control in runtime hooks", async () => {
     const [vaultHook] = buildMaestroToolHooks("user-1");
     expect(vaultHook.name).toBe("vault-guard");

@@ -84,8 +84,9 @@ authoritative and an Otium room is a projection of it.
 
 ## Transcript projection
 
-A full projection shares the same topic lock, neutral conversation log, workspace, and provider
-session regardless of which adapter starts the turn.
+A full projection shares the same topic lock, append-only raw conversation history, compactable
+active provider context, workspace, and provider session regardless of which adapter starts the
+turn.
 
 ```text
                     one Negotium topic

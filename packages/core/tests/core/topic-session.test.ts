@@ -1,11 +1,18 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { nextUsageAlert } from "#runtime/usage-alert";
 import { appendApiMessage, getAllMessagesForTopic } from "#storage/api-messages";
-import { deleteTopic, getTopic, getTopicSessionId, setTopicSessionId } from "#storage/api-topics";
+import {
+  deleteTopic,
+  getTopic,
+  getTopicSessionId,
+  setTopicSessionId,
+  upsertTopic,
+} from "#storage/api-topics";
 import {
   appendConversationEventStrict,
   readConversation,
+  readRawConversation,
   replaceConversationStrict,
 } from "#storage/conversations";
 import { db } from "#storage/forum-db";
@@ -15,7 +22,13 @@ import {
   getRuntimeUserTurnRequest,
 } from "#storage/runtime-turn-requests";
 import { registerTopic } from "#topics/create";
-import { compactTopicSession, restartTopicSession } from "#topics/session";
+import {
+  compactTopicSession,
+  createCompactedRolloutEntries,
+  restartTopicSession,
+  shouldCompactForkEntries,
+  shouldUseCompactionLog,
+} from "#topics/session";
 
 const createdTopicIds = new Set<string>();
 
@@ -66,6 +79,7 @@ describe("restartTopicSession", () => {
       purgeLogs: async () => {
         expect(archived).toBe(true);
         replaceConversationStrict(owner, topic.title, []);
+        return true;
       },
     });
 
@@ -90,6 +104,7 @@ describe("restartTopicSession", () => {
       memoryArchiveWaitMs: 5,
       purgeLogs: async () => {
         purged = true;
+        return true;
       },
     });
 
@@ -113,6 +128,7 @@ describe("restartTopicSession", () => {
         },
         purgeLogs: async () => {
           purged = true;
+          return true;
         },
       });
 
@@ -148,7 +164,9 @@ describe("restartTopicSession", () => {
       }),
     ).not.toBeNull();
 
-    const result = await restartTopicSession(topic.id, owner, "test-reset");
+    const result = await restartTopicSession(topic.id, owner, "test-reset", {
+      purgeLogs: async () => true,
+    });
 
     expect(result.isError).toBeUndefined();
     expect(result.text).toContain("next message starts fresh");
@@ -162,6 +180,47 @@ describe("restartTopicSession", () => {
         contextWindow: 100_000,
       }),
     ).not.toBeNull();
+  });
+
+  test("keeps the current session when provider context cleanup fails", async () => {
+    const { owner, topic } = createTopic();
+    setTopicSessionId(topic.id, "cleanup-failed-session", {
+      reason: "test",
+      agent: "codex",
+    });
+
+    const result = await restartTopicSession(topic.id, owner, "test-reset", {
+      archiveMemory: () => "empty",
+      purgeLogs: async () => false,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("could not remove all provider context");
+    expect(getTopicSessionId(topic.id)).toBe("cleanup-failed-session");
+  });
+
+  test("purges every participant context before committing a reset", async () => {
+    const { owner, topic } = createTopic();
+    const member = `member-${randomUUID()}`;
+    topic.participants.push({ userId: member, role: "member" });
+    upsertTopic(topic);
+    setTopicSessionId(topic.id, "multi-user-session", {
+      reason: "test",
+      agent: "codex",
+    });
+    const purgedUsers: string[] = [];
+
+    const result = await restartTopicSession(topic.id, owner, "test-reset", {
+      archiveMemory: () => "empty",
+      purgeLogs: async (options) => {
+        purgedUsers.push(String(options.userId));
+        return true;
+      },
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(purgedUsers).toEqual([owner, member]);
+    expect(getTopicSessionId(topic.id)).toBeNull();
   });
 
   test("rejects non-owners without clearing the current session", async () => {
@@ -209,7 +268,9 @@ describe("restartTopicSession", () => {
     }, 25);
 
     try {
-      const result = await restartTopicSession(topic.id, owner);
+      const result = await restartTopicSession(topic.id, owner, undefined, {
+        purgeLogs: async () => true,
+      });
 
       expect(result.isError).toBeUndefined();
       expect(getTopicSessionId(topic.id)).toBeNull();
@@ -223,14 +284,15 @@ describe("restartTopicSession", () => {
     const { owner, topic } = createTopic();
     topic.kind = "manager";
     topic.title = "General";
-    const { upsertTopic } = await import("#storage/api-topics");
     upsertTopic(topic);
     setTopicSessionId(topic.id, "personal-general-session", {
       reason: "test",
       agent: "codex",
     });
 
-    const result = await restartTopicSession(topic.id, owner);
+    const result = await restartTopicSession(topic.id, owner, undefined, {
+      purgeLogs: async () => true,
+    });
 
     expect(result.isError).toBeUndefined();
     expect(result.text).toBe('Session reset for "General". The next message starts fresh.');
@@ -239,6 +301,134 @@ describe("restartTopicSession", () => {
 });
 
 describe("compactTopicSession", () => {
+  test("charges CJK text conservatively for automatic fork compaction", () => {
+    expect(
+      shouldCompactForkEntries([
+        {
+          ts: new Date().toISOString(),
+          agent: "codex",
+          event: { type: "user_message", content: "가".repeat(30_000) },
+        },
+        {
+          ts: new Date().toISOString(),
+          agent: "codex",
+          event: { type: "result", content: "확인", stopReason: "end_turn" },
+        },
+      ]),
+    ).toBe(true);
+  });
+
+  test("aborts a compactor that exceeds its deadline", async () => {
+    const { owner, topic } = createTopic();
+    let signal: AbortSignal | undefined;
+
+    await expect(
+      createCompactedRolloutEntries(
+        {
+          topicId: topic.id,
+          topicTitle: topic.title,
+          userId: owner,
+          entries: [
+            {
+              ts: new Date().toISOString(),
+              agent: "codex",
+              event: { type: "user_message", content: "context to compact" },
+            },
+            {
+              ts: new Date().toISOString(),
+              agent: "codex",
+              event: { type: "result", content: "working state", stopReason: "end_turn" },
+            },
+          ],
+          agent: "codex",
+          model: "gpt-5.6-luna",
+          cwd: "/tmp",
+          timeoutMs: 5,
+        },
+        async (request) => {
+          signal = request.signal;
+          await new Promise<void>(() => {});
+          return "unreachable";
+        },
+      ),
+    ).rejects.toThrow("timed out");
+    expect(signal?.aborted).toBe(true);
+  });
+
+  test("keeps both ends of an oversized provider message in the summary source", async () => {
+    const { owner, topic } = createTopic();
+    let source = "";
+    const entries = await createCompactedRolloutEntries(
+      {
+        topicId: topic.id,
+        topicTitle: topic.title,
+        userId: owner,
+        entries: [
+          {
+            ts: new Date().toISOString(),
+            agent: "codex",
+            event: {
+              type: "user_message",
+              content: `request-start ${"x".repeat(100_000)} request-end`,
+            },
+          },
+          {
+            ts: new Date().toISOString(),
+            agent: "codex",
+            event: { type: "result", content: "response-end", stopReason: "end_turn" },
+          },
+        ],
+        agent: "codex",
+        model: "gpt-5.6-luna",
+        cwd: "/tmp",
+      },
+      async (request) => {
+        source = request.source;
+        return "summary";
+      },
+    );
+
+    expect(source).toContain("request-start");
+    expect(source).toContain("request-end");
+    expect(source).toContain("response-end");
+    expect(entries[1]?.event).toMatchObject({ type: "result", content: "summary" });
+  });
+
+  test("routes only long compaction sources through the scoped log reader", async () => {
+    const { owner, topic } = createTopic();
+    let source = "";
+    await createCompactedRolloutEntries(
+      {
+        topicId: topic.id,
+        topicTitle: topic.title,
+        userId: owner,
+        entries: [
+          {
+            ts: new Date().toISOString(),
+            agent: "codex",
+            event: { type: "user_message", content: `start ${"x".repeat(150_000)} end` },
+          },
+          {
+            ts: new Date().toISOString(),
+            agent: "codex",
+            event: { type: "result", content: "latest state", stopReason: "end_turn" },
+          },
+        ],
+        agent: "codex",
+        model: "gpt-5.6-luna",
+        cwd: "/tmp",
+      },
+      async (request) => {
+        source = request.source;
+        return "summary";
+      },
+    );
+
+    expect(source.length).toBeGreaterThan(100_000);
+    expect(shouldUseCompactionLog(source)).toBe(true);
+    expect(shouldUseCompactionLog("short context")).toBe(false);
+  });
+
   test("replaces provider context with a summary while preserving visible messages", async () => {
     const { owner, topic } = createTopic();
     const oldSessionId = "01940000-0000-7000-8000-000000000001";
@@ -270,6 +460,7 @@ describe("compactTopicSession", () => {
       type: "session",
       sessionId: oldSessionId,
     });
+    const rawBeforeCompact = readRawConversation(owner, topic.title);
 
     let source = "";
     const result = await compactTopicSession(topic.id, owner, "test-compact", {
@@ -297,8 +488,57 @@ describe("compactTopicSession", () => {
       content: "Standalone compact summary with decisions and next steps.",
     });
     expect(getTopicSessionId(topic.id)).not.toBe(oldSessionId);
+    const rawAfterCompact = readRawConversation(owner, topic.title);
+    expect(rawAfterCompact.slice(0, rawBeforeCompact.length)).toEqual(rawBeforeCompact);
+    expect(rawAfterCompact.at(-1)?.event).toMatchObject({
+      type: "session",
+      sessionId: getTopicSessionId(topic.id),
+    });
 
     await restartTopicSession(topic.id, owner, "test-compact-cleanup", {
+      archiveMemory: () => "below-threshold",
+    });
+  });
+
+  test("keeps a committed compact session when old rollout cleanup is deferred", async () => {
+    const { owner, topic } = createTopic();
+    const oldSessionId = "01940000-0000-7000-8000-000000000003";
+    setTopicSessionId(topic.id, oldSessionId, { reason: "test", agent: "codex" });
+    appendConversationEventStrict(owner, topic.title, "codex", {
+      type: "user_message",
+      content: "context to compact",
+    });
+    appendConversationEventStrict(owner, topic.title, "codex", {
+      type: "result",
+      content: "provider response to preserve",
+      stopReason: "end_turn",
+    });
+    const cleanupOldRollouts = mock(async () => false);
+
+    const result = await compactTopicSession(topic.id, owner, "test-compact-deferred-cleanup", {
+      summarize: async () => "committed summary",
+      cleanupOldRollouts,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(cleanupOldRollouts).toHaveBeenCalledTimes(1);
+    expect(getTopicSessionId(topic.id)).not.toBe(oldSessionId);
+    expect(readConversation(owner, topic.title)[1]?.event).toMatchObject({
+      type: "result",
+      content: "committed summary",
+    });
+    const deferredManifest = readConversation(owner, topic.title);
+    expect(
+      deferredManifest.some(
+        (entry) => entry.event.type === "session" && entry.event.sessionId === oldSessionId,
+      ),
+    ).toBe(true);
+    expect(deferredManifest.at(-1)?.event).toMatchObject({
+      type: "session",
+      sessionId: getTopicSessionId(topic.id),
+    });
+
+    await restartTopicSession(topic.id, owner, "test-compact-deferred-cleanup-reset", {
       archiveMemory: () => "below-threshold",
     });
   });

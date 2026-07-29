@@ -42,6 +42,7 @@ import {
   sweepStaleSubagentCards,
   WORKSPACE_DIR,
 } from "@negotium/core";
+import { migrateLegacyCompactedConversations } from "@negotium/core/conversation-migration";
 import { handleNegotiumMcpRequest } from "@negotium/mcp";
 import { McpHost, McpManifest } from "@negotium/mcp-host";
 import {
@@ -156,6 +157,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     throw new Error(`a Negotium node is already running for ${STATE_DIR}`);
   }
   try {
+    if (opts.singleton) migrateLegacyCompactedConversations();
     startAskUserQuestionGateOwner();
     reconcilePendingAskUserQuestionGates();
   } catch (error) {

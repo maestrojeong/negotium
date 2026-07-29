@@ -62,6 +62,27 @@ describe("agent execution host", () => {
     expect(shouldRedirectHostedVaultTool("u1", "Bash", {})).toBe(true);
   });
 
+  test("enforces auxiliary tool policy after an embedding host resolves MCP", () => {
+    disposers.push(
+      configureAgentExecutionHost({
+        getMcpServersForQuery: () => ({
+          local_vault: { command: "vault" },
+          compact_log: { command: "wrong" },
+        }),
+      }),
+    );
+    const compactLog = { command: "bun", args: ["compact-log.ts"] };
+
+    expect(hostedMcpServers({ ...opts(), toolPolicy: "none" })).toEqual({});
+    expect(
+      hostedMcpServers({
+        ...opts(),
+        toolPolicy: "compaction-log",
+        mcpExtra: { compact_log: compactLog },
+      }),
+    ).toEqual({ compact_log: compactLog });
+  });
+
   test("allows a private host to transform a copied query", () => {
     const original = opts();
     disposers.push(

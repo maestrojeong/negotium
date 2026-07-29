@@ -12,7 +12,11 @@ import {
   getPendingSelfSchedule,
   updatePendingSelfSchedule,
 } from "#storage/self-schedules";
-import { createDerivedTopic, TopicTitleConflictError } from "#topics/derive";
+import {
+  createDerivedTopic,
+  TopicForkCompactionError,
+  TopicTitleConflictError,
+} from "#topics/derive";
 import { topicMarkdownLink } from "#topics/links";
 import type { AgentKind, EffortLevel } from "#types";
 import type { TopicDto } from "#types/api";
@@ -393,7 +397,6 @@ export async function spawnSelfConfigTopic(
   try {
     derived = await createDerivedTopic(topic.id, ctx.userId, false, {
       name,
-      allowActiveSource: true,
     });
   } catch (e) {
     if (e instanceof TopicTitleConflictError) return err(`${e.message} — pick a different name.`);
@@ -414,10 +417,10 @@ export async function forkSelfConfigTopic(
   try {
     derived = await createDerivedTopic(topic.id, ctx.userId, true, {
       name,
-      allowActiveSource: true,
     });
   } catch (e) {
     if (e instanceof TopicTitleConflictError) return err(`${e.message} — pick a different name.`);
+    if (e instanceof TopicForkCompactionError) return err(e.message);
     throw e;
   }
   if (!derived) return err("Failed to fork topic (source not found or permission denied).");

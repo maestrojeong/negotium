@@ -1,8 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { buildClaudeDisallowedTools, substituteClaudeToolInput } from "#agents/claude-provider";
+import {
+  buildClaudeDisallowedTools,
+  claudeBuiltInTools,
+  substituteClaudeToolInput,
+} from "#agents/claude-provider";
 import { configureAgentExecutionHost } from "#agents/execution-host";
 
 describe("claudeProvider host tool policy", () => {
+  test("removes every built-in tool for no-tool auxiliary calls", () => {
+    expect(claudeBuiltInTools({ toolPolicy: "none" })).toEqual([]);
+    expect(claudeBuiltInTools({ toolPolicy: "compaction-log" })).toEqual([]);
+    expect(claudeBuiltInTools({})).toBeUndefined();
+  });
+
   test("disallows native task store and subagent tools by default", () => {
     expect(buildClaudeDisallowedTools()).toEqual([
       "AskUserQuestion",

@@ -1,4 +1,4 @@
-import { unlinkSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentRegistry } from "#agents/contracts";
@@ -86,6 +86,8 @@ export const codexRegistry: AgentRegistry = {
   async cleanupRollouts({ sessionIds }) {
     if (sessionIds.length === 0) return;
     const sessionsDir = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
+    // No sessions directory means there are no provider rollouts left to remove.
+    if (!existsSync(sessionsDir)) return;
     const failures: unknown[] = [];
     // One Glob per threadId so a single corrupt entry can't poison the rest.
     // Bun.Glob's `scan` yields paths relative to its base dir.

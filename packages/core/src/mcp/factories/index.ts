@@ -13,6 +13,10 @@ export {
   type WikiTopicBrief,
 } from "../wiki-server";
 export {
+  type CompactionLogMcpContext,
+  createCompactionLogMcpServer,
+} from "./compaction-log";
+export {
   createSessionCommMcpServer,
   type SessionCommMcpHost,
   type SessionCommMcpOptions,

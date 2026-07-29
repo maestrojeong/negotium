@@ -6,6 +6,7 @@ import { WsHub } from "#bus";
 import { WORKSPACE_DIR } from "#platform/config";
 import { logger } from "#platform/logger";
 import { type AgentDef, loadAgentPrompt } from "#prompts/builders";
+import { COMPLETED_BACKGROUND_SESSION_RETENTION_MS } from "#runtime/background-session-policy";
 import { sanitizeTopicName } from "#security/sanitize";
 import { appendApiMessage } from "#storage/api-messages";
 import { getTopicBrief, setTopicBrief } from "#storage/api-topic-brief";
@@ -22,35 +23,61 @@ import type { BackgroundSessionDto } from "#types/api";
  */
 const MAX_BRIEF_ENTRIES = 8;
 
-const MAX_SESSION_STEPS = 20;
-
 interface ActiveArchiverSession extends BackgroundSessionDto {
   userId: string;
+  expiresAt?: number;
+  expiryTimer?: ReturnType<typeof setTimeout>;
 }
 
 const activeArchiverSessions = new Map<string, ActiveArchiverSession>();
 
-function boundedSessionText(value: string): string {
-  return value.replace(/\s+/g, " ").trim().slice(0, 160);
+function sessionText(value: string, maxLength?: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return maxLength === undefined ? normalized : normalized.slice(0, maxLength);
+}
+
+function formatArchiverBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatArchiverTool(name: string, input: Record<string, unknown>): string {
+  const params = Object.entries(input)
+    .map(([key, value]) => {
+      const rendered = typeof value === "string" ? value : JSON.stringify(value);
+      return `${key}: ${sessionText(rendered ?? "")}`;
+    })
+    .join(", ");
+  return `${name}${params ? `(${params})` : ""}`;
 }
 
 function updateArchiverSession(id: string, status: string, step?: string): void {
   const session = activeArchiverSessions.get(id);
   if (!session) return;
-  session.status = boundedSessionText(status) || session.status;
+  session.status = sessionText(status, 160) || session.status;
   if (step) {
-    const text = boundedSessionText(step);
+    const text = sessionText(step);
     if (text && session.steps.at(-1) !== text) {
       session.steps.push(text);
-      if (session.steps.length > MAX_SESSION_STEPS) session.steps.shift();
     }
   }
 }
 
 export function listActiveMemoryArchiverSessions(userId: string): BackgroundSessionDto[] {
+  const now = Date.now();
+  for (const [id, session] of activeArchiverSessions) {
+    if (session.expiresAt !== undefined && session.expiresAt <= now) {
+      if (session.expiryTimer) clearTimeout(session.expiryTimer);
+      activeArchiverSessions.delete(id);
+    }
+  }
   return [...activeArchiverSessions.values()]
     .filter((session) => session.userId === userId)
-    .map(({ userId: _userId, ...session }) => ({ ...session, steps: [...session.steps] }));
+    .map(({ userId: _userId, expiresAt: _expiresAt, expiryTimer: _expiryTimer, ...session }) => ({
+      ...session,
+      steps: [...session.steps],
+    }));
 }
 
 // The wiki-archiver prompt is loaded once and cached — a missing/!malformed
@@ -70,6 +97,8 @@ export interface RunArchiverTurnParams {
   topicTitle: string;
   /** Absolute path to the JSONL archive produced by `archiveTopicMessages`. */
   archivePath: string;
+  /** Full provider-neutral event streams preserved before topic deletion. */
+  rawArchivePaths?: string[];
   /** Number of messages in the archive — gates the MIN threshold. */
   messageCount: number;
   /** Deleted topics update the #General memory hub; active idle snapshots do not. */
@@ -103,7 +132,15 @@ interface GeneralArchiverReply {
  * logged only — a broken archiver must never block or fail a topic deletion.
  */
 export function runArchiverTurn(params: RunArchiverTurnParams): boolean {
-  const { userId, topicId, topicTitle, archivePath, messageCount, mode = "deleted-topic" } = params;
+  const {
+    userId,
+    topicId,
+    topicTitle,
+    archivePath,
+    rawArchivePaths = [],
+    messageCount,
+    mode = "deleted-topic",
+  } = params;
 
   let archiverDef: AgentDef;
   try {
@@ -126,11 +163,13 @@ export function runArchiverTurn(params: RunArchiverTurnParams): boolean {
       ? [
           `세션 "${topicTitle}" 의 최근 idle 대화 snapshot입니다. 아래 아카이브에서 기억을 추출해 이 토픽 위키에 저장해줘.`,
           `archive_path: ${archivePath}`,
+          ...rawArchivePaths.map((path) => `raw_archive_path: ${path}`),
           `wiki_dir: ${wikiDir}`,
         ].join("\n")
       : [
           `세션 "${topicTitle}" 이(가) 삭제되었습니다. 아래 아카이브에서 기억을 추출해 위키에 저장해줘.`,
           `archive_path: ${archivePath}`,
+          ...rawArchivePaths.map((path) => `raw_archive_path: ${path}`),
           `wiki_dir: ${wikiDir}`,
           "",
           "#General에 표시될 짧은 한국어 완료 메시지로 최종 응답해줘. " +
@@ -159,6 +198,12 @@ export function runArchiverTurn(params: RunArchiverTurnParams): boolean {
   });
 
   const activeSessionId = `memory:${randomUUID()}`;
+  let archiveBytes = 0;
+  try {
+    archiveBytes = statSync(archivePath).size;
+  } catch {
+    // The provider will report the actionable read failure.
+  }
   activeArchiverSessions.set(activeSessionId, {
     id: activeSessionId,
     kind: "memory",
@@ -172,7 +217,9 @@ export function runArchiverTurn(params: RunArchiverTurnParams): boolean {
     model: model ?? archiverDef.model,
     prompt,
     promptTitle: "Prompt",
-    steps: ["Preparing archived conversation"],
+    steps: [
+      `Archive prepared · ${messageCount.toLocaleString()} messages · ${formatArchiverBytes(archiveBytes)}`,
+    ],
   });
 
   logger.info(
@@ -189,14 +236,23 @@ export function runArchiverTurn(params: RunArchiverTurnParams): boolean {
     let sawDelta = false;
     let accumulatedText = "";
     let resultText = "";
+    let finalText = "";
+    let errorText = "";
     let usage: GeneralArchiverReply["usage"] | undefined;
     try {
       // Drain the stream — the turn's side effects (wiki writes) are the point;
       // only the final assistant text is surfaced to #General for deleted topics.
       for await (const event of events) {
         switch (event.type) {
+          case "session":
+            updateArchiverSession(activeSessionId, "Running", "Provider session started");
+            break;
           case "tool_use":
-            updateArchiverSession(activeSessionId, `Running ${event.name}`, `Tool: ${event.name}`);
+            updateArchiverSession(
+              activeSessionId,
+              `Running ${event.name}`,
+              formatArchiverTool(event.name, event.input),
+            );
             break;
           case "tool_progress":
             {
@@ -214,7 +270,13 @@ export function runArchiverTurn(params: RunArchiverTurnParams): boolean {
             updateArchiverSession(activeSessionId, event.content, event.content);
             break;
           case "tool_result":
-            updateArchiverSession(activeSessionId, "Processing tool result");
+            updateArchiverSession(
+              activeSessionId,
+              event.isError ? "Tool failed" : "Processing tool result",
+              event.isError
+                ? `Tool failed: ${sessionText(event.content) || "unknown error"}`
+                : `Tool result · ${formatArchiverBytes(event.metadata?.returnedBytes ?? Buffer.byteLength(event.content))}`,
+            );
             break;
           case "text_delta":
             sawDelta = true;
@@ -224,23 +286,63 @@ export function runArchiverTurn(params: RunArchiverTurnParams): boolean {
             if (!sawDelta) accumulatedText += event.content;
             break;
           case "result":
-            updateArchiverSession(activeSessionId, "Finalizing memory");
+            updateArchiverSession(
+              activeSessionId,
+              "Finalizing memory",
+              `Memory received · ${formatArchiverBytes(Buffer.byteLength(event.content))}${
+                event.usage
+                  ? ` · ${event.usage.inputTokens.toLocaleString()} in / ${event.usage.outputTokens.toLocaleString()} out`
+                  : ""
+              }`,
+            );
             resultText = event.content;
             usage = event.usage
               ? { input: event.usage.inputTokens, output: event.usage.outputTokens }
               : undefined;
             break;
+          case "error":
+            errorText = event.content;
+            updateArchiverSession(
+              activeSessionId,
+              "Failed",
+              `Memory archive failed: ${sessionText(event.content)}`,
+            );
+            break;
           default:
             break;
         }
       }
-      ok = true;
+      ok = !errorText;
       logger.info({ userId, topicTitle }, "archiver: background turn completed");
     } catch (err) {
-      updateArchiverSession(activeSessionId, "Failed", "Memory archive failed");
+      errorText = err instanceof Error ? err.message : String(err);
+      updateArchiverSession(
+        activeSessionId,
+        "Failed",
+        `Memory archive failed: ${sessionText(errorText)}`,
+      );
       logger.warn({ err, userId, topicTitle }, "archiver: background turn failed");
     } finally {
-      activeArchiverSessions.delete(activeSessionId);
+      finalText = (accumulatedText.trim() ? accumulatedText : resultText).trim();
+      const completedSession = activeArchiverSessions.get(activeSessionId);
+      if (completedSession) {
+        if (finalText) completedSession.output = finalText;
+        updateArchiverSession(
+          activeSessionId,
+          ok ? "Completed" : "Failed",
+          ok
+            ? `Memory archive completed · ${formatArchiverBytes(Buffer.byteLength(finalText))}`
+            : `Memory archive failed: ${sessionText(errorText) || "unknown error"}`,
+        );
+        completedSession.active = false;
+        completedSession.expiresAt = Date.now() + COMPLETED_BACKGROUND_SESSION_RETENTION_MS;
+        completedSession.expiryTimer = setTimeout(() => {
+          if (activeArchiverSessions.get(activeSessionId) === completedSession) {
+            activeArchiverSessions.delete(activeSessionId);
+          }
+        }, COMPLETED_BACKGROUND_SESSION_RETENTION_MS);
+        completedSession.expiryTimer.unref?.();
+      }
       try {
         params.onSettled?.(ok);
       } catch (err) {
@@ -250,7 +352,7 @@ export function runArchiverTurn(params: RunArchiverTurnParams): boolean {
     if (mode === "deleted-topic") {
       // Roll the deleted topic into the #General memory hub regardless of LLM
       // success — even a failed distillation should leave a digest breadcrumb.
-      const text = (accumulatedText.trim() ? accumulatedText : resultText).trimEnd();
+      const text = finalText.trimEnd();
       finalizeGeneralMemory(
         userId,
         topicTitle,

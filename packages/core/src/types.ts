@@ -98,7 +98,7 @@ export interface TaskSnapshot {
 }
 
 export type UnifiedEvent =
-  | { type: "user_message"; content: string }
+  | { type: "user_message"; content: string; synthetic?: "compaction" }
   | { type: "session"; sessionId: string }
   | {
       type: "tool_use";
@@ -246,6 +246,16 @@ export interface AgentQueryOptions {
    * is disabled separately through the Codex feature config.
    */
   disallowedTools?: readonly string[];
+  /**
+   * Hard provider tool policy for auxiliary model calls.
+   *
+   * `"none"` removes MCP and provider-native tools before the request is
+   * dispatched. `"compaction-log"` keeps provider-native tools disabled and
+   * exposes only the host-scoped immutable log reader. Use these for untrusted
+   * transcript transforms; reacting to tool events after dispatch is not a
+   * security boundary.
+   */
+  toolPolicy?: "none" | "compaction-log";
   mcpEnabled?: string[] | null;
   peerBridge?: PeerRuntimeBridgeContext;
   mcpExtra?: Record<string, unknown>;

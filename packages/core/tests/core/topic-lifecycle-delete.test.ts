@@ -33,6 +33,7 @@ let archiveError: Error = new Error("archive failed");
 let archiveObservedActiveLease = false;
 let archiveMessageCount = 6;
 let archiveExchangeCount = 6;
+let rawArchivePath: string | undefined;
 
 const calls = {
   archive: [] as Array<{ topicId: string; title: string }>,
@@ -41,6 +42,8 @@ const calls = {
 const createdTopicIds: string[] = [];
 
 mock.module("#storage/topic-archive", () => ({
+  archiveConversationEvents: () =>
+    rawArchivePath ? { path: rawArchivePath, eventCount: 12 } : null,
   archiveTopicMessages: (topicId: string, title: string) => {
     archiveObservedActiveLease ||= getRuntimeTurnLease(topicId) !== null;
     calls.archive.push({ topicId, title });
@@ -55,12 +58,15 @@ mock.module("#storage/topic-archive", () => ({
 }));
 
 mock.module("#agents/archiver", () => ({
+  listActiveMemoryArchiverSessions: () => [],
   runArchiverTurn: (args: unknown) => {
     calls.archiver.push(args);
   },
 }));
 
-const { deleteTopicCascade, TopicArchiveRequiredError } = await import("#topics/lifecycle");
+const { deleteTopicCascade, TopicArchiveRequiredError, TopicCleanupRequiredError } = await import(
+  "#topics/lifecycle"
+);
 
 function makeTopic(id: string, title: string, patch: Partial<TopicDto> = {}): TopicDto {
   const now = new Date().toISOString();
@@ -107,6 +113,7 @@ beforeEach(() => {
   archiveObservedActiveLease = false;
   archiveMessageCount = 6;
   archiveExchangeCount = 6;
+  rawArchivePath = undefined;
   calls.archive = [];
   calls.archiver = [];
 });
@@ -154,6 +161,23 @@ describe("deleteTopicCascade archive policy", () => {
     expect(calls.archive).toEqual([{ topicId: topic.id, title: topic.title }]);
     expect(calls.archiver).toEqual([]);
     expect(getTopic(topic.id)).toBeNull();
+  });
+
+  test("passes the preserved raw event archive to the memory archiver", async () => {
+    const topic = makeTopic("topic-delete-raw-events", "Delete Raw Events");
+    rawArchivePath = `/tmp/${topic.id}-events.jsonl`;
+
+    await deleteTopicCascade(topic, "owner-user");
+
+    expect(calls.archiver).toEqual([
+      {
+        userId: "owner-user",
+        topicTitle: topic.title,
+        archivePath: `/tmp/${topic.id}.jsonl`,
+        rawArchivePaths: [rawArchivePath],
+        messageCount: 6,
+      },
+    ]);
   });
 
   test("waits for an aborted turn to release the room before archiving and deleting", async () => {
@@ -385,6 +409,18 @@ describe("deleteTopicCascade archive policy", () => {
 
     expect(calls.archive).toEqual([{ topicId: topic.id, title: topic.title }]);
     expect(calls.archiver).toEqual([]);
+    expect(getTopic(topic.id)).not.toBeNull();
+  });
+
+  test("blocks delete when provider context cleanup fails", async () => {
+    const topic = makeTopic("topic-cleanup-failed", "Cleanup Failed Topic");
+
+    await expect(
+      deleteTopicCascade(topic, "owner-user", {
+        purgeLogs: async () => false,
+      }),
+    ).rejects.toThrow(TopicCleanupRequiredError);
+
     expect(getTopic(topic.id)).not.toBeNull();
   });
 

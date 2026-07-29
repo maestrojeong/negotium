@@ -92,11 +92,30 @@ const DEFAULT_MAESTRO_DISALLOWED_TOOLS = [
   PROVIDER_SUBAGENT_TOOL,
   ...MAESTRO_NATIVE_TASK_TOOLS,
 ] as const;
+const MAESTRO_ALL_BUILTIN_TOOLS = [
+  "Bash",
+  "Read",
+  "ReadToolOutput",
+  "Write",
+  "Edit",
+  "Glob",
+  "Grep",
+  "WebFetch",
+  "GeminiImageQA",
+  "ToolSearch",
+  ...DEFAULT_MAESTRO_DISALLOWED_TOOLS,
+] as const;
 
 export function buildMaestroDisallowedTools(
   callerDisallowedTools: readonly string[] = [],
+  toolPolicy?: AgentQueryOptions["toolPolicy"],
 ): readonly string[] {
-  return [...new Set([...DEFAULT_MAESTRO_DISALLOWED_TOOLS, ...callerDisallowedTools])];
+  return [
+    ...new Set([
+      ...(toolPolicy ? MAESTRO_ALL_BUILTIN_TOOLS : DEFAULT_MAESTRO_DISALLOWED_TOOLS),
+      ...callerDisallowedTools,
+    ]),
+  ];
 }
 
 /**
@@ -200,8 +219,8 @@ export function maestroProvider(opts: AgentQueryOptions): AsyncGenerator<Unified
   // keep the runtime value intact so the host MCP resolver can choose cron scope.
   const sdkOpts = {
     maxTokens: MAESTRO_DEFAULT_MAX_TOKENS,
-    enableToolSearch: true,
     ...opts,
+    enableToolSearch: !opts.toolPolicy && opts.enableToolSearch !== false,
     // Resolve this after spreading caller options so untrusted runtime input
     // cannot replace a topic owner's Vault credentials with another key.
     apiKeyOverrides: resolveMaestroApiKeyOverrides(userId),
@@ -209,7 +228,7 @@ export function maestroProvider(opts: AgentQueryOptions): AsyncGenerator<Unified
     // Otium's AgentKind is wider ("claude"|"codex"|"maestro"), so stamp
     // the literal to satisfy the SDK type.
     agent: "maestro",
-    disallowedTools: buildMaestroDisallowedTools(callerDisallowedTools),
+    disallowedTools: buildMaestroDisallowedTools(callerDisallowedTools, opts.toolPolicy),
     toolHooks: [...buildMaestroToolHooks(userId), ...callerToolHooks],
   } as unknown as Parameters<typeof sdkMaestroProvider>[0];
   return sdkMaestroProvider(sdkOpts);

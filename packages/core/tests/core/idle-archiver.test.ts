@@ -133,6 +133,7 @@ describe("idle archiver defaults", () => {
       minMessages: 1,
       allowMentionOnly: true,
       skipBusyCheck: true,
+      rawArchivePaths: ["/tmp/reset-memory-events.jsonl"],
       archiveMessages: (
         _topicId: string,
         _topicTitle: string,
@@ -156,6 +157,7 @@ describe("idle archiver defaults", () => {
     expect(archiveActiveTopicForMemory(topic.id, "idle-owner", options)).toBe("archived");
     expect(launches).toHaveLength(1);
     expect(launches[0]?.mode).toBe("active-topic");
+    expect(launches[0]?.rawArchivePaths).toEqual(["/tmp/reset-memory-events.jsonl"]);
     expect(archiveCalls).toEqual([{ reason: "reset", afterRowid: 0 }]);
     expect(getTopicArchiveState(topic.id)?.lastArchivedRowid).toBeGreaterThan(0);
 

@@ -47,6 +47,12 @@ const CLAUDE_DEFAULT_DISALLOWED_TOOLS = [
 
 const CLAUDE_NATIVE_AGENT_TOOLS = ["Task", "Agent", "TaskOutput", "TaskStop"] as const;
 
+export function claudeBuiltInTools(
+  opts: Pick<AgentQueryOptions, "toolPolicy">,
+): string[] | undefined {
+  return opts.toolPolicy ? [] : undefined;
+}
+
 export function substituteClaudeToolInput(
   userId: string,
   toolName: string,
@@ -376,6 +382,7 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
     includePartialMessages: true,
     env: cleanEnv,
     mcpServers: hostedMcpServers(opts) as Options["mcpServers"],
+    ...(claudeBuiltInTools(opts) ? { tools: claudeBuiltInTools(opts) } : {}),
     abortController: opts.abortController,
     // `AskUserQuestion` is Claude Code's built-in clarification tool, but it
     // expects the SDK CLI to render a TUI prompt and read stdin for the

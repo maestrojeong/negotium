@@ -92,6 +92,7 @@ export const topicService = {
       ...(params.force !== undefined ? { force: params.force } : {}),
       ...(params.allowManager !== undefined ? { allowManager: params.allowManager } : {}),
       ...(params.skipArchive !== undefined ? { skipArchive: params.skipArchive } : {}),
+      ...(params.purgeLogs !== undefined ? { purgeLogs: params.purgeLogs } : {}),
     });
   },
 

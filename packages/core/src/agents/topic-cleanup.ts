@@ -1,14 +1,12 @@
 /**
  * Topic-level conversation cleanup.
  *
- * The unified conversation log (`data/conversations/<userId>/<topic>.jsonl`)
- * is **transient** by design — its only job is to feed the cross-agent
- * bridge in `set_agent` and to give per-agent SDK rollout reconstruction a
- * provider-agnostic source. Once a topic is reset (`/new`) or deleted
- * (`/del`, MCP `delete_topic`), the unified log AND every per-agent SDK
- * rollout file the topic produced should disappear together so a subsequent
- * fresh-start on the same topic name (or a stray `set_agent` call against a
- * recreated row) cannot resurrect orphan history.
+ * The raw and active conversation logs are operational files. The raw stream
+ * is append-only while a topic lives and is archived to `wiki/archive/` by
+ * reset/delete lifecycle code before this module removes it. The active stream
+ * is the compactable provider projection. Every per-agent SDK rollout and both
+ * operational files disappear together so a recreated topic cannot resurrect
+ * orphan history.
  *
  * Permanent forensic preservation lives in `wiki/archive/` via
  * `archiveSessionLogs`; this module is the matching teardown side.
@@ -21,8 +19,10 @@ import { getRegistry } from "#agents/registry";
 import { logger } from "#platform/logger";
 import {
   type ConversationEntry,
+  getActiveConversationPath,
   getConversationPath,
   readConversation,
+  readRawConversation,
 } from "#storage/conversations";
 import type { AgentKind } from "#types";
 
@@ -109,7 +109,15 @@ async function cleanupSessionRollouts(
 
 /** Remove every provider rollout currently manifested by a topic log. */
 export async function cleanupTopicRollouts(opts: PurgeTopicLogsOptions): Promise<boolean> {
-  return cleanupSessionRollouts(opts, readConversation(opts.userId, opts.topicName));
+  return cleanupSessionRollouts(opts, readRawConversation(opts.userId, opts.topicName));
+}
+
+/** Remove rollout ids captured from a point-in-time conversation manifest. */
+export async function cleanupTopicRolloutsFromEntries(
+  opts: PurgeTopicLogsOptions,
+  entries: ConversationEntry[],
+): Promise<boolean> {
+  return cleanupSessionRollouts(opts, entries);
 }
 
 export interface RotateTopicLogsOptions extends PurgeTopicLogsOptions {
@@ -163,7 +171,7 @@ export async function rotateTopicLogs(
     };
   }
 
-  const path = getConversationPath(opts.userId, opts.topicName);
+  const path = getActiveConversationPath(opts.userId, opts.topicName);
   const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
   try {
     mkdirSync(dirname(path), { recursive: true });
@@ -206,26 +214,34 @@ export async function rotateTopicLogs(
  *   3. Unlink the unified log LAST so a partial rollout-cleanup failure
  *      leaves the manifest in place for a future retry.
  *
- * Errors at every step are logged but never thrown — cleanup runs at
- * topic teardown when there is nothing left to abort to.
+ * Errors at every step are logged and reported through the return value.
+ * Callers must not commit a reset/delete state transition when this returns
+ * false, because the retained manifest can otherwise resurrect old context.
  */
-export async function purgeTopicLogs(opts: PurgeTopicLogsOptions): Promise<void> {
+export async function purgeTopicLogs(opts: PurgeTopicLogsOptions): Promise<boolean> {
   const { userId, topicName } = opts;
-  const entries = readConversation(userId, topicName);
+  const entries = readRawConversation(userId, topicName);
   if (!(await cleanupSessionRollouts(opts, entries))) {
     logger.warn(
       { userId, topicName },
       "purgeTopicLogs: keeping unified log because one or more rollout cleanups failed",
     );
-    return;
+    return false;
   }
 
-  const path = getConversationPath(userId, topicName);
-  try {
-    unlinkSync(path);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
-      logger.warn({ err: e, path }, "purgeTopicLogs: unified log unlink failed");
+  let unlinkFailed = false;
+  for (const path of [
+    getActiveConversationPath(userId, topicName),
+    getConversationPath(userId, topicName),
+  ]) {
+    try {
+      unlinkSync(path);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        logger.warn({ err: e, path }, "purgeTopicLogs: conversation log unlink failed");
+        unlinkFailed = true;
+      }
     }
   }
+  return !unlinkFailed;
 }
