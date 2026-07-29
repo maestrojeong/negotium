@@ -6,12 +6,16 @@
  * agents/registry.ts can resolve all three AgentRegistry instances from
  * sibling `@/agents/*` paths, keeping the import topology consistent.
  *
- * maestro-agent-sdk v0.1.46 supports DeepSeek and Kimi (Moonshot AI). The
+ * maestro-agent-sdk supports DeepSeek and Kimi (Moonshot AI). The
  * SDK's own default is `deepseek-pro`, which matches this override. Negotium
  * intentionally does not expose the retired DeepSeek Flash aliases.
  */
 import "#platform/maestro-bootstrap-env";
+import { existsSync } from "node:fs";
 import {
+  deleteMaestroSession,
+  maestroActiveSessionPath,
+  maestroSessionPath,
   setConversationReader,
   maestroRegistry as upstreamMaestroRegistry,
 } from "maestro-agent-sdk";
@@ -30,6 +34,26 @@ setConversationReader(readConversation as Parameters<typeof setConversationReade
 export const maestroRegistry: AgentRegistry = {
   ...upstream,
   defaultModel: "deepseek-pro",
+  async cleanupRollouts({ sessionIds }) {
+    const failures: unknown[] = [];
+    for (const sessionId of sessionIds) {
+      try {
+        deleteMaestroSession(sessionId);
+        const remaining = [
+          maestroSessionPath(sessionId),
+          maestroActiveSessionPath(sessionId),
+        ].filter(existsSync);
+        if (remaining.length > 0) {
+          throw new Error(`Maestro session files remain after cleanup: ${remaining.join(", ")}`);
+        }
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Maestro rollout cleanup failed");
+    }
+  },
   validateModel(model) {
     return !DISABLED_MODEL_ALIASES.has(model) && upstream.validateModel(model);
   },

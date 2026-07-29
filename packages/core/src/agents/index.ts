@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { hasActiveMaestroSession, maestroSessionPath } from "maestro-agent-sdk";
 import { claudeProvider } from "#agents/claude-provider";
 import { codexProvider } from "#agents/codex-provider";
 import { maestroProvider } from "#agents/maestro-provider";
@@ -93,7 +94,7 @@ function hasSessionRepairContext(
  * Check whether the SDK-native session file for the given agent / sessionId is
  * missing from disk (deleted by SDK housekeeping, stale ref, etc.).
  */
-async function resolveSessionFileMissing(
+export async function resolveSessionFileMissing(
   agent: AgentKind,
   sessionId: string,
   cwd: string,
@@ -113,8 +114,7 @@ async function resolveSessionFileMissing(
       return true; // no match found
     }
     case "maestro": {
-      const path = join(homedir(), ".maestro", "sessions", `${sessionId}.jsonl`);
-      return !existsSync(path);
+      return !existsSync(maestroSessionPath(sessionId)) && !hasActiveMaestroSession(sessionId);
     }
     default: {
       const _exhaustive: never = agent;

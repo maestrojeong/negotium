@@ -1,4 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { maestroActiveSessionPath, maestroSessionPath } from "maestro-agent-sdk";
+import { resolveSessionFileMissing } from "#agents/index";
 import { maestroRegistry } from "#agents/maestro-registry";
 
 describe("maestroRegistry model policy", () => {
@@ -13,5 +18,34 @@ describe("maestroRegistry model policy", () => {
       expect(maestroRegistry.validateModel(model)).toBe(false);
     }
     expect(maestroRegistry.validateModel("deepseek-pro")).toBe(true);
+  });
+});
+
+describe("maestroRegistry session storage", () => {
+  test("treats an active-only projection as resumable", async () => {
+    const sessionId = randomUUID();
+    const activePath = maestroActiveSessionPath(sessionId);
+    mkdirSync(dirname(activePath), { recursive: true });
+    writeFileSync(activePath, '{"type":"meta"}\n');
+
+    try {
+      expect(await resolveSessionFileMissing("maestro", sessionId, process.cwd())).toBe(false);
+    } finally {
+      rmSync(activePath, { force: true });
+    }
+  });
+
+  test("cleanup removes raw and active session files", async () => {
+    const sessionId = randomUUID();
+    const rawPath = maestroSessionPath(sessionId);
+    const activePath = maestroActiveSessionPath(sessionId);
+    mkdirSync(dirname(rawPath), { recursive: true });
+    writeFileSync(rawPath, '{"type":"meta"}\n');
+    writeFileSync(activePath, '{"type":"meta"}\n');
+
+    await maestroRegistry.cleanupRollouts({ cwd: process.cwd(), sessionIds: [sessionId] });
+
+    expect(existsSync(rawPath)).toBe(false);
+    expect(existsSync(activePath)).toBe(false);
   });
 });
