@@ -13,11 +13,14 @@ const packageEntrypoints = new Map<string, string>([
   ["@negotium/adapter-sdk/outbox", "packages/adapter-sdk/src/outbox.ts"],
   ["@negotium/adapter-sdk/testkit", "packages/adapter-sdk/src/testkit.ts"],
   ["@negotium/core", "packages/core/src/index.ts"],
+  ["@negotium/core/conversation-migration", "packages/core/src/storage/conversation-migration.ts"],
+  ["@negotium/core/cron-host", "packages/core/src/cron-host.ts"],
   ["@negotium/core/hosted-agent", "packages/core/src/agents/hosted-agent.ts"],
   ["@negotium/core/registry", "packages/core/src/agents/registry.ts"],
   ["@negotium/core/rollout", "packages/core/src/agents/rollout/index.ts"],
   ["@negotium/core/vault", "packages/core/src/storage/vault-public.ts"],
   ["@negotium/core/storage", "packages/core/src/storage/storage-public.ts"],
+  ["@negotium/core/version", "packages/core/src/version.ts"],
   ["@negotium/core/prompts", "packages/core/src/prompts/builders.ts"],
   ["@negotium/core/runtime-helpers", "packages/core/src/runtime/public-helpers.ts"],
   ["@negotium/core/mcp-factories", "packages/core/src/mcp/factories/index.ts"],
@@ -145,7 +148,6 @@ await bundle(["apps/negotium/src/registry.ts", "apps/negotium/src/rollout.ts"]);
 // module's exports and @negotium/core's re-exports in the same split chunk,
 // which produces invalid duplicate ESM export names.
 for (const entrypoint of [
-  "apps/negotium/src/cron.ts",
   "apps/negotium/src/mcp-servers.ts",
   "apps/negotium/src/vault.ts",
   "apps/negotium/src/storage.ts",
@@ -172,6 +174,24 @@ await cp(resolve(root, "packages/core/scripts"), resolve(runtimeRoot, "scripts")
 await cp(resolve(root, "packages/module-cron/src"), resolve(runtimeRoot, "cron"), {
   recursive: true,
 });
+await Bun.write(
+  resolve(runtimeRoot, "package.json"),
+  `${JSON.stringify({ type: "module", imports: { "#*": "./src/*.ts" } }, null, 2)}\n`,
+);
+await Bun.write(
+  resolve(runtimeRoot, "cron", "package.json"),
+  `${JSON.stringify({ type: "module", imports: { "#*": "./*.ts" } }, null, 2)}\n`,
+);
+for (const entry of await readdir(resolve(runtimeRoot, "cron"))) {
+  if (!entry.endsWith(".ts")) continue;
+  const path = resolve(runtimeRoot, "cron", entry);
+  const source = await readFile(path, "utf8");
+  const portable = source.replaceAll("@negotium/core/cron-host", "../src/cron-host.ts");
+  if (portable !== source) await writeFile(path, portable);
+}
+// Cron's stateful core dependencies contain ESM cycles that Bun handles
+// natively but cannot safely flatten into one bundle.
+await Bun.write(resolve(outdir, "cron.js"), 'export * from "./runtime/cron/index.ts";\n');
 await Bun.write(
   resolve(runtimeRoot, "tsconfig.json"),
   `${JSON.stringify(

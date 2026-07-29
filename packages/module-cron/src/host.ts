@@ -8,7 +8,7 @@ import {
   registerRuntimeMcpServer,
   resolveTopicWorkspaceDir,
   rotateTopicLogs,
-} from "@negotium/core";
+} from "@negotium/core/cron-host";
 import type { CronDispatch } from "#scheduler";
 
 export type CronAuthorizationAction = "cron:admin";

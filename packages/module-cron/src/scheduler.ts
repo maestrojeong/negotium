@@ -5,7 +5,7 @@ import {
   type MessageDto,
   type RuntimeBus,
   runtimeBus,
-} from "@negotium/core";
+} from "@negotium/core/cron-host";
 import { CRON_CONTEXT_ROTATE_EVERY, rotateCronTopicContext } from "#context";
 import { cronHost } from "#host";
 import {

@@ -1,10 +1,11 @@
 import {
   type BackgroundSessionDto,
   backgroundSessionProgress,
+  getAllMessagesForTopic,
   getTopic,
   isParticipant,
   listRuntimeTurnLeases,
-} from "@negotium/core";
+} from "@negotium/core/cron-host";
 import type { CronJobRecord, CronRunRecord } from "#store";
 import { getLastCronRun, listCronJobs } from "#store";
 
@@ -51,14 +52,37 @@ export function listCronBackgroundSessions(userId: string): BackgroundSessionDto
 
     const queryId = lease?.queryId ?? recent?.run.queryId;
     const progress = queryId ? backgroundSessionProgress(topicId, queryId) : undefined;
+    const output =
+      (queryId
+        ? getAllMessagesForTopic(topicId)
+            .findLast(
+              (message) =>
+                message.query_id === queryId &&
+                message.author_id === "ai" &&
+                message.kind !== "tool" &&
+                message.kind !== "system",
+            )
+            ?.text.trim()
+        : undefined) ||
+      recent?.run.outputPreview?.trim() ||
+      undefined;
     const enabledJobs = jobs.filter((job) => job.enabled);
     const nextJob = [...enabledJobs].sort((left, right) =>
       left.nextRunAt.localeCompare(right.nextRunAt),
     )[0];
-    const steps = progress?.steps.length
-      ? progress.steps
+    const prompt = promptForJob(displayJob);
+    const activeSteps = lease
+      ? [
+          `Job started · ${displayJob.name}`,
+          `Prompt prepared · ${Buffer.byteLength(prompt).toLocaleString()} B`,
+          ...(progress?.steps ?? []),
+        ]
+      : [];
+    const steps = activeSteps.length
+      ? activeSteps
       : [
           ...(recent ? [`Last run: ${recent.job.name} · ${recent.run.status}`] : ["No runs yet"]),
+          ...(progress?.steps ?? []),
           ...(nextJob ? [`Next: ${nextJob.name} · ${nextJob.nextRunAt}`] : []),
         ];
 
@@ -82,8 +106,9 @@ export function listCronBackgroundSessions(userId: string): BackgroundSessionDto
         agent: displayJob.agent ?? topic.agent,
         model: displayJob.model ?? topic.effectiveModel ?? topic.defaultModel,
         effort: displayJob.effort ?? topic.effectiveEffort ?? topic.defaultEffort,
-        prompt: promptForJob(displayJob),
+        prompt,
         promptTitle: `Prompt · ${displayJob.name}`,
+        ...(output ? { output } : {}),
         steps,
       },
     ];

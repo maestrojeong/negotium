@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type AgentKind, db as defaultDb, type EffortLevel } from "@negotium/core";
+import { type AgentKind, db as defaultDb, type EffortLevel } from "@negotium/core/cron-host";
 import { computeNextCronRun, normalizeCronTimezone, parseCronExpression } from "#schedule";
 import { validateCronScriptName } from "#scripts";
 

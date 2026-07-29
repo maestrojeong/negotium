@@ -56,8 +56,9 @@ switch (command) {
   }
   case "-v":
   case "--version": {
-    const { NEGOTIUM_VERSION } = await import("@negotium/core");
+    const { NEGOTIUM_VERSION } = await import("@negotium/core/version");
     console.log(NEGOTIUM_VERSION);
+    process.exit(0);
     break;
   }
   case "serve": {

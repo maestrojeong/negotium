@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
+  appendApiMessage,
   claimRuntimeTurnLease,
   db,
   releaseRuntimeTurnLease,
@@ -86,8 +87,36 @@ describe("Cron background sessions", () => {
           id: `cron:${topic.id}`,
           active: true,
           status: "Running",
+          steps: [
+            "Job started · daily-digest",
+            `Prompt prepared · ${Buffer.byteLength(job.prompt ?? "").toLocaleString()} B`,
+          ],
         }),
       ]);
+    } finally {
+      releaseRuntimeTurnLease(topic.id, queryId);
+    }
+  });
+
+  test("shows the complete assistant output for the displayed run", () => {
+    const { job, ownerUserId, topic } = fixture();
+    const queryId = randomUUID();
+    const output = `Full cron result\n${"detail ".repeat(120)}`;
+    claimRuntimeTurnLease({
+      topicId: topic.id,
+      queryId,
+      origin: `cron:${job.id}:${randomUUID()}`,
+    });
+    appendApiMessage({
+      id: randomUUID(),
+      topicId: topic.id,
+      authorId: "ai",
+      text: output,
+      queryId,
+      createdAt: new Date().toISOString(),
+    });
+    try {
+      expect(listCronBackgroundSessions(ownerUserId)[0]?.output).toBe(output.trim());
     } finally {
       releaseRuntimeTurnLease(topic.id, queryId);
     }

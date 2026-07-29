@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { resolve, sep } from "node:path";
-import { WORKSPACE_DIR } from "@negotium/core";
+import { WORKSPACE_DIR } from "@negotium/core/cron-host";
 
 export const CRON_JOBS_DIR = resolve(
   process.env.NEGOTIUM_CRON_JOBS_DIR?.trim() || resolve(WORKSPACE_DIR, "cron", "jobs"),

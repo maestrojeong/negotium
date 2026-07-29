@@ -5,7 +5,7 @@ import {
   logger,
   type NegotiumNodeModule,
   triggerTopicAiTurn,
-} from "@negotium/core";
+} from "@negotium/core/cron-host";
 import { listCronBackgroundSessions } from "#background-sessions";
 import { resetCronTopicContext } from "#context";
 import { type CronHost, configureCronHost, cronHost } from "#host";

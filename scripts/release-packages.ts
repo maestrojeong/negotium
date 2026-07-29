@@ -760,25 +760,25 @@ const issuedEnv = canonicalBridge.canonicalMcpBridgeEnv(bridgeScope);
 if (issuedEnv?.NEGOTIUM_RELEASE_SMOKE_BRIDGE !== "1") {
   throw new Error("packed canonical MCP bridge provider was not invoked");
 }
-const disposeHost = hostedAgent.configureAgentExecutionHost({
-  claudeCodeExecutablePath: () => "/definitely/missing/negotium-release-smoke-claude",
-});
 try {
-  for await (const _event of hostedAgent.runHostedAgent({
-    agent: "claude",
-    prompt: "release smoke",
-    cwd: process.cwd(),
-    systemPrompt: "release smoke",
-    userId: bridgeScope.userId,
-    topicId: bridgeScope.topicId,
-    queryId: bridgeScope.queryId,
-    peerBridge: bridgeScope.peerBridge,
-  })) {
-    // The deliberately missing executable makes this path deterministic and
-    // avoids contacting a provider; runHostedAgent's finally still revokes.
+  try {
+    for await (const _event of hostedAgent.runHostedAgent({
+      agent: "release-smoke-invalid" as AgentKind,
+      prompt: "release smoke",
+      cwd: process.cwd(),
+      systemPrompt: "release smoke",
+      userId: bridgeScope.userId,
+      topicId: bridgeScope.topicId,
+      queryId: bridgeScope.queryId,
+      peerBridge: bridgeScope.peerBridge,
+    })) {
+      throw new Error("invalid smoke agent unexpectedly emitted an event");
+    }
+  } catch {
+    // The invalid agent fails before provider startup while finally still
+    // exercises hosted-agent's canonical bridge revocation.
   }
 } finally {
-  disposeHost();
   disposeBridge();
 }
 if (revokedBridgeLeases !== 1) {
@@ -865,6 +865,9 @@ for (const subpath of [
     throw new Error(\`packed \${subpath} types must resolve to .d.ts, got \${String(types)}\`);
   }
 }
+// Runtime imports intentionally initialize persistent storage handles. All
+// smoke assertions are complete at this point, so do not wait on those handles.
+process.exit(0);
 `,
     );
     await Bun.write(

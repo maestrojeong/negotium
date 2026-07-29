@@ -1,4 +1,4 @@
-import { logger } from "@negotium/core";
+import { logger } from "@negotium/core/cron-host";
 import { cronHost } from "#host";
 import {
   type CronJobPatch,

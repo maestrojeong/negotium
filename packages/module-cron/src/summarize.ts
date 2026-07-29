@@ -1,4 +1,4 @@
-import { logger } from "@negotium/core";
+import { logger } from "@negotium/core/cron-host";
 import { updateCronJobSummaryIfPromptMatches } from "#store";
 
 const DEFAULT_URL = "https://api.deepseek.com/v1/chat/completions";
