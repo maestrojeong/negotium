@@ -308,7 +308,216 @@ function cleanInlineMarkdown(value: string): string {
     .replace(/`([^`]+)`/g, "‹$1›");
 }
 
-/** Lightweight block renderer adapted to agent replies: headings, lists, quotes and fenced code. */
+interface ParsedTableRow {
+  cells: string[];
+  hasOuterPipes: boolean;
+}
+
+/** Parse unescaped pipes outside inline code spans as table delimiters. */
+function parseTableRow(raw: string): ParsedTableRow | null {
+  const trimmed = raw.trim();
+  if (!trimmed.includes("|")) return null;
+
+  const cells: string[] = [];
+  let cell = "";
+  let delimiterCount = 0;
+  let codeFenceLength = 0;
+  let startsWithPipe = false;
+  let endsWithPipe = false;
+
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const character = trimmed[index] ?? "";
+    if (character === "\\") {
+      let runLength = 1;
+      while (trimmed[index + runLength] === "\\") runLength += 1;
+      const next = trimmed[index + runLength];
+      cell += "\\".repeat(Math.floor(runLength / 2));
+      if (next === "|" && runLength % 2 === 1) {
+        cell += "|";
+        index += runLength;
+      } else {
+        if (runLength % 2 === 1) cell += "\\";
+        index += runLength - 1;
+      }
+      continue;
+    }
+    if (character === "`") {
+      let runLength = 1;
+      while (trimmed[index + runLength] === "`") runLength += 1;
+      if (codeFenceLength === 0) codeFenceLength = runLength;
+      else if (codeFenceLength === runLength) codeFenceLength = 0;
+      cell += "`".repeat(runLength);
+      index += runLength - 1;
+      continue;
+    }
+    if (character === "|" && codeFenceLength === 0) {
+      if (delimiterCount === 0 && cell.trim() === "") startsWithPipe = true;
+      cells.push(cell.trim());
+      cell = "";
+      delimiterCount += 1;
+      endsWithPipe = index === trimmed.length - 1;
+      continue;
+    }
+    cell += character;
+    endsWithPipe = false;
+  }
+  if (delimiterCount === 0) return null;
+  cells.push(cell.trim());
+  if (startsWithPipe) cells.shift();
+  if (endsWithPipe) cells.pop();
+  if (cells.length === 0) return null;
+  return { cells, hasOuterPipes: startsWithPipe && endsWithPipe };
+}
+
+function isSeparatorCell(cell: string): boolean {
+  return /^:?-{3,}:?$/.test(cell.trim());
+}
+
+function alignmentFromSeparator(cell: string): "left" | "center" | "right" {
+  if (/^:-{3,}:$/.test(cell)) return "center";
+  if (/^-{3,}:$/.test(cell)) return "right";
+  return "left";
+}
+
+/** Maximum table width as fraction of the available column width. */
+const TABLE_MAX_WIDTH_FRACTION = 0.92;
+/** Minimum column width before a column is dropped with a "…" marker. */
+const TABLE_MIN_COL_WIDTH = 4;
+
+function renderTable(rows: string[][], width: number): UiLine[] {
+  // Determine header range: if row[1] is a separator, row[0] is the header.
+  const hasHeader =
+    rows.length >= 2 && rows[1].length > 0 && rows[1].every((cell) => isSeparatorCell(cell));
+  const headerRow = hasHeader ? rows[0] : null;
+  const separators = hasHeader ? rows[1] : null;
+  const bodyStart = hasHeader ? 2 : 0;
+  const bodyRows = rows.slice(bodyStart);
+  const allRows = [...(headerRow ? [headerRow] : []), ...bodyRows];
+
+  const sourceColCount = Math.max(1, ...allRows.map((row) => row.length), separators?.length ?? 0);
+  const innerWidth = Math.max(4, width - 2); // 2-char indent
+  const maxTableWidth = Math.max(1, Math.floor(innerWidth * TABLE_MAX_WIDTH_FRACTION));
+  const maxVisibleColumns = Math.max(
+    1,
+    Math.floor((maxTableWidth - 1) / (TABLE_MIN_COL_WIDTH + 3)),
+  );
+  const hasOmittedColumns = sourceColCount > maxVisibleColumns;
+  const colCount = Math.min(sourceColCount, maxVisibleColumns);
+  const visibleRow = (row: string[]): string[] => {
+    const visible = Array.from({ length: colCount }, (_, index) => row[index] ?? "");
+    if (hasOmittedColumns && colCount > 1) visible[colCount - 1] = "…";
+    return visible;
+  };
+  const visibleHeader = headerRow ? visibleRow(headerRow) : null;
+  const visibleBodyRows = bodyRows.map(visibleRow);
+
+  // Initial column widths from content.
+  const contentWidths = Array.from({ length: colCount }, () => 1);
+  for (const row of [...(visibleHeader ? [visibleHeader] : []), ...visibleBodyRows]) {
+    for (let index = 0; index < colCount; index += 1) {
+      const cell = row[index] ?? "";
+      const cleaned = cleanInlineMarkdown(cell);
+      contentWidths[index] = Math.max(contentWidths[index], displayWidth(cleaned));
+    }
+  }
+
+  const totalContent = contentWidths.reduce((sum, w) => sum + w, 0);
+  const totalPadding = colCount * 3 + 1; // "│ " + " │" per col + final "│"
+  const idealWidth = totalContent + totalPadding;
+
+  // Shrink columns to fit when necessary.
+  const colWidths = [...contentWidths];
+  if (idealWidth > maxTableWidth) {
+    const availableContent = Math.max(colCount, maxTableWidth - totalPadding);
+    for (let index = 0; index < colCount; index += 1) {
+      colWidths[index] = Math.min(contentWidths[index], TABLE_MIN_COL_WIDTH);
+    }
+    let remaining = Math.max(
+      0,
+      availableContent - colWidths.reduce((sum, columnWidth) => sum + columnWidth, 0),
+    );
+    while (remaining > 0) {
+      let widestRemainderIndex = -1;
+      let widestRemainder = 0;
+      for (let index = 0; index < colCount; index += 1) {
+        const remainder = contentWidths[index] - (colWidths[index] ?? 0);
+        if (remainder > widestRemainder) {
+          widestRemainder = remainder;
+          widestRemainderIndex = index;
+        }
+      }
+      if (widestRemainderIndex < 0) break;
+      colWidths[widestRemainderIndex] += 1;
+      remaining -= 1;
+    }
+  }
+
+  const alignments = Array.from({ length: colCount }, (_, index) =>
+    alignmentFromSeparator(separators?.[index] ?? ""),
+  );
+
+  function alignCell(text: string, colWidth: number, align?: string): string {
+    const cleaned = cleanInlineMarkdown(text);
+    const visual = displayWidth(cleaned);
+    if (visual <= colWidth) {
+      if (align === "right") return `${" ".repeat(colWidth - visual)}${cleaned}`;
+      if (align === "center") {
+        const left = Math.floor((colWidth - visual) / 2);
+        return `${" ".repeat(left)}${cleaned}${" ".repeat(colWidth - visual - left)}`;
+      }
+      return fit(cleaned, colWidth); // left
+    }
+    // Truncate with ellipsis.
+    return `${sliceWidth(cleaned, colWidth - 1)}…`;
+  }
+
+  const borderColor = theme.border;
+  const result: UiLine[] = [];
+
+  const joinRow = (cells: string[]): string => `  │ ${cells.join(" │ ")} │`;
+  const border = (left: string, middle: string, right: string): string =>
+    `  ${left}${colWidths.map((columnWidth) => "─".repeat(columnWidth + 2)).join(middle)}${right}`;
+
+  // Top border.
+  result.push(line(border("┌", "┬", "┐"), { fg: borderColor }));
+
+  // Header row.
+  if (visibleHeader) {
+    result.push(
+      line(
+        joinRow(
+          Array.from({ length: colCount }, (_, index) =>
+            alignCell(visibleHeader[index] ?? "", colWidths[index] ?? 0, alignments[index]),
+          ),
+        ),
+        { fg: theme.accent, bold: true },
+      ),
+    );
+    // Header separator.
+    result.push(line(border("├", "┼", "┤"), { fg: borderColor }));
+  }
+
+  // Body rows.
+  for (const row of visibleBodyRows) {
+    result.push(
+      line(
+        joinRow(
+          Array.from({ length: colCount }, (_, index) =>
+            alignCell(row[index] ?? "", colWidths[index] ?? 0, alignments[index]),
+          ),
+        ),
+        { fg: theme.text },
+      ),
+    );
+  }
+
+  // Bottom border.
+  result.push(line(border("└", "┴", "┘"), { fg: borderColor }));
+
+  return result;
+}
+
+/** Lightweight block renderer adapted to agent replies: headings, lists, quotes, fenced code and tables. */
 function renderMarkdown(value: string, width: number): UiLine[] {
   const result: UiLine[] = [];
   let codeLanguage = "";
@@ -321,9 +530,21 @@ function renderMarkdown(value: string, width: number): UiLine[] {
     codeHeaderIndex = -1;
     codeLines = [];
   };
-  for (const rawLine of safeText(value).split("\n")) {
+  let tableBuffer: string[][] = [];
+  let inTable = false;
+  const flushTable = () => {
+    if (tableBuffer.length > 0) {
+      result.push(...renderTable(tableBuffer, width));
+      tableBuffer = [];
+    }
+    inTable = false;
+  };
+  const rawLines = safeText(value).split("\n");
+  for (let lineIndex = 0; lineIndex < rawLines.length; lineIndex += 1) {
+    const rawLine = rawLines[lineIndex] ?? "";
     const fence = rawLine.match(/^\s*```([^`]*)$/);
     if (fence) {
+      flushTable();
       if (!inCode) {
         codeLanguage = fence[1]?.trim() ?? "";
         codeHeaderIndex = result.length;
@@ -348,6 +569,31 @@ function renderMarkdown(value: string, width: number): UiLine[] {
       }
       continue;
     }
+    // Table row detection: pipe-delimited cells.
+    const parsedTableRow = parseTableRow(rawLine);
+    const nextTableRow = parseTableRow(rawLines[lineIndex + 1] ?? "");
+    const startsHeaderTable =
+      parsedTableRow !== null &&
+      parsedTableRow.cells.length >= 2 &&
+      nextTableRow !== null &&
+      nextTableRow.cells.length === parsedTableRow.cells.length &&
+      nextTableRow.cells.every((cell) => isSeparatorCell(cell));
+    const startsExplicitTable =
+      parsedTableRow?.hasOuterPipes === true && parsedTableRow.cells.length >= 2;
+    const tableRow =
+      parsedTableRow && (inTable || startsHeaderTable || startsExplicitTable)
+        ? parsedTableRow.cells
+        : null;
+    if (tableRow) {
+      if (!inTable) {
+        inTable = true;
+        tableBuffer = [tableRow];
+      } else {
+        tableBuffer.push(tableRow);
+      }
+      continue;
+    }
+    if (inTable) flushTable();
     const heading = rawLine.match(/^\s{0,3}(#{1,6})\s+(.+)$/);
     if (heading) {
       for (const wrapped of wrapText(cleanInlineMarkdown(heading[2]), Math.max(4, width - 2))) {
@@ -395,6 +641,7 @@ function renderMarkdown(value: string, width: number): UiLine[] {
       result.push(line(`  ${wrapped}`, { fg: theme.text }));
     }
   }
+  if (inTable) flushTable();
   if (inCode) {
     result.push(line("  └─", { fg: theme.subtle, bg: theme.surfaceRaised }));
     finishCodeBlock();
@@ -809,11 +1056,14 @@ function topicOverlayLines(
       })),
     );
   }
-  for (const kind of ["cron", "memory"] as const) {
+  for (const kind of ["cron", "memory", "compact"] as const) {
     const sessions = state.backgroundSessions.filter((session) => session.kind === kind);
     if (sessions.length === 0) continue;
     if (entries.length > 0) entries.push({ kind: "separator" });
-    entries.push({ kind: "heading", label: kind === "memory" ? "Memory" : "Cron" });
+    entries.push({
+      kind: "heading",
+      label: kind === "memory" ? "Memory" : kind === "compact" ? "Compact" : "Cron",
+    });
     entries.push(
       ...sessions.map((session) => ({
         kind: "background" as const,
@@ -888,14 +1138,17 @@ function backgroundSessionLines(state: AppState, width: number, nowMs = terminal
     Math.max(0, Math.floor((nowMs - Date.parse(session.startedAt)) / 1_000)),
   );
   return [
-    line(`  ${session.kind === "memory" ? "Memory" : "Cron"} · read-only`, {
-      fg: theme.accent,
-      bold: true,
-    }),
+    line(
+      `  ${session.kind === "memory" ? "Memory" : session.kind === "compact" ? "Compact" : "Cron"} · read-only`,
+      {
+        fg: theme.accent,
+        bold: true,
+      },
+    ),
     line(
       session.kind === "cron"
         ? "  Esc back · session stays available between runs"
-        : "  Esc back · this entry disappears when archiving finishes",
+        : "  Esc back · completed logs remain available for 5 minutes",
       { fg: theme.muted },
     ),
     line(""),
@@ -924,8 +1177,45 @@ function backgroundSessionLines(state: AppState, width: number, nowMs = terminal
     line(""),
     line("  Activity", { fg: theme.cyan, bold: true }),
     ...(session.steps.length > 0
-      ? session.steps.map((step) => line(`  ○ ${safeText(step)}`, { fg: theme.muted }))
+      ? session.steps.flatMap((step) =>
+          wrapText(step, Math.max(4, width - 6)).map((part, index) =>
+            line(`  ${index === 0 ? "○" : " "} ${safeText(part)}`, { fg: theme.muted }),
+          ),
+        )
       : [line("  ○ Waiting for runtime activity", { fg: theme.muted })]),
+    ...(session.output
+      ? [
+          line(""),
+          line("  Output", { fg: theme.cyan, bold: true }),
+          ...renderMarkdown(session.output, width),
+        ]
+      : []),
+  ];
+}
+
+function backgroundSessionViewportLines(
+  state: AppState,
+  width: number,
+  height: number,
+  nowMs: number,
+): UiLine[] {
+  const all = backgroundSessionLines(state, width, nowMs);
+  const { contentHeight, maxOffset, offset } = conversationViewport(
+    all.length,
+    height,
+    state.backgroundScrollOffset,
+  );
+  const end = all.length - offset;
+  const visible = all.slice(Math.max(0, end - contentHeight), end);
+  if (offset <= 0) return visible;
+  return [
+    line(
+      offset >= maxOffset
+        ? "  ↑ Start of background session"
+        : `  ↑ earlier activity · ${offset} lines from latest · wheel down/PgDn to return`,
+      { fg: theme.amber, dim: true },
+    ),
+    ...visible,
   ];
 }
 
@@ -1201,7 +1491,7 @@ function conversationLines(
   if (state.overlay === "subagents")
     return subagentGraphLines(state, width, height, animationFrame);
   if (state.overlay === "background-session")
-    return backgroundSessionLines(state, width, nowMs).slice(0, height);
+    return backgroundSessionViewportLines(state, width, height, nowMs);
   if (state.overlay === "models") return modelOverlayLines(state, height).slice(0, height);
   if (state.overlay === "effort") return effortOverlayLines(state).slice(0, height);
   if (state.overlay === "vault") return vaultOverlayLines(state, width, height);
@@ -1489,7 +1779,7 @@ function footerLines(state: AppState, width: number): string[] {
               ? "Esc/Ctrl-C exit  "
               : "Esc close · Ctrl-C exit; work continues  "
             : state.overlay === "background-session"
-              ? "Esc back · read-only  "
+              ? "wheel/PgUp/PgDn scroll · Esc back · read-only  "
               : state.overlay === "subagents"
                 ? "arrows/hjkl/wheel move · Esc close  "
                 : state.overlay === "vault"
@@ -1618,9 +1908,17 @@ export function maxConversationScrollOffset(
   columns: number,
   rows: number,
 ): number {
-  if (state.overlay) return 0;
   const width = Math.max(32, columns);
   const height = Math.max(14, rows);
+  if (state.overlay === "background-session") {
+    const bodyHeight = Math.max(3, height - footerLines(state, width).length);
+    return conversationViewport(
+      backgroundSessionLines(state, width, terminalNowMs()).length,
+      bodyHeight,
+      state.backgroundScrollOffset,
+    ).maxOffset;
+  }
+  if (state.overlay) return 0;
   const bodyHeight = Math.max(
     3,
     height -

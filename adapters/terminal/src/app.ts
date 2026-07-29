@@ -1271,7 +1271,12 @@ export class TerminalApp {
   #selectPickedTopic(): void {
     const background = pickedBackgroundSession(this.#state);
     if (background) {
-      this.#state = { ...this.#state, overlay: "background-session", notice: undefined };
+      this.#state = {
+        ...this.#state,
+        overlay: "background-session",
+        backgroundScrollOffset: 0,
+        notice: undefined,
+      };
       this.#queueRender();
       return;
     }
@@ -1825,6 +1830,22 @@ export class TerminalApp {
   #scroll(delta: number): void {
     if (this.#state.overlay === "subagents") {
       this.#panSubagentGraph(0, -delta);
+      return;
+    }
+    if (this.#state.overlay === "background-session") {
+      const maxOffset = maxConversationScrollOffset(
+        this.#state,
+        process.stdout.columns ?? 100,
+        process.stdout.rows ?? 30,
+      );
+      this.#state = {
+        ...this.#state,
+        backgroundScrollOffset: Math.min(
+          maxOffset,
+          Math.max(0, this.#state.backgroundScrollOffset + delta),
+        ),
+      };
+      this.#queueRender();
       return;
     }
     const maxOffset = maxConversationScrollOffset(

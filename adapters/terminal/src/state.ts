@@ -85,6 +85,7 @@ export interface AppState {
   pendingDeleteTopicId?: string;
   creatingTopic: boolean;
   scrollOffset: number;
+  backgroundScrollOffset: number;
   subagentGraph?: SubagentGraphCanvas;
   subagentGraphLoading: boolean;
   subagentGraphOffset: { x: number; y: number };
@@ -121,6 +122,7 @@ export function createInitialState(userId: string): AppState {
     effortPickerIndex: 0,
     creatingTopic: false,
     scrollOffset: 0,
+    backgroundScrollOffset: 0,
     subagentGraphLoading: false,
     subagentGraphOffset: { x: 0, y: 0 },
     subagentGraphSpacing: DEFAULT_SUBAGENT_GRAPH_SPACING,
@@ -221,6 +223,7 @@ export function setBackgroundSessions(
   const orderedSessions = [
     ...backgroundSessions.filter((session) => session.kind === "cron"),
     ...backgroundSessions.filter((session) => session.kind === "memory"),
+    ...backgroundSessions.filter((session) => session.kind === "compact"),
   ];
   const selectedStillExists = orderedSessions.some(
     (session) => session.id === state.topicPickerBackgroundId,

@@ -203,12 +203,22 @@ describe("terminal adapter state", () => {
         status: "Writing",
         steps: ["Tool: wiki_save"],
       },
+      {
+        id: "compact-1",
+        kind: "compact",
+        title: "Compact work",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        status: "Summarizing",
+        steps: ["Provider session started"],
+      },
     ]);
 
     state = moveTopicPickerSelection(state, 1);
     expect(state.topicPickerBackgroundId).toBe("cron-1");
     state = moveTopicPickerSelection(state, 1);
     expect(state.topicPickerBackgroundId).toBe("memory-1");
+    state = moveTopicPickerSelection(state, 1);
+    expect(state.topicPickerBackgroundId).toBe("compact-1");
 
     state = { ...state, overlay: "background-session" };
     state = setBackgroundSessions(state, []);

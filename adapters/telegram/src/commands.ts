@@ -10,6 +10,7 @@ import {
   listTopics,
   type RegisterTopicOptions,
   TopicArchiveRequiredError,
+  TopicCleanupRequiredError,
   type TopicDto,
   TopicTitleConflictError,
   TopicValidationError,
@@ -245,6 +246,12 @@ export function createTelegramCommandRouter(
               threadId,
               `delete blocked: archiving "${topic.title}" failed and deleting now would lose its history. ` +
                 `Retry after fixing the archive, or force with: /del!${argument ? ` ${argument}` : ""}`,
+            );
+          } else if (err instanceof TopicCleanupRequiredError) {
+            reply(
+              chatId,
+              threadId,
+              `delete blocked: provider context cleanup for "${topic.title}" failed. Retry after fixing the cleanup failure.`,
             );
           } else {
             reply(chatId, threadId, errMsg(err, "delete failed"));

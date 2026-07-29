@@ -5,6 +5,7 @@ import {
   displayWidth,
   effectiveTopicModel,
   formatElapsedDuration,
+  maxConversationScrollOffset,
   preserveConversationScrollAnchor,
   renderApp,
   renderAppFrame,
@@ -245,7 +246,7 @@ describe("terminal renderer", () => {
     expect(output.indexOf("Public")).toBeLessThan(output.indexOf("○ Shared"));
   });
 
-  test("shows active Cron and Memory sessions in read-only groups", () => {
+  test("shows active Cron, Memory, and Compact sessions in read-only groups", () => {
     const state = {
       ...setTopics(createInitialState("local"), [topic()]),
       backgroundSessions: [
@@ -265,6 +266,14 @@ describe("terminal renderer", () => {
           status: "Running",
           steps: [],
         },
+        {
+          id: "compact-1",
+          kind: "compact" as const,
+          title: "Compact Research",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          status: "Summarizing",
+          steps: ["Provider session started"],
+        },
       ],
       overlay: "topics" as const,
     };
@@ -274,7 +283,41 @@ describe("terminal renderer", () => {
     expect(output).toContain("Archive Research  ·  Tool: wiki_save");
     expect(output).toContain("Cron");
     expect(output).toContain("Daily digest  ·  Running");
+    expect(output).toContain("Compact");
+    expect(output).toContain("Compact Research  ·  Summarizing");
     expect(output.indexOf("Daily digest")).toBeLessThan(output.indexOf("Archive Research"));
+    expect(output.indexOf("Archive Research")).toBeLessThan(output.indexOf("Compact Research"));
+  });
+
+  test("renders a compact background session with ephemeral lifecycle copy", () => {
+    const state = {
+      ...setTopics(createInitialState("local"), [topic()]),
+      backgroundSessions: [
+        {
+          id: "compact-1",
+          kind: "compact" as const,
+          title: "Compact Research",
+          startedAt: new Date().toISOString(),
+          status: "Summarizing",
+          agent: "maestro" as const,
+          model: "deepseek-pro",
+          effort: "low" as const,
+          steps: [
+            "Reasoning: selecting the relevant implementation details and unresolved verification work from a long transcript",
+          ],
+        },
+      ],
+      topicPickerBackgroundId: "compact-1",
+      overlay: "background-session" as const,
+    };
+
+    const output = stripAnsi(renderAppFrame(state, 72, 30).frame);
+    const compactOutput = output.replace(/\s/g, "");
+    expect(output).toContain("Compact · read-only");
+    expect(output).toContain("completed logs remain available for 5 minutes");
+    expect(compactOutput).toContain(
+      "Reasoning:selectingtherelevantimplementationdetailsandunresolvedverificationworkfromalongtranscript",
+    );
   });
 
   test("renders a background session without an interactive composer", () => {
@@ -302,6 +345,42 @@ describe("terminal renderer", () => {
     expect(output).toContain("Tool: wiki_save");
     expect(output).not.toContain("Ctrl-O topics");
     expect(rendered.cursor).toBeNull();
+  });
+
+  test("renders complete background output and scrolls to earlier activity", () => {
+    const outputLines = Array.from({ length: 30 }, (_, index) => `Output line ${index + 1}`).join(
+      "\n",
+    );
+    const base = {
+      ...setTopics(createInitialState("local"), [topic()]),
+      backgroundSessions: [
+        {
+          id: "memory-scroll",
+          kind: "memory" as const,
+          title: "Archive Research",
+          startedAt: new Date().toISOString(),
+          status: "Completed",
+          active: false,
+          output: outputLines,
+          steps: Array.from({ length: 12 }, (_, index) => `Activity ${index + 1}`),
+        },
+      ],
+      topicPickerBackgroundId: "memory-scroll",
+      overlay: "background-session" as const,
+    };
+
+    const latest = stripAnsi(renderAppFrame(base, 72, 20).frame);
+    expect(latest).toContain("Output line 30");
+    expect(latest).not.toContain("Activity 1");
+
+    const maxOffset = maxConversationScrollOffset(base, 72, 20);
+    const earlier = stripAnsi(
+      renderAppFrame({ ...base, backgroundScrollOffset: maxOffset }, 72, 20).frame,
+    );
+    expect(maxOffset).toBeGreaterThan(0);
+    expect(earlier).toContain("Start of background session");
+    expect(earlier).toContain("Memory · read-only");
+    expect(earlier).not.toContain("Output line 30");
   });
 
   test("keeps an idle Cron session readable with its prompt and execution config", () => {
@@ -684,6 +763,167 @@ describe("terminal renderer", () => {
     const output = stripAnsi(renderApp(state, 100, 30));
     expect(output).toContain("  ┌─ code · markdown  ⧉");
     expect(output).not.toContain("● ┌─ code");
+  });
+
+  test("renders markdown tables with box-drawing borders", () => {
+    const message: MessageDto = {
+      id: "table-message",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text: "| Name | Role |\n|------|------|\n| Alice | Admin |\n| Bob | User |",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [message]);
+    const output = stripAnsi(renderApp(state, 100, 30));
+    const tableLines = output
+      .split("\n")
+      .map((renderedLine) => renderedLine.trimEnd())
+      .filter((renderedLine) => /[┌├└│]/.test(renderedLine));
+    expect(
+      tableLines.map((renderedLine) => renderedLine.slice(renderedLine.search(/[┌├└│]/))),
+    ).toEqual([
+      "┌───────┬───────┐",
+      "│ Name  │ Role  │",
+      "├───────┼───────┤",
+      "│ Alice │ Admin │",
+      "│ Bob   │ User  │",
+      "└───────┴───────┘",
+    ]);
+  });
+
+  test("renders markdown tables with alignment", () => {
+    const message: MessageDto = {
+      id: "align-message",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text: "| Left | Center | Right |\n|:-----|:------:|------:|\n| a | b | c |",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [message]);
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("│ a    │   b    │     c │");
+  });
+
+  test("renders markdown tables without headers (no separator row)", () => {
+    const message: MessageDto = {
+      id: "noheader-message",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text: "| Alice | Admin |\n| Bob | User |",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [message]);
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("┌");
+    expect(output).toContain("┐");
+    // No header separator when there is no separator row
+    expect(output).not.toContain("├");
+    expect(output).toContain("│ Alice");
+    expect(output).toContain("│ Bob");
+  });
+
+  test("does not render prose containing a pipe as a table", () => {
+    const message: MessageDto = {
+      id: "pipe-prose-message",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text: "Choose foo | bar before continuing.",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [message]);
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("Choose foo | bar before continuing.");
+    expect(output).not.toContain("┌");
+  });
+
+  test("keeps escaped pipes and pipes in inline code inside a table cell", () => {
+    const message: MessageDto = {
+      id: "escaped-pipe-message",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text: "| Expr | Code |\n| --- | --- |\n| a \\| b | `x|y` |",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [message]);
+    const output = stripAnsi(renderApp(state, 100, 30));
+    const bodyLine = output.split("\n").find((renderedLine) => renderedLine.includes("a | b"));
+    expect(bodyLine).toBeDefined();
+    expect(bodyLine).toContain("‹x|y›");
+    expect(bodyLine?.match(/│/g)).toHaveLength(3);
+  });
+
+  test("treats a pipe after an even backslash run as a table delimiter", () => {
+    const message: MessageDto = {
+      id: "even-backslash-pipe-message",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text: String.raw`| Path | Value |
+| --- | --- |
+| C:\\ | next |`,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [message]);
+    const output = stripAnsi(renderApp(state, 100, 30));
+    const bodyLine = output.split("\n").find((renderedLine) => renderedLine.includes("C:\\"));
+    expect(bodyLine).toBeDefined();
+    expect(bodyLine).toContain("next");
+    expect(bodyLine?.match(/│/g)).toHaveLength(3);
+  });
+
+  test("normalizes ragged table rows to the widest row", () => {
+    const message: MessageDto = {
+      id: "ragged-table-message",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text: "| A | B |\n| --- | --- |\n| 1 | 2 | 3 |",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [message]);
+    const output = stripAnsi(renderApp(state, 100, 30));
+    const headerLine = output.split("\n").find((renderedLine) => renderedLine.includes("│ A "));
+    const bodyLine = output.split("\n").find((renderedLine) => renderedLine.includes("│ 1 "));
+    expect(headerLine?.match(/│/g)).toHaveLength(4);
+    expect(bodyLine?.match(/│/g)).toHaveLength(4);
+  });
+
+  test("keeps wide tables inside a narrow terminal and marks omitted columns", () => {
+    const message: MessageDto = {
+      id: "wide-table-message",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text: [
+        "| A | B | C | D | E | F |",
+        "| --- | --- | --- | --- | --- | --- |",
+        "| alpha | bravo | charlie | delta | echo | foxtrot |",
+      ].join("\n"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [message]);
+    const output = stripAnsi(renderApp(state, 40, 30));
+    const tableLines = output
+      .split("\n")
+      .map((renderedLine) => renderedLine.trimEnd())
+      .filter((renderedLine) => /[┌├└│]/.test(renderedLine));
+    expect(tableLines.some((renderedLine) => renderedLine.includes("…"))).toBe(true);
+    expect(tableLines.every((renderedLine) => displayWidth(renderedLine) <= 40)).toBe(true);
+    expect(tableLines[0]).toContain("┐");
+    expect(tableLines.at(-1)).toContain("┘");
   });
 
   test("hides system messages from the Terminal conversation", () => {
