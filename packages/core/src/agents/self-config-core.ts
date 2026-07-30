@@ -276,6 +276,15 @@ export function createSelfConfigCore(
       ...productOverrides.toolDescriptions,
     }),
   });
+  for (const [name, value] of [
+    ["scheduleMaxDelaySeconds", product.scheduleMaxDelaySeconds],
+    ["scheduleMaxMessageLength", product.scheduleMaxMessageLength],
+    ["derivedTopicLimit", product.derivedTopicLimit],
+  ] as const) {
+    if (!Number.isInteger(value) || value < 1) {
+      throw new Error(`self-config product ${name} must be a positive integer`);
+    }
+  }
 
   function requireAccessibleTopic(ctx: SelfConfigContext): SelfConfigTopic | SelfConfigResult {
     if (!ctx.topicId || !ctx.userId) return err("Error: missing topicId/userId context.");

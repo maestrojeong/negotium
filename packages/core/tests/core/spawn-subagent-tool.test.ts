@@ -246,6 +246,26 @@ describe("host-injected subagent lifecycle factory", () => {
     host.config.limits = { maxDepth: 0 };
     expect(() => createSubagentLifecycle(host)).toThrow("maxDepth must be a positive integer");
   });
+
+  test("captures runtime owner identity when the lifecycle is created", async () => {
+    const parent = makeTopic("user-1");
+    const { host, messages } = makeInjectedLifecycleHost(parent);
+    const lifecycle = createSubagentLifecycle(host);
+    host.runtime.ownerId = "mutated-owner";
+    const spawn = lifecycle.createSpawnSubagentToolDefinition({
+      userId: "user-1",
+      topicId: parent.id,
+      queryId: "parent-query",
+      agent: "claude",
+      model: "sonnet",
+      placement: "worker-1",
+    });
+
+    expect((await spawn.handler({ task: "capture owner" })).isError).toBeUndefined();
+    expect(messages.get("subagent-injected-child-1")?.subagentCard?.runtimeOwnerId).toBe(
+      "injected-owner",
+    );
+  });
 });
 
 describe("spawn_subagent guards", () => {

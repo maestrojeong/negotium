@@ -164,6 +164,7 @@ export interface SubagentLifecycle<
 export function createSubagentLifecycle<TContext extends SpawnSubagentToolContext>(
   host: SubagentLifecycleHost<TContext>,
 ): SubagentLifecycle<TContext> {
+  const runtimeOwnerId = host.runtime.ownerId;
   const limits = Object.freeze({
     maxDepth: host.config.limits?.maxDepth ?? MAX_SUBAGENT_DEPTH,
     maxLiveChildrenPerParent:
@@ -536,7 +537,7 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
     };
     watchesByChild.set(child.id, watch);
     patchSubagentCard(cardMessage.topicId, cardMessage.id, {
-      runtimeOwnerId: host.runtime.ownerId,
+      runtimeOwnerId,
       status: "spawned",
       startedAt,
       finishedAt: undefined,

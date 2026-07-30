@@ -173,4 +173,16 @@ describe("self-config host factory", () => {
     expect(runtime.core.product.scheduleMaxDelaySeconds).toBe(60);
     expect(runtime.core.product.toolDescriptions.schedule_self).toBe("Frozen schedule policy.");
   });
+
+  test("rejects invalid product policy limits at factory creation", () => {
+    for (const product of [
+      { scheduleMaxDelaySeconds: 0 },
+      { scheduleMaxMessageLength: -1 },
+      { derivedTopicLimit: 1.5 },
+    ]) {
+      expect(() => createSelfConfigRuntime({ host: createHost().host, product })).toThrow(
+        "must be a positive integer",
+      );
+    }
+  });
 });

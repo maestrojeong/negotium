@@ -302,4 +302,28 @@ describe("session system prompt builders", () => {
       }),
     ).toThrow("duplicate prompt extra section id");
   });
+
+  test("captures prompt extension objects when the builder is created", () => {
+    const section = {
+      id: "stable",
+      slot: "after-shared-tasks" as const,
+      render: () => "## Stable Policy",
+    };
+    const builders = createPromptBuilders({ extraSections: [section] });
+    section.slot = "after-system-prompt" as typeof section.slot;
+    section.render = () => "## Mutated Policy";
+
+    const prompt = builders.buildTopicSystemPrompt({
+      aiLabel: "Otium",
+      topicTitle: "Research",
+      workspaceCwd: "/tmp/research",
+      agentKind: "codex",
+    });
+
+    expect(prompt).toContain("## Stable Policy");
+    expect(prompt).not.toContain("## Mutated Policy");
+    expect(prompt.indexOf("## Stable Policy")).toBeLessThan(
+      prompt.indexOf("## Topic Configuration"),
+    );
+  });
 });

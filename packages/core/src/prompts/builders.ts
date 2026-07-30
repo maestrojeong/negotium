@@ -412,7 +412,18 @@ function buildRuntimeToolSection(
 
 export function createPromptBuilders(host: PromptBuilderHost = {}): PromptBuilders {
   const loadTemplate = host.loadTemplate;
-  const sections = [...(host.extraSections ?? [])];
+  const sections = (host.extraSections ?? []).map((section): PromptExtraSection => {
+    const render = section.render;
+    const snapshot: PromptExtraSection = {
+      id: section.id,
+      slot: section.slot,
+      ...(section.order === undefined ? {} : { order: section.order }),
+      render(context) {
+        return render.call(snapshot, context);
+      },
+    };
+    return Object.freeze(snapshot);
+  });
   const ids = new Set<string>();
   for (const section of sections) {
     if (!section.id.trim()) throw new Error("prompt extra section id is required");
