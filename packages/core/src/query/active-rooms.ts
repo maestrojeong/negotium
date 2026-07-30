@@ -113,6 +113,8 @@ export interface RoomQueryControl {
   origin: string;
   /** Prompt currently being processed. User-turn preemption merges this with the new prompt. */
   prompt: string;
+  /** Original user messages represented by prompt, in arrival order. */
+  userPrompts?: string[];
   /** Attachment ids currently being processed. User-turn preemption carries them forward. */
   attachments?: string[];
   /** Provider session id this turn resumed from. Superseding user turns restart from this base. */

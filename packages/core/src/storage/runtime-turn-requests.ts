@@ -24,6 +24,8 @@ export interface RuntimeUserTurnExecution {
   bridgeSessionFromHistory?: boolean;
   peerBridge?: PeerRuntimeBridgeContext;
   from?: string;
+  /** Newly accepted user texts not yet recorded in the unified conversation log. */
+  conversationPrompts?: string[];
 }
 
 export interface RuntimeUserTurnRequest {
@@ -31,6 +33,7 @@ export interface RuntimeUserTurnRequest {
   topicId: string;
   userId: string;
   prompt: string;
+  userPrompts: string[];
   attachments?: string[];
   allowAutoContinue: boolean;
   execution?: RuntimeUserTurnExecution;
@@ -47,6 +50,7 @@ interface RuntimeUserTurnRequestRow {
   topic_id: string;
   user_id: string;
   prompt: string;
+  user_prompts_json: string | null;
   attachments_json: string | null;
   allow_auto_continue: number;
   execution_json: string | null;
@@ -65,6 +69,7 @@ function createRuntimeUserTurnRequestsTable(): void {
     topic_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     prompt TEXT NOT NULL,
+    user_prompts_json TEXT,
     attachments_json TEXT,
     allow_auto_continue INTEGER NOT NULL DEFAULT 1 CHECK (allow_auto_continue IN (0, 1)),
     execution_json TEXT,
@@ -86,6 +91,11 @@ try {
   // Existing standalone database already has the additive handoff column.
 }
 try {
+  db.exec("ALTER TABLE runtime_user_turn_requests ADD COLUMN user_prompts_json TEXT");
+} catch {
+  // Existing standalone database already has the additive prompt-batch column.
+}
+try {
   db.exec(
     "ALTER TABLE runtime_user_turn_requests ADD COLUMN topic_epoch INTEGER NOT NULL DEFAULT 0",
   );
@@ -103,11 +113,11 @@ if (legacyTopicPrimaryKey) {
     createRuntimeUserTurnRequestsTable();
     db.exec(`
       INSERT INTO runtime_user_turn_requests (
-        request_id, topic_id, user_id, prompt, attachments_json,
+        request_id, topic_id, user_id, prompt, user_prompts_json, attachments_json,
         allow_auto_continue, execution_json, topic_epoch, created_at,
         status, claimed_by, claimed_at, running_query_id
       )
-      SELECT request_id, topic_id, user_id, prompt, attachments_json,
+      SELECT request_id, topic_id, user_id, prompt, NULL, attachments_json,
         allow_auto_continue, execution_json, topic_epoch, created_at,
         status, claimed_by, claimed_at, running_query_id
       FROM runtime_user_turn_requests_legacy
@@ -120,6 +130,21 @@ db.exec(
 );
 
 function rowToRequest(row: RuntimeUserTurnRequestRow): RuntimeUserTurnRequest {
+  let userPrompts = [row.prompt];
+  if (row.user_prompts_json) {
+    try {
+      const parsed = JSON.parse(row.user_prompts_json) as unknown;
+      if (
+        Array.isArray(parsed) &&
+        parsed.length > 0 &&
+        parsed.every((item) => typeof item === "string")
+      ) {
+        userPrompts = parsed;
+      }
+    } catch {
+      userPrompts = [row.prompt];
+    }
+  }
   let attachments: string[] | undefined;
   if (row.attachments_json) {
     try {
@@ -147,6 +172,7 @@ function rowToRequest(row: RuntimeUserTurnRequestRow): RuntimeUserTurnRequest {
     topicId: row.topic_id,
     userId: row.user_id,
     prompt: row.prompt,
+    userPrompts,
     attachments,
     allowAutoContinue: row.allow_auto_continue !== 0,
     execution,
@@ -163,6 +189,7 @@ export function enqueueRuntimeUserTurnRequest(input: {
   topicId: string;
   userId: string;
   prompt: string;
+  userPrompts?: string[];
   attachments?: string[];
   allowAutoContinue: boolean;
   requestId?: string;
@@ -180,16 +207,17 @@ export function enqueueRuntimeUserTurnRequest(input: {
     }
     db.query(
       `INSERT INTO runtime_user_turn_requests
-       (request_id, topic_id, user_id, prompt, attachments_json,
+       (request_id, topic_id, user_id, prompt, user_prompts_json, attachments_json,
         allow_auto_continue, execution_json, topic_epoch, created_at,
         status, claimed_by, claimed_at, running_query_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL)
      ON CONFLICT(request_id) DO NOTHING`,
     ).run(
       requestId,
       input.topicId,
       input.userId,
       input.prompt,
+      input.userPrompts?.length ? JSON.stringify(input.userPrompts) : null,
       input.attachments?.length ? JSON.stringify(input.attachments) : null,
       input.allowAutoContinue ? 1 : 0,
       input.execution ? JSON.stringify(input.execution) : null,

@@ -46,6 +46,7 @@ describe("runtime user turn requests", () => {
       topicId: topic,
       userId: "user",
       prompt: "second",
+      userPrompts: ["first", "second"],
       attachments: ["/tmp/example.txt"],
       allowAutoContinue: false,
       execution: {
@@ -67,6 +68,7 @@ describe("runtime user turn requests", () => {
     expect(getRuntimeUserTurnRequest(topic)).toMatchObject({
       requestId: second,
       prompt: "second",
+      userPrompts: ["first", "second"],
       attachments: ["/tmp/example.txt"],
       allowAutoContinue: false,
       execution: {

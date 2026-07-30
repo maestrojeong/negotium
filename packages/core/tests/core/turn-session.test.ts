@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
+  mergeSupersedingUserTurn,
+  renderUserPromptBatch,
   resolveInitialTurnSessionId,
   resolveTopicTurnExecution,
   resolveTopicTurnSession,
@@ -33,6 +35,37 @@ describe("default topic MCPs", () => {
 
   test("does not add browser or background shell tools to Manager", () => {
     expect(withDefaultPlaywright([], true)).toEqual([]);
+  });
+});
+
+describe("superseding user turns", () => {
+  test("preserves ordered prompts, attachments, and the pre-turn provider session", () => {
+    const second = mergeSupersedingUserTurn(
+      {
+        prompt: "first",
+        userPrompts: ["first"],
+        attachments: ["a", "shared"],
+        sessionId: "base-session",
+      },
+      {
+        prompt: "second",
+        userPrompts: ["second"],
+        attachments: ["shared", "b"],
+      },
+    );
+    const third = mergeSupersedingUserTurn(second, {
+      prompt: "third",
+      userPrompts: ["third"],
+    });
+
+    expect(third.userPrompts).toEqual(["first", "second", "third"]);
+    expect(third.prompt).toBe(renderUserPromptBatch(["first", "second", "third"]));
+    expect(third.attachments).toEqual(["a", "shared", "b"]);
+    expect(third.sessionId).toBe("base-session");
+  });
+
+  test("leaves a single user prompt unchanged", () => {
+    expect(renderUserPromptBatch(["hello"])).toBe("hello");
   });
 });
 
@@ -152,6 +185,7 @@ describe("turn session resolution", () => {
     leases.push(lease);
     expect(claimRuntimeTurnLease({ ...lease, origin: "user" })).toBe(true);
     setApiTopicConfig(topicId, { model: "gpt-5.6-terra" });
+    setTopicSessionId(topicId, "pre-turn-session", { reason: "test", agent: "codex" });
     let dispatchedQueryId: string | undefined;
 
     const queryId = triggerTopicAiTurn(topicId, "owner", "queued user turn", undefined, {
@@ -159,6 +193,7 @@ describe("turn session resolution", () => {
       onDispatched: (id) => {
         dispatchedQueryId = id;
       },
+      attachments: ["first.txt", "shared.txt"],
       peerBridge: {
         hubCellId: "cell-a",
         hostTopicId: "host-topic",
@@ -170,6 +205,10 @@ describe("turn session resolution", () => {
     expect(queryId).toBeString();
     if (!queryId) throw new Error("queued turn did not reserve a query id");
     expect(dispatchedQueryId).toBe(queryId);
+    setTopicSessionId(topicId, "partial-interrupted-session", {
+      reason: "test",
+      agent: "codex",
+    });
     expect(getAllMessagesForTopic(topicId).at(-1)).toMatchObject({
       text: "queued user turn",
       agent_type: "codex",
@@ -191,12 +230,40 @@ describe("turn session resolution", () => {
       topic,
       userId: "owner",
       prompt: "newer queued user turn",
+      attachments: ["shared.txt", "second.txt"],
       allowAutoContinue: true,
     });
     expect(replacementQueryId).toBeString();
     if (!replacementQueryId) throw new Error("replacement turn did not reserve a query id");
     expect(replacementQueryId).not.toBe(queryId);
-    expect(getRuntimeUserTurnRequest(topicId)?.requestId).toBe(replacementQueryId);
+    const finalQueryId = startAiTurn({
+      topic,
+      userId: "owner",
+      prompt: "final queued user turn",
+      attachments: ["third.txt"],
+      allowAutoContinue: true,
+    });
+    expect(finalQueryId).toBeString();
+    if (!finalQueryId) throw new Error("final turn did not reserve a query id");
+    expect(getRuntimeUserTurnRequest(topicId)?.requestId).toBe(finalQueryId);
+    expect(getRuntimeUserTurnRequest(topicId)).toMatchObject({
+      prompt: renderUserPromptBatch([
+        "queued user turn",
+        "newer queued user turn",
+        "final queued user turn",
+      ]),
+      userPrompts: ["queued user turn", "newer queued user turn", "final queued user turn"],
+      attachments: ["first.txt", "shared.txt", "second.txt", "third.txt"],
+      execution: {
+        sessionId: "pre-turn-session",
+        sessionIdSpecified: true,
+        conversationPrompts: [
+          "queued user turn",
+          "newer queued user turn",
+          "final queued user turn",
+        ],
+      },
+    });
     const statuses = listRecentRuntimeEventsForTopic(topicId).map((event) => event.payload);
     expect(statuses).toContainEqual({ kind: "ai_active", queryId });
     expect(statuses).toContainEqual({ kind: "ai_aborted", queryId, reason: "superseded" });
