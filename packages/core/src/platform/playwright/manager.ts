@@ -46,6 +46,7 @@ import {
   normalizeBrowserProfileName,
 } from "#storage/browser-profiles";
 import {
+  isLiveOwnedChildProcess,
   matchesSpawnedBrowserHealth,
   selectIdleEvictionKey,
   waitForChildProcessExit,
@@ -96,6 +97,7 @@ export { probePlaywrightMcpTransports } from "#platform/playwright/transport-pro
 export {
   browserProcessMatchesExpectedProfile,
   extractUserDataDirArg,
+  isLiveOwnedChildProcess,
   matchesSpawnedBrowserHealth,
   selectIdleEvictionKey,
   selectReusablePort,
@@ -820,6 +822,13 @@ async function spawnPlaywright(
     startupError = error instanceof Error ? error : new Error(String(error));
   } finally {
     startup.stop();
+  }
+  if (ready && !isLiveOwnedChildProcess(instances.get(instanceKey), proc)) {
+    ready = false;
+    startupError = new Error(
+      `Playwright MCP exited after readiness but before publication on port ${port}` +
+        (stderrTail() ? `\nstderr:\n${stderrTail()}` : ""),
+    );
   }
   if (!ready) {
     const exitCode = proc.exitCode;

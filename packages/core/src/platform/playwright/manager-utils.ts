@@ -1,6 +1,19 @@
 import type { ChildProcess } from "node:child_process";
 import { resolve } from "node:path";
 
+/** Revalidate that readiness still belongs to the same live child before publication. */
+export function isLiveOwnedChildProcess(
+  current: { process: ChildProcess } | undefined,
+  expected: ChildProcess,
+): boolean {
+  return (
+    current?.process === expected &&
+    expected.exitCode === null &&
+    expected.signalCode === null &&
+    !expected.killed
+  );
+}
+
 /** Require a health response that could only come from this exact wrapper spawn. */
 export function matchesSpawnedBrowserHealth(health: unknown, expectedSpawnNonce: string): boolean {
   if (!health || typeof health !== "object") return false;

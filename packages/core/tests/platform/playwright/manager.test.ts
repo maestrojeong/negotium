@@ -12,6 +12,7 @@ import {
   extractUserDataDirArg,
   getPlaywrightManagerHost,
   isBrowserJanitorOwner,
+  isLiveOwnedChildProcess,
   makeInstanceKey,
   matchesSpawnedBrowserHealth,
   pinPlaywrightInstance,
@@ -516,5 +517,19 @@ describe("watchChildStartup", () => {
 
     await expect(startup.failure).rejects.toThrow("EADDRINUSE");
     startup.stop();
+  });
+
+  it("rejects a child that exits after readiness but before port publication", () => {
+    const processHandle = {
+      exitCode: null,
+      signalCode: null,
+      killed: false,
+    } as unknown as ChildProcess;
+    const current = { process: processHandle };
+    expect(isLiveOwnedChildProcess(current, processHandle)).toBe(true);
+
+    Object.assign(processHandle, { exitCode: 1 });
+    expect(isLiveOwnedChildProcess(current, processHandle)).toBe(false);
+    expect(isLiveOwnedChildProcess(undefined, processHandle)).toBe(false);
   });
 });
