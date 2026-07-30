@@ -1,9 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { createServer } from "node:net";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import "#storage/api-topics";
+import { isPortInUse, reserveAvailableLoopbackPort } from "#platform/playwright/browser-processes";
 import {
   browserProcessMatchesExpectedProfile,
   configurePlaywrightManagerHost,
@@ -11,6 +13,7 @@ import {
   getPlaywrightManagerHost,
   isBrowserJanitorOwner,
   makeInstanceKey,
+  matchesSpawnedBrowserHealth,
   pinPlaywrightInstance,
   reapPlaywrightOrphans,
   resetPlaywrightManagerHost,
@@ -22,6 +25,7 @@ import {
   unpinPlaywrightInstance,
   waitForChildProcessExit,
   waitForChildProcessSpawnError,
+  watchChildStartup,
   withPlaywrightInstanceMaintenance,
   withPlaywrightProfileMaintenance,
 } from "#platform/playwright/manager";
@@ -94,6 +98,48 @@ describe("probeMcpTransport", () => {
 
   it("rejects a transport that initializes without browser tools", async () => {
     expect(await probeMcpTransport(stubMcpTransport({ tools: [] }))).toBe(false);
+  });
+});
+
+describe("loopback browser port ownership", () => {
+  it("detects an occupied port without relying on lsof or PATH", async () => {
+    const server = createServer();
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolveListen);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server has no TCP port");
+
+    expect(await isPortInUse(address.port)).toBe(true);
+
+    await new Promise<void>((resolveClose, reject) => {
+      server.close((error) => (error ? reject(error) : resolveClose()));
+    });
+    expect(await isPortInUse(address.port)).toBe(false);
+  });
+
+  it("rejects a healthy foreign browser gateway without the exact spawn nonce", () => {
+    const foreign = {
+      ok: true,
+      name: "negotium-browser-gateway",
+      spawnNonce: "foreign-spawn",
+    };
+    expect(matchesSpawnedBrowserHealth(foreign, "expected-spawn")).toBe(false);
+    expect(
+      matchesSpawnedBrowserHealth({ ...foreign, spawnNonce: "expected-spawn" }, "expected-spawn"),
+    ).toBe(true);
+  });
+
+  it("skips both a real instance and a foreign lookalike before reserving the next port", async () => {
+    const reserved = new Set<number>();
+    const occupied = new Set([9100, 9101]);
+    const port = await reserveAvailableLoopbackPort(9100, 9102, reserved, async (candidate) =>
+      occupied.has(candidate),
+    );
+
+    expect(port).toBe(9102);
+    expect([...reserved]).toEqual([9102]);
   });
 });
 
@@ -449,5 +495,26 @@ describe("waitForChildProcessSpawnError", () => {
     emitter.emit("error", error);
 
     await expect(waiting).rejects.toBe(error);
+  });
+});
+
+describe("watchChildStartup", () => {
+  it("fails immediately on early exit and preserves bounded stderr diagnostics", async () => {
+    const emitter = new EventEmitter() as EventEmitter & {
+      exitCode: number | null;
+      signalCode: NodeJS.Signals | null;
+    };
+    emitter.exitCode = null;
+    emitter.signalCode = null;
+    const startup = watchChildStartup(
+      emitter as unknown as ChildProcess,
+      () => "Error: listen EADDRINUSE 127.0.0.1:9101",
+    );
+
+    emitter.exitCode = 1;
+    emitter.emit("exit", 1, null);
+
+    await expect(startup.failure).rejects.toThrow("EADDRINUSE");
+    startup.stop();
   });
 });

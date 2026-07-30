@@ -1,6 +1,17 @@
 import type { ChildProcess } from "node:child_process";
 import { resolve } from "node:path";
 
+/** Require a health response that could only come from this exact wrapper spawn. */
+export function matchesSpawnedBrowserHealth(health: unknown, expectedSpawnNonce: string): boolean {
+  if (!health || typeof health !== "object") return false;
+  const candidate = health as Record<string, unknown>;
+  return (
+    candidate.ok === true &&
+    candidate.name === "negotium-browser-gateway" &&
+    candidate.spawnNonce === expectedSpawnNonce
+  );
+}
+
 /** Select an idle instance while excluding active borrowers and lifecycle work. */
 export function selectIdleEvictionKey(
   candidates: Iterable<[string, { lastUsedAt: number }]>,

@@ -9,6 +9,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { probePlaywrightMcpTransports } from "#platform/playwright/transport-probe";
 
 const capability = "wrapper-security-test-capability";
+const spawnNonce = "wrapper-security-test-spawn-nonce";
 let port = 0;
 let processHandle: ReturnType<typeof Bun.spawn> | undefined;
 
@@ -46,7 +47,11 @@ describe("authenticated browser HTTP wrapper", () => {
     port = await allocatePort();
     const script = resolve(import.meta.dir, "../../../scripts/mcp-patchright-http.mjs");
     processHandle = Bun.spawn(["node", script, "--host", "127.0.0.1", "--port", String(port)], {
-      env: { ...process.env, NEGOTIUM_BROWSER_CAPABILITY: capability },
+      env: {
+        ...process.env,
+        NEGOTIUM_BROWSER_CAPABILITY: capability,
+        NEGOTIUM_BROWSER_SPAWN_NONCE: spawnNonce,
+      },
       stdout: "ignore",
       stderr: "ignore",
     });
@@ -60,8 +65,13 @@ describe("authenticated browser HTTP wrapper", () => {
 
   test("reports the active browser engine behind the authenticated gateway", async () => {
     const response = await fetch(`http://127.0.0.1:${port}/health`);
-    const health = (await response.json()) as { name?: string; backend?: string };
+    const health = (await response.json()) as {
+      name?: string;
+      backend?: string;
+      spawnNonce?: string;
+    };
     expect(health.name).toBe("negotium-browser-gateway");
+    expect(health.spawnNonce).toBe(spawnNonce);
     expect(health.backend).toBe(
       process.env.NEGOTIUM_BROWSER_RS_BIN ? "browser-rs" : "mcp-patchright",
     );

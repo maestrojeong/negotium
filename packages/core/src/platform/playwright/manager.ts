@@ -26,12 +26,11 @@ import { delay } from "#platform/delay";
 import { logger } from "#platform/logger";
 import {
   cleanSingletonFiles,
-  isHealthy,
   isPortInUse,
   killBrowserProcsForUserDataDir,
-  killPlaywrightOnPort,
   killProcessTreeChildren,
   reapOrphanBrowsers,
+  reserveAvailableLoopbackPort,
 } from "#platform/playwright/browser-processes";
 import {
   type HeadedPlaywrightSpawnSpec,
@@ -47,10 +46,9 @@ import {
   normalizeBrowserProfileName,
 } from "#storage/browser-profiles";
 import {
+  matchesSpawnedBrowserHealth,
   selectIdleEvictionKey,
-  selectReusablePort,
   waitForChildProcessExit,
-  waitForChildProcessSpawnError,
 } from "./manager-utils";
 
 export interface PlaywrightProfileBinding {
@@ -98,6 +96,7 @@ export { probePlaywrightMcpTransports } from "#platform/playwright/transport-pro
 export {
   browserProcessMatchesExpectedProfile,
   extractUserDataDirArg,
+  matchesSpawnedBrowserHealth,
   selectIdleEvictionKey,
   selectReusablePort,
   waitForChildProcessExit,
@@ -520,31 +519,23 @@ function evictIdleInstance(): number | null {
 }
 
 /**
- * Find an available port, killing zombie processes if needed.
+ * Find an available port without depending on platform process-inspection tools.
  * If all ports are taken, evicts the oldest idle instance.
- *
- * `expectedUserDataDir` is forwarded to `killPlaywrightOnPort` so that only a
- * playwright-mcp serving this caller's own userDataDir is treated as a zombie.
- * Without that filter, another process with its own empty instances map could
- * mistake a live topic Playwright for an orphan and SIGKILL it.
  */
-async function allocatePort(expectedUserDataDir?: string): Promise<number> {
-  for (let port = managerHost.basePort; port <= managerHost.maxPort; port++) {
-    if (usedPorts.has(port)) continue;
-    usedPorts.add(port); // Reserve immediately before any await to prevent concurrent allocation
-
-    // Check if something else is already on this port (zombie from previous run)
-    if (isPortInUse(port)) {
-      logger.warn({ port }, "Port occupied by external process, attempting cleanup");
-      await killPlaywrightOnPort(port, expectedUserDataDir);
-      if (isPortInUse(port)) {
-        usedPorts.delete(port); // Still occupied — release reservation and try next
-        continue;
-      }
-    }
-
-    return port;
-  }
+async function allocatePort(): Promise<number> {
+  const port = await reserveAvailableLoopbackPort(
+    managerHost.basePort,
+    managerHost.maxPort,
+    usedPorts,
+    async (candidate) => {
+      // A real loopback bind probe is portable and fail-closed. In particular,
+      // a missing `lsof` must never make an occupied port appear available.
+      const occupied = await isPortInUse(candidate);
+      if (occupied) logger.warn({ port: candidate }, "Port occupied by external process, skipping");
+      return occupied;
+    },
+  );
+  if (port !== null) return port;
 
   // All ports used — try evicting an idle instance
   const evictedPort = evictIdleInstance();
@@ -553,16 +544,7 @@ async function allocatePort(expectedUserDataDir?: string): Promise<number> {
     // until the old listener is actually gone, and recheck every candidate in
     // case another allocator claimed a different port while we were waiting.
     await waitForPortRelease(evictedPort);
-    const reusablePort = selectReusablePort(
-      managerHost.basePort,
-      managerHost.maxPort,
-      usedPorts,
-      isPortInUse,
-    );
-    if (reusablePort !== null) {
-      usedPorts.add(reusablePort);
-      return reusablePort;
-    }
+    return allocatePort();
   }
 
   throw new Error(
@@ -627,6 +609,58 @@ function killInstance(instanceKey: string, opts?: { keepPort?: boolean }) {
   );
 }
 
+const PLAYWRIGHT_STARTUP_STDERR_LIMIT = 8 * 1024;
+
+function captureBoundedStderr(proc: ChildProcess): () => string {
+  let tail = Buffer.alloc(0);
+  proc.stderr?.on("data", (chunk: Buffer | string) => {
+    const next = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    tail = Buffer.concat([tail, next]);
+    if (tail.byteLength > PLAYWRIGHT_STARTUP_STDERR_LIMIT) {
+      tail = tail.subarray(tail.byteLength - PLAYWRIGHT_STARTUP_STDERR_LIMIT);
+    }
+  });
+  return () => tail.toString("utf8").trim();
+}
+
+export function watchChildStartup(
+  proc: ChildProcess,
+  stderrTail: () => string,
+): { failure: Promise<never>; stop: () => void } {
+  let stopped = false;
+  let rejectFailure: (error: Error) => void = () => undefined;
+  const diagnostics = () => {
+    const stderr = stderrTail();
+    return stderr ? `\nstderr (last ${PLAYWRIGHT_STARTUP_STDERR_LIMIT} bytes):\n${stderr}` : "";
+  };
+  const onError = (error: Error) => {
+    rejectFailure(
+      new Error(`Playwright MCP failed to spawn: ${error.message}${diagnostics()}`, {
+        cause: error,
+      }),
+    );
+  };
+  const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+    rejectFailure(
+      new Error(
+        `Playwright MCP exited during startup (code=${code ?? "null"}, signal=${signal ?? "null"})${diagnostics()}`,
+      ),
+    );
+  };
+  const failure = new Promise<never>((_resolve, reject) => {
+    rejectFailure = reject;
+    proc.once("error", onError);
+    proc.once("exit", onExit);
+  });
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    proc.off("error", onError);
+    proc.off("exit", onExit);
+  };
+  return { failure, stop };
+}
+
 /**
  * Spawn a browser MCP HTTP server for a shared named profile. The profile
  * identity is encoded in `instanceKey` and decoded inside `resolveUserDataDir`.
@@ -646,10 +680,7 @@ async function spawnPlaywright(
   allowFallback = true,
 ): Promise<number> {
   const userDataDir = resolveUserDataDir(instanceKey);
-  // Forward userDataDir to allocatePort so the in-port zombie scan can
-  // distinguish "my own orphan to kill" from "another process's live
-  // instance to skip past" — see allocatePort docstring.
-  const port = reservedPort ?? (await allocatePort(userDataDir));
+  const port = reservedPort ?? (await allocatePort());
   mkdirSync(userDataDir, { recursive: true });
 
   const mcpArgs = [
@@ -682,6 +713,7 @@ async function spawnPlaywright(
   // vars and hands them to Playwright's per-context proxy option.
   const proxy = managerHost.resolveProxy();
   const capability = randomBytes(32).toString("hex");
+  const spawnNonce = randomBytes(32).toString("hex");
   const childEnv = {
     ...managerHost.createChildEnvironment({
       instanceKey,
@@ -692,6 +724,7 @@ async function spawnPlaywright(
       environment: process.env,
     }),
     NEGOTIUM_BROWSER_CAPABILITY: capability,
+    NEGOTIUM_BROWSER_SPAWN_NONCE: spawnNonce,
   };
   // Every supported wrapper authenticates owner-scoped transports with this
   // capability. Product-specific environment hooks may add Vault callbacks,
@@ -712,7 +745,7 @@ async function spawnPlaywright(
   let proc: ChildProcess;
   try {
     proc = spawn(spawnSpec.command, spawnSpec.args, {
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", "pipe"],
       detached: false,
       env: childEnv,
     });
@@ -720,7 +753,8 @@ async function spawnPlaywright(
     releasePort(port);
     throw err;
   }
-  const spawnError = waitForChildProcessSpawnError(proc);
+  const stderrTail = captureBoundedStderr(proc);
+  const startup = watchChildStartup(proc, stderrTail);
 
   // When the MCP dies on its own (crash / OOM), its Chrome subtree is reparented
   // to init and escapes the tracked-instance map. Reap it by user-data-dir here
@@ -734,7 +768,7 @@ async function spawnPlaywright(
   };
 
   proc.once("error", (err) => {
-    logger.error({ err, instanceKey }, "Playwright MCP error");
+    logger.error({ err, instanceKey, stderr: stderrTail() || undefined }, "Playwright MCP error");
     if (instances.get(instanceKey)?.process === proc) {
       releasePort(port);
       instances.delete(instanceKey);
@@ -747,7 +781,7 @@ async function spawnPlaywright(
   });
 
   proc.once("exit", (code) => {
-    logger.info({ instanceKey, code }, "Playwright MCP exited");
+    logger.info({ instanceKey, code, stderr: stderrTail() || undefined }, "Playwright MCP exited");
     // `wasOurs` distinguishes a crash from our own killInstance(): the latter
     // calls removeAllListeners("exit") + instances.delete() BEFORE the kill
     // signal lands, so this listener either doesn't fire or sees wasOurs=false.
@@ -772,19 +806,33 @@ async function spawnPlaywright(
     capability,
   });
 
-  const ready = await Promise.race([
-    (async () =>
-      (await waitForServer(port, 10_000)) &&
-      (await supportsOwnerCleanup(port, capability)) &&
-      (await probePlaywrightMcpTransports(port, capability)))(),
-    spawnError,
-  ]);
+  let startupError: Error | undefined;
+  let ready = false;
+  try {
+    ready = await Promise.race([
+      (async () =>
+        (await waitForServer(port, spawnNonce, 10_000)) &&
+        (await supportsOwnerCleanup(port, capability)) &&
+        (await probePlaywrightMcpTransports(port, capability)))(),
+      startup.failure,
+    ]);
+  } catch (error) {
+    startupError = error instanceof Error ? error : new Error(String(error));
+  } finally {
+    startup.stop();
+  }
   if (!ready) {
     const exitCode = proc.exitCode;
     killInstance(instanceKey);
     if (allowFallback && browserBin !== managerHost.fallbackBrowserBin) {
       logger.warn(
-        { instanceKey, browserBin, fallback: managerHost.fallbackBrowserBin },
+        {
+          err: startupError,
+          instanceKey,
+          browserBin,
+          fallback: managerHost.fallbackBrowserBin,
+          stderr: stderrTail() || undefined,
+        },
         "Preferred browser MCP unavailable or lacks owner isolation; using Patchright fallback",
       );
       return spawnPlaywright(
@@ -795,9 +843,11 @@ async function spawnPlaywright(
         false,
       );
     }
+    if (startupError) throw startupError;
     throw new Error(
       `Playwright MCP failed health check after spawn on port ${port}` +
-        (exitCode === null ? "" : ` (exitCode=${exitCode})`),
+        (exitCode === null ? "" : ` (exitCode=${exitCode})`) +
+        (stderrTail() ? `\nstderr:\n${stderrTail()}` : ""),
     );
   }
   writePortFile(instanceKey, port);
@@ -889,7 +939,7 @@ export async function ensurePlaywright(userId: string, topic?: string): Promise<
 async function waitForPortRelease(port: number, timeoutMs = 3000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (!isPortInUse(port)) return;
+    if (!(await isPortInUse(port))) return;
     await delay(200);
   }
 }
@@ -923,7 +973,7 @@ export async function ensureBrowserProfile(ownerId: string, rawProfile: string):
         { instanceKey, publishedPort },
         "Recycling untracked browser profile process from stale port file",
       );
-      await killPlaywrightOnPort(publishedPort, resolveUserDataDir(instanceKey));
+      managerHost.cleanupBrowserProcessesForDataDir(resolveUserDataDir(instanceKey));
       await waitForPortRelease(publishedPort);
       deletePortFile(instanceKey);
     }
@@ -991,10 +1041,28 @@ export async function closeBrowserOwnerTabs(
  * Poll until the SSE server responds, or timeout.
  * Returns true if the server is healthy, false on timeout.
  */
-async function waitForServer(port: number, timeoutMs: number): Promise<boolean> {
+async function waitForServer(
+  port: number,
+  expectedSpawnNonce: string,
+  timeoutMs: number,
+): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (await isHealthy(port)) return true;
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/health`, {
+        signal: AbortSignal.timeout(1000),
+      });
+      if (response.ok) {
+        const health: unknown = await response.json();
+        if (matchesSpawnedBrowserHealth(health, expectedSpawnNonce)) {
+          return true;
+        }
+      } else {
+        await response.body?.cancel();
+      }
+    } catch {
+      // The owned child may still be loading or binding its listener.
+    }
     await delay(300);
   }
   logger.warn({ port, timeoutMs }, "Playwright MCP not ready before timeout");

@@ -1,85 +1,47 @@
 import { execFileSync } from "node:child_process";
 import { readdirSync, unlinkSync } from "node:fs";
+import { createServer } from "node:net";
 import { resolve, sep } from "node:path";
 import { BROWSER_PROFILES_DIR } from "#platform/config";
-import { delay } from "#platform/delay";
 import { logger } from "#platform/logger";
-import {
-  browserProcessMatchesExpectedProfile,
-  extractUserDataDirArg,
-} from "#platform/playwright/manager-utils";
+import { extractUserDataDirArg } from "#platform/playwright/manager-utils";
 import { getRuntimeProcessLease } from "#storage/runtime-process-leases";
 
-export function isPortInUse(port: number): boolean {
-  try {
-    execFileSync("lsof", ["-i", `:${port}`, "-t"], { stdio: "pipe" });
-    return true;
-  } catch {
-    return false;
-  }
+export function isPortInUse(port: number): Promise<boolean> {
+  return new Promise((resolveProbe) => {
+    const server = createServer();
+    let settled = false;
+    const finish = (occupied: boolean) => {
+      if (settled) return;
+      settled = true;
+      server.removeAllListeners();
+      resolveProbe(occupied);
+    };
+
+    server.unref();
+    server.once("error", () => finish(true));
+    server.listen({ host: "127.0.0.1", port, exclusive: true }, () => {
+      server.close((error) => finish(error !== undefined));
+    });
+  });
 }
 
-export async function killPlaywrightOnPort(port: number, expectedUserDataDir?: string) {
-  try {
-    // Only kill Negotium browser gateway processes on this port, not arbitrary services.
-    const pids = execFileSync("lsof", ["-i", `:${port}`, "-t"], { stdio: "pipe" })
-      .toString()
-      .trim();
-    if (!pids) return;
-    for (const pid of pids.split("\n")) {
-      try {
-        const cmdline = execFileSync("ps", ["-p", pid, "-o", "command="], { stdio: "pipe" })
-          .toString()
-          .trim();
-        if (!cmdline.includes("mcp-patchright-http.mjs")) {
-          logger.warn(
-            { port, pid, cmdline: cmdline.slice(0, 80) },
-            "Port occupied by non-browser-MCP process, skipping",
-          );
-          continue;
-        }
-        // Cross-process safety: when the caller knows which userDataDir its own
-        // Playwright will use, only treat a matching instance as a zombie.
-        // A playwright-mcp serving a different userDataDir belongs to another
-        // process (different topic / different bot instance) and must NOT be
-        // killed.
-        if (expectedUserDataDir) {
-          const otherDataDir = extractUserDataDirArg(cmdline);
-          if (!browserProcessMatchesExpectedProfile(cmdline, expectedUserDataDir)) {
-            logger.warn(
-              {
-                port,
-                pid,
-                otherDataDir,
-                expectedUserDataDir,
-              },
-              "Port occupied by another topic's playwright-mcp, skipping",
-            );
-            continue;
-          }
-        }
-        const pidNum = parseInt(pid, 10);
-        if (!Number.isNaN(pidNum)) {
-          // Reap Chrome children before the node parent — once the parent dies
-          // they reparent to init and `pgrep -P` can no longer find them,
-          // leaving orphan Chrome holding the same user-data-dir.
-          killProcessTreeChildren(pidNum);
-          process.kill(pidNum, "SIGKILL");
-        }
-        logger.info({ pid, port }, "Killed zombie mcp-patchright");
-      } catch (e) {
-        logger.warn({ err: e, port }, "Failed to inspect process occupying port");
-      }
+export async function reserveAvailableLoopbackPort(
+  minPort: number,
+  maxPort: number,
+  reservedPorts: Set<number>,
+  probeOccupied: (port: number) => Promise<boolean> = isPortInUse,
+): Promise<number | null> {
+  for (let port = minPort; port <= maxPort; port++) {
+    if (reservedPorts.has(port)) continue;
+    reservedPorts.add(port);
+    if (await probeOccupied(port)) {
+      reservedPorts.delete(port);
+      continue;
     }
-  } catch (e) {
-    logger.warn({ err: e, port }, "Failed to check processes on port");
+    return port;
   }
-  // Wait for port to actually be released
-  const start = Date.now();
-  while (Date.now() - start < 3000) {
-    if (!isPortInUse(port)) return;
-    await delay(200);
-  }
+  return null;
 }
 
 /**
@@ -121,7 +83,7 @@ export function cleanupZombiePlaywright(): void {
               );
               continue;
             }
-            // Reap Chrome children before the node parent (see killPlaywrightOnPort).
+            // Reap Chrome children before the node parent.
             killProcessTreeChildren(pidNum);
             process.kill(pidNum, "SIGKILL");
           } catch (e) {

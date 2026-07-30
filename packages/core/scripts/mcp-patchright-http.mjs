@@ -29,6 +29,8 @@ import { createBrowserWebAuthnGuard } from "./browser-webauthn-policy.mjs";
 
 const expectedCapability = process.env.NEGOTIUM_BROWSER_CAPABILITY;
 if (!expectedCapability) throw new Error("NEGOTIUM_BROWSER_CAPABILITY is required");
+const expectedSpawnNonce = process.env.NEGOTIUM_BROWSER_SPAWN_NONCE;
+if (!expectedSpawnNonce) throw new Error("NEGOTIUM_BROWSER_SPAWN_NONCE is required");
 const browserRsCapability = randomBytes(32).toString("hex");
 
 function parseCli(argv = process.argv.slice(2)) {
@@ -388,6 +390,7 @@ app.get("/health", (_req, res) => {
     ok: true,
     name: "negotium-browser-gateway",
     backend: browserRsBackend ? "browser-rs" : "mcp-patchright",
+    spawnNonce: expectedSpawnNonce,
   });
 });
 
