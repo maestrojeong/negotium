@@ -179,9 +179,34 @@ describe("session system prompt builders", () => {
     expect(parentPrompt).toContain("grant_subagent_tell");
     expect(parentPrompt).toContain("revoke_subagent_tell");
     expect(parentPrompt).toContain("list_memory_topics");
+    expect(parentPrompt).toContain("Create fixes `task` and `report_mode`");
+    expect(parentPrompt).toContain("start takes only the room ID");
+    expect(parentPrompt).toContain("smallest useful ownership/reporting topology");
+    expect(parentPrompt).toContain("keep execution and data flow separate");
+    expect(parentPrompt).toContain("preserve independent parallelism");
+    expect(parentPrompt).toContain("both rooms exist");
+    expect(parentPrompt).toContain("revoke it when that collaboration ends");
     expect(parentPrompt).toContain("effective topic memory");
-    expect(parentPrompt).toContain("status-only` updates lifecycle only");
+    expect(parentPrompt).toContain("Choose one result path");
+    expect(parentPrompt).toContain("`status-only` returns lifecycle without content");
+    expect(parentPrompt).toContain("Runtime length alone does not justify `status-only`");
     expect(parentPrompt).toContain("Do not wait or poll");
+
+    for (const agentKind of ["codex", "claude", "maestro"] as const) {
+      const agentPrompt = buildTopicSystemPrompt({
+        aiLabel: "Otium",
+        topicTitle: `${agentKind} manager`,
+        workspaceCwd: `/otium/workspace/topics/${agentKind}-manager`,
+        agentKind,
+        canSpawnSubagents: true,
+      });
+      expect(agentPrompt).toContain("smallest useful ownership/reporting topology");
+      expect(agentPrompt).toContain("Create fixes `task` and `report_mode`");
+      expect(agentPrompt).toContain("keep execution and data flow separate");
+      expect(agentPrompt).toContain("Choose one result path");
+      expect(agentPrompt).toContain("`tell` requires child `tell_session`");
+      expect(agentPrompt).toContain("`status-only` returns lifecycle without content");
+    }
 
     const peerPrompt = buildTopicSystemPrompt({
       aiLabel: "Otium",
@@ -198,6 +223,7 @@ describe("session system prompt builders", () => {
     expect(peerPrompt).not.toContain("delete_subagent");
     expect(peerPrompt).not.toContain("grant_subagent_tell");
     expect(peerPrompt).not.toContain("revoke_subagent_tell");
+    expect(peerPrompt).not.toContain("smallest useful ownership/reporting topology");
 
     const childPrompt = buildTopicSystemPrompt({
       aiLabel: "Otium",

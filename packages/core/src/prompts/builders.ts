@@ -288,15 +288,17 @@ function buildRuntimeToolSection(
   const runtimeToolRef = (name: string): string =>
     agentKind === "codex" ? `\`${name}\`` : `"${runtimeNamespace}__${name}"`;
   const spawnSubagentToolLine = `Use ${runtimeToolRef("spawn_subagent")} for self-contained parallel or long-running background work; keep quick work inline.`;
-  const lifecycleToolLine = `For staged work, call ${runtimeToolRef("create_subagent")} then ${runtimeToolRef("start_subagent")}. Manage descendants with ${runtimeToolRef("list_subagents")} and ${runtimeToolRef("delete_subagent")}; manage extra non-parent \`tell_session\` routes within this tree with ${runtimeToolRef("grant_subagent_tell")} and ${runtimeToolRef("revoke_subagent_tell")}. Direct-parent reporting needs no grant. Use ${runtimeToolRef("list_memory_topics")} when selecting \`memory_topic\`.`;
+  const lifecycleToolLine = `For staged work, call ${runtimeToolRef("create_subagent")} then ${runtimeToolRef("start_subagent")}. Create fixes \`task\` and \`report_mode\`; start takes only the room ID, so create after inputs are known unless preparing a \`tell_session\` receiver. Manage descendants with ${runtimeToolRef("list_subagents")} and ${runtimeToolRef("delete_subagent")}, and non-parent tell routes with ${runtimeToolRef("grant_subagent_tell")} and ${runtimeToolRef("revoke_subagent_tell")}. Direct-parent reporting needs no grant. Use ${runtimeToolRef("list_memory_topics")} to select \`memory_topic\`.`;
+  const subagentTopologyPolicyLine =
+    "Use the smallest useful ownership/reporting topology; keep execution and data flow separate, preserve independent parallelism, and nest only for ownership. Keep simple sequential work inline. Grant a non-parent tell route only when direct communication helps and both rooms exist; revoke it when that collaboration ends.";
   const spawnSubagentSection = canSpawnSubagents
     ? [
         "",
         "## Subagent Delegation",
         spawnSubagentToolLine,
-        ...(canStageSubagents ? [lifecycleToolLine] : []),
-        "A subagent starts in a fresh room with no parent conversation history and otherwise inherits this room's agent, model, and effective topic memory; include required context, paths, and acceptance criteria in `task`.",
-        "Started subagents run asynchronously: `auto` injects the final result here, `tell` requires child `tell_session`, and `status-only` updates lifecycle only. Do not wait or poll; continue or finish the current turn.",
+        ...(canStageSubagents ? [lifecycleToolLine, subagentTopologyPolicyLine] : []),
+        "A subagent starts fresh but inherits this room's agent, model, and effective topic memory; include all required context, paths, and acceptance criteria in `task`.",
+        "Subagents run asynchronously. Choose one result path: `auto` returns the final body to the direct parent; `tell` requires child `tell_session` to its recipient and does not auto-return the body; `status-only` returns lifecycle without content. Runtime length alone does not justify `status-only`. Do not wait or poll; continue or finish the turn.",
       ]
     : [];
   const nativeTaskPolicyLine =
