@@ -321,10 +321,17 @@ export function releaseRuntimeUserTurnClaim(
   return Number(result.changes ?? 0) > 0;
 }
 
-export function completeRuntimeUserTurnRequest(topicId: string, requestId: string): boolean {
+export function completeRuntimeUserTurnRequest(
+  topicId: string,
+  requestId: string,
+  ownerId: string,
+): boolean {
   const result = db
-    .query("DELETE FROM runtime_user_turn_requests WHERE topic_id = ? AND request_id = ?")
-    .run(topicId, requestId);
+    .query(
+      `DELETE FROM runtime_user_turn_requests
+       WHERE topic_id = ? AND request_id = ? AND claimed_by = ?`,
+    )
+    .run(topicId, requestId, ownerId);
   return Number(result.changes ?? 0) > 0;
 }
 

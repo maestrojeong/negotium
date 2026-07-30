@@ -120,7 +120,7 @@ describe("runtime user turn requests", () => {
 
     expect(claimNextRuntimeUserTurnRequest("worker")?.requestId).toBe(first);
     expect(claimNextRuntimeUserTurnRequest("competing-worker")).toBeNull();
-    expect(completeRuntimeUserTurnRequest(topic, first)).toBe(true);
+    expect(completeRuntimeUserTurnRequest(topic, first, "worker")).toBe(true);
     expect(claimNextRuntimeUserTurnRequest("worker")?.requestId).toBe(second);
   });
 
@@ -161,9 +161,12 @@ describe("runtime user turn requests", () => {
       claimedBy: "replacement-worker",
       runningQueryId: "query-dead",
     });
+    expect(completeRuntimeUserTurnRequest(topic, requestId, "dead-worker")).toBe(false);
+    expect(getRuntimeUserTurnRequest(topic)?.claimedBy).toBe("replacement-worker");
+    expect(completeRuntimeUserTurnRequest(topic, requestId, "replacement-worker")).toBe(true);
   });
 
-  test("completion is guarded by the current request id", () => {
+  test("completion is guarded by the current request id and claim owner", () => {
     const topic = topicId();
     const oldRequest = enqueueRuntimeUserTurnRequest({
       topicId: topic,
@@ -178,8 +181,10 @@ describe("runtime user turn requests", () => {
       allowAutoContinue: true,
     });
 
-    expect(completeRuntimeUserTurnRequest(topic, oldRequest)).toBe(false);
+    expect(completeRuntimeUserTurnRequest(topic, oldRequest, "worker")).toBe(false);
     expect(getRuntimeUserTurnRequest(topic)?.requestId).toBe(currentRequest);
-    expect(completeRuntimeUserTurnRequest(topic, currentRequest)).toBe(true);
+    expect(claimNextRuntimeUserTurnRequest("worker")?.requestId).toBe(currentRequest);
+    expect(completeRuntimeUserTurnRequest(topic, currentRequest, "other-worker")).toBe(false);
+    expect(completeRuntimeUserTurnRequest(topic, currentRequest, "worker")).toBe(true);
   });
 });

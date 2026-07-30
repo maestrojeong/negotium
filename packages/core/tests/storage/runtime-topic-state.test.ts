@@ -54,7 +54,9 @@ describe("runtime topic maintenance", () => {
     maintenance!.finish();
     const claimed = claimNextRuntimeUserTurnRequest("worker-after-maintenance");
     expect(claimed?.topicId).toBe(topic);
-    if (claimed) completeRuntimeUserTurnRequest(topic, claimed.requestId);
+    if (claimed) {
+      completeRuntimeUserTurnRequest(topic, claimed.requestId, "worker-after-maintenance");
+    }
   });
 
   test("advancing the epoch cancels only work accepted before reset", () => {

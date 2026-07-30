@@ -751,7 +751,7 @@ async function drainOneDurableUserTurn(): Promise<void> {
     if (!request) return;
     const topic = getTopic(request.topicId);
     if (!topic?.agent) {
-      completeRuntimeUserTurnRequest(request.topicId, request.requestId);
+      completeRuntimeUserTurnRequest(request.topicId, request.requestId, RUNTIME_INSTANCE_ID);
       return;
     }
     const execution = request.execution;
@@ -781,7 +781,7 @@ async function drainOneDurableUserTurn(): Promise<void> {
       _queryId: request.requestId,
       _runtimeEpoch: execution?.runtimeEpoch ?? request.topicEpoch,
       onSettled: () => {
-        completeRuntimeUserTurnRequest(request.topicId, request.requestId);
+        completeRuntimeUserTurnRequest(request.topicId, request.requestId, RUNTIME_INSTANCE_ID);
       },
     });
     if (!queryId) {

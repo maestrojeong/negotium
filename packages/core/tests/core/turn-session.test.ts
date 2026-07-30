@@ -16,7 +16,7 @@ import { deleteTopic, getTopic, setTopicSessionId, upsertTopic } from "#storage/
 import { listRecentRuntimeEventsForTopic } from "#storage/runtime-events";
 import { claimRuntimeTurnLease, releaseRuntimeTurnLease } from "#storage/runtime-leases";
 import {
-  completeRuntimeUserTurnRequest,
+  cancelRuntimeUserTurnRequests,
   getRuntimeUserTurnRequest,
 } from "#storage/runtime-turn-requests";
 
@@ -89,8 +89,7 @@ function seedTopic(): string {
 
 afterEach(() => {
   for (const id of topicIds) {
-    const request = getRuntimeUserTurnRequest(id);
-    if (request) completeRuntimeUserTurnRequest(id, request.requestId);
+    cancelRuntimeUserTurnRequests(id);
     deleteTopic(id);
   }
   for (const lease of leases) releaseRuntimeTurnLease(lease.topicId, lease.queryId, lease.ownerId);

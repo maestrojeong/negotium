@@ -74,7 +74,7 @@ test("topicService abort cancels a durable pending user turn and clears its acti
       requestId: nextRequestId,
       topicEpoch: initialEpoch + 1,
     });
-    completeRuntimeUserTurnRequest(topic.id, nextRequestId);
+    completeRuntimeUserTurnRequest(topic.id, nextRequestId, "post-abort-worker");
   } finally {
     unsubscribe();
   }
