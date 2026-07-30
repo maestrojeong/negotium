@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { db } from "#storage/forum-db";
 import {
@@ -10,9 +11,11 @@ import {
   claimNextRuntimeUserTurnRequest,
   completeRuntimeUserTurnRequest,
   enqueueRuntimeUserTurnRequest,
+  ensureRuntimeUserTurnRequestsSchema,
   getRuntimeUserTurnRequest,
   markRuntimeUserTurnRunning,
 } from "#storage/runtime-turn-requests";
+import type { StorageDatabase } from "#storage/storage-contract";
 
 const topics = new Set<string>();
 const leases: Array<{ topicId: string; queryId: string; ownerId: string }> = [];
@@ -95,7 +98,61 @@ describe("runtime user turn requests", () => {
     });
   });
 
-  test("migrates pending and running rows that predate prompt-batch and envelope columns", () => {
+  test("upgrades a pre-envelope database while preserving pending and running rows", () => {
+    const legacyDb = new Database(":memory:");
+    try {
+      legacyDb.exec(`
+        CREATE TABLE runtime_user_turn_requests (
+          request_id TEXT PRIMARY KEY,
+          topic_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          prompt TEXT NOT NULL,
+          attachments_json TEXT,
+          allow_auto_continue INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          claimed_by TEXT,
+          claimed_at INTEGER,
+          running_query_id TEXT
+        );
+        INSERT INTO runtime_user_turn_requests VALUES
+          ('pending-request', 'pending-topic', 'user', 'legacy pending',
+           '["pending-a","pending-a"]', 1, 1, 'pending', NULL, NULL, NULL),
+          ('running-request', 'running-topic', 'user', 'legacy running',
+           '["running-a","running-b"]', 1, 2, 'running',
+           'legacy-worker', 3, 'legacy-query');
+      `);
+
+      ensureRuntimeUserTurnRequestsSchema(legacyDb as unknown as StorageDatabase);
+
+      const columns = legacyDb
+        .query<{ name: string }, []>("PRAGMA table_info(runtime_user_turn_requests)")
+        .all()
+        .map((column) => column.name);
+      expect(columns).toContain("execution_json");
+      expect(columns).toContain("user_messages_json");
+      expect(columns).toContain("topic_epoch");
+      expect(
+        legacyDb
+          .query<{ request_id: string; status: string; running_query_id: string | null }, []>(
+            `SELECT request_id, status, running_query_id
+             FROM runtime_user_turn_requests ORDER BY created_at`,
+          )
+          .all(),
+      ).toEqual([
+        { request_id: "pending-request", status: "pending", running_query_id: null },
+        {
+          request_id: "running-request",
+          status: "running",
+          running_query_id: "legacy-query",
+        },
+      ]);
+    } finally {
+      legacyDb.close();
+    }
+  });
+
+  test("falls back for rows that predate prompt-batch and envelope metadata", () => {
     const pendingTopic = topicId();
     const runningTopic = topicId();
     const runningRequestId = enqueueRuntimeUserTurnRequest({

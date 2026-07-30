@@ -3,6 +3,7 @@ import { legacyUserTurnEnvelope, type UserTurnEnvelope } from "#runtime/user-tur
 import { db } from "#storage/forum-db";
 import { TURN_LEASE_STALE_MS } from "#storage/runtime-leases";
 import { getRuntimeTopicEpoch, TOPIC_MAINTENANCE_STALE_MS } from "#storage/runtime-topic-state";
+import type { StorageDatabase } from "#storage/storage-contract";
 import type { AgentKind, EffortLevel, PeerRuntimeBridgeContext } from "#types";
 
 const REQUEST_CLAIM_STALE_MS = TURN_LEASE_STALE_MS;
@@ -63,8 +64,8 @@ interface RuntimeUserTurnRequestRow {
   running_query_id: string | null;
 }
 
-function createRuntimeUserTurnRequestsTable(): void {
-  db.exec(`
+function createRuntimeUserTurnRequestsTable(database: StorageDatabase): void {
+  database.exec(`
   CREATE TABLE IF NOT EXISTS runtime_user_turn_requests (
     request_id TEXT PRIMARY KEY,
     topic_id TEXT NOT NULL,
@@ -84,35 +85,39 @@ function createRuntimeUserTurnRequestsTable(): void {
 `);
 }
 
-createRuntimeUserTurnRequestsTable();
+/** Apply additive upgrades and the legacy topic-primary-key rebuild to one database. */
+export function ensureRuntimeUserTurnRequestsSchema(database: StorageDatabase): void {
+  createRuntimeUserTurnRequestsTable(database);
 
-try {
-  db.exec("ALTER TABLE runtime_user_turn_requests ADD COLUMN execution_json TEXT");
-} catch {
-  // Existing standalone database already has the additive handoff column.
-}
-try {
-  db.exec("ALTER TABLE runtime_user_turn_requests ADD COLUMN user_messages_json TEXT");
-} catch {
-  // Existing standalone database already has the additive envelope column.
-}
-try {
-  db.exec(
-    "ALTER TABLE runtime_user_turn_requests ADD COLUMN topic_epoch INTEGER NOT NULL DEFAULT 0",
-  );
-} catch {
-  // Existing standalone database already has the additive epoch column.
-}
+  try {
+    database.exec("ALTER TABLE runtime_user_turn_requests ADD COLUMN execution_json TEXT");
+  } catch {
+    // Existing standalone database already has the additive handoff column.
+  }
+  try {
+    database.exec("ALTER TABLE runtime_user_turn_requests ADD COLUMN user_messages_json TEXT");
+  } catch {
+    // Existing standalone database already has the additive envelope column.
+  }
+  try {
+    database.exec(
+      "ALTER TABLE runtime_user_turn_requests ADD COLUMN topic_epoch INTEGER NOT NULL DEFAULT 0",
+    );
+  } catch {
+    // Existing standalone database already has the additive epoch column.
+  }
 
-const legacyTopicPrimaryKey = db
-  .query<{ name: string; pk: number }, []>("PRAGMA table_info(runtime_user_turn_requests)")
-  .all()
-  .some((column) => column.name === "topic_id" && column.pk === 1);
-if (legacyTopicPrimaryKey) {
-  db.transaction(() => {
-    db.exec("ALTER TABLE runtime_user_turn_requests RENAME TO runtime_user_turn_requests_legacy");
-    createRuntimeUserTurnRequestsTable();
-    db.exec(`
+  const legacyTopicPrimaryKey = database
+    .query<{ name: string; pk: number }, []>("PRAGMA table_info(runtime_user_turn_requests)")
+    .all()
+    .some((column) => column.name === "topic_id" && column.pk === 1);
+  if (legacyTopicPrimaryKey) {
+    database.transaction(() => {
+      database.exec(
+        "ALTER TABLE runtime_user_turn_requests RENAME TO runtime_user_turn_requests_legacy",
+      );
+      createRuntimeUserTurnRequestsTable(database);
+      database.exec(`
       INSERT INTO runtime_user_turn_requests (
         request_id, topic_id, user_id, prompt, user_messages_json, attachments_json,
         allow_auto_continue, execution_json, topic_epoch, created_at,
@@ -123,12 +128,15 @@ if (legacyTopicPrimaryKey) {
         status, claimed_by, claimed_at, running_query_id
       FROM runtime_user_turn_requests_legacy
     `);
-    db.exec("DROP TABLE runtime_user_turn_requests_legacy");
-  })();
+      database.exec("DROP TABLE runtime_user_turn_requests_legacy");
+    })();
+  }
+  database.exec(
+    "CREATE INDEX IF NOT EXISTS idx_runtime_user_turn_requests_ready ON runtime_user_turn_requests(status, created_at)",
+  );
 }
-db.exec(
-  "CREATE INDEX IF NOT EXISTS idx_runtime_user_turn_requests_ready ON runtime_user_turn_requests(status, created_at)",
-);
+
+ensureRuntimeUserTurnRequestsSchema(db);
 
 function rowToRequest(row: RuntimeUserTurnRequestRow): RuntimeUserTurnRequest {
   let attachments: string[] | undefined;
