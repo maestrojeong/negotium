@@ -18,6 +18,8 @@ required.
   injected host.
 
 See [Browser runtime](./BROWSER-RUNTIME.md) for the host contract and example.
+The exact browser, tool-format, and query-state signatures used by downstream migration are recorded
+in [Otium runtime deduplication](./OTIUM-RUNTIME-DEDUP.md).
 
 ## Shared helpers
 

@@ -32,6 +32,7 @@ instead of copying the explanation.
 | [Migration 0.1.38](./MIGRATION-0.1.38.md) | Authenticated browser readiness, active-turn failure propagation, and startup orphan cleanup |
 | [Migration 0.1.39](./MIGRATION-0.1.39.md) | Host-injected browser runtime and downstream fork reduction |
 | [Browser runtime](./BROWSER-RUNTIME.md) | Host-injected Playwright MCP lifecycle for downstream runtimes |
+| [Otium runtime deduplication](./OTIUM-RUNTIME-DEDUP.md) | Public migration contracts and planned host-factory boundaries |
 
 The root [README](../README.md) is the user-facing entry point. Package-specific setup belongs in
 the package README beside the code it describes.
