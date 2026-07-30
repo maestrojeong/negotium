@@ -34,6 +34,7 @@ export interface WikiTopicBrief {
 export interface WikiMcpHost {
   wikiRoot: string;
   getTopicBrief?(topicId: string): WikiTopicBrief | null;
+  resolveTopicBrief?(selection: string, userId: string): WikiTopicBrief | null;
   setTopicBrief?(
     topicId: string,
     fields: { briefMd?: string; latestSummaryMd?: string; summaryDate?: string },
@@ -44,6 +45,31 @@ export interface WikiMcpContext {
   userId: string;
   topicId?: string;
   surface?: WikiSurface;
+}
+
+interface WikiMemoryTopic {
+  id: string;
+  title: string;
+  visibility?: string;
+  participants: Array<{ userId: string }>;
+}
+
+export function resolveAccessibleWikiTopicBrief(
+  selection: string,
+  userId: string,
+  topics: WikiMemoryTopic[],
+  resolveBrief: (topicId: string, legacyTitle: string) => { brief: WikiTopicBrief } | null,
+): WikiTopicBrief | null {
+  const normalized = selection.trim().toLowerCase();
+  const matches = topics.filter(
+    (topic) =>
+      topic.visibility !== "hidden" &&
+      topic.participants.some((participant) => participant.userId === userId) &&
+      (topic.id === selection || topic.title.trim().toLowerCase() === normalized),
+  );
+  if (matches.length !== 1) return null;
+  const topic = matches[0]!;
+  return resolveBrief(topic.id, topic.title)?.brief ?? null;
 }
 
 interface WikiRuntime extends Required<Pick<WikiMcpContext, "userId" | "surface">> {
@@ -220,10 +246,12 @@ function wikiTopicBrief(args: Record<string, unknown>): CallToolResult {
     };
   }
 
-  const getTopicBrief = runtime().host.getTopicBrief;
-  if (runtime().topicId && getTopicBrief) {
+  const { getTopicBrief, resolveTopicBrief } = runtime().host;
+  if (runtime().topicId && (getTopicBrief || resolveTopicBrief)) {
     try {
-      const brief = getTopicBrief(rawTopic);
+      const brief = resolveTopicBrief
+        ? resolveTopicBrief(rawTopic, runtime().userId)
+        : getTopicBrief!(rawTopic);
       if (!brief) {
         return { content: [{ type: "text", text: `No brief found for topic: ${rawTopic}` }] };
       }
@@ -773,8 +801,21 @@ async function main() {
   let bridge: Partial<WikiMcpHost> = {};
   if (context.topicId) {
     try {
-      const mod = await import("#storage/api-topic-brief");
-      bridge = { getTopicBrief: mod.getTopicBrief, setTopicBrief: mod.setTopicBrief };
+      const [briefs, topics] = await Promise.all([
+        import("#storage/api-topic-brief"),
+        import("#storage/api-topics"),
+      ]);
+      bridge = {
+        getTopicBrief: briefs.getTopicBrief,
+        resolveTopicBrief: (selection, userId) =>
+          resolveAccessibleWikiTopicBrief(
+            selection,
+            userId,
+            topics.listTopics(),
+            briefs.resolveTopicBrief,
+          ),
+        setTopicBrief: briefs.setTopicBrief,
+      };
     } catch {
       // DB not available — degrade gracefully (file-only).
     }

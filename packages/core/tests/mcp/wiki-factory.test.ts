@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createWikiMcpServer } from "#mcp/wiki-server";
+import { createWikiMcpServer, resolveAccessibleWikiTopicBrief } from "#mcp/wiki-server";
 
 const roots: string[] = [];
 
@@ -74,5 +74,112 @@ describe("createWikiMcpServer", () => {
       text(await client.callTool({ name: "wiki_topic_brief", arguments: { topic: "topic-id" } })),
     ).toContain("brief:topic-id");
     await client.close();
+  });
+
+  test("resolves a topic title before reading its canonical brief", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wiki-title-brief-"));
+    roots.push(root);
+    const client = await connect(
+      createWikiMcpServer(
+        { userId: "user", topicId: "caller-topic", surface: "wiki" },
+        {
+          wikiRoot: root,
+          getTopicBrief: (id) => ({
+            briefMd: `legacy:${id}`,
+            updatedAt: "2026-07-18T00:00:00Z",
+          }),
+          resolveTopicBrief: (selection, userId) =>
+            selection === "negotium" && userId === "user"
+              ? {
+                  briefMd: "canonical:topic-id",
+                  updatedAt: "2026-07-30T00:00:00Z",
+                }
+              : null,
+        },
+      ),
+    );
+
+    expect(
+      text(await client.callTool({ name: "wiki_topic_brief", arguments: { topic: "negotium" } })),
+    ).toContain("canonical:topic-id");
+    expect(
+      text(await client.callTool({ name: "wiki_topic_brief", arguments: { topic: "private" } })),
+    ).toContain("No brief found for topic: private");
+    await client.close();
+  });
+
+  test("supports a resolver-only topic brief host", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wiki-resolver-only-"));
+    roots.push(root);
+    const client = await connect(
+      createWikiMcpServer(
+        { userId: "user", topicId: "caller-topic", surface: "wiki" },
+        {
+          wikiRoot: root,
+          resolveTopicBrief: () => ({
+            briefMd: "resolver-only",
+            updatedAt: "2026-07-30T00:00:00Z",
+          }),
+        },
+      ),
+    );
+    expect(
+      text(await client.callTool({ name: "wiki_topic_brief", arguments: { topic: "negotium" } })),
+    ).toContain("resolver-only");
+    await client.close();
+  });
+
+  test("resolves only one visible participant topic before reading its brief", () => {
+    const topics = [
+      {
+        id: "topic-id",
+        title: "Negotium",
+        visibility: "private",
+        participants: [{ userId: "user" }],
+      },
+      {
+        id: "hidden-id",
+        title: "Hidden",
+        visibility: "hidden",
+        participants: [{ userId: "user" }],
+      },
+      {
+        id: "private-id",
+        title: "Private",
+        visibility: "private",
+        participants: [{ userId: "other" }],
+      },
+    ];
+    const resolveBrief = (topicId: string, legacyTitle: string) => ({
+      brief: {
+        briefMd: `canonical:${topicId}:${legacyTitle}`,
+        updatedAt: "2026-07-30T00:00:00Z",
+      },
+    });
+
+    expect(resolveAccessibleWikiTopicBrief("negotium", "user", topics, resolveBrief)?.briefMd).toBe(
+      "canonical:topic-id:Negotium",
+    );
+    expect(resolveAccessibleWikiTopicBrief("topic-id", "user", topics, resolveBrief)?.briefMd).toBe(
+      "canonical:topic-id:Negotium",
+    );
+    expect(resolveAccessibleWikiTopicBrief("Hidden", "user", topics, resolveBrief)).toBeNull();
+    expect(resolveAccessibleWikiTopicBrief("Private", "user", topics, resolveBrief)).toBeNull();
+    expect(
+      resolveAccessibleWikiTopicBrief(
+        "Negotium",
+        "user",
+        [
+          ...topics,
+          {
+            id: "duplicate-id",
+            title: "negotium",
+            visibility: "private",
+            participants: [{ userId: "user" }],
+          },
+        ],
+        resolveBrief,
+      ),
+    ).toBeNull();
   });
 });
