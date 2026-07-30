@@ -34,6 +34,7 @@ instead of copying the explanation.
 | [Migration 0.1.40](./MIGRATION-0.1.40.md) | Public durable ask-user storage, optional schedule_self prompt section, lazy storage-schema fix |
 | [Migration 0.1.41](./MIGRATION-0.1.41.md) | Packaged runtime export fix for the default durable ask-user host |
 | [Migration 0.1.42](./MIGRATION-0.1.42.md) | Browser gateway port ownership, spawn nonce readiness, and startup diagnostics |
+| [Migration 0.1.43](./MIGRATION-0.1.43.md) | Ordered consecutive user-message preservation and interrupted-turn session restart |
 | [Browser runtime](./BROWSER-RUNTIME.md) | Host-injected Playwright MCP lifecycle for downstream runtimes |
 | [Otium runtime deduplication](./OTIUM-RUNTIME-DEDUP.md) | Public migration contracts and planned host-factory boundaries |
 
