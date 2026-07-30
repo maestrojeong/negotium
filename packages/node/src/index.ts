@@ -25,6 +25,7 @@ import {
   nodeRequestHandlerNames,
   onShutdown,
   RUN_DIR,
+  reapOrphanBrowsers,
   reconcilePendingAskUserQuestionGates,
   runNodeRequestHandlers,
   runShutdown,
@@ -53,6 +54,7 @@ import {
   writeNodeDaemonInfo,
 } from "./control";
 import { nodeFileStore } from "./files";
+import { runSingletonStartupMaintenance } from "./startup-maintenance";
 
 export type {
   NodeDaemonConnection,
@@ -157,7 +159,15 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     throw new Error(`a Negotium node is already running for ${STATE_DIR}`);
   }
   try {
-    if (opts.singleton) migrateLegacyCompactedConversations();
+    if (opts.singleton) {
+      // The lease makes this process the sole authority over the shared
+      // profile tree. Reap browsers the previous daemon lost before serving
+      // any turn instead of waiting for the periodic janitor interval.
+      runSingletonStartupMaintenance({
+        reapBrowsers: reapOrphanBrowsers,
+        migrateConversations: migrateLegacyCompactedConversations,
+      });
+    }
     startAskUserQuestionGateOwner();
     reconcilePendingAskUserQuestionGates();
   } catch (error) {

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import "#storage/api-topics";
 import {
   browserProcessMatchesExpectedProfile,
   extractUserDataDirArg,
@@ -13,6 +16,77 @@ import {
   waitForChildProcessSpawnError,
   withPlaywrightInstanceMaintenance,
 } from "#platform/playwright/manager";
+import { probeMcpTransport } from "#platform/playwright/transport-probe";
+
+function stubMcpTransport(options: { tools?: string[]; listError?: boolean } = {}): Transport {
+  const transport: Transport = {
+    async start() {},
+    async close() {
+      transport.onclose?.();
+    },
+    async send(message: JSONRPCMessage) {
+      if (!("method" in message) || !("id" in message)) return;
+      queueMicrotask(() => {
+        if (message.method === "initialize") {
+          transport.onmessage?.({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              protocolVersion: "2025-06-18",
+              capabilities: {},
+              serverInfo: { name: "probe-test", version: "1" },
+            },
+          });
+          return;
+        }
+        if (message.method === "tools/list") {
+          transport.onmessage?.(
+            options.listError
+              ? {
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  error: { code: -32603, message: "tools unavailable" },
+                }
+              : {
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  result: {
+                    tools: (options.tools ?? ["browser_status"]).map((name) => ({
+                      name,
+                      description: name,
+                      inputSchema: { type: "object" },
+                    })),
+                  },
+                },
+          );
+        }
+      });
+    },
+  };
+  return transport;
+}
+
+describe("probeMcpTransport", () => {
+  it("requires initialize, tools/list, and optional session cleanup", async () => {
+    let terminated = false;
+    expect(
+      await probeMcpTransport(stubMcpTransport(), {
+        terminate: async () => {
+          terminated = true;
+        },
+      }),
+    ).toBe(true);
+    expect(terminated).toBe(true);
+  });
+
+  it("rejects a transport whose tools/list request fails", async () => {
+    expect(await probeMcpTransport(stubMcpTransport({ listError: true }))).toBe(false);
+  });
+
+  it("rejects a transport that initializes without browser tools", async () => {
+    expect(await probeMcpTransport(stubMcpTransport({ tools: [] }))).toBe(false);
+  });
+});
 
 describe("isBrowserJanitorOwner", () => {
   it("only lets the current node-daemon lease owner reap shared browser processes", () => {
@@ -105,7 +179,10 @@ describe("selectOrphanBrowserPids", () => {
   });
 
   it("never touches Chrome outside the profile root", () => {
-    const procs = [{ pid: 400, userDataDir: "/Users/me/Library/Chrome" }];
+    const procs = [
+      { pid: 400, userDataDir: "/Users/me/Library/Chrome" },
+      { pid: 401, userDataDir: "/profiles-lookalike/Chrome" },
+    ];
     expect(selectOrphanBrowserPids(procs, [], root, 1)).toEqual([]);
   });
 

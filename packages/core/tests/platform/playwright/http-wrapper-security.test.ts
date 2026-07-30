@@ -6,6 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { probePlaywrightMcpTransports } from "#platform/playwright/transport-probe";
 
 const capability = "wrapper-security-test-capability";
 let port = 0;
@@ -64,6 +65,10 @@ describe("authenticated browser HTTP wrapper", () => {
     expect(health.backend).toBe(
       process.env.NEGOTIUM_BROWSER_RS_BIN ? "browser-rs" : "mcp-patchright",
     );
+  });
+
+  test("passes the authenticated dual-transport readiness probe", async () => {
+    expect(await probePlaywrightMcpTransports(port, capability)).toBe(true);
   });
 
   test("exposes SSE only with owner-scoped header authentication", async () => {

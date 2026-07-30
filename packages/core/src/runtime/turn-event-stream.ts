@@ -712,21 +712,38 @@ export async function runTurnEventStream(
       // message supersedes the turn. Adapters clean up transient tool status
       // separately when they receive ai_aborted.
       emitPendingAssistantMessage();
-      if (!silent) hub.broadcastAborted(topicId, queryId, wsAbortReason(control.abortReason));
       terminalEmitted = true;
-      outcome = { kind: "aborted" };
+      if (control.abortReason === AbortReason.Infrastructure) {
+        // Infrastructure loss is a failed turn, not a user stop. Defer the
+        // terminal event and settlement to turn-runner's provider-error path
+        // so visible turns, asks, subagents, and Cron all receive one
+        // consistent error outcome.
+        outcome = {
+          kind: "provider-error",
+          error: control.abortError ?? "Required browser infrastructure failed",
+        };
+      } else {
+        if (!silent) hub.broadcastAborted(topicId, queryId, wsAbortReason(control.abortReason));
+        outcome = { kind: "aborted" };
+      }
       // Internal abort = this turn is being replaced and (if it was a session
       // inject) re-queued — NOT a failure. Suppress the asker notification so
       // the caller doesn't get a spurious "Aborted" followed by the real reply
       // from the re-queued turn. Only External/stop notifies the asker.
-      if (control.abortReason !== AbortReason.Internal) {
-        deliverAskError(queryId, topicTitle, "Aborted");
+      if (
+        control.abortReason !== AbortReason.Internal &&
+        control.abortReason !== AbortReason.Infrastructure
+      ) {
+        const abortError = control.abortError ?? "Aborted";
+        deliverAskError(queryId, topicTitle, abortError);
         void settleSubagentFailure(queryId, "중지됨 (사용자가 실행을 멈췄습니다)");
       } else {
         // The replay receives a new queryId and registers a fresh callback.
         // Drop the superseded mapping now so it cannot leak until TTL expiry.
-        const { resolveAskCallback } = await import("#runtime/ask-callbacks");
-        resolveAskCallback(queryId);
+        if (control.abortReason === AbortReason.Internal) {
+          const { resolveAskCallback } = await import("#runtime/ask-callbacks");
+          resolveAskCallback(queryId);
+        }
       }
     }
   } catch (err) {

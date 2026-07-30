@@ -753,6 +753,55 @@ describe("turn stream ordering", () => {
     ).toBe(false);
   });
 
+  test("promotes browser infrastructure aborts to provider errors", async () => {
+    const topicId = seedTopic();
+    const queryId = randomUUID();
+    const after = latestRuntimeEventSeq();
+    const control: RoomQueryControl = {
+      topicId,
+      queryId,
+      origin: "user",
+      prompt: "test",
+      abortController: new AbortController(),
+      abortReason: AbortReason.None,
+    };
+    async function* interruptedStream(): AsyncGenerator<UnifiedEvent> {
+      yield { type: "text", content: "incomplete browser answer" };
+      control.abortReason = AbortReason.Infrastructure;
+      control.abortError = "Browser MCP transport became unresponsive and was restarted";
+      control.abortController.abort(new Error(control.abortError));
+      yield { type: "text", content: "ignored after browser failure" };
+    }
+
+    const outcome = await streamAgentEvents(
+      topicId,
+      "stream order",
+      queryId,
+      interruptedStream(),
+      control,
+      "codex",
+      "gpt-5.6-luna",
+      "medium",
+      "owner",
+    );
+
+    expect(outcome).toEqual({
+      kind: "provider-error",
+      error: "Browser MCP transport became unresponsive and was restarted",
+    });
+    expect(listApiMessages(topicId).page).toHaveLength(0);
+    const terminalKinds = listRuntimeEventsAfter(after)
+      .filter(
+        (event) =>
+          event.topicId === topicId &&
+          event.type === "ai-status" &&
+          (event.payload as { queryId?: string }).queryId === queryId,
+      )
+      .map((event) => (event.payload as { kind?: string }).kind);
+    expect(terminalKinds).not.toContain("ai_aborted");
+    expect(terminalKinds).not.toContain("ai_done");
+  });
+
   test("returns retryable session expiry and removes incomplete assistant segments", async () => {
     const topicId = seedTopic();
     const queryId = randomUUID();

@@ -197,7 +197,7 @@ export {
   runNodeRequestHandlers,
   unregisterNodeRequestHandler,
 } from "#platform/node-plugins";
-export { killAllPlaywright } from "#platform/playwright/manager";
+export { killAllPlaywright, reapOrphanBrowsers } from "#platform/playwright/manager";
 // ── Query control ───────────────────────────────────────────────────
 export {
   abortAllRooms,

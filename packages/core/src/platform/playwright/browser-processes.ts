@@ -145,7 +145,8 @@ export function cleanupZombiePlaywright(): void {
  */
 export function killBrowserProcsForUserDataDir(userDataDir: string): void {
   const target = resolve(userDataDir);
-  if (!target.startsWith(resolve(BROWSER_PROFILES_DIR))) return;
+  const profileRoot = resolve(BROWSER_PROFILES_DIR);
+  if (target !== profileRoot && !target.startsWith(`${profileRoot}${sep}`)) return;
   let pids: string;
   try {
     pids = execFileSync("pgrep", ["-f", "--", userDataDir], { stdio: "pipe" }).toString().trim();
@@ -194,7 +195,7 @@ export function selectOrphanBrowserPids(
   for (const { pid, userDataDir } of procs) {
     if (pid === selfPid || !userDataDir) continue;
     const dir = resolve(userDataDir);
-    if (!dir.startsWith(root)) continue; // never touch Chrome outside our dir
+    if (dir !== root && !dir.startsWith(`${root}${sep}`)) continue;
     if (live.has(dir)) continue; // belongs to a tracked instance
     out.push(pid);
   }

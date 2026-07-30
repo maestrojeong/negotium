@@ -119,6 +119,8 @@ export interface RoomQueryControl {
   sessionId?: string | null;
   abortController: AbortController;
   abortReason: AbortReason;
+  /** Specific failure surfaced when infrastructure aborts the turn. */
+  abortError?: string;
   /** Epoch ms when this turn claimed the room (stale-abort guard). */
   startedAt?: number;
   /**

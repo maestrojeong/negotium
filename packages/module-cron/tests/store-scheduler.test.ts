@@ -295,6 +295,33 @@ describe("cron scheduler", () => {
     });
   });
 
+  test("records browser infrastructure failures as failed runs with their cause", async () => {
+    const topic = createTopic();
+    const job = createJob(topic);
+    requestCronRun(job.id, new Date("2026-07-14T12:01:00Z"));
+    const scheduler = new CronScheduler({
+      now: () => new Date("2026-07-14T12:02:00Z"),
+      dispatch(_job, _run, hooks) {
+        hooks.onDispatched("cron-browser-failure");
+        hooks.onSettled({
+          queryId: "cron-browser-failure",
+          kind: "error",
+          error: "Browser MCP transport became unresponsive and was restarted",
+        });
+        return "cron-browser-failure";
+      },
+    });
+
+    await scheduler.tick();
+    await waitFor(() => listCronRuns(job.id, 1)[0]?.status === "failed");
+
+    expect(listCronRuns(job.id, 1)[0]).toMatchObject({
+      status: "failed",
+      queryId: "cron-browser-failure",
+      error: "Browser MCP transport became unresponsive and was restarted",
+    });
+  });
+
   test("serializes jobs by topic and gives the next job the previous job context", async () => {
     const topic = createTopic();
     const first = createJob(topic);

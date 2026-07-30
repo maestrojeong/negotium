@@ -58,6 +58,7 @@ import {
 import { buildMentionOnlyChannelPrompt } from "#runtime/channel-context";
 import { classifyAgentError, stringifyError } from "#runtime/errors";
 import { withTurnSilenceHeartbeat } from "#runtime/event-heartbeat";
+import { trackPlaywrightTurn, untrackPlaywrightTurn } from "#runtime/playwright-turn-abort";
 import { getTopicConfig } from "#runtime/topic-config";
 import { runTurnEventStream, type StreamAgentOutcome } from "#runtime/turn-event-stream";
 import {
@@ -1289,6 +1290,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         if (!playwrightCapability) {
           throw new Error("browser MCP capability was not registered");
         }
+        trackPlaywrightTurn(playwrightInstanceKey, control);
       } catch (err) {
         logger.warn(
           { topicId, err },
@@ -1361,7 +1363,10 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         peerBridge,
       });
     } finally {
-      if (playwrightInstanceKey) unpinPlaywrightInstance(playwrightInstanceKey);
+      if (playwrightInstanceKey) {
+        untrackPlaywrightTurn(playwrightInstanceKey, control);
+        unpinPlaywrightInstance(playwrightInstanceKey);
+      }
     }
   }
   // Provider streams can stay silent while reasoning, starting MCPs, or

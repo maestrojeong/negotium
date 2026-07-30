@@ -1,4 +1,3 @@
-import { createHmac } from "node:crypto";
 import { canonicalMcpBridgeEnv } from "#mcp/canonical-bridge-config";
 import { buildRuntimeMcpSpec, RUNTIME_MCP_KEY } from "#mcp/runtime-spec";
 import { peerSessionBridgeIpcEnv } from "#mcp/session-comm/bridge-ipc-config";
@@ -24,6 +23,7 @@ import {
   commonRuntimeMcpPolicy,
   type RuntimeMcpScope,
 } from "#platform/mcp-catalog-policy";
+import { browserOwnerCapability } from "#platform/playwright/capability";
 import type { AgentKind, AgentQueryOptions, PeerRuntimeBridgeContext } from "#types";
 
 export type { RuntimeMcpScope } from "#platform/mcp-catalog-policy";
@@ -216,9 +216,7 @@ export interface RuntimeMcpCatalogEntry {
 
 export const CODEX_BROWSER_CAPABILITY_ENV = "NEGOTIUM_BROWSER_CAPABILITY";
 
-export function browserOwnerCapability(capability: string, owner: string): string {
-  return createHmac("sha256", capability).update(owner).digest("hex");
-}
+export { browserOwnerCapability };
 
 export function browserOwnerForContext(ctx: {
   userId?: string;

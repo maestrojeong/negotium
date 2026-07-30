@@ -36,6 +36,7 @@ import {
   type HeadedPlaywrightSpawnSpec,
   resolveHeadedPlaywrightSpawn,
 } from "#platform/playwright/headed-launch";
+import { probePlaywrightMcpTransports } from "#platform/playwright/transport-probe";
 import { sanitizeTopicName } from "#security/sanitize";
 import {
   assignTopicBrowserProfile,
@@ -54,8 +55,10 @@ import {
 export {
   cleanupZombiePlaywright,
   isBrowserJanitorOwner,
+  reapOrphanBrowsers,
   selectOrphanBrowserPids,
 } from "#platform/playwright/browser-processes";
+export { probePlaywrightMcpTransports } from "#platform/playwright/transport-probe";
 export {
   browserProcessMatchesExpectedProfile,
   extractUserDataDirArg,
@@ -219,16 +222,30 @@ export function getPlaywrightCapability(instanceKey: string): string | undefined
   return instances.get(instanceKey)?.capability;
 }
 
-// --- Abnormal exit notification callback ---
-// Fired when a Playwright MCP child process exits with a non-zero / non-null
-// code that did NOT originate from our own killInstance() (those paths are
-// intentional cleanups, not crashes). Consumers use this to abort any
-// in-flight `handleAgentQuery` whose Claude SDK is waiting on a tool result
-// the dead MCP can never deliver — preventing 20+ minute typing-only stalls.
-type PlaywrightExitHandler = (instanceKey: string, code: number | null) => void;
-let _onPlaywrightExit: PlaywrightExitHandler | null = null;
-export function onPlaywrightExit(handler: PlaywrightExitHandler) {
-  _onPlaywrightExit = handler;
+// --- Browser MCP failure notification callback ---
+// Fired when a managed process fails or its transport becomes unhealthy.
+// Intentional cleanup paths do not notify consumers.
+export interface PlaywrightFailure {
+  reason: "exit" | "process-error" | "unhealthy";
+  code?: number | null;
+  error?: string;
+}
+
+type PlaywrightFailureHandler = (instanceKey: string, failure: PlaywrightFailure) => void;
+const playwrightFailureHandlers = new Set<PlaywrightFailureHandler>();
+export function onPlaywrightFailure(handler: PlaywrightFailureHandler): () => void {
+  playwrightFailureHandlers.add(handler);
+  return () => playwrightFailureHandlers.delete(handler);
+}
+
+function notifyPlaywrightFailure(instanceKey: string, failure: PlaywrightFailure): void {
+  for (const handler of playwrightFailureHandlers) {
+    try {
+      handler(instanceKey, failure);
+    } catch (err) {
+      logger.warn({ err, instanceKey, failure }, "Playwright failure handler failed");
+    }
+  }
 }
 
 /**
@@ -471,6 +488,10 @@ async function spawnPlaywright(
       releasePort(port);
       instances.delete(instanceKey);
       reapCrashedBrowser();
+      notifyPlaywrightFailure(instanceKey, {
+        reason: "process-error",
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   });
 
@@ -486,7 +507,7 @@ async function spawnPlaywright(
       releasePort(port);
       instances.delete(instanceKey);
       reapCrashedBrowser();
-      _onPlaywrightExit?.(instanceKey, code);
+      notifyPlaywrightFailure(instanceKey, { reason: "exit", code });
     }
   });
 
@@ -502,7 +523,9 @@ async function spawnPlaywright(
 
   const ready = await Promise.race([
     (async () =>
-      (await waitForServer(port, 10_000)) && (await supportsOwnerCleanup(port, capability)))(),
+      (await waitForServer(port, 10_000)) &&
+      (await supportsOwnerCleanup(port, capability)) &&
+      (await probePlaywrightMcpTransports(port, capability)))(),
     spawnError,
   ]);
   if (!ready) {
@@ -577,19 +600,24 @@ export async function ensurePlaywright(userId: string, topic?: string): Promise<
     const existing = instances.get(instanceKey);
 
     if (existing && !existing.process.killed && existing.process.exitCode === null) {
-      if (await isHealthy(existing.port)) {
+      if (await probePlaywrightMcpTransports(existing.port, existing.capability)) {
         existing.lastUsedAt = Date.now();
         return existing.port;
       }
       logger.warn({ instanceKey }, "Playwright MCP unresponsive, restarting");
       const oldPort = existing.port;
       killInstance(instanceKey);
+      notifyPlaywrightFailure(instanceKey, { reason: "unhealthy" });
       await waitForPortRelease(oldPort);
       cleanSingletonFiles(resolveUserDataDir(instanceKey));
     } else if (existing) {
       releasePort(existing.port);
       instances.delete(instanceKey);
       cleanSingletonFiles(resolveUserDataDir(instanceKey));
+      notifyPlaywrightFailure(instanceKey, {
+        reason: "exit",
+        code: existing.process.exitCode,
+      });
     }
 
     return spawnPlaywright(instanceKey, userId);
@@ -612,7 +640,10 @@ export async function ensureBrowserProfile(ownerId: string, rawProfile: string):
   const inProgress = spawning.get(instanceKey);
   if (inProgress) {
     const port = await inProgress;
-    if (port !== null && (await isHealthy(port))) return port;
+    const capability = instances.get(instanceKey)?.capability;
+    if (port !== null && capability && (await probePlaywrightMcpTransports(port, capability))) {
+      return port;
+    }
     if (port === null) return ensureBrowserProfile(ownerId, rawProfile);
     throw new Error(`Browser profile "${rawProfile}" failed to start.`);
   }
@@ -635,17 +666,27 @@ export async function ensureBrowserProfile(ownerId: string, rawProfile: string):
     }
 
     if (existing && !existing.process.killed && existing.process.exitCode === null) {
-      if (await isHealthy(existing.port)) {
+      if (await probePlaywrightMcpTransports(existing.port, existing.capability)) {
         existing.lastUsedAt = Date.now();
         return existing.port;
       }
       const oldPort = existing.port;
       killInstance(instanceKey);
+      notifyPlaywrightFailure(instanceKey, { reason: "unhealthy" });
       await waitForPortRelease(oldPort);
       cleanSingletonFiles(resolveUserDataDir(instanceKey));
+    } else if (existing) {
+      releasePort(existing.port);
+      instances.delete(instanceKey);
+      cleanSingletonFiles(resolveUserDataDir(instanceKey));
+      notifyPlaywrightFailure(instanceKey, {
+        reason: "exit",
+        code: existing.process.exitCode,
+      });
     }
     const port = await spawnPlaywright(instanceKey, ownerId);
-    if (!(await isHealthy(port))) {
+    const capability = instances.get(instanceKey)?.capability;
+    if (!capability || !(await probePlaywrightMcpTransports(port, capability))) {
       killInstance(instanceKey);
       throw new Error(`Browser profile "${rawProfile}" did not pass its health check.`);
     }

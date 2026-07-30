@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BUNDLED_CODEX_VERSION } from "#agents/codex-native-multi-agent";
+import { browserOwnerCapability } from "#platform/playwright/capability";
 import type { AgentQueryOptions } from "#types";
 
 // `codexProvider` does an up-front `existsSync(codexAuthPath)` check
@@ -63,7 +64,7 @@ mock.module("@openai/codex-sdk", () => ({
 }));
 
 mock.module("#platform/mcp-config", () => ({
-  browserOwnerCapability: (capability: string, owner: string) => `${capability}:${owner}`,
+  browserOwnerCapability,
   browserOwnerForContext: (context: { userId?: string; session?: string; topicId?: string }) =>
     context.topicId
       ? `topic:${context.topicId}`
@@ -634,7 +635,7 @@ describe("codexProvider MCP config", () => {
     expect(codexConstructor).toHaveBeenCalledWith(
       expect.objectContaining({
         env: expect.objectContaining({
-          NEGOTIUM_BROWSER_CAPABILITY: "secret-capability:user:1:dev",
+          NEGOTIUM_BROWSER_CAPABILITY: browserOwnerCapability("secret-capability", "user:1:dev"),
         }),
       }),
     );
