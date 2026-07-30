@@ -439,6 +439,13 @@ if (typeof queryRuntime.createQueryStateStore !== "function") {
 if (typeof agentHelpers.formatToolUse !== "function") {
   throw new Error("packed tool-format helper is missing");
 }
+if (
+  typeof agentHelpers.defaultAskUserDurabilityHost !== "object" ||
+  typeof agentHelpers.defaultAskUserDurabilityHost?.gates?.prepare !== "function" ||
+  typeof agentHelpers.defaultAskUserDurabilityHost?.processLeases?.acquire !== "function"
+) {
+  throw new Error("packed default ask-user durability host is missing");
+}
 if (typeof agentHelpers.createTopicLogMaintenance !== "function") {
   throw new Error("packed topic-log maintenance factory is missing");
 }

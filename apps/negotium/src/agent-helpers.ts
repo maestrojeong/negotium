@@ -40,6 +40,7 @@ export {
   createTopicLogMaintenance,
   createVaultToolPolicy,
   DEFAULT_SELF_CONFIG_PRODUCT,
+  defaultAskUserDurabilityHost,
   type ForkAgentSessionOptions,
   type ForkHandle,
   findNewCodexChildren,
