@@ -50,6 +50,7 @@ export {
   type AskUserRuntimeHost,
   type AskUserToolContext,
   createAskUserRuntime,
+  defaultAskUserDurabilityHost,
   normalizeAskUserChoices,
   normalizeAskUserQuestionInput,
 } from "#agents/mcp-tools/ask-user";

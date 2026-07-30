@@ -21,6 +21,23 @@ describe("public storage facade", () => {
     expect(storage.sessionAsks.createPendingAsk).toBe(storage.createPendingAsk);
   });
 
+  test("exposes durable ask-user-gate and runtime-process-lease storage for embedding hosts", () => {
+    expect(storage.prepareAskUserGate).toBeFunction();
+    expect(storage.claimAskUserGateAndSelect).toBeFunction();
+    expect(storage.cancelAskUserGate).toBeFunction();
+    expect(storage.quarantineAskUserGate).toBeFunction();
+    expect(storage.quarantineForeignAskUserGates).toBeFunction();
+    expect(storage.askUserGates.prepareAskUserGate).toBe(storage.prepareAskUserGate);
+
+    expect(storage.acquireRuntimeProcessLease).toBeFunction();
+    expect(storage.listRuntimeProcessLeases).toBeFunction();
+    expect(storage.isRuntimeProcessLeaseAlive).toBeFunction();
+    expect(storage.removeDeadRuntimeProcessLeases).toBeFunction();
+    expect(storage.runtimeProcessLeases.acquireRuntimeProcessLease).toBe(
+      storage.acquireRuntimeProcessLease,
+    );
+  });
+
   test("importing the facade does not create fallback storage paths", () => {
     const parent = mkdtempSync(join(tmpdir(), "negotium-storage-import-"));
     const stateDir = join(parent, "state-that-must-stay-absent");

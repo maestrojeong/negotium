@@ -1,5 +1,6 @@
 import { db } from "#storage/forum-db";
 import { RUNTIME_INSTANCE_ID } from "#storage/runtime-leases";
+import { registerStorageSchemaInitializer } from "#storage/storage-host";
 
 export const PROCESS_LEASE_STALE_MS = 5_000;
 export const PROCESS_LEASE_HEARTBEAT_MS = 1_000;
@@ -43,18 +44,18 @@ interface RuntimeProcessLeaseRow {
   heartbeat_at: number | bigint;
 }
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS runtime_process_leases (
-    role TEXT PRIMARY KEY,
-    owner_id TEXT NOT NULL UNIQUE,
-    pid INTEGER NOT NULL,
-    started_at INTEGER NOT NULL,
-    heartbeat_at INTEGER NOT NULL
-  )
-`);
-db.exec(
-  "CREATE INDEX IF NOT EXISTS idx_runtime_process_leases_heartbeat ON runtime_process_leases(heartbeat_at)",
-);
+registerStorageSchemaInitializer((database) => {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS runtime_process_leases (
+      role TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL UNIQUE,
+      pid INTEGER NOT NULL,
+      started_at INTEGER NOT NULL,
+      heartbeat_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_runtime_process_leases_heartbeat ON runtime_process_leases(heartbeat_at);
+  `);
+}, 34);
 
 function rowToLease(row: RuntimeProcessLeaseRow): RuntimeProcessLease {
   return {

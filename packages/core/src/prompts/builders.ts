@@ -205,6 +205,14 @@ export interface PromptTemplateRequest {
 export interface PromptBuilderHost {
   readonly loadTemplate?: (request: PromptTemplateRequest) => string | null | undefined;
   readonly extraSections?: readonly PromptExtraSection[];
+  /**
+   * Whether the runtime exposes `schedule_self`/`get_self_schedule`/
+   * `update_self_schedule`/`cancel_self_schedule` tools. Defaults to `true`
+   * (Negotium's own runtime-server exposes them). Hosts without a matching
+   * delayed-continuation worker should set this to `false` so the generated
+   * prompt does not advertise a tool call that will fail with tool-not-found.
+   */
+  readonly scheduleSelf?: boolean;
 }
 
 export interface PromptBuilders {
@@ -223,6 +231,7 @@ interface RuntimeToolSectionOpts {
   currentEffort?: EffortLevel;
   subagentParentTitle?: string;
   subagentReportMode?: SubagentReportMode;
+  scheduleSelf?: boolean;
 }
 
 interface RuntimeToolSectionExtensions {
@@ -244,6 +253,7 @@ function buildRuntimeToolSection(
     currentEffort,
     subagentParentTitle,
     subagentReportMode = "auto",
+    scheduleSelf = true,
   } = opts;
   const runtimeNamespace = "mcp__runtime";
   const taskNamespace = "mcp__task";
@@ -327,7 +337,7 @@ function buildRuntimeToolSection(
           askUserToolLine,
           'Do not use provider built-in "AskUserQuestion"; it is disabled or unsupported in this headless chat runtime. Use the runtime ask_user_question tool instead.',
         ]),
-    scheduleSelfToolLine,
+    ...(scheduleSelf ? [scheduleSelfToolLine] : []),
     ...(visualTools && extensions.visualDesignGuide ? ["", extensions.visualDesignGuide] : []),
     ...extensions.render("after-runtime-tools"),
     "",
@@ -412,6 +422,7 @@ function buildRuntimeToolSection(
 
 export function createPromptBuilders(host: PromptBuilderHost = {}): PromptBuilders {
   const loadTemplate = host.loadTemplate;
+  const scheduleSelf = host.scheduleSelf ?? true;
   const sections = (host.extraSections ?? []).map((section): PromptExtraSection => {
     const render = section.render;
     const snapshot: PromptExtraSection = {
@@ -481,6 +492,7 @@ export function createPromptBuilders(host: PromptBuilderHost = {}): PromptBuilde
           currentEffort: opts.currentEffort,
           subagentParentTitle: opts.subagentParentTitle,
           subagentReportMode: opts.subagentReportMode,
+          scheduleSelf,
         },
         {
           render,

@@ -500,6 +500,35 @@ export function createAskUserRuntime(host: AskUserRuntimeHost): AskUserRuntime {
   };
 }
 
+/**
+ * Negotium's own SQLite-backed durability wiring for {@link AskUserRuntimeHost}.
+ * Embedding hosts (e.g. Otium) that want durable ask-gates and runtime-process
+ * leases without reimplementing that storage can reuse this directly:
+ * `createAskUserRuntime({ messaging, topics, durability: defaultAskUserDurabilityHost, runtime })`.
+ *
+ * Important: the gate claim step reads and writes the `ask_user_question`
+ * column on the real `api_messages` row directly (see `#storage/ask-user-gates`),
+ * not through `host.messaging.persistence`. A host that pairs this durability
+ * layer with its own message store must still persist the ask-card message via
+ * Negotium's `appendApiMessage`/`getApiMessage` (exported from `negotium/storage`)
+ * so the gate and the message agree on the same row.
+ */
+export const defaultAskUserDurabilityHost: AskUserRuntimeHost["durability"] = {
+  gates: {
+    prepare: prepareAskUserGate,
+    claimAndSelect: claimAskUserGateAndSelect,
+    cancel: cancelAskUserGate,
+    quarantine: quarantineAskUserGate,
+    quarantineForeign: quarantineForeignAskUserGates,
+  },
+  processLeases: {
+    acquire: (role, ownerId) => acquireRuntimeProcessLease(role, { ownerId }),
+    list: listRuntimeProcessLeases,
+    isAlive: isRuntimeProcessLeaseAlive,
+    removeDead: removeDeadRuntimeProcessLeases,
+  },
+};
+
 const defaultAskUserRuntime = createAskUserRuntime({
   messaging: {
     persistence: {
@@ -519,21 +548,7 @@ const defaultAskUserRuntime = createAskUserRuntime({
     getTopic,
     getConfig: getApiTopicConfig,
   },
-  durability: {
-    gates: {
-      prepare: prepareAskUserGate,
-      claimAndSelect: claimAskUserGateAndSelect,
-      cancel: cancelAskUserGate,
-      quarantine: quarantineAskUserGate,
-      quarantineForeign: quarantineForeignAskUserGates,
-    },
-    processLeases: {
-      acquire: (role, ownerId) => acquireRuntimeProcessLease(role, { ownerId }),
-      list: listRuntimeProcessLeases,
-      isAlive: isRuntimeProcessLeaseAlive,
-      removeDead: removeDeadRuntimeProcessLeases,
-    },
-  },
+  durability: defaultAskUserDurabilityHost,
   runtime: {
     ownerId: ASK_GATE_OWNER_ID,
     createId: randomUUID,

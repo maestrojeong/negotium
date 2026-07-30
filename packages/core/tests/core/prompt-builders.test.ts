@@ -69,6 +69,35 @@ describe("session system prompt builders", () => {
     expect(prompt.replaceAll("{{KEY}}", "")).not.toContain("{{");
   });
 
+  test("omits schedule_self guidance when the host disables it", () => {
+    const builders = createPromptBuilders({ scheduleSelf: false });
+    const prompt = builders.buildTopicSystemPrompt({
+      aiLabel: "Otium",
+      topicTitle: "Research",
+      workspaceCwd: "/otium/workspace/topics/research",
+      agentKind: "claude",
+    });
+
+    expect(prompt).not.toContain("schedule_self");
+    expect(prompt).not.toContain("get_self_schedule");
+    expect(prompt).not.toContain("update_self_schedule");
+    expect(prompt).not.toContain("cancel_self_schedule");
+    // Everything else in the runtime tools section still renders.
+    expect(prompt).toContain("mcp__runtime__ask_user_question");
+    expect(prompt).toContain("mcp__task__task_create");
+  });
+
+  test("defaults to advertising schedule_self when the host omits the option", () => {
+    const prompt = createPromptBuilders({}).buildTopicSystemPrompt({
+      aiLabel: "Otium",
+      topicTitle: "Research",
+      workspaceCwd: "/otium/workspace/topics/research",
+      agentKind: "claude",
+    });
+
+    expect(prompt).toContain("mcp__runtime__schedule_self");
+  });
+
   test("inserts replacement-pattern characters literally", () => {
     const prompt = buildTopicSystemPrompt({
       aiLabel: "Otium",

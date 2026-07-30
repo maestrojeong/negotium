@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { db } from "#storage/forum-db";
 import { TOPIC_MAINTENANCE_STALE_MS } from "#storage/runtime-topic-state";
+import { registerStorageSchemaInitializer } from "#storage/storage-host";
 
 export const RUNTIME_INSTANCE_ID = `${process.pid}-${randomUUID()}`;
 export const TURN_LEASE_STALE_MS = 10_000;
@@ -27,21 +28,21 @@ interface RuntimeTurnLeaseRow {
   abort_reason: string | null;
 }
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS runtime_turn_leases (
-    topic_id TEXT PRIMARY KEY,
-    query_id TEXT NOT NULL UNIQUE,
-    owner_id TEXT NOT NULL,
-    origin TEXT NOT NULL,
-    started_at INTEGER NOT NULL,
-    heartbeat_at INTEGER NOT NULL,
-    abort_requested INTEGER NOT NULL DEFAULT 0 CHECK (abort_requested IN (0, 1)),
-    abort_reason TEXT CHECK (abort_reason IS NULL OR abort_reason IN ('internal', 'external'))
-  )
-`);
-db.exec(
-  "CREATE INDEX IF NOT EXISTS idx_runtime_turn_leases_heartbeat ON runtime_turn_leases(heartbeat_at)",
-);
+registerStorageSchemaInitializer((database) => {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS runtime_turn_leases (
+      topic_id TEXT PRIMARY KEY,
+      query_id TEXT NOT NULL UNIQUE,
+      owner_id TEXT NOT NULL,
+      origin TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      heartbeat_at INTEGER NOT NULL,
+      abort_requested INTEGER NOT NULL DEFAULT 0 CHECK (abort_requested IN (0, 1)),
+      abort_reason TEXT CHECK (abort_reason IS NULL OR abort_reason IN ('internal', 'external'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_runtime_turn_leases_heartbeat ON runtime_turn_leases(heartbeat_at);
+  `);
+}, 33);
 
 function rowToLease(row: RuntimeTurnLeaseRow): RuntimeTurnLease {
   const abortReason =

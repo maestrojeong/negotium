@@ -16,6 +16,8 @@ export * as apiTopics from "#storage/api-topics";
 export * from "#storage/api-topics";
 export * as appSettings from "#storage/app-settings";
 export * from "#storage/app-settings";
+export * as askUserGates from "#storage/ask-user-gates";
+export * from "#storage/ask-user-gates";
 export * as conversations from "#storage/conversations";
 export * from "#storage/conversations";
 export type {
@@ -55,6 +57,8 @@ export {
   setTopicMcpExtra,
   updateTopicThreadId,
 } from "#storage/forum/index";
+export * as runtimeProcessLeases from "#storage/runtime-process-leases";
+export * from "#storage/runtime-process-leases";
 export * as sessionAsks from "#storage/session-asks";
 export * from "#storage/session-asks";
 export type {

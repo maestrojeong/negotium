@@ -5,9 +5,15 @@ import {
   cancelPendingAskUserQuestions,
   createAskUserRuntime,
   createAskUserToolDefinition,
+  defaultAskUserDurabilityHost,
 } from "#agents/mcp-tools/ask-user";
 import { runtimeBus, setRuntimeBus } from "#bus";
-import { appendApiMessage, getApiMessage, listApiMessages } from "#storage/api-messages";
+import {
+  appendApiMessage,
+  getApiMessage,
+  listApiMessages,
+  listApiMessagesByKind,
+} from "#storage/api-messages";
 import { deleteTopic, upsertTopic } from "#storage/api-topics";
 import { prepareAskUserGate, quarantineForeignAskUserGates } from "#storage/ask-user-gates";
 import type { MessageDto } from "#types/api";
@@ -197,6 +203,69 @@ describe("runtime ask_user_question", () => {
 
     runtime.stopGateOwner();
     expect(leaseStopped).toBe(true);
+  });
+
+  test("defaultAskUserDurabilityHost drives a real prepare/answer cycle against SQLite storage", async () => {
+    // Mirrors the composition an embedding host (e.g. Otium) is expected to use:
+    // plug Negotium's durable SQLite gate/lease storage into host-owned
+    // publication/topics/runtime wiring. The claim step reads and writes the
+    // `ask_user_question` column on the real `api_messages` row directly (not
+    // through `messaging.persistence`), so message persistence must also be
+    // backed by Negotium's own `appendApiMessage`/`getApiMessage` storage.
+    const topicId = seedTopic();
+    const publishedUpdates: string[] = [];
+    const ownerId = `external-host-${crypto.randomUUID()}`;
+
+    const host: AskUserRuntimeHost = {
+      messaging: {
+        persistence: {
+          getMessage: (requestedTopicId, messageId) => getApiMessage(requestedTopicId, messageId),
+          appendMessage: (message) => appendApiMessage(message),
+        },
+        publication: {
+          publishMessage: () => {},
+          publishCardUpdate: (update) => {
+            publishedUpdates.push(update.messageId);
+          },
+        },
+      },
+      topics: {
+        getTopic: () => ({ participants: [{ userId: USER, role: "owner" }] }),
+        getConfig: () => ({}),
+      },
+      durability: defaultAskUserDurabilityHost,
+      runtime: {
+        ownerId,
+        createId: () => crypto.randomUUID(),
+        now: () => new Date().toISOString(),
+      },
+    };
+
+    const runtime = createAskUserRuntime(host);
+    const tool = runtime.createToolDefinition({
+      userId: USER,
+      topicId,
+      queryId: "external-host-query",
+      agent: "maestro",
+    });
+
+    const pending = tool.handler({
+      question: "Use the external host's durability wiring?",
+      choices: [{ label: "Yes" }],
+    });
+    await Bun.sleep(0);
+
+    const askMessage = listApiMessagesByKind("ask_user_question").find(
+      (message) => message.topicId === topicId,
+    );
+    expect(askMessage).toBeDefined();
+    expect(runtime.hasPendingQuestion(topicId, askMessage!.id)).toBe(true);
+
+    const answered = runtime.answerPendingQuestion(topicId, askMessage!.id, "Yes", USER);
+    expect(answered.ok).toBe(true);
+    expect((await pending).content[0]?.text).toContain("User selected: Yes");
+    expect(publishedUpdates).toEqual([askMessage!.id]);
+    expect(getApiMessage(topicId, askMessage!.id)?.askUserQuestion?.selectedLabel).toBe("Yes");
   });
 
   test("preserves this binding for host runtime and process lease methods", () => {

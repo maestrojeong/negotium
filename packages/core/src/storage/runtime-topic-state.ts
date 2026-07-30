@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { db } from "#storage/forum-db";
+import { registerStorageSchemaInitializer } from "#storage/storage-host";
 
 export const TOPIC_MAINTENANCE_STALE_MS = 30_000;
 export const TOPIC_MAINTENANCE_HEARTBEAT_MS = 1_000;
@@ -28,15 +29,17 @@ interface RuntimeTopicStateRow {
   heartbeat_at: number | bigint | null;
 }
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS runtime_topic_state (
-    topic_id TEXT PRIMARY KEY,
-    epoch INTEGER NOT NULL DEFAULT 0,
-    maintenance INTEGER NOT NULL DEFAULT 0 CHECK (maintenance IN (0, 1)),
-    maintenance_owner TEXT,
-    heartbeat_at INTEGER
-  )
-`);
+registerStorageSchemaInitializer((database) => {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS runtime_topic_state (
+      topic_id TEXT PRIMARY KEY,
+      epoch INTEGER NOT NULL DEFAULT 0,
+      maintenance INTEGER NOT NULL DEFAULT 0 CHECK (maintenance IN (0, 1)),
+      maintenance_owner TEXT,
+      heartbeat_at INTEGER
+    )
+  `);
+}, 32);
 
 function rowToState(row: RuntimeTopicStateRow, now = Date.now()): RuntimeTopicState {
   const heartbeatAt = row.heartbeat_at === null ? undefined : Number(row.heartbeat_at);
