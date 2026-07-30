@@ -87,6 +87,201 @@ async function runInteractive(command: string, commandArgs: string[], cwd = root
   }
 }
 
+function unusedLoopbackPort(): number {
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response("port reservation"),
+  });
+  const port = server.port;
+  server.stop(true);
+  if (!port) fail("could not reserve a loopback port for the packed startup smoke");
+  return port;
+}
+
+function captureStream(stream: ReadableStream<Uint8Array>): {
+  text: () => string;
+  done: Promise<void>;
+} {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let output = "";
+  const done = (async () => {
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        output += decoder.decode(value, { stream: true });
+      }
+      output += decoder.decode();
+    } finally {
+      reader.releaseLock();
+    }
+  })();
+  return { text: () => output, done };
+}
+
+async function assertPackedServerStarts(
+  bin: string,
+  args: string[],
+  healthPath: string,
+  listeningLabel: string,
+  cwd: string,
+  env: Record<string, string | undefined>,
+): Promise<void> {
+  let lastFailure = "";
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const port = unusedLoopbackPort();
+    const child = Bun.spawn([bin, ...args, `--port=${port}`], {
+      cwd,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = captureStream(child.stdout);
+    const stderr = captureStream(child.stderr);
+    const listeningMarker = `${listeningLabel} on 127.0.0.1:${port}`;
+    let healthy = false;
+    let timedOut = false;
+    const deadline = Date.now() + 15_000;
+
+    try {
+      while (Date.now() < deadline && child.exitCode === null) {
+        if (stdout.text().includes(listeningMarker)) {
+          try {
+            const response = await fetch(`http://127.0.0.1:${port}${healthPath}`, {
+              signal: AbortSignal.timeout(500),
+            });
+            const body = (await response.json()) as { ok?: boolean; pid?: number };
+            const pidMatches = healthPath !== "/health" || body.pid === child.pid;
+            if (response.ok && body.ok === true && pidMatches) {
+              healthy = true;
+              break;
+            }
+          } catch {
+            // The packed server printed its listener before the health route became ready.
+          }
+        }
+        await Bun.sleep(100);
+      }
+      timedOut = !healthy && child.exitCode === null;
+    } finally {
+      if (child.exitCode === null) child.kill("SIGTERM");
+      const exited = await Promise.race([
+        child.exited.then(() => true),
+        Bun.sleep(2_000).then(() => false),
+      ]);
+      if (!exited) {
+        child.kill("SIGKILL");
+        await child.exited;
+      }
+      await Promise.all([stdout.done, stderr.done]);
+    }
+
+    if (healthy) return;
+    lastFailure =
+      `packed negotium ${args.join(" ")} did not become ready at ` +
+      `http://127.0.0.1:${port}${healthPath} (attempt ${attempt}, ` +
+      `${timedOut ? "timed out" : `status ${child.exitCode}`})\n` +
+      `stdout:\n${stdout.text()}\nstderr:\n${stderr.text()}`;
+    if (timedOut) break;
+  }
+  fail(lastFailure);
+}
+
+async function withPackedNodeDaemon(
+  bin: string,
+  cwd: string,
+  env: Record<string, string | undefined>,
+  action: () => Promise<void>,
+): Promise<void> {
+  const stateDir = env.NEGOTIUM_STATE_DIR;
+  if (!stateDir) fail("packed node daemon smoke requires NEGOTIUM_STATE_DIR");
+  const infoPath = join(stateDir, "run", "node-daemon.json");
+  const child = Bun.spawn([bin, "__node-daemon", "--port=0"], {
+    cwd,
+    env,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const stdout = captureStream(child.stdout);
+  const stderr = captureStream(child.stderr);
+  let failure: unknown;
+
+  try {
+    let ready = false;
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline && child.exitCode === null) {
+      if (await Bun.file(infoPath).exists()) {
+        const info = (await Bun.file(infoPath).json()) as {
+          pid?: unknown;
+          port?: unknown;
+          stateDir?: unknown;
+        };
+        if (
+          info.pid === child.pid &&
+          Number.isInteger(info.port) &&
+          (info.port as number) > 0 &&
+          info.stateDir === stateDir
+        ) {
+          try {
+            const response = await fetch(`http://127.0.0.1:${info.port}/health`, {
+              signal: AbortSignal.timeout(500),
+            });
+            const body = (await response.json()) as {
+              ok?: boolean;
+              pid?: number;
+              stateDir?: string;
+            };
+            if (
+              response.ok &&
+              body.ok === true &&
+              body.pid === child.pid &&
+              body.stateDir === stateDir
+            ) {
+              ready = true;
+              break;
+            }
+          } catch {
+            // The daemon state was published before its health route became ready.
+          }
+        }
+      }
+      await Bun.sleep(100);
+    }
+    if (!ready) {
+      throw new Error(
+        child.exitCode === null
+          ? "packed managed node daemon did not become ready"
+          : `packed managed node daemon exited with status ${child.exitCode}`,
+      );
+    }
+    await action();
+  } catch (error) {
+    failure = error;
+  } finally {
+    if (child.exitCode === null) child.kill("SIGTERM");
+    const exited = await Promise.race([
+      child.exited.then(() => true),
+      Bun.sleep(8_000).then(() => false),
+    ]);
+    if (!exited) {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
+    await Promise.all([stdout.done, stderr.done]);
+  }
+
+  if (failure !== undefined) {
+    const message = failure instanceof Error ? failure.message : String(failure);
+    fail(
+      `${message}\nmanaged daemon stdout:\n${stdout.text()}\nmanaged daemon stderr:\n${stderr.text()}`,
+    );
+  }
+}
+
 async function loadAndValidatePackages(): Promise<void> {
   const versions = new Set<string>();
   const packageIndexes = new Map(releasePackages.map((pkg, index) => [pkg.name, index]));
@@ -304,6 +499,7 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
     const smokeEnv = {
       ...process.env,
       CODEX_HOME: join(smokeRoot, ".codex"),
+      NEGOTIUM_CRON: "0",
       NEGOTIUM_STATE_DIR: join(smokeRoot, "state"),
       TMPDIR: installTmp,
     };
@@ -1045,6 +1241,30 @@ try {
     if (!otiumHelp.includes("usage: negotium otium")) {
       fail("packed negotium binary did not load the Otium adapter CLI");
     }
+    await assertPackedServerStarts(
+      bin,
+      ["serve"],
+      "/health",
+      "negotium node listening",
+      smokeRoot,
+      smokeEnv,
+    );
+    const otiumEnv = {
+      ...smokeEnv,
+      OTIUM_CENTRAL_URL: "http://127.0.0.1:1",
+      OTIUM_CELL_ID: "release-smoke-worker",
+      OTIUM_CELL_SECRET: "release-smoke-secret",
+    };
+    await withPackedNodeDaemon(bin, smokeRoot, otiumEnv, async () => {
+      await assertPackedServerStarts(
+        bin,
+        ["serve", "otium"],
+        "/ready",
+        "negotium Otium adapter listening",
+        smokeRoot,
+        otiumEnv,
+      );
+    });
     console.log(`packed install smoke passed for ${packages.length} packages`);
   } finally {
     await rm(smokeRoot, { recursive: true, force: true });

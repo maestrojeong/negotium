@@ -21,3 +21,17 @@ jobs:
       - run: bun run release:check
       - run: bun run check
       - run: bun test
+
+  packed-startup-bun-1-3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: bun install --frozen-lockfile
+      - run: bun run release:smoke

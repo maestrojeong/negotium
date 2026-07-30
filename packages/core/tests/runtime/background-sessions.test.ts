@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   backgroundSessionProgress,
   beginTransientBackgroundSession,
@@ -9,6 +11,15 @@ import { db } from "#storage/forum-db";
 import { appendRuntimeEvent } from "#storage/runtime-events";
 
 const runtimeTopicIds: string[] = [];
+
+test("keeps background sessions outside the topic/session initialization cycle", () => {
+  const source = readFileSync(
+    resolve(import.meta.dir, "../../src/runtime/background-sessions.ts"),
+    "utf8",
+  );
+  expect(source).not.toContain('from "#topics/derive"');
+  expect(source).not.toContain('from "#topics/session"');
+});
 
 afterEach(() => {
   for (const topicId of runtimeTopicIds.splice(0)) {

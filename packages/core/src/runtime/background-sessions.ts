@@ -2,7 +2,6 @@ import { listActiveMemoryArchiverSessions } from "#agents/archiver";
 import { getTopic } from "#storage/api-topics";
 import { listRecentRuntimeEventsForTopic } from "#storage/runtime-events";
 import { listRuntimeTurnLeases } from "#storage/runtime-leases";
-import { isParticipant } from "#topics/derive";
 import type { BackgroundSessionDto } from "#types/api";
 import { COMPLETED_BACKGROUND_SESSION_RETENTION_MS } from "./background-session-policy";
 
@@ -245,7 +244,10 @@ export function listBackgroundSessionsForUser(userId: string): BackgroundSession
     .filter((lease) => lease.origin.startsWith("cron:"))
     .flatMap((lease): BackgroundSessionDto[] => {
       const topic = getTopic(lease.topicId);
-      if (!topic || !isParticipant(topic, userId) || providedCronTopicIds.has(lease.topicId)) {
+      const isParticipant = topic?.participants.some(
+        (participant) => participant.userId === userId,
+      );
+      if (!topic || !isParticipant || providedCronTopicIds.has(lease.topicId)) {
         return [];
       }
       const progress = backgroundSessionProgress(lease.topicId, lease.queryId);

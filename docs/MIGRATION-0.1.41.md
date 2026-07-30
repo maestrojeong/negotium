@@ -1,8 +1,22 @@
 # Migration to 0.1.41
 
-Version 0.1.41 fixes the packaged JavaScript export for the pre-wired durable ask-user host
-introduced in 0.1.40. No SQLite, topic, conversation, Vault, Wiki, or browser-profile data
-migration is required.
+Version 0.1.41 fixes a Linux startup regression in the packaged node and the JavaScript export for
+the pre-wired durable ask-user host introduced in 0.1.40. No SQLite, topic, conversation, Vault,
+Wiki, or browser-profile data migration is required.
+
+## Linux packaged node startup
+
+Version 0.1.40 could enter a CPU-bound initialization loop when `negotium serve` loaded the bundled
+node runtime under Bun 1.3.14 on Linux. The bundle contained an async module initialization cycle
+between background sessions, topic derivation, and topic sessions. Version 0.1.41 removes that
+runtime dependency cycle.
+
+The packed-install release smoke now starts a test-owned canonical daemon and then the production
+`negotium serve otium` sidecar path, requiring their `/health` and `/ready` endpoints to become
+ready. Owning the daemon process directly also guarantees cleanup when startup fails before daemon
+state is published. This verifies long-lived server startup in addition to the existing CLI help,
+version, import, and type checks. CI runs this packed startup gate on Ubuntu with Bun 1.3.14, the
+environment where the 0.1.40 regression was reproduced.
 
 ## `defaultAskUserDurabilityHost` is available at runtime
 
@@ -27,5 +41,5 @@ ask-card message through Negotium's `appendApiMessage`/`getApiMessage` storage p
 1. Upgrade direct Negotium dependencies to `0.1.41`.
 2. Replace any temporary manual assembly of ask-user gate and process-lease operations with
    `defaultAskUserDurabilityHost` if the host uses Negotium's API-message storage.
-3. Restart the runtime and exercise one durable ask-user round trip.
-
+3. Restart the runtime and verify that the node's `/health` endpoint becomes ready.
+4. Exercise one durable ask-user round trip.
