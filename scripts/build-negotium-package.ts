@@ -317,6 +317,7 @@ for (const publicEntrypoint of [
   "agent-helpers.js",
   "mcp-catalog.js",
   "background-bash.js",
+  "browser-runtime.js",
   "outbox.js",
   "query-runtime.js",
   "platform-runtime.js",

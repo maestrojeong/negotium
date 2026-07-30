@@ -54,14 +54,14 @@ import {
 } from "./manager-utils";
 
 export interface PlaywrightProfileBinding {
-  instanceKey: string;
-  ownerId: string;
-  profile: string;
+  readonly instanceKey: string;
+  readonly ownerId: string;
+  readonly profile: string;
 }
 
 export interface PlaywrightChildEnvironmentContext {
   instanceKey: string;
-  userId: string;
+  ownerId: string;
   capability: string;
   proxy: BrowserProxyConfig | null;
   browserRsBin?: string;
@@ -69,18 +69,23 @@ export interface PlaywrightChildEnvironmentContext {
 }
 
 export interface PlaywrightManagerHost {
-  portsDir: string;
-  basePort: number;
-  maxPort: number;
-  browserBin: string;
-  fallbackBrowserBin: string;
-  browserRsBin?: string;
-  resolveProxy(): BrowserProxyConfig | null;
-  resolveTopicBinding(userId: string, topic?: string): PlaywrightProfileBinding;
-  resolveNamedBinding(ownerId: string, rawProfile: string): PlaywrightProfileBinding;
-  resolveInstanceDataDir(instanceKey: string): string;
-  createChildEnvironment(context: PlaywrightChildEnvironmentContext): NodeJS.ProcessEnv;
-  reapOrphanBrowsers(liveUserDataDirs: Iterable<string>): void;
+  readonly portsDir: string;
+  readonly basePort: number;
+  readonly maxPort: number;
+  readonly browserBin: string;
+  readonly fallbackBrowserBin: string;
+  readonly browserRsBin?: string;
+  readonly resolveProxy: () => BrowserProxyConfig | null;
+  readonly resolveTopicBinding: (userId: string, topic?: string) => PlaywrightProfileBinding;
+  readonly resolveNamedBinding: (ownerId: string, rawProfile: string) => PlaywrightProfileBinding;
+  readonly resolveInstanceDataDir: (instanceKey: string) => string;
+  readonly createChildEnvironment: (
+    context: PlaywrightChildEnvironmentContext,
+  ) => NodeJS.ProcessEnv;
+  /** Reap an orphan that owns this exact host-managed data directory. */
+  readonly cleanupBrowserProcessesForDataDir: (userDataDir: string) => void;
+  /** Reap host-managed browsers that are not represented by the supplied live directories. */
+  readonly reapOrphanBrowsers: (liveUserDataDirs: Iterable<string>) => void;
 }
 
 export {
@@ -102,18 +107,47 @@ export { PLAYWRIGHT_PORTS_DIR };
 
 /** Multiple topics assigned to one profile reuse one browser process. */
 export function makeInstanceKey(userId: string, topic: string | undefined): string {
-  return managerHost.resolveTopicBinding(userId, topic).instanceKey;
+  return resolvePlaywrightTopicBinding(userId, topic).instanceKey;
+}
+
+export function resolvePlaywrightTopicBinding(
+  userId: string,
+  topic: string | undefined,
+): PlaywrightProfileBinding {
+  return validateProfileBinding(managerHost.resolveTopicBinding(userId, topic));
 }
 
 function defaultTopicBinding(userId: string, topic: string | undefined): PlaywrightProfileBinding {
-  if (!topic) return defaultNamedBinding(userId, "default");
+  if (!topic) return managerHost.resolveNamedBinding(userId, "default");
   const ownerId = getBrowserProfileOwner(topic, userId);
   const profile = migrateLegacyTopicProfile(ownerId, topic);
-  return defaultNamedBinding(ownerId, profile);
+  return managerHost.resolveNamedBinding(ownerId, profile);
 }
 
 export function makeBrowserProfileInstanceKey(ownerId: string, rawProfile: string): string {
-  return managerHost.resolveNamedBinding(ownerId, rawProfile).instanceKey;
+  return resolvePlaywrightProfileBinding(ownerId, rawProfile).instanceKey;
+}
+
+export function resolvePlaywrightProfileBinding(
+  ownerId: string,
+  rawProfile: string,
+): PlaywrightProfileBinding {
+  return validateProfileBinding(managerHost.resolveNamedBinding(ownerId, rawProfile));
+}
+
+function validateProfileBinding(binding: PlaywrightProfileBinding): PlaywrightProfileBinding {
+  if (
+    !binding ||
+    typeof binding.instanceKey !== "string" ||
+    !binding.instanceKey.trim() ||
+    typeof binding.ownerId !== "string" ||
+    !binding.ownerId.trim() ||
+    typeof binding.profile !== "string" ||
+    !binding.profile.trim()
+  ) {
+    throw new Error("invalid Playwright profile binding");
+  }
+  return Object.freeze({ ...binding });
 }
 
 function defaultNamedBinding(ownerId: string, rawProfile: string): PlaywrightProfileBinding {
@@ -147,11 +181,11 @@ function migrateLegacyTopicProfile(ownerId: string, topic: string): string {
 }
 
 function defaultChildEnvironment(context: PlaywrightChildEnvironmentContext): NodeJS.ProcessEnv {
-  const { capability, userId, proxy, browserRsBin, environment } = context;
+  const { capability, ownerId, proxy, browserRsBin, environment } = context;
   return {
     ...environment,
     NEGOTIUM_BROWSER_CAPABILITY: capability,
-    NEGOTIUM_BROWSER_VAULT_USER_ID: userId,
+    NEGOTIUM_BROWSER_VAULT_USER_ID: ownerId,
     ...(browserRsBin && !proxy ? { NEGOTIUM_BROWSER_RS_BIN: browserRsBin } : {}),
     ...(proxy
       ? {
@@ -164,7 +198,7 @@ function defaultChildEnvironment(context: PlaywrightChildEnvironmentContext): No
   };
 }
 
-const defaultManagerHost: PlaywrightManagerHost = {
+const defaultManagerHost: Readonly<PlaywrightManagerHost> = Object.freeze({
   portsDir: PLAYWRIGHT_PORTS_DIR,
   basePort: PLAYWRIGHT_BASE_PORT,
   maxPort: PLAYWRIGHT_MAX_PORT,
@@ -174,15 +208,16 @@ const defaultManagerHost: PlaywrightManagerHost = {
   resolveProxy: resolveBrowserProxy,
   resolveTopicBinding: defaultTopicBinding,
   resolveNamedBinding: defaultNamedBinding,
-  resolveInstanceDataDir(instanceKey) {
+  resolveInstanceDataDir(instanceKey: string) {
     const { ownerId, profile } = parseInstanceKey(instanceKey);
     return defaultProfileDir(ownerId, profile);
   },
   createChildEnvironment: defaultChildEnvironment,
+  cleanupBrowserProcessesForDataDir: killBrowserProcsForUserDataDir,
   reapOrphanBrowsers,
-};
+});
 
-let managerHost = defaultManagerHost;
+let managerHost: Readonly<PlaywrightManagerHost> = defaultManagerHost;
 
 /**
  * Configure product-specific profile storage and browser launch glue.
@@ -190,11 +225,11 @@ let managerHost = defaultManagerHost;
  */
 export function configurePlaywrightManagerHost(
   overrides: Partial<PlaywrightManagerHost>,
-): PlaywrightManagerHost {
-  if (instances.size > 0 || spawning.size > 0) {
+): Readonly<PlaywrightManagerHost> {
+  if (instances.size > 0 || spawning.size > 0 || pinnedInstances.size > 0) {
     throw new Error("cannot configure Playwright manager while browser instances are active");
   }
-  const next = { ...defaultManagerHost, ...overrides };
+  const next = { ...managerHost, ...overrides };
   if (!next.portsDir || !Number.isInteger(next.basePort) || !Number.isInteger(next.maxPort)) {
     throw new Error("invalid Playwright manager paths or port range");
   }
@@ -204,7 +239,17 @@ export function configurePlaywrightManagerHost(
   if (!next.browserBin || !next.fallbackBrowserBin) {
     throw new Error("Playwright manager browser binaries are required");
   }
-  managerHost = next;
+  if (
+    next.resolveInstanceDataDir !== defaultManagerHost.resolveInstanceDataDir &&
+    (next.cleanupBrowserProcessesForDataDir ===
+      defaultManagerHost.cleanupBrowserProcessesForDataDir ||
+      next.reapOrphanBrowsers === defaultManagerHost.reapOrphanBrowsers)
+  ) {
+    throw new Error(
+      "custom Playwright profile paths require host crash cleanup and orphan sweep hooks",
+    );
+  }
+  managerHost = Object.freeze(next);
   return managerHost;
 }
 
@@ -269,7 +314,7 @@ const MAX_IDLE_MS = 2 * 60 * 60 * 1000; // 2 hours idle → eligible for evictio
 interface PlaywrightInstance {
   process: ChildProcess;
   port: number;
-  userId: string;
+  ownerId: string;
   startedAt: number;
   lastUsedAt: number;
   capability: string;
@@ -277,18 +322,33 @@ interface PlaywrightInstance {
 
 const instances = new Map<string, PlaywrightInstance>();
 
+function assertInstanceOwner(instanceKey: string, ownerId: string): void {
+  const existing = instances.get(instanceKey);
+  if (existing && existing.ownerId !== ownerId) {
+    throw new Error(
+      `Playwright profile binding owner changed for "${instanceKey}" (${existing.ownerId} -> ${ownerId})`,
+    );
+  }
+}
+
 // Track used ports to avoid collisions
 const usedPorts = new Set<number>();
 
 // Prevent concurrent spawns for the same key
 const spawning = new Map<string, Promise<number | null>>();
 
+export interface PlaywrightMaintenanceControl {
+  /** Stop one of the locked instances before mutating its profile directory. */
+  stopInstance(instanceKey: string): Promise<boolean>;
+}
+
 /** Serialize destructive profile maintenance with normal browser startup. */
 export async function withPlaywrightInstanceMaintenance<T>(
   rawKeys: string[],
-  operation: () => Promise<T>,
+  operation: (control: PlaywrightMaintenanceControl) => Promise<T>,
 ): Promise<T> {
   const keys = [...new Set(rawKeys)].sort();
+  const lockedKeys = new Set(keys);
   for (;;) {
     const pending = keys
       .map((key) => spawning.get(key))
@@ -307,7 +367,32 @@ export async function withPlaywrightInstanceMaintenance<T>(
     for (const key of keys) spawning.set(key, barrier);
 
     try {
-      return await operation();
+      return await operation({
+        async stopInstance(instanceKey) {
+          if (!lockedKeys.has(instanceKey)) {
+            throw new Error(`Playwright maintenance does not own instance "${instanceKey}"`);
+          }
+          const process = instances.get(instanceKey)?.process;
+          if (!process) return false;
+          killInstance(instanceKey);
+          if (!(await waitForChildProcessExit(process, 3000))) {
+            logger.warn(
+              { instanceKey, pid: process.pid },
+              "Playwright MCP ignored SIGTERM during profile maintenance",
+            );
+            try {
+              process.kill("SIGKILL");
+            } catch (error) {
+              logger.warn(
+                { err: error, instanceKey, pid: process.pid },
+                "Failed to SIGKILL Playwright MCP during profile maintenance",
+              );
+            }
+            await waitForChildProcessExit(process, 1000);
+          }
+          return true;
+        },
+      });
     } finally {
       for (const key of keys) {
         if (spawning.get(key) === barrier) spawning.delete(key);
@@ -315,6 +400,36 @@ export async function withPlaywrightInstanceMaintenance<T>(
       releaseBarrier();
     }
   }
+}
+
+/** Stop one managed instance under the same serialization used by startup and profile mutation. */
+export function stopPlaywrightInstance(instanceKey: string): Promise<boolean> {
+  return withPlaywrightInstanceMaintenance([instanceKey], ({ stopInstance }) =>
+    stopInstance(instanceKey),
+  );
+}
+
+/** Run owner-aware named-profile maintenance under one lifecycle barrier. */
+export function withPlaywrightProfileMaintenance<T>(
+  ownerId: string,
+  rawProfile: string,
+  operation: (
+    binding: PlaywrightProfileBinding,
+    control: PlaywrightMaintenanceControl,
+  ) => Promise<T>,
+): Promise<T> {
+  const binding = resolvePlaywrightProfileBinding(ownerId, rawProfile);
+  return withPlaywrightInstanceMaintenance([binding.instanceKey], async (control) => {
+    assertInstanceOwner(binding.instanceKey, binding.ownerId);
+    return operation(binding, control);
+  });
+}
+
+/** Stop a named profile before deleting or replacing its host-managed data directory. */
+export function stopPlaywrightProfile(ownerId: string, rawProfile: string): Promise<boolean> {
+  return withPlaywrightProfileMaintenance(ownerId, rawProfile, (binding, { stopInstance }) =>
+    stopInstance(binding.instanceKey),
+  );
 }
 
 // A shared profile may have several concurrent turns. Reference counts keep an
@@ -343,10 +458,15 @@ export function resolvePlaywrightCapabilityOwner(capability: string): string | u
   for (const instance of instances.values()) {
     const expected = Buffer.from(instance.capability);
     if (provided.length === expected.length && timingSafeEqual(provided, expected)) {
-      return instance.userId;
+      return instance.ownerId;
     }
   }
   return undefined;
+}
+
+/** Run the configured host's path-bounded orphan sweep against current live instances. */
+export function reapPlaywrightOrphans(): void {
+  managerHost.reapOrphanBrowsers([...instances.keys()].map(resolveUserDataDir));
 }
 
 // --- Browser MCP failure notification callback ---
@@ -514,13 +634,13 @@ function killInstance(instanceKey: string, opts?: { keepPort?: boolean }) {
 /**
  * Spawn a Playwright MCP process for the given instanceKey.
  * @param instanceKey  Unique key identifying this instance.
- * @param userId       Owner user ID (stored in the instance record).
+ * @param ownerId      Canonical profile owner ID (stored in the instance record).
  * @param reservedPort When provided the process binds to this already-reserved
  *                     port (restart path). When omitted a fresh port is allocated.
  */
 async function spawnPlaywright(
   instanceKey: string,
-  userId: string,
+  ownerId: string,
   reservedPort?: number,
   browserBin = managerHost.browserBin,
   allowFallback = true,
@@ -565,7 +685,7 @@ async function spawnPlaywright(
   const childEnv = {
     ...managerHost.createChildEnvironment({
       instanceKey,
-      userId,
+      ownerId,
       capability,
       proxy,
       browserRsBin: managerHost.browserRsBin,
@@ -609,7 +729,7 @@ async function spawnPlaywright(
   // removes these listeners before signalling, so this only runs on real deaths.
   const reapCrashedBrowser = () => {
     const userDataDir = resolveUserDataDir(instanceKey);
-    killBrowserProcsForUserDataDir(userDataDir);
+    managerHost.cleanupBrowserProcessesForDataDir(userDataDir);
     cleanSingletonFiles(userDataDir);
   };
 
@@ -646,7 +766,7 @@ async function spawnPlaywright(
   instances.set(instanceKey, {
     process: proc,
     port,
-    userId,
+    ownerId,
     startedAt: now,
     lastUsedAt: now,
     capability,
@@ -667,7 +787,13 @@ async function spawnPlaywright(
         { instanceKey, browserBin, fallback: managerHost.fallbackBrowserBin },
         "Preferred browser MCP unavailable or lacks owner isolation; using Patchright fallback",
       );
-      return spawnPlaywright(instanceKey, userId, undefined, managerHost.fallbackBrowserBin, false);
+      return spawnPlaywright(
+        instanceKey,
+        ownerId,
+        undefined,
+        managerHost.fallbackBrowserBin,
+        false,
+      );
     }
     throw new Error(
       `Playwright MCP failed health check after spawn on port ${port}` +
@@ -707,12 +833,14 @@ async function supportsOwnerCleanup(port: number, capability: string): Promise<b
  * - If not running → spawn
  */
 export async function ensurePlaywright(userId: string, topic?: string): Promise<number> {
-  const instanceKey = makeInstanceKey(userId, topic);
+  const binding = resolvePlaywrightTopicBinding(userId, topic);
+  const { instanceKey, ownerId } = binding;
 
   // If a spawn/restart is already in progress for this key, wait for it
   const inProgress = spawning.get(instanceKey);
   if (inProgress) {
     const port = await inProgress;
+    assertInstanceOwner(instanceKey, ownerId);
     if (port !== null) return port;
     // Restart failed — re-enter: by now another caller may have registered a
     // newer attempt to join, otherwise we start one ourselves.
@@ -729,6 +857,7 @@ export async function ensurePlaywright(userId: string, topic?: string): Promise<
   // a single-threaded event loop.
   const promise = (async (): Promise<number> => {
     const existing = instances.get(instanceKey);
+    assertInstanceOwner(instanceKey, ownerId);
 
     if (existing && !existing.process.killed && existing.process.exitCode === null) {
       if (await probePlaywrightMcpTransports(existing.port, existing.capability)) {
@@ -751,7 +880,7 @@ export async function ensurePlaywright(userId: string, topic?: string): Promise<
       });
     }
 
-    return spawnPlaywright(instanceKey, userId);
+    return spawnPlaywright(instanceKey, ownerId);
   })().finally(() => spawning.delete(instanceKey));
   spawning.set(instanceKey, promise);
   return promise;
@@ -767,10 +896,12 @@ async function waitForPortRelease(port: number, timeoutMs = 3000): Promise<void>
 
 /** Start or reuse a named shared profile before assigning more topics to it. */
 export async function ensureBrowserProfile(ownerId: string, rawProfile: string): Promise<number> {
-  const instanceKey = makeBrowserProfileInstanceKey(ownerId, rawProfile);
+  const binding = resolvePlaywrightProfileBinding(ownerId, rawProfile);
+  const instanceKey = binding.instanceKey;
   const inProgress = spawning.get(instanceKey);
   if (inProgress) {
     const port = await inProgress;
+    assertInstanceOwner(instanceKey, binding.ownerId);
     const capability = instances.get(instanceKey)?.capability;
     if (port !== null && capability && (await probePlaywrightMcpTransports(port, capability))) {
       return port;
@@ -782,6 +913,7 @@ export async function ensureBrowserProfile(ownerId: string, rawProfile: string):
   const promise = (async (): Promise<number> => {
     const publishedPort = readPortFile(instanceKey);
     const existing = instances.get(instanceKey);
+    assertInstanceOwner(instanceKey, binding.ownerId);
     if (publishedPort !== null && !existing) {
       // A port file without an in-memory instance belongs to a previous runtime.
       // Its per-process capability and ChildProcess handle cannot be recovered,
@@ -815,7 +947,7 @@ export async function ensureBrowserProfile(ownerId: string, rawProfile: string):
         code: existing.process.exitCode,
       });
     }
-    const port = await spawnPlaywright(instanceKey, ownerId);
+    const port = await spawnPlaywright(instanceKey, binding.ownerId);
     const capability = instances.get(instanceKey)?.capability;
     if (!capability || !(await probePlaywrightMcpTransports(port, capability))) {
       killInstance(instanceKey);
@@ -833,9 +965,11 @@ export async function closeBrowserOwnerTabs(
   rawProfile: string,
   owner: string,
 ): Promise<number> {
-  const instanceKey = makeBrowserProfileInstanceKey(ownerId, rawProfile);
+  const binding = resolvePlaywrightProfileBinding(ownerId, rawProfile);
+  const instanceKey = binding.instanceKey;
   const inProgress = spawning.get(instanceKey);
   if (inProgress) await inProgress;
+  assertInstanceOwner(instanceKey, binding.ownerId);
   const instance = instances.get(instanceKey);
   if (!instance) return 0;
   const port = instance.port;
@@ -923,18 +1057,26 @@ export async function cloneProfileForChild(opts: {
   const srcOwner = getBrowserProfileOwner(opts.srcTopic, opts.userId);
   const dstOwner = getBrowserProfileOwner(opts.dstTopic, opts.userId);
   if (srcOwner !== dstOwner) {
-    const dstDir = defaultProfileDir(dstOwner, getTopicBrowserProfile(opts.dstTopic));
+    const srcBinding = resolvePlaywrightProfileBinding(
+      srcOwner,
+      getTopicBrowserProfile(opts.srcTopic),
+    );
+    const dstBinding = resolvePlaywrightProfileBinding(
+      dstOwner,
+      getTopicBrowserProfile(opts.dstTopic),
+    );
     return {
       copied: false,
-      srcDir: defaultProfileDir(srcOwner, getTopicBrowserProfile(opts.srcTopic)),
-      dstDir,
+      srcDir: resolveUserDataDir(srcBinding.instanceKey),
+      dstDir: resolveUserDataDir(dstBinding.instanceKey),
       reason: "cross-owner-fresh-profile",
     };
   }
   if (srcOwner === dstOwner && hasBrowserProfileTopic(opts.dstTopic)) {
     const profile = getTopicBrowserProfile(opts.srcTopic);
     assignTopicBrowserProfile({ topicId: opts.dstTopic, actorUserId: dstOwner, profile });
-    const sharedDir = defaultProfileDir(srcOwner, profile);
+    const binding = resolvePlaywrightProfileBinding(srcOwner, profile);
+    const sharedDir = resolveUserDataDir(binding.instanceKey);
     return {
       copied: false,
       srcDir: sharedDir,
@@ -1063,7 +1205,7 @@ setInterval(
   () => {
     while (evictIdleInstance() !== null) {}
     try {
-      managerHost.reapOrphanBrowsers([...instances.keys()].map(resolveUserDataDir));
+      reapPlaywrightOrphans();
     } catch (e) {
       logger.debug({ err: e }, "reapOrphanBrowsers sweep failed");
     }

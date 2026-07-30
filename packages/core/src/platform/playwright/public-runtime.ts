@@ -1,7 +1,5 @@
 export {
-  cleanupZombiePlaywright,
   isBrowserJanitorOwner,
-  reapOrphanBrowsers,
   selectOrphanBrowserPids,
 } from "./browser-processes";
 export {
@@ -17,14 +15,21 @@ export {
   onPlaywrightFailure,
   type PlaywrightChildEnvironmentContext,
   type PlaywrightFailure,
+  type PlaywrightMaintenanceControl,
   type PlaywrightManagerHost,
   type PlaywrightProfileBinding,
   pinPlaywrightInstance,
+  reapPlaywrightOrphans,
   resetPlaywrightManagerHost,
   resolvePlaywrightCapabilityOwner,
+  resolvePlaywrightProfileBinding,
+  resolvePlaywrightTopicBinding,
   resolveTopicProfileDir,
+  stopPlaywrightInstance,
+  stopPlaywrightProfile,
   unpinPlaywrightInstance,
   withPlaywrightInstanceMaintenance,
+  withPlaywrightProfileMaintenance,
 } from "./manager";
 export {
   browserProcessMatchesExpectedProfile,

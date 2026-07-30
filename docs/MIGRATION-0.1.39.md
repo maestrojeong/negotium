@@ -9,12 +9,13 @@ required.
 - Import the shared lifecycle from `negotium/browser-runtime`.
 - Call `configurePlaywrightManagerHost` once during bootstrap, before starting a browser.
 - Inject the application's profile assignment, profile path, port range, browser binaries, proxy,
-  child-process environment, and path-bounded orphan cleanup.
+  child-process environment, exact-profile crash cleanup, and path-bounded orphan cleanup.
 - Keep product-specific Vault callback variables in `createChildEnvironment`. Negotium always
   supplies the authenticated browser capability and owns process readiness, restart serialization,
   and failure fan-out.
 - Remove downstream copies of the Playwright manager only after browser startup, shared-profile
-  reuse, infrastructure failure, and restart recovery pass against the injected host.
+  reuse, active-profile deletion, infrastructure failure, and restart recovery pass against the
+  injected host.
 
 See [Browser runtime](./BROWSER-RUNTIME.md) for the host contract and example.
 

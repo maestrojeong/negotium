@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
   cloneProfileForChild,
+  configurePlaywrightManagerHost,
   makeInstanceKey,
+  resetPlaywrightManagerHost,
   resolveTopicProfileDir,
 } from "#platform/playwright/manager";
 import { deleteTopic, upsertTopic } from "#storage/api-topics";
@@ -167,6 +169,65 @@ describe("browser profiles", () => {
     } finally {
       deleteTopic(source);
       deleteTopic(destination);
+    }
+  });
+
+  test("clone outcomes resolve custom host profile directories", async () => {
+    const ownerId = `owner-${randomUUID()}`;
+    const otherOwnerId = `owner-${randomUUID()}`;
+    const source = createOwnedTopic(ownerId, `source-${randomUUID()}`);
+    const sharedDestination = createOwnedTopic(ownerId, `shared-${randomUUID()}`);
+    const isolatedDestination = createOwnedTopic(otherOwnerId, `isolated-${randomUUID()}`);
+    try {
+      configurePlaywrightManagerHost({
+        resolveNamedBinding(bindingOwnerId, rawProfile) {
+          return {
+            instanceKey: `custom:${bindingOwnerId}:${rawProfile}`,
+            ownerId: bindingOwnerId,
+            profile: rawProfile,
+          };
+        },
+        resolveInstanceDataDir(instanceKey) {
+          return `/tmp/custom-browser-profiles/${instanceKey}`;
+        },
+        cleanupBrowserProcessesForDataDir() {},
+        reapOrphanBrowsers() {},
+      });
+      assignTopicBrowserProfile({ topicId: source, actorUserId: ownerId, profile: "research" });
+      assignTopicBrowserProfile({
+        topicId: sharedDestination,
+        actorUserId: ownerId,
+        profile: "existing",
+      });
+
+      const shared = await cloneProfileForChild({
+        userId: ownerId,
+        srcTopic: source,
+        dstTopic: sharedDestination,
+      });
+      expect(shared).toEqual({
+        copied: false,
+        srcDir: `/tmp/custom-browser-profiles/custom:${ownerId}:research`,
+        dstDir: `/tmp/custom-browser-profiles/custom:${ownerId}:research`,
+        reason: "shared-profile-assignment",
+      });
+
+      const isolated = await cloneProfileForChild({
+        userId: otherOwnerId,
+        srcTopic: source,
+        dstTopic: isolatedDestination,
+      });
+      expect(isolated).toEqual({
+        copied: false,
+        srcDir: `/tmp/custom-browser-profiles/custom:${ownerId}:research`,
+        dstDir: `/tmp/custom-browser-profiles/custom:${otherOwnerId}:default`,
+        reason: "cross-owner-fresh-profile",
+      });
+    } finally {
+      resetPlaywrightManagerHost();
+      deleteTopic(source);
+      deleteTopic(sharedDestination);
+      deleteTopic(isolatedDestination);
     }
   });
 });

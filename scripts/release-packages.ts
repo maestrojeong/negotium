@@ -333,9 +333,14 @@ import type {
   CodexProcStamp,
   ForkHandle,
   TaskEventHost,
+  ToolCallSummaryInput,
   VaultToolPolicyHost,
 } from "negotium/agent-helpers";
 import type { BackgroundBashManager, BackgroundBashManagerOptions } from "negotium/background-bash";
+import type {
+  PlaywrightManagerHost,
+  PlaywrightProfileBinding,
+} from "negotium/browser-runtime";
 import type {
   OutboxFileHost,
   OutboxFileOps,
@@ -344,6 +349,7 @@ import type {
 import type { RuntimeEnvironment, StdioLogger } from "negotium/platform-runtime";
 import type {
   HandleAgentQueryOutcome,
+  QueryStateStoreOptions,
   RoomQueryRegistryHost,
 } from "negotium/query-runtime";
 import type {
@@ -391,6 +397,7 @@ const mcpCatalog = await import("negotium/mcp-catalog");
 const mcpFactories = await import("negotium/mcp-factories");
 const agentHelpers = await import("negotium/agent-helpers");
 const backgroundBash = await import("negotium/background-bash");
+const browserRuntime = await import("negotium/browser-runtime");
 const outbox = await import("negotium/outbox");
 const platformRuntime = await import("negotium/platform-runtime");
 const queryRuntime = await import("negotium/query-runtime");
@@ -403,6 +410,21 @@ const storage = await import("negotium/storage");
 const sqlite = await import("negotium/sqlite");
 if (typeof hostedAgent.configureAgentExecutionHost !== "function") {
   throw new Error("packed hosted-agent export is missing");
+}
+if (typeof browserRuntime.configurePlaywrightManagerHost !== "function") {
+  throw new Error("packed browser runtime host configurator is missing");
+}
+if (typeof browserRuntime.stopPlaywrightProfile !== "function") {
+  throw new Error("packed browser runtime profile stop is missing");
+}
+if (typeof browserRuntime.reapPlaywrightOrphans !== "function") {
+  throw new Error("packed browser runtime orphan sweep is missing");
+}
+if (typeof queryRuntime.createQueryStateStore !== "function") {
+  throw new Error("packed query-state factory is missing");
+}
+if (typeof agentHelpers.formatToolUse !== "function") {
+  throw new Error("packed tool-format helper is missing");
 }
 if (typeof hostedAgent.runHostedAgent !== "function") {
   throw new Error("packed hosted-agent runner is missing");
@@ -849,6 +871,7 @@ for (const subpath of [
   "./mcp-factories",
   "./agent-helpers",
   "./background-bash",
+  "./browser-runtime",
   "./outbox",
   "./query-runtime",
   "./platform-runtime",

@@ -11,14 +11,19 @@ import {
   getPlaywrightManagerHost,
   isBrowserJanitorOwner,
   makeInstanceKey,
+  pinPlaywrightInstance,
+  reapPlaywrightOrphans,
   resetPlaywrightManagerHost,
+  resolvePlaywrightTopicBinding,
   resolveTopicProfileDir,
   selectIdleEvictionKey,
   selectOrphanBrowserPids,
   selectReusablePort,
+  unpinPlaywrightInstance,
   waitForChildProcessExit,
   waitForChildProcessSpawnError,
   withPlaywrightInstanceMaintenance,
+  withPlaywrightProfileMaintenance,
 } from "#platform/playwright/manager";
 import { probeMcpTransport } from "#platform/playwright/transport-probe";
 
@@ -166,6 +171,8 @@ describe("configurePlaywrightManagerHost", () => {
             OTIUM_BROWSER_VAULT_TOKEN: context.capability,
           };
         },
+        cleanupBrowserProcessesForDataDir() {},
+        reapOrphanBrowsers() {},
       });
 
       expect(makeInstanceKey("alice", "research")).toBe("otium:alice:research");
@@ -177,12 +184,86 @@ describe("configurePlaywrightManagerHost", () => {
       expect(
         host.createChildEnvironment({
           instanceKey: "otium:alice:research",
-          userId: "alice",
+          ownerId: "alice",
           capability: "secret",
           proxy: null,
           environment: {},
         }).OTIUM_BROWSER_VAULT_TOKEN,
       ).toBe("secret");
+      expect(Object.isFrozen(host)).toBe(true);
+      expect(() => Object.assign(host, { basePort: 1 })).toThrow();
+    } finally {
+      resetPlaywrightManagerHost();
+    }
+  });
+
+  it("preserves the canonical binding owner instead of the requesting user", () => {
+    try {
+      configurePlaywrightManagerHost({
+        resolveTopicBinding(_userId, topic) {
+          return {
+            instanceKey: `shared:${topic ?? "default"}`,
+            ownerId: "profile-owner",
+            profile: topic ?? "default",
+          };
+        },
+      });
+
+      expect(resolvePlaywrightTopicBinding("requesting-user", "research")).toEqual({
+        instanceKey: "shared:research",
+        ownerId: "profile-owner",
+        profile: "research",
+      });
+    } finally {
+      resetPlaywrightManagerHost();
+    }
+  });
+
+  it("composes the default topic resolver with an injected named-profile resolver", () => {
+    try {
+      configurePlaywrightManagerHost({
+        resolveNamedBinding(ownerId, profile) {
+          return {
+            instanceKey: `custom:${ownerId}:${profile}`,
+            ownerId,
+            profile,
+          };
+        },
+      });
+
+      expect(makeInstanceKey("alice", undefined)).toBe("custom:alice:default");
+    } finally {
+      resetPlaywrightManagerHost();
+    }
+  });
+
+  it("merges consecutive partial configurations and rejects changes while borrowed", () => {
+    try {
+      configurePlaywrightManagerHost({ portsDir: "/tmp/custom-browser-ports" });
+      configurePlaywrightManagerHost({ basePort: 9200, maxPort: 9201 });
+      expect(getPlaywrightManagerHost().portsDir).toBe("/tmp/custom-browser-ports");
+
+      pinPlaywrightInstance("custom:borrowed");
+      expect(() => configurePlaywrightManagerHost({ basePort: 9300 })).toThrow(
+        "cannot configure Playwright manager while browser instances are active",
+      );
+    } finally {
+      unpinPlaywrightInstance("custom:borrowed");
+      resetPlaywrightManagerHost();
+    }
+  });
+
+  it("runs explicit orphan sweeps through the injected host", () => {
+    const sweeps: string[][] = [];
+    try {
+      configurePlaywrightManagerHost({
+        reapOrphanBrowsers(liveUserDataDirs) {
+          sweeps.push([...liveUserDataDirs]);
+        },
+      });
+
+      reapPlaywrightOrphans();
+      expect(sweeps).toEqual([[]]);
     } finally {
       resetPlaywrightManagerHost();
     }
@@ -194,9 +275,28 @@ describe("configurePlaywrightManagerHost", () => {
     );
     resetPlaywrightManagerHost();
   });
+
+  it("rejects custom profile paths without matching cleanup hooks", () => {
+    expect(() =>
+      configurePlaywrightManagerHost({
+        resolveInstanceDataDir(instanceKey) {
+          return `/tmp/custom-browser-profiles/${instanceKey}`;
+        },
+      }),
+    ).toThrow("custom Playwright profile paths require host crash cleanup and orphan sweep hooks");
+    resetPlaywrightManagerHost();
+  });
 });
 
 describe("withPlaywrightInstanceMaintenance", () => {
+  it("only allows stopping instances covered by the maintenance barrier", async () => {
+    await expect(
+      withPlaywrightInstanceMaintenance(["profile:a"], ({ stopInstance }) =>
+        stopInstance("profile:b"),
+      ),
+    ).rejects.toThrow('Playwright maintenance does not own instance "profile:b"');
+  });
+
   it("serializes operations that overlap on any profile key", async () => {
     const events: string[] = [];
     let releaseFirst!: () => void;
@@ -220,6 +320,28 @@ describe("withPlaywrightInstanceMaintenance", () => {
     releaseFirst();
     await Promise.all([first, second]);
     expect(events).toEqual(["first:start", "first:end", "second:start"]);
+  });
+});
+
+describe("withPlaywrightProfileMaintenance", () => {
+  it("passes the canonical binding and a stop control under one barrier", async () => {
+    const result = await withPlaywrightProfileMaintenance(
+      "alice",
+      "default",
+      async (binding, { stopInstance }) => ({
+        binding,
+        stopped: await stopInstance(binding.instanceKey),
+      }),
+    );
+
+    expect(result).toEqual({
+      binding: {
+        instanceKey: "profile:alice:default",
+        ownerId: "alice",
+        profile: "default",
+      },
+      stopped: false,
+    });
   });
 });
 
