@@ -31,6 +31,7 @@ instead of copying the explanation.
 | [Migration 0.1.37](./MIGRATION-0.1.37.md) | Raw conversation preservation, active context projections, and fail-closed cleanup |
 | [Migration 0.1.38](./MIGRATION-0.1.38.md) | Authenticated browser readiness, active-turn failure propagation, and startup orphan cleanup |
 | [Migration 0.1.39](./MIGRATION-0.1.39.md) | Host-injected browser runtime and downstream fork reduction |
+| [Migration 0.1.40](./MIGRATION-0.1.40.md) | Public durable ask-user storage, optional schedule_self prompt section, lazy storage-schema fix |
 | [Browser runtime](./BROWSER-RUNTIME.md) | Host-injected Playwright MCP lifecycle for downstream runtimes |
 | [Otium runtime deduplication](./OTIUM-RUNTIME-DEDUP.md) | Public migration contracts and planned host-factory boundaries |
 
