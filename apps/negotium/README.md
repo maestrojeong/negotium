@@ -237,6 +237,25 @@ Supplying `AgentAuthHost` and `TaskEventHost` keeps auth paths, environment stat
 owned by the embedding process. The default host remains available only as a convenience for the
 standalone Negotium runtime.
 
+The same subpath exposes host-injected lifecycle factories for downstream runtimes:
+
+```ts
+import {
+  createArchiverRuntime,
+  createAskUserRuntime,
+  createSelfConfigRuntime,
+  createSubagentLifecycle,
+  createTopicLogMaintenance,
+} from "negotium/agent-helpers";
+```
+
+Use `createPromptBuilders` from `negotium/prompts` for ordered product prompt sections and
+`createSessionTargetCatalog` from `negotium/mcp-factories` for collision-safe session target
+listing and validation. Product scheduling, MCP catalogs, ports and environment configuration, and
+top-level agent wiring remain owned by the embedding host. See
+the [Otium runtime deduplication contract](https://github.com/maestrojeong/negotium/blob/main/docs/OTIUM-RUNTIME-DEDUP.md)
+for the full host interfaces and migration boundaries.
+
 ## MCP catalog policy
 
 `negotium/mcp-catalog` exposes transport-independent required/optional classification. Embedding

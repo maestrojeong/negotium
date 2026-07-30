@@ -1,4 +1,14 @@
 export {
+  type ArchiverAgentRuntimeHost,
+  type ArchiverConfigHost,
+  type ArchiverHost,
+  type ArchiverMessagingHost,
+  type ArchiverRuntime,
+  type ArchiverStorageHost,
+  createArchiverRuntime,
+  type RunArchiverTurnParams,
+} from "#agents/archiver";
+export {
   type AgentAuthHost,
   type AuthCheckResult,
   checkAgentAuth,
@@ -34,6 +44,31 @@ export {
   archiveActiveTopicForMemory,
 } from "#agents/idle-archiver";
 export {
+  type AnswerAskUserQuestionResult,
+  type AskUserChoice,
+  type AskUserRuntime,
+  type AskUserRuntimeHost,
+  type AskUserToolContext,
+  createAskUserRuntime,
+  normalizeAskUserChoices,
+  normalizeAskUserQuestionInput,
+} from "#agents/mcp-tools/ask-user";
+export {
+  createSelfConfigRuntime,
+  createSelfConfigToolDefinitionsForCore,
+  type SelfConfigRuntime,
+  type SelfConfigRuntimeOptions,
+} from "#agents/mcp-tools/self-config";
+export {
+  createSubagentLifecycle,
+  type SpawnSubagentToolContext,
+  type SubagentLifecycle,
+  type SubagentLifecycleHost,
+  type SubagentLifecycleLimits,
+  type SubagentToolContext,
+  type SubagentWatch,
+} from "#agents/mcp-tools/spawn-subagent";
+export {
   otiumVisualToolDefinitions,
   showPngTool,
 } from "#agents/mcp-tools/visual-compat";
@@ -46,6 +81,28 @@ export {
   visualToolDefinitions,
 } from "#agents/mcp-tools/visuals";
 export { MIN_MEMORY_ARCHIVE_EXCHANGES } from "#agents/memory-archive-policy";
+export {
+  createSelfConfigCore,
+  DEFAULT_SELF_CONFIG_PRODUCT,
+  type SelfConfigAgentPolicy,
+  type SelfConfigAgentSwitchOptions,
+  type SelfConfigAgentSwitchResult,
+  type SelfConfigContext,
+  type SelfConfigCore,
+  type SelfConfigCreateScheduleResult,
+  type SelfConfigDerivedTopics,
+  type SelfConfigField,
+  type SelfConfigHost,
+  type SelfConfigModelPolicy,
+  type SelfConfigProductConfig,
+  type SelfConfigResult,
+  type SelfConfigRuntimeBoundary,
+  type SelfConfigSchedule,
+  type SelfConfigSchedules,
+  type SelfConfigTopic,
+  type SelfConfigTopicConfig,
+  type SelfConfigTopicStore,
+} from "#agents/self-config-core";
 export {
   resolveTaskEventScope,
   type TaskEventHost,
@@ -63,6 +120,20 @@ export {
   type ToolCallSummaryInput,
   type ToolCallSummaryValue,
 } from "#agents/tool-format";
+export {
+  cleanupTopicRollouts,
+  cleanupTopicRolloutsFromEntries,
+  createTopicLogMaintenance,
+  type PurgeSessionRef,
+  type PurgeTopicLogsOptions,
+  purgeTopicLogs,
+  type RotateTopicLogsOptions,
+  type RotateTopicLogsResult,
+  rotateTopicLogs,
+  type TopicConversationEntry,
+  type TopicLogMaintenance,
+  type TopicLogMaintenanceHost,
+} from "#agents/topic-cleanup";
 export {
   createVaultToolPolicy,
   isVaultBrokerTool,

@@ -175,6 +175,44 @@ export interface SessionSystemPromptOpts {
   fileDeliveryTools?: boolean;
 }
 
+export type SessionPromptKind = "topic" | "channel" | "manager";
+export type PromptSectionSlot =
+  | "after-runtime-tools"
+  | "after-shared-tasks"
+  | "before-session-communication"
+  | "after-session-communication"
+  | "before-topic-configuration"
+  | "after-topic-configuration"
+  | "after-system-prompt";
+
+export interface PromptSectionContext extends SessionSystemPromptOpts {
+  sessionKind: SessionPromptKind;
+}
+
+export interface PromptExtraSection {
+  id: string;
+  slot: PromptSectionSlot;
+  order?: number;
+  render(context: PromptSectionContext): string | null | undefined;
+}
+
+export interface PromptTemplateRequest {
+  kind: "topic-system" | "channel-system" | "manager-system" | "visual-design";
+  filename: string;
+  fallback: string;
+}
+
+export interface PromptBuilderHost {
+  readonly loadTemplate?: (request: PromptTemplateRequest) => string | null | undefined;
+  readonly extraSections?: readonly PromptExtraSection[];
+}
+
+export interface PromptBuilders {
+  buildTopicSystemPrompt(opts: SessionSystemPromptOpts): string;
+  buildChannelSystemPrompt(opts: SessionSystemPromptOpts): string;
+  buildManagerSystemPrompt(opts: SessionSystemPromptOpts): string;
+}
+
 interface RuntimeToolSectionOpts {
   agentKind: AgentKind;
   canSpawnSubagents?: boolean;
@@ -187,7 +225,15 @@ interface RuntimeToolSectionOpts {
   subagentReportMode?: SubagentReportMode;
 }
 
-function buildRuntimeToolSection(opts: RuntimeToolSectionOpts): string {
+interface RuntimeToolSectionExtensions {
+  render(slot: PromptSectionSlot): string[];
+  visualDesignGuide: string;
+}
+
+function buildRuntimeToolSection(
+  opts: RuntimeToolSectionOpts,
+  extensions: RuntimeToolSectionExtensions,
+): string {
   const {
     agentKind,
     canSpawnSubagents = false,
@@ -282,13 +328,16 @@ function buildRuntimeToolSection(opts: RuntimeToolSectionOpts): string {
           'Do not use provider built-in "AskUserQuestion"; it is disabled or unsupported in this headless chat runtime. Use the runtime ask_user_question tool instead.',
         ]),
     scheduleSelfToolLine,
-    ...(visualTools ? ["", visualDesignGuide()] : []),
+    ...(visualTools && extensions.visualDesignGuide ? ["", extensions.visualDesignGuide] : []),
+    ...extensions.render("after-runtime-tools"),
     "",
     "## Shared Tasks",
     taskToolLine,
     "Use this shared task store for plans, task progress, and checklist updates. It is visible across claude/codex/maestro turns and drives the live task panel.",
     nativeTaskPolicyLine,
+    ...extensions.render("after-shared-tasks"),
     ...fileDeliverySection,
+    ...extensions.render("before-session-communication"),
     "",
     "## Session Communication",
     ...(subagentParentTitle
@@ -313,6 +362,7 @@ function buildRuntimeToolSection(opts: RuntimeToolSectionOpts): string {
       : []),
     "Do not use session communication to make another topic perform destructive changes without the user's clear intent.",
     ...spawnSubagentSection,
+    ...extensions.render("after-session-communication"),
   ];
 
   const modelCatalog = SELECTABLE_MODELS.map(
@@ -343,68 +393,148 @@ function buildRuntimeToolSection(opts: RuntimeToolSectionOpts): string {
   if (agentKind !== "claude") {
     return [
       ...shared,
+      ...extensions.render("before-topic-configuration"),
       ...topicConfig,
+      ...extensions.render("after-topic-configuration"),
       "",
       "## Runtime Tool Limits",
       "If file delivery or topic configuration tools are not present in your available tools for this session, do not claim you used them. Tell the user this session does not expose that in-chat tool action.",
     ].join("\n");
   }
 
-  return [...shared, ...topicConfig].join("\n");
+  return [
+    ...shared,
+    ...extensions.render("before-topic-configuration"),
+    ...topicConfig,
+    ...extensions.render("after-topic-configuration"),
+  ].join("\n");
 }
 
-export function buildTopicSystemPrompt(opts: SessionSystemPromptOpts): string {
-  const uploadsDir = `${opts.workspaceCwd}/attachments`;
-  let prompt =
-    replaceVars(topicSystemPromptTemplate(), {
-      AI_LABEL: opts.aiLabel,
-      TOPIC_TITLE: opts.topicTitle,
-      WORKSPACE_CWD: opts.workspaceCwd,
-      UPLOADS_DIR: uploadsDir,
-    }) +
-    buildRuntimeToolSection({
-      agentKind: opts.agentKind,
-      canSpawnSubagents: opts.canSpawnSubagents,
-      canStageSubagents: opts.canStageSubagents,
-      visualTools: opts.visualTools,
-      fileDeliveryTools: opts.fileDeliveryTools,
-      currentModel: opts.currentModel,
-      currentEffort: opts.currentEffort,
-      subagentParentTitle: opts.subagentParentTitle,
-      subagentReportMode: opts.subagentReportMode,
-    });
-  if (opts.description?.trim()) {
-    prompt += `\n\n## Topic-Specific Instructions\n${opts.description.trim()}`;
+export function createPromptBuilders(host: PromptBuilderHost = {}): PromptBuilders {
+  const loadTemplate = host.loadTemplate;
+  const sections = [...(host.extraSections ?? [])];
+  const ids = new Set<string>();
+  for (const section of sections) {
+    if (!section.id.trim()) throw new Error("prompt extra section id is required");
+    if (ids.has(section.id)) throw new Error(`duplicate prompt extra section id: ${section.id}`);
+    ids.add(section.id);
   }
-  return prompt;
+  sections.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
+
+  const templateCache = new Map<PromptTemplateRequest["kind"], string>();
+  const template = (request: PromptTemplateRequest): string => {
+    const cached = templateCache.get(request.kind);
+    if (cached !== undefined) return cached;
+    const loaded = loadTemplate?.(request);
+    const value =
+      loaded ??
+      (request.kind === "topic-system"
+        ? topicSystemPromptTemplate()
+        : request.kind === "channel-system"
+          ? channelSystemPromptTemplate()
+          : request.kind === "manager-system"
+            ? managerSystemPromptTemplate()
+            : visualDesignGuide());
+    templateCache.set(request.kind, value);
+    return value;
+  };
+
+  const build = (
+    sessionKind: SessionPromptKind,
+    opts: SessionSystemPromptOpts,
+    sessionTemplate: string,
+  ): string => {
+    const context = Object.freeze({ ...opts, sessionKind });
+    const render = (slot: PromptSectionSlot): string[] =>
+      sections
+        .filter((section) => section.slot === slot)
+        .map((section) => section.render(context)?.trim())
+        .filter((section): section is string => Boolean(section))
+        .flatMap((section) => ["", section]);
+    const uploadsDir = `${opts.workspaceCwd}/attachments`;
+    let prompt =
+      replaceVars(sessionTemplate, {
+        AI_LABEL: opts.aiLabel,
+        TOPIC_TITLE: opts.topicTitle,
+        WORKSPACE_CWD: opts.workspaceCwd,
+        UPLOADS_DIR: uploadsDir,
+      }) +
+      buildRuntimeToolSection(
+        {
+          agentKind: opts.agentKind,
+          canSpawnSubagents: sessionKind === "channel" ? false : opts.canSpawnSubagents,
+          canStageSubagents: sessionKind === "channel" ? false : opts.canStageSubagents,
+          visualTools: opts.visualTools,
+          fileDeliveryTools: opts.fileDeliveryTools,
+          currentModel: opts.currentModel,
+          currentEffort: opts.currentEffort,
+          subagentParentTitle: opts.subagentParentTitle,
+          subagentReportMode: opts.subagentReportMode,
+        },
+        {
+          render,
+          visualDesignGuide: template({
+            kind: "visual-design",
+            filename: "visual-design.md",
+            fallback: "",
+          }),
+        },
+      );
+    if (sessionKind !== "channel" && opts.description?.trim()) {
+      prompt += `\n\n## Topic-Specific Instructions\n${opts.description.trim()}`;
+    }
+    if (sessionKind === "manager") {
+      prompt += `\n\n${template({
+        kind: "manager-system",
+        filename: "manager-system.md",
+        fallback: FALLBACK_MANAGER_SYSTEM_PROMPT_TEMPLATE,
+      })}`;
+    }
+    return `${prompt}${render("after-system-prompt").join("\n")}`;
+  };
+
+  return Object.freeze({
+    buildTopicSystemPrompt(opts: SessionSystemPromptOpts) {
+      return build(
+        "topic",
+        opts,
+        template({
+          kind: "topic-system",
+          filename: "topic-system.md",
+          fallback: FALLBACK_TOPIC_SYSTEM_PROMPT_TEMPLATE,
+        }),
+      );
+    },
+    buildChannelSystemPrompt(opts: SessionSystemPromptOpts) {
+      return build(
+        "channel",
+        opts,
+        template({
+          kind: "channel-system",
+          filename: "channel-system.md",
+          fallback: FALLBACK_CHANNEL_SYSTEM_PROMPT_TEMPLATE,
+        }),
+      );
+    },
+    buildManagerSystemPrompt(opts: SessionSystemPromptOpts) {
+      return build(
+        "manager",
+        opts,
+        template({
+          kind: "topic-system",
+          filename: "topic-system.md",
+          fallback: FALLBACK_TOPIC_SYSTEM_PROMPT_TEMPLATE,
+        }),
+      );
+    },
+  });
 }
 
-export function buildChannelSystemPrompt(opts: SessionSystemPromptOpts): string {
-  const uploadsDir = `${opts.workspaceCwd}/attachments`;
-  return (
-    replaceVars(channelSystemPromptTemplate(), {
-      AI_LABEL: opts.aiLabel,
-      TOPIC_TITLE: opts.topicTitle,
-      WORKSPACE_CWD: opts.workspaceCwd,
-      UPLOADS_DIR: uploadsDir,
-    }) +
-    buildRuntimeToolSection({
-      agentKind: opts.agentKind,
-      canSpawnSubagents: false,
-      canStageSubagents: false,
-      visualTools: opts.visualTools,
-      fileDeliveryTools: opts.fileDeliveryTools,
-      currentModel: opts.currentModel,
-      currentEffort: opts.currentEffort,
-      subagentParentTitle: opts.subagentParentTitle,
-      subagentReportMode: opts.subagentReportMode,
-    })
-  );
-}
+const defaultPromptBuilders = createPromptBuilders();
 
-export function buildManagerSystemPrompt(opts: SessionSystemPromptOpts): string {
-  return `${buildTopicSystemPrompt(opts)}\n\n${managerSystemPromptTemplate()}`;
-}
+export const buildTopicSystemPrompt = defaultPromptBuilders.buildTopicSystemPrompt;
+export const buildChannelSystemPrompt = defaultPromptBuilders.buildChannelSystemPrompt;
+export const buildManagerSystemPrompt = defaultPromptBuilders.buildManagerSystemPrompt;
 
 export function buildMemoryPromptSection(opts: {
   briefFile: string;

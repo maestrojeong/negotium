@@ -4,6 +4,7 @@ import {
   buildManagerSystemPrompt,
   buildMemoryPromptSection,
   buildTopicSystemPrompt,
+  createPromptBuilders,
   loadAgentPrompt,
 } from "#prompts/builders";
 
@@ -237,5 +238,68 @@ describe("session system prompt builders", () => {
     expect(memory).toContain("## Memory");
     expect(memory).toContain("/tmp/wiki/topic/general.md");
     expect(memory).toContain("/tmp/wiki/summaries/2026-06-25-general.md");
+  });
+
+  test("builds prompts from host templates and ordered extension slots", () => {
+    const loads: string[] = [];
+    const builders = createPromptBuilders({
+      loadTemplate(request) {
+        loads.push(request.kind);
+        if (request.kind === "topic-system") {
+          return "Custom {{AI_LABEL}} / {{TOPIC_TITLE}} / {{WORKSPACE_CWD}} / {{UPLOADS_DIR}}";
+        }
+        return null;
+      },
+      extraSections: [
+        {
+          id: "copyable-drafts",
+          slot: "after-shared-tasks",
+          order: 20,
+          render: (context) => `## Copyable Drafts\n${context.sessionKind}`,
+        },
+        {
+          id: "product-policy",
+          slot: "after-shared-tasks",
+          order: 10,
+          render: () => "## Product Policy",
+        },
+        {
+          id: "topic-tail",
+          slot: "after-system-prompt",
+          render: (context) => `## Tail\n${context.topicTitle}`,
+        },
+      ],
+    });
+
+    const prompt = builders.buildTopicSystemPrompt({
+      aiLabel: "Otium",
+      topicTitle: "Research",
+      workspaceCwd: "/tmp/research",
+      agentKind: "codex",
+    });
+    expect(prompt).toStartWith(
+      "Custom Otium / Research / /tmp/research / /tmp/research/attachments",
+    );
+    expect(prompt.indexOf("## Product Policy")).toBeLessThan(prompt.indexOf("## Copyable Drafts"));
+    expect(prompt).toEndWith("## Tail\nResearch");
+
+    builders.buildTopicSystemPrompt({
+      aiLabel: "Otium",
+      topicTitle: "Again",
+      workspaceCwd: "/tmp/again",
+      agentKind: "codex",
+    });
+    expect(loads.filter((kind) => kind === "topic-system")).toHaveLength(1);
+  });
+
+  test("rejects duplicate prompt extension ids", () => {
+    expect(() =>
+      createPromptBuilders({
+        extraSections: [
+          { id: "same", slot: "after-runtime-tools", render: () => "one" },
+          { id: "same", slot: "after-shared-tasks", render: () => "two" },
+        ],
+      }),
+    ).toThrow("duplicate prompt extra section id");
   });
 });

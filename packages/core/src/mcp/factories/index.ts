@@ -3,6 +3,15 @@ export {
   type SessionCommContext,
   type SessionCommContextDefaults,
 } from "../session-comm/context";
+export {
+  createSessionTargetCatalog,
+  type SessionTarget,
+  type SessionTargetCatalog,
+  type SessionTargetCatalogHost,
+  type SessionTopicEntry,
+  type SessionTopicRow,
+  type ValidateSessionTargetResult,
+} from "../session-comm/topic-catalog";
 export { executeVaultHttpRequest } from "../vault-http";
 export { executeVaultRun } from "../vault-run";
 export {

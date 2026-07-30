@@ -12,20 +12,15 @@ import {
   getPendingSelfSchedule,
   updatePendingSelfSchedule,
 } from "#storage/self-schedules";
-import {
-  createDerivedTopic,
-  TopicForkCompactionError,
-  TopicTitleConflictError,
-} from "#topics/derive";
 import { topicMarkdownLink } from "#topics/links";
 import type { AgentKind, EffortLevel } from "#types";
-import type { TopicDto } from "#types/api";
 
 export const SELF_CONFIG_MCP_KEY = "topic-config";
-
-export type SelfConfigField = "agent" | "model" | "effort";
 export const SELF_SCHEDULE_MAX_DELAY_SECONDS = 86_400;
 export const SELF_SCHEDULE_MAX_MESSAGE_LENGTH = 10_000;
+export const SELF_CONFIG_DERIVED_TOPIC_LIMIT = 5;
+
+export type SelfConfigField = "agent" | "model" | "effort";
 
 export interface SelfConfigContext {
   topicId: string;
@@ -42,6 +37,176 @@ export interface SelfConfigResult {
   isError?: boolean;
 }
 
+export interface SelfConfigTopic {
+  id: string;
+  title: string;
+  agent?: AgentKind;
+  defaultModel: string;
+  defaultEffort: EffortLevel;
+  participants: readonly { userId: string }[];
+}
+
+export interface SelfConfigTopicConfig {
+  model?: string;
+  effort?: EffortLevel;
+  mcp?: string[];
+  agentLocked?: boolean;
+  modelLocked?: boolean;
+  effortLocked?: boolean;
+}
+
+export interface SelfConfigAgentPolicy {
+  defaultEffort?: EffortLevel;
+  validEfforts: readonly EffortLevel[];
+  validateModel(model: string): boolean;
+  validateEffort(effort: EffortLevel): boolean;
+  resolveModel(model: string | undefined): string;
+}
+
+export interface SelfConfigTopicStore {
+  getTopic(topicId: string): SelfConfigTopic | null;
+  getConfig(topicId: string): SelfConfigTopicConfig | undefined;
+  setConfig(topicId: string, config: SelfConfigTopicConfig): void;
+}
+
+export interface SelfConfigModelPolicy {
+  forAgent(agent: AgentKind): SelfConfigAgentPolicy;
+  owner(model: string): AgentKind | undefined;
+  checkAuth(
+    agent: AgentKind,
+    model: string,
+    userId: string,
+  ): { ok: true } | { ok: false; error: string };
+}
+
+export interface SelfConfigRuntimeBoundary {
+  resolveWorkspaceDir(topicId: string): string;
+  switchAgent(options: SelfConfigAgentSwitchOptions): SelfConfigAgentSwitchResult;
+  configChanged(topicId: string, field: SelfConfigField): void;
+}
+
+export type SelfConfigAgentSwitchResult =
+  | {
+      ok: true;
+      outcome:
+        | { kind: "fresh"; agent: AgentKind; reason: "no-history" | "bridge-failed" }
+        | {
+            kind: "bridged";
+            agent: AgentKind;
+            bridgedSessionId: string;
+            rolloutPath: string;
+          };
+    }
+  | { ok: false; error: string };
+
+export interface SelfConfigAgentSwitchOptions {
+  topicId: string;
+  topicTitle: string;
+  userId: string;
+  fromAgent?: AgentKind;
+  agent: AgentKind;
+  cwd: string;
+  config: SelfConfigTopicConfig;
+  defaultModel?: string;
+  defaultEffort?: EffortLevel;
+  reason: string;
+}
+
+export interface SelfConfigDerivedTopics {
+  create(
+    sourceTopicId: string,
+    userId: string,
+    copyHistory: boolean,
+    options: { name?: string },
+  ): Promise<SelfConfigTopic | null>;
+  link(topicId: string): string;
+  isTitleConflict(error: unknown): boolean;
+  isForkCompactionError(error: unknown): boolean;
+}
+
+export interface SelfConfigSchedules {
+  create(input: {
+    topicId: string;
+    userId: string;
+    message: string;
+    deliverAt: number;
+    now?: number;
+  }): SelfConfigCreateScheduleResult;
+  getPending(topicId: string): SelfConfigSchedule | null;
+  update(input: {
+    topicId: string;
+    scheduleId: string;
+    message?: string;
+    deliverAt?: number;
+    now?: number;
+  }): SelfConfigSchedule | null;
+  cancel(topicId: string, scheduleId: string): boolean;
+}
+
+export interface SelfConfigSchedule {
+  id: string;
+  topicId: string;
+  userId: string;
+  message: string;
+  deliverAt: number;
+}
+
+export type SelfConfigCreateScheduleResult =
+  | { ok: true; schedule: SelfConfigSchedule }
+  | { ok: false; existing: SelfConfigSchedule };
+
+/** Product-level limits and copy that are shared by policy and MCP wrappers. */
+export interface SelfConfigProductConfig {
+  readonly mcpKey: string;
+  readonly scheduleMaxDelaySeconds: number;
+  readonly scheduleMaxMessageLength: number;
+  readonly derivedTopicLimit: number;
+  readonly toolDescriptions: Readonly<Record<string, string>>;
+}
+
+export interface SelfConfigHost {
+  topics: SelfConfigTopicStore;
+  models: SelfConfigModelPolicy;
+  runtime: SelfConfigRuntimeBoundary;
+  derivedTopics?: SelfConfigDerivedTopics;
+  schedules?: SelfConfigSchedules;
+}
+
+export interface SelfConfigCore {
+  readonly host: SelfConfigHost;
+  readonly product: SelfConfigProductConfig;
+  setModel(ctx: SelfConfigContext, model: string): SelfConfigResult;
+  getModel(ctx: SelfConfigContext): SelfConfigResult;
+  setAgent(ctx: SelfConfigContext, agent: AgentKind): SelfConfigResult;
+  getAgent(ctx: SelfConfigContext): SelfConfigResult;
+  setEffort(ctx: SelfConfigContext, effort: EffortLevel): SelfConfigResult;
+  getEffort(ctx: SelfConfigContext): SelfConfigResult;
+  scheduleContinue(
+    ctx: SelfConfigContext,
+    delaySeconds: number,
+    message: string,
+    nowMs?: number,
+  ): SelfConfigResult;
+  getSchedule(ctx: SelfConfigContext, nowMs?: number): SelfConfigResult;
+  updateSchedule(
+    ctx: SelfConfigContext,
+    scheduleId: string,
+    updates: { delaySeconds?: number; message?: string },
+    nowMs?: number,
+  ): SelfConfigResult;
+  cancelSchedule(ctx: SelfConfigContext, scheduleId: string): SelfConfigResult;
+  spawnTopic(ctx: SelfConfigContext, name?: string): Promise<SelfConfigResult>;
+  forkTopic(ctx: SelfConfigContext, name?: string): Promise<SelfConfigResult>;
+}
+
+export const DEFAULT_SELF_CONFIG_PRODUCT: SelfConfigProductConfig = {
+  mcpKey: SELF_CONFIG_MCP_KEY,
+  scheduleMaxDelaySeconds: SELF_SCHEDULE_MAX_DELAY_SECONDS,
+  scheduleMaxMessageLength: SELF_SCHEDULE_MAX_MESSAGE_LENGTH,
+  derivedTopicLimit: SELF_CONFIG_DERIVED_TOPIC_LIMIT,
+  toolDescriptions: {},
+};
+
 function ok(text: string): SelfConfigResult {
   return { text };
 }
@@ -50,34 +215,8 @@ function err(text: string): SelfConfigResult {
   return { text, isError: true };
 }
 
-function requireAccessibleTopic(ctx: SelfConfigContext): TopicDto | SelfConfigResult {
-  if (!ctx.topicId || !ctx.userId) return err("Error: missing topicId/userId context.");
-  const topic = getTopic(ctx.topicId);
-  if (!topic) return err(`Error: topic '${ctx.topicId}' not found.`);
-  if (!topic.participants.some((p) => p.userId === ctx.userId)) {
-    return err("Error: user is not a member of this topic.");
-  }
-  return topic;
-}
-
-function requireTopic(ctx: SelfConfigContext): TopicDto | SelfConfigResult {
-  const topic = requireAccessibleTopic(ctx);
-  if (isResult(topic)) return topic;
-  if (!topic.agent) return err("Error: this topic has no AI agent invited.");
-  return topic;
-}
-
-function isResult(value: TopicDto | SelfConfigResult): value is SelfConfigResult {
-  return "text" in value;
-}
-
-function currentAgent(topic: TopicDto): AgentKind {
-  return (topic.agent ?? "maestro") as AgentKind;
-}
-
-function effectiveDefaultModel(topic: TopicDto, agent: AgentKind): string {
-  const registry = getRegistry(agent);
-  return resolveModelForAgent(agent, topic.defaultModel, registry);
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function escapeRegExp(value: string): string {
@@ -111,8 +250,7 @@ function agentAliases(agent: AgentKind): string[] {
 function hasExplicitAgentSwitchRequest(prompt: string | undefined, agent: AgentKind): boolean {
   if (!prompt?.trim()) return false;
   const text = prompt.toLowerCase().replace(/\s+/g, " ").trim();
-  const aliases = agentAliases(agent).map(escapeRegExp);
-  const target = `(?:${aliases.join("|")})`;
+  const target = `(?:${agentAliases(agent).map(escapeRegExp).join("|")})`;
   const switchVerb =
     "(?:바꿔|바꿔줘|변경|변경해|전환|전환해|설정|설정해|써줘|사용|가|switch|change|set|use)";
   const switchSubject = "(?:agent|runtime|model|에이전트|런타임|모델)";
@@ -126,205 +264,426 @@ function hasExplicitAgentSwitchRequest(prompt: string | undefined, agent: AgentK
   ].some((pattern) => pattern.test(text));
 }
 
-export function setSelfConfigModel(ctx: SelfConfigContext, model: string): SelfConfigResult {
-  const topic = requireTopic(ctx);
-  if (isResult(topic)) return topic;
+export function createSelfConfigCore(
+  host: SelfConfigHost,
+  productOverrides: Partial<SelfConfigProductConfig> = {},
+): SelfConfigCore {
+  const product: SelfConfigProductConfig = Object.freeze({
+    ...DEFAULT_SELF_CONFIG_PRODUCT,
+    ...productOverrides,
+    toolDescriptions: Object.freeze({
+      ...DEFAULT_SELF_CONFIG_PRODUCT.toolDescriptions,
+      ...productOverrides.toolDescriptions,
+    }),
+  });
 
-  const cfg = getApiTopicConfig(topic.id) ?? {};
-  if (cfg.modelLocked) return err("Model for this topic is locked by the user. Cannot override.");
+  function requireAccessibleTopic(ctx: SelfConfigContext): SelfConfigTopic | SelfConfigResult {
+    if (!ctx.topicId || !ctx.userId) return err("Error: missing topicId/userId context.");
+    const topic = host.topics.getTopic(ctx.topicId);
+    if (!topic) return err(`Error: topic '${ctx.topicId}' not found.`);
+    if (!topic.participants.some((participant) => participant.userId === ctx.userId)) {
+      return err("Error: user is not a member of this topic.");
+    }
+    return topic;
+  }
 
-  const agent = currentAgent(topic);
-  const registry = getRegistry(agent);
-  const owner = modelOwner(model);
-  if ((owner && owner !== agent) || !registry.validateModel(model)) {
-    return err(
-      `'${model}' is not a valid model for agent '${agent}'. If it belongs to another agent, call set_agent first.`,
+  function requireTopic(ctx: SelfConfigContext): SelfConfigTopic | SelfConfigResult {
+    const topic = requireAccessibleTopic(ctx);
+    if ("text" in topic) return topic;
+    if (!topic.agent) return err("Error: this topic has no AI agent invited.");
+    return topic;
+  }
+
+  function currentAgent(topic: SelfConfigTopic): AgentKind {
+    return topic.agent ?? "maestro";
+  }
+
+  function setModel(ctx: SelfConfigContext, model: string): SelfConfigResult {
+    const topic = requireTopic(ctx);
+    if ("text" in topic) return topic;
+
+    const config = host.topics.getConfig(topic.id) ?? {};
+    if (config.modelLocked) {
+      return err("Model for this topic is locked by the user. Cannot override.");
+    }
+
+    const agent = currentAgent(topic);
+    const policy = host.models.forAgent(agent);
+    const owner = host.models.owner(model);
+    if ((owner && owner !== agent) || !policy.validateModel(model)) {
+      return err(
+        `'${model}' is not a valid model for agent '${agent}'. If it belongs to another agent, call set_agent first.`,
+      );
+    }
+    const resolvedModel = policy.resolveModel(model);
+    const auth = host.models.checkAuth(agent, resolvedModel, ctx.userId);
+    if (!auth.ok) return err(auth.error);
+
+    host.topics.setConfig(topic.id, { ...config, model: resolvedModel });
+    host.runtime.configChanged(topic.id, "model");
+    ctx.onConfigChanged?.("model");
+    return ok(
+      `Model for this topic set to '${resolvedModel}' (agent=${agent}). Applies from the next turn.`,
     );
   }
-  const resolvedModel = resolveModelForAgent(agent, model, registry);
-  const auth = checkAgentModelAuth(agent, resolvedModel, undefined, ctx.userId);
-  if (!auth.ok) return err(auth.error);
 
-  setApiTopicConfig(topic.id, { ...cfg, model: resolvedModel });
-  // Keep the provider conversation. Codex and Claude both support changing
-  // the model for a later turn while resuming the same thread/session.
-  WsHub.get().broadcastTopicUpdated(topic.id);
-  ctx.onConfigChanged?.("model");
-  return ok(
-    `Model for this topic set to '${resolvedModel}' (agent=${agent}). Applies from the next turn.`,
-  );
+  function getModel(ctx: SelfConfigContext): SelfConfigResult {
+    const topic = requireTopic(ctx);
+    if ("text" in topic) return topic;
+
+    const config = host.topics.getConfig(topic.id);
+    const agent = currentAgent(topic);
+    const policy = host.models.forAgent(agent);
+    const fallback = policy.resolveModel(topic.defaultModel);
+    const resolved = config?.model ? policy.resolveModel(config.model) : fallback;
+    const value =
+      config?.model && resolved === config.model ? config.model : `default (${fallback})`;
+    const lock = config?.modelLocked ? " [locked by user]" : "";
+    return ok(`Model (agent=${agent}): ${value}${lock}`);
+  }
+
+  function setAgent(ctx: SelfConfigContext, agent: AgentKind): SelfConfigResult {
+    const topic = requireTopic(ctx);
+    if ("text" in topic) return topic;
+
+    const config = host.topics.getConfig(topic.id) ?? {};
+    const existing = currentAgent(topic);
+    if (existing === agent) return ok(`Agent is already '${agent}'. No change.`);
+    if (config.agentLocked) {
+      return err("Agent for this topic is locked by the user. Cannot override.");
+    }
+    if (!hasExplicitAgentSwitchRequest(ctx.currentUserPrompt, agent)) {
+      return err(
+        `Agent switch to '${agent}' requires an explicit request in the current user message.`,
+      );
+    }
+
+    const switched = host.runtime.switchAgent({
+      topicId: topic.id,
+      topicTitle: topic.title,
+      userId: ctx.userId,
+      fromAgent: existing,
+      agent,
+      cwd: ctx.cwd ?? host.runtime.resolveWorkspaceDir(topic.id),
+      config: { ...config, model: undefined, effort: undefined },
+      defaultModel: topic.defaultModel,
+      defaultEffort: topic.defaultEffort,
+      reason: "self-config-agent-switch",
+    });
+    if (!switched.ok) return err(switched.error);
+
+    host.runtime.configChanged(topic.id, "agent");
+    ctx.onConfigChanged?.("agent");
+    const sessionNote =
+      switched.outcome.kind === "bridged"
+        ? ` Conversation history was bridged into a ${agent} session (${switched.outcome.bridgedSessionId}).`
+        : switched.outcome.reason === "bridge-failed"
+          ? " Conversation history bridge failed; the next turn starts fresh."
+          : " No prior conversation history was found; the next turn starts fresh.";
+    return ok(
+      `Agent for this topic set to '${agent}'. Model/effort reset to '${agent}' defaults.${sessionNote}`,
+    );
+  }
+
+  function getAgent(ctx: SelfConfigContext): SelfConfigResult {
+    const topic = requireTopic(ctx);
+    if ("text" in topic) return topic;
+    return ok(`Agent: ${currentAgent(topic)}`);
+  }
+
+  function setEffort(ctx: SelfConfigContext, effort: EffortLevel): SelfConfigResult {
+    const topic = requireTopic(ctx);
+    if ("text" in topic) return topic;
+
+    const config = host.topics.getConfig(topic.id) ?? {};
+    if (config.effortLocked) {
+      return err("Effort for this topic is locked by the user. Cannot override.");
+    }
+    const agent = currentAgent(topic);
+    const policy = host.models.forAgent(agent);
+    if (!policy.validateEffort(effort)) {
+      return err(
+        `'${effort}' is not a valid effort for agent '${agent}'. Valid: ${policy.validEfforts.join(", ")}.`,
+      );
+    }
+
+    host.topics.setConfig(topic.id, { ...config, effort });
+    host.runtime.configChanged(topic.id, "effort");
+    ctx.onConfigChanged?.("effort");
+    return ok(
+      `Effort for this topic set to '${effort}' (agent=${agent}). Applies from the next turn.`,
+    );
+  }
+
+  function getEffort(ctx: SelfConfigContext): SelfConfigResult {
+    const topic = requireTopic(ctx);
+    if ("text" in topic) return topic;
+
+    const config = host.topics.getConfig(topic.id);
+    const agent = currentAgent(topic);
+    const policy = host.models.forAgent(agent);
+    const fallback = policy.defaultEffort ? `default (${policy.defaultEffort})` : "default (off)";
+    const value = config?.effort ?? fallback;
+    const lock = config?.effortLocked ? " [locked by user]" : "";
+    return ok(`Effort (agent=${agent}): ${value}${lock}`);
+  }
+
+  function unavailable(capability: string): SelfConfigResult {
+    return err(`${capability} is not available in this host.`);
+  }
+
+  function scheduleContinue(
+    ctx: SelfConfigContext,
+    delaySeconds: number,
+    message: string,
+    nowMs = Date.now(),
+  ): SelfConfigResult {
+    if (!host.schedules) return unavailable("Self-scheduling");
+    const topic = requireTopic(ctx);
+    if ("text" in topic) return topic;
+    if (
+      !Number.isInteger(delaySeconds) ||
+      delaySeconds < 1 ||
+      delaySeconds > product.scheduleMaxDelaySeconds
+    ) {
+      return err(`delay_seconds must be an integer from 1 to ${product.scheduleMaxDelaySeconds}.`);
+    }
+    const cleanMessage = message.trim();
+    if (!cleanMessage) return err("message is required.");
+    if (cleanMessage.length > product.scheduleMaxMessageLength) {
+      return err(`message must be ${product.scheduleMaxMessageLength} characters or fewer.`);
+    }
+
+    const deliverAtMs = nowMs + delaySeconds * 1000;
+    const created = host.schedules.create({
+      topicId: topic.id,
+      userId: ctx.userId,
+      message: cleanMessage,
+      deliverAt: deliverAtMs,
+      now: nowMs,
+    });
+    if (!created.ok) {
+      return err(
+        `This topic already has a pending self-schedule (${created.existing.id}) for ` +
+          `${new Date(created.existing.deliverAt).toISOString()}. ` +
+          "Use update_self_schedule or cancel_self_schedule instead of creating another one.",
+      );
+    }
+    return ok(
+      `Scheduled this topic to resume in ${delaySeconds} seconds at ${new Date(deliverAtMs).toISOString()}. ` +
+        `Schedule ID: ${created.schedule.id}. ` +
+        `The continuation is durable across node restarts (delivery granularity is about 5 seconds).`,
+    );
+  }
+
+  function getSchedule(ctx: SelfConfigContext, nowMs = Date.now()): SelfConfigResult {
+    if (!host.schedules) return unavailable("Self-scheduling");
+    const topic = requireAccessibleTopic(ctx);
+    if ("text" in topic) return topic;
+    const schedule = host.schedules.getPending(topic.id);
+    if (!schedule) return ok("This topic has no pending self-schedule.");
+    const remainingSeconds = Math.max(0, Math.ceil((schedule.deliverAt - nowMs) / 1000));
+    return ok(
+      [
+        `Pending self-schedule: ${schedule.id}`,
+        `Deliver at: ${new Date(schedule.deliverAt).toISOString()} (in about ${remainingSeconds} seconds)`,
+        `Message: ${schedule.message}`,
+      ].join("\n"),
+    );
+  }
+
+  function updateSchedule(
+    ctx: SelfConfigContext,
+    scheduleId: string,
+    updates: { delaySeconds?: number; message?: string },
+    nowMs = Date.now(),
+  ): SelfConfigResult {
+    if (!host.schedules) return unavailable("Self-scheduling");
+    const topic = requireAccessibleTopic(ctx);
+    if ("text" in topic) return topic;
+    if (updates.delaySeconds === undefined && updates.message === undefined) {
+      return err("Provide delay_seconds, message, or both.");
+    }
+    if (
+      updates.delaySeconds !== undefined &&
+      (!Number.isInteger(updates.delaySeconds) ||
+        updates.delaySeconds < 1 ||
+        updates.delaySeconds > product.scheduleMaxDelaySeconds)
+    ) {
+      return err(`delay_seconds must be an integer from 1 to ${product.scheduleMaxDelaySeconds}.`);
+    }
+    let cleanMessage: string | undefined;
+    if (updates.message !== undefined) {
+      cleanMessage = updates.message.trim();
+      if (!cleanMessage) return err("message is required when provided.");
+      if (cleanMessage.length > product.scheduleMaxMessageLength) {
+        return err(`message must be ${product.scheduleMaxMessageLength} characters or fewer.`);
+      }
+    }
+
+    const updated = host.schedules.update({
+      topicId: topic.id,
+      scheduleId,
+      message: cleanMessage,
+      deliverAt:
+        updates.delaySeconds === undefined ? undefined : nowMs + updates.delaySeconds * 1000,
+      now: nowMs,
+    });
+    if (!updated) {
+      return err(
+        `Pending self-schedule '${scheduleId}' was not found. It may have been cancelled, replaced, or already started.`,
+      );
+    }
+    return ok(
+      `Updated self-schedule ${updated.id}. It will resume at ${new Date(updated.deliverAt).toISOString()}.`,
+    );
+  }
+
+  function cancelSchedule(ctx: SelfConfigContext, scheduleId: string): SelfConfigResult {
+    if (!host.schedules) return unavailable("Self-scheduling");
+    const topic = requireAccessibleTopic(ctx);
+    if ("text" in topic) return topic;
+    if (!host.schedules.cancel(topic.id, scheduleId)) {
+      return err(
+        `Pending self-schedule '${scheduleId}' was not found. It may have been cancelled, replaced, or already started.`,
+      );
+    }
+    return ok(`Cancelled self-schedule ${scheduleId}.`);
+  }
+
+  async function deriveTopic(
+    ctx: SelfConfigContext,
+    copyHistory: boolean,
+    name?: string,
+  ): Promise<SelfConfigResult> {
+    if (!host.derivedTopics) return unavailable("Derived topics");
+    const topic = requireTopic(ctx);
+    if ("text" in topic) return topic;
+
+    let derived: SelfConfigTopic | null;
+    try {
+      derived = await host.derivedTopics.create(topic.id, ctx.userId, copyHistory, { name });
+    } catch (error) {
+      if (host.derivedTopics.isTitleConflict(error)) {
+        return err(`${errorMessage(error)} — pick a different name.`);
+      }
+      if (copyHistory && host.derivedTopics.isForkCompactionError(error)) {
+        return err(errorMessage(error));
+      }
+      throw error;
+    }
+    const verb = copyHistory ? "Forked" : "Spawned";
+    if (!derived) {
+      return err(`Failed to ${verb.toLowerCase()} topic (source not found or permission denied).`);
+    }
+    const history = copyHistory ? " History copied." : "";
+    return ok(
+      `${verb} new topic "${derived.title}".${history}\nLink: ${host.derivedTopics.link(derived.id)}`,
+    );
+  }
+
+  const core: SelfConfigCore = {
+    host,
+    product,
+    setModel,
+    getModel,
+    setAgent,
+    getAgent,
+    setEffort,
+    getEffort,
+    scheduleContinue,
+    getSchedule,
+    updateSchedule,
+    cancelSchedule,
+    spawnTopic: (ctx, name) => deriveTopic(ctx, false, name),
+    forkTopic: (ctx, name) => deriveTopic(ctx, true, name),
+  };
+  return Object.freeze(core);
+}
+
+export const defaultSelfConfigHost: SelfConfigHost = {
+  topics: {
+    getTopic,
+    getConfig: getApiTopicConfig,
+    setConfig: setApiTopicConfig,
+  },
+  models: {
+    forAgent(agent) {
+      const registry = getRegistry(agent);
+      return {
+        defaultEffort: registry.defaultEffort,
+        validEfforts: registry.validEfforts,
+        validateModel: (model) => registry.validateModel(model),
+        validateEffort: (effort) => registry.validateEffort(effort),
+        resolveModel: (model) => resolveModelForAgent(agent, model, registry),
+      };
+    },
+    owner: modelOwner,
+    checkAuth: (agent, model, userId) => checkAgentModelAuth(agent, model, undefined, userId),
+  },
+  runtime: {
+    resolveWorkspaceDir: resolveTopicWorkspaceDir,
+    switchAgent: switchApiTopicAgent,
+    configChanged: (topicId) => WsHub.get().broadcastTopicUpdated(topicId),
+  },
+  derivedTopics: {
+    async create(sourceTopicId, userId, copyHistory, options) {
+      const { createDerivedTopic } = await import("#topics/derive");
+      return createDerivedTopic(sourceTopicId, userId, copyHistory, options);
+    },
+    link: topicMarkdownLink,
+    isTitleConflict: (error) => error instanceof Error && error.name === "TopicTitleConflictError",
+    isForkCompactionError: (error) =>
+      error instanceof Error && error.name === "TopicForkCompactionError",
+  },
+  schedules: {
+    create: createPendingSelfSchedule,
+    getPending: getPendingSelfSchedule,
+    update: updatePendingSelfSchedule,
+    cancel: cancelPendingSelfSchedule,
+  },
+};
+
+export const defaultSelfConfigCore = createSelfConfigCore(defaultSelfConfigHost);
+
+export function setSelfConfigModel(ctx: SelfConfigContext, model: string): SelfConfigResult {
+  return defaultSelfConfigCore.setModel(ctx, model);
 }
 
 export function getSelfConfigModel(ctx: SelfConfigContext): SelfConfigResult {
-  const topic = requireTopic(ctx);
-  if (isResult(topic)) return topic;
-
-  const cfg = getApiTopicConfig(topic.id);
-  const agent = currentAgent(topic);
-  const registry = getRegistry(agent);
-  const fallback = effectiveDefaultModel(topic, agent);
-  const resolved = cfg?.model ? resolveModelForAgent(agent, cfg.model, registry) : fallback;
-  const value = cfg?.model && resolved === cfg.model ? cfg.model : `default (${fallback})`;
-  const lock = cfg?.modelLocked ? " [locked by user]" : "";
-  return ok(`Model (agent=${agent}): ${value}${lock}`);
+  return defaultSelfConfigCore.getModel(ctx);
 }
 
 export function setSelfConfigAgent(ctx: SelfConfigContext, agent: AgentKind): SelfConfigResult {
-  const topic = requireTopic(ctx);
-  if (isResult(topic)) return topic;
-
-  const cfg = getApiTopicConfig(topic.id) ?? {};
-  // Agent is a topic property; the same path is used by UI and MCP.
-
-  const existing = currentAgent(topic);
-  if (existing === agent) return ok(`Agent is already '${agent}'. No change.`);
-  if (cfg.agentLocked) return err("Agent for this topic is locked by the user. Cannot override.");
-  if (!hasExplicitAgentSwitchRequest(ctx.currentUserPrompt, agent)) {
-    return err(
-      `Agent switch to '${agent}' requires an explicit request in the current user message.`,
-    );
-  }
-
-  // Switching agents invalidates provider-native session ids and per-agent
-  // model/effort overrides. The helper mirrors Otium's switchTopicAgent:
-  // write rollout, manifest the synthetic session in the unified log, then
-  // commit config + durable session.
-  const switched = switchApiTopicAgent({
-    topicId: topic.id,
-    topicTitle: topic.title,
-    userId: ctx.userId,
-    fromAgent: existing,
-    agent,
-    cwd: ctx.cwd ?? resolveTopicWorkspaceDir(topic.id),
-    config: { ...cfg, model: undefined, effort: undefined },
-    defaultModel: topic.defaultModel,
-    defaultEffort: topic.defaultEffort,
-    reason: "self-config-agent-switch",
-  });
-  if (!switched.ok) return err(switched.error);
-
-  WsHub.get().broadcastTopicUpdated(topic.id);
-  ctx.onConfigChanged?.("agent");
-  const sessionNote =
-    switched.outcome.kind === "bridged"
-      ? ` Conversation history was bridged into a ${agent} session (${switched.outcome.bridgedSessionId}).`
-      : switched.outcome.reason === "bridge-failed"
-        ? " Conversation history bridge failed; the next turn starts fresh."
-        : " No prior conversation history was found; the next turn starts fresh.";
-  return ok(
-    `Agent for this topic set to '${agent}'. Model/effort reset to '${agent}' defaults.${sessionNote}`,
-  );
+  return defaultSelfConfigCore.setAgent(ctx, agent);
 }
 
 export function getSelfConfigAgent(ctx: SelfConfigContext): SelfConfigResult {
-  const topic = requireTopic(ctx);
-  if (isResult(topic)) return topic;
-
-  const lock = "";
-  return ok(`Agent: ${currentAgent(topic)}${lock}`);
+  return defaultSelfConfigCore.getAgent(ctx);
 }
 
 export function setSelfConfigEffort(ctx: SelfConfigContext, effort: EffortLevel): SelfConfigResult {
-  const topic = requireTopic(ctx);
-  if (isResult(topic)) return topic;
-
-  const cfg = getApiTopicConfig(topic.id) ?? {};
-  if (cfg.effortLocked) return err("Effort for this topic is locked by the user. Cannot override.");
-
-  const agent = currentAgent(topic);
-  const registry = getRegistry(agent);
-  if (!registry.validateEffort(effort)) {
-    return err(
-      `'${effort}' is not a valid effort for agent '${agent}'. Valid: ${registry.validEfforts.join(", ")}.`,
-    );
-  }
-
-  setApiTopicConfig(topic.id, { ...cfg, effort });
-  WsHub.get().broadcastTopicUpdated(topic.id);
-  ctx.onConfigChanged?.("effort");
-  return ok(
-    `Effort for this topic set to '${effort}' (agent=${agent}). Applies from the next turn.`,
-  );
+  return defaultSelfConfigCore.setEffort(ctx, effort);
 }
 
 export function getSelfConfigEffort(ctx: SelfConfigContext): SelfConfigResult {
-  const topic = requireTopic(ctx);
-  if (isResult(topic)) return topic;
-
-  const cfg = getApiTopicConfig(topic.id);
-  const agent = currentAgent(topic);
-  const registry = getRegistry(agent);
-  const fallback = registry.defaultEffort ? `default (${registry.defaultEffort})` : "default (off)";
-  const value = cfg?.effort ?? fallback;
-  const lock = cfg?.effortLocked ? " [locked by user]" : "";
-  return ok(`Effort (agent=${agent}): ${value}${lock}`);
+  return defaultSelfConfigCore.getEffort(ctx);
 }
 
-/**
- * Persist the topic's sole pending one-shot continuation. The inbox worker
- * claims due rows only when the room is idle and keeps running claims durable
- * until the turn settles.
- */
 export function scheduleSelfConfigContinue(
   ctx: SelfConfigContext,
   delaySeconds: number,
   message: string,
   nowMs = Date.now(),
 ): SelfConfigResult {
-  const topic = requireTopic(ctx);
-  if (isResult(topic)) return topic;
-  if (
-    !Number.isInteger(delaySeconds) ||
-    delaySeconds < 1 ||
-    delaySeconds > SELF_SCHEDULE_MAX_DELAY_SECONDS
-  ) {
-    return err(`delay_seconds must be an integer from 1 to ${SELF_SCHEDULE_MAX_DELAY_SECONDS}.`);
-  }
-  const cleanMessage = message.trim();
-  if (!cleanMessage) return err("message is required.");
-  if (cleanMessage.length > SELF_SCHEDULE_MAX_MESSAGE_LENGTH) {
-    return err(`message must be ${SELF_SCHEDULE_MAX_MESSAGE_LENGTH} characters or fewer.`);
-  }
-
-  const deliverAtMs = nowMs + delaySeconds * 1000;
-  const created = createPendingSelfSchedule({
-    topicId: topic.id,
-    userId: ctx.userId,
-    message: cleanMessage,
-    deliverAt: deliverAtMs,
-    now: nowMs,
-  });
-  if (!created.ok) {
-    return err(
-      `This topic already has a pending self-schedule (${created.existing.id}) for ` +
-        `${new Date(created.existing.deliverAt).toISOString()}. ` +
-        "Use update_self_schedule or cancel_self_schedule instead of creating another one.",
-    );
-  }
-  const deliverAt = new Date(deliverAtMs).toISOString();
-  return ok(
-    `Scheduled this topic to resume in ${delaySeconds} seconds at ${deliverAt}. ` +
-      `Schedule ID: ${created.schedule.id}. ` +
-      `The continuation is durable across node restarts (delivery granularity is about 5 seconds).`,
-  );
+  return defaultSelfConfigCore.scheduleContinue(ctx, delaySeconds, message, nowMs);
 }
 
 export function getSelfConfigSchedule(
   ctx: SelfConfigContext,
   nowMs = Date.now(),
 ): SelfConfigResult {
-  const topic = requireAccessibleTopic(ctx);
-  if (isResult(topic)) return topic;
-  const schedule = getPendingSelfSchedule(topic.id);
-  if (!schedule) return ok("This topic has no pending self-schedule.");
-  const remainingSeconds = Math.max(0, Math.ceil((schedule.deliverAt - nowMs) / 1000));
-  return ok(
-    [
-      `Pending self-schedule: ${schedule.id}`,
-      `Deliver at: ${new Date(schedule.deliverAt).toISOString()} (in about ${remainingSeconds} seconds)`,
-      `Message: ${schedule.message}`,
-    ].join("\n"),
-  );
+  return defaultSelfConfigCore.getSchedule(ctx, nowMs);
 }
 
 export function updateSelfConfigSchedule(
@@ -333,98 +692,26 @@ export function updateSelfConfigSchedule(
   updates: { delaySeconds?: number; message?: string },
   nowMs = Date.now(),
 ): SelfConfigResult {
-  const topic = requireAccessibleTopic(ctx);
-  if (isResult(topic)) return topic;
-  if (updates.delaySeconds === undefined && updates.message === undefined) {
-    return err("Provide delay_seconds, message, or both.");
-  }
-  if (
-    updates.delaySeconds !== undefined &&
-    (!Number.isInteger(updates.delaySeconds) ||
-      updates.delaySeconds < 1 ||
-      updates.delaySeconds > SELF_SCHEDULE_MAX_DELAY_SECONDS)
-  ) {
-    return err(`delay_seconds must be an integer from 1 to ${SELF_SCHEDULE_MAX_DELAY_SECONDS}.`);
-  }
-  let cleanMessage: string | undefined;
-  if (updates.message !== undefined) {
-    cleanMessage = updates.message.trim();
-    if (!cleanMessage) return err("message is required when provided.");
-    if (cleanMessage.length > SELF_SCHEDULE_MAX_MESSAGE_LENGTH) {
-      return err(`message must be ${SELF_SCHEDULE_MAX_MESSAGE_LENGTH} characters or fewer.`);
-    }
-  }
-
-  const updated = updatePendingSelfSchedule({
-    topicId: topic.id,
-    scheduleId,
-    message: cleanMessage,
-    deliverAt: updates.delaySeconds === undefined ? undefined : nowMs + updates.delaySeconds * 1000,
-    now: nowMs,
-  });
-  if (!updated) {
-    return err(
-      `Pending self-schedule '${scheduleId}' was not found. It may have been cancelled, replaced, or already started.`,
-    );
-  }
-  return ok(
-    `Updated self-schedule ${updated.id}. It will resume at ${new Date(updated.deliverAt).toISOString()}.`,
-  );
+  return defaultSelfConfigCore.updateSchedule(ctx, scheduleId, updates, nowMs);
 }
 
 export function cancelSelfConfigSchedule(
   ctx: SelfConfigContext,
   scheduleId: string,
 ): SelfConfigResult {
-  const topic = requireAccessibleTopic(ctx);
-  if (isResult(topic)) return topic;
-  if (!cancelPendingSelfSchedule(topic.id, scheduleId)) {
-    return err(
-      `Pending self-schedule '${scheduleId}' was not found. It may have been cancelled, replaced, or already started.`,
-    );
-  }
-  return ok(`Cancelled self-schedule ${scheduleId}.`);
+  return defaultSelfConfigCore.cancelSchedule(ctx, scheduleId);
 }
 
-export async function spawnSelfConfigTopic(
+export function spawnSelfConfigTopic(
   ctx: SelfConfigContext,
   name?: string,
 ): Promise<SelfConfigResult> {
-  const topic = requireTopic(ctx);
-  if (isResult(topic)) return topic;
-
-  let derived: TopicDto | null;
-  try {
-    derived = await createDerivedTopic(topic.id, ctx.userId, false, {
-      name,
-    });
-  } catch (e) {
-    if (e instanceof TopicTitleConflictError) return err(`${e.message} — pick a different name.`);
-    throw e;
-  }
-  if (!derived) return err("Failed to spawn topic (source not found or permission denied).");
-  return ok(`Spawned new topic "${derived.title}".\nLink: ${topicMarkdownLink(derived.id)}`);
+  return defaultSelfConfigCore.spawnTopic(ctx, name);
 }
 
-export async function forkSelfConfigTopic(
+export function forkSelfConfigTopic(
   ctx: SelfConfigContext,
   name?: string,
 ): Promise<SelfConfigResult> {
-  const topic = requireTopic(ctx);
-  if (isResult(topic)) return topic;
-
-  let derived: TopicDto | null;
-  try {
-    derived = await createDerivedTopic(topic.id, ctx.userId, true, {
-      name,
-    });
-  } catch (e) {
-    if (e instanceof TopicTitleConflictError) return err(`${e.message} — pick a different name.`);
-    if (e instanceof TopicForkCompactionError) return err(e.message);
-    throw e;
-  }
-  if (!derived) return err("Failed to fork topic (source not found or permission denied).");
-  return ok(
-    `Forked new topic "${derived.title}". History copied.\nLink: ${topicMarkdownLink(derived.id)}`,
-  );
+  return defaultSelfConfigCore.forkTopic(ctx, name);
 }

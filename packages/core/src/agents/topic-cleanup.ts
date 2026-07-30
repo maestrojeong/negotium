@@ -18,13 +18,18 @@ import { SUPPORTED_AGENTS } from "#agents/index";
 import { getRegistry } from "#agents/registry";
 import { logger } from "#platform/logger";
 import {
-  type ConversationEntry,
   getActiveConversationPath,
   getConversationPath,
   readConversation,
   readRawConversation,
 } from "#storage/conversations";
-import type { AgentKind } from "#types";
+import type { AgentKind, UnifiedEvent } from "#types";
+
+export interface TopicConversationEntry {
+  ts: string;
+  agent: AgentKind;
+  event: UnifiedEvent;
+}
 
 export interface PurgeSessionRef {
   agent: AgentKind;
@@ -37,7 +42,7 @@ export interface PurgeSessionRef {
  * switch back), so we collect into a Set to deduplicate before deletion.
  */
 function collectSessionIdsByAgent(
-  entries: ConversationEntry[],
+  entries: TopicConversationEntry[],
   extraSessions: PurgeSessionRef[] = [],
 ): Map<AgentKind, Set<string>> {
   const out = new Map<AgentKind, Set<string>>();
@@ -77,25 +82,49 @@ export interface PurgeTopicLogsOptions {
   extraSessions?: PurgeSessionRef[];
 }
 
+export interface TopicLogMaintenanceHost {
+  readonly agents: readonly AgentKind[];
+  readonly readActiveConversation: (
+    userId: number | string,
+    topicName: string,
+  ) => TopicConversationEntry[];
+  readonly readRawConversation: (
+    userId: number | string,
+    topicName: string,
+  ) => TopicConversationEntry[];
+  readonly activeConversationPath: (userId: number | string, topicName: string) => string;
+  readonly rawConversationPath: (userId: number | string, topicName: string) => string;
+  readonly cleanupRollouts: (agent: AgentKind, cwd: string, sessionIds: string[]) => Promise<void>;
+  readonly warn: (context: Record<string, unknown>, message: string) => void;
+}
+
+export interface TopicLogMaintenance {
+  cleanupTopicRollouts(opts: PurgeTopicLogsOptions): Promise<boolean>;
+  cleanupTopicRolloutsFromEntries(
+    opts: PurgeTopicLogsOptions,
+    entries: TopicConversationEntry[],
+  ): Promise<boolean>;
+  rotateTopicLogs(opts: RotateTopicLogsOptions): Promise<RotateTopicLogsResult>;
+  purgeTopicLogs(opts: PurgeTopicLogsOptions): Promise<boolean>;
+}
+
 async function cleanupSessionRollouts(
+  host: TopicLogMaintenanceHost,
   opts: PurgeTopicLogsOptions,
-  entries: ConversationEntry[],
+  entries: TopicConversationEntry[],
 ): Promise<boolean> {
   const { userId, topicName, cwd, extraSessions = [] } = opts;
   const idsByAgent = collectSessionIdsByAgent(entries, extraSessions);
   let cleanupFailed = false;
 
   await Promise.all(
-    SUPPORTED_AGENTS.map(async (agent) => {
+    host.agents.map(async (agent) => {
       const ids = idsByAgent.get(agent);
       if (!ids || ids.size === 0) return;
       try {
-        await getRegistry(agent).cleanupRollouts({
-          cwd,
-          sessionIds: Array.from(ids),
-        });
+        await host.cleanupRollouts(agent, cwd, Array.from(ids));
       } catch (e) {
-        logger.warn(
+        host.warn(
           { err: e, userId, topicName, agent, count: ids.size },
           "topic logs: agent cleanup failed",
         );
@@ -105,19 +134,6 @@ async function cleanupSessionRollouts(
   );
 
   return !cleanupFailed;
-}
-
-/** Remove every provider rollout currently manifested by a topic log. */
-export async function cleanupTopicRollouts(opts: PurgeTopicLogsOptions): Promise<boolean> {
-  return cleanupSessionRollouts(opts, readRawConversation(opts.userId, opts.topicName));
-}
-
-/** Remove rollout ids captured from a point-in-time conversation manifest. */
-export async function cleanupTopicRolloutsFromEntries(
-  opts: PurgeTopicLogsOptions,
-  entries: ConversationEntry[],
-): Promise<boolean> {
-  return cleanupSessionRollouts(opts, entries);
 }
 
 export interface RotateTopicLogsOptions extends PurgeTopicLogsOptions {
@@ -132,116 +148,138 @@ export interface RotateTopicLogsResult {
   retainedEntries: number;
 }
 
+export function createTopicLogMaintenance(host: TopicLogMaintenanceHost): TopicLogMaintenance {
+  const runtimeHost: TopicLogMaintenanceHost = Object.freeze({
+    ...host,
+    agents: Object.freeze([...host.agents]),
+  });
+  const cleanupFromEntries = (
+    opts: PurgeTopicLogsOptions,
+    entries: TopicConversationEntry[],
+  ): Promise<boolean> => cleanupSessionRollouts(runtimeHost, opts, entries);
+
+  return Object.freeze({
+    cleanupTopicRollouts(opts: PurgeTopicLogsOptions) {
+      return cleanupFromEntries(opts, runtimeHost.readRawConversation(opts.userId, opts.topicName));
+    },
+    cleanupTopicRolloutsFromEntries: cleanupFromEntries,
+    async rotateTopicLogs(opts: RotateTopicLogsOptions) {
+      const retainTurns = Math.max(0, Math.floor(opts.retainTurns));
+      const entries = runtimeHost.readActiveConversation(opts.userId, opts.topicName);
+      const userEntryIndexes = entries.flatMap((entry, index) =>
+        entry.event.type === "user_message" ? [index] : [],
+      );
+      const totalTurns = userEntryIndexes.length;
+      const firstRetainedIndex =
+        retainTurns === 0
+          ? entries.length
+          : (userEntryIndexes[Math.max(0, totalTurns - retainTurns)] ?? 0);
+      const retained = entries
+        .slice(firstRetainedIndex)
+        .filter((entry) => entry.event.type !== "session");
+
+      if (!(await cleanupFromEntries(opts, entries))) {
+        runtimeHost.warn(
+          { userId: opts.userId, topicName: opts.topicName },
+          "rotateTopicLogs: keeping current context because rollout cleanup failed",
+        );
+        return {
+          rotated: false,
+          totalTurns,
+          retainedTurns: Math.min(totalTurns, retainTurns),
+          retainedEntries: retained.length,
+        };
+      }
+
+      const path = runtimeHost.activeConversationPath(opts.userId, opts.topicName);
+      const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+      try {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(
+          tempPath,
+          retained.length > 0
+            ? `${retained.map((entry) => JSON.stringify(entry)).join("\n")}\n`
+            : "",
+          { flag: "wx" },
+        );
+        renameSync(tempPath, path);
+      } catch (e) {
+        try {
+          unlinkSync(tempPath);
+        } catch {}
+        runtimeHost.warn({ err: e, path }, "rotateTopicLogs: conversation replacement failed");
+        return {
+          rotated: false,
+          totalTurns,
+          retainedTurns: Math.min(totalTurns, retainTurns),
+          retainedEntries: retained.length,
+        };
+      }
+
+      return {
+        rotated: true,
+        totalTurns,
+        retainedTurns: Math.min(totalTurns, retainTurns),
+        retainedEntries: retained.length,
+      };
+    },
+    async purgeTopicLogs(opts: PurgeTopicLogsOptions) {
+      const { userId, topicName } = opts;
+      const entries = runtimeHost.readRawConversation(userId, topicName);
+      if (!(await cleanupFromEntries(opts, entries))) {
+        runtimeHost.warn(
+          { userId, topicName },
+          "purgeTopicLogs: keeping unified log because one or more rollout cleanups failed",
+        );
+        return false;
+      }
+
+      let unlinkFailed = false;
+      for (const path of [
+        runtimeHost.activeConversationPath(userId, topicName),
+        runtimeHost.rawConversationPath(userId, topicName),
+      ]) {
+        try {
+          unlinkSync(path);
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
+            runtimeHost.warn({ err: e, path }, "purgeTopicLogs: conversation log unlink failed");
+            unlinkFailed = true;
+          }
+        }
+      }
+      return !unlinkFailed;
+    },
+  });
+}
+
+const defaultTopicLogMaintenance = createTopicLogMaintenance({
+  agents: SUPPORTED_AGENTS,
+  readActiveConversation: readConversation,
+  readRawConversation,
+  activeConversationPath: getActiveConversationPath,
+  rawConversationPath: getConversationPath,
+  async cleanupRollouts(agent, cwd, sessionIds) {
+    await getRegistry(agent).cleanupRollouts({ cwd, sessionIds });
+  },
+  warn: logger.warn.bind(logger),
+});
+
+/** Remove every provider rollout currently manifested by a topic log. */
+export const cleanupTopicRollouts = defaultTopicLogMaintenance.cleanupTopicRollouts;
+
+/** Remove rollout ids captured from a point-in-time conversation manifest. */
+export const cleanupTopicRolloutsFromEntries =
+  defaultTopicLogMaintenance.cleanupTopicRolloutsFromEntries;
+
 /**
  * Replace a topic's native provider sessions while retaining a bounded tail
- * of its provider-neutral conversation log. This is used by long-lived Cron
- * topics: a fresh native rollout keeps prompt/session state bounded, and the
- * retained tail gives the next rollout enough context to continue naturally.
+ * of its provider-neutral conversation log.
  */
-export async function rotateTopicLogs(
-  opts: RotateTopicLogsOptions,
-): Promise<RotateTopicLogsResult> {
-  const retainTurns = Math.max(0, Math.floor(opts.retainTurns));
-  const entries = readConversation(opts.userId, opts.topicName);
-  const userEntryIndexes = entries.flatMap((entry, index) =>
-    entry.event.type === "user_message" ? [index] : [],
-  );
-  const totalTurns = userEntryIndexes.length;
-  const firstRetainedIndex =
-    retainTurns === 0
-      ? entries.length
-      : (userEntryIndexes[Math.max(0, totalTurns - retainTurns)] ?? 0);
-  // Native session ids point at rollouts that are removed below. Keeping
-  // those manifest entries would make later cleanup treat deleted files as
-  // live context, so only conversational events cross the rotation boundary.
-  const retained = entries
-    .slice(firstRetainedIndex)
-    .filter((entry) => entry.event.type !== "session");
-
-  if (!(await cleanupSessionRollouts(opts, entries))) {
-    logger.warn(
-      { userId: opts.userId, topicName: opts.topicName },
-      "rotateTopicLogs: keeping current context because rollout cleanup failed",
-    );
-    return {
-      rotated: false,
-      totalTurns,
-      retainedTurns: Math.min(totalTurns, retainTurns),
-      retainedEntries: retained.length,
-    };
-  }
-
-  const path = getActiveConversationPath(opts.userId, opts.topicName);
-  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(
-      tempPath,
-      retained.length > 0 ? `${retained.map((entry) => JSON.stringify(entry)).join("\n")}\n` : "",
-      { flag: "wx" },
-    );
-    renameSync(tempPath, path);
-  } catch (e) {
-    try {
-      unlinkSync(tempPath);
-    } catch {}
-    logger.warn({ err: e, path }, "rotateTopicLogs: conversation replacement failed");
-    return {
-      rotated: false,
-      totalTurns,
-      retainedTurns: Math.min(totalTurns, retainTurns),
-      retainedEntries: retained.length,
-    };
-  }
-
-  return {
-    rotated: true,
-    totalTurns,
-    retainedTurns: Math.min(totalTurns, retainTurns),
-    retainedEntries: retained.length,
-  };
-}
+export const rotateTopicLogs = defaultTopicLogMaintenance.rotateTopicLogs;
 
 /**
  * Best-effort teardown of every artifact associated with a topic's
- * conversation lifecycle. Order matters and is intentional:
- *
- *   1. Read the unified log first — it's the authoritative manifest of
- *      every SDK session id the topic has emitted. Merge any DB session id
- *      passed via `extraSessions` for synthetic rollouts not yet emitted.
- *   2. Dispatch per-agent rollout cleanup in parallel (independent
- *      filesystems, no shared state).
- *   3. Unlink the unified log LAST so a partial rollout-cleanup failure
- *      leaves the manifest in place for a future retry.
- *
- * Errors at every step are logged and reported through the return value.
- * Callers must not commit a reset/delete state transition when this returns
- * false, because the retained manifest can otherwise resurrect old context.
+ * conversation lifecycle.
  */
-export async function purgeTopicLogs(opts: PurgeTopicLogsOptions): Promise<boolean> {
-  const { userId, topicName } = opts;
-  const entries = readRawConversation(userId, topicName);
-  if (!(await cleanupSessionRollouts(opts, entries))) {
-    logger.warn(
-      { userId, topicName },
-      "purgeTopicLogs: keeping unified log because one or more rollout cleanups failed",
-    );
-    return false;
-  }
-
-  let unlinkFailed = false;
-  for (const path of [
-    getActiveConversationPath(userId, topicName),
-    getConversationPath(userId, topicName),
-  ]) {
-    try {
-      unlinkSync(path);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
-        logger.warn({ err: e, path }, "purgeTopicLogs: conversation log unlink failed");
-        unlinkFailed = true;
-      }
-    }
-  }
-  return !unlinkFailed;
-}
+export const purgeTopicLogs = defaultTopicLogMaintenance.purgeTopicLogs;

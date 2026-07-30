@@ -1,8 +1,8 @@
 # Migration to 0.1.39
 
-Version 0.1.39 exposes host-injected browser and query runtime APIs for applications that embed
-Negotium. No SQLite, topic, conversation, Vault, Wiki, or browser-profile data migration is
-required.
+Version 0.1.39 exposes host-injected browser, query, prompt, session-catalog, and agent-lifecycle
+APIs for applications that embed Negotium. No SQLite, topic, conversation, Vault, Wiki, or
+browser-profile data migration is required.
 
 ## Browser runtime
 
@@ -27,14 +27,17 @@ in [Otium runtime deduplication](./OTIUM-RUNTIME-DEDUP.md).
   `createQueryStateStore({ usersLogDir, logger, sanitizeTopicId })` from
   `negotium/query-runtime`.
 - Import tool display and shell-summary helpers from `negotium/agent-helpers`.
-- `negotium/prompts` remains available to consumers that already share Negotium's prompt policy.
-  Do not replace a product-specific prompt builder solely to deduplicate code: visual, file-delivery,
-  memory-path, and copyable-draft sections may be part of the host application's behavior. A
-  downstream builder should migrate only after its prompt snapshots match or the shared builder
-  gains the required host extension points.
-
-Large agent orchestration modules remain internal until their storage, session, and scheduler
-dependencies have explicit host contracts. Do not import files from `dist/runtime/src`.
+- Replace product prompt forks with `createPromptBuilders` from `negotium/prompts`. Preserve
+  product wording through ordered `extraSections` and optional `loadTemplate`; keep visual and
+  file-delivery behavior behind the existing feature flags.
+- Replace session target listing/validation forks with `createSessionTargetCatalog` from
+  `negotium/mcp-factories`. Keep inbox, transport, and legacy configuration glue downstream.
+- Import `createAskUserRuntime`, `createArchiverRuntime`, `createTopicLogMaintenance`,
+  `createSelfConfigRuntime`, and `createSubagentLifecycle` from `negotium/agent-helpers`.
+  Implement their host interfaces with product storage, messaging, runtime, and configuration
+  services; do not import files from `dist/runtime/src`.
+- Keep idle scheduling policy, MCP catalogs, ports/environment configuration, and top-level agent
+  wiring in the downstream product.
 
 ## Package dependencies
 
@@ -47,6 +50,8 @@ adapter contracts.
 
 1. Upgrade direct Negotium dependencies to `0.1.39`.
 2. Configure the browser host before any call to `ensurePlaywright`.
-3. Replace query-state and tool-format forks with public imports. Keep product-specific prompt
-   builders until prompt snapshots and host policy sections are preserved.
-4. Restart the node and exercise browser startup, profile reuse, failure propagation, and recovery.
+3. Replace query-state, tool-format, prompt, session-catalog, ask-user, archiver, topic-cleanup,
+   self-config, and subagent lifecycle forks with public factories plus thin host adapters.
+4. Compare prompt snapshots before deleting the product builder.
+5. Restart the node and exercise browser startup, profile reuse, profile deletion, failure
+   propagation, recovery, ask settlement, self-configuration, and subagent completion.

@@ -4,7 +4,10 @@ import {
   canSpawnSubagentsFromTopic,
   createPrepareSubagentToolDefinition,
   createSpawnSubagentToolDefinition,
+  createSubagentLifecycle,
   createSubagentManagementToolDefinitions,
+  type SpawnSubagentToolContext,
+  type SubagentLifecycleHost,
   settleSubagentSuccess,
   sweepStaleSubagentCards,
   takeSubagentWatch,
@@ -68,11 +71,181 @@ function toolFor(topicId: string, userId: string) {
   });
 }
 
+function makeInjectedLifecycleHost(parent: TopicDto) {
+  const topics = new Map([[parent.id, parent]]);
+  const messages = new Map<string, MessageDto>();
+  const calls = {
+    createDerived: 0,
+    dispatch: 0,
+    resolveConfig: 0,
+    notifications: [] as Array<{ requestId: string; prompt: string }>,
+    publishedMessages: [] as string[],
+    dispatchedQueryId: "",
+    placement: "",
+  };
+  const host: SubagentLifecycleHost<SpawnSubagentToolContext & { placement: string }> = {
+    storage: {
+      getTopic: (topicId) => topics.get(topicId),
+      listTopics: () => [...topics.values()],
+      getTopicMemoryOrigin: (topicId) => topics.get(topicId) ?? null,
+      upsertTopic: (topic) => {
+        topics.set(topic.id, topic);
+      },
+      getMessage: (topicId, messageId) => {
+        const message = messages.get(messageId);
+        return message?.topicId === topicId ? message : undefined;
+      },
+      listSubagentMessages: () =>
+        [...messages.values()].filter((message) => message.kind === "subagent"),
+      appendMessage: (message) => {
+        messages.set(message.id, message);
+      },
+      updateSubagentCard: (topicId, messageId, card, editedAt) => {
+        const message = messages.get(messageId);
+        if (!message || message.topicId !== topicId) return null;
+        const updated = { ...message, subagentCard: card, editedAt };
+        messages.set(messageId, updated);
+        return updated;
+      },
+      publishMessage: (_topicId, message) => {
+        calls.publishedMessages.push(message.id);
+      },
+      publishCardUpdate: () => {},
+    },
+    topic: {
+      async createDerived(input) {
+        calls.createDerived += 1;
+        calls.placement = input.context.placement;
+        const now = new Date().toISOString();
+        const child: TopicDto = {
+          ...parent,
+          id: `injected-child-${calls.createDerived}`,
+          title: input.name ?? `injected-child-${calls.createDerived}`,
+          parentTopicId: input.parentTopicId,
+          isSubagent: true,
+          agent: input.agent ?? parent.agent,
+          defaultModel: input.model ?? parent.defaultModel,
+          createdAt: now,
+          lastMessageAt: now,
+        };
+        topics.set(child.id, child);
+        return { ok: true, topic: child };
+      },
+      async delete(topic) {
+        topics.delete(topic.id);
+      },
+    },
+    task: {
+      async dispatch(input) {
+        calls.dispatch += 1;
+        calls.dispatchedQueryId = `injected-query-${input.child.id}`;
+        input.onDispatched(calls.dispatchedQueryId);
+        return { accepted: true };
+      },
+    },
+    sessionCommunication: {
+      async notifyParent({ requestId, prompt }) {
+        calls.notifications.push({ requestId, prompt });
+        return true;
+      },
+      listTellTargetIds: () => [],
+      grantTellTarget: () => {},
+      revokeTellTarget: () => false,
+    },
+    runtime: {
+      ownerId: "injected-owner",
+      now: () => new Date().toISOString(),
+      ownerIsAlive: () => true,
+      childExecutionQueryId: () => null,
+      childExecutionIsRecoverable: () => false,
+    },
+    config: {
+      async resolveAgentModel({ model }) {
+        calls.resolveConfig += 1;
+        return { model };
+      },
+      memoryFilenames: (topic) => [`${topic.id}.md`, `${topic.title}.md`],
+    },
+  };
+  return { host, calls, messages };
+}
+
 afterEach(() => {
   for (const topicId of createdTopicIds.splice(0)) {
     deleteMessagesForTopic(topicId);
     deleteTopic(topicId);
   }
+});
+
+describe("host-injected subagent lifecycle factory", () => {
+  test("routes host work through grouped boundaries and isolates watch state", async () => {
+    const parent = makeTopic("user-1");
+    const { host, calls, messages } = makeInjectedLifecycleHost(parent);
+    const first = createSubagentLifecycle(host);
+    const second = createSubagentLifecycle(host);
+    const spawn = first.createSpawnSubagentToolDefinition({
+      userId: "user-1",
+      topicId: parent.id,
+      queryId: "parent-query",
+      agent: "claude",
+      model: "sonnet",
+      placement: "worker-1",
+    });
+
+    const result = await spawn.handler({ task: "run through the injected host", name: "worker" });
+    expect(result.isError).toBeUndefined();
+    expect(calls).toMatchObject({
+      createDerived: 1,
+      dispatch: 1,
+      resolveConfig: 1,
+      placement: "worker-1",
+    });
+    expect(calls.publishedMessages).toEqual(["subagent-injected-child-1"]);
+
+    expect(second.takeSubagentWatch(calls.dispatchedQueryId)).toBeNull();
+    const watch = first.takeSubagentWatch(calls.dispatchedQueryId);
+    expect(watch).toMatchObject({
+      parentTopicId: parent.id,
+      childTopicId: "injected-child-1",
+      queryId: calls.dispatchedQueryId,
+      running: true,
+    });
+    expect(messages.get("subagent-injected-child-1")?.subagentCard?.status).toBe("running");
+
+    if (!watch) return;
+    await first.settleSubagentSuccess(watch, "finished");
+    expect(calls.notifications).toEqual([
+      {
+        requestId: "subagent-done-injected-child-1",
+        prompt: expect.stringContaining("finished"),
+      },
+    ]);
+    expect(messages.get("subagent-injected-child-1")?.subagentCard?.status).toBe("completed");
+  });
+
+  test("captures and enforces caller-owned lifecycle limits", async () => {
+    const parent = makeTopic("user-1");
+    const { host, calls } = makeInjectedLifecycleHost(parent);
+    const configuredLimits = { maxLiveChildrenPerParent: 1 };
+    host.config.limits = configuredLimits;
+    const lifecycle = createSubagentLifecycle(host);
+    configuredLimits.maxLiveChildrenPerParent = 2;
+    const spawn = lifecycle.createSpawnSubagentToolDefinition({
+      userId: "user-1",
+      topicId: parent.id,
+      queryId: "parent-query",
+      agent: "claude",
+      model: "sonnet",
+      placement: "worker-1",
+    });
+
+    expect((await spawn.handler({ task: "first" })).isError).toBeUndefined();
+    expect((await spawn.handler({ task: "second" })).isError).toBe(true);
+    expect(calls.createDerived).toBe(1);
+
+    host.config.limits = { maxDepth: 0 };
+    expect(() => createSubagentLifecycle(host)).toThrow("maxDepth must be a positive integer");
+  });
 });
 
 describe("spawn_subagent guards", () => {

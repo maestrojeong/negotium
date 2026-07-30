@@ -1,8 +1,8 @@
 # Otium runtime deduplication
 
 This document fixes the public integration boundary used to remove duplicated runtime code from
-Otium. Sections marked **0.1.39** describe published package contracts. Sections marked **planned**
-are design commitments, not exports that consumers may import yet.
+Otium. Every factory described here is part of the 0.1.39 package contract unless the extraction
+table explicitly marks the module as a downstream keep.
 
 ## 0.1.39 immediate migrations
 
@@ -115,7 +115,7 @@ createQueryStateStore(options: QueryStateStoreOptions): QueryStateStore;
 The store writes `<usersLogDir>/<userId>/active-queries/<sanitized-topic-id>.json` atomically.
 `clear` also accepts a legacy topic name so downstream migration can remove the old filename.
 
-## Prompt builder factory (planned for 0.1.40)
+## Prompt builder factory
 
 The shared prompt policy remains owned by Negotium. A downstream host may supply templates and
 product sections through a factory; it may not replace the runtime-policy builder wholesale.
@@ -186,34 +186,72 @@ Normalize workspace and memory roots before comparison. Assert heading order, ex
 exact product sections, no duplicate policy section, and no unresolved known template variable.
 Intentional text changes require a reviewed snapshot update; whitespace-only drift is not ignored.
 
+## Agent runtime factories
+
+Import the following from `negotium/agent-helpers`:
+
+```ts
+createAskUserRuntime(host: AskUserRuntimeHost): AskUserRuntime;
+createArchiverRuntime(host: ArchiverHost): ArchiverRuntime;
+createTopicLogMaintenance(host: TopicLogMaintenanceHost): TopicLogMaintenance;
+createSelfConfigCore(
+  host: SelfConfigHost,
+  product?: Partial<SelfConfigProductConfig>,
+): SelfConfigCore;
+createSelfConfigRuntime(options: SelfConfigRuntimeOptions): SelfConfigRuntime;
+createSubagentLifecycle<TContext extends SpawnSubagentToolContext>(
+  host: SubagentLifecycleHost<TContext>,
+): SubagentLifecycle<TContext>;
+```
+
+`createSelfConfigRuntime` is the supported combined adoption path: it constructs the core and MCP
+tool definitions from one host and one product policy. `createSelfConfigCore` and
+`createSelfConfigToolDefinitionsForCore` are exposed for hosts that compose their own MCP server,
+but they use the same core instance and must not be configured independently.
+
+Import `createSessionTargetCatalog` and its host/result types from `negotium/mcp-factories`.
+The catalog accepts `listRows`, `isAgent`, and the current topic id/title. It owns manager/current
+filtering, case-insensitive collision detection, qualified aliases, lookup, and validation errors.
+Inbox paths, browser ports, legacy session configuration, and tell/ask delivery remain product
+transport glue.
+
+Every stateful factory owns isolated in-memory state. Create one long-lived instance per runtime
+host; do not construct a new ask-user, archiver, self-config tool, or subagent lifecycle for each
+callback. Host implementations own persistence and publication durability, while the factory owns
+ordering, idempotency, lifecycle settlement, and policy limits.
+
+`SubagentLifecycleHost.config.limits` optionally overrides `maxDepth`,
+`maxLiveChildrenPerParent`, and `maxPreparedChildrenPerParent`. Values are captured when the
+factory is created and must be positive integers; omitted values retain Negotium defaults.
+
 ## Extraction policy
 
 Public factories are justified when Negotium owns a reusable state machine and the downstream code
 can be reduced to a host implementation. Code that primarily selects product ports, environment
 variables, catalogs, routes, or barrels remains downstream-owned.
 
-The candidate decisions and release order below are maintained as part of the 0.1.40 planning work.
-No downstream migration may use raw internal imports while a candidate is still planned.
+The candidate decisions below are final for 0.1.39. No downstream migration may use raw internal
+imports.
 
 | Candidate | Decision | Target |
 | --- | --- | --- |
-| `prompts/builders.ts` | Extract the factory contract above | 0.1.40 |
-| `agents/mcp-tools/ask-user.ts` | Extract durable ask state machine and MCP tool factory | 0.1.40 |
-| `agents/topic-cleanup.ts` | Extract provider-rollout and conversation-log maintenance | 0.1.40 |
-| `agents/archiver.ts` | Extract background archiver runtime; keep product scheduling outside | 0.1.40 |
-| `agents/self-config-core.ts` + `agents/mcp-tools/self-config.ts` | Extract together as one service and tool factory | 0.1.41 |
-| `mcp/session-comm/topics.ts` | Extract target catalog/validation; keep delivery transport outside | 0.1.41 |
-| `agents/mcp-tools/spawn-subagent.ts` | Extract after the smaller repositories stabilize | 0.1.42 |
+| `prompts/builders.ts` | Extracted as `createPromptBuilders` | 0.1.39 |
+| `agents/mcp-tools/ask-user.ts` | Extracted as `createAskUserRuntime` | 0.1.39 |
+| `agents/topic-cleanup.ts` | Extracted as `createTopicLogMaintenance` | 0.1.39 |
+| `agents/archiver.ts` | Extracted as `createArchiverRuntime`; product scheduling stays outside | 0.1.39 |
+| `agents/self-config-core.ts` + `agents/mcp-tools/self-config.ts` | Extracted together through `createSelfConfigRuntime` | 0.1.39 |
+| `mcp/session-comm/topics.ts` | Target catalog extracted as `createSessionTargetCatalog`; delivery stays outside | 0.1.39 |
+| `agents/mcp-tools/spawn-subagent.ts` | Extracted as `createSubagentLifecycle` | 0.1.39 |
 | `agents/idle-archiver.ts` | Keep downstream policy glue | Keep |
 | `platform/mcp-config.ts` | Keep downstream catalog and transport composition | Keep |
 | `platform/config.ts` | Keep downstream paths, ports, environment, and secrets | Keep |
 | `agents/index.ts` | Keep downstream provider wiring around `runHostedAgent` | Keep |
 
-Targets are planning order, not compatibility promises. A target moves only when its factory has
-package-level type tests, host-isolation tests, and an Otium migration proving that the local file
-shrinks to a thin adapter.
+Each extracted factory has package-level type smoke and host-isolation tests. Otium migration is
+complete only when its local module contains host wiring rather than a second lifecycle
+implementation.
 
-### Planned host boundaries
+### Host boundaries
 
 The interfaces below define ownership, not final method names. Implementation PRs must publish the
 exact structural types and may split a large repository into nested interfaces.
@@ -264,14 +302,12 @@ the other because tool schemas, limits, and result semantics are one compatibili
 
 **Session target catalog**
 
-- storage: list caller-visible topic rows and optional legacy session configuration;
-- context: current topic ID/title and caller user ID;
-- paths: build a target inbox path and resolve a browser port when that compatibility field is
-  requested;
-- diagnostics: stderr-safe warning sink.
+- storage: `listRows()` returns caller-visible topic rows;
+- context: current topic ID/title and an `isAgent` type guard.
 
 The factory owns collision-safe aliases, current/manager filtering, target validation, and DTO
-mapping. Tell/ask delivery, peer routing, and WebSocket publication remain outside this read model.
+mapping. Legacy configuration, inbox paths, browser-port lookup, tell/ask delivery, peer routing,
+and WebSocket publication remain outside this read model.
 
 **Subagents**
 
@@ -283,9 +319,9 @@ mapping. Tell/ask delivery, peer routing, and WebSocket publication remain outsi
 - config: depth and child-count limits, model catalog, workspace paths, IDs, and clock.
 
 The factory owns lifecycle serialization, depth enforcement, watch settlement, stale-card recovery,
-and MCP tool definitions. Extraction is deferred until these responsibilities can be represented by
-cohesive topic, run, and card repositories; a flat interface mirroring every current import is not
-acceptable.
+and MCP tool definitions. The public host is grouped into `storage`, `topic`, `task`,
+`sessionCommunication`, `runtime`, and `config` boundaries; it is not a flat mirror of internal
+imports.
 
 ### Explicit downstream keeps
 

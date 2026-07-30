@@ -329,9 +329,17 @@ import type {
   ActiveTopicArchiveOptions,
   AgentAuthHost,
   AgentForkHost,
+  ArchiverHost,
+  AskUserRuntimeHost,
   CodexTreeHost,
   CodexProcStamp,
   ForkHandle,
+  SelfConfigHost,
+  SelfConfigRuntimeOptions,
+  SubagentLifecycleHost,
+  SubagentLifecycleLimits,
+  TopicConversationEntry,
+  TopicLogMaintenanceHost,
   TaskEventHost,
   ToolCallSummaryInput,
   VaultToolPolicyHost,
@@ -359,6 +367,7 @@ import type {
   SystemHealthSnapshot,
   SessionCommContext,
   SessionCommMcpHost,
+  SessionTargetCatalogHost,
   TokenStatsMcpContext,
   TokenStatsMcpHost,
   VaultCredentialHost,
@@ -369,7 +378,11 @@ import type {
 import type { AgentRegistry, WriteRolloutOptions } from "negotium/registry";
 import type { ChatPair, CodexContextUsage } from "negotium/rollout";
 import type { VaultStorageOptions } from "negotium/vault";
-import type { SessionSystemPromptOpts } from "negotium/prompts";
+import type {
+  PromptBuilderHost,
+  PromptSectionContext,
+  SessionSystemPromptOpts,
+} from "negotium/prompts";
 import type {
   AgentKind,
   ContextOccupancy,
@@ -425,6 +438,27 @@ if (typeof queryRuntime.createQueryStateStore !== "function") {
 }
 if (typeof agentHelpers.formatToolUse !== "function") {
   throw new Error("packed tool-format helper is missing");
+}
+if (typeof agentHelpers.createTopicLogMaintenance !== "function") {
+  throw new Error("packed topic-log maintenance factory is missing");
+}
+if (typeof agentHelpers.createAskUserRuntime !== "function") {
+  throw new Error("packed ask-user runtime factory is missing");
+}
+if (typeof agentHelpers.createArchiverRuntime !== "function") {
+  throw new Error("packed archiver runtime factory is missing");
+}
+if (typeof agentHelpers.createSelfConfigRuntime !== "function") {
+  throw new Error("packed self-config runtime factory is missing");
+}
+if (typeof agentHelpers.createSubagentLifecycle !== "function") {
+  throw new Error("packed subagent lifecycle factory is missing");
+}
+if (typeof mcpFactories.createSessionTargetCatalog !== "function") {
+  throw new Error("packed session-target catalog factory is missing");
+}
+if (typeof prompts.createPromptBuilders !== "function") {
+  throw new Error("packed prompt-builder factory is missing");
 }
 if (typeof hostedAgent.runHostedAgent !== "function") {
   throw new Error("packed hosted-agent runner is missing");

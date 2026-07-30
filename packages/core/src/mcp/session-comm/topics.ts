@@ -22,6 +22,10 @@ import {
   userId,
   withDb,
 } from "./runtime";
+import {
+  type SessionTarget as CatalogSessionTarget,
+  createSessionTargetCatalog,
+} from "./topic-catalog";
 
 export type { QueryState };
 
@@ -39,10 +43,7 @@ export interface TopicEntry {
   agent?: AgentKind;
 }
 
-export interface SessionTarget {
-  key: string;
-  topic: TopicEntry;
-}
+export type SessionTarget = CatalogSessionTarget<AgentKind>;
 
 export interface McpTopicEntry {
   sessionId: string;
@@ -67,29 +68,7 @@ export type ValidateTargetResult =
 // --- Queries ---
 
 export function validateTarget(to: string): ValidateTargetResult {
-  const topics = getTopicsForUser();
-  const target = topics[to];
-  if (!target) {
-    const available = Object.entries(topics)
-      .filter(([name, topic]) => name !== currentTopic && Boolean(topic.agent))
-      .map(([name]) => name);
-    return {
-      ok: false,
-      error: {
-        content: [
-          {
-            type: "text" as const,
-            text: `Error: Session "${to}" not found.\nAvailable: ${available.join(", ") || "none"}`,
-          },
-        ],
-        isError: true,
-      },
-    };
-  }
-  // Topics without an active session (sessionId === "") are still valid
-  // targets — ask_session / tell_session deliveries will wake them with a
-  // fresh session via the session-inbox worker. See `session-inbox.ts`.
-  return { ok: true, target };
+  return sessionTargetCatalog.validateTarget(to);
 }
 
 function sessionTargetRows(): Array<{
@@ -130,41 +109,28 @@ function sessionTargetRows(): Array<{
 
 /** Canonical, deduplicated targets for display and status inspection. */
 export function listSessionTargetsForUser(): SessionTarget[] {
-  const eligibleRows = sessionTargetRows().filter((row) => row.kind !== "manager");
-  const titleCounts = new Map<string, number>();
-  for (const row of eligibleRows) {
-    const normalized = row.title.toLowerCase();
-    titleCounts.set(normalized, (titleCounts.get(normalized) ?? 0) + 1);
-  }
-  const rows = eligibleRows.filter((row) =>
-    currentTopicId ? row.id !== currentTopicId : row.title !== currentTopic,
-  );
-  return rows.map((row) => {
-    const agent = isAgentKind(row.agent) ? row.agent : undefined;
-    const kind = row.kind === "agent" ? "agent" : "channel";
-    const topic: TopicEntry = {
-      sessionId: row.session_id ?? "",
-      messageThreadId: 0,
-      name: row.title,
-      kind,
-      topicId: row.id,
-      ...(agent && { agent }),
-      ...(row.description && { description: row.description }),
-    };
-    const collision = (titleCounts.get(row.title.toLowerCase()) ?? 0) > 1;
-    return { key: collision ? `${kind}:${row.title}` : row.title, topic };
-  });
+  return sessionTargetCatalog.listTargets();
 }
 
 /** Lookup index with qualified aliases for every target and plain aliases when unambiguous. */
 export function getTopicsForUser(): { [name: string]: TopicEntry } {
-  const result: { [name: string]: TopicEntry } = {};
-  for (const { key, topic } of listSessionTargetsForUser()) {
-    result[`${topic.kind}:${topic.name}`] = topic;
-    result[key] = topic;
-  }
-  return result;
+  return sessionTargetCatalog.getTopics();
 }
+
+const sessionTargetCatalog = createSessionTargetCatalog<AgentKind>({
+  currentTopicId,
+  currentTopicName: currentTopic,
+  isAgent: isAgentKind,
+  listRows: () =>
+    sessionTargetRows().map((row) => ({
+      id: row.id,
+      title: row.title,
+      kind: row.kind,
+      agent: row.agent,
+      sessionId: row.session_id,
+      description: row.description,
+    })),
+});
 
 export function getMcpUserConfig(): McpUserConfig | null {
   if (!existsSync(SESSIONS_DB)) return null;
