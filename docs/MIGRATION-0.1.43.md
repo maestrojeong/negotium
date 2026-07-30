@@ -2,7 +2,8 @@
 
 Version 0.1.43 preserves consecutive user messages that arrive while a user turn is
 running or waiting to start. It also restarts the provider session from the state that
-existed before the interrupted turn. No manual data conversion is required.
+existed before the interrupted turn, clarifies subagent delegation topology, and resolves
+Wiki topic titles through their canonical topic ids. No manual data conversion is required.
 
 ## Ordered consecutive user messages
 
@@ -36,6 +37,28 @@ The column contains an ordered JSON array of `{ prompt, attachments? }` envelope
 `NULL`, invalid JSON, or an empty value falls back to one envelope built from the existing
 `prompt` and `attachments_json` columns, so existing pending and running requests remain
 claimable. The legacy topic-primary-key table copy also initializes this column as `NULL`.
+
+## Subagent delegation guidance
+
+Generated runtime instructions now distinguish ownership/reporting topology from execution
+and data flow. They preserve independent parallelism, keep simple sequential work inline,
+and reserve nested subagents for actual ownership. They also state that `create_subagent`
+fixes `task` and `report_mode`, while `start_subagent` only starts the prepared room.
+
+Non-parent `tell_session` routes should be granted only after both rooms exist and when
+direct communication is useful. The route can remain open for the collaboration window and
+should be revoked when that collaboration ends. Result modes are explicit: `auto` returns
+the final body to the direct parent, `tell` requires the child to send its result directly,
+and `status-only` returns lifecycle without result content.
+
+## Canonical Wiki topic briefs
+
+`wiki_topic_brief` now resolves an exact topic id or a normalized topic title against the
+caller's accessible topics before reading the brief. Hidden topics, topics where the caller
+is not a participant, and ambiguous duplicate titles fail closed. A successful title match
+reads the canonical UUID-keyed brief first, with the accessible legacy title retained only
+as a storage fallback. This prevents title lookup from returning a stale brief while direct
+UUID lookup returns the current one.
 
 ## Compatibility and rollback
 
