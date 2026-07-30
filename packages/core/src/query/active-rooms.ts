@@ -15,6 +15,7 @@
 
 import type { ForkHandle } from "#agents/fork";
 import { logger } from "#platform/logger";
+import type { UserTurnEnvelope } from "#runtime/user-turn-envelope";
 import {
   claimRuntimeTurnLease,
   getRuntimeTurnLease,
@@ -113,8 +114,8 @@ export interface RoomQueryControl {
   origin: string;
   /** Prompt currently being processed. User-turn preemption merges this with the new prompt. */
   prompt: string;
-  /** Original user messages represented by prompt, in arrival order. */
-  userPrompts?: string[];
+  /** Original user submissions represented by prompt, in arrival order. */
+  userMessages?: UserTurnEnvelope[];
   /** Attachment ids currently being processed. User-turn preemption carries them forward. */
   attachments?: string[];
   /** Provider session id this turn resumed from. Superseding user turns restart from this base. */

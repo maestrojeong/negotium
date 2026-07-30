@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { db } from "#storage/forum-db";
 import {
   claimRuntimeTurnLease,
   releaseRuntimeTurnLease,
@@ -46,8 +47,11 @@ describe("runtime user turn requests", () => {
       topicId: topic,
       userId: "user",
       prompt: "second",
-      userPrompts: ["first", "second"],
-      attachments: ["/tmp/example.txt"],
+      userMessages: [
+        { prompt: "first", attachments: ["/tmp/first.txt", "/tmp/first.txt"] },
+        { prompt: "second", attachments: ["/tmp/example.txt"] },
+      ],
+      attachments: ["/tmp/first.txt", "/tmp/first.txt", "/tmp/example.txt"],
       allowAutoContinue: false,
       execution: {
         sourceRequestId: "host-request",
@@ -68,8 +72,11 @@ describe("runtime user turn requests", () => {
     expect(getRuntimeUserTurnRequest(topic)).toMatchObject({
       requestId: second,
       prompt: "second",
-      userPrompts: ["first", "second"],
-      attachments: ["/tmp/example.txt"],
+      userMessages: [
+        { prompt: "first", attachments: ["/tmp/first.txt", "/tmp/first.txt"] },
+        { prompt: "second", attachments: ["/tmp/example.txt"] },
+      ],
+      attachments: ["/tmp/first.txt", "/tmp/first.txt", "/tmp/example.txt"],
       allowAutoContinue: false,
       execution: {
         sourceRequestId: "host-request",
@@ -85,6 +92,44 @@ describe("runtime user turn requests", () => {
         },
       },
       status: "pending",
+    });
+  });
+
+  test("migrates pending and running rows that predate prompt-batch and envelope columns", () => {
+    const pendingTopic = topicId();
+    const runningTopic = topicId();
+    const runningRequestId = enqueueRuntimeUserTurnRequest({
+      topicId: runningTopic,
+      userId: "user",
+      prompt: "legacy running",
+      attachments: ["running-a", "running-b"],
+      allowAutoContinue: true,
+    });
+    const running = claimNextRuntimeUserTurnRequest("legacy-worker");
+    expect(running?.requestId).toBe(runningRequestId);
+    expect(
+      markRuntimeUserTurnRunning(runningTopic, runningRequestId, "legacy-worker", "legacy-query"),
+    ).toBe(true);
+    const pendingRequestId = enqueueRuntimeUserTurnRequest({
+      topicId: pendingTopic,
+      userId: "user",
+      prompt: "legacy pending",
+      attachments: ["pending-a", "pending-a"],
+      allowAutoContinue: true,
+    });
+    db.query(
+      `UPDATE runtime_user_turn_requests
+       SET user_messages_json = NULL
+       WHERE request_id IN (?, ?)`,
+    ).run(pendingRequestId, runningRequestId);
+
+    expect(getRuntimeUserTurnRequest(pendingTopic)?.userMessages).toEqual([
+      { prompt: "legacy pending", attachments: ["pending-a", "pending-a"] },
+    ]);
+    expect(getRuntimeUserTurnRequest(runningTopic)).toMatchObject({
+      status: "running",
+      runningQueryId: "legacy-query",
+      userMessages: [{ prompt: "legacy running", attachments: ["running-a", "running-b"] }],
     });
   });
 

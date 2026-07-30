@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { legacyUserTurnEnvelope, type UserTurnEnvelope } from "#runtime/user-turn-envelope";
 import { db } from "#storage/forum-db";
 import { TURN_LEASE_STALE_MS } from "#storage/runtime-leases";
 import { getRuntimeTopicEpoch, TOPIC_MAINTENANCE_STALE_MS } from "#storage/runtime-topic-state";
@@ -33,7 +34,7 @@ export interface RuntimeUserTurnRequest {
   topicId: string;
   userId: string;
   prompt: string;
-  userPrompts: string[];
+  userMessages: UserTurnEnvelope[];
   attachments?: string[];
   allowAutoContinue: boolean;
   execution?: RuntimeUserTurnExecution;
@@ -50,7 +51,7 @@ interface RuntimeUserTurnRequestRow {
   topic_id: string;
   user_id: string;
   prompt: string;
-  user_prompts_json: string | null;
+  user_messages_json: string | null;
   attachments_json: string | null;
   allow_auto_continue: number;
   execution_json: string | null;
@@ -69,7 +70,7 @@ function createRuntimeUserTurnRequestsTable(): void {
     topic_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     prompt TEXT NOT NULL,
-    user_prompts_json TEXT,
+    user_messages_json TEXT,
     attachments_json TEXT,
     allow_auto_continue INTEGER NOT NULL DEFAULT 1 CHECK (allow_auto_continue IN (0, 1)),
     execution_json TEXT,
@@ -91,9 +92,9 @@ try {
   // Existing standalone database already has the additive handoff column.
 }
 try {
-  db.exec("ALTER TABLE runtime_user_turn_requests ADD COLUMN user_prompts_json TEXT");
+  db.exec("ALTER TABLE runtime_user_turn_requests ADD COLUMN user_messages_json TEXT");
 } catch {
-  // Existing standalone database already has the additive prompt-batch column.
+  // Existing standalone database already has the additive envelope column.
 }
 try {
   db.exec(
@@ -113,7 +114,7 @@ if (legacyTopicPrimaryKey) {
     createRuntimeUserTurnRequestsTable();
     db.exec(`
       INSERT INTO runtime_user_turn_requests (
-        request_id, topic_id, user_id, prompt, user_prompts_json, attachments_json,
+        request_id, topic_id, user_id, prompt, user_messages_json, attachments_json,
         allow_auto_continue, execution_json, topic_epoch, created_at,
         status, claimed_by, claimed_at, running_query_id
       )
@@ -130,21 +131,6 @@ db.exec(
 );
 
 function rowToRequest(row: RuntimeUserTurnRequestRow): RuntimeUserTurnRequest {
-  let userPrompts = [row.prompt];
-  if (row.user_prompts_json) {
-    try {
-      const parsed = JSON.parse(row.user_prompts_json) as unknown;
-      if (
-        Array.isArray(parsed) &&
-        parsed.length > 0 &&
-        parsed.every((item) => typeof item === "string")
-      ) {
-        userPrompts = parsed;
-      }
-    } catch {
-      userPrompts = [row.prompt];
-    }
-  }
   let attachments: string[] | undefined;
   if (row.attachments_json) {
     try {
@@ -156,6 +142,34 @@ function rowToRequest(row: RuntimeUserTurnRequestRow): RuntimeUserTurnRequest {
       attachments = undefined;
     }
   }
+  let userMessages: UserTurnEnvelope[] | undefined;
+  if (row.user_messages_json) {
+    try {
+      const parsed = JSON.parse(row.user_messages_json) as unknown;
+      if (
+        Array.isArray(parsed) &&
+        parsed.length > 0 &&
+        parsed.every(
+          (item) =>
+            item &&
+            typeof item === "object" &&
+            typeof (item as UserTurnEnvelope).prompt === "string" &&
+            ((item as UserTurnEnvelope).attachments === undefined ||
+              (Array.isArray((item as UserTurnEnvelope).attachments) &&
+                (item as UserTurnEnvelope).attachments?.every(
+                  (attachment) => typeof attachment === "string",
+                ))),
+        )
+      ) {
+        userMessages = parsed as UserTurnEnvelope[];
+      }
+    } catch {
+      userMessages = undefined;
+    }
+  }
+  // Pre-envelope rows cannot associate a batched attachment list with individual
+  // messages. Preserve their historic provider input as one submission instead.
+  userMessages ??= [legacyUserTurnEnvelope(row.prompt, attachments)];
   let execution: RuntimeUserTurnExecution | undefined;
   if (row.execution_json) {
     try {
@@ -172,7 +186,7 @@ function rowToRequest(row: RuntimeUserTurnRequestRow): RuntimeUserTurnRequest {
     topicId: row.topic_id,
     userId: row.user_id,
     prompt: row.prompt,
-    userPrompts,
+    userMessages,
     attachments,
     allowAutoContinue: row.allow_auto_continue !== 0,
     execution,
@@ -189,7 +203,7 @@ export function enqueueRuntimeUserTurnRequest(input: {
   topicId: string;
   userId: string;
   prompt: string;
-  userPrompts?: string[];
+  userMessages?: UserTurnEnvelope[];
   attachments?: string[];
   allowAutoContinue: boolean;
   requestId?: string;
@@ -207,7 +221,7 @@ export function enqueueRuntimeUserTurnRequest(input: {
     }
     db.query(
       `INSERT INTO runtime_user_turn_requests
-       (request_id, topic_id, user_id, prompt, user_prompts_json, attachments_json,
+       (request_id, topic_id, user_id, prompt, user_messages_json, attachments_json,
         allow_auto_continue, execution_json, topic_epoch, created_at,
         status, claimed_by, claimed_at, running_query_id)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL)
@@ -217,7 +231,7 @@ export function enqueueRuntimeUserTurnRequest(input: {
       input.topicId,
       input.userId,
       input.prompt,
-      input.userPrompts?.length ? JSON.stringify(input.userPrompts) : null,
+      input.userMessages?.length ? JSON.stringify(input.userMessages) : null,
       input.attachments?.length ? JSON.stringify(input.attachments) : null,
       input.allowAutoContinue ? 1 : 0,
       input.execution ? JSON.stringify(input.execution) : null,

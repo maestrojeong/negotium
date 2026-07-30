@@ -66,6 +66,11 @@ import {
   resolveTopicTurnExecution,
   resolveTopicTurnSession,
 } from "#runtime/turn-session";
+import {
+  flattenUserTurnAttachments,
+  legacyUserTurnEnvelope,
+  type UserTurnEnvelope,
+} from "#runtime/user-turn-envelope";
 import { getActiveVisualForPrompt } from "#runtime/visual-store";
 import { activeVisualHtmlForPrompt } from "#runtime/visuals";
 import { appendApiMessage } from "#storage/api-messages";
@@ -598,8 +603,8 @@ export interface StartAiTurnParams extends AiTurnExecutionOptions {
   _queryId?: string;
   /** Topic epoch captured when queued. Internal reset-fence guard only. */
   _runtimeEpoch?: number;
-  /** Ordered user messages already folded into prompt. Internal handoff metadata only. */
-  _userPrompts?: string[];
+  /** Ordered user submissions already folded into prompt. Internal handoff metadata only. */
+  _userMessages?: UserTurnEnvelope[];
   /** Newly accepted user texts not yet written to the unified conversation log. */
   _conversationPrompts?: string[];
   _sessionRetried?: boolean;
@@ -627,31 +632,23 @@ export function renderUserPromptBatch(prompts: readonly string[]): string {
   ].join("\n");
 }
 
-export function mergeTurnAttachments(
-  previous: readonly string[] | undefined,
-  incoming: readonly string[] | undefined,
-): string[] | undefined {
-  const merged = [...new Set([...(previous ?? []), ...(incoming ?? [])])];
-  return merged.length ? merged : undefined;
-}
-
 export function mergeSupersedingUserTurn(
-  running: Pick<RoomQueryControl, "prompt" | "userPrompts" | "attachments" | "sessionId">,
-  incoming: { prompt: string; userPrompts?: string[]; attachments?: string[] },
+  running: Pick<RoomQueryControl, "prompt" | "userMessages" | "attachments" | "sessionId">,
+  incoming: { prompt: string; userMessages?: UserTurnEnvelope[]; attachments?: string[] },
 ): {
   prompt: string;
-  userPrompts: string[];
+  userMessages: UserTurnEnvelope[];
   attachments?: string[];
   sessionId?: string | null;
 } {
-  const userPrompts = [
-    ...(running.userPrompts ?? [running.prompt]),
-    ...(incoming.userPrompts ?? [incoming.prompt]),
+  const userMessages = [
+    ...(running.userMessages ?? [legacyUserTurnEnvelope(running.prompt, running.attachments)]),
+    ...(incoming.userMessages ?? [legacyUserTurnEnvelope(incoming.prompt, incoming.attachments)]),
   ];
   return {
-    prompt: renderUserPromptBatch(userPrompts),
-    userPrompts,
-    attachments: mergeTurnAttachments(running.attachments, incoming.attachments),
+    prompt: renderUserPromptBatch(userMessages.map((message) => message.prompt)),
+    userMessages,
+    attachments: flattenUserTurnAttachments(userMessages),
     sessionId: running.sessionId,
   };
 }
@@ -674,7 +671,8 @@ function serializableUserTurnExecution(params: StartAiTurnParams): RuntimeUserTu
     bridgeSessionFromHistory: params.bridgeSessionFromHistory,
     peerBridge: params.peerBridge,
     from: params.from,
-    conversationPrompts: params._conversationPrompts ?? [params.prompt],
+    conversationPrompts: params._conversationPrompts ??
+      params._userMessages?.map((message) => message.prompt) ?? [params.prompt],
   };
 }
 
@@ -685,10 +683,12 @@ function waitToStartRemoteUserTurn(params: StartAiTurnParams, queryId: string): 
     execution.sessionId = previous.execution.sessionId;
     execution.sessionIdSpecified = true;
   }
-  const incomingUserPrompts = params._userPrompts ?? [params.prompt];
-  const userPrompts = previous
-    ? [...previous.userPrompts, ...incomingUserPrompts]
-    : incomingUserPrompts;
+  const incomingUserMessages = params._userMessages ?? [
+    legacyUserTurnEnvelope(params.prompt, params.attachments),
+  ];
+  const userMessages = previous
+    ? [...previous.userMessages, ...incomingUserMessages]
+    : incomingUserMessages;
   if (previous?.status === "pending") {
     execution.conversationPrompts = [
       ...(previous.execution?.conversationPrompts ?? [previous.prompt]),
@@ -698,9 +698,9 @@ function waitToStartRemoteUserTurn(params: StartAiTurnParams, queryId: string): 
   const queuedQueryId = enqueueRuntimeUserTurnRequest({
     topicId: params.topic.id,
     userId: params.userId,
-    prompt: renderUserPromptBatch(userPrompts),
-    userPrompts,
-    attachments: mergeTurnAttachments(previous?.attachments, params.attachments),
+    prompt: renderUserPromptBatch(userMessages.map((message) => message.prompt)),
+    userMessages,
+    attachments: flattenUserTurnAttachments(userMessages),
     allowAutoContinue: params.allowAutoContinue,
     requestId: queryId,
     execution,
@@ -759,7 +759,7 @@ async function drainOneDurableUserTurn(): Promise<void> {
       topic,
       userId: request.userId,
       prompt: request.prompt,
-      _userPrompts: request.userPrompts,
+      _userMessages: request.userMessages,
       _conversationPrompts: execution?.conversationPrompts ?? [request.prompt],
       attachments: request.attachments,
       allowAutoContinue: request.allowAutoContinue,
@@ -845,9 +845,13 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   const origin = params.origin ?? "user";
   const conversationPrompts = params._conversationPrompts ?? [params.prompt];
   let recordsOnlyIncomingPrompts = params._conversationPrompts !== undefined;
-  let userPrompts = isUserOrigin(origin) ? (params._userPrompts ?? [params.prompt]) : undefined;
-  let prompt = userPrompts ? renderUserPromptBatch(userPrompts) : params.prompt;
-  let attachments = params.attachments;
+  let userMessages = isUserOrigin(origin)
+    ? (params._userMessages ?? [legacyUserTurnEnvelope(params.prompt, params.attachments)])
+    : undefined;
+  let prompt = userMessages
+    ? renderUserPromptBatch(userMessages.map((message) => message.prompt))
+    : params.prompt;
+  let attachments = userMessages ? flattenUserTurnAttachments(userMessages) : params.attachments;
   const execution = resolveTopicTurnExecution(topic, params);
   const sessionResolution = resolveTopicTurnSession(topic, params.sessionId, {
     agentOverride: params.agentOverride,
@@ -999,7 +1003,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         prompt,
         attachments,
         sessionId,
-        _userPrompts: userPrompts,
+        _userMessages: userMessages,
         _conversationPrompts: conversationPrompts,
         _runtimeEpoch: runtimeEpoch,
       },
@@ -1015,8 +1019,8 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   if (decision.action === "abort-replace") {
     const running = decision.running;
     if (isUserOrigin(running.origin)) {
-      const merged = mergeSupersedingUserTurn(running, { prompt, userPrompts, attachments });
-      userPrompts = merged.userPrompts;
+      const merged = mergeSupersedingUserTurn(running, { prompt, userMessages, attachments });
+      userMessages = merged.userMessages;
       prompt = merged.prompt;
       attachments = merged.attachments;
       // Resume from the session that existed before the interrupted batch.
@@ -1064,7 +1068,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     queryId,
     origin,
     prompt,
-    userPrompts,
+    userMessages,
     attachments,
     sessionId,
     abortController,
@@ -1122,7 +1126,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           prompt,
           attachments,
           sessionId,
-          _userPrompts: userPrompts,
+          _userMessages: userMessages,
           _conversationPrompts: conversationPrompts,
           _runtimeEpoch: runtimeEpoch,
         },
@@ -1186,8 +1190,18 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       }
     }
   }
-  const promptAttachments = materializePromptAttachments(topicId, queryId, attachments);
-  const promptWithFiles = promptWithAttachments(prompt, promptAttachments);
+  const messageAttachmentGroups = userMessages?.map((message, index) =>
+    materializePromptAttachments(topicId, `${queryId}-${index}`, message.attachments),
+  );
+  const promptAttachments =
+    messageAttachmentGroups?.flat() ?? materializePromptAttachments(topicId, queryId, attachments);
+  const promptWithFiles = userMessages
+    ? renderUserPromptBatch(
+        userMessages.map((message, index) =>
+          promptWithAttachments(message.prompt, messageAttachmentGroups?.[index] ?? []),
+        ),
+      )
+    : promptWithAttachments(prompt, promptAttachments);
   const agentPrompt =
     topic.aiMode === "mention" && isUserOrigin(origin) && !silent
       ? buildMentionOnlyChannelPrompt({
@@ -1527,7 +1541,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           topic,
           userId,
           prompt,
-          _userPrompts: userPrompts,
+          _userMessages: userMessages,
           _conversationPrompts: conversationPrompts,
           attachments,
           allowAutoContinue,

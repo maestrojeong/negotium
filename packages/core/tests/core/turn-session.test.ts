@@ -39,28 +39,30 @@ describe("default topic MCPs", () => {
 });
 
 describe("superseding user turns", () => {
-  test("preserves ordered prompts, attachments, and the pre-turn provider session", () => {
+  test("locally preserves three ordered user envelopes and duplicate attachments", () => {
     const second = mergeSupersedingUserTurn(
       {
         prompt: "first",
-        userPrompts: ["first"],
-        attachments: ["a", "shared"],
+        userMessages: [{ prompt: "first", attachments: ["a", "shared", "shared"] }],
         sessionId: "base-session",
       },
       {
         prompt: "second",
-        userPrompts: ["second"],
-        attachments: ["shared", "b"],
+        userMessages: [{ prompt: "second", attachments: ["shared", "b"] }],
       },
     );
     const third = mergeSupersedingUserTurn(second, {
       prompt: "third",
-      userPrompts: ["third"],
+      userMessages: [{ prompt: "third", attachments: ["c", "shared"] }],
     });
 
-    expect(third.userPrompts).toEqual(["first", "second", "third"]);
+    expect(third.userMessages).toEqual([
+      { prompt: "first", attachments: ["a", "shared", "shared"] },
+      { prompt: "second", attachments: ["shared", "b"] },
+      { prompt: "third", attachments: ["c", "shared"] },
+    ]);
     expect(third.prompt).toBe(renderUserPromptBatch(["first", "second", "third"]));
-    expect(third.attachments).toEqual(["a", "shared", "b"]);
+    expect(third.attachments).toEqual(["a", "shared", "shared", "shared", "b", "c", "shared"]);
     expect(third.sessionId).toBe("base-session");
   });
 
@@ -173,7 +175,7 @@ describe("turn session resolution", () => {
     expect(settlement).toMatchObject({ kind: "error", error: "topic no longer exists" });
   });
 
-  test("cross-process handoff keeps one stable query id for the originating adapter", () => {
+  test("remotely preserves three envelopes and logs each user prompt once", () => {
     const topicId = seedTopic();
     const topic = getTopic(topicId)!;
     const lease = {
@@ -192,7 +194,7 @@ describe("turn session resolution", () => {
       onDispatched: (id) => {
         dispatchedQueryId = id;
       },
-      attachments: ["first.txt", "shared.txt"],
+      attachments: ["first.txt", "shared.txt", "shared.txt"],
       peerBridge: {
         hubCellId: "cell-a",
         hostTopicId: "host-topic",
@@ -239,7 +241,7 @@ describe("turn session resolution", () => {
       topic,
       userId: "owner",
       prompt: "final queued user turn",
-      attachments: ["third.txt"],
+      attachments: ["third.txt", "shared.txt"],
       allowAutoContinue: true,
     });
     expect(finalQueryId).toBeString();
@@ -251,8 +253,20 @@ describe("turn session resolution", () => {
         "newer queued user turn",
         "final queued user turn",
       ]),
-      userPrompts: ["queued user turn", "newer queued user turn", "final queued user turn"],
-      attachments: ["first.txt", "shared.txt", "second.txt", "third.txt"],
+      userMessages: [
+        { prompt: "queued user turn", attachments: ["first.txt", "shared.txt", "shared.txt"] },
+        { prompt: "newer queued user turn", attachments: ["shared.txt", "second.txt"] },
+        { prompt: "final queued user turn", attachments: ["third.txt", "shared.txt"] },
+      ],
+      attachments: [
+        "first.txt",
+        "shared.txt",
+        "shared.txt",
+        "shared.txt",
+        "second.txt",
+        "third.txt",
+        "shared.txt",
+      ],
       execution: {
         sessionId: "pre-turn-session",
         sessionIdSpecified: true,

@@ -27,15 +27,13 @@ export function materializePromptAttachments(
 ): AgentInputAttachment[] {
   if (!attachmentIds?.length) return [];
 
-  const seen = new Set<string>();
   const out: AgentInputAttachment[] = [];
   const destDir = join(workspaceCwdFor(topicId), "attachments", queryId);
 
   for (const rawId of attachmentIds) {
     if (typeof rawId !== "string") continue;
     const fileId = rawId.trim();
-    if (!fileId || seen.has(fileId)) continue;
-    seen.add(fileId);
+    if (!fileId) continue;
 
     const attachment = resolveAttachmentByFileId(fileId);
     const sourcePath = resolveUploadedFilePathByFileId(fileId);
