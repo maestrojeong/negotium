@@ -4,6 +4,8 @@ export type {
 } from "@negotium/core/query-runtime";
 export {
   AbortReason,
+  clearQueryState,
+  createQueryStateStore,
   createRoomQueryRegistry,
   type DeferredInject,
   DeferredInjectBatcher,
@@ -13,10 +15,14 @@ export {
   isolatedTurnRoomId,
   isUserOrigin,
   type PrepareInjectSession,
+  type QueryStateStore,
+  type QueryStateStoreLogger,
+  type QueryStateStoreOptions,
   type RoomQueryControlLike,
   type RoomQueryDecision,
   type RoomQueryRegistry,
   type RoomQueryRegistryHost,
   type RuntimeTurnLeaseLike,
+  writeQueryState,
   wsAbortReason,
 } from "@negotium/core/query-runtime";

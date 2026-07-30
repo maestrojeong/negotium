@@ -30,6 +30,7 @@ instead of copying the explanation.
 | [Migration 0.1.33](./MIGRATION-0.1.33.md) | Durable user questions, compact terminal pastes, deletion shortcuts, and Maestro SDK 0.1.50 |
 | [Migration 0.1.37](./MIGRATION-0.1.37.md) | Raw conversation preservation, active context projections, and fail-closed cleanup |
 | [Migration 0.1.38](./MIGRATION-0.1.38.md) | Authenticated browser readiness, active-turn failure propagation, and startup orphan cleanup |
+| [Browser runtime](./BROWSER-RUNTIME.md) | Host-injected Playwright MCP lifecycle for downstream runtimes |
 
 The root [README](../README.md) is the user-facing entry point. Package-specific setup belongs in
 the package README beside the code it describes.

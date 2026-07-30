@@ -24,6 +24,7 @@
     "./agent-helpers": "./src/agents/public-helpers.ts",
     "./mcp-catalog": "./src/platform/mcp-catalog-policy.ts",
     "./background-bash": "./src/platform/background-bash/manager.ts",
+    "./browser-runtime": "./src/platform/playwright/public-runtime.ts",
     "./query-runtime": "./src/query/public-runtime.ts",
     "./outbox": "./src/outbox/index.ts",
     "./platform-runtime": "./src/platform/public-runtime.ts",

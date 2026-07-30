@@ -6,9 +6,13 @@ import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import "#storage/api-topics";
 import {
   browserProcessMatchesExpectedProfile,
+  configurePlaywrightManagerHost,
   extractUserDataDirArg,
+  getPlaywrightManagerHost,
   isBrowserJanitorOwner,
   makeInstanceKey,
+  resetPlaywrightManagerHost,
+  resolveTopicProfileDir,
   selectIdleEvictionKey,
   selectOrphanBrowserPids,
   selectReusablePort,
@@ -136,6 +140,59 @@ describe("makeInstanceKey", () => {
 
   it("uses a user-scoped default profile for dm", () => {
     expect(makeInstanceKey("alice", undefined)).toBe("profile:alice:default");
+  });
+});
+
+describe("configurePlaywrightManagerHost", () => {
+  it("injects product-specific profile paths and child environment", () => {
+    try {
+      configurePlaywrightManagerHost({
+        portsDir: "/tmp/otium-browser-ports",
+        resolveTopicBinding(userId, topic) {
+          const profile = topic ?? "default";
+          return {
+            instanceKey: `otium:${userId}:${profile}`,
+            ownerId: userId,
+            profile,
+          };
+        },
+        resolveInstanceDataDir(instanceKey) {
+          const [, userId, profile] = instanceKey.split(":");
+          return `/tmp/otium-browser-profiles/${userId}/${profile}`;
+        },
+        createChildEnvironment(context) {
+          return {
+            ...context.environment,
+            OTIUM_BROWSER_VAULT_TOKEN: context.capability,
+          };
+        },
+      });
+
+      expect(makeInstanceKey("alice", "research")).toBe("otium:alice:research");
+      expect(resolveTopicProfileDir("alice", "research")).toBe(
+        "/tmp/otium-browser-profiles/alice/research",
+      );
+      const host = getPlaywrightManagerHost();
+      expect(host.portsDir).toBe("/tmp/otium-browser-ports");
+      expect(
+        host.createChildEnvironment({
+          instanceKey: "otium:alice:research",
+          userId: "alice",
+          capability: "secret",
+          proxy: null,
+          environment: {},
+        }).OTIUM_BROWSER_VAULT_TOKEN,
+      ).toBe("secret");
+    } finally {
+      resetPlaywrightManagerHost();
+    }
+  });
+
+  it("rejects invalid injected port ranges", () => {
+    expect(() => configurePlaywrightManagerHost({ basePort: 9300, maxPort: 9200 })).toThrow(
+      "invalid Playwright manager port range",
+    );
+    resetPlaywrightManagerHost();
   });
 });
 

@@ -18,6 +18,14 @@ export {
   type RuntimeTurnLeaseLike,
 } from "./room-query-registry";
 export {
+  clearQueryState,
+  createQueryStateStore,
+  type QueryStateStore,
+  type QueryStateStoreLogger,
+  type QueryStateStoreOptions,
+  writeQueryState,
+} from "./state";
+export {
   AbortReason,
   type HandleAgentQueryOutcome,
   type HandleAgentQueryParams,

@@ -53,6 +53,17 @@ export {
   withTaskSnapshots,
 } from "#agents/task-events";
 export {
+  buildNumberedDiffSummary,
+  classifyShellToolName,
+  formatToolUse,
+  type NumberedDiffSummary,
+  summarizeDisplayText,
+  summarizeShellCommand,
+  summarizeToolInput,
+  type ToolCallSummaryInput,
+  type ToolCallSummaryValue,
+} from "#agents/tool-format";
+export {
   createVaultToolPolicy,
   isVaultBrokerTool,
   referencesRuntimeSecretStorage,

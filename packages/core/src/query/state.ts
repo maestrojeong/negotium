@@ -7,23 +7,78 @@ import type { QueryState } from "#types";
 
 type QueryStateUserId = number | string;
 
-function queryStateDirPath(userId: QueryStateUserId): string {
-  return join(USERS_LOG_DIR, String(userId), "active-queries");
+export interface QueryStateStoreLogger {
+  warn(context: Record<string, unknown>, message: string): void;
 }
 
-function queryStateFile(userId: QueryStateUserId, topicId: string): string {
-  return join(queryStateDirPath(userId), `${sanitizeId(topicId)}.json`);
+export interface QueryStateStoreOptions {
+  usersLogDir: string;
+  logger?: QueryStateStoreLogger;
+  sanitizeTopicId?: (topicId: string) => string;
 }
 
-function legacyQueryStateFile(
-  userId: QueryStateUserId,
-  topicName: string | undefined,
-): string | null {
-  if (!topicName || topicName === "." || topicName === ".." || basename(topicName) !== topicName) {
-    return null;
-  }
-  return join(queryStateDirPath(userId), `${topicName}.json`);
+export interface QueryStateStore {
+  write(userId: QueryStateUserId, topicId: string, topicName: string, task?: string): void;
+  clear(userId: QueryStateUserId, topicId: string, legacyTopicName?: string): void;
 }
+
+export function createQueryStateStore(options: QueryStateStoreOptions): QueryStateStore {
+  const sanitize = options.sanitizeTopicId ?? sanitizeId;
+  const queryStateDirPath = (userId: QueryStateUserId): string =>
+    join(options.usersLogDir, String(userId), "active-queries");
+  const queryStateFile = (userId: QueryStateUserId, topicId: string): string =>
+    join(queryStateDirPath(userId), `${sanitize(topicId)}.json`);
+  const legacyQueryStateFile = (
+    userId: QueryStateUserId,
+    topicName: string | undefined,
+  ): string | null => {
+    if (
+      !topicName ||
+      topicName === "." ||
+      topicName === ".." ||
+      basename(topicName) !== topicName
+    ) {
+      return null;
+    }
+    return join(queryStateDirPath(userId), `${topicName}.json`);
+  };
+
+  return {
+    write(userId, topicId, topicName, task) {
+      const dir = queryStateDirPath(userId);
+      mkdirSync(dir, { recursive: true });
+      const state: QueryState = { topicId, topicName, since: new Date().toISOString() };
+      if (task) state.task = [...task.replace(/\n+/g, " ").trim()].slice(0, 100).join("");
+      const target = queryStateFile(userId, topicId);
+      const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
+      writeFileSync(tmp, JSON.stringify(state));
+      renameSync(tmp, target);
+    },
+    clear(userId, topicId, legacyTopicName) {
+      const paths = [
+        queryStateFile(userId, topicId),
+        legacyQueryStateFile(userId, legacyTopicName),
+      ].filter((path): path is string => Boolean(path));
+      for (const path of new Set(paths)) {
+        try {
+          unlinkSync(path);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+            options.logger?.warn(
+              { err: error, userId, topicId, path },
+              "Failed to clear query state file",
+            );
+          }
+        }
+      }
+    },
+  };
+}
+
+const defaultQueryStateStore = createQueryStateStore({
+  usersLogDir: USERS_LOG_DIR,
+  logger,
+});
 
 export function writeQueryState(
   userId: QueryStateUserId,
@@ -31,14 +86,7 @@ export function writeQueryState(
   topicName: string,
   task?: string,
 ) {
-  const dir = queryStateDirPath(userId);
-  mkdirSync(dir, { recursive: true });
-  const state: QueryState = { topicId, topicName, since: new Date().toISOString() };
-  if (task) state.task = [...task.replace(/\n+/g, " ").trim()].slice(0, 100).join("");
-  const target = queryStateFile(userId, topicId);
-  const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tmp, JSON.stringify(state));
-  renameSync(tmp, target);
+  defaultQueryStateStore.write(userId, topicId, topicName, task);
 }
 
 export function clearQueryState(
@@ -46,17 +94,5 @@ export function clearQueryState(
   topicId: string,
   legacyTopicName?: string,
 ) {
-  const paths = [
-    queryStateFile(userId, topicId),
-    legacyQueryStateFile(userId, legacyTopicName),
-  ].filter((path): path is string => Boolean(path));
-  for (const path of new Set(paths)) {
-    try {
-      unlinkSync(path);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
-        logger.warn({ err: e, userId, topicId, path }, "Failed to clear query state file");
-      }
-    }
-  }
+  defaultQueryStateStore.clear(userId, topicId, legacyTopicName);
 }

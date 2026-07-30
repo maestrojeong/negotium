@@ -1,5 +1,5 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   cpSync,
   existsSync,
@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import {
   BROWSER_PROFILES_DIR,
   BROWSER_RS_BIN,
+  type BrowserProxyConfig,
   PATCHRIGHT_MCP_BIN,
   PLAYWRIGHT_BASE_PORT,
   PLAYWRIGHT_MAX_PORT,
@@ -52,6 +53,36 @@ import {
   waitForChildProcessSpawnError,
 } from "./manager-utils";
 
+export interface PlaywrightProfileBinding {
+  instanceKey: string;
+  ownerId: string;
+  profile: string;
+}
+
+export interface PlaywrightChildEnvironmentContext {
+  instanceKey: string;
+  userId: string;
+  capability: string;
+  proxy: BrowserProxyConfig | null;
+  browserRsBin?: string;
+  environment: NodeJS.ProcessEnv;
+}
+
+export interface PlaywrightManagerHost {
+  portsDir: string;
+  basePort: number;
+  maxPort: number;
+  browserBin: string;
+  fallbackBrowserBin: string;
+  browserRsBin?: string;
+  resolveProxy(): BrowserProxyConfig | null;
+  resolveTopicBinding(userId: string, topic?: string): PlaywrightProfileBinding;
+  resolveNamedBinding(ownerId: string, rawProfile: string): PlaywrightProfileBinding;
+  resolveInstanceDataDir(instanceKey: string): string;
+  createChildEnvironment(context: PlaywrightChildEnvironmentContext): NodeJS.ProcessEnv;
+  reapOrphanBrowsers(liveUserDataDirs: Iterable<string>): void;
+}
+
 export {
   cleanupZombiePlaywright,
   isBrowserJanitorOwner,
@@ -71,14 +102,28 @@ export { PLAYWRIGHT_PORTS_DIR };
 
 /** Multiple topics assigned to one profile reuse one browser process. */
 export function makeInstanceKey(userId: string, topic: string | undefined): string {
-  if (!topic) return makeBrowserProfileInstanceKey(userId, "default");
+  return managerHost.resolveTopicBinding(userId, topic).instanceKey;
+}
+
+function defaultTopicBinding(userId: string, topic: string | undefined): PlaywrightProfileBinding {
+  if (!topic) return defaultNamedBinding(userId, "default");
   const ownerId = getBrowserProfileOwner(topic, userId);
   const profile = migrateLegacyTopicProfile(ownerId, topic);
-  return makeBrowserProfileInstanceKey(ownerId, profile);
+  return defaultNamedBinding(ownerId, profile);
 }
 
 export function makeBrowserProfileInstanceKey(ownerId: string, rawProfile: string): string {
-  return `profile:${encodeURIComponent(ownerId)}:${normalizeBrowserProfileName(rawProfile)}`;
+  return managerHost.resolveNamedBinding(ownerId, rawProfile).instanceKey;
+}
+
+function defaultNamedBinding(ownerId: string, rawProfile: string): PlaywrightProfileBinding {
+  const profile = normalizeBrowserProfileName(rawProfile);
+  const instanceKey = `profile:${encodeURIComponent(ownerId)}:${profile}`;
+  return {
+    instanceKey,
+    ownerId,
+    profile,
+  };
 }
 
 export function legacyBrowserProfileName(topic: string): string {
@@ -93,12 +138,83 @@ function migrateLegacyTopicProfile(ownerId: string, topic: string): string {
   if (!existsSync(legacyDir)) return current;
 
   const profile = legacyBrowserProfileName(topic);
-  const profileDir = resolveProfileDir(ownerId, profile);
+  const profileDir = defaultProfileDir(ownerId, profile);
   mkdirSync(dirname(profileDir), { recursive: true });
   if (!existsSync(profileDir)) renameSync(legacyDir, profileDir);
   assignTopicBrowserProfile({ topicId: topic, actorUserId: ownerId, profile });
   logger.info({ ownerId, topic, profile }, "Adopted legacy topic browser profile");
   return profile;
+}
+
+function defaultChildEnvironment(context: PlaywrightChildEnvironmentContext): NodeJS.ProcessEnv {
+  const { capability, userId, proxy, browserRsBin, environment } = context;
+  return {
+    ...environment,
+    NEGOTIUM_BROWSER_CAPABILITY: capability,
+    NEGOTIUM_BROWSER_VAULT_USER_ID: userId,
+    ...(browserRsBin && !proxy ? { NEGOTIUM_BROWSER_RS_BIN: browserRsBin } : {}),
+    ...(proxy
+      ? {
+          NEGOTIUM_BROWSER_PROXY_SERVER: proxy.server,
+          ...(proxy.username ? { NEGOTIUM_BROWSER_PROXY_USERNAME: proxy.username } : {}),
+          ...(proxy.password ? { NEGOTIUM_BROWSER_PROXY_PASSWORD: proxy.password } : {}),
+          ...(proxy.bypass ? { NEGOTIUM_BROWSER_PROXY_BYPASS: proxy.bypass } : {}),
+        }
+      : {}),
+  };
+}
+
+const defaultManagerHost: PlaywrightManagerHost = {
+  portsDir: PLAYWRIGHT_PORTS_DIR,
+  basePort: PLAYWRIGHT_BASE_PORT,
+  maxPort: PLAYWRIGHT_MAX_PORT,
+  browserBin: PLAYWRIGHT_MCP_BIN,
+  fallbackBrowserBin: PATCHRIGHT_MCP_BIN,
+  browserRsBin: BROWSER_RS_BIN,
+  resolveProxy: resolveBrowserProxy,
+  resolveTopicBinding: defaultTopicBinding,
+  resolveNamedBinding: defaultNamedBinding,
+  resolveInstanceDataDir(instanceKey) {
+    const { ownerId, profile } = parseInstanceKey(instanceKey);
+    return defaultProfileDir(ownerId, profile);
+  },
+  createChildEnvironment: defaultChildEnvironment,
+  reapOrphanBrowsers,
+};
+
+let managerHost = defaultManagerHost;
+
+/**
+ * Configure product-specific profile storage and browser launch glue.
+ * Call once during bootstrap, before any browser instance is started.
+ */
+export function configurePlaywrightManagerHost(
+  overrides: Partial<PlaywrightManagerHost>,
+): PlaywrightManagerHost {
+  if (instances.size > 0 || spawning.size > 0) {
+    throw new Error("cannot configure Playwright manager while browser instances are active");
+  }
+  const next = { ...defaultManagerHost, ...overrides };
+  if (!next.portsDir || !Number.isInteger(next.basePort) || !Number.isInteger(next.maxPort)) {
+    throw new Error("invalid Playwright manager paths or port range");
+  }
+  if (next.basePort < 1 || next.maxPort > 65_535 || next.basePort > next.maxPort) {
+    throw new Error("invalid Playwright manager port range");
+  }
+  if (!next.browserBin || !next.fallbackBrowserBin) {
+    throw new Error("Playwright manager browser binaries are required");
+  }
+  managerHost = next;
+  return managerHost;
+}
+
+export function getPlaywrightManagerHost(): Readonly<PlaywrightManagerHost> {
+  return managerHost;
+}
+
+/** Restore Negotium's built-in browser host after all instances are stopped. */
+export function resetPlaywrightManagerHost(): void {
+  configurePlaywrightManagerHost(defaultManagerHost);
 }
 
 interface InstanceKeyParts {
@@ -121,8 +237,8 @@ function portFileName(instanceKey: string): string {
 
 function writePortFile(instanceKey: string, port: number) {
   try {
-    mkdirSync(PLAYWRIGHT_PORTS_DIR, { recursive: true });
-    writeFileSync(join(PLAYWRIGHT_PORTS_DIR, portFileName(instanceKey)), String(port));
+    mkdirSync(managerHost.portsDir, { recursive: true });
+    writeFileSync(join(managerHost.portsDir, portFileName(instanceKey)), String(port));
   } catch (e) {
     logger.warn({ err: e, instanceKey, port }, "Failed to save playwright port file");
   }
@@ -130,7 +246,7 @@ function writePortFile(instanceKey: string, port: number) {
 
 function deletePortFile(instanceKey: string) {
   try {
-    unlinkSync(join(PLAYWRIGHT_PORTS_DIR, portFileName(instanceKey)));
+    unlinkSync(join(managerHost.portsDir, portFileName(instanceKey)));
   } catch (e) {
     logger.warn({ err: e, instanceKey }, "Failed to delete playwright port file");
   }
@@ -139,7 +255,7 @@ function deletePortFile(instanceKey: string) {
 function readPortFile(instanceKey: string): number | null {
   try {
     const port = Number.parseInt(
-      readFileSync(join(PLAYWRIGHT_PORTS_DIR, portFileName(instanceKey)), "utf8").trim(),
+      readFileSync(join(managerHost.portsDir, portFileName(instanceKey)), "utf8").trim(),
       10,
     );
     return Number.isInteger(port) ? port : null;
@@ -148,8 +264,6 @@ function readPortFile(instanceKey: string): number | null {
   }
 }
 
-const BASE_PORT = PLAYWRIGHT_BASE_PORT;
-const MAX_PORT = PLAYWRIGHT_MAX_PORT;
 const MAX_IDLE_MS = 2 * 60 * 60 * 1000; // 2 hours idle → eligible for eviction
 
 interface PlaywrightInstance {
@@ -222,6 +336,19 @@ export function getPlaywrightCapability(instanceKey: string): string | undefined
   return instances.get(instanceKey)?.capability;
 }
 
+/** Resolve a live browser capability back to its owning user. */
+export function resolvePlaywrightCapabilityOwner(capability: string): string | undefined {
+  if (!capability) return undefined;
+  const provided = Buffer.from(capability);
+  for (const instance of instances.values()) {
+    const expected = Buffer.from(instance.capability);
+    if (provided.length === expected.length && timingSafeEqual(provided, expected)) {
+      return instance.userId;
+    }
+  }
+  return undefined;
+}
+
 // --- Browser MCP failure notification callback ---
 // Fired when a managed process fails or its transport becomes unhealthy.
 // Intentional cleanup paths do not notify consumers.
@@ -282,7 +409,7 @@ function evictIdleInstance(): number | null {
  * mistake a live topic Playwright for an orphan and SIGKILL it.
  */
 async function allocatePort(expectedUserDataDir?: string): Promise<number> {
-  for (let port = BASE_PORT; port <= MAX_PORT; port++) {
+  for (let port = managerHost.basePort; port <= managerHost.maxPort; port++) {
     if (usedPorts.has(port)) continue;
     usedPorts.add(port); // Reserve immediately before any await to prevent concurrent allocation
 
@@ -306,7 +433,12 @@ async function allocatePort(expectedUserDataDir?: string): Promise<number> {
     // until the old listener is actually gone, and recheck every candidate in
     // case another allocator claimed a different port while we were waiting.
     await waitForPortRelease(evictedPort);
-    const reusablePort = selectReusablePort(BASE_PORT, MAX_PORT, usedPorts, isPortInUse);
+    const reusablePort = selectReusablePort(
+      managerHost.basePort,
+      managerHost.maxPort,
+      usedPorts,
+      isPortInUse,
+    );
     if (reusablePort !== null) {
       usedPorts.add(reusablePort);
       return reusablePort;
@@ -314,7 +446,7 @@ async function allocatePort(expectedUserDataDir?: string): Promise<number> {
   }
 
   throw new Error(
-    `No available ports for Playwright MCP (${instances.size} active instances, range ${BASE_PORT}-${MAX_PORT})`,
+    `No available ports for Playwright MCP (${instances.size} active instances, range ${managerHost.basePort}-${managerHost.maxPort})`,
   );
 }
 
@@ -327,14 +459,13 @@ function ownerDirectory(ownerId: string): string {
   return `${sanitizeTopicName(ownerId).slice(0, 24)}_${digest}`;
 }
 
-function resolveProfileDir(ownerId: string, profile: string): string {
+function defaultProfileDir(ownerId: string, profile: string): string {
   return resolve(BROWSER_PROFILES_DIR, "profiles", ownerDirectory(ownerId), profile);
 }
 
 /** Resolve the shared profile userDataDir for an instanceKey. */
 function resolveUserDataDir(instanceKey: string): string {
-  const { ownerId, profile } = parseInstanceKey(instanceKey);
-  return resolveProfileDir(ownerId, profile);
+  return managerHost.resolveInstanceDataDir(instanceKey);
 }
 
 /**
@@ -391,7 +522,7 @@ async function spawnPlaywright(
   instanceKey: string,
   userId: string,
   reservedPort?: number,
-  browserBin = PLAYWRIGHT_MCP_BIN,
+  browserBin = managerHost.browserBin,
   allowFallback = true,
 ): Promise<number> {
   const userDataDir = resolveUserDataDir(instanceKey);
@@ -429,22 +560,22 @@ async function spawnPlaywright(
   // argv so the credentials never surface in `ps`/`/proc` command lines. The
   // launcher (scripts/mcp-patchright-http.mjs) reads these NEGOTIUM_BROWSER_PROXY_*
   // vars and hands them to Playwright's per-context proxy option.
-  const proxy = resolveBrowserProxy();
+  const proxy = managerHost.resolveProxy();
   const capability = randomBytes(32).toString("hex");
   const childEnv = {
-    ...process.env,
+    ...managerHost.createChildEnvironment({
+      instanceKey,
+      userId,
+      capability,
+      proxy,
+      browserRsBin: managerHost.browserRsBin,
+      environment: process.env,
+    }),
     NEGOTIUM_BROWSER_CAPABILITY: capability,
-    NEGOTIUM_BROWSER_VAULT_USER_ID: userId,
-    ...(BROWSER_RS_BIN && !proxy ? { NEGOTIUM_BROWSER_RS_BIN: BROWSER_RS_BIN } : {}),
-    ...(proxy
-      ? {
-          NEGOTIUM_BROWSER_PROXY_SERVER: proxy.server,
-          ...(proxy.username ? { NEGOTIUM_BROWSER_PROXY_USERNAME: proxy.username } : {}),
-          ...(proxy.password ? { NEGOTIUM_BROWSER_PROXY_PASSWORD: proxy.password } : {}),
-          ...(proxy.bypass ? { NEGOTIUM_BROWSER_PROXY_BYPASS: proxy.bypass } : {}),
-        }
-      : {}),
   };
+  // Every supported wrapper authenticates owner-scoped transports with this
+  // capability. Product-specific environment hooks may add Vault callbacks,
+  // but cannot remove transport authentication.
   if (proxy) {
     logger.info({ instanceKey, proxyServer: proxy.server }, "Browser egress proxy enabled");
   }
@@ -531,12 +662,12 @@ async function spawnPlaywright(
   if (!ready) {
     const exitCode = proc.exitCode;
     killInstance(instanceKey);
-    if (allowFallback && browserBin !== PATCHRIGHT_MCP_BIN) {
+    if (allowFallback && browserBin !== managerHost.fallbackBrowserBin) {
       logger.warn(
-        { instanceKey, browserBin, fallback: PATCHRIGHT_MCP_BIN },
+        { instanceKey, browserBin, fallback: managerHost.fallbackBrowserBin },
         "Preferred browser MCP unavailable or lacks owner isolation; using Patchright fallback",
       );
-      return spawnPlaywright(instanceKey, userId, undefined, PATCHRIGHT_MCP_BIN, false);
+      return spawnPlaywright(instanceKey, userId, undefined, managerHost.fallbackBrowserBin, false);
     }
     throw new Error(
       `Playwright MCP failed health check after spawn on port ${port}` +
@@ -792,10 +923,10 @@ export async function cloneProfileForChild(opts: {
   const srcOwner = getBrowserProfileOwner(opts.srcTopic, opts.userId);
   const dstOwner = getBrowserProfileOwner(opts.dstTopic, opts.userId);
   if (srcOwner !== dstOwner) {
-    const dstDir = resolveProfileDir(dstOwner, getTopicBrowserProfile(opts.dstTopic));
+    const dstDir = defaultProfileDir(dstOwner, getTopicBrowserProfile(opts.dstTopic));
     return {
       copied: false,
-      srcDir: resolveProfileDir(srcOwner, getTopicBrowserProfile(opts.srcTopic)),
+      srcDir: defaultProfileDir(srcOwner, getTopicBrowserProfile(opts.srcTopic)),
       dstDir,
       reason: "cross-owner-fresh-profile",
     };
@@ -803,7 +934,7 @@ export async function cloneProfileForChild(opts: {
   if (srcOwner === dstOwner && hasBrowserProfileTopic(opts.dstTopic)) {
     const profile = getTopicBrowserProfile(opts.srcTopic);
     assignTopicBrowserProfile({ topicId: opts.dstTopic, actorUserId: dstOwner, profile });
-    const sharedDir = resolveProfileDir(srcOwner, profile);
+    const sharedDir = defaultProfileDir(srcOwner, profile);
     return {
       copied: false,
       srcDir: sharedDir,
@@ -932,7 +1063,7 @@ setInterval(
   () => {
     while (evictIdleInstance() !== null) {}
     try {
-      reapOrphanBrowsers([...instances.keys()].map(resolveUserDataDir));
+      managerHost.reapOrphanBrowsers([...instances.keys()].map(resolveUserDataDir));
     } catch (e) {
       logger.debug({ err: e }, "reapOrphanBrowsers sweep failed");
     }

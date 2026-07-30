@@ -32,7 +32,9 @@ Wiki, or browser-profile data migration is required.
 
 ## Upgrade checklist
 
-1. Upgrade `negotium` and `@negotium/adapter-sdk` together to `0.1.38`.
+1. Upgrade every Negotium package that the application directly depends on to `0.1.38`. Most
+   runtime consumers only need `negotium`; upgrade `@negotium/adapter-sdk` in lockstep only when
+   the application implements or imports the public adapter SDK.
 2. Restart the singleton Negotium node so startup cleanup runs under the new daemon lease.
 3. Start one browser-enabled turn and confirm both SSE and Streamable HTTP readiness checks pass.
 4. Confirm a browser MCP failure ends affected turns promptly and the next browser turn starts a

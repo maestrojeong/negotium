@@ -78,6 +78,11 @@
       "import": "./dist/background-bash.js",
       "default": "./dist/background-bash.js"
     },
+    "./browser-runtime": {
+      "types": "./dist/types/packages/core/src/platform/playwright/public-runtime.d.ts",
+      "import": "./dist/browser-runtime.js",
+      "default": "./dist/browser-runtime.js"
+    },
     "./outbox": {
       "types": "./dist/types/packages/core/src/outbox/index.d.ts",
       "import": "./dist/outbox.js",

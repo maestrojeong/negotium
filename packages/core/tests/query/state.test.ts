@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { USERS_LOG_DIR } from "#platform/config";
-import { clearQueryState, writeQueryState } from "#query/state";
+import { clearQueryState, createQueryStateStore, writeQueryState } from "#query/state";
 import { sanitizeId } from "#security/sanitize";
 import type { QueryState } from "#types";
 
@@ -24,6 +25,27 @@ afterEach(() => {
 });
 
 describe("active query state", () => {
+  test("factory isolates state under a host-provided root", () => {
+    const root = join(tmpdir(), `query-state-store-${randomUUID()}`);
+    try {
+      const store = createQueryStateStore({
+        usersLogDir: root,
+        sanitizeTopicId: (topicId) => `safe-${topicId}`,
+      });
+      store.write("alice", "topic", "Research", "inspect public runtime");
+      const path = join(root, "alice", "active-queries", "safe-topic.json");
+      expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({
+        topicId: "topic",
+        topicName: "Research",
+        task: "inspect public runtime",
+      });
+      store.clear("alice", "topic");
+      expect(existsSync(path)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("same-title topics keep independent ID-addressed state", () => {
     const userId = `query-state-${randomUUID()}`;
     users.push(userId);
