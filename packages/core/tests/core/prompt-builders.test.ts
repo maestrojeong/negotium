@@ -347,6 +347,24 @@ describe("session system prompt builders", () => {
     expect(loads.filter((kind) => kind === "topic-system")).toHaveLength(1);
   });
 
+  test("substitutes vars in a host manager template", () => {
+    const builders = createPromptBuilders({
+      loadTemplate(request) {
+        return request.kind === "manager-system"
+          ? "Manager speaks {{RESPONSE_LANGUAGE}} for {{AI_LABEL}}."
+          : null;
+      },
+    });
+    const prompt = builders.buildManagerSystemPrompt({
+      aiLabel: "Otium",
+      topicTitle: "General",
+      workspaceCwd: "/tmp/general",
+      agentKind: "claude",
+    });
+    expect(prompt).toContain("Manager speaks English for Otium.");
+    expect(prompt).not.toContain("{{RESPONSE_LANGUAGE}}");
+  });
+
   test("rejects duplicate prompt extension ids", () => {
     expect(() =>
       createPromptBuilders({

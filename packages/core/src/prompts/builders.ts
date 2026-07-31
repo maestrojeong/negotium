@@ -490,17 +490,18 @@ export function createPromptBuilders(host: PromptBuilderHost = {}): PromptBuilde
         .filter((section): section is string => Boolean(section))
         .flatMap((section) => ["", section]);
     const uploadsDir = `${opts.workspaceCwd}/attachments`;
+    // SHARED_TOOLS first: it injects text containing {{WORKSPACE_CWD}} /
+    // {{UPLOADS_DIR}}, which the later keys in this same pass then resolve.
+    const templateVars: Record<string, string> = {
+      SHARED_TOOLS: sharedToolsPartial(),
+      AI_LABEL: opts.aiLabel,
+      TOPIC_TITLE: opts.topicTitle,
+      WORKSPACE_CWD: opts.workspaceCwd,
+      UPLOADS_DIR: uploadsDir,
+      RESPONSE_LANGUAGE: resolveOutputLanguage(),
+    };
     let prompt =
-      replaceVars(sessionTemplate, {
-        // SHARED_TOOLS first: it injects text containing {{WORKSPACE_CWD}} /
-        // {{UPLOADS_DIR}}, which the later keys in this same pass then resolve.
-        SHARED_TOOLS: sharedToolsPartial(),
-        AI_LABEL: opts.aiLabel,
-        TOPIC_TITLE: opts.topicTitle,
-        WORKSPACE_CWD: opts.workspaceCwd,
-        UPLOADS_DIR: uploadsDir,
-        RESPONSE_LANGUAGE: resolveOutputLanguage(),
-      }) +
+      replaceVars(sessionTemplate, templateVars) +
       buildRuntimeToolSection(
         {
           agentKind: opts.agentKind,
@@ -527,11 +528,17 @@ export function createPromptBuilders(host: PromptBuilderHost = {}): PromptBuilde
       prompt += `\n\n## Topic-Specific Instructions\n${opts.description.trim()}`;
     }
     if (sessionKind === "manager") {
-      prompt += `\n\n${template({
-        kind: "manager-system",
-        filename: "manager-system.md",
-        fallback: FALLBACK_MANAGER_SYSTEM_PROMPT_TEMPLATE,
-      })}`;
+      // Substitute the same vars so a host manager template using placeholders
+      // like {{RESPONSE_LANGUAGE}} never reaches the model unresolved.
+      const managerTemplate = replaceVars(
+        template({
+          kind: "manager-system",
+          filename: "manager-system.md",
+          fallback: FALLBACK_MANAGER_SYSTEM_PROMPT_TEMPLATE,
+        }),
+        templateVars,
+      );
+      prompt += `\n\n${managerTemplate}`;
     }
     return `${prompt}${render("after-system-prompt").join("\n")}`;
   };

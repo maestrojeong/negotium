@@ -290,6 +290,43 @@ describe("createWikiMcpServer", () => {
     await client.close();
   });
 
+  test("save_wiki_entry carries a legacy id-keyed brief into a new title row", async () => {
+    // Regression: with no brief file and no title row yet, a summary-only write
+    // must migrate the legacy id-keyed brief forward instead of inserting an
+    // empty title row that shadows it (resolveTopicBrief prefers the title key).
+    const root = mkdtempSync(join(tmpdir(), "wiki-legacy-brief-"));
+    roots.push(root);
+    const writes: Array<{
+      key: string;
+      fields: { briefMd?: string; latestSummaryMd?: string; summaryDate?: string };
+    }> = [];
+    const client = await connect(
+      createWikiMcpServer(
+        { userId: "user", topicId: "room-id", surface: "wiki" },
+        {
+          wikiRoot: root,
+          setTopicBrief: (key, fields) => writes.push({ key, fields }),
+          getTopicBrief: (key: string) =>
+            key === "room-id"
+              ? { briefMd: "# legacy brief", updatedAt: "2026-01-01T00:00:00.000Z" }
+              : null,
+        },
+      ),
+    );
+
+    await client.callTool({
+      name: "save_wiki_entry",
+      arguments: { topic: "Roadmap Notes", content: "Fresh summary." },
+    });
+
+    const date = new Date().toISOString().slice(0, 10);
+    expect(writes.at(-1)).toEqual({
+      key: "Roadmap-Notes",
+      fields: { briefMd: "# legacy brief", latestSummaryMd: "Fresh summary.", summaryDate: date },
+    });
+    await client.close();
+  });
+
   test("deduplicates canonical topic index entries", async () => {
     const root = mkdtempSync(join(tmpdir(), "wiki-index-"));
     roots.push(root);

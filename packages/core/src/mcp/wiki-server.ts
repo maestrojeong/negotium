@@ -676,17 +676,25 @@ function saveWikiEntry(args: Record<string, unknown>): CallToolResult {
   }
 
   // Record the latest summary. The fresh brief is written authoritatively by
-  // save_topic_brief (called after this step). We only backfill brief_md from an
-  // existing brief file here so the empty-session path — which skips
-  // save_topic_brief — can't create a title-key row with empty brief_md that
-  // shadows a valid legacy id-keyed brief (see resolveTopicBrief). Never
-  // overwrites an existing brief_md with empty.
+  // save_topic_brief (called after this step). We only backfill brief_md here so
+  // a summary-only write — e.g. the no-substance path, which skips
+  // save_topic_brief — can't create a title-key row with an empty brief_md that
+  // shadows an existing brief (see resolveTopicBrief precedence). Backfill order:
+  // an existing brief file, else a legacy id-keyed row migrated forward. We
+  // never overwrite an existing title brief_md with empty.
   const setTopicBrief = runtime().host.setTopicBrief;
+  const getTopicBrief = runtime().host.getTopicBrief;
   let sqliteUpdated = false;
   if (topicId && setTopicBrief) {
     try {
       const briefPath = resolve(runtime().topicsDir, `${fileSlug}.md`);
-      const briefMd = existsSync(briefPath) ? readFileSync(briefPath, "utf-8") : undefined;
+      let briefMd = existsSync(briefPath) ? readFileSync(briefPath, "utf-8") : undefined;
+      if (briefMd === undefined && getTopicBrief && !getTopicBrief(fileSlug)?.briefMd) {
+        // No brief file and no title-keyed brief yet: carry a legacy id-keyed
+        // brief into the title row so this write cannot hide it.
+        const legacy = getTopicBrief(topicId)?.briefMd;
+        if (legacy) briefMd = legacy;
+      }
       setTopicBrief(fileSlug, {
         latestSummaryMd: content,
         summaryDate: dateStr,
