@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { runAgent } from "#agents/index";
 import { WsHub } from "#bus";
-import { WORKSPACE_DIR } from "#platform/config";
+import { resolveOutputLanguage, WORKSPACE_DIR } from "#platform/config";
 import { logger } from "#platform/logger";
 import { type AgentDef, loadAgentPrompt } from "#prompts/builders";
 import { COMPLETED_BACKGROUND_SESSION_RETENTION_MS } from "#runtime/background-session-policy";
@@ -22,6 +22,21 @@ import type { BackgroundSessionDto, MessageDto } from "#types/api";
  * General turn's system prompt — keep it to the most recent N topics (~<2KB).
  */
 const MAX_BRIEF_ENTRIES = 8;
+
+/**
+ * Language the archiver writes durable memory in (session summaries, topic
+ * briefs, articles, and its completion reply). Follows the global
+ * `NEGOTIUM_LANG` setting by default (see {@link resolveOutputLanguage}); set
+ * `NEGOTIUM_MEMORY_LANG` only to narrow memory to a *different* language than
+ * the rest of the system. Defaults to English when neither is set.
+ *
+ * Structural keys (frontmatter fields, slugs, index anchors) always stay in
+ * English — only human-readable prose follows this setting.
+ */
+function resolveMemoryLanguage(): string {
+  const override = process.env.NEGOTIUM_MEMORY_LANG?.trim();
+  return override && override.length > 0 ? override : resolveOutputLanguage();
+}
 
 interface ActiveArchiverSession extends BackgroundSessionDto {
   userId: string;
@@ -210,22 +225,25 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
     const agent: AgentKind = params.agent ?? "claude";
     const model = params.model;
 
+    const outputLanguage = resolveMemoryLanguage();
     const prompt =
       mode === "active-topic"
         ? [
-            `세션 "${topicTitle}" 의 최근 idle 대화 snapshot입니다. 아래 아카이브에서 기억을 추출해 이 토픽 위키에 저장해줘.`,
+            `Recent idle conversation snapshot of session "${topicTitle}". Extract durable memory from the archive below and save it into this topic's wiki.`,
             `archive_path: ${archivePath}`,
             ...rawArchivePaths.map((path) => `raw_archive_path: ${path}`),
             `wiki_dir: ${wikiDir}`,
+            `output_language: ${outputLanguage}`,
           ].join("\n")
         : [
-            `세션 "${topicTitle}" 이(가) 삭제되었습니다. 아래 아카이브에서 기억을 추출해 위키에 저장해줘.`,
+            `Session "${topicTitle}" was deleted. Extract durable memory from the archive below and save it into the wiki.`,
             `archive_path: ${archivePath}`,
             ...rawArchivePaths.map((path) => `raw_archive_path: ${path}`),
             `wiki_dir: ${wikiDir}`,
+            `output_language: ${outputLanguage}`,
             "",
-            "#General에 표시될 짧은 한국어 완료 메시지로 최종 응답해줘. " +
-              "도구 호출 로그나 원문 전문은 쓰지 말고, 저장한 요약/브리프/문서만 간단히 말해줘.",
+            `Reply with a short completion message in ${outputLanguage} for display in #General. ` +
+              "Do not include tool-call logs or raw transcripts — just briefly name the summary / brief / articles you saved.",
           ].join("\n");
 
     const activeSessionId = `memory:${host.config.createId()}`;
@@ -501,7 +519,8 @@ function finalizeGeneralMemory(
       ? findSummaryFile(host.storage, topicTitle, date, startMs, topicId)
       : null;
     const summaryMd = summaryPath ? host.storage.readTextFile(summaryPath) : "";
-    const oneLine = (summaryMd && distillOneLine(summaryMd)) || `${messageCount}개 메시지 아카이브`;
+    const oneLine =
+      (summaryMd && distillOneLine(summaryMd)) || `Archived ${messageCount} messages`;
 
     // Rolling digest: dedupe same-title, prepend newest, cap at MAX_BRIEF_ENTRIES.
     const prev = host.storage.getTopicBrief(generalTopicId);
@@ -514,7 +533,7 @@ function finalizeGeneralMemory(
       newEntry,
       ...prevEntries.filter((l) => !l.startsWith(`- **${topicTitle}** `)),
     ].slice(0, MAX_BRIEF_ENTRIES);
-    const briefMd = `# 워크스페이스 메모리 허브\n\n삭제된 토픽에서 추출한 최근 기억 다이제스트입니다. 자세한 내용은 \`wiki_query\`로 조회하세요.\n\n## 최근 아카이브\n${rolled.join("\n")}`;
+    const briefMd = `# Workspace Memory Hub\n\nRecent memory digest distilled from deleted topics. Use \`wiki_query\` for details.\n\n## Recent Archives\n${rolled.join("\n")}`;
 
     host.storage.setTopicBrief(generalTopicId, {
       briefMd,
@@ -536,8 +555,8 @@ function finalizeGeneralMemory(
     const text =
       replyText ||
       (ok
-        ? `🗂 "${topicTitle}" 토픽이 삭제되어 #General 메모리에 아카이브됐어요.`
-        : `🗂 "${topicTitle}" 토픽을 아카이브했어요 (요약 추출은 실패 — 원본은 wiki/archive에 보존).`);
+        ? `🗂 Topic "${topicTitle}" was deleted and archived into #General memory.`
+        : `🗂 Archived topic "${topicTitle}" (summary extraction failed — raw log preserved in wiki/archive).`);
     const replyMeta =
       generalReply && replyText
         ? {

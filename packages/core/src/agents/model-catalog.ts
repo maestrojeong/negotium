@@ -69,7 +69,7 @@ export interface SelectableModel {
  */
 export const MODEL_COST_RESEARCHED_AT = "2026-07-19";
 export const MODEL_COST_ROUTING_SUMMARY =
-  "Cost basis (2026-07-19): Codex Pro 20x and Claude Max 20x are each $200/month; Maestro models are pay-per-token. DeepSeek Pro is cheapest, Kimi K2.7 Code is the coding route, and Kimi K3 is the frontier route.";
+  "Cost basis (2026-07-19): Codex Pro 20x and Claude Max 20x are each $200/month; Maestro models are pay-per-token. DeepSeek Pro is cheapest.";
 
 const CODEX_PRO_20X_COST = "ChatGPT Pro 20x subscription: $200/month";
 const CODEX_COMMUNITY_WEEKLY =

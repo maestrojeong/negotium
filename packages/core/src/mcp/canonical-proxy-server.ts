@@ -118,6 +118,16 @@ const wikiTools: Tool[] = [
     },
   },
   {
+    name: "save_topic_brief",
+    description:
+      "Write the accumulated persona/topic brief to the canonical workspace wiki (call after save_wiki_entry).",
+    inputSchema: {
+      type: "object",
+      properties: { content: { type: "string" } },
+      required: ["content"],
+    },
+  },
+  {
     name: "index_upsert",
     description: "Upsert a canonical wiki index entry.",
     inputSchema: {

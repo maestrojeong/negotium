@@ -65,7 +65,7 @@ describe("session system prompt builders", () => {
     expect(prompt).not.toContain("move up one step");
     expect(prompt).toContain("`set_agent` autonomous calls are forbidden");
     expect(prompt).toContain("explicitly asks to change the model, agent backend");
-    expect(prompt).toContain("Use `{{KEY}}` directly in browser tools");
+    expect(prompt).toContain("use `{{KEY}}` directly in browser tools");
     expect(prompt.replaceAll("{{KEY}}", "")).not.toContain("{{");
   });
 

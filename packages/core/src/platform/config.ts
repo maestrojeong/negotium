@@ -79,6 +79,20 @@ export const SESSION_WORKSPACE_DIR = resolve(WORKSPACE_DIR, "sessions");
 const CLAUDE_EXECUTABLE_ENV = envText("NEGOTIUM_CLAUDE_EXECUTABLE");
 export const CLAUDE_EXECUTABLE = CLAUDE_EXECUTABLE_ENV ? resolve(CLAUDE_EXECUTABLE_ENV) : undefined;
 
+// Fallback output language for model-generated prose (topic/channel/manager
+// replies and the archiver's summaries, briefs, articles, completion reply).
+// Defaults to English; set `NEGOTIUM_LANG` to the user's mother tongue (e.g.
+// `Korean`, `ko`). The assistant still mirrors whatever language the user
+// writes in; `NEGOTIUM_MEMORY_LANG` can narrow just the archiver. Fixed system
+// chrome / degraded-path strings emitted by code stay English (can't translate
+// an arbitrary value at runtime).
+export const DEFAULT_OUTPUT_LANGUAGE = "English";
+
+export function resolveOutputLanguage(): string {
+  const raw = envText("NEGOTIUM_LANG")?.trim();
+  return raw && raw.length > 0 ? raw : DEFAULT_OUTPUT_LANGUAGE;
+}
+
 // Browser automation uses the authenticated local gateway. The historical
 // wrapper filename is retained for compatibility with existing deployments.
 export function resolveBrowserMcpBin(envValue?: string): string {

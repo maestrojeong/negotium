@@ -111,4 +111,56 @@ describe("canonical MCP loopback bridge", () => {
       }),
     ).toBeUndefined();
   });
+
+  test("forwards save_topic_brief on the wiki surface and still denies non-wiki tools", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const bridge = startCanonicalMcpBridge({
+      forwardTool: async (capability, request) => {
+        calls.push({ ...capability, ...request });
+        return { result: { content: [{ type: "text", text: "ok" }] } };
+      },
+    });
+    try {
+      const scope = {
+        surface: "wiki" as const,
+        userId: "user-w",
+        topicId: "worker-topic",
+        queryId: "worker-query",
+        peerBridge: {
+          hubCellId: "hub-cell",
+          hostTopicId: "hub-topic",
+          hostQueryId: "hub-query",
+          canSpawnSubagents: false,
+        },
+      };
+      const env = canonicalMcpBridgeEnv(scope);
+      const headers = {
+        authorization: `Bearer ${env?.NEGOTIUM_CANONICAL_MCP_BRIDGE_TOKEN}`,
+        "content-type": "application/json",
+      };
+
+      // Regression guard: save_topic_brief must be allowlisted on the wiki
+      // surface, otherwise a remote/placed archiver can save the summary but is
+      // 403-blocked from persisting the accumulated brief.
+      const allowed = await fetch(bridge.url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ tool: "save_topic_brief", input: { content: "# brief" } }),
+      });
+      expect(allowed.status).toBe(200);
+      expect(calls.at(-1)).toMatchObject({ surface: "wiki", tool: "save_topic_brief" });
+
+      // A tool outside the wiki allowlist is still rejected.
+      const denied = await fetch(bridge.url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ tool: "task_list", input: {} }),
+      });
+      expect(denied.status).toBe(403);
+
+      revokeCanonicalMcpBridgeTurn(scope);
+    } finally {
+      bridge.stop();
+    }
+  });
 });

@@ -675,8 +675,12 @@ function saveWikiEntry(args: Record<string, unknown>): CallToolResult {
     }
   }
 
-  // Mirror the canonical accumulated title brief into SQLite while recording
-  // this immutable source summary as the latest deep-history entry.
+  // Record the latest summary. The fresh brief is written authoritatively by
+  // save_topic_brief (called after this step). We only backfill brief_md from an
+  // existing brief file here so the empty-session path — which skips
+  // save_topic_brief — can't create a title-key row with empty brief_md that
+  // shadows a valid legacy id-keyed brief (see resolveTopicBrief). Never
+  // overwrites an existing brief_md with empty.
   const setTopicBrief = runtime().host.setTopicBrief;
   let sqliteUpdated = false;
   if (topicId && setTopicBrief) {
@@ -700,6 +704,48 @@ function saveWikiEntry(args: Record<string, unknown>): CallToolResult {
         type: "text",
         text:
           `Saved summary: summaries/${summaryName}` +
+          (sqliteUpdated ? "\nSQLite latest-summary also updated." : ""),
+      },
+    ],
+  };
+}
+
+function saveTopicBrief(args: Record<string, unknown>): CallToolResult {
+  const rawTopic = safeExt(args, ["topic", "topicName"], "");
+  const content: string = safeExt(args, ["content", "brief", "text", "body"], "");
+
+  if (!rawTopic) return { content: [{ type: "text", text: "Missing topic." }] };
+  if (!content) return { content: [{ type: "text", text: "Missing content." }] };
+
+  const topicId = runtime().topicId;
+  const fileSlug = wikiBriefStorageKey(rawTopic, topicId);
+
+  // Write the canonical accumulated persona brief file.
+  const briefPath = resolve(runtime().topicsDir, `${fileSlug}.md`);
+  ensureDir(dirname(briefPath));
+  const existed = existsSync(briefPath);
+  writeFileSync(briefPath, content, "utf-8");
+
+  // Mirror the brief into SQLite so it is injected at the next session start.
+  // Partial upsert: only brief_md is touched, leaving latest_summary_md and
+  // summary_date (written by save_wiki_entry) intact.
+  const setTopicBrief = runtime().host.setTopicBrief;
+  let sqliteUpdated = false;
+  if (topicId && setTopicBrief) {
+    try {
+      setTopicBrief(fileSlug, { briefMd: content });
+      sqliteUpdated = true;
+    } catch {
+      // DB update failed — file save succeeded, not critical.
+    }
+  }
+
+  return {
+    content: [
+      {
+        type: "text",
+        text:
+          `Saved brief: topic/${fileSlug}.md (${existed ? "updated" : "created"})` +
           (sqliteUpdated ? "\nSQLite brief also updated." : ""),
       },
     ],
@@ -882,6 +928,22 @@ const WIKI_TOOLS: Tool[] = [
     },
   },
   {
+    name: "save_topic_brief",
+    description:
+      "Write the accumulated persona/topic brief to wiki/topic/<topic>.md and mirror it into SQLite for next-session injection. Call this AFTER save_wiki_entry (archive → summary → brief order).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        topic: { type: "string", description: "Topic name of the session" },
+        content: {
+          type: "string",
+          description: "Full accumulated topic brief in markdown (persona layer + recent work)",
+        },
+      },
+      required: ["topic", "content"],
+    },
+  },
+  {
     name: "index_upsert",
     description: "Upsert an entry in wiki/article-index.md, topic-index.md, or skill-index.md.",
     inputSchema: {
@@ -1002,6 +1064,7 @@ export function createWikiMcpServer(context: WikiMcpContext, host: WikiMcpHost):
         skill_query: skillQuery,
         skill_save: skillSave,
         save_wiki_entry: saveWikiEntry,
+        save_topic_brief: saveTopicBrief,
         index_upsert: indexUpsert,
       };
       const handler = tools.some((tool) => tool.name === name) ? handlers[name] : undefined;

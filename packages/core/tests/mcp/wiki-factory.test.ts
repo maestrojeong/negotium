@@ -208,11 +208,15 @@ describe("createWikiMcpServer", () => {
     }
 
     const date = new Date().toISOString().slice(0, 10);
-    expect(response).toContain("SQLite brief also updated.");
+    // save_wiki_entry records the latest summary and defensively backfills the
+    // EXISTING brief file into brief_md (never emptying it). The authoritative
+    // fresh brief is written later by save_topic_brief (archive → summary → brief).
+    expect(response).toContain("SQLite latest-summary also updated.");
     expect(readdirSync(join(root, "summaries")).sort()).toEqual([
       `${date}-Roadmap-Notes.md`,
       `${date}-Roadmap-Notes~2.md`,
     ]);
+    // The accumulated brief file itself is left untouched by save_wiki_entry.
     expect(readFileSync(join(topicDir, "Roadmap-Notes.md"), "utf-8")).toBe(brief);
     expect(writes.at(-1)).toEqual({
       key: "Roadmap-Notes",
@@ -222,6 +226,40 @@ describe("createWikiMcpServer", () => {
         summaryDate: date,
       },
     });
+    await client.close();
+  });
+
+  test("save_topic_brief writes the brief file and mirrors only brief_md", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wiki-save-brief-"));
+    roots.push(root);
+    const writes: Array<{
+      key: string;
+      fields: { briefMd?: string; latestSummaryMd?: string; summaryDate?: string };
+    }> = [];
+    const client = await connect(
+      createWikiMcpServer(
+        { userId: "user", topicId: "room-id", surface: "wiki" },
+        {
+          wikiRoot: root,
+          setTopicBrief: (key, fields) => writes.push({ key, fields }),
+        },
+      ),
+    );
+
+    const brief =
+      "---\ntopic: Roadmap Notes\ntype: topic-brief\n---\n# Roadmap Notes 토픽 브리프\n\n## 페르소나\n- 사용자: BlueHole 엔지니어";
+    const response = text(
+      await client.callTool({
+        name: "save_topic_brief",
+        arguments: { topic: "Roadmap Notes", content: brief },
+      }),
+    );
+
+    expect(response).toContain("Saved brief: topic/Roadmap-Notes.md");
+    expect(response).toContain("SQLite brief also updated.");
+    expect(readFileSync(join(root, "topic", "Roadmap-Notes.md"), "utf-8")).toBe(brief);
+    // Partial upsert: only brief_md is touched (latest_summary_md/summary_date untouched).
+    expect(writes.at(-1)).toEqual({ key: "Roadmap-Notes", fields: { briefMd: brief } });
     await client.close();
   });
 
@@ -248,7 +286,7 @@ describe("createWikiMcpServer", () => {
     );
 
     expect(response).toContain("Saved summary:");
-    expect(response).not.toContain("SQLite brief also updated.");
+    expect(response).not.toContain("SQLite latest-summary also updated.");
     await client.close();
   });
 
