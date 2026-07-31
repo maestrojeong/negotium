@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { legacyUserTurnEnvelope, type UserTurnEnvelope } from "#runtime/user-turn-envelope";
+import {
+  flattenUserTurnAttachments,
+  legacyUserTurnEnvelope,
+  renderUserPromptBatch,
+  type UserTurnEnvelope,
+} from "#runtime/user-turn-envelope";
 import { db } from "#storage/forum-db";
 import { TURN_LEASE_STALE_MS } from "#storage/runtime-leases";
 import { getRuntimeTopicEpoch, TOPIC_MAINTENANCE_STALE_MS } from "#storage/runtime-topic-state";
@@ -28,6 +33,10 @@ export interface RuntimeUserTurnExecution {
   from?: string;
   /** Newly accepted user texts not yet recorded in the unified conversation log. */
   conversationPrompts?: string[];
+  /** Number of leading userMessages already present in the unified conversation log. */
+  loggedUserMessageCount?: number;
+  /** Request ids whose ordered messages were folded into this replacement. */
+  supersededRequestIds?: string[];
 }
 
 export interface RuntimeUserTurnRequest {
@@ -248,6 +257,174 @@ export function enqueueRuntimeUserTurnRequest(input: {
     );
   })();
   return requestId;
+}
+
+function loggedMessageCount(request: RuntimeUserTurnRequest): number {
+  const explicit = request.execution?.loggedUserMessageCount;
+  if (typeof explicit === "number" && Number.isInteger(explicit)) {
+    return Math.min(Math.max(0, explicit), request.userMessages.length);
+  }
+  const legacyPendingPrompts = request.execution?.conversationPrompts;
+  if (legacyPendingPrompts) {
+    return Math.max(0, request.userMessages.length - legacyPendingPrompts.length);
+  }
+  return 0;
+}
+
+/**
+ * Atomically fold every accepted request for a topic into one replacement.
+ * BEGIN IMMEDIATE serializes cross-process readers before they observe and
+ * replace the current rows, preventing the classic read/merge/delete race.
+ */
+export function mergeRuntimeUserTurnRequest(input: {
+  topicId: string;
+  userId: string;
+  userMessages: UserTurnEnvelope[];
+  allowAutoContinue: boolean;
+  requestId: string;
+  execution: RuntimeUserTurnExecution;
+  topicEpoch: number;
+  alreadyIncludedRequestIds?: string[];
+}): { requestId: string; supersededRequestIds: string[] } {
+  const now = Date.now();
+  return db
+    .transaction(() => {
+      const rows = db
+        .query<RuntimeUserTurnRequestRow, [string]>(
+          "SELECT * FROM runtime_user_turn_requests WHERE topic_id = ? ORDER BY created_at ASC, rowid ASC",
+        )
+        .all(input.topicId);
+      const previous = rows.map(rowToRequest);
+      const alreadyIncludedRequestIds = new Set(input.alreadyIncludedRequestIds ?? []);
+      const alreadyIncludedMessages = previous
+        .filter((request) => alreadyIncludedRequestIds.has(request.requestId))
+        .flatMap((request) => request.userMessages);
+      const includedPrefixMatches = alreadyIncludedMessages.every((message, index) => {
+        const candidate = input.userMessages[index];
+        return (
+          candidate?.prompt === message.prompt &&
+          JSON.stringify(candidate.attachments ?? []) === JSON.stringify(message.attachments ?? [])
+        );
+      });
+      const alreadyIncludedMessageCount = includedPrefixMatches
+        ? alreadyIncludedMessages.length
+        : 0;
+      const userMessages = [
+        ...previous.flatMap((request) => request.userMessages),
+        ...input.userMessages.slice(alreadyIncludedMessageCount),
+      ];
+      const incomingLoggedCount = Math.min(
+        Math.max(0, input.execution.loggedUserMessageCount ?? 0),
+        input.userMessages.length,
+      );
+      const loggedUserMessageCount =
+        previous.reduce((count, request) => count + loggedMessageCount(request), 0) +
+        Math.max(0, incomingLoggedCount - alreadyIncludedMessageCount);
+      const execution: RuntimeUserTurnExecution = {
+        ...input.execution,
+        loggedUserMessageCount,
+        supersededRequestIds: [
+          ...new Set(
+            previous.flatMap((request) => [
+              request.requestId,
+              ...(request.execution?.supersededRequestIds ?? []),
+            ]),
+          ),
+        ],
+        conversationPrompts: userMessages
+          .slice(loggedUserMessageCount)
+          .map((message) => message.prompt),
+      };
+      const sessionBase = previous.find(
+        (request) => request.execution?.sessionIdSpecified,
+      )?.execution;
+      if (sessionBase?.sessionIdSpecified) {
+        execution.sessionId = sessionBase.sessionId;
+        execution.sessionIdSpecified = true;
+      }
+      const attachments = flattenUserTurnAttachments(userMessages);
+
+      db.query("DELETE FROM runtime_user_turn_requests WHERE topic_id = ?").run(input.topicId);
+      db.query(
+        `INSERT INTO runtime_user_turn_requests
+         (request_id, topic_id, user_id, prompt, user_messages_json, attachments_json,
+          allow_auto_continue, execution_json, topic_epoch, created_at,
+          status, claimed_by, claimed_at, running_query_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL)`,
+      ).run(
+        input.requestId,
+        input.topicId,
+        input.userId,
+        renderUserPromptBatch(userMessages.map((message) => message.prompt)),
+        JSON.stringify(userMessages),
+        attachments?.length ? JSON.stringify(attachments) : null,
+        input.allowAutoContinue ? 1 : 0,
+        JSON.stringify(execution),
+        input.topicEpoch,
+        now,
+      );
+      return {
+        requestId: input.requestId,
+        supersededRequestIds: previous.map((request) => request.requestId),
+      };
+    })
+    .immediate();
+}
+
+export function markRuntimeUserTurnMessagesLogged(
+  topicId: string,
+  requestId: string,
+  ownerId: string,
+  loggedUserMessages: readonly UserTurnEnvelope[],
+): boolean {
+  if (loggedUserMessages.length === 0) return false;
+  return db
+    .transaction(() => {
+      const requests = db
+        .query<RuntimeUserTurnRequestRow, [string]>(
+          "SELECT * FROM runtime_user_turn_requests WHERE topic_id = ? ORDER BY created_at ASC, rowid ASC",
+        )
+        .all(topicId)
+        .map(rowToRequest);
+      const hasLoggedPrefix = (request: RuntimeUserTurnRequest): boolean =>
+        loggedUserMessages.length <= request.userMessages.length &&
+        loggedUserMessages.every((message, index) => {
+          const candidate = request.userMessages[index];
+          return (
+            candidate?.prompt === message.prompt &&
+            JSON.stringify(candidate.attachments ?? []) ===
+              JSON.stringify(message.attachments ?? [])
+          );
+        });
+      const request =
+        requests.find(
+          (candidate) =>
+            candidate.requestId === requestId &&
+            candidate.claimedBy === ownerId &&
+            hasLoggedPrefix(candidate),
+        ) ??
+        requests.find(
+          (candidate) =>
+            candidate.execution?.supersededRequestIds?.includes(requestId) &&
+            hasLoggedPrefix(candidate),
+        );
+      if (!request) return false;
+      const count = Math.max(loggedMessageCount(request), loggedUserMessages.length);
+      const execution: RuntimeUserTurnExecution = {
+        ...request.execution,
+        loggedUserMessageCount: count,
+        conversationPrompts: request.userMessages.slice(count).map((message) => message.prompt),
+      };
+      const result = db
+        .query(
+          `UPDATE runtime_user_turn_requests
+           SET execution_json = ?
+           WHERE topic_id = ? AND request_id = ?`,
+        )
+        .run(JSON.stringify(execution), topicId, request.requestId);
+      return result.changes === 1;
+    })
+    .immediate();
 }
 
 export function claimNextRuntimeUserTurnRequest(

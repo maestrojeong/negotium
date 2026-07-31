@@ -8,6 +8,7 @@ import {
   resolveTopicTurnSession,
   startAiTurn,
   triggerTopicAiTurn,
+  userConversationPromptsToRecord,
   withDefaultPlaywright,
 } from "#runtime/turn-runner";
 import { getAllMessagesForTopic } from "#storage/api-messages";
@@ -68,6 +69,19 @@ describe("superseding user turns", () => {
 
   test("leaves a single user prompt unchanged", () => {
     expect(renderUserPromptBatch(["hello"])).toBe("hello");
+  });
+
+  test("records only new envelopes while retaining their materialized attachment prompts", () => {
+    expect(
+      userConversationPromptsToRecord(
+        [
+          "first\n\n[Attached file: first.txt at path: /workspace/first.txt]",
+          "second\n\n[Attached file: second.txt at path: /workspace/second.txt]",
+        ],
+        1,
+        "batched provider prompt",
+      ),
+    ).toEqual(["second\n\n[Attached file: second.txt at path: /workspace/second.txt]"]);
   });
 });
 

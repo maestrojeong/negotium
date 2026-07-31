@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { appendApiMessage, getApiMessage } from "#storage/api-messages";
+import { getTopicSessionId } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
 import { appendRuntimeEvent } from "#storage/runtime-events";
 import {
@@ -87,6 +88,12 @@ export function submitRuntimeGatewayTurn(
         allowAutoContinue: params.allowAutoContinue ?? true,
         requestId,
         supersedeExisting: false,
+        execution: {
+          sessionId: getTopicSessionId(params.topic.id),
+          sessionIdSpecified: true,
+          conversationPrompts: [params.text],
+          loggedUserMessageCount: 0,
+        },
       });
       const acceptedEvent = appendRuntimeEvent("runtime-gateway-ingress", {
         type: "ai-status",

@@ -69,6 +69,7 @@ import {
 import {
   flattenUserTurnAttachments,
   legacyUserTurnEnvelope,
+  renderUserPromptBatch,
   type UserTurnEnvelope,
 } from "#runtime/user-turn-envelope";
 import { getActiveVisualForPrompt } from "#runtime/visual-store";
@@ -93,9 +94,9 @@ import { getRuntimeTopicEpoch, isRuntimeTopicMaintenance } from "#storage/runtim
 import {
   claimNextRuntimeUserTurnRequest,
   completeRuntimeUserTurnRequest,
-  enqueueRuntimeUserTurnRequest,
-  getRuntimeUserTurnRequest,
+  markRuntimeUserTurnMessagesLogged,
   markRuntimeUserTurnRunning,
+  mergeRuntimeUserTurnRequest,
   type RuntimeUserTurnExecution,
   releaseRuntimeUserTurnClaim,
 } from "#storage/runtime-turn-requests";
@@ -118,6 +119,7 @@ export * from "#runtime/channel-context";
 export * from "#runtime/errors";
 export * from "#runtime/tasks";
 export * from "#runtime/turn-session";
+export { renderUserPromptBatch } from "#runtime/user-turn-envelope";
 export * from "#runtime/visuals";
 
 // In-flight AI turns are tracked room-keyed (topicId → control) in
@@ -607,6 +609,10 @@ export interface StartAiTurnParams extends AiTurnExecutionOptions {
   _userMessages?: UserTurnEnvelope[];
   /** Newly accepted user texts not yet written to the unified conversation log. */
   _conversationPrompts?: string[];
+  /** Number of leading _userMessages already written to the conversation log. */
+  _loggedUserMessageCount?: number;
+  /** Durable rows whose envelopes are already present in _userMessages. */
+  _durableRequestIds?: string[];
   _sessionRetried?: boolean;
 }
 
@@ -622,15 +628,6 @@ export interface TriggerTopicAiTurnOptions extends AiTurnExecutionOptions {
 }
 
 const remoteInjectWaiters = new Map<string, ReturnType<typeof setInterval>>();
-
-export function renderUserPromptBatch(prompts: readonly string[]): string {
-  if (prompts.length <= 1) return prompts[0] ?? "";
-  return [
-    "[Consecutive user messages received before an assistant response]",
-    "",
-    ...prompts.map((prompt, index) => `${index + 1}. ${prompt}`),
-  ].join("\n");
-}
 
 export function mergeSupersedingUserTurn(
   running: Pick<RoomQueryControl, "prompt" | "userMessages" | "attachments" | "sessionId">,
@@ -653,6 +650,16 @@ export function mergeSupersedingUserTurn(
   };
 }
 
+export function userConversationPromptsToRecord(
+  renderedUserPrompts: readonly string[] | undefined,
+  loggedUserMessageCount: number | undefined,
+  agentPrompt: string,
+): string[] {
+  return renderedUserPrompts && loggedUserMessageCount !== undefined
+    ? renderedUserPrompts.slice(loggedUserMessageCount)
+    : [agentPrompt];
+}
+
 function serializableUserTurnExecution(params: StartAiTurnParams): RuntimeUserTurnExecution {
   return {
     runtimeEpoch: params._runtimeEpoch ?? getRuntimeTopicEpoch(params.topic.id),
@@ -673,43 +680,31 @@ function serializableUserTurnExecution(params: StartAiTurnParams): RuntimeUserTu
     from: params.from,
     conversationPrompts: params._conversationPrompts ??
       params._userMessages?.map((message) => message.prompt) ?? [params.prompt],
+    loggedUserMessageCount: params._loggedUserMessageCount,
   };
 }
 
 function waitToStartRemoteUserTurn(params: StartAiTurnParams, queryId: string): string {
-  const previous = getRuntimeUserTurnRequest(params.topic.id);
   const execution = serializableUserTurnExecution(params);
-  if (previous?.execution?.sessionIdSpecified) {
-    execution.sessionId = previous.execution.sessionId;
-    execution.sessionIdSpecified = true;
-  }
   const incomingUserMessages = params._userMessages ?? [
     legacyUserTurnEnvelope(params.prompt, params.attachments),
   ];
-  const userMessages = previous
-    ? [...previous.userMessages, ...incomingUserMessages]
-    : incomingUserMessages;
-  if (previous?.status === "pending") {
-    execution.conversationPrompts = [
-      ...(previous.execution?.conversationPrompts ?? [previous.prompt]),
-      ...(execution.conversationPrompts ?? [params.prompt]),
-    ];
-  }
-  const queuedQueryId = enqueueRuntimeUserTurnRequest({
+  const merged = mergeRuntimeUserTurnRequest({
     topicId: params.topic.id,
     userId: params.userId,
-    prompt: renderUserPromptBatch(userMessages.map((message) => message.prompt)),
-    userMessages,
-    attachments: flattenUserTurnAttachments(userMessages),
+    userMessages: incomingUserMessages,
     allowAutoContinue: params.allowAutoContinue,
     requestId: queryId,
     execution,
-    topicEpoch: execution.runtimeEpoch,
+    topicEpoch: execution.runtimeEpoch ?? getRuntimeTopicEpoch(params.topic.id),
+    alreadyIncludedRequestIds: params._durableRequestIds,
   });
-  if (previous && previous.requestId !== queuedQueryId) {
-    WsHub.get().broadcastAborted(params.topic.id, previous.requestId, "superseded");
+  for (const supersededRequestId of merged.supersededRequestIds) {
+    if (supersededRequestId !== merged.requestId) {
+      WsHub.get().broadcastAborted(params.topic.id, supersededRequestId, "superseded");
+    }
   }
-  return queuedQueryId;
+  return merged.requestId;
 }
 
 function announceQueuedUserTurn(params: StartAiTurnParams, queryId: string): void {
@@ -761,6 +756,10 @@ async function drainOneDurableUserTurn(): Promise<void> {
       prompt: request.prompt,
       _userMessages: request.userMessages,
       _conversationPrompts: execution?.conversationPrompts ?? [request.prompt],
+      _loggedUserMessageCount:
+        execution?.loggedUserMessageCount ??
+        Math.max(0, request.userMessages.length - (execution?.conversationPrompts?.length ?? 1)),
+      _durableRequestIds: [request.requestId],
       attachments: request.attachments,
       allowAutoContinue: request.allowAutoContinue,
       origin: "user",
@@ -844,7 +843,8 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   const { userId, allowAutoContinue, onDispatched } = params;
   const origin = params.origin ?? "user";
   const conversationPrompts = params._conversationPrompts ?? [params.prompt];
-  let recordsOnlyIncomingPrompts = params._conversationPrompts !== undefined;
+  let loggedUserMessageCount = params._loggedUserMessageCount;
+  let durableRequestIds = params._durableRequestIds ?? [];
   let userMessages = isUserOrigin(origin)
     ? (params._userMessages ?? [legacyUserTurnEnvelope(params.prompt, params.attachments)])
     : undefined;
@@ -1005,6 +1005,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         sessionId,
         _userMessages: userMessages,
         _conversationPrompts: conversationPrompts,
+        _loggedUserMessageCount: loggedUserMessageCount,
         _runtimeEpoch: runtimeEpoch,
       },
       queryId,
@@ -1026,7 +1027,10 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       // Resume from the session that existed before the interrupted batch.
       // The aborted provider may or may not have persisted its partial turn.
       sessionId = merged.sessionId;
-      recordsOnlyIncomingPrompts = true;
+      loggedUserMessageCount = running.userMessages?.length ?? 1;
+      durableRequestIds = [
+        ...new Set([...(running.durableRequestIds ?? []), ...durableRequestIds]),
+      ];
     }
     // The preempted turn was itself a session-inject → re-queue it so the
     // inter-session work isn't lost; it resumes after the user's turn.
@@ -1069,6 +1073,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     origin,
     prompt,
     userMessages,
+    durableRequestIds,
     attachments,
     sessionId,
     abortController,
@@ -1128,6 +1133,8 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           sessionId,
           _userMessages: userMessages,
           _conversationPrompts: conversationPrompts,
+          _loggedUserMessageCount: loggedUserMessageCount,
+          _durableRequestIds: durableRequestIds,
           _runtimeEpoch: runtimeEpoch,
         },
         queryId,
@@ -1202,6 +1209,11 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         ),
       )
     : promptWithAttachments(prompt, promptAttachments);
+  const renderedUserPrompts = userMessages
+    ? userMessages.map((message, index) =>
+        promptWithAttachments(message.prompt, messageAttachmentGroups?.[index] ?? []),
+      )
+    : undefined;
   const agentPrompt =
     topic.aiMode === "mention" && isUserOrigin(origin) && !silent
       ? buildMentionOnlyChannelPrompt({
@@ -1339,12 +1351,33 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   }
 
   if (!silent && !sessionRetried) {
-    const promptsToRecord = recordsOnlyIncomingPrompts ? conversationPrompts : [agentPrompt];
-    for (const content of promptsToRecord) {
-      appendConversationEvent(userId, sessionName, agentKind, {
+    const promptsToRecord = userConversationPromptsToRecord(
+      renderedUserPrompts,
+      loggedUserMessageCount,
+      agentPrompt,
+    );
+    const consecutiveBatchSize =
+      userMessages && userMessages.length > 1 ? userMessages.length : undefined;
+    const firstPromptIndex = loggedUserMessageCount ?? 0;
+    for (const [index, content] of promptsToRecord.entries()) {
+      const appended = appendConversationEvent(userId, sessionName, agentKind, {
         type: "user_message",
         content,
+        ...(consecutiveBatchSize
+          ? {
+              consecutiveBatchSize,
+              consecutiveBatchIndex: firstPromptIndex + index,
+            }
+          : {}),
       });
+      if (!appended) break;
+      loggedUserMessageCount = firstPromptIndex + index + 1;
+      markRuntimeUserTurnMessagesLogged(
+        topicId,
+        queryId,
+        RUNTIME_INSTANCE_ID,
+        userMessages?.slice(0, loggedUserMessageCount) ?? [],
+      );
     }
   }
 
@@ -1543,6 +1576,8 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           prompt,
           _userMessages: userMessages,
           _conversationPrompts: conversationPrompts,
+          _loggedUserMessageCount: loggedUserMessageCount,
+          _durableRequestIds: durableRequestIds,
           attachments,
           allowAutoContinue,
           origin,

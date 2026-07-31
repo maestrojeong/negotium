@@ -12,6 +12,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DM_WORKSPACE_DIR, TOPIC_WORKSPACE_DIR, WORKSPACE_DIR } from "#platform/config";
 import { logger } from "#platform/logger";
+import { renderUserPromptBatch } from "#runtime/user-turn-envelope";
 import type { ConversationEntry } from "#storage/conversations";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -138,19 +139,23 @@ export function extractChatPairs(
   opts: ExtractOptions = { includeToolAnnotations: true },
 ): ChatPair[] {
   const pairs: ChatPair[] = [];
-  let pendingUser: string | null = null;
+  let pendingUsers: string[] = [];
+  let pendingBatchSize: number | null = null;
+  let pendingBatchNextIndex = 0;
   let pendingAssistantParts: string[] = [];
   let toolBuffer: string[] = [];
 
   const flushAssistant = () => {
-    if (pendingUser === null) return;
+    if (pendingUsers.length === 0) return;
     const tools =
       opts.includeToolAnnotations && toolBuffer.length > 0 ? `\n\n${toolBuffer.join("\n")}` : "";
     const assistantText = pendingAssistantParts.join("").trim() + tools;
     if (assistantText.trim()) {
-      pairs.push({ userText: pendingUser, assistantText });
+      pairs.push({ userText: renderUserPromptBatch(pendingUsers), assistantText });
     }
-    pendingUser = null;
+    pendingUsers = [];
+    pendingBatchSize = null;
+    pendingBatchNextIndex = 0;
     pendingAssistantParts = [];
     toolBuffer = [];
   };
@@ -159,11 +164,46 @@ export function extractChatPairs(
     const ev = entry.event;
     switch (ev.type) {
       case "user_message": {
-        // Explicit user prompt marker emitted by the query handler before each
-        // turn. Close the previous pair (in case the prior turn streamed
-        // assistant text without a clean termination) and stage this prompt.
-        flushAssistant();
-        pendingUser = (ev as { content: string }).content;
+        const userEvent = ev as {
+          content: string;
+          consecutiveBatchSize?: number;
+          consecutiveBatchIndex?: number;
+        };
+        if (pendingAssistantParts.length > 0 || toolBuffer.length > 0) {
+          flushAssistant();
+        }
+        const batchSize = userEvent.consecutiveBatchSize;
+        const batchIndex = userEvent.consecutiveBatchIndex;
+        const marked =
+          Number.isInteger(batchSize) &&
+          Number.isInteger(batchIndex) &&
+          (batchSize ?? 0) > 1 &&
+          (batchIndex ?? -1) >= 0 &&
+          (batchIndex ?? 0) < (batchSize ?? 0);
+        if (!marked) {
+          if (pendingUsers.length > 0) flushAssistant();
+          pendingUsers.push(userEvent.content);
+          pendingBatchSize = null;
+          pendingBatchNextIndex = 0;
+          break;
+        }
+        if (batchIndex === 0) {
+          if (pendingUsers.length > 0) flushAssistant();
+          pendingBatchSize = batchSize ?? null;
+          pendingBatchNextIndex = 0;
+        } else if (
+          !(
+            (pendingBatchSize !== null &&
+              (batchSize ?? 0) >= pendingBatchSize &&
+              pendingBatchNextIndex === batchIndex) ||
+            (pendingBatchSize === null && pendingUsers.length === batchIndex)
+          )
+        ) {
+          flushAssistant();
+        }
+        pendingUsers.push(userEvent.content);
+        pendingBatchSize = batchSize ?? null;
+        pendingBatchNextIndex = (batchIndex ?? 0) + 1;
         break;
       }
       case "session":
@@ -184,8 +224,8 @@ export function extractChatPairs(
         // interleaved with tool_use. Accumulate (do NOT flush yet) — the
         // turn's `result` event below carries the final concatenation and
         // is the proper boundary.
-        if (pendingUser === null) {
-          pendingUser = "(continued)";
+        if (pendingUsers.length === 0) {
+          pendingUsers = ["(continued)"];
         }
         pendingAssistantParts.push((ev as { content: string }).content);
         break;
@@ -194,8 +234,8 @@ export function extractChatPairs(
         // End-of-turn marker. `result.content` is the canonical final answer
         // produced by the provider, so prefer it over the accumulated `text`
         // chunks (which may be partial or out of order across SDKs).
-        if (pendingUser === null) {
-          pendingUser = "(continued)";
+        if (pendingUsers.length === 0) {
+          pendingUsers = ["(continued)"];
         }
         pendingAssistantParts = [(ev as { content: string }).content];
         flushAssistant();

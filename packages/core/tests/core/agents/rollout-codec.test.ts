@@ -99,16 +99,76 @@ describe("extractChatPairs", () => {
     expect(pairs).toEqual([{ userText: "q", assistantText: "a" }]);
   });
 
-  test("turns with no assistant text are dropped", () => {
-    // A user prompt that produced no output (aborted, error, etc.) should
-    // not synthesize a pair — replaying it would inject an empty assistant
-    // turn that the SDKs may reject or render weirdly.
+  test("consecutive user messages are preserved as one ordered batch", () => {
     const pairs = extractChatPairs([
-      entry({ type: "user_message", content: "abandoned" }),
-      entry({ type: "user_message", content: "q" }),
+      entry({ type: "user_message", content: "first" }),
+      entry({
+        type: "user_message",
+        content: "second",
+        consecutiveBatchSize: 2,
+        consecutiveBatchIndex: 1,
+      }),
+      entry({
+        type: "user_message",
+        content: "third",
+        consecutiveBatchSize: 3,
+        consecutiveBatchIndex: 2,
+      }),
       entry({ type: "result", content: "a", stopReason: "end_turn" }),
     ]);
-    expect(pairs).toEqual([{ userText: "q", assistantText: "a" }]);
+    expect(pairs).toEqual([
+      {
+        userText:
+          "[Consecutive user messages received before an assistant response]\n\n1. first\n2. second\n3. third",
+        assistantText: "a",
+      },
+    ]);
+  });
+
+  test("a new marked batch drops an earlier marked batch with no assistant output", () => {
+    const pairs = extractChatPairs([
+      entry({
+        type: "user_message",
+        content: "old first",
+        consecutiveBatchSize: 2,
+        consecutiveBatchIndex: 0,
+      }),
+      entry({
+        type: "user_message",
+        content: "old second",
+        consecutiveBatchSize: 2,
+        consecutiveBatchIndex: 1,
+      }),
+      entry({
+        type: "user_message",
+        content: "new first",
+        consecutiveBatchSize: 2,
+        consecutiveBatchIndex: 0,
+      }),
+      entry({
+        type: "user_message",
+        content: "new second",
+        consecutiveBatchSize: 2,
+        consecutiveBatchIndex: 1,
+      }),
+      entry({ type: "result", content: "answer", stopReason: "end_turn" }),
+    ]);
+    expect(pairs).toEqual([
+      {
+        userText:
+          "[Consecutive user messages received before an assistant response]\n\n1. new first\n2. new second",
+        assistantText: "answer",
+      },
+    ]);
+  });
+
+  test("an unrelated prompt still drops an earlier turn with no assistant output", () => {
+    const pairs = extractChatPairs([
+      entry({ type: "user_message", content: "explicitly stopped" }),
+      entry({ type: "user_message", content: "new request" }),
+      entry({ type: "result", content: "answer", stopReason: "end_turn" }),
+    ]);
+    expect(pairs).toEqual([{ userText: "new request", assistantText: "answer" }]);
   });
 });
 

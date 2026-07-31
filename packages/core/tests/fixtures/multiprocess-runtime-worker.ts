@@ -80,6 +80,57 @@ switch (mode) {
     stop();
     break;
   }
+  case "turn-seed": {
+    const { enqueueRuntimeUserTurnRequest } = await import(
+      "../../src/storage/runtime-turn-requests"
+    );
+    enqueueRuntimeUserTurnRequest({
+      topicId: value,
+      userId: "user",
+      prompt: "base",
+      userMessages: [{ prompt: "base" }],
+      allowAutoContinue: true,
+      execution: {
+        sessionId: null,
+        sessionIdSpecified: true,
+        conversationPrompts: ["base"],
+        loggedUserMessageCount: 0,
+      },
+    });
+    process.stdout.write("SEEDED\n");
+    break;
+  }
+  case "turn-merge": {
+    const { mergeRuntimeUserTurnRequest } = await import("../../src/storage/runtime-turn-requests");
+    process.stdout.write("READY\n");
+    process.stdin.setEncoding("utf8");
+    for await (const chunk of process.stdin) {
+      if (!String(chunk).includes("go")) continue;
+      mergeRuntimeUserTurnRequest({
+        topicId: value,
+        userId: "user",
+        userMessages: [{ prompt: extra }],
+        allowAutoContinue: true,
+        requestId: `request-${extra}`,
+        execution: {
+          conversationPrompts: [extra],
+          loggedUserMessageCount: 0,
+        },
+        topicEpoch: 0,
+      });
+      process.stdout.write(`MERGED ${extra}\n`);
+      break;
+    }
+    break;
+  }
+  case "turn-read": {
+    const { getRuntimeUserTurnRequest } = await import("../../src/storage/runtime-turn-requests");
+    const request = getRuntimeUserTurnRequest(value);
+    process.stdout.write(
+      `${JSON.stringify(request?.userMessages.map((message) => message.prompt) ?? [])}\n`,
+    );
+    break;
+  }
   default:
     throw new Error(`unknown worker mode: ${mode}`);
 }

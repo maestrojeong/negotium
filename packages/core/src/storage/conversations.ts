@@ -110,14 +110,16 @@ export function appendConversationEvent(
   topicName: string,
   agent: AgentKind,
   event: UnifiedEvent,
-): void {
+): boolean {
   try {
     appendConversationEventStrict(userId, topicName, agent, event);
+    return true;
   } catch (err) {
     logger.warn(
       { err, userId, topicName, eventType: event.type },
       "appendConversationEvent: write failed",
     );
+    return false;
   }
 }
 

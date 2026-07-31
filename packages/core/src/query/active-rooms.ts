@@ -116,6 +116,8 @@ export interface RoomQueryControl {
   prompt: string;
   /** Original user submissions represented by prompt, in arrival order. */
   userMessages?: UserTurnEnvelope[];
+  /** Durable request rows whose messages are already represented by userMessages. */
+  durableRequestIds?: string[];
   /** Attachment ids currently being processed. User-turn preemption carries them forward. */
   attachments?: string[];
   /** Provider session id this turn resumed from. Superseding user turns restart from this base. */

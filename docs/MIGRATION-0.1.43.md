@@ -17,12 +17,39 @@ The same ordering is retained when messages cross the remote runtime handoff. Pe
 requests store the original texts separately from the rendered provider prompt so a
 restart or delayed claim cannot collapse the batch into one message.
 
+Remote replacement runs in one SQLite `BEGIN IMMEDIATE` transaction. Concurrent runtime
+processes therefore serialize the read/merge/replace operation instead of allowing the last
+writer to delete another process's newly accepted message. Existing FIFO requests for the
+topic are folded into the replacement in creation order.
+
+If a locally preempted batch loses the topic-lease race and falls back to durable handoff,
+it carries the ids of durable rows already represented by its in-memory envelopes. The
+transaction removes only that verified envelope prefix from the incoming copy before
+appending its new suffix. This prevents provider input duplication without deduplicating
+legitimate repeated messages, and retains intervening FIFO requests in arrival order.
+
+Conversation events retain each original message and its materialized attachment prompt.
+Events belonging to one preempting provider turn carry the total batch size and each
+message's zero-based batch index. Synthetic rollout reconstruction uses both values as an
+explicit boundary, so separate interrupted batches cannot be joined merely because their
+events are adjacent. Unrelated prompts following an explicitly stopped or failed turn
+remain separate.
+
+Durable requests persist the count of user messages successfully appended to the
+conversation log. Claim or lease state alone is not treated as proof of an append: the
+count advances only after the synchronous log write succeeds. A crash between dispatch
+and append therefore leaves the message eligible for replay instead of silently dropping
+it from reconstructed history.
+
 ## Interrupted-turn provider session
 
 For a superseding user turn, the provider session id is reset to the session that existed
 before the interrupted turn. This prevents provider-side partial output from becoming the
 base state for the replacement batch. The replacement turn therefore starts from the
 last known pre-turn session and receives all consecutive user messages in order.
+
+Runtime-gateway ingress snapshots this session base when it durably accepts the request,
+including an explicit `null` for a topic that has not created its first provider session.
 
 ## Storage migration
 
@@ -59,6 +86,9 @@ is not a participant, and ambiguous duplicate titles fail closed. A successful t
 reads the canonical UUID-keyed brief first, with the accessible legacy title retained only
 as a storage fallback. This prevents title lookup from returning a stale brief while direct
 UUID lookup returns the current one.
+
+An exact accessible topic id takes precedence over title matching. A different topic whose
+title happens to equal that id therefore cannot make the exact-id lookup ambiguous.
 
 ## Compatibility and rollback
 

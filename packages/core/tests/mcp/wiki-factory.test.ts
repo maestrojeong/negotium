@@ -163,6 +163,22 @@ describe("createWikiMcpServer", () => {
     expect(resolveAccessibleWikiTopicBrief("topic-id", "user", topics, resolveBrief)?.briefMd).toBe(
       "canonical:topic-id:Negotium",
     );
+    expect(
+      resolveAccessibleWikiTopicBrief(
+        "topic-id",
+        "user",
+        [
+          ...topics,
+          {
+            id: "title-collision",
+            title: "topic-id",
+            visibility: "private",
+            participants: [{ userId: "user" }],
+          },
+        ],
+        resolveBrief,
+      )?.briefMd,
+    ).toBe("canonical:topic-id:Negotium");
     expect(resolveAccessibleWikiTopicBrief("Hidden", "user", topics, resolveBrief)).toBeNull();
     expect(resolveAccessibleWikiTopicBrief("Private", "user", topics, resolveBrief)).toBeNull();
     expect(

@@ -152,4 +152,31 @@ describe("cross-process runtime", () => {
     contender.child.stdin.end();
     expect(await contender.child.exited).toBe(0);
   });
+
+  test("serializes simultaneous durable user-turn merges without losing either message", async () => {
+    const env = stateEnv();
+    const topicId = `topic-${crypto.randomUUID()}`;
+    const seed = spawnWorker(env, "turn-seed", topicId);
+    expect(await seed.lines.next()).toBe("SEEDED");
+    expect(await seed.child.exited).toBe(0);
+
+    const first = spawnWorker(env, "turn-merge", topicId, "first");
+    const second = spawnWorker(env, "turn-merge", topicId, "second");
+    expect(await first.lines.next(10_000)).toBe("READY");
+    expect(await second.lines.next(10_000)).toBe("READY");
+    first.child.stdin.write("go\n");
+    second.child.stdin.write("go\n");
+    first.child.stdin.end();
+    second.child.stdin.end();
+    expect(await first.lines.next(10_000)).toBe("MERGED first");
+    expect(await second.lines.next(10_000)).toBe("MERGED second");
+    expect(await first.child.exited).toBe(0);
+    expect(await second.child.exited).toBe(0);
+
+    const reader = spawnWorker(env, "turn-read", topicId);
+    const prompts = JSON.parse(await reader.lines.next()) as string[];
+    expect(await reader.child.exited).toBe(0);
+    expect(prompts[0]).toBe("base");
+    expect(prompts.slice(1).sort()).toEqual(["first", "second"]);
+  });
 });

@@ -14,3 +14,12 @@ export function flattenUserTurnAttachments(
   const attachments = messages.flatMap((message) => message.attachments ?? []);
   return attachments.length ? attachments : undefined;
 }
+
+export function renderUserPromptBatch(prompts: readonly string[]): string {
+  if (prompts.length <= 1) return prompts[0] ?? "";
+  return [
+    "[Consecutive user messages received before an assistant response]",
+    "",
+    ...prompts.map((prompt, index) => `${index + 1}. ${prompt}`),
+  ].join("\n");
+}

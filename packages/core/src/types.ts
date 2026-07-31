@@ -98,7 +98,15 @@ export interface TaskSnapshot {
 }
 
 export type UnifiedEvent =
-  | { type: "user_message"; content: string; synthetic?: "compaction" }
+  | {
+      type: "user_message";
+      content: string;
+      synthetic?: "compaction";
+      /** Total ordered user submissions represented by one preempting provider turn. */
+      consecutiveBatchSize?: number;
+      /** Zero-based position within the ordered preemption batch. */
+      consecutiveBatchIndex?: number;
+    }
   | { type: "session"; sessionId: string }
   | {
       type: "tool_use";

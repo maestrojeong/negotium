@@ -61,12 +61,14 @@ export function resolveAccessibleWikiTopicBrief(
   resolveBrief: (topicId: string, legacyTitle: string) => { brief: WikiTopicBrief } | null,
 ): WikiTopicBrief | null {
   const normalized = selection.trim().toLowerCase();
-  const matches = topics.filter(
+  const accessible = topics.filter(
     (topic) =>
       topic.visibility !== "hidden" &&
-      topic.participants.some((participant) => participant.userId === userId) &&
-      (topic.id === selection || topic.title.trim().toLowerCase() === normalized),
+      topic.participants.some((participant) => participant.userId === userId),
   );
+  const idMatch = accessible.find((topic) => topic.id === selection);
+  if (idMatch) return resolveBrief(idMatch.id, idMatch.title)?.brief ?? null;
+  const matches = accessible.filter((topic) => topic.title.trim().toLowerCase() === normalized);
   if (matches.length !== 1) return null;
   const topic = matches[0]!;
   return resolveBrief(topic.id, topic.title)?.brief ?? null;

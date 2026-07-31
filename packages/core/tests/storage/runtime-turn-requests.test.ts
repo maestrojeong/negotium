@@ -13,7 +13,9 @@ import {
   enqueueRuntimeUserTurnRequest,
   ensureRuntimeUserTurnRequestsSchema,
   getRuntimeUserTurnRequest,
+  markRuntimeUserTurnMessagesLogged,
   markRuntimeUserTurnRunning,
+  mergeRuntimeUserTurnRequest,
 } from "#storage/runtime-turn-requests";
 import type { StorageDatabase } from "#storage/storage-contract";
 
@@ -224,6 +226,238 @@ describe("runtime user turn requests", () => {
     expect(claimNextRuntimeUserTurnRequest("competing-worker")).toBeNull();
     expect(completeRuntimeUserTurnRequest(topic, first, "worker")).toBe(true);
     expect(claimNextRuntimeUserTurnRequest("worker")?.requestId).toBe(second);
+  });
+
+  test("atomically folds running, pending, and incoming messages into one replacement", () => {
+    const topic = topicId();
+    const runningId = enqueueRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      prompt: "running",
+      userMessages: [{ prompt: "running", attachments: ["running-file"] }],
+      attachments: ["running-file"],
+      allowAutoContinue: true,
+      supersedeExisting: false,
+      execution: {
+        sessionId: null,
+        sessionIdSpecified: true,
+        conversationPrompts: ["running"],
+        loggedUserMessageCount: 0,
+      },
+    });
+    expect(claimNextRuntimeUserTurnRequest("worker")?.requestId).toBe(runningId);
+    expect(markRuntimeUserTurnRunning(topic, runningId, "worker", "running-query")).toBe(true);
+    expect(
+      markRuntimeUserTurnMessagesLogged(topic, runningId, "worker", [
+        { prompt: "running", attachments: ["running-file"] },
+      ]),
+    ).toBe(true);
+    enqueueRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      prompt: "pending",
+      allowAutoContinue: true,
+      supersedeExisting: false,
+      execution: { conversationPrompts: ["pending"], loggedUserMessageCount: 0 },
+    });
+
+    const merged = mergeRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      userMessages: [{ prompt: "incoming", attachments: ["incoming-file"] }],
+      allowAutoContinue: true,
+      requestId: "replacement",
+      execution: {
+        sessionId: "partial-session",
+        sessionIdSpecified: true,
+        conversationPrompts: ["incoming"],
+        loggedUserMessageCount: 0,
+      },
+      topicEpoch: 0,
+    });
+
+    expect(merged.supersededRequestIds).toHaveLength(2);
+    expect(getRuntimeUserTurnRequest(topic)).toMatchObject({
+      requestId: "replacement",
+      userMessages: [
+        { prompt: "running", attachments: ["running-file"] },
+        { prompt: "pending" },
+        { prompt: "incoming", attachments: ["incoming-file"] },
+      ],
+      attachments: ["running-file", "incoming-file"],
+      execution: {
+        sessionId: null,
+        sessionIdSpecified: true,
+        loggedUserMessageCount: 1,
+        conversationPrompts: ["pending", "incoming"],
+      },
+    });
+  });
+
+  test("does not duplicate a durable prefix already merged in memory", () => {
+    const topic = topicId();
+    const runningId = enqueueRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      prompt: "running",
+      userMessages: [{ prompt: "running" }],
+      allowAutoContinue: true,
+      supersedeExisting: false,
+      execution: { conversationPrompts: ["running"], loggedUserMessageCount: 0 },
+    });
+    expect(claimNextRuntimeUserTurnRequest("worker")?.requestId).toBe(runningId);
+    expect(
+      markRuntimeUserTurnMessagesLogged(topic, runningId, "worker", [{ prompt: "running" }]),
+    ).toBe(true);
+    enqueueRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      prompt: "pending between turns",
+      allowAutoContinue: true,
+      supersedeExisting: false,
+      execution: { conversationPrompts: ["pending between turns"], loggedUserMessageCount: 0 },
+    });
+
+    mergeRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      userMessages: [{ prompt: "running" }, { prompt: "running" }],
+      allowAutoContinue: true,
+      requestId: "replacement",
+      execution: {
+        conversationPrompts: ["running"],
+        loggedUserMessageCount: 1,
+      },
+      topicEpoch: 0,
+      alreadyIncludedRequestIds: [runningId],
+    });
+
+    expect(getRuntimeUserTurnRequest(topic)).toMatchObject({
+      requestId: "replacement",
+      userMessages: [
+        { prompt: "running" },
+        { prompt: "pending between turns" },
+        { prompt: "running" },
+      ],
+      execution: {
+        loggedUserMessageCount: 1,
+        conversationPrompts: ["pending between turns", "running"],
+      },
+    });
+  });
+
+  test("carries an append acknowledgement onto a concurrent replacement", () => {
+    const topic = topicId();
+    const originalId = enqueueRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      prompt: "original",
+      userMessages: [{ prompt: "original", attachments: ["original-file"] }],
+      attachments: ["original-file"],
+      allowAutoContinue: true,
+      supersedeExisting: false,
+      execution: { conversationPrompts: ["original"], loggedUserMessageCount: 0 },
+    });
+    expect(claimNextRuntimeUserTurnRequest("worker")?.requestId).toBe(originalId);
+
+    mergeRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      userMessages: [{ prompt: "incoming" }],
+      allowAutoContinue: true,
+      requestId: "replacement",
+      execution: { conversationPrompts: ["incoming"], loggedUserMessageCount: 0 },
+      topicEpoch: 0,
+    });
+    mergeRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      userMessages: [{ prompt: "later" }],
+      allowAutoContinue: true,
+      requestId: "second-replacement",
+      execution: { conversationPrompts: ["later"], loggedUserMessageCount: 0 },
+      topicEpoch: 0,
+    });
+
+    expect(
+      markRuntimeUserTurnMessagesLogged(topic, originalId, "worker", [
+        { prompt: "original", attachments: ["original-file"] },
+      ]),
+    ).toBe(true);
+    expect(getRuntimeUserTurnRequest(topic)).toMatchObject({
+      requestId: "second-replacement",
+      execution: {
+        loggedUserMessageCount: 1,
+        conversationPrompts: ["incoming", "later"],
+      },
+    });
+  });
+
+  test("does not carry a late acknowledgement onto an unrelated matching FIFO request", () => {
+    const topic = topicId();
+    const originalId = enqueueRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      prompt: "same",
+      allowAutoContinue: true,
+      supersedeExisting: false,
+      execution: { conversationPrompts: ["same"], loggedUserMessageCount: 0 },
+    });
+    expect(claimNextRuntimeUserTurnRequest("worker")?.requestId).toBe(originalId);
+    db.query("DELETE FROM runtime_user_turn_requests WHERE topic_id = ?").run(topic);
+
+    enqueueRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      prompt: "same",
+      allowAutoContinue: true,
+      supersedeExisting: false,
+      execution: { conversationPrompts: ["same"], loggedUserMessageCount: 0 },
+    });
+
+    expect(
+      markRuntimeUserTurnMessagesLogged(topic, originalId, "worker", [{ prompt: "same" }]),
+    ).toBe(false);
+    expect(getRuntimeUserTurnRequest(topic)?.execution).toMatchObject({
+      loggedUserMessageCount: 0,
+      conversationPrompts: ["same"],
+    });
+  });
+
+  test("does not treat a claimed request with a stale lease as already logged", () => {
+    const topic = topicId();
+    const requestId = enqueueRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      prompt: "claimed but not dispatched",
+      allowAutoContinue: true,
+      supersedeExisting: false,
+      execution: { conversationPrompts: ["claimed but not dispatched"], loggedUserMessageCount: 0 },
+    });
+    expect(claimNextRuntimeUserTurnRequest("worker")?.requestId).toBe(requestId);
+
+    const lease = { topicId: topic, queryId: "query", ownerId: "turn-owner" };
+    leases.push(lease);
+    expect(claimRuntimeTurnLease({ ...lease, origin: "user" })).toBe(true);
+    db.query("UPDATE runtime_turn_leases SET heartbeat_at = ? WHERE topic_id = ?").run(
+      Date.now() - TURN_LEASE_STALE_MS - 1,
+      topic,
+    );
+
+    mergeRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      userMessages: [{ prompt: "incoming" }],
+      allowAutoContinue: true,
+      requestId: "replacement",
+      execution: { conversationPrompts: ["incoming"], loggedUserMessageCount: 0 },
+      topicEpoch: 0,
+    });
+
+    expect(getRuntimeUserTurnRequest(topic)?.execution).toMatchObject({
+      loggedUserMessageCount: 0,
+      conversationPrompts: ["claimed but not dispatched", "incoming"],
+    });
   });
 
   test("does not claim a request until the active topic lease is released", () => {
