@@ -11,7 +11,7 @@ import { sanitizeTopicName } from "#security/sanitize";
 import { appendApiMessage } from "#storage/api-messages";
 import { getTopicBrief, setTopicBrief } from "#storage/api-topic-brief";
 import { getSharedWikiDir } from "#storage/wiki";
-import { wikiSummaryFilename } from "#storage/wiki-summary-names";
+import { isTopicSummaryFile, wikiSummaryFilename } from "#storage/wiki-summary-names";
 import { ensurePersonalGeneral } from "#topics/personal-general";
 import type { AgentKind, AgentQueryOptions, UnifiedEvent } from "#types";
 import type { BackgroundSessionDto, MessageDto } from "#types/api";
@@ -132,6 +132,7 @@ export interface ArchiverRuntime {
 
 export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
   const activeSessions = new Map<string, ActiveArchiverSession>();
+  const topicQueues = new Map<string, Promise<void>>();
   let archiverDef: AgentDef | null = null;
 
   const updateSession = (id: string, status: string, step?: string): void => {
@@ -227,27 +228,6 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
               "도구 호출 로그나 원문 전문은 쓰지 말고, 저장한 요약/브리프/문서만 간단히 말해줘.",
           ].join("\n");
 
-    // cwd = workspace root so the archiver's relative `wiki/...` Glob/Read paths
-    // resolve against the same shared wiki the MCP writes to.
-    const abortController = new AbortController();
-    const events = host.agentRuntime.run({
-      agent,
-      prompt,
-      cwd: host.config.workspaceDir,
-      systemPrompt: definition.prompt,
-      userId,
-      // Throwaway session name → wiki MCP runs in topic-id (shared-root) mode.
-      session: `__archiver_${safeTopic}`,
-      sessionType: "forum",
-      topicId,
-      abortController,
-      model,
-      // Limit MCP surface to the wiki server (no playwright/bg-bash/etc.).
-      mcpEnabled: ["wiki"],
-      // Hidden run: don't record to the cross-agent conversation log.
-      silent: true,
-    });
-
     const activeSessionId = `memory:${host.config.createId()}`;
     let archiveBytes = 0;
     try {
@@ -278,145 +258,170 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
       "archiver: starting background turn",
     );
 
-    // Baseline for locating the summary file the turn is about to write (fallback
-    // when the predicted filename misses). Stamped before draining.
-    const startMs = host.config.now().getTime();
-
-    void (async () => {
-      let ok = false;
-      let sawDelta = false;
-      let accumulatedText = "";
-      let resultText = "";
-      let finalText = "";
-      let errorText = "";
-      let usage: GeneralArchiverReply["usage"] | undefined;
-      try {
-        // Drain the stream — the turn's side effects (wiki writes) are the point;
-        // only the final assistant text is surfaced to #General for deleted topics.
-        for await (const event of events) {
-          switch (event.type) {
-            case "session":
-              updateSession(activeSessionId, "Running", "Provider session started");
-              break;
-            case "tool_use":
-              updateSession(
-                activeSessionId,
-                `Running ${event.name}`,
-                formatArchiverTool(event.name, event.input),
-              );
-              break;
-            case "tool_progress":
-              {
-                const progress = `${event.toolName === "thinking" ? "Thinking" : event.toolName} · ${Math.max(0, Math.floor(event.elapsed))}s`;
-                updateSession(activeSessionId, progress, progress);
-              }
-              break;
-            case "reasoning":
-              updateSession(activeSessionId, "Reasoning", `Reasoning: ${event.content}`);
-              break;
-            case "tool_use_summary":
-              updateSession(activeSessionId, event.summary, event.summary);
-              break;
-            case "status":
-              updateSession(activeSessionId, event.content, event.content);
-              break;
-            case "tool_result":
-              updateSession(
-                activeSessionId,
-                event.isError ? "Tool failed" : "Processing tool result",
-                event.isError
-                  ? `Tool failed: ${sessionText(event.content) || "unknown error"}`
-                  : `Tool result · ${formatArchiverBytes(event.metadata?.returnedBytes ?? Buffer.byteLength(event.content))}`,
-              );
-              break;
-            case "text_delta":
-              sawDelta = true;
-              accumulatedText += event.content;
-              break;
-            case "text":
-              if (!sawDelta) accumulatedText += event.content;
-              break;
-            case "result":
-              updateSession(
-                activeSessionId,
-                "Finalizing memory",
-                `Memory received · ${formatArchiverBytes(Buffer.byteLength(event.content))}${
-                  event.usage
-                    ? ` · ${event.usage.inputTokens.toLocaleString()} in / ${event.usage.outputTokens.toLocaleString()} out`
-                    : ""
-                }`,
-              );
-              resultText = event.content;
-              usage = event.usage
-                ? { input: event.usage.inputTokens, output: event.usage.outputTokens }
-                : undefined;
-              break;
-            case "error":
-              errorText = event.content;
-              updateSession(
-                activeSessionId,
-                "Failed",
-                `Memory archive failed: ${sessionText(event.content)}`,
-              );
-              break;
-            default:
-              break;
+    const previous = topicQueues.get(safeTopic);
+    if (previous)
+      updateSession(activeSessionId, "Queued", `Waiting for ${topicTitle} archive lock`);
+    const work = (previous ?? Promise.resolve())
+      .catch(() => {
+        // A failed predecessor must not poison the title queue.
+      })
+      .then(async () => {
+        // Baseline for locating the summary file the turn is about to write.
+        const startMs = host.config.now().getTime();
+        let ok = false;
+        let sawDelta = false;
+        let accumulatedText = "";
+        let resultText = "";
+        let finalText = "";
+        let errorText = "";
+        let usage: GeneralArchiverReply["usage"] | undefined;
+        try {
+          // cwd = workspace root so the archiver's relative `wiki/...` paths
+          // resolve against the same shared wiki the MCP writes to.
+          const events = host.agentRuntime.run({
+            agent,
+            prompt,
+            cwd: host.config.workspaceDir,
+            systemPrompt: definition.prompt,
+            userId,
+            session: `__archiver_${safeTopic}`,
+            sessionType: "forum",
+            topicId,
+            abortController: new AbortController(),
+            model,
+            mcpEnabled: ["wiki"],
+            silent: true,
+          });
+          // Drain the stream — the turn's side effects (wiki writes) are the point;
+          // only the final assistant text is surfaced to #General for deleted topics.
+          for await (const event of events) {
+            switch (event.type) {
+              case "session":
+                updateSession(activeSessionId, "Running", "Provider session started");
+                break;
+              case "tool_use":
+                updateSession(
+                  activeSessionId,
+                  `Running ${event.name}`,
+                  formatArchiverTool(event.name, event.input),
+                );
+                break;
+              case "tool_progress":
+                {
+                  const progress = `${event.toolName === "thinking" ? "Thinking" : event.toolName} · ${Math.max(0, Math.floor(event.elapsed))}s`;
+                  updateSession(activeSessionId, progress, progress);
+                }
+                break;
+              case "reasoning":
+                updateSession(activeSessionId, "Reasoning", `Reasoning: ${event.content}`);
+                break;
+              case "tool_use_summary":
+                updateSession(activeSessionId, event.summary, event.summary);
+                break;
+              case "status":
+                updateSession(activeSessionId, event.content, event.content);
+                break;
+              case "tool_result":
+                updateSession(
+                  activeSessionId,
+                  event.isError ? "Tool failed" : "Processing tool result",
+                  event.isError
+                    ? `Tool failed: ${sessionText(event.content) || "unknown error"}`
+                    : `Tool result · ${formatArchiverBytes(event.metadata?.returnedBytes ?? Buffer.byteLength(event.content))}`,
+                );
+                break;
+              case "text_delta":
+                sawDelta = true;
+                accumulatedText += event.content;
+                break;
+              case "text":
+                if (!sawDelta) accumulatedText += event.content;
+                break;
+              case "result":
+                updateSession(
+                  activeSessionId,
+                  "Finalizing memory",
+                  `Memory received · ${formatArchiverBytes(Buffer.byteLength(event.content))}${
+                    event.usage
+                      ? ` · ${event.usage.inputTokens.toLocaleString()} in / ${event.usage.outputTokens.toLocaleString()} out`
+                      : ""
+                  }`,
+                );
+                resultText = event.content;
+                usage = event.usage
+                  ? { input: event.usage.inputTokens, output: event.usage.outputTokens }
+                  : undefined;
+                break;
+              case "error":
+                errorText = event.content;
+                updateSession(
+                  activeSessionId,
+                  "Failed",
+                  `Memory archive failed: ${sessionText(event.content)}`,
+                );
+                break;
+              default:
+                break;
+            }
           }
-        }
-        ok = !errorText;
-        host.config.info({ userId, topicTitle }, "archiver: background turn completed");
-      } catch (err) {
-        errorText = err instanceof Error ? err.message : String(err);
-        updateSession(
-          activeSessionId,
-          "Failed",
-          `Memory archive failed: ${sessionText(errorText)}`,
-        );
-        host.config.warn({ err, userId, topicTitle }, "archiver: background turn failed");
-      } finally {
-        finalText = (accumulatedText.trim() ? accumulatedText : resultText).trim();
-        const completedSession = activeSessions.get(activeSessionId);
-        if (completedSession) {
-          if (finalText) completedSession.output = finalText;
+          ok = !errorText;
+          host.config.info({ userId, topicTitle }, "archiver: background turn completed");
+        } catch (err) {
+          errorText = err instanceof Error ? err.message : String(err);
           updateSession(
             activeSessionId,
-            ok ? "Completed" : "Failed",
-            ok
-              ? `Memory archive completed · ${formatArchiverBytes(Buffer.byteLength(finalText))}`
-              : `Memory archive failed: ${sessionText(errorText) || "unknown error"}`,
+            "Failed",
+            `Memory archive failed: ${sessionText(errorText)}`,
           );
-          completedSession.active = false;
-          completedSession.expiresAt =
-            host.config.now().getTime() + host.config.completedSessionRetentionMs;
-          completedSession.expiryTimer = host.config.schedule(() => {
-            if (activeSessions.get(activeSessionId) === completedSession) {
-              activeSessions.delete(activeSessionId);
-            }
-          }, host.config.completedSessionRetentionMs);
-          host.config.unrefScheduled?.(completedSession.expiryTimer);
+          host.config.warn({ err, userId, topicTitle }, "archiver: background turn failed");
+        } finally {
+          finalText = (accumulatedText.trim() ? accumulatedText : resultText).trim();
+          const completedSession = activeSessions.get(activeSessionId);
+          if (completedSession) {
+            if (finalText) completedSession.output = finalText;
+            updateSession(
+              activeSessionId,
+              ok ? "Completed" : "Failed",
+              ok
+                ? `Memory archive completed · ${formatArchiverBytes(Buffer.byteLength(finalText))}`
+                : `Memory archive failed: ${sessionText(errorText) || "unknown error"}`,
+            );
+            completedSession.active = false;
+            completedSession.expiresAt =
+              host.config.now().getTime() + host.config.completedSessionRetentionMs;
+            completedSession.expiryTimer = host.config.schedule(() => {
+              if (activeSessions.get(activeSessionId) === completedSession) {
+                activeSessions.delete(activeSessionId);
+              }
+            }, host.config.completedSessionRetentionMs);
+            host.config.unrefScheduled?.(completedSession.expiryTimer);
+          }
+          try {
+            params.onSettled?.(ok);
+          } catch (err) {
+            host.config.warn({ err, userId, topicTitle }, "archiver: settlement callback failed");
+          }
         }
-        try {
-          params.onSettled?.(ok);
-        } catch (err) {
-          host.config.warn({ err, userId, topicTitle }, "archiver: settlement callback failed");
+        if (mode === "deleted-topic") {
+          // Roll the deleted topic into the #General memory hub regardless of LLM
+          // success — even a failed distillation should leave a digest breadcrumb.
+          const text = finalText.trimEnd();
+          finalizeGeneralMemory(
+            host,
+            userId,
+            topicTitle,
+            messageCount,
+            startMs,
+            ok,
+            topicId,
+            ok && text ? { text, agent, model, usage } : undefined,
+          );
         }
-      }
-      if (mode === "deleted-topic") {
-        // Roll the deleted topic into the #General memory hub regardless of LLM
-        // success — even a failed distillation should leave a digest breadcrumb.
-        const text = finalText.trimEnd();
-        finalizeGeneralMemory(
-          host,
-          userId,
-          topicTitle,
-          messageCount,
-          startMs,
-          ok,
-          topicId,
-          ok && text ? { text, agent, model, usage } : undefined,
-        );
-      }
-    })();
+      });
+    topicQueues.set(safeTopic, work);
+    void work.finally(() => {
+      if (topicQueues.get(safeTopic) === work) topicQueues.delete(safeTopic);
+    });
     return true;
   };
 
@@ -441,10 +446,9 @@ function distillOneLine(summaryMd: string): string {
 
 /**
  * Locate the summary the archiver turn just wrote. The wiki MCP's
- * `save_wiki_entry` writes `summaries/<date>-<slug>.md`, keyed by topic id
- * when one is available and by title for legacy/ephemeral fallback paths.
+ * `save_wiki_entry` writes `summaries/<date>-<title>[~N].md`.
  */
-function findSummaryFile(
+export function findSummaryFile(
   storage: ArchiverStorageHost,
   topicTitle: string,
   date: string,
@@ -455,11 +459,14 @@ function findSummaryFile(
   if (!storage.fileExists(dir)) return null;
 
   const predicted = join(dir, wikiSummaryFilename(date, topicTitle, topicId));
-  if (storage.fileExists(predicted)) return predicted;
+  if (storage.fileExists(predicted) && storage.fileModifiedAt(predicted) >= sinceMs)
+    return predicted;
 
   let best: { path: string; mtime: number } | null = null;
   for (const f of storage.listDirectory(dir)) {
-    if (!f.endsWith(".md")) continue;
+    if (!f.startsWith(`${date}-`) || !isTopicSummaryFile(f, topicId ?? "", topicTitle)) {
+      continue;
+    }
     const p = join(dir, f);
     try {
       const m = storage.fileModifiedAt(p);

@@ -4,24 +4,16 @@ export function wikiSummarySlug(value: string): string {
   return value.replaceAll(/[^a-zA-Z0-9가-힣_-]+/g, "-").slice(0, 120) || "_";
 }
 
-export function isEphemeralWikiTopicId(topicId: string | undefined): boolean {
-  return topicId?.startsWith("__") ?? false;
-}
-
 /**
- * Resolve a readable, collision-safe storage slug. Stable topic ids remain in
- * the suffix so equal titles and slug collisions cannot overwrite each other.
+ * Wiki memory is a title-keyed namespace. Reopening or recreating a room with
+ * the same title must continue the same accumulated topic memory.
  */
-export function wikiSummaryStorageSlug(rawTopic: string, topicId?: string): string {
-  const titleSlug = wikiSummarySlug(rawTopic);
-  if (!topicId || isEphemeralWikiTopicId(topicId)) return titleSlug;
-  const idSlug = wikiSummarySlug(topicId);
-  return titleSlug === idSlug ? idSlug : `${titleSlug}--${idSlug}`;
+export function wikiSummaryStorageSlug(rawTopic: string, _topicId?: string): string {
+  return wikiSummarySlug(rawTopic);
 }
 
 /**
- * Resolve the canonical filename key for a topic brief mirror. SQLite remains
- * keyed by the full topic id; the title prefix only makes the mirror readable.
+ * Resolve the canonical filename key for a topic brief.
  */
 export function wikiBriefStorageKey(rawTopic: string, topicId?: string): string {
   return wikiSummaryStorageSlug(rawTopic, topicId);
@@ -34,20 +26,27 @@ export function wikiSummaryFilename(date: string, rawTopic: string, topicId?: st
 export function isTopicSummaryFile(
   filename: string,
   topicId: string,
-  legacyTopicTitle?: string,
+  topicTitle?: string,
 ): boolean {
   if (!WIKI_SUMMARY_DATE_PREFIX.test(filename)) return false;
+  if (topicTitle) {
+    const titleSlug = wikiSummarySlug(topicTitle);
+    if (
+      new RegExp(`^\\d{4}-\\d{2}-\\d{2}-${escapeRegExp(titleSlug)}(?:~\\d+)?\\.md$`).test(filename)
+    ) {
+      return true;
+    }
+  }
   const idSlug = wikiSummarySlug(topicId);
-  if (filename.endsWith(`--${idSlug}.md`) || filename.endsWith(`-${idSlug}.md`)) return true;
-  return legacyTopicTitle ? filename.endsWith(`-${wikiSummarySlug(legacyTopicTitle)}.md`) : false;
+  return filename.endsWith(`--${idSlug}.md`) || filename.endsWith(`-${idSlug}.md`);
 }
 
-export function isTopicBriefFile(
-  filename: string,
-  topicId: string,
-  legacyTopicTitle?: string,
-): boolean {
+export function isTopicBriefFile(filename: string, topicId: string, topicTitle?: string): boolean {
+  if (topicTitle && filename === `${wikiSummarySlug(topicTitle)}.md`) return true;
   const idSlug = wikiSummarySlug(topicId);
-  if (filename === `${idSlug}.md` || filename.endsWith(`--${idSlug}.md`)) return true;
-  return legacyTopicTitle ? filename === `${wikiSummarySlug(legacyTopicTitle)}.md` : false;
+  return filename === `${idSlug}.md` || filename.endsWith(`--${idSlug}.md`);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

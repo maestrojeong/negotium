@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   type ArchiverHost,
+  type ArchiverStorageHost,
   createArchiverRuntime,
+  findSummaryFile,
   type RunArchiverTurnParams,
 } from "#agents/archiver";
 import type { AgentQueryOptions, UnifiedEvent } from "#types";
@@ -97,6 +99,62 @@ function runAndSettle(
 }
 
 describe("archiver runtime factory", () => {
+  test("finds only the current topic's newly numbered summary", () => {
+    const modified = new Map([
+      ["/wiki/summaries/2026-07-29-other-topic.md", 300],
+      ["/wiki/summaries/2026-07-29-Factory-Test~2.md", 200],
+      ["/wiki/summaries/2026-07-29-Factory-Test.md", 50],
+    ]);
+    const storage = {
+      getWikiDir: () => "/wiki",
+      fileExists: (path: string) => path === "/wiki/summaries",
+      listDirectory: () => [
+        "2026-07-29-other-topic.md",
+        "2026-07-29-Factory-Test~2.md",
+        "2026-07-29-Factory-Test.md",
+      ],
+      fileModifiedAt: (path: string) => modified.get(path) ?? 0,
+    } as unknown as ArchiverStorageHost;
+
+    expect(findSummaryFile(storage, "Factory Test", "2026-07-29", 100, "topic-id")).toBe(
+      "/wiki/summaries/2026-07-29-Factory-Test~2.md",
+    );
+  });
+
+  test("serializes archiver turns that share a title", async () => {
+    let runCount = 0;
+    let releaseFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const fixture = createHost(() => {
+      runCount += 1;
+      const current = runCount;
+      return (async function* () {
+        if (current === 1) await firstGate;
+        yield { type: "result", content: `run-${current}`, stopReason: "end_turn" };
+      })();
+    });
+    const runtime = createArchiverRuntime(fixture.host);
+    const params = {
+      userId: "owner",
+      topicId: "topic-id",
+      topicTitle: "Shared Title",
+      archivePath: "/archive/messages.jsonl",
+      messageCount: 7,
+      mode: "active-topic" as const,
+    };
+
+    const first = runAndSettle(runtime, params);
+    const second = runAndSettle(runtime, params);
+    await Bun.sleep(0);
+    expect(runCount).toBe(1);
+
+    releaseFirst?.();
+    await Promise.all([first, second]);
+    expect(runCount).toBe(2);
+  });
+
   test("owns isolated session lifecycle, prompt cache, and agent event reduction", async () => {
     const fixture = createHost(async function* () {
       yield { type: "session", sessionId: "provider-session" };

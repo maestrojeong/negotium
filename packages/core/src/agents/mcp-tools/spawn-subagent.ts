@@ -206,19 +206,24 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
     const accessible = host.storage
       .listTopics()
       .filter((topic) => topic.participants.some((participant) => participant.userId === userId));
-    const matches = accessible.filter((topic) => {
-      const [canonicalFilename, legacyFilename] = host.config.memoryFilenames(topic);
-      return (
-        key === topic.id ||
-        key.toLowerCase() === topic.title.toLowerCase() ||
-        key === canonicalFilename ||
-        key === legacyFilename
-      );
-    });
+    const exactId = accessible.find((topic) => topic.id === key);
+    const matches = exactId
+      ? [exactId]
+      : accessible.filter((topic) => {
+          const [canonicalFilename, legacyFilename] = host.config.memoryFilenames(topic);
+          return (
+            key.toLowerCase() === topic.title.toLowerCase() ||
+            key === canonicalFilename ||
+            key === legacyFilename
+          );
+        });
     if (matches.length === 0) {
       return { error: `Error: memory topic '${selection}' was not found or is not accessible.` };
     }
-    if (matches.length > 1) {
+    const canonicalNamespaces = new Set(
+      matches.map((topic) => host.config.memoryFilenames(topic)[0]),
+    );
+    if (canonicalNamespaces.size > 1) {
       return {
         error: `Error: memory topic '${selection}' is ambiguous; use its topic id or canonical topic/*.md filename.`,
       };
@@ -810,7 +815,8 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
       if (!topic.participants.some((participant) => participant.userId === ctx.userId)) continue;
       const origin = host.storage.getTopicMemoryOrigin(topic.id) ?? topic;
       if (!origin.participants.some((participant) => participant.userId === ctx.userId)) continue;
-      sources.set(origin.id, origin.title);
+      const [canonicalFilename] = host.config.memoryFilenames(origin);
+      sources.set(canonicalFilename, origin.title);
     }
     return {
       names: [...sources.values()].sort((left, right) =>

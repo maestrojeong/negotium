@@ -2,32 +2,33 @@ import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { deleteTopicBrief, resolveTopicBrief, setTopicBrief } from "#storage/api-topic-brief";
 
-test("resolveTopicBrief falls back to a legacy title key", () => {
+test("resolveTopicBrief falls back to a legacy topic id", () => {
   const topicId = randomUUID();
-  const legacyTitle = `legacy-${randomUUID()}`;
-  setTopicBrief(legacyTitle, { briefMd: "legacy memory" });
+  const title = `shared title ${randomUUID()}`;
+  setTopicBrief(topicId, { briefMd: "legacy id memory" });
 
   try {
-    const resolved = resolveTopicBrief(topicId, legacyTitle);
-    expect(resolved?.storageKey).toBe(legacyTitle);
-    expect(resolved?.brief.briefMd).toBe("legacy memory");
+    const resolved = resolveTopicBrief(topicId, title);
+    expect(resolved?.storageKey).toBe(topicId);
+    expect(resolved?.brief.briefMd).toBe("legacy id memory");
   } finally {
-    deleteTopicBrief(legacyTitle);
+    deleteTopicBrief(topicId);
   }
 });
 
-test("resolveTopicBrief prefers the current topic id", () => {
+test("resolveTopicBrief prefers the shared title key", () => {
   const topicId = randomUUID();
-  const legacyTitle = `legacy-${randomUUID()}`;
-  setTopicBrief(topicId, { briefMd: "current memory" });
-  setTopicBrief(legacyTitle, { briefMd: "legacy memory" });
+  const title = `shared title ${randomUUID()}`;
+  const titleKey = title.replaceAll(" ", "-");
+  setTopicBrief(topicId, { briefMd: "legacy id memory" });
+  setTopicBrief(titleKey, { briefMd: "shared title memory" });
 
   try {
-    const resolved = resolveTopicBrief(topicId, legacyTitle);
-    expect(resolved?.storageKey).toBe(topicId);
-    expect(resolved?.brief.briefMd).toBe("current memory");
+    const resolved = resolveTopicBrief(topicId, title);
+    expect(resolved?.storageKey).toBe(titleKey);
+    expect(resolved?.brief.briefMd).toBe("shared title memory");
   } finally {
     deleteTopicBrief(topicId);
-    deleteTopicBrief(legacyTitle);
+    deleteTopicBrief(titleKey);
   }
 });

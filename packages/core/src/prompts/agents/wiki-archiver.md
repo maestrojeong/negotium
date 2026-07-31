@@ -21,7 +21,7 @@ content directories:
 wiki/
   summaries/<date>-<topic>.md   <- session summaries (write-once)
   articles/<slug>.md            <- curated concept pages (mergeable)
-  topic/<topic>.md              <- topic brief (overwritten each session)
+  topic/<topic>.md              <- accumulated topic brief (one file per title)
   article-index.md              <- catalog: articles + summaries
   topic-index.md                <- catalog: topic briefs only
 ```
@@ -33,41 +33,45 @@ wiki/
    - `Read(archive_path, offset: 1, limit: 2000)` 로 첫 청크를 읽는다.
    - 결과 끝에 `lines X-Y of N` 같은 truncation 안내가 보이면 `offset = Y + 1` 로 다음 청크를 호출한다. 안내가 없거나 `Y == N` 이면 끝.
    - 매 청크마다 핵심 항목(decisions / facts / tools / files / patterns 등)을 메모리 buffer(짧은 bullet 리스트)에 **누적만** 한다.
-   - **청크마다 wiki write / save / index_upsert 를 호출하지 말 것.** 모든 청크를 다 읽은 다음, 누적된 buffer를 기준으로 step 3 이하를 단 한 번 실행한다. 매 청크마다 저장하면 같은 summary 파일이 마지막 청크 내용만 남도록 덮어써지고, index_upsert 도 중복 호출이 누적된다.
+   - **청크마다 wiki write / save / index_upsert 를 호출하지 말 것.** 모든 청크를 다 읽은 다음, 누적된 buffer를 기준으로 step 3 이하를 단 한 번 실행한다. 매 청크마다 저장하면 같은 세션이 여러 summary 파일로 쪼개지고, index_upsert 도 중복 호출이 누적된다.
    - buffer가 비대해지면(예: 3000+ bullets, 청크 ≥ 5개) 이전 청크의 사소한 항목은 압축·삭제하고 결정·사실·패턴의 핵심만 유지하라. 마지막 청크까지 cross-reference 보존이 우선이다.
 
 2. **Extract** key information (decisions, facts, patterns, tools — skip greetings, debug noise, repeated questions).
    - `topic` = the session name from the prompt (e.g. `세션 "dev"` → topic is `dev`)
    - If `sent_files:` is in the prompt, include those entries under `## Files Sent`
-   - If the session yielded **no extractable substance** (pure debug, ≤2 short exchanges, all greeting), STOP after step 3 with a single-line summary entry. Do not pollute articles/ or indexes.
-3. **Save the session summary** via `mcp__wiki__save_wiki_entry(topic, content)`.
+   - If the session yielded **no extractable substance** (pure debug, ≤2 short exchanges, all greeting), save only a single-line immutable summary via `save_wiki_entry`, then STOP. Do not modify the accumulated topic brief, articles, or indexes.
+3. **Update the accumulated topic brief first** at `wiki/topic/<topic>.md`:
+   - Read the existing brief if present.
+   - Merge the new session's durable facts, decisions, preferences, patterns, current state, and
+     useful query hints into it. Preserve still-valid prior experience; remove only facts that the
+     new session explicitly supersedes.
+   - Keep one canonical file per topic title. Never add a UUID or room id to the filename.
+   - Write a fresh compact brief using the **brief format** below.
+4. **Save the immutable session summary** via `mcp__wiki__save_wiki_entry(topic, content)`.
    The MCP handles file naming + dedup → returns the saved path (e.g. `wiki/summaries/2026-05-08-dev.md`).
-   **This also auto-updates the SQLite-backed topic brief** (`api_topic_brief` table) with `latest_summary_md` — no separate step 5 needed for the summary portion.
+   This also mirrors the accumulated title brief from step 3 into SQLite and records
+   `latest_summary_md`.
    Use the **summary format** below.
-4. **Update articles** — for each genuinely reusable concept/decision/tool/pattern:
+5. **Update articles** — for each genuinely reusable concept/decision/tool/pattern:
    - Glob existing articles: `Glob(wiki/articles/*.md)`
    - If a matching article exists (by slug or topic): Read it, then Write merged content.
      - **Preserve frontmatter `date:` (first-seen) and `status:`.** Only refresh `updated:`.
      - **Preserve manually written body sections.** Only append/update what the session adds.
    - If new: Write `wiki/articles/<slug>.md` using the **article format** below.
    - Skip session-specific noise. If nothing qualifies, no articles change — that's fine.
-5. **Update the topic brief** at `wiki/topic/<topic>.md`:
-   - Read the existing brief if present
-   - Write a fresh brief using the **brief format** below (overwrite — this file is regenerated each session)
-   - Note: `save_wiki_entry` in step 3 handles the SQLite-backed `latest_summary_md`. This step handles the persistent `brief_md` file which is the canonical long-form topic brief for system prompt injection (R2 shared model).
 6. **Update the dual indexes via `mcp__wiki__index_upsert` — one call per entry.**
-   The MCP handles in-place updates, section insertion, the `created` vs `updated` date split, and atomic file writes. Do **not** Read/Write the index files manually.
+   The MCP handles in-place updates, section insertion, and the `created` vs `updated` date split. Do **not** Read/Write the index files manually.
 
-   **For each new or updated article** (from step 4):
+   **For each new or updated article** (from step 5):
    - First, scan `wiki/article-index.md` once with `Read` to see existing `## ...` headers, then pick the closest matching section. If no section fits, choose a short Korean or English domain title (e.g. `사업 / 커리어`, `Physical AI / Robotics`) — the MCP will create the new H2 above `## Source Summaries`.
    - Call: `index_upsert(slug=<article-slug>, description=<one-line>, kind="article", section=<chosen-header-without-"## ">)`
    - The MCP preserves the original `created` date on update — do not pass it.
 
-   **For the new session summary** (from step 3):
+   **For the new session summary** (from step 4):
    - Call: `index_upsert(slug=<summary-slug>, description=<one-line>, kind="summary")`
    - Goes under `## Source Summaries` automatically.
 
-   **For this session's topic brief** (from step 5):
+   **For this session's topic brief** (from step 3):
    - Call: `index_upsert(slug=<topic>, description=<one-line summary of recent work>, kind="topic")`
    - Pass the bare topic name (no `topic/` prefix); the MCP wikilinks it as `[[topic/<topic>]]`.
 

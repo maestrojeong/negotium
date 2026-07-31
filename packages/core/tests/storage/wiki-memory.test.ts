@@ -11,6 +11,20 @@ afterAll(() => {
 });
 
 describe("getTopicMemoryFilePaths", () => {
+  test("returns the newest numbered title summary instead of the base file", async () => {
+    const wikiDir = join(workspaceDir, "wiki");
+    mkdirSync(join(wikiDir, "topic"), { recursive: true });
+    mkdirSync(join(wikiDir, "summaries"), { recursive: true });
+    writeFileSync(join(wikiDir, "topic", "topic.md"), "brief");
+    writeFileSync(join(wikiDir, "summaries", "2026-07-30-topic.md"), "first");
+    await Bun.sleep(5);
+    writeFileSync(join(wikiDir, "summaries", "2026-07-30-topic~2.md"), "second");
+
+    expect(getTopicMemoryFilePaths(42, "Topic", undefined, workspaceDir).latestSummaryFile).toBe(
+      join(wikiDir, "summaries", "2026-07-30-topic~2.md"),
+    );
+  });
+
   test("checks fork origin archives when a fork inherits parent wiki memory", () => {
     const wikiDir = join(workspaceDir, "wiki");
     mkdirSync(join(wikiDir, "topic"), { recursive: true });

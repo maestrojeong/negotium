@@ -189,35 +189,67 @@ function appendAskReplyMessage(
   return message;
 }
 
-function resolveWikiMirrorPath(
+export function resolveWikiMirrorPath(
   directory: string,
   preferredFilename: string,
-  matchesStableId: (filename: string) => boolean,
-  matchesLegacyTitle: (filename: string) => boolean,
+  matchesLegacyId: (filename: string) => boolean,
+  matchesTitle: (filename: string) => boolean,
+  preferExact = true,
 ): string {
   const preferred = join(directory, preferredFilename);
-  if (existsSync(preferred)) return preferred;
+  if (preferExact && existsSync(preferred)) return preferred;
 
-  let newestStableId: { path: string; mtimeMs: number } | null = null;
-  let newestLegacyTitle: { path: string; mtimeMs: number } | null = null;
+  let newestLegacyId: { path: string; mtimeMs: number } | null = null;
+  let newestTitle: { path: string; mtimeMs: number } | null = null;
   try {
     for (const filename of readdirSync(directory)) {
-      const stableIdMatch = matchesStableId(filename);
-      if (!stableIdMatch && !matchesLegacyTitle(filename)) continue;
+      const titleMatch = matchesTitle(filename);
+      const legacyIdMatch = !titleMatch && matchesLegacyId(filename);
+      if (!titleMatch && !legacyIdMatch) continue;
       const path = join(directory, filename);
       const mtimeMs = statSync(path).mtimeMs;
-      if (stableIdMatch) {
-        if (!newestStableId || mtimeMs > newestStableId.mtimeMs) {
-          newestStableId = { path, mtimeMs };
+      if (titleMatch) {
+        if (!newestTitle || mtimeMs > newestTitle.mtimeMs) {
+          newestTitle = { path, mtimeMs };
         }
-      } else if (!newestLegacyTitle || mtimeMs > newestLegacyTitle.mtimeMs) {
-        newestLegacyTitle = { path, mtimeMs };
+      } else if (!newestLegacyId || mtimeMs > newestLegacyId.mtimeMs) {
+        newestLegacyId = { path, mtimeMs };
       }
     }
   } catch {
     // The mirror is best-effort; callers can still use the SQLite brief.
   }
-  return newestStableId?.path ?? newestLegacyTitle?.path ?? preferred;
+  return newestTitle?.path ?? newestLegacyId?.path ?? preferred;
+}
+
+export function resolveWikiMemoryMirror(
+  wikiDir: string,
+  topicId: string,
+  topicTitle: string,
+): {
+  briefFile: string;
+  hasBriefFile: boolean;
+  latestSummaryFile: string | null;
+} {
+  const briefFile = resolveWikiMirrorPath(
+    join(wikiDir, "topic"),
+    `${wikiBriefStorageKey(topicTitle, topicId)}.md`,
+    (filename) => isTopicBriefFile(filename, topicId),
+    (filename) => isTopicBriefFile(filename, topicId, topicTitle),
+  );
+  const hasBriefFile = existsSync(briefFile) && statSync(briefFile).isFile();
+  const latestSummaryCandidate = resolveWikiMirrorPath(
+    join(wikiDir, "summaries"),
+    `__missing__-${wikiSummaryFilename("0000-00-00", topicTitle, topicId)}`,
+    (filename) => isTopicSummaryFile(filename, topicId),
+    (filename) => isTopicSummaryFile(filename, topicId, topicTitle),
+    false,
+  );
+  const latestSummaryFile =
+    existsSync(latestSummaryCandidate) && statSync(latestSummaryCandidate).isFile()
+      ? latestSummaryCandidate
+      : null;
+  return { briefFile, hasBriefFile, latestSummaryFile };
 }
 
 export async function streamAgentEvents(
@@ -1280,36 +1312,22 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   if (!isMentionOnlyChannel) {
     try {
       const resolvedBrief = resolveTopicBrief(memoryTopic.id, memoryTopic.title);
-      if (resolvedBrief) {
-        const { brief } = resolvedBrief;
-        // #General is the workspace memory hub: its brief is the rolling digest the
-        // archiver accumulates across ALL archived topics, and its files live in the
-        // SHARED wiki root (getSharedWikiDir), not this topic's per-room workspace.
-        const wikiDir = getSharedWikiDir();
-        const briefFile = resolveWikiMirrorPath(
-          join(wikiDir, "topic"),
-          `${wikiBriefStorageKey(memoryTopic.title, memoryTopic.id)}.md`,
-          (filename) => isTopicBriefFile(filename, memoryTopic.id),
-          (filename) => isTopicBriefFile(filename, memoryTopic.id, memoryTopic.title),
-        );
-        const latestSummaryFile = brief.summaryDate
-          ? resolveWikiMirrorPath(
-              join(wikiDir, "summaries"),
-              wikiSummaryFilename(brief.summaryDate, memoryTopic.title, memoryTopic.id),
-              (filename) =>
-                filename.startsWith(`${brief.summaryDate}-`) &&
-                isTopicSummaryFile(filename, memoryTopic.id),
-              (filename) =>
-                filename.startsWith(`${brief.summaryDate}-`) &&
-                isTopicSummaryFile(filename, memoryTopic.id, memoryTopic.title),
-            )
-          : null;
+      // #General is the workspace memory hub: its brief is the rolling digest the
+      // archiver accumulates across ALL archived topics, and its files live in the
+      // SHARED wiki root (getSharedWikiDir), not this topic's per-room workspace.
+      const wikiDir = getSharedWikiDir();
+      const { briefFile, hasBriefFile, latestSummaryFile } = resolveWikiMemoryMirror(
+        wikiDir,
+        memoryTopic.id,
+        memoryTopic.title,
+      );
+      if (resolvedBrief || hasBriefFile || latestSummaryFile) {
         systemPrompt += buildMemoryPromptSection({
           briefFile,
           wikiDir,
-          hasFiles: true,
+          hasFiles: hasBriefFile,
           latestSummaryFile,
-          hasArchive: Boolean(brief.latestSummaryMd),
+          hasArchive: Boolean(resolvedBrief?.brief.latestSummaryMd || latestSummaryFile),
           isManager,
         });
       }

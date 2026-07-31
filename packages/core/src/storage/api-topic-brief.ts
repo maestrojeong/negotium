@@ -1,10 +1,11 @@
-// Persistent per-topic wiki brief store, backed by shared SQLite.
-// Topic briefs are keyed by topicId and shared across participants.
+// Persistent title-scoped wiki brief store, backed by shared SQLite.
+// Topic IDs remain readable as a migration fallback for older rows.
 //
 // Briefs are injected into AI-invited topic turns at session start. The
 // wiki-archiver updates them post-session.
 import { db } from "#storage/forum-db";
 import { registerStorageSchemaInitializer } from "#storage/storage-host";
+import { wikiSummarySlug } from "#storage/wiki-summary-names";
 
 registerStorageSchemaInitializer((database) => {
   database.exec(`
@@ -49,27 +50,30 @@ function rowToBrief(r: BriefRow): TopicBrief {
 }
 
 /**
- * Get the topic brief for a given topicId. Returns null when no brief
+ * Get the topic brief for a storage key. Returns null when no brief
  * has been written yet (fresh topic, no archiver run).
  */
-export function getTopicBrief(topicId: string): TopicBrief | null {
+export function getTopicBrief(storageKey: string): TopicBrief | null {
   const row = db
     .query(
       "SELECT topic_id, brief_md, latest_summary_md, summary_date, updated_at FROM api_topic_brief WHERE topic_id = ?",
     )
-    .get(topicId) as BriefRow | null;
+    .get(storageKey) as BriefRow | null;
   if (!row) return null;
   return rowToBrief(row);
 }
 
-/** Resolve current id-keyed briefs while retaining legacy title-keyed wiki memory. */
+/** Resolve title-keyed memory first, retaining id-keyed rows as a migration fallback. */
 export function resolveTopicBrief(
   topicId: string,
   legacyTitle: string,
 ): { brief: TopicBrief; storageKey: string } | null {
+  const titleKey = wikiSummarySlug(legacyTitle);
+  const titleBrief = getTopicBrief(titleKey);
+  if (titleBrief) return { brief: titleBrief, storageKey: titleKey };
   const current = getTopicBrief(topicId);
   if (current) return { brief: current, storageKey: topicId };
-  const legacy = getTopicBrief(legacyTitle);
+  const legacy = titleKey === legacyTitle ? null : getTopicBrief(legacyTitle);
   return legacy ? { brief: legacy, storageKey: legacyTitle } : null;
 }
 

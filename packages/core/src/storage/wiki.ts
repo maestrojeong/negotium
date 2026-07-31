@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { sanitizeTopicName } from "#security/sanitize";
 import { resolveStorageSharedWikiDir, resolveStorageWorkspaceDir } from "#storage/storage-host";
@@ -25,11 +25,14 @@ function findLatestSummaryFile(wikiDir: string, safeTopic: string): string | nul
     .filter(
       (f) =>
         f.endsWith(".md") &&
-        f.match(new RegExp(`^\\d{4}-\\d{2}-\\d{2}-${safeTopic}(\\.md|-\\d+\\.md)$`)) &&
+        f.match(new RegExp(`^\\d{4}-\\d{2}-\\d{2}-${safeTopic}(\\.md|~\\d+\\.md)$`)) &&
         !f.endsWith("-sent-files.md"),
     )
-    .sort()
-    .reverse();
+    .sort((left, right) => {
+      const mtimeDelta =
+        statSync(join(summariesDir, right)).mtimeMs - statSync(join(summariesDir, left)).mtimeMs;
+      return mtimeDelta || right.localeCompare(left, undefined, { numeric: true });
+    });
   return files.length > 0 ? join(summariesDir, files[0]) : null;
 }
 

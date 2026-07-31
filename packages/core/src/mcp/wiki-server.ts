@@ -1,7 +1,19 @@
 #!/usr/bin/env bun
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { argv, exit } from "node:process";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -37,7 +49,11 @@ export interface WikiMcpHost {
   resolveTopicBrief?(selection: string, userId: string): WikiTopicBrief | null;
   setTopicBrief?(
     topicId: string,
-    fields: { briefMd?: string; latestSummaryMd?: string; summaryDate?: string },
+    fields: {
+      briefMd?: string;
+      latestSummaryMd?: string;
+      summaryDate?: string;
+    },
   ): void;
 }
 
@@ -69,7 +85,7 @@ export function resolveAccessibleWikiTopicBrief(
   const idMatch = accessible.find((topic) => topic.id === selection);
   if (idMatch) return resolveBrief(idMatch.id, idMatch.title)?.brief ?? null;
   const matches = accessible.filter((topic) => topic.title.trim().toLowerCase() === normalized);
-  if (matches.length !== 1) return null;
+  if (matches.length === 0) return null;
   const topic = matches[0]!;
   return resolveBrief(topic.id, topic.title)?.brief ?? null;
 }
@@ -93,7 +109,11 @@ function runtime(): WikiRuntime {
   return current;
 }
 
-function parseArgv(): { userId: string; topicId?: string; surface: WikiSurface } {
+function parseArgv(): {
+  userId: string;
+  topicId?: string;
+  surface: WikiSurface;
+} {
   let userId = "default";
   let topicId: string | undefined;
   let surface: WikiSurface = "all";
@@ -113,6 +133,118 @@ function parseArgv(): { userId: string; topicId?: string; surface: WikiSurface }
 
 function ensureDir(dir: string): void {
   mkdirSync(dir, { recursive: true });
+}
+
+const FILE_LOCK_WAIT_MS = 10;
+const FILE_LOCK_TIMEOUT_MS = 5_000;
+const FILE_LOCK_STALE_MS = 30_000;
+const lockWaitArray = new Int32Array(new SharedArrayBuffer(4));
+
+function acquireRecoveryGuard(lockPath: string): () => void {
+  const guardPath = `${lockPath}.reclaim`;
+  const ownerToken = randomUUID();
+  const deadline = Date.now() + FILE_LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      const fd = openSync(guardPath, "wx");
+      try {
+        writeFileSync(fd, ownerToken, "utf-8");
+      } catch (error) {
+        closeSync(fd);
+        try {
+          unlinkSync(guardPath);
+        } catch {
+          // Preserve the original write failure.
+        }
+        throw error;
+      }
+      return () => {
+        closeSync(fd);
+        try {
+          if (readFileSync(guardPath, "utf-8") === ownerToken) unlinkSync(guardPath);
+        } catch {
+          // The guard is already gone.
+        }
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for wiki lock recovery guard: ${basename(lockPath)}`);
+      }
+      Atomics.wait(lockWaitArray, 0, 0, FILE_LOCK_WAIT_MS);
+    }
+  }
+}
+
+function acquireFileLock(path: string): () => void {
+  const lockPath = `${path}.lock`;
+  const ownerToken = randomUUID();
+  const deadline = Date.now() + FILE_LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      const fd = openSync(lockPath, "wx");
+      try {
+        writeFileSync(fd, ownerToken, "utf-8");
+      } catch (error) {
+        closeSync(fd);
+        try {
+          unlinkSync(lockPath);
+        } catch {
+          // Preserve the original write failure.
+        }
+        throw error;
+      }
+      return () => {
+        closeSync(fd);
+        const releaseGuard = acquireRecoveryGuard(lockPath);
+        try {
+          if (readFileSync(lockPath, "utf-8") === ownerToken) unlinkSync(lockPath);
+        } catch {
+          // A stale-lock recovery may already have replaced it.
+        } finally {
+          releaseGuard();
+        }
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const releaseGuard = acquireRecoveryGuard(lockPath);
+      try {
+        try {
+          const staleToken = readFileSync(lockPath, "utf-8");
+          if (
+            Date.now() - statSync(lockPath).mtimeMs > FILE_LOCK_STALE_MS &&
+            readFileSync(lockPath, "utf-8") === staleToken
+          ) {
+            unlinkSync(lockPath);
+            continue;
+          }
+        } catch {
+          continue;
+        }
+      } finally {
+        releaseGuard();
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for wiki file lock: ${basename(path)}`);
+      }
+      Atomics.wait(lockWaitArray, 0, 0, FILE_LOCK_WAIT_MS);
+    }
+  }
+}
+
+function atomicWriteFile(path: string, content: string): void {
+  const temporaryPath = `${path}.tmp.${process.pid}.${Date.now()}`;
+  writeFileSync(temporaryPath, content, "utf-8");
+  try {
+    renameSync(temporaryPath, path);
+  } catch (error) {
+    try {
+      unlinkSync(temporaryPath);
+    } catch {
+      // Best-effort cleanup.
+    }
+    throw error;
+  }
 }
 
 function safeExt<T, K extends string = string>(
@@ -176,7 +308,11 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
           const fp = join(dir, entry.name);
           try {
             const text = readFileSync(fp, "utf-8");
-            scored.push({ score: scoreMatch(text), path: `${label}/${entry.name}`, text });
+            scored.push({
+              score: scoreMatch(text),
+              path: `${label}/${entry.name}`,
+              text,
+            });
           } catch {
             /* skip unreadable */
           }
@@ -244,7 +380,12 @@ function wikiTopicBrief(args: Record<string, unknown>): CallToolResult {
   );
   if (!rawTopic) {
     return {
-      content: [{ type: "text", text: "No topic specified (provide --topic-id or topic arg)." }],
+      content: [
+        {
+          type: "text",
+          text: "No topic specified (provide --topic-id or topic arg).",
+        },
+      ],
     };
   }
 
@@ -255,7 +396,9 @@ function wikiTopicBrief(args: Record<string, unknown>): CallToolResult {
         ? resolveTopicBrief(rawTopic, runtime().userId)
         : getTopicBrief!(rawTopic);
       if (!brief) {
-        return { content: [{ type: "text", text: `No brief found for topic: ${rawTopic}` }] };
+        return {
+          content: [{ type: "text", text: `No brief found for topic: ${rawTopic}` }],
+        };
       }
       const lines = [
         `# Topic Brief: ${topicNameFrom(rawTopic)}`,
@@ -270,11 +413,15 @@ function wikiTopicBrief(args: Record<string, unknown>): CallToolResult {
       }
       return { content: [{ type: "text", text: lines.join("\n") }] };
     } catch {
-      return { content: [{ type: "text", text: `Could not read topic brief for: ${rawTopic}` }] };
+      return {
+        content: [{ type: "text", text: `Could not read topic brief for: ${rawTopic}` }],
+      };
     }
   }
 
-  return { content: [{ type: "text", text: `No topic brief found for: ${rawTopic}` }] };
+  return {
+    content: [{ type: "text", text: `No topic brief found for: ${rawTopic}` }],
+  };
 }
 
 function wikiLastConversation(args: Record<string, unknown>): CallToolResult {
@@ -311,7 +458,9 @@ function wikiLastConversation(args: Record<string, unknown>): CallToolResult {
         .reverse();
     }
     if (files.length === 0) {
-      return { content: [{ type: "text", text: `No archive found for topic: ${rawTopic}` }] };
+      return {
+        content: [{ type: "text", text: `No archive found for topic: ${rawTopic}` }],
+      };
     }
 
     // Read most recent archive file
@@ -348,7 +497,11 @@ function wikiLastConversation(args: Record<string, unknown>): CallToolResult {
         try {
           // Archives are written by archiveTopicMessages → TopicArchiveTranscriptRecord:
           // { type: "message", role: "user"|"assistant"|"system", text: "..." }
-          const record = JSON.parse(line) as { type: string; role?: string; text?: string };
+          const record = JSON.parse(line) as {
+            type: string;
+            role?: string;
+            text?: string;
+          };
           if (record.type === "message" && record.role === "user") {
             flush();
             currentUser = record.text ?? "";
@@ -362,7 +515,9 @@ function wikiLastConversation(args: Record<string, unknown>): CallToolResult {
       flush();
 
       if (turns.length === 0) {
-        return { content: [{ type: "text", text: `Archive file found but no valid entries.` }] };
+        return {
+          content: [{ type: "text", text: `Archive file found but no valid entries.` }],
+        };
       }
 
       const recent = turns.slice(-maxTurns);
@@ -375,10 +530,14 @@ function wikiLastConversation(args: Record<string, unknown>): CallToolResult {
         ],
       };
     } catch {
-      return { content: [{ type: "text", text: `Could not read archive for: ${rawTopic}` }] };
+      return {
+        content: [{ type: "text", text: `Could not read archive for: ${rawTopic}` }],
+      };
     }
   } catch {
-    return { content: [{ type: "text", text: `No archive found for: ${rawTopic}` }] };
+    return {
+      content: [{ type: "text", text: `No archive found for: ${rawTopic}` }],
+    };
   }
 }
 
@@ -391,7 +550,9 @@ function skillQuery(args: Record<string, unknown>): CallToolResult {
   const matches: { name: string; path: string; desc: string }[] = [];
 
   try {
-    for (const entry of readdirSync(runtime().skillsDir, { withFileTypes: true })) {
+    for (const entry of readdirSync(runtime().skillsDir, {
+      withFileTypes: true,
+    })) {
       if (!entry.isDirectory()) continue;
       const skillFile = resolve(runtime().skillsDir, entry.name, "skill.md");
       try {
@@ -473,7 +634,14 @@ function skillSave(args: Record<string, unknown>): CallToolResult {
 
   writeFileSync(skillPath, finalContent, "utf-8");
 
-  return { content: [{ type: "text", text: `Skill "${name}" saved at skills/${name}/skill.md` }] };
+  return {
+    content: [
+      {
+        type: "text",
+        text: `Skill "${name}" saved at skills/${name}/skill.md`,
+      },
+    ],
+  };
 }
 
 function saveWikiEntry(args: Record<string, unknown>): CallToolResult {
@@ -486,44 +654,44 @@ function saveWikiEntry(args: Record<string, unknown>): CallToolResult {
   const now = new Date();
   const dateStr = now.toISOString().slice(0, 10);
   const topicId = runtime().topicId;
-  const summaryName = wikiSummaryFilename(dateStr, rawTopic, topicId);
-  // Human-readable title + stable id for on-disk mirrors. SQLite remains keyed
-  // by the canonical topic id below.
   const fileSlug = wikiBriefStorageKey(rawTopic, topicId);
-  const name = fileSlug;
 
   // Save to summaries directory
   ensureDir(runtime().summariesDir);
-  const summaryFile = resolve(runtime().summariesDir, summaryName);
-  writeFileSync(summaryFile, content, "utf-8");
-
-  // Also update SQLite brief if in topicId mode
-  const setTopicBrief = runtime().host.setTopicBrief;
-  if (topicId && setTopicBrief) {
+  const baseSummaryName = wikiSummaryFilename(dateStr, rawTopic, topicId);
+  let summaryName = baseSummaryName;
+  let counter = 1;
+  while (true) {
     try {
-      // Extract a brief from the first paragraph (non-heading)
-      const bodyStart = content.indexOf("\n\n");
-      const briefParagraph =
-        bodyStart > 0
-          ? (content.slice(bodyStart).trim().split("\n\n")[0]?.slice(0, 600) ?? "")
-          : content.slice(0, 600);
-      setTopicBrief(topicId, {
-        latestSummaryMd: content,
-        summaryDate: dateStr,
-        briefMd: briefParagraph,
+      writeFileSync(resolve(runtime().summariesDir, summaryName), content, {
+        encoding: "utf-8",
+        flag: "wx",
       });
-    } catch {
-      // DB update failed — file save succeeded, not critical.
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      counter += 1;
+      summaryName = baseSummaryName.replace(/\.md$/, `~${counter}.md`);
     }
   }
 
-  // Also update topic brief file for backward-compat
-  ensureDir(runtime().topicsDir);
-  const briefPath = resolve(runtime().topicsDir, `${name}.md`);
-  try {
-    writeFileSync(briefPath, content, "utf-8");
-  } catch {
-    /* best effort */
+  // Mirror the canonical accumulated title brief into SQLite while recording
+  // this immutable source summary as the latest deep-history entry.
+  const setTopicBrief = runtime().host.setTopicBrief;
+  let sqliteUpdated = false;
+  if (topicId && setTopicBrief) {
+    try {
+      const briefPath = resolve(runtime().topicsDir, `${fileSlug}.md`);
+      const briefMd = existsSync(briefPath) ? readFileSync(briefPath, "utf-8") : undefined;
+      setTopicBrief(fileSlug, {
+        latestSummaryMd: content,
+        summaryDate: dateStr,
+        ...(briefMd !== undefined ? { briefMd } : {}),
+      });
+      sqliteUpdated = true;
+    } catch {
+      // DB update failed — file save succeeded, not critical.
+    }
   }
 
   return {
@@ -532,7 +700,7 @@ function saveWikiEntry(args: Record<string, unknown>): CallToolResult {
         type: "text",
         text:
           `Saved summary: summaries/${summaryName}` +
-          (runtime().topicId ? "\nSQLite brief also updated." : ""),
+          (sqliteUpdated ? "\nSQLite brief also updated." : ""),
       },
     ],
   };
@@ -557,71 +725,93 @@ function indexUpsert(args: Record<string, unknown>): CallToolResult {
   })();
 
   ensureDir(dirname(indexPath));
+  const releaseLock = acquireFileLock(indexPath);
 
-  let index: string;
   try {
-    index = readFileSync(indexPath, "utf-8");
-  } catch {
-    index = "";
-  }
-
-  const lines = index.split("\n");
-  const link = (() => {
-    switch (kind) {
-      case "summary":
-        return `- [[summaries/${slug}]] ${desc} (${dateStr})`;
-      case "topic":
-        return `- [[topic/${slug}]] ${desc} (${dateStr})`;
-      case "skill":
-        return `- [[skills/${slug}]] ${desc} (${dateStr})`;
-      default:
-        return `- [[articles/${slug}]] ${desc} (${dateStr})`;
+    let index: string;
+    try {
+      index = readFileSync(indexPath, "utf-8");
+    } catch {
+      index = "";
     }
-  })();
 
-  // Find existing entry for this slug and replace, or append
-  const slugPattern = `[[${slug}]]`; // loose match on wikilink target
-  let replaced = false;
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes(slugPattern)) {
-      lines[i] = link;
-      replaced = true;
-      break;
-    }
-  }
+    const lines = index.split("\n");
+    const link = (() => {
+      switch (kind) {
+        case "summary":
+          return `- [[summaries/${slug}]] ${desc} (${dateStr})`;
+        case "topic":
+          return `- [[topic/${slug}]] ${desc} (${dateStr})`;
+        case "skill":
+          return `- [[skills/${slug}]] ${desc} (${dateStr})`;
+        default:
+          return `- [[articles/${slug}]] ${desc} (${dateStr})`;
+      }
+    })();
 
-  if (!replaced) {
-    // Append to appropriate section
-    if (section) {
-      let sectionIdx = -1;
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].startsWith("## ") && lines[i].includes(section)) {
-          sectionIdx = i;
-          break;
+    // Find every existing entry for this canonical target. Historical versions
+    // appended duplicates because they searched for [[slug]] while writing
+    // [[topic/slug]].
+    const target = (() => {
+      switch (kind) {
+        case "summary":
+          return `summaries/${slug}`;
+        case "topic":
+          return `topic/${slug}`;
+        case "skill":
+          return `skills/${slug}`;
+        default:
+          return `articles/${slug}`;
+      }
+    })();
+    const slugPattern = `[[${target}]]`;
+    let replaced = false;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (lines[i].includes(slugPattern)) {
+        if (!replaced) {
+          lines[i] = link;
+          replaced = true;
+        } else {
+          lines.splice(i, 1);
         }
       }
-      if (sectionIdx >= 0) {
-        // Insert after section heading, before next section
-        let insertAt = sectionIdx + 1;
-        while (
-          insertAt < lines.length &&
-          lines[insertAt].trim() !== "" &&
-          !lines[insertAt].startsWith("## ")
-        ) {
-          insertAt++;
+    }
+
+    if (!replaced) {
+      // Append to appropriate section
+      if (section) {
+        let sectionIdx = -1;
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].startsWith("## ") && lines[i].includes(section)) {
+            sectionIdx = i;
+            break;
+          }
         }
-        lines.splice(insertAt, 0, link);
+        if (sectionIdx >= 0) {
+          // Insert after section heading, before next section
+          let insertAt = sectionIdx + 1;
+          while (
+            insertAt < lines.length &&
+            lines[insertAt].trim() !== "" &&
+            !lines[insertAt].startsWith("## ")
+          ) {
+            insertAt++;
+          }
+          lines.splice(insertAt, 0, link);
+        } else {
+          lines.push(`\n## ${section}`, link);
+        }
       } else {
-        lines.push(`\n## ${section}`, link);
+        lines.push(link);
       }
-    } else {
-      lines.push(link);
     }
+
+    atomicWriteFile(indexPath, lines.join("\n"));
+
+    return { content: [{ type: "text", text: `Index updated: ${link}` }] };
+  } finally {
+    releaseLock();
   }
-
-  writeFileSync(indexPath, lines.join("\n"), "utf-8");
-
-  return { content: [{ type: "text", text: `Index updated: ${link}` }] };
 }
 
 // --- MCP Tool definitions -------------------------------------------------
@@ -633,8 +823,14 @@ const WIKI_TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        question: { type: "string", description: "The question or topic to search for" },
-        topic: { type: "string", description: "Optional topic name to narrow the search" },
+        question: {
+          type: "string",
+          description: "The question or topic to search for",
+        },
+        topic: {
+          type: "string",
+          description: "Optional topic name to narrow the search",
+        },
       },
       required: ["question"],
     },
@@ -645,7 +841,10 @@ const WIKI_TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        topic: { type: "string", description: "Topic name (e.g. 'dev', 'trading', 'research')" },
+        topic: {
+          type: "string",
+          description: "Topic name (e.g. 'dev', 'trading', 'research')",
+        },
       },
       required: ["topic"],
     },
@@ -656,7 +855,10 @@ const WIKI_TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        topic: { type: "string", description: "Topic name (e.g. 'dev', 'trading')" },
+        topic: {
+          type: "string",
+          description: "Topic name (e.g. 'dev', 'trading')",
+        },
         turns: {
           type: "number",
           description: "Number of recent turns (max 10), default 5",
@@ -685,15 +887,27 @@ const WIKI_TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        slug: { type: "string", description: "Article/summary slug or topic name" },
-        description: { type: "string", description: "Single-line description for the index row" },
+        slug: {
+          type: "string",
+          description: "Article/summary slug or topic name",
+        },
+        description: {
+          type: "string",
+          description: "Single-line description for the index row",
+        },
         kind: {
           type: "string",
           enum: ["article", "summary", "topic", "skill"],
           description: "Which index to update",
         },
-        section: { type: "string", description: "For kind='article': H2 section title" },
-        date: { type: "string", description: "Override entry date YYYY-MM-DD (default: today)" },
+        section: {
+          type: "string",
+          description: "For kind='article': H2 section title",
+        },
+        date: {
+          type: "string",
+          description: "Override entry date YYYY-MM-DD (default: today)",
+        },
       },
       required: ["slug", "description", "kind"],
     },
@@ -721,7 +935,10 @@ const SKILL_TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        name: { type: "string", description: "Skill folder name in kebab-case" },
+        name: {
+          type: "string",
+          description: "Skill folder name in kebab-case",
+        },
         content: {
           type: "string",
           description: "Skill definition in markdown (with frontmatter name+description)",
@@ -823,7 +1040,10 @@ async function main() {
     }
   }
   const transport = new StdioServerTransport();
-  await createWikiMcpServer(context, { wikiRoot: SHARED_WIKI_DIR, ...bridge }).connect(transport);
+  await createWikiMcpServer(context, {
+    wikiRoot: SHARED_WIKI_DIR,
+    ...bridge,
+  }).connect(transport);
 }
 
 if (import.meta.main) {

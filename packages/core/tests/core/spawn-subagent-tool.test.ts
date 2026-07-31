@@ -354,6 +354,7 @@ describe("subagent management tools", () => {
   test("lists only accessible effective memory topic names", async () => {
     const parent = makeTopic("user-1", { title: `parent-${randomUUID()}` });
     const knowledge = makeTopic("user-1", { title: `knowledge-${randomUUID()}` });
+    makeTopic("user-1", { title: knowledge.title });
     makeTopic("other-user", { title: `private-${randomUUID()}` });
     makeTopic("user-1", {
       title: `derived-${randomUUID()}`,
@@ -508,6 +509,7 @@ describe("subagent management tools", () => {
   test("uses the parent memory by default and accepts an explicit topic/*.md source", async () => {
     const parent = makeTopic("user-1");
     const memorySource = makeTopic("user-1", { title: `knowledge-${randomUUID()}` });
+    makeTopic("user-1", { title: memorySource.title });
     const create = createPrepareSubagentToolDefinition({
       userId: "user-1",
       topicId: parent.id,
@@ -546,6 +548,18 @@ describe("subagent management tools", () => {
       expect(getTopic(explicitChildId)?.memoryTopicId).toBe(memorySource.id);
       expect(getTopicMemoryOrigin(explicitChildId)?.id).toBe(memorySource.id);
     }
+
+    const sharedTitle = await create.handler({
+      task: "use the shared title namespace",
+      name: `shared-title-memory-${randomUUID().slice(0, 8)}`,
+      memory_topic: memorySource.title,
+    });
+    expect(sharedTitle.isError).toBeUndefined();
+    const sharedTitleChildId = listApiMessagesByKind("subagent")
+      .filter((message) => message.topicId === parent.id)
+      .at(-1)?.subagentCard?.subagentTopicId;
+    expect(sharedTitleChildId).toBeTruthy();
+    if (sharedTitleChildId) createdTopicIds.push(sharedTitleChildId);
   });
 
   test("rejects inaccessible or unsafe memory topic selectors", async () => {
