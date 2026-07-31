@@ -76,13 +76,16 @@ import {
   setMessages,
   setTopics,
   startTopicCreation,
+  type SubagentGraphCanvas,
   toggleTaskSidebar,
   upsertMessage,
 } from "@/state";
 import {
   adjustSubagentGraphSpacing,
+  applySubagentGraphStates,
   buildSubagentGraph,
   layoutSubagentGraph,
+  subagentGraphSignature,
 } from "@/subagent-graph";
 import { InputHistory, TextBuffer } from "@/text-buffer";
 
@@ -161,6 +164,9 @@ export class TerminalApp {
   #subagentGraphGeneration = 0;
   #subagentGraphAbortController: AbortController | null = null;
   #subagentGraphSpacingTimer: ReturnType<typeof setTimeout> | null = null;
+  // Caches the last laid-out canvas keyed by structural signature so live
+  // running-state changes re-render via nodeStates overlay without rerunning ELK.
+  #subagentGraphCache: { signature: string; canvas: SubagentGraphCanvas } | null = null;
   #pendingSubagentGraphSpacing: number | null = null;
   #running = false;
   #stopRequested = false;
@@ -321,6 +327,21 @@ export class TerminalApp {
     this.#queueRender();
   }
 
+  // Cache the laid-out canvas by structural signature and publish it with a live
+  // running-state overlay. Later same-structure updates reuse this canvas.
+  #storeSubagentGraph(
+    rawCanvas: SubagentGraphCanvas,
+    signature: string,
+    runningTopicIds: ReadonlySet<string>,
+  ): void {
+    this.#subagentGraphCache = { signature, canvas: rawCanvas };
+    this.#state = {
+      ...this.#state,
+      subagentGraph: applySubagentGraphStates(rawCanvas, runningTopicIds),
+      subagentGraphLoading: false,
+    };
+  }
+
   async #reloadSubagentGraphAfterTopicEvent(): Promise<void> {
     const topicId = this.#state.activeTopicId;
     if (!topicId || this.#state.overlay !== "subagents") return;
@@ -330,6 +351,23 @@ export class TerminalApp {
         .map(([candidateId]) => candidateId),
     );
     const graph = buildSubagentGraph(this.#state.topics, topicId, runningTopicIds);
+    const signature = subagentGraphSignature(graph, this.#state.subagentGraphSpacing);
+
+    // Fast path: graph structure is unchanged, so only running states can differ.
+    // Overlay them onto the cached canvas without rerunning ELK layout.
+    if (this.#subagentGraphCache?.signature === signature) {
+      this.#subagentGraphGeneration += 1;
+      this.#subagentGraphAbortController?.abort();
+      this.#subagentGraphAbortController = null;
+      this.#state = {
+        ...this.#state,
+        subagentGraph: applySubagentGraphStates(this.#subagentGraphCache.canvas, runningTopicIds),
+        subagentGraphLoading: false,
+      };
+      this.#queueRender();
+      return;
+    }
+
     const generation = ++this.#subagentGraphGeneration;
     this.#subagentGraphAbortController?.abort();
     const layoutController = new AbortController();
@@ -344,7 +382,7 @@ export class TerminalApp {
         return;
       }
       this.#subagentGraphAbortController = null;
-      this.#state = { ...this.#state, subagentGraph: canvas, subagentGraphLoading: false };
+      this.#storeSubagentGraph(canvas, signature, runningTopicIds);
     } catch (error) {
       if (generation !== this.#subagentGraphGeneration) return;
       this.#subagentGraphAbortController = null;
@@ -564,7 +602,11 @@ export class TerminalApp {
       if (generation !== this.#subagentGraphGeneration || this.#state.overlay !== "subagents") {
         return;
       }
-      this.#state = { ...this.#state, subagentGraph: canvas, subagentGraphLoading: false };
+      this.#storeSubagentGraph(
+        canvas,
+        subagentGraphSignature(graph, this.#state.subagentGraphSpacing),
+        runningTopicIds,
+      );
       this.#subagentGraphAbortController = null;
     } catch (error) {
       if (generation !== this.#subagentGraphGeneration) return;
@@ -625,7 +667,11 @@ export class TerminalApp {
       if (generation !== this.#subagentGraphGeneration || this.#state.overlay !== "subagents") {
         return;
       }
-      this.#state = { ...this.#state, subagentGraph: canvas, subagentGraphLoading: false };
+      this.#storeSubagentGraph(
+        canvas,
+        subagentGraphSignature(graph, this.#state.subagentGraphSpacing),
+        runningTopicIds,
+      );
       this.#subagentGraphAbortController = null;
     } catch (error) {
       if (generation !== this.#subagentGraphGeneration) return;

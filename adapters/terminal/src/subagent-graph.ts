@@ -1,5 +1,13 @@
 import type { TopicDto } from "@negotium/core";
-import { type GraphDocument, type GraphEdge, type GraphNode, layoutTerminalGraph } from "orchgraph";
+import {
+  type GraphDocument,
+  type GraphEdge,
+  type GraphNode,
+  layoutTerminalGraph,
+  type NodeState,
+  renderTerminalCanvas,
+  type TerminalCanvas,
+} from "orchgraph";
 import type { SubagentGraphCanvas, SubagentGraphEdgeKind } from "@/state";
 
 export const DEFAULT_SUBAGENT_GRAPH_SPACING = 4;
@@ -168,6 +176,53 @@ export function buildSubagentGraph(
     edges: domainEdges.map((edge) => ({ ...edge, ...edgePresentation(edge.kind) })),
     rootDetail: root?.detail,
     rootRunning: root?.state === "running",
+  };
+}
+
+/**
+ * Structural identity of a graph for a given spacing — everything that affects
+ * ELK layout, but NOT the per-node running state. When this is unchanged, live
+ * agent-state updates can be re-rendered from a cached canvas without rerunning
+ * layout (see `applySubagentGraphStates`).
+ */
+export function subagentGraphSignature(graph: SubagentGraph, spacing: number): string {
+  return JSON.stringify({
+    spacing,
+    direction: graph.direction,
+    title: graph.title,
+    rootDetail: graph.rootDetail,
+    nodes: graph.nodes.map((node) => [node.id, node.label, node.detail]),
+    edges: graph.edges.map((edge) => [
+      edge.id,
+      edge.source,
+      edge.target,
+      edge.kind,
+      edge.direction,
+      edge.style,
+      edge.label,
+    ]),
+  });
+}
+
+/**
+ * Re-render a laid-out canvas with a fresh running-state overlay. This never
+ * recomputes layout (orchgraph 0.2.0 `nodeStates`), so it is the cheap path for
+ * live agent-state changes when the graph structure is unchanged.
+ */
+export function applySubagentGraphStates(
+  canvas: SubagentGraphCanvas,
+  runningTopicIds: ReadonlySet<string>,
+): SubagentGraphCanvas {
+  const nodeStates: Record<string, NodeState> = {};
+  for (const node of canvas.nodes) {
+    nodeStates[node.id] = runningTopicIds.has(node.id) ? "running" : "idle";
+  }
+  const lines = renderTerminalCanvas(canvas as unknown as TerminalCanvas, { nodeStates });
+  const rootId = canvas.nodes[0]?.id;
+  return {
+    ...canvas,
+    lines,
+    rootRunning: rootId ? runningTopicIds.has(rootId) : canvas.rootRunning,
   };
 }
 

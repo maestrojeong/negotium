@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import type { TopicDto } from "@negotium/core";
 import {
   adjustSubagentGraphSpacing,
+  applySubagentGraphStates,
   buildSubagentGraph,
   layoutSubagentGraph,
   MAX_SUBAGENT_GRAPH_SPACING,
   MIN_SUBAGENT_GRAPH_SPACING,
+  subagentGraphSignature,
 } from "@/subagent-graph";
 
 function topic(id: string, title: string, parentTopicId?: string): TopicDto {
@@ -200,5 +202,38 @@ describe("subagent graph", () => {
     await expect(
       layoutSubagentGraph(graph, MIN_SUBAGENT_GRAPH_SPACING, controller.signal),
     ).rejects.toThrow();
+  });
+});
+
+describe("subagent graph live-state overlay", () => {
+  const topics = [topic("root", "Root"), topic("child", "Child", "root")];
+
+  test("signature ignores running state but reacts to structure and spacing", () => {
+    const idle = buildSubagentGraph(topics, "root", new Set());
+    const running = buildSubagentGraph(topics, "root", new Set(["root", "child"]));
+    // Same structure, different running set → identical signature (cache hit).
+    expect(subagentGraphSignature(idle, 4)).toBe(subagentGraphSignature(running, 4));
+    // Spacing is a layout input → different signature.
+    expect(subagentGraphSignature(idle, 4)).not.toBe(subagentGraphSignature(idle, 6));
+    // Structural change (an extra node) → different signature.
+    const grown = buildSubagentGraph([...topics, topic("child2", "Child2", "root")], "root");
+    expect(subagentGraphSignature(idle, 4)).not.toBe(subagentGraphSignature(grown, 4));
+  });
+
+  test("applying states re-renders without changing geometry", async () => {
+    const graph = buildSubagentGraph(topics, "root", new Set());
+    const canvas = await layoutSubagentGraph(graph, 4);
+
+    const running = applySubagentGraphStates(canvas, new Set(["child"]));
+    // Geometry is untouched — only the rendered state overlay changes.
+    expect(running.width).toBe(canvas.width);
+    expect(running.height).toBe(canvas.height);
+    expect(running.lines.length).toBe(canvas.lines.length);
+    expect(running.rootRunning).toBe(false);
+
+    const rootRunning = applySubagentGraphStates(canvas, new Set(["root"]));
+    expect(rootRunning.rootRunning).toBe(true);
+    // Overlaying a different running set yields different rendered lines.
+    expect(running.lines.join("\n")).not.toBe(rootRunning.lines.join("\n"));
   });
 });

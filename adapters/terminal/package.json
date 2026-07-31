@@ -50,7 +50,7 @@
     "@negotium/adapter-sdk": "workspace:*",
     "@negotium/core": "workspace:*",
     "@negotium/node": "workspace:*",
-    "orchgraph": "0.1.1"
+    "orchgraph": "0.2.0"
   },
   "devDependencies": {
     "@types/node": "^20",
