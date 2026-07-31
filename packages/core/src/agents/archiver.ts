@@ -519,8 +519,7 @@ function finalizeGeneralMemory(
       ? findSummaryFile(host.storage, topicTitle, date, startMs, topicId)
       : null;
     const summaryMd = summaryPath ? host.storage.readTextFile(summaryPath) : "";
-    const oneLine =
-      (summaryMd && distillOneLine(summaryMd)) || `Archived ${messageCount} messages`;
+    const oneLine = (summaryMd && distillOneLine(summaryMd)) || `Archived ${messageCount} messages`;
 
     // Rolling digest: dedupe same-title, prepend newest, cap at MAX_BRIEF_ENTRIES.
     const prev = host.storage.getTopicBrief(generalTopicId);
