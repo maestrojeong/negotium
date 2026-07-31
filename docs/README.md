@@ -35,6 +35,7 @@ instead of copying the explanation.
 | [Migration 0.1.41](./MIGRATION-0.1.41.md) | Packaged runtime export fix for the default durable ask-user host |
 | [Migration 0.1.42](./MIGRATION-0.1.42.md) | Browser gateway port ownership, spawn nonce readiness, and startup diagnostics |
 | [Migration 0.1.43](./MIGRATION-0.1.43.md) | Ordered user-message preservation, subagent topology guidance, and canonical Wiki briefs |
+| [Migration 0.1.44](./MIGRATION-0.1.44.md) | Title-scoped accumulated Wiki memory, immutable summaries, and concurrent archive safety |
 | [Browser runtime](./BROWSER-RUNTIME.md) | Host-injected Playwright MCP lifecycle for downstream runtimes |
 | [Otium runtime deduplication](./OTIUM-RUNTIME-DEDUP.md) | Public migration contracts and planned host-factory boundaries |
 
