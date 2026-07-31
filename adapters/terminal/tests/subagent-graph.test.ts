@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { TopicDto } from "@negotium/core";
+import type { SubagentGraphCanvas } from "@/state";
 import {
   adjustSubagentGraphSpacing,
   applySubagentGraphStates,
@@ -224,16 +225,37 @@ describe("subagent graph live-state overlay", () => {
     const graph = buildSubagentGraph(topics, "root", new Set());
     const canvas = await layoutSubagentGraph(graph, 4);
 
-    const running = applySubagentGraphStates(canvas, new Set(["child"]));
+    const running = applySubagentGraphStates(canvas, new Set(["child"]), "root");
     // Geometry is untouched — only the rendered state overlay changes.
     expect(running.width).toBe(canvas.width);
     expect(running.height).toBe(canvas.height);
     expect(running.lines.length).toBe(canvas.lines.length);
     expect(running.rootRunning).toBe(false);
 
-    const rootRunning = applySubagentGraphStates(canvas, new Set(["root"]));
+    const rootRunning = applySubagentGraphStates(canvas, new Set(["root"]), "root");
     expect(rootRunning.rootRunning).toBe(true);
     // Overlaying a different running set yields different rendered lines.
     expect(running.lines.join("\n")).not.toBe(rootRunning.lines.join("\n"));
+  });
+
+  test("rootRunning binds to the explicit root id, not node order", () => {
+    // A layout engine is not required to preserve input node order, so the root
+    // flag must follow the declared root id rather than nodes[0].
+    const canvas: SubagentGraphCanvas = {
+      id: "subagents",
+      title: "Root",
+      nodes: [
+        { id: "child", label: "Child", state: "idle", x: 0, y: 0, width: 1, height: 1, markerX: 0, markerY: 0 },
+        { id: "root", label: "Root", state: "idle", x: 0, y: 0, width: 1, height: 1, markerX: 0, markerY: 0 },
+      ],
+      edges: [],
+      lines: [],
+      width: 1,
+      height: 1,
+    };
+    // nodes[0] is "child"; declaring "root" as running must set rootRunning even
+    // though the root is not first in the node array.
+    expect(applySubagentGraphStates(canvas, new Set(["root"]), "root").rootRunning).toBe(true);
+    expect(applySubagentGraphStates(canvas, new Set(["child"]), "root").rootRunning).toBe(false);
   });
 });

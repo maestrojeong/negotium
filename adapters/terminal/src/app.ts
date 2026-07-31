@@ -333,11 +333,12 @@ export class TerminalApp {
     rawCanvas: SubagentGraphCanvas,
     signature: string,
     runningTopicIds: ReadonlySet<string>,
+    rootId: string,
   ): void {
     this.#subagentGraphCache = { signature, canvas: rawCanvas };
     this.#state = {
       ...this.#state,
-      subagentGraph: applySubagentGraphStates(rawCanvas, runningTopicIds),
+      subagentGraph: applySubagentGraphStates(rawCanvas, runningTopicIds, rootId),
       subagentGraphLoading: false,
     };
   }
@@ -361,7 +362,11 @@ export class TerminalApp {
       this.#subagentGraphAbortController = null;
       this.#state = {
         ...this.#state,
-        subagentGraph: applySubagentGraphStates(this.#subagentGraphCache.canvas, runningTopicIds),
+        subagentGraph: applySubagentGraphStates(
+          this.#subagentGraphCache.canvas,
+          runningTopicIds,
+          topicId,
+        ),
         subagentGraphLoading: false,
       };
       this.#queueRender();
@@ -382,7 +387,7 @@ export class TerminalApp {
         return;
       }
       this.#subagentGraphAbortController = null;
-      this.#storeSubagentGraph(canvas, signature, runningTopicIds);
+      this.#storeSubagentGraph(canvas, signature, runningTopicIds, topicId);
     } catch (error) {
       if (generation !== this.#subagentGraphGeneration) return;
       this.#subagentGraphAbortController = null;
@@ -606,6 +611,7 @@ export class TerminalApp {
         canvas,
         subagentGraphSignature(graph, this.#state.subagentGraphSpacing),
         runningTopicIds,
+        topicId,
       );
       this.#subagentGraphAbortController = null;
     } catch (error) {
@@ -671,6 +677,7 @@ export class TerminalApp {
         canvas,
         subagentGraphSignature(graph, this.#state.subagentGraphSpacing),
         runningTopicIds,
+        topicId,
       );
       this.#subagentGraphAbortController = null;
     } catch (error) {

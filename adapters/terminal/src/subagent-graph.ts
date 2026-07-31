@@ -212,17 +212,20 @@ export function subagentGraphSignature(graph: SubagentGraph, spacing: number): s
 export function applySubagentGraphStates(
   canvas: SubagentGraphCanvas,
   runningTopicIds: ReadonlySet<string>,
+  rootId?: string,
 ): SubagentGraphCanvas {
   const nodeStates: Record<string, NodeState> = {};
   for (const node of canvas.nodes) {
     nodeStates[node.id] = runningTopicIds.has(node.id) ? "running" : "idle";
   }
   const lines = renderTerminalCanvas(canvas as unknown as TerminalCanvas, { nodeStates });
-  const rootId = canvas.nodes[0]?.id;
+  // Bind rootRunning to the explicit root id when known (the graph's active
+  // topic), not to positional node order which the layout engine may not fix.
+  const resolvedRootId = rootId ?? canvas.nodes[0]?.id;
   return {
     ...canvas,
     lines,
-    rootRunning: rootId ? runningTopicIds.has(rootId) : canvas.rootRunning,
+    rootRunning: resolvedRootId ? runningTopicIds.has(resolvedRootId) : canvas.rootRunning,
   };
 }
 
