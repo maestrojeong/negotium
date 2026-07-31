@@ -191,6 +191,7 @@ State lives under `~/.negotium` by default:
 ```
 
 Set `NEGOTIUM_STATE_DIR` to move the state root.
+Set `NEGOTIUM_LANG` (default `English`) to the user's mother tongue to localize the assistant's replies and memory; it stays a fallback since the assistant mirrors whatever language the user writes in.
 
 The vault encrypts values at rest and keeps plaintext out of normal agent
 messages and tool results. Manage it with `/vault` in Terminal or
