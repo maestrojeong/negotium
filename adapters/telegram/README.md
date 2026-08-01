@@ -32,12 +32,21 @@ npm install --global @negotium/cli
 TELEGRAM_BOT_TOKEN=... TELEGRAM_ALLOWED_USERS=123456 negotium telegram
 ```
 
-`TELEGRAM_ALLOWED_USERS` is a comma-separated Telegram user-ID allowlist. An empty value allows
-everyone who can reach the bot to act as the same local Negotium owner, so set it for any
-non-isolated bot. Vault commands are disabled unless this allowlist is non-empty. With one
-allowlisted user that user owns the Vault; with multiple users, set
-`TELEGRAM_VAULT_OWNER_USER_ID` to exactly one id from the allowlist. Other users' `/vault`
-commands are silently ignored.
+`TELEGRAM_ALLOWED_USERS` is a **required** comma-separated allowlist of numeric Telegram user
+IDs. The CLI refuses to start without it: every accepted user acts as the same local Negotium
+owner and gets an agent session with shell access, and rejection is silent, so an open bot gives
+no signal that strangers are being served.
+
+Usernames and `@handles` are rejected because they are mutable.
+
+To run an intentionally open bot, set `TELEGRAM_ALLOW_ALL=true` and leave `TELEGRAM_ALLOWED_USERS`
+unset. Setting both is a startup error. The two settings are read only by the standalone CLI;
+embedders calling `startTelegramAdapter` directly still control access through the
+`allowedUsers` option, where an empty array means allow-all.
+
+Vault commands are disabled unless the allowlist is non-empty. With one allowlisted user that
+user owns the Vault; with multiple users, set `TELEGRAM_VAULT_OWNER_USER_ID` to exactly one id
+from the allowlist. Other users' `/vault` commands are silently ignored.
 
 Telegram and other channels share SQLite state while running as separate processes:
 

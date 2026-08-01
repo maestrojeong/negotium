@@ -93,7 +93,14 @@ export interface TelegramAdapterOptions {
   client: TelegramClientLike;
   /** negotium user the bot acts as; defaults to "local". */
   userId?: string;
-  /** Telegram user-id whitelist; empty/absent = allow all. */
+  /**
+   * Telegram user-id whitelist; empty/absent = allow all.
+   *
+   * Kept permissive for embedders and tests that deliberately want an open
+   * channel. The standalone CLI does NOT rely on this default: it resolves the
+   * mode through `parseTelegramAuthEnv`, which refuses to start without either
+   * an allowlist or an explicit `TELEGRAM_ALLOW_ALL=true`.
+   */
   allowedUsers?: string[];
   /**
    * Telegram user id allowed to manage the shared node Vault. The owner must

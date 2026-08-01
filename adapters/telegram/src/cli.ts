@@ -17,6 +17,7 @@ import {
   waitForNodeDaemon,
 } from "@negotium/node";
 import TelegramBot from "node-telegram-bot-api";
+import { allowedUsersForAdapter, parseTelegramAuthEnv } from "@/env-auth";
 import {
   startTelegramAdapter,
   type TelegramAdapterHandle,
@@ -40,16 +41,23 @@ export function startTelegramFromEnv(
   const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
   if (!token) throw new Error("TELEGRAM_BOT_TOKEN is required");
 
+  // Resolve authorization before opening the socket: a misconfigured allowlist
+  // must fail startup, not start polling and accept strangers.
+  const auth = parseTelegramAuthEnv(process.env);
+  if (auth.mode === "allow-all") {
+    process.stderr.write(
+      "negotium-telegram: WARNING TELEGRAM_ALLOW_ALL=true — every Telegram user who reaches " +
+        "this bot gets an agent session with shell access as the local owner.\n",
+    );
+  }
+
   const bot = new TelegramBot(token, { polling: true });
   const requestedAgent = process.env.TELEGRAM_DEFAULT_AGENT?.trim();
   const forumChatId = Number.parseInt(process.env.TELEGRAM_FORUM_CHAT_ID ?? "", 10);
   const adapter = startTelegramAdapter({
     ...options,
     client: bot,
-    allowedUsers: (process.env.TELEGRAM_ALLOWED_USERS ?? "")
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean),
+    allowedUsers: allowedUsersForAdapter(auth),
     ...(process.env.TELEGRAM_VAULT_OWNER_USER_ID?.trim()
       ? { vaultOwnerTelegramUserId: process.env.TELEGRAM_VAULT_OWNER_USER_ID.trim() }
       : {}),
