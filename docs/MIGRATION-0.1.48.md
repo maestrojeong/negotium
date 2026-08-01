@@ -6,7 +6,7 @@ uses `browser-rs` directly.
 
 ## Browser runtime
 
-- Negotium installs and requires `browser-rs` 0.1.15 or newer.
+- Negotium installs `browser-rs` 0.1.16 and requires 0.1.15 or newer.
 - `mcp-patchright` is no longer installed or used as a fallback.
 - The Rust process owns HTTP authentication, owner and session isolation, the
   tool allowlist, and graceful browser shutdown.
