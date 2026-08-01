@@ -25,6 +25,7 @@ import {
   listRunningTopicQueries,
   listRuntimeEventsAfter,
   listVaultEntries,
+  logger,
   NEGOTIUM_VERSION,
   NODE_CONTROL_TOKEN,
   RUN_DIR,
@@ -120,8 +121,25 @@ async function bodyRecord(req: Request): Promise<Record<string, unknown>> {
   }
 }
 
+/**
+ * A malformed request from the caller, safe to echo back as a 400.
+ *
+ * Anything that is *not* one of the control plane's typed errors is treated as
+ * an internal fault: it gets logged and answered with a generic 500, because an
+ * unexpected exception's message can carry filesystem paths or other internals
+ * that should not reach a client.
+ */
+export class ControlRequestError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ControlRequestError";
+  }
+}
+
 function requiredText(value: unknown, name: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`${name} is required`);
+  if (typeof value !== "string" || !value.trim()) {
+    throw new ControlRequestError(`${name} is required`);
+  }
   return value.trim();
 }
 
@@ -366,7 +384,7 @@ export function createNodeControlHandler(
         const body = await bodyRecord(req);
         const userId = requiredText(body.userId, "userId");
         const key = requiredText(body.key, "key");
-        if (typeof body.value !== "string") throw new Error("value is required");
+        if (typeof body.value !== "string") throw new ControlRequestError("value is required");
         const description = body.description === undefined ? "" : String(body.description);
         return Response.json({
           ok: true,
@@ -589,7 +607,11 @@ export function createNodeControlHandler(
       if (error instanceof TopicDeriveBusyError) return jsonError(409, error.message);
       if (error instanceof TopicForkCompactionError) return jsonError(503, error.message);
       if (error instanceof TopicTitleConflictError) return jsonError(409, error.message);
-      return jsonError(400, error instanceof Error ? error.message : String(error));
+      if (error instanceof ControlRequestError) return jsonError(400, error.message);
+      // Unclassified: a bug or an unavailable dependency, not a client mistake.
+      // Log the detail locally and return nothing that could leak internals.
+      logger.error({ err: error, method: req.method, path }, "control: unhandled request error");
+      return jsonError(500, "Internal control-plane error");
     }
   };
 }
