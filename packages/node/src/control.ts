@@ -606,6 +606,9 @@ export function createNodeControlHandler(
       if (error instanceof TopicForkCompactionError) return jsonError(503, error.message);
       if (error instanceof TopicTitleConflictError) return jsonError(409, error.message);
       if (error instanceof ControlRequestError) return jsonError(400, error.message);
+      // `decodeURIComponent` on a malformed path segment (e.g. `/topics/%/…`)
+      // throws URIError. That is bad input from the caller, not a node fault.
+      if (error instanceof URIError) return jsonError(400, "Malformed URL encoding");
       // Unclassified: a bug or an unavailable dependency, not a client mistake.
       // Log the detail locally and return nothing that could leak internals.
       logger.error({ err: error, method: req.method, path }, "control: unhandled request error");

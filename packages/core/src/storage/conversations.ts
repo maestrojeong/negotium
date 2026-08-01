@@ -125,6 +125,27 @@ export function appendConversationEvent(
 }
 
 /**
+ * The raw manifest accepted an entry that the active projection rejected.
+ *
+ * Distinct from a plain write failure because the two logs are now out of sync
+ * rather than merely un-updated: `raw` records the event, `active` — the log
+ * replayed to the provider — does not.
+ */
+export class ConversationLogDivergedError extends Error {
+  constructor(
+    readonly rawPath: string,
+    readonly activePath: string,
+    override readonly cause: unknown,
+  ) {
+    super(
+      `conversation logs diverged: the entry is in the raw manifest (${rawPath}) ` +
+        `but the active projection (${activePath}) rejected it`,
+    );
+    this.name = "ConversationLogDivergedError";
+  }
+}
+
+/**
  * Strict variant for state transitions where the conversation log is a manifest
  * rather than telemetry. Throws on I/O failure so callers can avoid committing
  * DB state that points at an unmanifested SDK session.
@@ -145,7 +166,18 @@ export function appendConversationEventStrict(
   mkdirSync(dirname(path), { recursive: true });
   appendJsonlLine(path, line);
   const activePath = getActiveConversationPath(userId, topicName);
-  if (existsSync(activePath)) appendJsonlLine(activePath, line);
+  if (existsSync(activePath)) {
+    try {
+      appendJsonlLine(activePath, line);
+    } catch (cause) {
+      // The two appends are not atomic. Raw already has the entry, so failing
+      // here leaves the logs permanently split: the provider replays `active`
+      // and will never see this event, while the raw manifest says it happened.
+      // We cannot un-append, so at least name the inconsistency instead of
+      // surfacing a generic write error that hides which side is wrong.
+      throw new ConversationLogDivergedError(path, activePath, cause);
+    }
+  }
 }
 
 /** Append lifecycle metadata to the raw manifest without changing active context. */

@@ -94,10 +94,21 @@ export function writeJsonFileAtomic(filePath: string, value: unknown): void {
 // discards the wreckage later and far from the cause. The caller was told the
 // write succeeded. Failing loudly lets each caller choose: surface the error to
 // its client, or log and continue.
+//
+// The timeout MUST outlast the staleness threshold. A writer killed while
+// holding the lock leaves the file behind, and only the mtime check reclaims
+// it. With a timeout shorter than `LOCK_STALE_MS` every append issued in the
+// first few seconds after such a crash gave up *before* the reclaim could fire
+// — measured as a ~3.5s window in which every append to that file failed, all
+// of which the pre-throw fallback used to deliver. Waiting past the staleness
+// threshold means a dead holder is always reclaimed rather than waited out, so
+// a timeout now means a *live* holder has been stuck for over five seconds,
+// which is a genuine fault worth reporting.
 const LOCK_SUFFIX = ".lock";
 const LOCK_RETRY_MS = 5;
-const LOCK_TIMEOUT_MS = 1500;
 const LOCK_STALE_MS = 5000;
+/** Must stay > `LOCK_STALE_MS`; see the note above. */
+const LOCK_TIMEOUT_MS = LOCK_STALE_MS + 1500;
 const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 
 /**

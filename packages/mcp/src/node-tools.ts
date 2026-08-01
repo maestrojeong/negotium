@@ -135,6 +135,7 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
       }
 
       const aborted = abortRoom(target.id);
+      let queued = true;
       try {
         // Cover the not-yet-started case: the inbox consumer drops queued work
         // when it sees the abort entry.
@@ -143,12 +144,17 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
           timestamp: new Date().toISOString(),
         });
       } catch (err) {
+        queued = false;
         logger.warn({ err, topicId: target.id }, "negotium MCP: abort inbox write failed");
       }
+      if (aborted) return textResult(`Aborted the active turn in "${target.title}".`);
+      // Reporting a queued abort that was never written told the caller the
+      // topic would stop when nothing had been delivered.
       return textResult(
-        aborted
-          ? `Aborted the active turn in "${target.title}".`
-          : `No active turn in "${target.title}"; abort signal queued in its inbox.`,
+        queued
+          ? `No active turn in "${target.title}"; abort signal queued in its inbox.`
+          : `No active turn in "${target.title}", and the abort signal could NOT be queued ` +
+              `(its inbox is locked). The topic will run its queued work; retry shortly.`,
       );
     },
   );

@@ -151,3 +151,18 @@ test("a genuine idempotency conflict is still a 409", async () => {
     );
   }
 });
+
+test("malformed percent encoding is a 400, not an internal 500", async () => {
+  const handler = createNodeControlHandler(baseOptions);
+
+  // `decodeURIComponent("%")` throws URIError. The catch-all classified that as
+  // an unclassified fault and answered 500, blaming the node for bad input.
+  const response = await handler(
+    new Request(`http://127.0.0.1:43211${NODE_CONTROL_BASE_PATH}/topics/%/messages?user=u`, {
+      headers: { authorization: `Bearer ${NODE_CONTROL_TOKEN}` },
+    }),
+  );
+
+  expect(response?.status).toBe(400);
+  expect(((await response?.json()) as { error: string }).error).toBe("Malformed URL encoding");
+});

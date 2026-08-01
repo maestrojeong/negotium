@@ -7,7 +7,15 @@
  * macOS 512 B) to the same file.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendJsonlEntry, JsonlLockTimeoutError } from "#platform/jsonl";
@@ -128,41 +136,78 @@ describe("appendJsonlEntry — cross-process lock", () => {
   });
 });
 
-describe("appendJsonlEntry — contention fails instead of writing unlocked", () => {
-  test("throws JsonlLockTimeoutError and writes nothing while a live lock is held", () => {
-    const filePath = join(workDir, "contended.jsonl");
+describe("appendJsonlEntry — a dead holder never costs an entry", () => {
+  test("an abandoned lock is waited out and reclaimed, at every age", () => {
+    // A writer killed mid-append leaves its lock file behind; only the mtime
+    // check reclaims it, at LOCK_STALE_MS. When the acquire timeout was shorter
+    // than that threshold, every append issued in the first ~3.5s after such a
+    // crash gave up before the reclaim could fire and was lost. The timeout now
+    // outlasts staleness, so the entry always lands.
+    for (const ageMs of [0, 1000, 3000]) {
+      const filePath = join(workDir, `abandoned-${ageMs}.jsonl`);
+      const lockPath = `${filePath}.lock`;
+      writeFileSync(lockPath, "");
+      if (ageMs > 0) {
+        const backdated = Date.now() / 1000 - ageMs / 1000;
+        utimesSync(lockPath, backdated, backdated);
+      }
+
+      appendJsonlEntry(filePath, { ageMs });
+
+      expect(readLines(filePath)).toEqual([JSON.stringify({ ageMs })]);
+      expect(existsSync(lockPath)).toBeFalse();
+    }
+  }, 30_000);
+
+  test("a holder that stays alive past the timeout fails the append without writing", async () => {
+    // The only remaining way to time out: a holder that keeps its lock fresh so
+    // staleness never fires — a genuinely stuck writer. The refresher must live
+    // in another process, because `appendJsonlEntry` blocks this thread on
+    // `Atomics.wait` and no timer here could run during the attempt.
+    const filePath = join(workDir, "live-holder.jsonl");
     appendJsonlEntry(filePath, { seq: 1 });
-
-    // A lock with a fresh mtime is not stale (LOCK_STALE_MS=5000), so the
-    // acquire loop exhausts LOCK_TIMEOUT_MS=1500 and gives up.
     const lockPath = `${filePath}.lock`;
-    writeFileSync(lockPath, "");
 
-    expect(() => appendJsonlEntry(filePath, { seq: 2 })).toThrow(JsonlLockTimeoutError);
+    const holder = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        `const { writeFileSync, utimesSync } = require("node:fs");
+         const lock = process.env.LOCK;
+         writeFileSync(lock, "");
+         setInterval(() => {
+           const now = Date.now() / 1000;
+           try { utimesSync(lock, now, now); } catch { process.exit(0); }
+         }, 250);`,
+      ],
+      { env: { ...process.env, LOCK: lockPath }, stdout: "ignore", stderr: "pipe" },
+    );
 
-    // The previous behavior appended unlocked here, risking a line interleaved
-    // with the lock holder's write. Nothing must have been added.
-    expect(readLines(filePath)).toEqual([JSON.stringify({ seq: 1 })]);
-    unlinkSync(lockPath);
+    try {
+      // Let the holder create the lock before we contend for it.
+      while (!existsSync(lockPath)) await Bun.sleep(10);
+
+      let thrown: unknown;
+      try {
+        appendJsonlEntry(filePath, { seq: 2 });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(JsonlLockTimeoutError);
+      expect((thrown as JsonlLockTimeoutError).filePath).toBe(filePath);
+      expect((thrown as Error).message).toInclude("nothing written");
+      // Nothing was appended unlocked alongside the holder.
+      expect(readLines(filePath)).toEqual([JSON.stringify({ seq: 1 })]);
+    } finally {
+      holder.kill();
+      await holder.exited;
+      if (existsSync(lockPath)) unlinkSync(lockPath);
+    }
 
     // Once the holder releases, appends resume normally.
     appendJsonlEntry(filePath, { seq: 2 });
     expect(readLines(filePath)).toEqual([JSON.stringify({ seq: 1 }), JSON.stringify({ seq: 2 })]);
-  });
-
-  test("the error names the file and reports that nothing was written", () => {
-    const filePath = join(workDir, "named.jsonl");
-    writeFileSync(`${filePath}.lock`, "");
-    try {
-      appendJsonlEntry(filePath, { x: 1 });
-      throw new Error("expected a lock timeout");
-    } catch (err) {
-      expect(err).toBeInstanceOf(JsonlLockTimeoutError);
-      expect((err as JsonlLockTimeoutError).filePath).toBe(filePath);
-      expect((err as Error).message).toInclude("nothing written");
-    }
-    expect(existsSync(filePath)).toBeFalse();
-  });
+  }, 30_000);
 });
 
 describe("appendJsonlEntry — true multi-process race", () => {

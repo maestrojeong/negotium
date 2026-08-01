@@ -116,6 +116,7 @@ export class BoundedOutputStream {
   #totalBytes = 0;
 
   #spillFd?: number;
+  #spillOpened = false;
   #spillError?: string;
   #closed = false;
 
@@ -130,9 +131,16 @@ export class BoundedOutputStream {
     return this.#totalBytes;
   }
 
-  /** Absolute spill path, or undefined when spilling is off or has failed. */
+  /**
+   * Absolute spill path, or undefined when spilling is off, has failed, or has
+   * not written anything yet.
+   *
+   * The file is opened lazily on the first chunk, so a stream that has produced
+   * no output has no file. Reporting the path before then hands the caller a
+   * path that does not exist.
+   */
   get spillPath(): string | undefined {
-    return this.#spillError ? undefined : this.#spillPath;
+    return this.#spillError || !this.#spillOpened ? undefined : this.#spillPath;
   }
 
   get spillError(): string | undefined {
@@ -289,8 +297,17 @@ export class BoundedOutputStream {
       if (this.#spillFd === undefined) {
         mkdirSync(dirname(this.#spillPath), { recursive: true, mode: 0o700 });
         this.#spillFd = openSync(this.#spillPath, "a", 0o600);
+        this.#spillOpened = true;
       }
-      writeSync(this.#spillFd, chunk);
+      // `writeSync` may legally write fewer bytes than requested (quota or
+      // filesystem boundaries). Ignoring the count would leave a short file
+      // while we keep advertising it as the complete record.
+      let written = 0;
+      while (written < chunk.length) {
+        const n = writeSync(this.#spillFd, chunk, written, chunk.length - written);
+        if (n <= 0) throw new Error(`spill write stalled after ${written}/${chunk.length} bytes`);
+        written += n;
+      }
     } catch (e) {
       this.#spillError = e instanceof Error ? e.message : String(e);
       if (this.#spillFd !== undefined) {

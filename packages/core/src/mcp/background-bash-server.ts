@@ -79,6 +79,8 @@ interface BgProc {
   stderrCursor: number;
   exited: boolean;
   exitCode: number | null;
+  /** False once the completion turn failed to reach the topic's inbox. */
+  delivered: boolean;
   startedAt: number;
   killTimer?: ReturnType<typeof setTimeout>;
   cleanupTimer?: ReturnType<typeof setTimeout>;
@@ -161,7 +163,14 @@ function describeStream(label: string, snapshot: OutputSnapshot): string | undef
   return `${label} (${notes.join(" · ")}):\n${body}`;
 }
 
-function injectCompletion(proc: BgProc): void {
+/**
+ * Deliver the completion turn.
+ *
+ * Returns false when the inbox write failed. The tool promises the caller it
+ * need not poll, so a dropped completion is the one failure that leaves a
+ * background job silently unfinished — the caller must not treat it as done.
+ */
+function injectCompletion(proc: BgProc): boolean {
   const parts: string[] = [];
   const stdout = describeStream("stdout", proc.stdout.snapshot());
   const stderr = describeStream("stderr", proc.stderr.snapshot());
@@ -189,8 +198,14 @@ function injectCompletion(proc: BgProc): void {
       timestamp: new Date().toISOString(),
     });
     process.stderr.write(`[bg-bash] injected completion ${proc.bashId} exit=${proc.exitCode}\n`);
+    return true;
   } catch (e) {
-    process.stderr.write(`[bg-bash] session-inbox write failed: ${e}\n`);
+    process.stderr.write(
+      `[bg-bash] FAILED to deliver completion ${proc.bashId} (exit=${proc.exitCode}): ${e}\n` +
+        `[bg-bash] the topic will never be told this job finished; ` +
+        `its output is kept at ${spillDir(proc.bashId)}\n`,
+    );
+    return false;
   }
 }
 
@@ -222,7 +237,8 @@ function forgetProc(proc: BgProc): void {
 
 function pruneCompletedProcs(): void {
   const completed = [...procs.values()]
-    .filter((proc) => proc.exited)
+    // Undelivered jobs hold the only copy of output the topic never saw.
+    .filter((proc) => proc.exited && proc.delivered)
     .sort((a, b) => a.startedAt - b.startedAt);
   while (completed.length > MAX_COMPLETED_PROCS) {
     const oldest = completed.shift();
@@ -254,9 +270,14 @@ function finishProc(proc: BgProc, exitCode: number | null): void {
   // paths, so anything reading them sees a closed, complete file.
   proc.stdout.close();
   proc.stderr.close();
-  injectCompletion(proc);
-  proc.cleanupTimer = setTimeout(() => forgetProc(proc), COMPLETED_RETENTION_MS);
-  proc.cleanupTimer.unref?.();
+  proc.delivered = injectCompletion(proc);
+  if (proc.delivered) {
+    proc.cleanupTimer = setTimeout(() => forgetProc(proc), COMPLETED_RETENTION_MS);
+    proc.cleanupTimer.unref?.();
+  }
+  // An undelivered job keeps its registry entry and spill: `background_bash_
+  // output` is the only way left to retrieve it, and expiring it on the normal
+  // schedule would destroy the sole copy of output nobody has seen.
   pruneCompletedProcs();
 }
 
@@ -296,6 +317,7 @@ function spawnBash(
     stderrCursor: 0,
     exited: false,
     exitCode: null,
+    delivered: false,
     startedAt: Date.now(),
   };
   // Raw Buffers: decoding per chunk would split multi-byte characters that

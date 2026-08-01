@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -167,6 +167,25 @@ describe("BoundedOutputStream — spill", () => {
     expect(snap.spillPath).toBe(spillPath);
     expect(snap.spillError).toBeUndefined();
     expect(readFileSync(spillPath, "utf-8")).toBe(payload);
+  });
+
+  test("does not advertise a spill path before the file exists", () => {
+    // The file is opened lazily on the first chunk. A silent stream has no
+    // file, so `background_bash_output` must not hand back a path to nothing.
+    const spillPath = join(tmp, "silent", "stdout.log");
+    const stream = new BoundedOutputStream({ maxBytes: 4096, spillPath });
+
+    expect(stream.spillPath).toBeUndefined();
+    expect(stream.snapshot().spillPath).toBeUndefined();
+    expect(existsSync(spillPath)).toBeFalse();
+
+    stream.append(Buffer.from("now there is output\n", "utf-8"));
+    expect(stream.spillPath).toBe(spillPath);
+    expect(existsSync(spillPath)).toBeTrue();
+
+    // Still reported after close: the file exists and holds the record.
+    stream.close();
+    expect(stream.spillPath).toBe(spillPath);
   });
 
   test("stops claiming completeness when output arrives after close", () => {
