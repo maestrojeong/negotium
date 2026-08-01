@@ -169,6 +169,25 @@ describe("BoundedOutputStream — spill", () => {
     expect(readFileSync(spillPath, "utf-8")).toBe(payload);
   });
 
+  test("stops claiming completeness when output arrives after close", () => {
+    // `child.on("error")` finishes the process while the pipes may still be
+    // open, so a late chunk can reach the preview after the descriptor closed.
+    // Previously the spill silently diverged while `spillPath` still advertised
+    // it as the complete record.
+    const spillPath = join(tmp, "late", "stdout.log");
+    const stream = new BoundedOutputStream({ maxBytes: 4096, spillPath });
+    stream.append(Buffer.from("before-close\n", "utf-8"));
+    stream.close();
+    stream.append(Buffer.from("AFTER-CLOSE\n", "utf-8"));
+
+    const snap = stream.snapshot();
+    expect(snap.text).toInclude("AFTER-CLOSE");
+    expect(readFileSync(spillPath, "utf-8")).not.toInclude("AFTER-CLOSE");
+    // The invariant: never point at a file that does not hold what we counted.
+    expect(snap.spillPath).toBeUndefined();
+    expect(snap.spillError).toInclude("incomplete");
+  });
+
   test("reports the failure instead of claiming recoverability", () => {
     // Put a regular file where the spill's parent directory has to be, so
     // mkdirSync fails and the spill can never open.

@@ -40,6 +40,21 @@ function duplicateResult(submission: RuntimeGatewaySubmission): SubmitRuntimeGat
  * reuses the canonical message table and existing durable turn worker rather
  * than starting a second execution path.
  */
+/**
+ * The supplied idempotency key already identifies a different turn.
+ *
+ * A distinct type rather than a plain `Error` because the control plane maps
+ * this to 409, and it must not be confused with a *missing* `clientMessageId`,
+ * which is a malformed request (400). Matching on message text conflated the
+ * two.
+ */
+export class RuntimeGatewayIdempotencyConflictError extends Error {
+  constructor(message = "clientMessageId or requestId is already bound to another turn") {
+    super(message);
+    this.name = "RuntimeGatewayIdempotencyConflictError";
+  }
+}
+
 export function submitRuntimeGatewayTurn(
   params: SubmitRuntimeGatewayTurnParams,
 ): SubmitRuntimeGatewayTurnResult {
@@ -52,7 +67,7 @@ export function submitRuntimeGatewayTurn(
       existing.topicId !== params.topic.id ||
       existing.userId !== params.userId
     ) {
-      throw new Error("clientMessageId or requestId is already bound to another turn");
+      throw new RuntimeGatewayIdempotencyConflictError();
     }
     return duplicateResult(existing);
   }

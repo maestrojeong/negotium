@@ -276,7 +276,15 @@ export class BoundedOutputStream {
    * would make the "complete output" claim false exactly when it matters.
    */
   #spill(chunk: Buffer): void {
-    if (!this.#spillPath || this.#spillError || this.#closed) return;
+    if (!this.#spillPath || this.#spillError) return;
+    if (this.#closed) {
+      // A child can still emit after completion was triggered (`child.on
+      // ("error")` finishes the process while the pipes are open). Those bytes
+      // reach the preview but can no longer reach the file, so the record is
+      // no longer complete and must stop being advertised as recoverable.
+      this.#spillError = "output continued after the spill was closed; the file is incomplete";
+      return;
+    }
     try {
       if (this.#spillFd === undefined) {
         mkdirSync(dirname(this.#spillPath), { recursive: true, mode: 0o700 });

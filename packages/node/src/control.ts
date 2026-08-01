@@ -30,6 +30,7 @@ import {
   NODE_CONTROL_TOKEN,
   RUN_DIR,
   type RuntimeBusEvent,
+  RuntimeGatewayIdempotencyConflictError,
   STATE_DIR,
   type StoredRuntimeEvent,
   saveVaultEntry,
@@ -597,10 +598,7 @@ export function createNodeControlHandler(
 
       return jsonError(404, "Control route not found");
     } catch (error) {
-      if (
-        error instanceof Error &&
-        (error.message.includes("clientMessageId") || error.message.includes("requestId"))
-      ) {
+      if (error instanceof RuntimeGatewayIdempotencyConflictError) {
         return jsonError(409, error.message);
       }
       if (error instanceof TopicServiceError) return topicServiceError(error);

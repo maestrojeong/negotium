@@ -56,7 +56,10 @@ export type {
   SubmitRuntimeGatewayTurnParams,
   SubmitRuntimeGatewayTurnResult,
 } from "#application/submit-runtime-gateway-turn";
-export { submitRuntimeGatewayTurn } from "#application/submit-runtime-gateway-turn";
+export {
+  RuntimeGatewayIdempotencyConflictError,
+  submitRuntimeGatewayTurn,
+} from "#application/submit-runtime-gateway-turn";
 export type {
   SubmitUserMessageParams,
   SubmitUserMessageResult,
