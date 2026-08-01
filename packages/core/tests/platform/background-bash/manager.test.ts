@@ -174,7 +174,7 @@ describe("shared background-bash runtime", () => {
 
       for (let attempt = 0; attempt < 20 && !existsSync(inboxFile); attempt++) await delay(25);
       const completion = readFileSync(inboxFile, "utf-8");
-      expect(completion).toContain(`[background_bash ${started.bash_id} 완료]`);
+      expect(completion).toContain(`[background_bash ${started.bash_id} finished]`);
       expect(completion).toContain("firstsecond");
     } finally {
       await client.close();

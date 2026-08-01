@@ -59,6 +59,11 @@ test("a clean promotion delivers each due entry once and keeps the future one", 
 });
 
 test("an interrupted promotion retains only what it had not delivered", async () => {
+  // Shrink the lock window so the contended append fails in ~2s instead of
+  // blocking this thread for ~6.5s and starving every other test file.
+  const previousStale = process.env.NEGOTIUM_JSONL_LOCK_STALE_MS;
+  process.env.NEGOTIUM_JSONL_LOCK_STALE_MS = "500";
+
   seed([entry("due-A", past()), entry("due-B", past()), entry("not-yet", future())]);
 
   // Promotion appends the due entries to the live inbox, then rewrites the
@@ -89,6 +94,8 @@ test("an interrupted promotion retains only what it had not delivered", async ()
     holder.kill();
     await holder.exited;
     rmSync(`${schedulePath}.lock`, { force: true });
+    if (previousStale === undefined) delete process.env.NEGOTIUM_JSONL_LOCK_STALE_MS;
+    else process.env.NEGOTIUM_JSONL_LOCK_STALE_MS = previousStale;
   }
 
   // The due entries went out.

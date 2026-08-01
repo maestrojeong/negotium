@@ -53,6 +53,7 @@
  */
 
 import "#platform/maestro-bootstrap-env";
+import { resolve } from "node:path";
 import type { HookRegistration, McpResolver } from "maestro-agent-sdk";
 import { maestroProvider as sdkMaestroProvider, setMcpResolver } from "maestro-agent-sdk";
 import { deepMapStrings } from "#agents/deep-map";
@@ -63,6 +64,7 @@ import {
   substituteHostedSecrets,
 } from "#agents/execution-host";
 import { shouldSubstituteVaultToolInput } from "#agents/vault-tool-policy";
+import { RUN_DIR } from "#platform/config";
 import { vaultGetValue } from "#storage/vault";
 import type { AgentQueryOptions, UnifiedEvent } from "#types";
 
@@ -202,6 +204,38 @@ function buildProviderOwnedToolBlockHook(): HookRegistration {
   };
 }
 
+/**
+ * Where the SDK persists the untruncated copy of an oversized tool result.
+ *
+ * Alongside the background-bash spills rather than in the SDK's own
+ * `MAESTRO_DATA_DIR` default: both are "too big for the context, recoverable
+ * for a while", and keeping them under this node's state directory means one
+ * place to inspect, back up, or wipe.
+ */
+const MAESTRO_TOOL_OUTPUT_DIR = resolve(RUN_DIR, "maestro-tool-outputs");
+
+/**
+ * Resolve the tool-result budget, defaulting it on.
+ *
+ * Caller wins, including `{ enabled: false }`, so a turn that needs whole
+ * results can opt out.
+ */
+export function buildMaestroToolResultTruncation(
+  opts: AgentQueryOptions,
+): NonNullable<AgentQueryOptions["toolResultTruncation"]> {
+  if (opts.toolResultTruncation) return opts.toolResultTruncation;
+  return {
+    enabled: true,
+    saveFullOutput: true,
+    outputDir: MAESTRO_TOOL_OUTPUT_DIR,
+    // `ReadToolOutput` is the escape hatch for a truncated result. The SDK
+    // already caps its reads below this budget, but truncating the reader
+    // would make an oversized result unreadable through the very tool meant
+    // to recover it.
+    ignoreTools: ["ReadToolOutput"],
+  };
+}
+
 export function maestroProvider(opts: AgentQueryOptions): AsyncGenerator<UnifiedEvent> {
   // Dispatcher guarantees agent === "maestro" before routing here; throw early
   // so routing bugs surface at the call site rather than silently overwriting.
@@ -221,6 +255,7 @@ export function maestroProvider(opts: AgentQueryOptions): AsyncGenerator<Unified
     maxTokens: MAESTRO_DEFAULT_MAX_TOKENS,
     ...opts,
     enableToolSearch: !opts.toolPolicy && opts.enableToolSearch !== false,
+    toolResultTruncation: buildMaestroToolResultTruncation(opts),
     // Resolve this after spreading caller options so untrusted runtime input
     // cannot replace a topic owner's Vault credentials with another key.
     apiKeyOverrides: resolveMaestroApiKeyOverrides(userId),

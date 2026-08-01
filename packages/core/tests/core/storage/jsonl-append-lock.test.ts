@@ -164,6 +164,13 @@ describe("appendJsonlEntry — a dead holder never costs an entry", () => {
     // staleness never fires — a genuinely stuck writer. The refresher must live
     // in another process, because `appendJsonlEntry` blocks this thread on
     // `Atomics.wait` and no timer here could run during the attempt.
+    // Shrink the lock window: the real thresholds would block this thread for
+    // ~6.5s on `Atomics.wait`, which starves every other test file sharing the
+    // runner. The invariant under test (timeout outlasts staleness) holds at
+    // any scale.
+    const previousStale = process.env.NEGOTIUM_JSONL_LOCK_STALE_MS;
+    process.env.NEGOTIUM_JSONL_LOCK_STALE_MS = "500";
+
     const filePath = join(workDir, "live-holder.jsonl");
     appendJsonlEntry(filePath, { seq: 1 });
     const lockPath = `${filePath}.lock`;
@@ -201,7 +208,11 @@ describe("appendJsonlEntry — a dead holder never costs an entry", () => {
     } finally {
       holder.kill();
       await holder.exited;
+      const holderErr = await new Response(holder.stderr).text();
+      if (holderErr.trim()) console.error("[holder stderr]", holderErr);
       if (existsSync(lockPath)) unlinkSync(lockPath);
+      if (previousStale === undefined) delete process.env.NEGOTIUM_JSONL_LOCK_STALE_MS;
+      else process.env.NEGOTIUM_JSONL_LOCK_STALE_MS = previousStale;
     }
 
     // Once the holder releases, appends resume normally.

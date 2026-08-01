@@ -158,15 +158,20 @@ function describeStream(label: string, snapshot: OutputSnapshot): string | undef
   if (!snapshot.truncated) return `${label}:\n${body}`;
 
   const notes = [
-    `전체 ${formatBytes(snapshot.totalBytes)} 중 ${formatBytes(snapshot.omittedBytes)} 생략`,
+    `${formatBytes(snapshot.totalBytes)} total, ${formatBytes(snapshot.omittedBytes)} omitted`,
   ];
   if (snapshot.spillPath) {
     // The path is only good while the completed process is retained. Saying so
     // lets a reader that comes back later know why the file is gone.
     notes.push(
-      `전체 출력: ${snapshot.spillPath} (약 ${Math.round(COMPLETED_RETENTION_MS / 60_000)}분 후 삭제)`,
+      `full output: ${snapshot.spillPath} ` +
+        `(deleted in ~${Math.round(COMPLETED_RETENTION_MS / 60_000)} min)`,
     );
-  } else notes.push(`전체 출력 저장 실패 (복구 불가): ${snapshot.spillError ?? "unknown"}`);
+  } else {
+    notes.push(
+      `full output could NOT be saved, unrecoverable: ${snapshot.spillError ?? "unknown"}`,
+    );
+  }
   return `${label} (${notes.join(" · ")}):\n${body}`;
 }
 
@@ -183,12 +188,15 @@ function injectCompletion(proc: BgProc): boolean {
   const stderr = describeStream("stderr", proc.stderr.snapshot());
   if (stdout) parts.push(stdout);
   if (stderr) parts.push(stderr);
-  const output = parts.join("\n") || "(출력 없음)";
+  const output = parts.join("\n") || "(no output)";
 
+  // English on purpose: this text is injected into the model's context, and
+  // every other model-facing string in this server — the tool descriptions it
+  // sits alongside — is English. It is also cheaper in tokens.
   const message =
-    `[background_bash ${proc.bashId} 완료]\n` +
-    `커맨드: ${proc.command.slice(0, 200)}\n` +
-    `종료 코드: ${proc.exitCode ?? "unknown"}\n` +
+    `[background_bash ${proc.bashId} finished]\n` +
+    `command: ${proc.command.slice(0, 200)}\n` +
+    `exit code: ${proc.exitCode ?? "unknown"}\n` +
     output;
 
   // `proc.topic` is the canonical topic id (see mcp-config background-bash

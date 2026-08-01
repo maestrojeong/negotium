@@ -247,6 +247,35 @@ export interface AgentQueryOptions {
    */
   enableToolSearch?: boolean;
   /**
+   * Bounded tool results with the full output kept on disk.
+   *
+   * Wired to `maestro-agent-sdk`'s `AgentQueryOptions.toolResultTruncation`.
+   * The SDK caps a string tool result, writes the untruncated bytes to a file,
+   * and splices an opaque `maestro://tool-output/<id>` reference into the text
+   * that the `ReadToolOutput` tool can page back through.
+   *
+   * The maestro provider enables it by default. Left unset, every tool result
+   * — a whole-file `Read`, a wide `Grep`, a `WebFetch` of a large page —
+   * entered the context at full size, and the `"ReadToolOutput"` entry in the
+   * provider's builtin list was dead, because the SDK only registers that tool
+   * when truncation is on with `saveFullOutput`.
+   *
+   * Pass an explicit object to tune the budget, or `{ enabled: false }` for a
+   * call whose tool results must arrive whole.
+   *
+   * No-op for claude / codex agents — their SDKs do their own truncation.
+   */
+  toolResultTruncation?: {
+    enabled?: boolean;
+    maxBytes?: number;
+    headBytes?: number;
+    tailBytes?: number;
+    saveFullOutput?: boolean;
+    outputDir?: string;
+    retentionDays?: number;
+    ignoreTools?: string[];
+  };
+  /**
    * Claude-Code-compatible exact tool denylist. Maestro v0.1.42+ hides these
    * tools from provider schemas / ToolSearch and blocks dispatch if a stale
    * call still arrives. Claude maps this to its SDK option. Codex does not

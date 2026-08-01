@@ -106,9 +106,28 @@ export function writeJsonFileAtomic(filePath: string, value: unknown): void {
 // which is a genuine fault worth reporting.
 const LOCK_SUFFIX = ".lock";
 const LOCK_RETRY_MS = 5;
-const LOCK_STALE_MS = 5000;
-/** Must stay > `LOCK_STALE_MS`; see the note above. */
-const LOCK_TIMEOUT_MS = LOCK_STALE_MS + 1500;
+const DEFAULT_LOCK_STALE_MS = 5000;
+/** Headroom so a waiter never gives up exactly as the reclaim becomes due. */
+const LOCK_TIMEOUT_HEADROOM_MS = 1500;
+
+/**
+ * Staleness threshold, overridable so tests can exercise the timeout path
+ * without blocking a real five seconds.
+ *
+ * Read per call rather than captured at import: the constants are consulted
+ * once per append, which is nothing next to the file I/O that follows, and a
+ * module-level snapshot could not be adjusted by a test that imports this
+ * module transitively.
+ */
+function lockStaleMs(): number {
+  const raw = Number.parseInt(process.env.NEGOTIUM_JSONL_LOCK_STALE_MS ?? "", 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_LOCK_STALE_MS;
+}
+
+/** Always > `lockStaleMs()`, so a dead holder is reclaimed rather than waited out. */
+function lockTimeoutMs(): number {
+  return lockStaleMs() + LOCK_TIMEOUT_HEADROOM_MS;
+}
 const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 
 /**
@@ -144,7 +163,7 @@ function tryAcquireAppendLock(lockPath: string): boolean {
 
 function isStaleLock(lockPath: string): boolean {
   try {
-    return Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS;
+    return Date.now() - statSync(lockPath).mtimeMs > lockStaleMs();
   } catch {
     return false;
   }
@@ -184,7 +203,8 @@ export function appendJsonlLine(filePath: string, line: string): void {
   }
   if (!acquired) {
     const start = Date.now();
-    while (!acquired && Date.now() - start < LOCK_TIMEOUT_MS) {
+    const timeoutMs = lockTimeoutMs();
+    while (!acquired && Date.now() - start < timeoutMs) {
       // Codex launches built-in stdio MCPs under Node+tsx while the runtime
       // itself uses Bun. Atomics.wait gives both processes a blocking sleep
       // without a CPU-spinning fallback or a Bun-only global.
@@ -199,7 +219,7 @@ export function appendJsonlLine(filePath: string, line: string): void {
     }
   }
 
-  if (!acquired) throw new JsonlLockTimeoutError(filePath, LOCK_TIMEOUT_MS);
+  if (!acquired) throw new JsonlLockTimeoutError(filePath, lockTimeoutMs());
 
   try {
     appendFileSync(filePath, payload);
