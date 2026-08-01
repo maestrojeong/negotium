@@ -14,7 +14,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ForkHandle } from "#agents/fork";
 import { WsHub } from "#bus";
@@ -478,21 +478,66 @@ export function sweepScheduledSessionInbox(nowMs = Date.now()): void {
         (deliverAt <= nowMs ? due : pending).push(entry);
       }
 
-      try {
-        for (const entry of due) {
-          const { deliverAt: _deliverAt, ...liveEntry } = entry;
-          appendJsonlEntry(sessionInboxPath(userId, topicId), liveEntry);
+      // A contended append can throw. Promotion is not atomic across entries,
+      // so record exactly which ones still need doing: retaining the whole
+      // claim would re-promote entries already delivered, and `seenRequestIds`
+      // only dedupes within a single drained batch — once the durable turn row
+      // completes, the same requestId runs a second time.
+      const unfinished: ScheduledSessionInboxEntry[] = [];
+      let failure: unknown;
+
+      for (const entry of due) {
+        if (failure) {
+          unfinished.push(entry);
+          continue;
         }
-        for (const entry of pending) appendJsonlEntry(schedulePath, entry);
-      } catch (err) {
-        // A contended append now throws instead of writing unlocked. Leave the
-        // `.processing` claim in place: the next drain merges it back, which is
-        // the same at-least-once recovery this loop already relies on after a
-        // crash. Deleting it here would drop every entry we had not rewritten.
+        const { deliverAt: _deliverAt, ...liveEntry } = entry;
+        try {
+          appendJsonlEntry(sessionInboxPath(userId, topicId), liveEntry);
+        } catch (err) {
+          failure = err;
+          unfinished.push(entry);
+        }
+      }
+      for (const entry of pending) {
+        if (failure) {
+          unfinished.push(entry);
+          continue;
+        }
+        try {
+          appendJsonlEntry(schedulePath, entry);
+        } catch (err) {
+          failure = err;
+          unfinished.push(entry);
+        }
+      }
+
+      if (failure) {
         logger.error(
-          { err, userId, topicId, due: due.length, pending: pending.length },
-          "self-schedule: promotion failed; leaving .processing for recovery",
+          {
+            err: failure,
+            userId,
+            topicId,
+            unfinished: unfinished.length,
+            total: due.length + pending.length,
+          },
+          "self-schedule: promotion interrupted; retaining only the unpromoted entries",
         );
+        try {
+          // Rewrite the claim we own so the next drain merges back only what
+          // was not delivered. Not an append, so it needs no append lock.
+          writeFileSync(
+            drained.processingPath,
+            `${unfinished.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+          );
+        } catch (rewriteErr) {
+          // Could not narrow the claim; keep all of it. Recovery then re-runs
+          // already-promoted entries, which is worse than losing none.
+          logger.error(
+            { err: rewriteErr, userId, topicId },
+            "self-schedule: could not rewrite the claim; recovery may duplicate entries",
+          );
+        }
         continue;
       }
       deleteProcessingFile(drained.processingPath, "self-schedule", drained.lines.length);

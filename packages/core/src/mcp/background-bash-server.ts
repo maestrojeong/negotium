@@ -63,6 +63,8 @@ const SIGTERM_GRACE_MS = 5_000;
 const MAX_OUTPUT_BYTES = 200_000;
 const COMPLETED_RETENTION_MS = 60 * 60_000;
 const MAX_COMPLETED_PROCS = 100;
+/** Count-based pruning ignores jobs this fresh; their turn may still be queued. */
+const PRUNE_GRACE_MS = 5 * 60_000;
 
 /** Root for full-output spill files, one directory per bash id. */
 const SPILL_ROOT = join(RUN_DIR, "bg-bash-output");
@@ -158,8 +160,13 @@ function describeStream(label: string, snapshot: OutputSnapshot): string | undef
   const notes = [
     `전체 ${formatBytes(snapshot.totalBytes)} 중 ${formatBytes(snapshot.omittedBytes)} 생략`,
   ];
-  if (snapshot.spillPath) notes.push(`전체 출력: ${snapshot.spillPath}`);
-  else notes.push(`전체 출력 저장 실패 (복구 불가): ${snapshot.spillError ?? "unknown"}`);
+  if (snapshot.spillPath) {
+    // The path is only good while the completed process is retained. Saying so
+    // lets a reader that comes back later know why the file is gone.
+    notes.push(
+      `전체 출력: ${snapshot.spillPath} (약 ${Math.round(COMPLETED_RETENTION_MS / 60_000)}분 후 삭제)`,
+    );
+  } else notes.push(`전체 출력 저장 실패 (복구 불가): ${snapshot.spillError ?? "unknown"}`);
   return `${label} (${notes.join(" · ")}):\n${body}`;
 }
 
@@ -236,9 +243,12 @@ function forgetProc(proc: BgProc): void {
 }
 
 function pruneCompletedProcs(): void {
+  // A burst of short high-output jobs could otherwise evict a spill seconds
+  // after its completion turn was queued but before the topic consumed it.
+  const evictableBefore = Date.now() - PRUNE_GRACE_MS;
   const completed = [...procs.values()]
     // Undelivered jobs hold the only copy of output the topic never saw.
-    .filter((proc) => proc.exited && proc.delivered)
+    .filter((proc) => proc.exited && proc.delivered && proc.startedAt < evictableBefore)
     .sort((a, b) => a.startedAt - b.startedAt);
   while (completed.length > MAX_COMPLETED_PROCS) {
     const oldest = completed.shift();

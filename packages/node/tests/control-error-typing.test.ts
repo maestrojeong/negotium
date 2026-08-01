@@ -1,9 +1,28 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { NODE_CONTROL_TOKEN, registerTopic } from "@negotium/core";
+import { deleteTopicCascade, NODE_CONTROL_TOKEN, registerTopic } from "@negotium/core";
 import { createNodeControlHandler, NODE_CONTROL_BASE_PATH } from "../src/control";
 
 const userId = `control-errors-${randomUUID()}`;
+
+// The SQLite fixture is shared across the whole run. Topics left behind here
+// (and their messages, runtime events, and gateway submissions) leak into
+// order-sensitive global queries in other suites, so every topic this file
+// creates is tracked and removed.
+const createdTopics: ReturnType<typeof registerTopic>[] = [];
+function topic(title: string) {
+  const created = registerTopic({ title, userId });
+  createdTopics.push(created);
+  return created;
+}
+
+afterAll(async () => {
+  for (const created of createdTopics) {
+    await deleteTopicCascade(created, userId).catch(() => {
+      // Best-effort teardown; a failure here must not fail the suite.
+    });
+  }
+});
 
 /** Shaped like the internals an unexpected throw tends to carry. */
 const LEAKY_MESSAGE = "ENOENT: /Users/private/.negotium/data/store.db is locked by pid 4242";
@@ -32,10 +51,10 @@ test("an unclassified error becomes a sanitized 500, not a 400 echoing internals
       throw new Error(LEAKY_MESSAGE);
     },
   });
-  const topic = registerTopic({ title: `Compact boom ${randomUUID()}`, userId });
+  const created = topic(`Compact boom ${randomUUID()}`);
 
   const response = await handler(
-    request(`/topics/${encodeURIComponent(topic.id)}/session/compact`, {
+    request(`/topics/${encodeURIComponent(created.id)}/session/compact`, {
       method: "POST",
       body: JSON.stringify({ userId }),
     }),
@@ -54,12 +73,12 @@ test("an unclassified error becomes a sanitized 500, not a 400 echoing internals
 
 test("genuine request validation still answers 400 with an actionable message", async () => {
   const handler = createNodeControlHandler(baseOptions);
-  const topic = registerTopic({ title: `Validation ${randomUUID()}`, userId });
+  const created = topic(`Validation ${randomUUID()}`);
 
   // `userId` missing entirely — a real client mistake, routed through the
   // typed ControlRequestError rather than the catch-all.
   const missingUser = await handler(
-    request(`/topics/${encodeURIComponent(topic.id)}/messages`, {
+    request(`/topics/${encodeURIComponent(created.id)}/messages`, {
       method: "POST",
       body: JSON.stringify({ text: "hello" }),
     }),
@@ -69,7 +88,7 @@ test("genuine request validation still answers 400 with an actionable message", 
 
   // Present but blank counts as absent.
   const blankText = await handler(
-    request(`/topics/${encodeURIComponent(topic.id)}/messages`, {
+    request(`/topics/${encodeURIComponent(created.id)}/messages`, {
       method: "POST",
       body: JSON.stringify({ userId, text: "   " }),
     }),
@@ -80,10 +99,10 @@ test("genuine request validation still answers 400 with an actionable message", 
 
 test("a non-string field is a 400, not a 500", async () => {
   const handler = createNodeControlHandler(baseOptions);
-  const topic = registerTopic({ title: `Wrong type ${randomUUID()}`, userId });
+  const created = topic(`Wrong type ${randomUUID()}`);
 
   const response = await handler(
-    request(`/topics/${encodeURIComponent(topic.id)}/model`, {
+    request(`/topics/${encodeURIComponent(created.id)}/model`, {
       method: "POST",
       body: JSON.stringify({ userId, model: 42 }),
     }),
@@ -95,7 +114,7 @@ test("a non-string field is a 400, not a 500", async () => {
 
 test("a missing idempotency key is a 400, not a 409 conflict", async () => {
   const handler = createNodeControlHandler(baseOptions);
-  const topic = registerTopic({ title: `Idempotency ${randomUUID()}`, userId });
+  const created = topic(`Idempotency ${randomUUID()}`);
 
   // `requiredText(body.clientMessageId, "clientMessageId")` throws a message
   // containing "clientMessageId". The catch block used to sniff for that
@@ -104,7 +123,7 @@ test("a missing idempotency key is a 400, not a 409 conflict", async () => {
   const response = await handler(
     request("/runtime/v1/turns", {
       method: "POST",
-      body: JSON.stringify({ v: 1, topicId: topic.id, userId, text: "hi" }),
+      body: JSON.stringify({ v: 1, topicId: created.id, userId, text: "hi" }),
     }),
   );
 
@@ -114,8 +133,8 @@ test("a missing idempotency key is a 400, not a 409 conflict", async () => {
 
 test("a genuine idempotency conflict is still a 409", async () => {
   const handler = createNodeControlHandler(baseOptions);
-  const first = registerTopic({ title: `Conflict A ${randomUUID()}`, userId });
-  const second = registerTopic({ title: `Conflict B ${randomUUID()}`, userId });
+  const first = topic(`Conflict A ${randomUUID()}`);
+  const second = topic(`Conflict B ${randomUUID()}`);
   const clientMessageId = randomUUID();
 
   const accepted = await handler(
