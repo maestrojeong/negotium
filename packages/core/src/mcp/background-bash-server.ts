@@ -21,12 +21,20 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { readdirSync, rmSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { deriveBgBashContextCapability } from "#platform/background-bash/context";
+import {
+  BoundedOutputStream,
+  formatBytes,
+  type OutputSnapshot,
+} from "#platform/background-bash/output-buffer";
+import { RUN_DIR } from "#platform/config";
 import { appendJsonlEntry } from "#platform/jsonl";
 import { sessionInboxPath } from "#query/session-inbox-path";
 import { mcpError, mcpOk } from "./mcp-helpers";
@@ -48,9 +56,16 @@ if (!port || !runtimeCapability || !runtimeServerId) {
 // --- Process registry ---
 
 const SIGTERM_GRACE_MS = 5_000;
+/**
+ * Preview budget per stream, in real UTF-8 bytes. Output beyond this is kept
+ * only in the spill file, never dropped outright.
+ */
 const MAX_OUTPUT_BYTES = 200_000;
 const COMPLETED_RETENTION_MS = 60 * 60_000;
 const MAX_COMPLETED_PROCS = 100;
+
+/** Root for full-output spill files, one directory per bash id. */
+const SPILL_ROOT = join(RUN_DIR, "bg-bash-output");
 
 interface BgProc {
   bashId: string;
@@ -58,8 +73,8 @@ interface BgProc {
   topic: string;
   command: string;
   child: ChildProcess;
-  stdout: string;
-  stderr: string;
+  stdout: BoundedOutputStream;
+  stderr: BoundedOutputStream;
   stdoutCursor: number;
   stderrCursor: number;
   exited: boolean;
@@ -88,22 +103,70 @@ function newBashId(): string {
   return `bash_${randomBytes(6).toString("hex")}`;
 }
 
-function appendBounded(proc: BgProc, stream: "stdout" | "stderr", chunk: string): void {
-  const next = proc[stream] + chunk;
-  if (next.length <= MAX_OUTPUT_BYTES) {
-    proc[stream] = next;
-    return;
+function spillDir(bashId: string): string {
+  return join(SPILL_ROOT, bashId);
+}
+
+function removeSpill(bashId: string): void {
+  try {
+    rmSync(spillDir(bashId), { recursive: true, force: true });
+  } catch {
+    // Best-effort: a leftover spill is swept on the next server start.
   }
-  const half = Math.floor(MAX_OUTPUT_BYTES / 2);
-  proc[stream] = `${next.slice(0, half)}\n…[truncated]…\n${next.slice(-half)}`;
+}
+
+/**
+ * Drop spill directories left behind by a previous server process.
+ *
+ * Completed processes are forgotten after `COMPLETED_RETENTION_MS`, but a
+ * crash or restart skips that cleanup, so anything older than the retention
+ * window is unreachable and safe to remove.
+ */
+function sweepStaleSpills(): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(SPILL_ROOT);
+  } catch {
+    return; // Nothing spilled yet.
+  }
+  const cutoff = Date.now() - COMPLETED_RETENTION_MS;
+  for (const entry of entries) {
+    if (procs.has(entry)) continue;
+    const path = join(SPILL_ROOT, entry);
+    try {
+      if (statSync(path).mtimeMs < cutoff) rmSync(path, { recursive: true, force: true });
+    } catch {
+      // Ignore races with a concurrent sweep.
+    }
+  }
+}
+
+/**
+ * Render one stream for the completion turn.
+ *
+ * Reports the real total, what was dropped from the preview, and where the
+ * complete bytes live. When the spill failed we say so instead of pointing at
+ * a file that does not hold the full output.
+ */
+function describeStream(label: string, snapshot: OutputSnapshot): string | undefined {
+  const body = snapshot.text.trim();
+  if (!body && !snapshot.truncated) return undefined;
+  if (!snapshot.truncated) return `${label}:\n${body}`;
+
+  const notes = [
+    `전체 ${formatBytes(snapshot.totalBytes)} 중 ${formatBytes(snapshot.omittedBytes)} 생략`,
+  ];
+  if (snapshot.spillPath) notes.push(`전체 출력: ${snapshot.spillPath}`);
+  else notes.push(`전체 출력 저장 실패 (복구 불가): ${snapshot.spillError ?? "unknown"}`);
+  return `${label} (${notes.join(" · ")}):\n${body}`;
 }
 
 function injectCompletion(proc: BgProc): void {
-  const stdout = proc.stdout.trim();
-  const stderr = proc.stderr.trim();
   const parts: string[] = [];
-  if (stdout) parts.push(`stdout:\n${stdout}`);
-  if (stderr) parts.push(`stderr:\n${stderr}`);
+  const stdout = describeStream("stdout", proc.stdout.snapshot());
+  const stderr = describeStream("stderr", proc.stderr.snapshot());
+  if (stdout) parts.push(stdout);
+  if (stderr) parts.push(stderr);
   const output = parts.join("\n") || "(출력 없음)";
 
   const message =
@@ -150,6 +213,11 @@ function forgetProc(proc: BgProc): void {
   if (procs.get(proc.bashId) !== proc) return;
   if (proc.cleanupTimer) clearTimeout(proc.cleanupTimer);
   procs.delete(proc.bashId);
+  // The spill is only reachable through this registry entry, so its lifetime
+  // is the completed-process retention lifetime.
+  proc.stdout.close();
+  proc.stderr.close();
+  removeSpill(proc.bashId);
 }
 
 function pruneCompletedProcs(): void {
@@ -182,6 +250,10 @@ function finishProc(proc: BgProc, exitCode: number | null): void {
     clearTimeout(proc.killTimer);
     proc.killTimer = undefined;
   }
+  // Release the spill descriptors before the completion turn quotes their
+  // paths, so anything reading them sees a closed, complete file.
+  proc.stdout.close();
+  proc.stderr.close();
   injectCompletion(proc);
   proc.cleanupTimer = setTimeout(() => forgetProc(proc), COMPLETED_RETENTION_MS);
   proc.cleanupTimer.unref?.();
@@ -205,27 +277,36 @@ function spawnBash(
   } catch (e) {
     return { error: `spawn failed: ${e instanceof Error ? e.message : String(e)}` };
   }
+  const dir = spillDir(bashId);
   const proc: BgProc = {
     bashId,
     userId: context.userId,
     topic: context.topic,
     command,
     child,
-    stdout: "",
-    stderr: "",
+    stdout: new BoundedOutputStream({
+      maxBytes: MAX_OUTPUT_BYTES,
+      spillPath: join(dir, "stdout.log"),
+    }),
+    stderr: new BoundedOutputStream({
+      maxBytes: MAX_OUTPUT_BYTES,
+      spillPath: join(dir, "stderr.log"),
+    }),
     stdoutCursor: 0,
     stderrCursor: 0,
     exited: false,
     exitCode: null,
     startedAt: Date.now(),
   };
-  child.stdout?.on("data", (c: Buffer) => appendBounded(proc, "stdout", c.toString("utf-8")));
-  child.stderr?.on("data", (c: Buffer) => appendBounded(proc, "stderr", c.toString("utf-8")));
+  // Raw Buffers: decoding per chunk would split multi-byte characters that
+  // straddle a chunk boundary. The buffer decodes at read time instead.
+  child.stdout?.on("data", (c: Buffer) => proc.stdout.append(c));
+  child.stderr?.on("data", (c: Buffer) => proc.stderr.append(c));
   child.on("close", (code) => {
     finishProc(proc, code);
   });
   child.on("error", (err) => {
-    appendBounded(proc, "stderr", `[spawn error]: ${err.message}\n`);
+    proc.stderr.append(Buffer.from(`[spawn error]: ${err.message}\n`, "utf-8"));
     finishProc(proc, -1);
   });
   procs.set(bashId, proc);
@@ -249,7 +330,10 @@ function buildMcpServer(context: BgContext): McpServer {
     [
       "Start a long-running shell command in the background. Returns bash_id immediately.",
       "The process runs independently of this agent turn.",
-      "When it exits, the full output is automatically injected into this session as a new turn.",
+      "When it exits, its output is injected into this session as a new turn.",
+      `Each stream is previewed up to ${Math.floor(MAX_OUTPUT_BYTES / 1024)} KiB (head + tail);`,
+      "when output exceeds that, the preview states how much was omitted and gives the path of a",
+      "spill file holding the complete stdout/stderr, readable until the process is pruned.",
       "You do NOT need to poll for completion — just start it and continue.",
       "Use background_bash_output to peek at live output, background_bash_kill to terminate early.",
     ].join(" "),
@@ -266,22 +350,30 @@ function buildMcpServer(context: BgContext): McpServer {
 
   server.tool(
     "background_bash_output",
-    "Poll incremental stdout/stderr since the last call. Returns only new bytes plus exited/exitCode.",
+    [
+      "Poll incremental stdout/stderr since the last call. Returns only new bytes plus exited/exitCode.",
+      "stdoutDropped/stderrDropped count bytes that scrolled out of the live window before this call",
+      "reached them; read stdoutPath/stderrPath for the complete output when that happens.",
+    ].join(" "),
     { bash_id: z.string().describe("bash_id from background_bash_run") },
     async ({ bash_id }) => {
       const proc = procs.get(bash_id);
       if (!proc || !sameContext(proc, context)) return mcpError(`Unknown bash_id: ${bash_id}`);
-      const newStdout = proc.stdout.slice(proc.stdoutCursor);
-      const newStderr = proc.stderr.slice(proc.stderrCursor);
-      proc.stdoutCursor = proc.stdout.length;
-      proc.stderrCursor = proc.stderr.length;
+      const out = proc.stdout.readSince(proc.stdoutCursor);
+      const err = proc.stderr.readSince(proc.stderrCursor);
+      proc.stdoutCursor = out.nextCursor;
+      proc.stderrCursor = err.nextCursor;
       return mcpOk(
         JSON.stringify({
           bash_id,
           exited: proc.exited,
           exitCode: proc.exitCode,
-          stdout: newStdout,
-          stderr: newStderr,
+          stdout: out.text,
+          stderr: err.text,
+          ...(out.droppedBytes ? { stdoutDropped: out.droppedBytes } : {}),
+          ...(err.droppedBytes ? { stderrDropped: err.droppedBytes } : {}),
+          ...(proc.stdout.spillPath ? { stdoutPath: proc.stdout.spillPath } : {}),
+          ...(proc.stderr.spillPath ? { stderrPath: proc.stderr.spillPath } : {}),
         }),
       );
     },
@@ -440,5 +532,6 @@ const httpServer = createServer(async (req, res) => {
 });
 
 httpServer.listen(port, "127.0.0.1", () => {
+  sweepStaleSpills();
   process.stderr.write(`[bg-bash] shared runtime listening on 127.0.0.1:${port}\n`);
 });
