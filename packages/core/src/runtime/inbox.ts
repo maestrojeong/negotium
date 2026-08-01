@@ -478,11 +478,23 @@ export function sweepScheduledSessionInbox(nowMs = Date.now()): void {
         (deliverAt <= nowMs ? due : pending).push(entry);
       }
 
-      for (const entry of due) {
-        const { deliverAt: _deliverAt, ...liveEntry } = entry;
-        appendJsonlEntry(sessionInboxPath(userId, topicId), liveEntry);
+      try {
+        for (const entry of due) {
+          const { deliverAt: _deliverAt, ...liveEntry } = entry;
+          appendJsonlEntry(sessionInboxPath(userId, topicId), liveEntry);
+        }
+        for (const entry of pending) appendJsonlEntry(schedulePath, entry);
+      } catch (err) {
+        // A contended append now throws instead of writing unlocked. Leave the
+        // `.processing` claim in place: the next drain merges it back, which is
+        // the same at-least-once recovery this loop already relies on after a
+        // crash. Deleting it here would drop every entry we had not rewritten.
+        logger.error(
+          { err, userId, topicId, due: due.length, pending: pending.length },
+          "self-schedule: promotion failed; leaving .processing for recovery",
+        );
+        continue;
       }
-      for (const entry of pending) appendJsonlEntry(schedulePath, entry);
       deleteProcessingFile(drained.processingPath, "self-schedule", drained.lines.length);
 
       if (due.length > 0) {

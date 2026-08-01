@@ -84,14 +84,37 @@ export function writeJsonFileAtomic(filePath: string, value: unknown): void {
 // every append at the OS level. Lock is held for the duration of one
 // `appendFileSync`, so the contention window is microseconds. Stale locks
 // (process crashed mid-write) are detected via mtime and forcibly removed
-// after `LOCK_STALE_MS`. As a last resort, after `LOCK_TIMEOUT_MS` of
-// retries, the lock is bypassed — the entry survives but may interleave;
-// preferable to dropping it entirely.
+// after `LOCK_STALE_MS`.
+//
+// When the lock still cannot be acquired within `LOCK_TIMEOUT_MS`, the append
+// FAILS. It used to fall through to an unlocked `appendFileSync` on the theory
+// that a possibly-interleaved entry beats a dropped one — but an interleaved
+// write is exactly the corruption the lock exists to prevent, it can damage a
+// neighbouring well-formed entry as well as its own, and `parseOutboxLine`
+// discards the wreckage later and far from the cause. The caller was told the
+// write succeeded. Failing loudly lets each caller choose: surface the error to
+// its client, or log and continue.
 const LOCK_SUFFIX = ".lock";
 const LOCK_RETRY_MS = 5;
 const LOCK_TIMEOUT_MS = 1500;
 const LOCK_STALE_MS = 5000;
 const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+
+/**
+ * The append lock could not be acquired, so nothing was written.
+ *
+ * Distinguishable from an I/O error so callers can retry, degrade, or report
+ * contention specifically. Nothing was appended when this is thrown.
+ */
+export class JsonlLockTimeoutError extends Error {
+  constructor(
+    readonly filePath: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`jsonl append lock busy after ${timeoutMs}ms; nothing written to ${filePath}`);
+    this.name = "JsonlLockTimeoutError";
+  }
+}
 
 /** Synchronous, non-spinning sleep supported by both Bun and Node MCP workers. */
 function sleepForAppendLock(ms: number): void {
@@ -165,13 +188,7 @@ export function appendJsonlLine(filePath: string, line: string): void {
     }
   }
 
-  if (!acquired) {
-    // Best-effort fallback: append unlocked. Worst case the line interleaves
-    // with another writer and one of them is dropped at parse time — still
-    // better than dropping the entry on the floor here.
-    appendFileSync(filePath, payload);
-    return;
-  }
+  if (!acquired) throw new JsonlLockTimeoutError(filePath, LOCK_TIMEOUT_MS);
 
   try {
     appendFileSync(filePath, payload);

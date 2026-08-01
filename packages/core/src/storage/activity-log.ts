@@ -56,7 +56,13 @@ export function writeLog(entry: LogEntry) {
     // File doesn't exist yet, fine
   }
 
-  appendJsonlEntry(file, entry);
+  try {
+    appendJsonlEntry(file, entry);
+  } catch (e) {
+    // Activity logging is telemetry: a contended append must never take down
+    // the turn that produced the entry. Matches `writeSentFileLog` below.
+    logger.warn({ err: e, userId: entry.userId, session: entry.session }, "Failed to write log");
+  }
 }
 
 /** Remove oldest log files when total size exceeds budget */

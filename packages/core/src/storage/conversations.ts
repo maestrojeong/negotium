@@ -98,8 +98,9 @@ export function hasActiveConversation(userId: number | string, topicName: string
  * (512B), and a torn line is silently dropped by `readConversation` —
  * corrupting the canonical source for cross-agent rollout reconstruction.
  * Writes therefore go through `appendJsonlLine` (sidecar `.lock` via O_EXCL,
- * stale-lock reclaim, unlocked-append fallback on timeout — interleave is
- * accepted over dropping the entry).
+ * stale-lock reclaim, and a `JsonlLockTimeoutError` when the lock stays busy —
+ * nothing is written unlocked, so a contended append fails instead of risking
+ * an interleaved line that `readConversationPath` would later discard).
  *
  * The append stays SYNCHRONOUS on purpose: a previous attempt at a
  * Promise-chained per-topic queue made writes async (durability gap before a

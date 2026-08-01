@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appendJsonlEntry } from "#platform/jsonl";
+import { appendJsonlEntry, JsonlLockTimeoutError } from "#platform/jsonl";
 
 let workDir: string;
 
@@ -126,4 +126,103 @@ describe("appendJsonlEntry — cross-process lock", () => {
     expect(exitCode).toBe(0);
     expect(readLines(filePath).map((line) => JSON.parse(line))).toEqual([{ runtime: "node" }]);
   });
+});
+
+describe("appendJsonlEntry — contention fails instead of writing unlocked", () => {
+  test("throws JsonlLockTimeoutError and writes nothing while a live lock is held", () => {
+    const filePath = join(workDir, "contended.jsonl");
+    appendJsonlEntry(filePath, { seq: 1 });
+
+    // A lock with a fresh mtime is not stale (LOCK_STALE_MS=5000), so the
+    // acquire loop exhausts LOCK_TIMEOUT_MS=1500 and gives up.
+    const lockPath = `${filePath}.lock`;
+    writeFileSync(lockPath, "");
+
+    expect(() => appendJsonlEntry(filePath, { seq: 2 })).toThrow(JsonlLockTimeoutError);
+
+    // The previous behavior appended unlocked here, risking a line interleaved
+    // with the lock holder's write. Nothing must have been added.
+    expect(readLines(filePath)).toEqual([JSON.stringify({ seq: 1 })]);
+    unlinkSync(lockPath);
+
+    // Once the holder releases, appends resume normally.
+    appendJsonlEntry(filePath, { seq: 2 });
+    expect(readLines(filePath)).toEqual([JSON.stringify({ seq: 1 }), JSON.stringify({ seq: 2 })]);
+  });
+
+  test("the error names the file and reports that nothing was written", () => {
+    const filePath = join(workDir, "named.jsonl");
+    writeFileSync(`${filePath}.lock`, "");
+    try {
+      appendJsonlEntry(filePath, { x: 1 });
+      throw new Error("expected a lock timeout");
+    } catch (err) {
+      expect(err).toBeInstanceOf(JsonlLockTimeoutError);
+      expect((err as JsonlLockTimeoutError).filePath).toBe(filePath);
+      expect((err as Error).message).toInclude("nothing written");
+    }
+    expect(existsSync(filePath)).toBeFalse();
+  });
+});
+
+describe("appendJsonlEntry — true multi-process race", () => {
+  test("concurrent OS processes never interleave a large payload", async () => {
+    // The in-process test above cannot produce a real race: appendFileSync
+    // calls are serialized by the event loop. These are separate OS processes
+    // writing payloads far above PIPE_BUF (macOS 512 B, Linux 4 KB) at the
+    // same time, which is the exact condition the lock exists for.
+    // Kept deliberately small: `bun test` runs files in parallel, and a
+    // heavier fan-out here starves neighbouring cross-process tests that wait
+    // on a spawned runtime. Four writers with payloads above PIPE_BUF is
+    // already sufficient to expose an interleave.
+    const filePath = join(workDir, "multiproc.jsonl");
+    const WRITERS = 4;
+    const PER_WRITER = 6;
+    const PAD = 2048; // macOS PIPE_BUF is 512 B
+    const coreDir = join(import.meta.dir, "../../..");
+
+    const children = Array.from({ length: WRITERS }, (_, w) =>
+      Bun.spawn(
+        [
+          process.execPath,
+          "-e",
+          `import { appendJsonlEntry } from "./src/platform/jsonl.ts";
+           const w = Number(process.env.W);
+           for (let i = 0; i < ${PER_WRITER}; i++) {
+             appendJsonlEntry(process.env.F, { w, i, pad: String(w).repeat(${PAD}) });
+           }`,
+        ],
+        {
+          cwd: coreDir,
+          env: { ...process.env, F: filePath, W: String(w) },
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      ),
+    );
+
+    const results = await Promise.all(
+      children.map(async (child) => ({
+        code: await child.exited,
+        stderr: await new Response(child.stderr).text(),
+      })),
+    );
+    for (const result of results) {
+      expect(result.stderr).toBe("");
+      expect(result.code).toBe(0);
+    }
+
+    const lines = readLines(filePath);
+    expect(lines.length).toBe(WRITERS * PER_WRITER);
+
+    // Every line must be intact JSON — an interleaved write shows up here.
+    const seen = new Set<string>();
+    for (const line of lines) {
+      const parsed = JSON.parse(line) as { w: number; i: number; pad: string };
+      expect(parsed.pad).toBe(String(parsed.w).repeat(PAD));
+      seen.add(`${parsed.w}:${parsed.i}`);
+    }
+    expect(seen.size).toBe(WRITERS * PER_WRITER);
+    expect(existsSync(`${filePath}.lock`)).toBeFalse();
+  }, 30_000);
 });
