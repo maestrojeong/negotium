@@ -42,12 +42,27 @@ describe("McpHost", () => {
   let portsDir: string;
   let manifest: McpManifest;
   let host: McpHost;
+  /**
+   * Logical clock for idle bookkeeping. The eviction rules are pure arithmetic
+   * over `lastUsedAt`, so driving them from a variable makes the outcome
+   * independent of how loaded the machine is — `Bun.sleep(150)` can return
+   * 500ms later when the whole suite runs in parallel, which used to evict an
+   * instance the test had just touched.
+   */
+  let clock: { t: number };
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "mcp-host-"));
     portsDir = join(dir, "run", "mcp-ports");
     manifest = new McpManifest({ file: join(dir, "data", "mcp-manifest.json") });
-    host = new McpHost({ manifest, portsDir, log: noopLog, sweepIntervalMs: 100 });
+    clock = { t: 1_000_000 };
+    host = new McpHost({
+      manifest,
+      portsDir,
+      log: noopLog,
+      sweepIntervalMs: 100,
+      now: () => clock.t,
+    });
   });
 
   afterEach(async () => {
@@ -191,31 +206,34 @@ describe("McpHost", () => {
     const portFile = join(portsDir, "web--node");
     expect(existsSync(portFile)).toBe(true);
 
-    const stopSweeper = host.startSweeper();
-    try {
-      expect(await waitFor(() => host.listRunning().length === 0, 3_000)).toBe(true);
-      expect(existsSync(portFile)).toBe(false);
-    } finally {
-      stopSweeper();
-    }
+    // Not yet idle.
+    clock.t += 299;
+    await host.sweepOnce();
+    expect(host.listRunning()).toHaveLength(1);
+
+    clock.t += 1;
+    await host.sweepOnce();
+    expect(host.listRunning()).toHaveLength(0);
+    expect(existsSync(portFile)).toBe(false);
   });
 
   test("touch defers idle eviction", async () => {
     manifest.add(httpSpec("web", 43800, { idleEvictMs: 400 }));
     await host.ensure("web");
-    const stopSweeper = host.startSweeper();
-    try {
-      // Keep touching for a full eviction window — instance must survive.
-      for (let i = 0; i < 4; i++) {
-        await Bun.sleep(150);
-        host.touch("web");
-      }
+
+    // Touch just inside the window, repeatedly, for longer than one window.
+    // Each touch resets the age, so the instance must survive all of it.
+    for (let i = 0; i < 4; i++) {
+      clock.t += 300;
+      host.touch("web");
+      await host.sweepOnce();
       expect(host.listRunning()).toHaveLength(1);
-      // Stop touching — it must get evicted.
-      expect(await waitFor(() => host.listRunning().length === 0, 3_000)).toBe(true);
-    } finally {
-      stopSweeper();
     }
+
+    // Stop touching: the next sweep past the window reaps it.
+    clock.t += 400;
+    await host.sweepOnce();
+    expect(host.listRunning()).toHaveLength(0);
   });
 
   test("ensure fails when the command never binds the port", async () => {
