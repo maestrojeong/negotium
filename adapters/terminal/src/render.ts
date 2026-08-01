@@ -7,6 +7,7 @@ import {
   type TopicDto,
 } from "@negotium/core";
 import { terminalNowMs } from "@/clock";
+import { type ColorDepth, detectColorDepth, rgbToAnsi16, rgbToAnsi256 } from "@/color-depth";
 import { commandSuggestions } from "@/commands";
 import { pathSuggestions } from "@/path-suggest";
 import {
@@ -15,8 +16,11 @@ import {
   activeQuestion,
   activeTaskPanel,
   activeTopic,
+  type NoticeLevel,
   pickedBackgroundSession,
   type TerminalMessage,
+  visibleBackgroundSessions,
+  visibleTopicPickerIds,
 } from "@/state";
 import { displayWidth, runeWidth, stripAnsi } from "@/terminal-width";
 
@@ -122,14 +126,116 @@ export interface RenderedTerminalApp {
 
 const ESC = "\u001b[";
 const RESET = `${ESC}0m`;
-const fg = ([r, g, b]: Rgb) => `${ESC}38;2;${r};${g};${b}m`;
-const bg = ([r, g, b]: Rgb) => `${ESC}48;2;${r};${g};${b}m`;
+/**
+ * Detected once at module load. The palette above is authored in 24-bit RGB;
+ * `fg`/`bg` downshift it to whatever the terminal accepts, and `"none"` drops
+ * every SGR byte so a pipe, `NO_COLOR`, or `TERM=dumb` gets plain text.
+ *
+ * Because every severity/state distinction in the UI also carries a glyph
+ * (`NOTICE_STYLE`, `toolMessageLines`, `toolDetailSign`), `"none"` loses
+ * emphasis but not information.
+ */
+let colorDepth: ColorDepth = detectColorDepth();
+
+export function getColorDepth(): ColorDepth {
+  return colorDepth;
+}
+
+/**
+ * Runtime override (tests, and any caller applying `NEGOTIUM_TUI_COLOR` after
+ * module load). Clears the message layout cache: layouts are cached as
+ * unpainted `UiLine` values today, so depth does not actually leak into them,
+ * but the invalidation must exist regardless of that internal detail.
+ */
+export function setColorDepth(depth: ColorDepth): void {
+  if (depth === colorDepth) return;
+  colorDepth = depth;
+  clearMessageLayoutCache();
+}
+
+const fg = (rgb: Rgb): string => {
+  switch (colorDepth) {
+    case "none":
+      return "";
+    case "ansi16": {
+      const code = rgbToAnsi16(rgb);
+      return `${ESC}${code < 8 ? 30 + code : 90 + (code - 8)}m`;
+    }
+    case "ansi256":
+      return `${ESC}38;5;${rgbToAnsi256(rgb)}m`;
+    default:
+      return `${ESC}38;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
+  }
+};
+
+const bg = (rgb: Rgb): string => {
+  switch (colorDepth) {
+    case "none":
+      return "";
+    case "ansi16": {
+      const code = rgbToAnsi16(rgb);
+      return `${ESC}${code < 8 ? 40 + code : 100 + (code - 8)}m`;
+    }
+    case "ansi256":
+      return `${ESC}48;5;${rgbToAnsi256(rgb)}m`;
+    default:
+      return `${ESC}48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
+  }
+};
 
 function paint(
   value: string,
   options: { fg?: Rgb; bg?: Rgb; bold?: boolean; dim?: boolean } = {},
 ): string {
+  // `none` emits no SGR at all - including the trailing reset, so the frame is
+  // byte-for-byte plain text rather than text wrapped in no-op escapes.
+  if (colorDepth === "none") return value;
   return `${options.fg ? fg(options.fg) : ""}${options.bg ? bg(options.bg) : ""}${options.bold ? `${ESC}1m` : ""}${options.dim ? `${ESC}2m` : ""}${value}${RESET}`;
+}
+
+// OSC 8 hyperlinks (https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda).
+// Terminals that understand the sequence make the wrapped text clickable;
+// most terminals that don't simply ignore the escape bytes. "Most" is why this
+// is gated on `colorDepth !== "none"` below rather than emitted unconditionally.
+// `stripAnsi` (terminal-width.ts) strips it back out for width math and
+// selection copy, so it must stay in sync with this format.
+function hyperlink(url: string, label: string): string {
+  return `\u001b]8;;${url}\u0007${label}\u001b]8;;\u0007`;
+}
+
+// Bare `https?://` URLs that show up in agent output or tool results (plain
+// paragraphs, markdown-link parens from `cleanInlineMarkdown`, code blocks,
+// etc). Run once over the fully composed frame — after wrapping/fitting have
+// already fixed every line's visual width — because the inserted escape
+// bytes are zero-width and must not perturb any width calculation upstream.
+// biome-ignore lint/complexity/useRegexLiterals: avoids a literal terminal control byte in source.
+const BARE_URL_PATTERN = new RegExp("\\bhttps?://[^\\s<>\"'`\\u001b]+", "g");
+// Trailing characters that are almost always punctuation around the URL
+// rather than part of it (closing paren from markdown, sentence-ending
+// punctuation, etc).
+const URL_TRAILING_PUNCTUATION = /[).,;:!?\]}'"]+$/;
+
+/**
+ * Wraps bare URLs in OSC 8, except at colour depth `none`.
+ *
+ * `none` is the contract "this frame is plain text": it is what `NO_COLOR` and
+ * `TERM=dumb` resolve to, and both mean "the thing reading me may not speak
+ * escape sequences at all". A terminal that ignores SGR but not OSC 8 would
+ * print the raw `]8;;https://…` bytes as visible garbage, and a pipe or a
+ * screen reader has no use for them either. Hyperlinks are folded into the
+ * colour capability rather than given their own flag: negotium has no way to
+ * probe OSC 8 support separately, so a second flag would only be a second thing
+ * to guess wrong.
+ */
+function linkifyUrls(text: string): string {
+  if (colorDepth === "none") return text;
+  return text.replace(BARE_URL_PATTERN, (match) => {
+    const trailingMatch = match.match(URL_TRAILING_PUNCTUATION);
+    const trailing = trailingMatch ? trailingMatch[0] : "";
+    const url = trailing ? match.slice(0, -trailing.length) : match;
+    if (!url) return match;
+    return `${hyperlink(url, url)}${trailing}`;
+  });
 }
 
 function safeText(value: string): string {
@@ -237,27 +343,165 @@ function joinSides(left: string, right: string, width: number): string {
   return fit(`${safeLeft}${" ".repeat(gap)}${safeRight}`, width);
 }
 
+/**
+ * Port of codex's `usable_content_width` (codex-rs/tui/src/width.rs): fixed
+ * prefix columns are only spent when a usable content width survives them.
+ * Returns `null` when the caller should drop the prefix (or itself) instead of
+ * forcing a layout that cannot fit.
+ */
+function usableContentWidth(
+  totalWidth: number,
+  reservedColumns: number,
+  minimum = 1,
+): number | null {
+  const remaining = totalWidth - reservedColumns;
+  return remaining >= minimum ? remaining : null;
+}
+
+/**
+ * Greedy fit test over a priority-ordered list of candidates, mirroring the
+ * drop chain in codex's `bottom_pane/footer.rs`: try the richest text first and
+ * fall back to progressively shorter ones instead of switching on a global
+ * "narrow terminal" breakpoint. The last candidate is used even if it still
+ * overflows, because the caller truncates it anyway.
+ */
+function pickFitting(candidates: readonly string[], width: number): string {
+  for (const candidate of candidates) {
+    if (displayWidth(candidate) <= width) return candidate;
+  }
+  return candidates[candidates.length - 1] ?? "";
+}
+
+/**
+ * One visual row of a wrapped paragraph, expressed as code-point offsets into
+ * the paragraph rather than as a string.
+ *
+ * `[start, end)` is every code point the row *owns* — including whitespace that
+ * was swallowed at the fold and is not drawn. `[start, textEnd)` is what is
+ * actually rendered. The two differ only when a fold lands inside a run of
+ * spaces; keeping both means the wrapper and the cursor mapper agree on which
+ * row an offset belongs to even for characters that leave no visible mark.
+ */
+interface WrapSegment {
+  start: number;
+  end: number;
+  textEnd: number;
+}
+
+const isWrapSpace = (character: string): boolean => character === " " || character === "\t";
+
+/**
+ * Scripts without spaces (Hangul, Han, kana, and — harmlessly — emoji) are all
+ * double-width here, so "is this two columns wide" doubles as "may a line fold
+ * on either side of this character". Without it, Korean text has no break
+ * opportunity at all and would only ever fold by force.
+ */
+const isWideBreak = (character: string): boolean => runeWidth(character) === 2;
+
+/**
+ * Minimal kinsoku: characters that must not open a row (closing brackets and
+ * trailing punctuation) and characters that must not close one (opening
+ * brackets). Without this, folding "…접힙니다." on a CJK boundary strands the
+ * full stop alone on the next row, which is the most visible artefact of
+ * character-level CJK folding.
+ *
+ * Advisory only — the force split that rescues an over-long token ignores it,
+ * so this can never keep a row from fitting.
+ */
+const NO_ROW_START = new Set(
+  Array.from(
+    ".,;:!?)]}>»”’\u3001\u3002\uff0c\uff0e\uff01\uff1f\uff1a\uff1b\uff09\uff3d\uff5d\u3009\u300b\u300d\u300f\u3011\u3015\u30fb\u2026\u30fc",
+  ),
+);
+const NO_ROW_END = new Set(
+  Array.from("([{<«“‘\uff08\uff3b\uff5b\u3008\u300a\u300c\u300e\u3010\u3014"),
+);
+
+/** May a row end immediately before `index`? */
+function breaksBefore(chars: readonly string[], index: number): boolean {
+  const previous = chars[index] === undefined ? "" : (chars[index - 1] ?? "");
+  const current = chars[index] ?? "";
+  if (NO_ROW_START.has(current) || NO_ROW_END.has(previous)) return false;
+  if (isWrapSpace(previous) && !isWrapSpace(current)) return true;
+  if (isWideBreak(previous) || isWideBreak(current)) return true;
+  return previous === "-" && !isWrapSpace(current);
+}
+
+/**
+ * Greedy word wrap over code points.
+ *
+ * Rules, in the order they apply:
+ *  1. Fold at the last break opportunity that still fits — after a whitespace
+ *     run, on either side of a double-width (CJK/emoji) character, or after a
+ *     hyphen. Western words therefore stay intact and Korean keeps packing the
+ *     row as tightly as the old character wrap did.
+ *  2. A token longer than the whole row (a URL, a hash) is force-split at the
+ *     column limit. Without this the row would outgrow the terminal and break
+ *     the width invariant that the line-diff renderer depends on.
+ *  3. When the character that overflows is whitespace, the entire whitespace
+ *     run is absorbed by the row that is ending and clipped away at render
+ *     time, so the next row never begins with the separator space.
+ *
+ * Everything is measured with `runeWidth` per code point, deliberately matching
+ * `displayWidth`/`sliceWidth`/the text buffer's cursor; a grapheme-cluster
+ * measure here alone would resurrect over-wide rows on narrow terminals.
+ */
+function wrapSegments(chars: readonly string[], width: number): WrapSegment[] {
+  const total = chars.length;
+  if (total === 0) return [{ start: 0, end: 0, textEnd: 0 }];
+  const segments: WrapSegment[] = [];
+  let start = 0;
+  while (start < total) {
+    let used = 0;
+    let lastBreak = -1;
+    let index = start;
+    for (; index < total; index++) {
+      // Recorded before the fit test: a row may legally end *after* a character
+      // that itself no longer fits' predecessor, e.g. the space in "한국어 테스트".
+      if (index > start && breaksBefore(chars, index)) lastBreak = index;
+      const characterWidth = runeWidth(chars[index] ?? "");
+      if (used + characterWidth > width && index > start) break;
+      used += characterWidth;
+    }
+    if (index >= total) {
+      segments.push({ start, end: total, textEnd: total });
+      break;
+    }
+    if (isWrapSpace(chars[index] ?? "")) {
+      let after = index;
+      while (after < total && isWrapSpace(chars[after] ?? "")) after += 1;
+      segments.push({ start, end: after, textEnd: index });
+      start = after;
+      continue;
+    }
+    const end = lastBreak > start ? lastBreak : index;
+    segments.push({ start, end, textEnd: end });
+    start = end;
+  }
+  return segments.length > 0 ? segments : [{ start: 0, end: 0, textEnd: 0 }];
+}
+
+/**
+ * Single row escape hatch for widths too narrow to fold into.
+ *
+ * At `width <= 1` a double-width code point cannot be placed at all, so any
+ * folding would emit a row wider than the terminal. `wrapText` and
+ * `wrapLineWithCursor` both take this branch so they stay in agreement.
+ */
+const WRAP_MIN_WIDTH = 2;
+
 export function wrapText(value: string, width: number): string[] {
-  if (width <= 1) return [sliceWidth(value, Math.max(0, width))];
+  if (width < WRAP_MIN_WIDTH) return [sliceWidth(value, Math.max(0, width))];
   const output: string[] = [];
   for (const paragraph of safeText(value).split("\n")) {
     if (!paragraph) {
       output.push("");
       continue;
     }
-    let current = "";
-    let currentWidth = 0;
-    for (const character of [...paragraph]) {
-      const characterWidth = runeWidth(character);
-      if (currentWidth + characterWidth > width && current) {
-        output.push(current);
-        current = "";
-        currentWidth = 0;
-      }
-      current += character;
-      currentWidth += characterWidth;
+    const chars = Array.from(paragraph);
+    for (const segment of wrapSegments(chars, width)) {
+      output.push(chars.slice(segment.start, segment.textEnd).join(""));
     }
-    output.push(current);
   }
   return output.length > 0 ? output : [""];
 }
@@ -266,6 +510,17 @@ function line(text: string, options: Omit<UiLine, "text"> = {}): UiLine {
   return { text, ...options };
 }
 
+/**
+ * Narrowest inner width a bordered pane is still drawn at. Below it the pane is
+ * skipped entirely rather than degraded, matching `card_inner_width()` in
+ * codex's `history_cell/session.rs`, which returns `None` under four columns
+ * and renders nothing at all. No "terminal too narrow" notice is shown; codex
+ * has none either.
+ */
+const FRAME_MIN_INNER_WIDTH = 4;
+/** Below this inner width the border title is dropped to keep content legible. */
+const FRAME_TITLE_MIN_INNER_WIDTH = 8;
+
 function framePane(
   title: string,
   content: UiLine[],
@@ -273,9 +528,16 @@ function framePane(
   height: number,
   options: { active?: boolean; accent?: Rgb } = {},
 ): string[] {
-  const innerWidth = Math.max(1, width - 2);
+  const innerWidth = usableContentWidth(width, 2, FRAME_MIN_INNER_WIDTH);
+  if (innerWidth === null) return [];
   const borderColor = options.active ? (options.accent ?? theme.borderActive) : theme.border;
-  const label = ` ${sliceWidth(title, Math.max(0, innerWidth - 3))} `;
+  const labelText =
+    innerWidth >= FRAME_TITLE_MIN_INNER_WIDTH ? sliceWidth(title, innerWidth - 3) : "";
+  const label = labelText ? ` ${labelText} ` : "";
+  // Every row is cut to `innerWidth` before the border is attached (`fit`
+  // below, `sliceWidth` for the title). codex PR #34775 fixed exactly this:
+  // its `with_border` used to widen the box to the longest line, so the box
+  // could exceed the terminal. Truncating first makes that impossible here.
   const top = paint(`╭${label}${"─".repeat(Math.max(0, innerWidth - displayWidth(label)))}╮`, {
     fg: borderColor,
     bg: theme.canvas,
@@ -753,7 +1015,56 @@ function toolMessageLines(message: TerminalMessage, width: number): UiLine[] {
   ];
 }
 
+interface MessageLayout {
+  width: number;
+  userId: string;
+  lines: UiLine[];
+}
+
+/**
+ * Layout cache for messages that have not changed since the last frame.
+ *
+ * Every runtime event lays out the whole transcript three times (the frame
+ * itself, plus `maxConversationScrollOffset` twice via
+ * `preserveConversationScrollAnchor`), and Markdown layout dominates that cost.
+ *
+ * Keyed by object identity rather than by message content, following codex
+ * PR #34223: instead of proving "the content did not change" with a hash, the
+ * cache relies on the store already proving it structurally. `upsertMessage`
+ * and `patchMessage` in `state.ts` always replace the message object
+ * (`next[index] = { ...next[index], ...patch }`) and never mutate one in place,
+ * and `activeMessages` hands out the stored objects without copying them. So a
+ * surviving reference *is* the proof that nothing changed, and a streaming
+ * delta — which allocates a new object per chunk — misses automatically with no
+ * need for an explicit "is this message still streaming" flag.
+ *
+ * Only one slot per message is kept (codex uses `Option<(Key, Lines)>` the same
+ * way): a width or viewer change overwrites it. The WeakMap lets dropped
+ * messages be collected, so no LRU or size cap is required.
+ *
+ * Colour depth (see `setColorDepth`) is deliberately *not* part of the key:
+ * entries hold unpainted `UiLine` values whose `fg`/`bg` are still raw RGB, and
+ * `paint` resolves the depth later in `renderBody`. `setColorDepth` clears this
+ * cache anyway, so the two stay correct even if a layout ever starts baking
+ * escape bytes in.
+ */
+let messageLayoutCache = new WeakMap<TerminalMessage, MessageLayout>();
+
+/** Rendered line arrays are treated as immutable; callers only spread or slice. */
 function messageLines(message: TerminalMessage, width: number, userId: string): UiLine[] {
+  const cached = messageLayoutCache.get(message);
+  if (cached && cached.width === width && cached.userId === userId) return cached.lines;
+  const lines = renderMessageLines(message, width, userId);
+  messageLayoutCache.set(message, { width, userId, lines });
+  return lines;
+}
+
+/** Escape hatch for tests and for future palette-driven invalidation. */
+export function clearMessageLayoutCache(): void {
+  messageLayoutCache = new WeakMap();
+}
+
+function renderMessageLines(message: TerminalMessage, width: number, userId: string): UiLine[] {
   if (
     message.kind === "system" ||
     (message.authorId === "system" && !isVisibleSystemMessage(message))
@@ -921,12 +1232,15 @@ function helpLines(): UiLine[] {
   return [
     line("  Keyboard", { fg: theme.accent, bold: true }),
     line(""),
-    line("  Alt-Enter newline"),
+    // Shift/Ctrl-Enter only reach us on terminals that honour the kitty
+    // keyboard protocol we push; Alt-Enter is the universal fallback.
+    line("  Shift-Enter / Ctrl-Enter newline · Alt-Enter always works"),
     line("  ← → move · Ctrl/Alt-← → move by word · ↑ ↓ history"),
     line("  Alt-Backspace delete word · Ctrl-U clear before cursor"),
     line("  Cmd-Backspace works when forwarded · Ctrl-W/K aliases"),
     line("  Mouse wheel / PgUp/PgDn scroll · Ctrl-E load older · Ctrl-T tasks"),
-    line("  Ctrl-O topics · Ctrl-G subagents · Ctrl-P/N previous/next topic"),
+    line("  Ctrl-O topics · Ctrl-G subagents · Ctrl-X abort"),
+    line("  In topics: type to filter · Ctrl-N new · Ctrl-D delete"),
     line("  Esc/Ctrl-C stop active turn · Ctrl-C twice when idle to quit"),
     line(""),
     line("  Commands", { fg: theme.cyan, bold: true }),
@@ -1025,13 +1339,77 @@ function subagentTreePrefix(topic: TopicDto, topics: TopicDto[], rootTopicId?: s
   return prefix;
 }
 
+/**
+ * Picker key hints, longest first for `pickFitting`.
+ *
+ * The overlay body is hard-clipped to the terminal width by `renderBody`, so an
+ * overlong hint would silently lose its tail — dropping to a shorter phrasing
+ * keeps the highest-value keys visible instead. Order of importance: navigate,
+ * filter, create, then the destructive/stateful chords.
+ */
+function topicPickerHints(topicPickerRoot: boolean): string[] {
+  const exit = topicPickerRoot ? "Esc/Ctrl-C exit" : "Esc close · Ctrl-C exit; work continues";
+  const shortExit = topicPickerRoot ? "Esc/Ctrl-C exit" : "Esc close";
+  return [
+    `↑↓ select · Enter open · type to filter · Ctrl-N new · Ctrl-D delete · ${exit}`,
+    `↑↓ select · Enter open · type to filter · Ctrl-N new · Ctrl-D delete · ${shortExit}`,
+    `↑↓ select · Enter open · type to filter · Ctrl-N/D · ${shortExit}`,
+    "↑↓ · Enter · type to filter · Ctrl-N/D",
+    "type to filter · Ctrl-N/D",
+    "Ctrl-N/D",
+  ];
+}
+
+/**
+ * Where the filter row sits inside {@link topicOverlayLines} (0-based), and the
+ * text before the query on it. Both are needed by {@link topicOverlayCursor} to
+ * place the hardware cursor; keeping them as shared constants is what stops the
+ * caret and the drawn row from drifting apart.
+ */
+const TOPIC_FILTER_ROW_INDEX = 2;
+const TOPIC_FILTER_LABEL = "  Filter: ";
+
+/**
+ * Explicit caret for the topic filter.
+ *
+ * The composer is hidden while the picker is open, so without this the frame
+ * reported no cursor at all and the terminal left it wherever the last frame
+ * put it. A Hangul IME anchors its preedit to the hardware cursor, so composing
+ * a Korean topic name showed the in-progress syllable in the wrong place.
+ *
+ * Returned for an *empty* query too, parked where the first character will be
+ * drawn. Preedit starts before anything is committed — the moment the user
+ * presses the first jamo is exactly the moment the query is still empty — so
+ * skipping the caret here would leave the very first syllable of a Korean
+ * search floating at the previous frame's cursor. The filter row is blank at
+ * that point, but the caret sits at the column the text is about to occupy, so
+ * committing the character advances it by one cell instead of jumping.
+ *
+ * Clipped to the pane width, matching `fit()` truncation of the row, so it can
+ * never be pushed outside the frame on a narrow terminal.
+ */
+function topicOverlayCursor(
+  state: AppState,
+  width: number,
+  bodyHeight: number,
+): { x: number; y: number } | null {
+  if (state.overlay !== "topics") return null;
+  const y = TOPIC_FILTER_ROW_INDEX + 1;
+  if (y > bodyHeight) return null;
+  const drawn = `${TOPIC_FILTER_LABEL}${safeText(state.topicFilter.trim())}`;
+  return { x: Math.max(1, Math.min(displayWidth(drawn) + 1, width)), y };
+}
+
 function topicOverlayLines(
   state: AppState,
   width: number,
   height: number,
   animationFrame = 0,
 ): UiLine[] {
-  const indexedTopics = state.topics.map((topic, topicIndex) => ({ topic, topicIndex }));
+  const visibleIds = visibleTopicPickerIds(state);
+  const indexedTopics = state.topics
+    .map((topic, topicIndex) => ({ topic, topicIndex }))
+    .filter(({ topic }) => visibleIds.has(topic.id));
   const managerTopics = indexedTopics.filter(({ topic }) => topic.kind === "manager");
   const privateTopics = indexedTopics.filter(
     ({ topic }) => topic.kind !== "manager" && topic.accessMode !== "shared",
@@ -1056,8 +1434,9 @@ function topicOverlayLines(
       })),
     );
   }
+  const matchingSessions = visibleBackgroundSessions(state);
   for (const kind of ["cron", "memory", "compact"] as const) {
-    const sessions = state.backgroundSessions.filter((session) => session.kind === kind);
+    const sessions = matchingSessions.filter((session) => session.kind === kind);
     if (sessions.length === 0) continue;
     if (entries.length > 0) entries.push({ kind: "separator" });
     entries.push({
@@ -1086,17 +1465,27 @@ function topicOverlayLines(
     Math.max(0, entries.length - visibleCount),
     Math.max(0, selectedEntryIndex - visibleCount + 1),
   );
+  const query = state.topicFilter.trim();
   return [
     line("  Topics", { fg: theme.accent, bold: true }),
-    line(
-      state.topicPickerRoot
-        ? "  ↑↓ select · Enter open · N new · D/Del delete · Esc/Ctrl-C exit"
-        : "  ↑↓ select · Enter open · N new · D/Del delete · Esc close · Ctrl-C exit; work continues",
-      { fg: theme.muted },
-    ),
-    line(""),
+    line(`  ${pickFitting(topicPickerHints(state.topicPickerRoot), Math.max(0, width - 2))}`, {
+      fg: theme.muted,
+    }),
+    // The filter reuses the blank spacer row instead of adding a fourth header
+    // line, so turning filtering on never steals a row from the list itself and
+    // `visibleCount` below stays valid unchanged.
+    query.length > 0
+      ? line(`${TOPIC_FILTER_LABEL}${safeText(query)}`, { fg: theme.cyan, bold: true })
+      : line(""),
     ...(entries.length === 0
-      ? [line("  No topics yet · Press N to create one", { fg: theme.muted })]
+      ? [
+          line(
+            query.length > 0
+              ? `  No topics match “${safeText(query)}” · Esc clears the filter`
+              : "  No topics yet · Press Ctrl-N to create one",
+            { fg: theme.muted },
+          ),
+        ]
       : entries.slice(start, start + visibleCount).map((entry) => {
           if (entry.kind === "heading") {
             return line(`  ${entry.label}`, { fg: theme.cyan, bold: true });
@@ -1592,25 +1981,79 @@ interface InputVisual {
   cursorColumn: number;
 }
 
-function wrappedCursorPosition(
+/**
+ * Rows *and* cursor for one logical composer line, derived from a single
+ * `wrapSegments` call.
+ *
+ * The two used to be independent walks over the text, which was safe only while
+ * `wrapText` folded on raw width. Now that folding depends on word boundaries,
+ * any divergence would put the hardware cursor — and with it the Hangul IME
+ * preedit anchor — on the wrong cell, so the fold decision is made once and
+ * both outputs are read off the same segment list.
+ *
+ * Exported so the cursor-consistency suite can exercise the exact function the
+ * composer uses, rather than a re-implementation of it.
+ */
+export function wrapLineWithCursor(
   value: string,
   codePointColumn: number,
   width: number,
-): { line: number; column: number } {
-  let line = 0;
-  let column = 0;
-  for (const character of Array.from(value).slice(0, Math.max(0, codePointColumn))) {
-    const characterWidth = runeWidth(character);
-    if (column + characterWidth > width && column > 0) {
-      line += 1;
-      column = 0;
-    }
-    column += characterWidth;
+): { rows: string[]; line: number; column: number } {
+  const chars = Array.from(safeText(value));
+  if (width < WRAP_MIN_WIDTH) {
+    // Below the fold minimum the whole line is clipped to one row, but the
+    // caret still has to follow the caret *offset*: measuring the clipped whole
+    // string put the cursor after the character at width 1, so "before `a`" and
+    // "after `a`" landed on the same cell and typing looked like it went
+    // nowhere. Clip the prefix in front of the caret instead.
+    const clipped = sliceWidth(value, Math.max(0, width));
+    const offset = Math.max(0, Math.min(chars.length, codePointColumn));
+    const prefix = sliceWidth(chars.slice(0, offset).join(""), Math.max(0, width));
+    return {
+      rows: [clipped],
+      line: 0,
+      column: Math.min(displayWidth(prefix), Math.max(0, width)),
+    };
   }
-  return { line, column };
+  const segments = wrapSegments(chars, width);
+  const offset = Math.max(0, Math.min(chars.length, codePointColumn));
+  const rows = segments.map((segment) => chars.slice(segment.start, segment.textEnd).join(""));
+  let line = segments.length - 1;
+  for (const [index, segment] of segments.entries()) {
+    // Strictly `<` so an offset sitting exactly on a fold resolves to the start
+    // of the *following* row — which is where the next typed character lands.
+    if (offset < segment.end) {
+      line = index;
+      break;
+    }
+  }
+  const segment = segments[line] ?? { start: 0, end: 0, textEnd: 0 };
+  let column = 0;
+  for (let index = segment.start; index < offset; index += 1) {
+    column += runeWidth(chars[index] ?? "");
+  }
+  // Only reachable inside an absorbed whitespace run, whose columns are clipped
+  // away; park the cursor on the row's last cell rather than off the edge.
+  return { rows, line, column: Math.min(column, width) };
 }
 
+/** Columns reserved by the composer's "  › " speaker gutter plus its right margin. */
+const COMPOSER_GUTTER = 4;
+const COMPOSER_RIGHT_MARGIN = 1;
+/** Fewer usable columns than this and the gutter is dropped rather than the text. */
+const COMPOSER_MIN_CONTENT_WIDTH = 4;
+
 function inputVisualLines(state: AppState, width: number): InputVisual {
+  // Continuous, not a breakpoint: the gutter is spent only while it leaves a
+  // usable content width behind it (codex `usable_content_width`).
+  const gutted = usableContentWidth(
+    width,
+    COMPOSER_GUTTER + COMPOSER_RIGHT_MARGIN,
+    COMPOSER_MIN_CONTENT_WIDTH,
+  );
+  const gutter = gutted === null ? 0 : COMPOSER_GUTTER;
+  const leadPrefix = gutter ? "  › " : "";
+  const contPrefix = " ".repeat(gutter);
   const secretInput = state.overlay === "vault" && state.vaultMode === "value";
   const displayInput = secretInput
     ? state.input
@@ -1632,25 +2075,32 @@ function inputVisualLines(state: AppState, width: number): InputVisual {
           ? "Type a topic name…"
           : "Type a message or /command…";
     return {
-      lines: [line(`  ›   ${placeholder}`, { fg: theme.subtle, bg: theme.surfaceRaised })],
+      lines: [
+        line(`${leadPrefix}${gutter ? "  " : ""}${placeholder}`, {
+          fg: theme.subtle,
+          bg: theme.surfaceRaised,
+        }),
+      ],
       cursorLine: 0,
-      cursorColumn: 5,
+      cursorColumn: gutter + 1,
     };
   }
-  const contentWidth = Math.max(4, width - 5);
+  const contentWidth = gutted ?? Math.max(1, width - COMPOSER_RIGHT_MARGIN);
   const result: UiLine[] = [];
   let cursorLine = 0;
-  let cursorColumn = 5;
+  let cursorColumn = gutter + 1;
   for (const [row, inputLine] of displayInput.split("\n").entries()) {
     const firstVisualLine = result.length;
+    // One wrap per logical line feeds both the rows and the cursor, so the
+    // composer can never draw a fold the cursor mapper disagrees with.
+    const wrapped = wrapLineWithCursor(inputLine, state.inputCursor.col, contentWidth);
     if (row === state.inputCursor.row) {
-      const cursor = wrappedCursorPosition(inputLine, state.inputCursor.col, contentWidth);
-      cursorLine = firstVisualLine + cursor.line;
-      cursorColumn = 5 + cursor.column;
+      cursorLine = firstVisualLine + wrapped.line;
+      cursorColumn = gutter + 1 + wrapped.column;
     }
-    for (const [visualIndex, wrapped] of wrapText(inputLine, contentWidth).entries()) {
+    for (const [visualIndex, text] of wrapped.rows.entries()) {
       result.push(
-        line(`${row === 0 && visualIndex === 0 ? "  › " : "    "}${wrapped}`, {
+        line(`${row === 0 && visualIndex === 0 ? leadPrefix : contPrefix}${text}`, {
           bg: theme.surfaceRaised,
         }),
       );
@@ -1740,64 +2190,108 @@ function composerPane(state: AppState, width: number): ComposerPane {
   };
 }
 
+/**
+ * Priority-ordered fallbacks for the footer's status row and hint row.
+ *
+ * There is no global "narrow terminal" mode here. Following codex's
+ * `bottom_pane/footer.rs`, each row declares its content richest-first and the
+ * widest variant that actually measures small enough wins; when even the last
+ * one overflows, `joinSides` truncates it. That keeps the degradation
+ * continuous instead of snapping at one magic column count.
+ */
+function footerStatusText(state: AppState): string[] {
+  const topic = activeTopic(state);
+  const title = `  ${topic?.title ?? "no topic"}`;
+  const agent = topic?.agent ?? "-";
+  return [
+    `${title} · ${agent} · ${effectiveTopicModel(topic)} · ${effectiveTopicEffort(topic)}`,
+    `${title} · ${agent} · ${effectiveTopicModel(topic)}`,
+    `${title} · ${agent}`,
+    title,
+  ];
+}
+
+/**
+ * Glyph + colour per notice severity.
+ *
+ * The glyph carries the severity on its own so the distinction survives
+ * `NO_COLOR` / colour-blindness, where the colour column is unavailable.
+ * `!`/amber is kept for `warn` so the pre-severity rendering is unchanged for
+ * anything that has not been classified yet, and `✓`/`●`/`·` reuse markers the
+ * renderer already emits (`toolMessageLines`, the `·` separators everywhere)
+ * rather than widening the glyph vocabulary.
+ *
+ * Every glyph is `runeWidth === 1`; `tests/render.test.ts` asserts that, since
+ * a 2-column glyph here would push the footer past the terminal width and
+ * desynchronise the line-diff renderer's row coordinates.
+ */
+const NOTICE_STYLE: Record<NoticeLevel, { glyph: string; fg: Rgb }> = {
+  info: { glyph: "·", fg: theme.muted },
+  success: { glyph: "✓", fg: theme.green },
+  warn: { glyph: "!", fg: theme.amber },
+  error: { glyph: "✗", fg: theme.red },
+};
+
+function noticeStyle(state: AppState): { glyph: string; fg: Rgb } {
+  return NOTICE_STYLE[state.noticeLevel ?? "warn"];
+}
+
+function footerHintText(state: AppState): string[] {
+  if (state.notice) return [`${noticeStyle(state).glyph} ${state.notice}  `];
+  if (state.overlay === "topics") {
+    // With a query in flight Escape narrows to "clear the filter", so the
+    // footer has to say that instead of promising to close the overlay.
+    if (state.topicFilter.trim().length > 0) {
+      return ["Esc clears the filter · ↑↓ select · Enter open  ", "Esc clear filter  ", "Esc  "];
+    }
+    return state.topicPickerRoot
+      ? ["Esc/Ctrl-C exit  ", "Esc exit  "]
+      : ["Esc close · Ctrl-C exit; work continues  ", "Esc close · Ctrl-C exit  ", "Esc  "];
+  }
+  if (state.overlay === "background-session") {
+    return [
+      "wheel/PgUp/PgDn scroll · Esc back · read-only  ",
+      "PgUp/PgDn scroll · Esc back  ",
+      "Esc back  ",
+    ];
+  }
+  if (state.overlay === "subagents") {
+    return ["arrows/hjkl/wheel move · Esc close  ", "arrows move · Esc close  ", "Esc close  "];
+  }
+  if (state.overlay === "vault") {
+    if (state.vaultMode === "list") return ["Enter run · Esc close  ", "Esc close  "];
+    if (state.vaultMode === "confirm-delete") return ["Y delete · N cancel  ", "Y/N  "];
+    return ["Enter continue · Esc cancel  ", "Esc cancel  "];
+  }
+  const topic = activeTopic(state);
+  if (topic && state.activity[topic.id]?.running) return ["Esc/Ctrl-C stop  ", "Esc stop  "];
+  return ["Ctrl-C twice to quit  ", "Ctrl-C ×2 quit  ", "Ctrl-C  "];
+}
+
 function footerLines(state: AppState, width: number): string[] {
   if (state.creatingTopic) {
     return [
-      paint(joinSides("  New topic", "○ naming  ", width), {
+      paint(joinSides("  New topic", pickFitting(["○ naming  ", ""], width - 12), width), {
         fg: theme.accent,
         bg: theme.surfaceRaised,
         bold: true,
       }),
-      paint(joinSides("", "Esc cancel  ", width), {
+      paint(joinSides("", pickFitting(["Esc cancel  ", "Esc  "], width), width), {
         fg: theme.muted,
         bg: theme.canvas,
       }),
     ];
   }
-  const topic = activeTopic(state);
-  const running = Boolean(topic && state.activity[topic.id]?.running);
   return [
-    paint(
-      joinSides(
-        `  ${topic?.title ?? "no topic"} · ${topic?.agent ?? "-"} · ${effectiveTopicModel(topic)} · ${effectiveTopicEffort(topic)}`,
-        "",
-        width,
-      ),
-      {
-        fg: theme.accent,
-        bg: theme.surfaceRaised,
-        bold: true,
-      },
-    ),
-    paint(
-      joinSides(
-        "",
-        state.notice
-          ? `! ${state.notice}  `
-          : state.overlay === "topics"
-            ? state.topicPickerRoot
-              ? "Esc/Ctrl-C exit  "
-              : "Esc close · Ctrl-C exit; work continues  "
-            : state.overlay === "background-session"
-              ? "wheel/PgUp/PgDn scroll · Esc back · read-only  "
-              : state.overlay === "subagents"
-                ? "arrows/hjkl/wheel move · Esc close  "
-                : state.overlay === "vault"
-                  ? state.vaultMode === "list"
-                    ? "Enter run · Esc close  "
-                    : state.vaultMode === "confirm-delete"
-                      ? "Y delete · N cancel  "
-                      : "Enter continue · Esc cancel  "
-                  : running
-                    ? "Esc/Ctrl-C stop  "
-                    : "Ctrl-C twice to quit  ",
-        width,
-      ),
-      {
-        fg: state.notice ? theme.amber : theme.muted,
-        bg: theme.canvas,
-      },
-    ),
+    paint(joinSides(pickFitting(footerStatusText(state), width), "", width), {
+      fg: theme.accent,
+      bg: theme.surfaceRaised,
+      bold: true,
+    }),
+    paint(joinSides("", pickFitting(footerHintText(state), width), width), {
+      fg: state.notice ? noticeStyle(state).fg : theme.muted,
+      bg: theme.canvas,
+    }),
   ];
 }
 
@@ -1849,7 +2343,11 @@ export function renderAppFrame(
   animationFrame = 0,
   nowMs = terminalNowMs(),
 ): RenderedTerminalApp {
-  const width = Math.max(32, columns);
+  // Never emit a line wider than the terminal actually reported. The line-diff
+  // renderer addresses physical rows directly (`CSI <row>;1H`), so a single
+  // over-wide row auto-wraps and desynchronises every row coordinate below it
+  // — including the hardware cursor used to anchor IME preedit.
+  const width = Math.max(1, columns);
   const height = Math.max(14, rows);
   const footer = footerLines(state, width);
   const decision = decisionPane(state, width);
@@ -1879,6 +2377,10 @@ export function renderAppFrame(
           bodyHeight,
           { active: true, accent: theme.taskBorder },
         );
+        // `framePane` skips itself below its minimum inner width; the sidebar
+        // only exists above TASK_SIDEBAR_MIN_WIDTH so that cannot happen here,
+        // but falling back keeps the row width exact if that ever changes.
+        if (taskPane.length === 0) return renderBody(conversation, width, bodyHeight);
         const gap = paint(" ".repeat(TASK_SIDEBAR_GAP), { bg: theme.canvas });
         return conversationBody.map((row, index) => `${row}${gap}${taskPane[index] ?? ""}`);
       })()
@@ -1896,9 +2398,20 @@ export function renderAppFrame(
   const cursorY = composer.cursor
     ? body.length + decision.length + composer.cursor.y
     : Number.POSITIVE_INFINITY;
+  // The topic filter is the one input that lives in the body rather than in the
+  // composer, so its caret is measured against the body rows directly.
+  const overlayCursor = topicOverlayCursor(state, layout.conversationWidth, body.length);
+  const cursor =
+    composer.cursor && cursorY <= height
+      ? { x: Math.min(composer.cursor.x, width), y: cursorY }
+      : overlayCursor && overlayCursor.y <= height
+        ? overlayCursor
+        : null;
   return {
-    frame: [...body, ...decision, ...composer.lines, ...footer].slice(0, height).join("\n"),
-    cursor: composer.cursor && cursorY <= height ? { x: composer.cursor.x, y: cursorY } : null,
+    frame: linkifyUrls(
+      [...body, ...decision, ...composer.lines, ...footer].slice(0, height).join("\n"),
+    ),
+    cursor,
     codeCopyTargets,
   };
 }
@@ -1908,7 +2421,7 @@ export function maxConversationScrollOffset(
   columns: number,
   rows: number,
 ): number {
-  const width = Math.max(32, columns);
+  const width = Math.max(1, columns);
   const height = Math.max(14, rows);
   if (state.overlay === "background-session") {
     const bodyHeight = Math.max(3, height - footerLines(state, width).length);

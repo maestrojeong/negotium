@@ -61,6 +61,9 @@ interface TopicActivity {
 
 export type VaultMode = "list" | "key" | "value" | "description" | "confirm-delete";
 
+/** Severity of a footer notice. See `AppState.noticeLevel`. */
+export type NoticeLevel = "info" | "success" | "warn" | "error";
+
 export interface MessageHistoryStatus {
   hasMore: boolean;
   loading: boolean;
@@ -80,6 +83,15 @@ export interface AppState {
   suggestionIndex: number;
   topicPickerIndex: number;
   topicPickerBackgroundId?: string;
+  /**
+   * Type-to-filter query for the topic picker overlay.
+   *
+   * Kept separate from `topics` so the full list stays authoritative for
+   * `activeTopic`/`selectTopic`/`applyRuntimeEvent`; only the picker's visible
+   * entries and its keyboard navigation consult this. Reset whenever the
+   * overlay opens or a topic is selected.
+   */
+  topicFilter: string;
   modelPickerIndex: number;
   effortPickerIndex: number;
   pendingDeleteTopicId?: string;
@@ -95,6 +107,16 @@ export interface AppState {
   overlay: Overlay;
   topicPickerRoot: boolean;
   notice?: string;
+  /**
+   * Severity for `notice`, driving both the footer glyph and its colour.
+   *
+   * Kept as a sibling field rather than folding `notice` into an object so the
+   * dozens of existing `{ ...state, notice }` updates stay valid. Every site
+   * that writes `notice` writes `noticeLevel` alongside it (including the
+   * `undefined` clears), so a level can never outlive the text it describes.
+   * An unset level renders as `warn`, which is the pre-severity behaviour.
+   */
+  noticeLevel?: NoticeLevel;
   vaultEntries: VaultEntry[];
   vaultPickerIndex: number;
   vaultMode: VaultMode;
@@ -118,6 +140,7 @@ export function createInitialState(userId: string): AppState {
     inputCursor: { row: 0, col: 0 },
     suggestionIndex: 0,
     topicPickerIndex: 0,
+    topicFilter: "",
     modelPickerIndex: 0,
     effortPickerIndex: 0,
     creatingTopic: false,
@@ -228,26 +251,103 @@ export function setBackgroundSessions(
   const selectedStillExists = orderedSessions.some(
     (session) => session.id === state.topicPickerBackgroundId,
   );
-  return {
+  return clampTopicPickerSelection({
     ...state,
     backgroundSessions: orderedSessions,
     topicPickerBackgroundId: selectedStillExists ? state.topicPickerBackgroundId : undefined,
     overlay:
       state.overlay === "background-session" && !selectedStillExists ? "topics" : state.overlay,
-  };
+  });
 }
 
 export function pickedBackgroundSession(state: AppState): BackgroundSessionDto | undefined {
   return state.backgroundSessions.find((session) => session.id === state.topicPickerBackgroundId);
 }
 
+/**
+ * The topic the picker highlight is actually on.
+ *
+ * Gated on {@link visibleTopicPickerIds}: a stale index left over from a list
+ * refresh, or a filter that matches nothing, must not resolve to a row the user
+ * cannot see. Enter and Ctrl-D both go through here, so an invisible selection
+ * became "open/delete a topic you never chose". Outside the picker the filter is
+ * empty and every topic is visible, so this is a no-op there.
+ */
 export function pickedTopic(state: AppState): TopicDto | undefined {
-  return state.topicPickerBackgroundId ? undefined : state.topics[state.topicPickerIndex];
+  if (state.topicPickerBackgroundId) return undefined;
+  const topic = state.topics[state.topicPickerIndex];
+  if (!topic) return undefined;
+  return visibleTopicPickerIds(state).has(topic.id) ? topic : undefined;
 }
 
-export function moveTopicPickerSelection(state: AppState, delta: number): AppState {
-  const indexedTopics = state.topics.map((topic, index) => ({ topic, index }));
-  const items = [
+/** Index meaning "nothing is selected" — the filter matched no row. */
+export const NO_TOPIC_PICKER_SELECTION = -1;
+
+/**
+ * Case-insensitive substring match on the title.
+ *
+ * `toLowerCase()` is Unicode-aware in JS, so Latin case folding works while
+ * Hangul (which has no case) simply compares as-is — a plain `includes` already
+ * matches "회의" inside "주간 회의록". Initial-consonant (초성) search is out of
+ * scope: it needs syllable decomposition and would make the rule non-obvious.
+ */
+export function topicPickerQueryMatches(title: string, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  return needle.length === 0 || title.toLowerCase().includes(needle);
+}
+
+/**
+ * Topic ids the picker shows under the active filter.
+ *
+ * Ancestors of a matching subagent are pulled in even when they do not match
+ * themselves: `subagentTreePrefix` draws `├─`/`└─` from the lineage, so showing
+ * an orphaned child would render a prefix with nothing above it, and the user
+ * would lose the context of which room spawned the hit. Parents are context,
+ * not results — they are still selectable, which matches how file-tree filters
+ * in editors behave.
+ */
+export function visibleTopicPickerIds(state: AppState): Set<string> {
+  const visible = new Set<string>();
+  const query = state.topicFilter.trim();
+  if (query.length === 0) {
+    for (const topic of state.topics) visible.add(topic.id);
+    return visible;
+  }
+  const byId = new Map(state.topics.map((topic) => [topic.id, topic]));
+  for (const topic of state.topics) {
+    if (!topicPickerQueryMatches(topic.title, query)) continue;
+    visible.add(topic.id);
+    let current = topic;
+    while (current.isSubagent && current.parentTopicId) {
+      const parent = byId.get(current.parentTopicId);
+      if (!parent || visible.has(parent.id)) break;
+      visible.add(parent.id);
+      current = parent;
+    }
+  }
+  return visible;
+}
+
+/** Background sessions surviving the active filter, matched on their title. */
+export function visibleBackgroundSessions(state: AppState): BackgroundSessionDto[] {
+  return state.backgroundSessions.filter((session) =>
+    topicPickerQueryMatches(session.title, state.topicFilter),
+  );
+}
+
+interface TopicPickerItem {
+  kind: "topic" | "background";
+  id: string;
+  index?: number;
+}
+
+/** Selectable rows in picker order — the single source shared by nav and render. */
+function topicPickerItems(state: AppState): TopicPickerItem[] {
+  const visible = visibleTopicPickerIds(state);
+  const indexedTopics = state.topics
+    .map((topic, index) => ({ topic, index }))
+    .filter(({ topic }) => visible.has(topic.id));
+  return [
     ...indexedTopics
       .filter(({ topic }) => topic.kind === "manager")
       .map(({ topic, index }) => ({ kind: "topic" as const, id: topic.id, index })),
@@ -257,20 +357,83 @@ export function moveTopicPickerSelection(state: AppState, delta: number): AppSta
     ...indexedTopics
       .filter(({ topic }) => topic.kind !== "manager" && topic.accessMode === "shared")
       .map(({ topic, index }) => ({ kind: "topic" as const, id: topic.id, index })),
-    ...state.backgroundSessions.map((session) => ({
+    ...visibleBackgroundSessions(state).map((session) => ({
       kind: "background" as const,
       id: session.id,
     })),
   ];
+}
+
+/**
+ * Pull the highlight back onto a row the filter still shows.
+ *
+ * Without this, narrowing the list would leave `topicPickerIndex` pointing at a
+ * hidden topic, so Enter would open something the user cannot see. When nothing
+ * matches, the selection is cleared outright ({@link NO_TOPIC_PICKER_SELECTION})
+ * rather than left dangling — Enter and Ctrl-D then do nothing, which is the
+ * only honest answer for an empty list.
+ *
+ * Every path that can change the row set must funnel through here: the filter
+ * edits, `setTopics`, `setBackgroundSessions`, and opening the overlay. An
+ * asynchronous refresh that drops the selected topic is otherwise indistinguishable
+ * from a stale index.
+ */
+export function clampTopicPickerSelection(state: AppState): AppState {
+  const items = topicPickerItems(state);
+  if (items.length === 0) {
+    // Leaving the old index in place would keep a hidden topic selectable.
+    if (state.topicPickerIndex === NO_TOPIC_PICKER_SELECTION && !state.topicPickerBackgroundId) {
+      return state;
+    }
+    return {
+      ...state,
+      topicPickerIndex: NO_TOPIC_PICKER_SELECTION,
+      topicPickerBackgroundId: undefined,
+    };
+  }
+  const currentId = state.topicPickerBackgroundId ?? state.topics[state.topicPickerIndex]?.id;
+  if (items.some((item) => item.id === currentId)) return state;
+  const first = items[0];
+  return first.kind === "topic"
+    ? { ...state, topicPickerIndex: first.index ?? 0, topicPickerBackgroundId: undefined }
+    : { ...state, topicPickerBackgroundId: first.id };
+}
+
+/**
+ * Matching and rendering both `trim()` the query, so a whitespace-only filter is
+ * invisible and matches everything. Storing it raw made Escape disagree with the
+ * screen — it saw a non-empty string, cleared "the filter", and only the *second*
+ * press closed the overlay. Normalising here keeps one predicate: filter active
+ * iff `topicFilter.length > 0`.
+ */
+export function setTopicFilter(state: AppState, topicFilter: string): AppState {
+  const normalized = topicFilter.trim().length === 0 ? "" : topicFilter;
+  return clampTopicPickerSelection({ ...state, topicFilter: normalized });
+}
+
+export function appendTopicFilter(state: AppState, text: string): AppState {
+  return setTopicFilter(state, state.topicFilter + text);
+}
+
+/** Drop one *code point*, so a Hangul syllable does not leave a lone surrogate. */
+export function backspaceTopicFilter(state: AppState): AppState {
+  const chars = [...state.topicFilter];
+  return setTopicFilter(state, chars.slice(0, -1).join(""));
+}
+
+export function moveTopicPickerSelection(state: AppState, delta: number): AppState {
+  const items = topicPickerItems(state);
   if (items.length === 0) return state;
   const currentId = state.topicPickerBackgroundId ?? state.topics[state.topicPickerIndex]?.id;
-  const current = Math.max(
-    0,
-    items.findIndex((item) => item.id === currentId),
-  );
-  const next = items[(current + delta + items.length) % items.length];
+  const current = items.findIndex((item) => item.id === currentId);
+  const next =
+    current < 0
+      ? // Nothing was selected (empty filter result that just gained rows):
+        // step onto the edge the user is moving towards, not past it.
+        items[delta >= 0 ? 0 : items.length - 1]
+      : items[(current + delta + items.length) % items.length];
   return next.kind === "topic"
-    ? { ...state, topicPickerIndex: next.index, topicPickerBackgroundId: undefined }
+    ? { ...state, topicPickerIndex: next.index ?? 0, topicPickerBackgroundId: undefined }
     : { ...state, topicPickerBackgroundId: next.id };
 }
 
@@ -314,7 +477,7 @@ export function setTopics(state: AppState, topics: TopicDto[], preferredTitle?: 
   const nextActive = state.topicPickerRoot
     ? null
     : (preferred?.id ?? (stillVisible ? state.activeTopicId : orderedTopics[0]?.id) ?? null);
-  return {
+  return clampTopicPickerSelection({
     ...state,
     topics: orderedTopics,
     activity,
@@ -323,13 +486,15 @@ export function setTopics(state: AppState, topics: TopicDto[], preferredTitle?: 
     askChoiceIndex: nextActive === state.activeTopicId ? state.askChoiceIndex : 0,
     topicPickerIndex:
       state.overlay === "topics"
-        ? Math.max(0, pickedTopicIndex)
+        ? // `-1` when the refresh dropped the highlighted topic; the clamp below
+          // then moves onto the first row the filter still shows.
+          pickedTopicIndex
         : Math.max(
             0,
             orderedTopics.findIndex((topic) => topic.id === nextActive),
           ),
     topicPickerBackgroundId: state.topicPickerBackgroundId,
-  };
+  });
 }
 
 export function selectTopic(state: AppState, topicId: string): AppState {
@@ -344,7 +509,9 @@ export function selectTopic(state: AppState, topicId: string): AppState {
     creatingTopic: false,
     topicPickerIndex: state.topics.findIndex((topic) => topic.id === topicId),
     topicPickerBackgroundId: undefined,
+    topicFilter: "",
     notice: undefined,
+    noticeLevel: undefined,
   };
 }
 
@@ -360,9 +527,13 @@ export function openTopicPicker(
   state: AppState,
   notice = state.notice,
   topicPickerRoot = false,
+  // Carried over only when the caller is passing the *same* notice through; a
+  // freshly supplied string with no level falls back to the neutral default
+  // rather than inheriting the previous notice's severity.
+  noticeLevel = notice === state.notice ? state.noticeLevel : undefined,
 ): AppState {
   const activeIndex = state.topics.findIndex((topic) => topic.id === state.activeTopicId);
-  return {
+  return clampTopicPickerSelection({
     ...state,
     activeTopicId: topicPickerRoot ? null : state.activeTopicId,
     overlay: "topics",
@@ -370,8 +541,12 @@ export function openTopicPicker(
     creatingTopic: false,
     topicPickerIndex: Math.max(0, activeIndex >= 0 ? activeIndex : state.topicPickerIndex),
     topicPickerBackgroundId: undefined,
+    // A stale query from the previous visit would silently hide most of the
+    // list on reopen, so every open starts from the unfiltered view.
+    topicFilter: "",
     notice,
-  };
+    noticeLevel,
+  });
 }
 
 export function startTopicCreation(state: AppState): AppState {
@@ -380,6 +555,7 @@ export function startTopicCreation(state: AppState): AppState {
     overlay: null,
     creatingTopic: true,
     notice: "Type a new topic name, then press Enter",
+    noticeLevel: "info",
   };
 }
 

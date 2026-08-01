@@ -82,18 +82,34 @@ indicator. Topics and transcript use temporary overlays.
 | --- | --- |
 | `Enter` | send text, or accept the selected ask choice |
 | `Alt-Enter` | insert a newline |
-| `Ctrl-P` / `Ctrl-N` | previous / next topic |
 | `Up` / `Down` | edit multiline input, history, suggestions, or ask choices |
 | `PageUp` / `PageDown` | scroll conversation |
 | Mouse wheel / trackpad | scroll conversation history |
 | `Ctrl-E` | load one older 50-message page |
 | Mouse drag | select screen text and copy it on release |
 | `Ctrl-O` | toggle topic overlay; `Ctrl-C` there exits the TUI while work continues |
-| `Ctrl-T` | toggle the plain transcript overlay |
+| `Ctrl-G` | toggle the subagent graph overlay |
+| `Ctrl-T` | toggle the Tasks sidebar |
 | `Ctrl-Y` | copy the latest agent response |
+| `Ctrl-X` | abort the active turn |
 | `Ctrl-L` | redraw |
 | `Esc` | abort the active turn; otherwise close overlay or clear composer |
 | `Ctrl-C` | abort in a conversation; exit without aborting from Topics; press twice on an idle screen to quit |
+
+In the topic overlay:
+
+| Key | Action |
+| --- | --- |
+| any printable key | type to filter the list; Hangul jamo and syllables included |
+| `Backspace` | delete one character of the filter |
+| `Up` / `Down` | move through the rows the filter still shows |
+| `Enter` | open the highlighted topic (nothing happens when the filter matches nothing) |
+| `Ctrl-N` | create a new topic |
+| `Ctrl-D` | delete the highlighted topic, after a confirmation |
+| `Esc` | first press clears the filter, second press closes the overlay |
+
+Topic actions moved onto control chords when type-to-filter was introduced: bare
+`n`/`d` are now text, which is what a filter needs them to be.
 
 Commands: `/compact` (summarize and shrink provider context), `/status` (separate latest context
 occupancy from aggregate turn usage), `/model` (open the model picker), `/new` (reset the current
@@ -102,8 +118,8 @@ context), `/topics` (open the topic picker), `/del` (delete the current topic),
 
 A reset keeps the visible transcript, cancels active and queued work accepted before the reset,
 and lets later requests start with a fresh provider context. This includes the private `General`
-topic. In the `Ctrl-O` topic overlay, press `N`, type only the new topic name, and press `Enter`;
-the new topic opens immediately. After deleting a topic, Terminal returns to the topic overlay.
+topic. In the `Ctrl-O` topic overlay, press `Ctrl-N`, type only the new topic name, and press
+`Enter`; the new topic opens immediately. After deleting a topic, Terminal returns to the topic overlay.
 
 Compaction also preserves the visible transcript, but replaces provider-native and provider-neutral
 context with a standalone summary so the next turn can continue with a smaller context. Reopening a
@@ -128,6 +144,18 @@ in Terminal.
 The adapter never calls provider SDKs directly. Ask, task, subagent, wiki, and
 Playwright behavior stays inside Negotium, so switching Claude/Codex/Maestro
 does not fork terminal-specific state.
+
+One terminal, one adapter: starting a second Terminal adapter in a process that
+already has a live one fails with `TerminalAlreadyOwnedError` before anything is
+written. Two TUIs cannot share a terminal — alternate screen, raw mode and the
+kitty keyboard stack are all process-global — so the conflict is reported rather
+than silently corrupting both.
+
+Four issues are deliberately left unfixed or only mitigated, with the reasoning
+and the measurements recorded in
+[Terminal deferred issues](../../docs/TERMINAL-DEFERRED.md): emoji presentation
+(VS16) width, the hyperlink target of a wrapped URL, the selection highlight
+across an SGR reset, and the limits of bracketed-paste isolation.
 
 ## Development
 

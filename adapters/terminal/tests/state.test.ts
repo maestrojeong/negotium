@@ -2,17 +2,25 @@ import { describe, expect, test } from "bun:test";
 import type { MessageDto, TopicDto } from "@negotium/core";
 import {
   activeQuestion,
+  appendTopicFilter,
   applyRuntimeEvent,
+  backspaceTopicFilter,
   createInitialState,
   focusCreatedTopic,
   moveTopicPickerSelection,
   openTopicPicker,
+  pickedBackgroundSession,
+  pickedTopic,
   selectTopic,
   setBackgroundSessions,
   setMessages,
+  setTopicFilter,
   setTopics,
   startTopicCreation,
   toggleTaskSidebar,
+  topicPickerQueryMatches,
+  visibleBackgroundSessions,
+  visibleTopicPickerIds,
 } from "@/state";
 
 function topic(id: string, title: string): TopicDto {
@@ -726,5 +734,175 @@ describe("terminal adapter state", () => {
       } satisfies MessageDto,
     });
     expect(state.scrollOffset).toBe(24);
+  });
+});
+
+describe("topic picker filter", () => {
+  const many = [
+    topic("a", "Design review"),
+    topic("b", "설계 회의"),
+    topic("c", "DEPLOY pipeline"),
+  ];
+
+  test("matches case-insensitively on a substring", () => {
+    expect(topicPickerQueryMatches("Design review", "sign")).toBe(true);
+    expect(topicPickerQueryMatches("DEPLOY pipeline", "deploy")).toBe(true);
+    expect(topicPickerQueryMatches("Design review", "DESIGN")).toBe(true);
+    expect(topicPickerQueryMatches("Design review", "deploy")).toBe(false);
+  });
+
+  test("matches Hangul substrings anywhere in the title", () => {
+    expect(topicPickerQueryMatches("설계 회의", "회의")).toBe(true);
+    expect(topicPickerQueryMatches("설계 회의", "설계")).toBe(true);
+    expect(topicPickerQueryMatches("설계 회의", "보고")).toBe(false);
+  });
+
+  test("does not attempt 초성 (initial-consonant) search", () => {
+    // Explicitly out of scope: "ㅅㄱ" must not match "설계".
+    expect(topicPickerQueryMatches("설계 회의", "ㅅㄱ")).toBe(false);
+  });
+
+  test("an empty query shows everything", () => {
+    const state = openTopicPicker(setTopics(createInitialState("local"), many));
+    expect(visibleTopicPickerIds(state).size).toBe(3);
+    expect(visibleTopicPickerIds(setTopicFilter(state, "   ")).size).toBe(3);
+  });
+
+  test("narrows to matching topics, including Hangul", () => {
+    const state = openTopicPicker(setTopics(createInitialState("local"), many));
+    expect([...visibleTopicPickerIds(setTopicFilter(state, "de"))].sort()).toEqual(["a", "c"]);
+    expect([...visibleTopicPickerIds(setTopicFilter(state, "회의"))]).toEqual(["b"]);
+  });
+
+  test("yields no ids when nothing matches, so the overlay can say so", () => {
+    const state = openTopicPicker(setTopics(createInitialState("local"), many));
+    expect(visibleTopicPickerIds(setTopicFilter(state, "zzz")).size).toBe(0);
+  });
+
+  test("keeps ancestors of a matching subagent visible for the tree prefix", () => {
+    const parent = topic("parent", "Parent room");
+    const child: TopicDto = {
+      ...topic("child", "widget worker"),
+      isSubagent: true,
+      parentTopicId: "parent",
+    };
+    const state = openTopicPicker(setTopics(createInitialState("local"), [parent, child]));
+    const visible = visibleTopicPickerIds(setTopicFilter(state, "widget"));
+    expect(visible.has("child")).toBe(true);
+    expect(visible.has("parent")).toBe(true);
+  });
+
+  test("clamps the highlight onto a row the filter still shows", () => {
+    let state = openTopicPicker(setTopics(createInitialState("local"), many));
+    state = { ...state, topicPickerIndex: 2 };
+    expect(state.topics[state.topicPickerIndex].id).toBe("c");
+    state = setTopicFilter(state, "회의");
+    expect(state.topics[state.topicPickerIndex].id).toBe("b");
+  });
+
+  test("clears the selection when nothing matches, so Enter/Ctrl-D cannot act on a hidden topic", () => {
+    let state = openTopicPicker(setTopics(createInitialState("local"), many));
+    expect(pickedTopic(state)).toBeDefined();
+    state = setTopicFilter(state, "zzz");
+    expect(state.topicPickerIndex).toBe(-1);
+    expect(state.topicPickerBackgroundId).toBeUndefined();
+    expect(pickedTopic(state)).toBeUndefined();
+    expect(pickedBackgroundSession(state)).toBeUndefined();
+  });
+
+  test("restores a selection once the filter matches again", () => {
+    let state = setTopicFilter(
+      openTopicPicker(setTopics(createInitialState("local"), many)),
+      "zzz",
+    );
+    state = setTopicFilter(state, "회의");
+    expect(pickedTopic(state)?.id).toBe("b");
+  });
+
+  test("pickedTopic ignores a stale index pointing at a filtered-out topic", () => {
+    let state = setTopicFilter(
+      openTopicPicker(setTopics(createInitialState("local"), many)),
+      "회의",
+    );
+    // Force the exact stale state an unclamped list refresh used to leave behind.
+    state = { ...state, topicPickerIndex: state.topics.findIndex((item) => item.id === "a") };
+    expect(pickedTopic(state)).toBeUndefined();
+  });
+
+  test("re-clamps when a list refresh drops the selected topic under an active filter", () => {
+    let state = setTopicFilter(openTopicPicker(setTopics(createInitialState("local"), many)), "de");
+    state = { ...state, topicPickerIndex: state.topics.findIndex((item) => item.id === "c") };
+    expect(pickedTopic(state)?.id).toBe("c");
+    state = setTopics(
+      state,
+      many.filter((item) => item.id !== "c"),
+    );
+    expect(pickedTopic(state)?.id).toBe("a");
+  });
+
+  test("keeps the selection when a list refresh leaves it visible", () => {
+    let state = setTopicFilter(openTopicPicker(setTopics(createInitialState("local"), many)), "de");
+    state = { ...state, topicPickerIndex: state.topics.findIndex((item) => item.id === "c") };
+    state = setTopics(state, many);
+    expect(pickedTopic(state)?.id).toBe("c");
+  });
+
+  test("clears the selection when a refresh empties the filtered list", () => {
+    let state = setTopicFilter(
+      openTopicPicker(setTopics(createInitialState("local"), many)),
+      "회의",
+    );
+    expect(pickedTopic(state)?.id).toBe("b");
+    state = setTopics(
+      state,
+      many.filter((item) => item.id !== "b"),
+    );
+    expect(pickedTopic(state)).toBeUndefined();
+    expect(state.topicPickerIndex).toBe(-1);
+  });
+
+  test("navigation only visits filtered rows", () => {
+    let state = setTopicFilter(openTopicPicker(setTopics(createInitialState("local"), many)), "de");
+    const seen = new Set<string>();
+    for (let step = 0; step < 4; step += 1) {
+      seen.add(state.topics[state.topicPickerIndex].id);
+      state = moveTopicPickerSelection(state, 1);
+    }
+    expect([...seen].sort()).toEqual(["a", "c"]);
+  });
+
+  test("appends and backspaces one code point at a time", () => {
+    let state = openTopicPicker(setTopics(createInitialState("local"), many));
+    state = appendTopicFilter(state, "회");
+    state = appendTopicFilter(state, "의");
+    expect(state.topicFilter).toBe("회의");
+    state = backspaceTopicFilter(state);
+    expect(state.topicFilter).toBe("회");
+    state = backspaceTopicFilter(state);
+    expect(state.topicFilter).toBe("");
+    expect(backspaceTopicFilter(state).topicFilter).toBe("");
+  });
+
+  test("filters background sessions by title too", () => {
+    let state = openTopicPicker(setTopics(createInitialState("local"), many));
+    state = setBackgroundSessions(state, [
+      {
+        id: "cron-1",
+        kind: "cron",
+        title: "nightly digest",
+        status: "running",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        steps: [],
+      },
+    ] as never);
+    expect(visibleBackgroundSessions(setTopicFilter(state, "nightly"))).toHaveLength(1);
+    expect(visibleBackgroundSessions(setTopicFilter(state, "de"))).toHaveLength(0);
+  });
+
+  test("resets when the picker reopens or a topic is selected", () => {
+    let state = setTopicFilter(openTopicPicker(setTopics(createInitialState("local"), many)), "de");
+    expect(openTopicPicker(state).topicFilter).toBe("");
+    state = selectTopic(state, "a");
+    expect(state.topicFilter).toBe("");
   });
 });

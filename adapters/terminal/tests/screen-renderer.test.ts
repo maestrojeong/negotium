@@ -1,19 +1,31 @@
 import { expect, test } from "bun:test";
-import { ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from "@/app";
-import { placeTerminalCursor, TerminalScreenRenderer } from "@/screen-renderer";
+import { altScreenSequences } from "@/app";
+import {
+  BEGIN_SYNCHRONIZED_UPDATE,
+  END_SYNCHRONIZED_UPDATE,
+  placeTerminalCursor,
+  TerminalScreenRenderer,
+} from "@/screen-renderer";
 
 const CLEAR_DISPLAY = "\u001b[2J";
+// Explicit env: the exported constants are derived from the ambient one, so
+// asserting fixed colour bytes against them fails under `NO_COLOR`/`TERM=dumb`.
+const { enter: ENTER, exit: EXIT } = altScreenSequences({
+  TERM: "xterm-256color",
+  COLORTERM: "truecolor",
+});
 
 test("fills the alternate screen with the terminal canvas color on entry", () => {
-  expect(ENTER_ALT_SCREEN).toStartWith("\u001b]11;#0a0b0f\u0007");
-  expect(ENTER_ALT_SCREEN).toContain("\u001b[48;2;10;11;15m\u001b[2J\u001b[H");
+  expect(ENTER).toStartWith("\u001b]11;#0a0b0f\u0007");
+  expect(ENTER).toContain("\u001b[48;2;10;11;15m\u001b[2J\u001b[H");
 });
 
 test("restores terminal autowrap when leaving the alternate screen", () => {
-  expect(EXIT_ALT_SCREEN).toContain("\u001b[?7h");
-  expect(EXIT_ALT_SCREEN.indexOf("\u001b[?7h")).toBeLessThan(
-    EXIT_ALT_SCREEN.indexOf("\u001b[?1049l"),
-  );
+  expect(EXIT).toContain("\u001b[?7h");
+  // Every patch opens with `CSI ?2026h`; dying between begin and end would
+  // otherwise leave the terminal buffering its output even after the restore.
+  expect(EXIT).toStartWith(END_SYNCHRONIZED_UPDATE);
+  expect(EXIT.indexOf("\u001b[?7h")).toBeLessThan(EXIT.indexOf("\u001b[?1049l"));
 });
 
 test("places and shows the hardware cursor for IME composition", () => {
@@ -98,4 +110,36 @@ test("does not address rows below the resized physical screen", () => {
   const output = renderer.update("first\nsecond", 2);
   expect(output).not.toContain("\u001b[3;1H");
   expect(output).toContain("\u001b[2;1H\u001b[2K\u001b[?7lsecond\u001b[?7h");
+});
+
+test("wraps every patch in a DECSET 2026 synchronized update", () => {
+  const renderer = new TerminalScreenRenderer();
+
+  const first = renderer.update("first\nsecond");
+  expect(BEGIN_SYNCHRONIZED_UPDATE).toBe("\u001b[?2026h");
+  expect(END_SYNCHRONIZED_UPDATE).toBe("\u001b[?2026l");
+  expect(first).toStartWith(BEGIN_SYNCHRONIZED_UPDATE);
+  expect(first).toEndWith(END_SYNCHRONIZED_UPDATE);
+  // Every row move must be inside the synchronized block, not around it.
+  expect(first.indexOf("\u001b[1;1H")).toBeGreaterThan(0);
+  expect(first.lastIndexOf("\u001b[H")).toBeLessThan(first.lastIndexOf(END_SYNCHRONIZED_UPDATE));
+  expect(first.split(BEGIN_SYNCHRONIZED_UPDATE)).toHaveLength(2);
+  expect(first.split(END_SYNCHRONIZED_UPDATE)).toHaveLength(2);
+});
+
+test("emits no synchronized-update markers when nothing changed", () => {
+  const renderer = new TerminalScreenRenderer();
+  renderer.update("first\nsecond");
+
+  const unchanged = renderer.update("first\nsecond");
+  expect(unchanged).toBe("");
+  expect(unchanged).not.toContain(BEGIN_SYNCHRONIZED_UPDATE);
+});
+
+test("keeps the autowrap guard inside the synchronized block", () => {
+  const renderer = new TerminalScreenRenderer();
+  const output = renderer.update("1234\n5678", 2);
+
+  expect(output.indexOf("\u001b[?7l")).toBeGreaterThan(output.indexOf(BEGIN_SYNCHRONIZED_UPDATE));
+  expect(output.indexOf("\u001b[?7h")).toBeLessThan(output.indexOf(END_SYNCHRONIZED_UPDATE));
 });

@@ -1,7 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import type { MessageDto, TopicDto } from "@negotium/core";
 import { terminalNowMs } from "@/clock";
 import {
+  clearMessageLayoutCache,
   displayWidth,
   effectiveTopicModel,
   formatElapsedDuration,
@@ -9,18 +10,81 @@ import {
   preserveConversationScrollAnchor,
   renderApp,
   renderAppFrame,
+  setColorDepth,
   stripAnsi,
   WORKING_FRAME_INTERVAL_MS,
   workingFrame,
   wrapText,
 } from "@/render";
+import { highlightScreenSelection } from "@/selection";
 import {
   applyRuntimeEvent,
   createInitialState,
   openTopicPicker,
   setMessages,
+  setTopicFilter,
   setTopics,
+  upsertMessage,
 } from "@/state";
+
+// The renderer defaults to `none` when stdout is not a TTY, which is exactly
+// the case under `bun test`. These suites assert on concrete escape bytes, so
+// they pin the depth explicitly; the `NO_COLOR` / downshift behaviour is
+// covered separately in `color-depth.test.ts` and in the plain-text suite here.
+beforeEach(() => {
+  setColorDepth("truecolor");
+});
+
+describe("notice severity", () => {
+  const ESC = String.fromCharCode(0x1b);
+  const MARKERS = [
+    ["success", "✓", `${ESC}[38;2;94;211;142m`],
+    ["error", "✗", `${ESC}[38;2;245;116;128m`],
+    ["warn", "!", `${ESC}[38;2;241;190;91m`],
+    ["info", "·", `${ESC}[38;2;137;141;158m`],
+  ] as const;
+
+  function noticed(
+    level: "info" | "success" | "warn" | "error",
+    text: string,
+    columns = 80,
+  ): string {
+    const state = setTopics(createInitialState("local"), [topic()]);
+    return renderApp({ ...state, notice: text, noticeLevel: level }, columns, 16);
+  }
+
+  for (const [level, glyph, colour] of MARKERS) {
+    test(`renders ${level} with its own glyph and colour`, () => {
+      const frame = noticed(level, `${level} happened`);
+      expect(stripAnsi(frame)).toContain(`${glyph} ${level} happened`);
+      expect(frame).toContain(colour);
+    });
+  }
+
+  test("falls back to the pre-severity warn styling when no level is set", () => {
+    const state = setTopics(createInitialState("local"), [topic()]);
+    const frame = renderApp({ ...state, notice: "unclassified" }, 80, 16);
+    expect(stripAnsi(frame)).toContain("! unclassified");
+    expect(frame).toContain(`${ESC}[38;2;241;190;91m`);
+  });
+
+  test("every severity glyph measures exactly one column", () => {
+    // A two-column glyph here would push the footer past the terminal width and
+    // desynchronise every physical row below it.
+    for (const [, glyph] of MARKERS) expect(displayWidth(glyph)).toBe(1);
+  });
+
+  test("keeps the footer within the terminal width on narrow terminals", () => {
+    for (const [level] of MARKERS) {
+      for (const columns of [10, 20, 32, 44]) {
+        const frame = noticed(level, "a notice long enough to need clipping", columns);
+        for (const row of frame.split("\n")) {
+          expect(displayWidth(row)).toBeLessThanOrEqual(columns);
+        }
+      }
+    }
+  });
+});
 
 function topic(): TopicDto {
   return {
@@ -344,6 +408,7 @@ describe("terminal renderer", () => {
     expect(output).toContain("Memory · read-only");
     expect(output).toContain("Tool: wiki_save");
     expect(output).not.toContain("Ctrl-O topics");
+    // A read-only overlay has no text entry at all, so no caret either.
     expect(rendered.cursor).toBeNull();
   });
 
@@ -431,7 +496,9 @@ describe("terminal renderer", () => {
     expect(output).not.toContain("Esc close");
     expect(output).not.toContain("stale chat draft");
     expect(output).not.toContain("Ctrl-O topics");
-    expect(rendered.cursor).toBeNull();
+    // The picker is type-to-filter, so the caret belongs on the filter row even
+    // before anything is typed — that is where a Hangul preedit has to anchor.
+    expect(rendered.cursor).toEqual({ x: displayWidth("  Filter: ") + 1, y: 3 });
   });
 
   test("keeps the selected topic visible in a short grouped picker", () => {
@@ -526,6 +593,325 @@ describe("terminal renderer", () => {
     expect(childLine).toContain("└─ ○ Child");
     expect(output.indexOf("Parent")).toBeLessThan(output.indexOf("Child"));
     expect(output).not.toContain("SUBAGENT");
+  });
+
+  // The line-diff renderer maps logical line index directly onto physical
+  // terminal rows. A single line wider than the reported column count
+  // auto-wraps and desynchronises every row below it (and the IME cursor), so
+  // the width invariant is asserted for every state the renderer can produce.
+  describe("never renders a line wider than the terminal reports", () => {
+    const widths = [1, 2, 3, 5, 8, 10, 12, 16, 20, 28, 31, 32, 33, 40, 44, 60, 80, 120, 200];
+
+    const longMessages: MessageDto[] = [
+      {
+        id: "cjk",
+        topicId: "topic",
+        authorId: "local",
+        text: "한글 메시지가 아주 길어서 좁은 터미널에서 반드시 접혀야 하는 문장입니다 ✅ ￦1,000 🇰🇷",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "markdown",
+        topicId: "topic",
+        authorId: "ai",
+        text: [
+          "# Heading that is quite long indeed",
+          "",
+          "Body with **bold**, `code`, and a [link](https://example.com/very/long/path).",
+          "",
+          "| column one | column two | column three |",
+          "| --- | ---: | :---: |",
+          "| value aaaaaaaa | value bbbbbbbb | value cccccccc |",
+          "",
+          "```ts",
+          "const someVeryLongIdentifier = doSomethingWithAVeryLongName(argument);",
+          "```",
+          "",
+          "- bullet item that keeps going and going and going",
+          "> quoted text that also keeps going and going",
+        ].join("\n"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "tool",
+        topicId: "topic",
+        authorId: "ai",
+        kind: "tool",
+        text: "Edit · /a/very/long/path/to/some/file.ts (+12 -3)\n+ added a long line of content here\n- removed a long line of content here",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "ask",
+        topicId: "topic",
+        authorId: "ai",
+        kind: "ask_user_question",
+        text: "question",
+        askUserQuestion: {
+          question: "Which deployment target should this very long question use?",
+          choices: [
+            { label: "production", description: "the real one, with a long description" },
+            { label: "staging", description: "the safe one, also with a long description" },
+          ],
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ] as MessageDto[];
+
+    const graphCanvasLines = [
+      "╭──────────╮                   ",
+      "│ ○ Root   │                   ",
+      "╰──────────╯                   ",
+      "     │                         ",
+      "     ▼                         ",
+      "                    ╭─────────╮",
+      "                    │ ○ Child │",
+      "                    ╰─BOTTOM──╯",
+    ];
+
+    const populated = setMessages(
+      setTopics(createInitialState("local"), [topic()]),
+      "topic",
+      longMessages,
+    );
+
+    const scenarios: Record<string, ReturnType<typeof createInitialState>> = {
+      empty: createInitialState("local"),
+      "no topic with input": {
+        ...createInitialState("local"),
+        input: "안녕하세요 this is a fairly long draft message",
+        inputCursor: { row: 0, col: 20 },
+      },
+      "conversation with decision overlay": populated,
+      "conversation scrolled": { ...populated, scrollOffset: 5 },
+      "task sidebar": {
+        ...setMessages(setTopics(createInitialState("local"), [topic()]), "topic", [
+          {
+            id: "tasks-1",
+            topicId: "topic",
+            authorId: "ai",
+            text: "- [ ] first task with a long title\n- [x] ✅ second task done",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          } as MessageDto,
+        ]),
+        taskSidebarEnabled: true,
+      },
+      "topic picker": openTopicPicker(setTopics(createInitialState("local"), [topic()])),
+      // The filter row is new geometry in the picker, so it gets the full
+      // width-vector treatment too rather than relying on the unfiltered
+      // picker above to cover it.
+      "topic picker filtered": setTopicFilter(
+        openTopicPicker(setTopics(createInitialState("local"), [topic()])),
+        "한글 섞인 아주 긴 필터 문자열 that also runs long in latin",
+      ),
+      "topic picker no matches": setTopicFilter(
+        openTopicPicker(setTopics(createInitialState("local"), [topic()])),
+        "zzz-nothing-matches-this",
+      ),
+      "creating topic": {
+        ...setTopics(createInitialState("local"), [topic()]),
+        creatingTopic: true,
+        input: "a new topic name that is long",
+        inputCursor: { row: 0, col: 5 },
+      },
+      help: { ...setTopics(createInitialState("local"), [topic()]), overlay: "help" as const },
+      status: { ...setTopics(createInitialState("local"), [topic()]), overlay: "status" as const },
+      "subagent graph": {
+        ...setTopics(createInitialState("local"), [topic()]),
+        overlay: "subagents" as const,
+        subagentGraphLoading: false,
+        subagentGraph: {
+          title: "Root",
+          rootDetail: "codex · gpt-5.6-luna · medium",
+          rootRunning: false,
+          nodes: [],
+          edges: [],
+          lines: graphCanvasLines,
+          width: 31,
+          height: graphCanvasLines.length,
+        },
+      },
+      notice: { ...populated, notice: "Copy failed: ENOENT while writing to the clipboard" },
+    };
+
+    for (const [name, state] of Object.entries(scenarios)) {
+      test(name, () => {
+        for (const cols of widths) {
+          const rendered = renderAppFrame(state, cols, 24);
+          const rows = rendered.frame.split("\n");
+          // codex asserts the exact vector of widths (PR #34775) rather than a
+          // snapshot, because a reviewed snapshot can freeze a broken layout in
+          // place. Every row is padded to the full width, so equality holds.
+          const rowWidths = rows.map((row) => displayWidth(stripAnsi(row)));
+          expect({ name, cols, rowWidths }).toEqual({
+            name,
+            cols,
+            rowWidths: rows.map(() => cols),
+          });
+          if (rendered.cursor) expect(rendered.cursor.x).toBeLessThanOrEqual(cols);
+        }
+      });
+    }
+
+    test("keeps a bordered pane exactly at the requested width", () => {
+      // The pane that PR #34775 was about: a decision box whose content is far
+      // wider than the terminal must not widen the box.
+      const decision = scenarios["conversation with decision overlay"];
+      for (const cols of [12, 20, 44]) {
+        const box = stripAnsi(renderAppFrame(decision, cols, 24).frame)
+          .split("\n")
+          .filter((row) => row.includes("\u256d") || row.includes("\u2570"));
+        expect(box.length).toBeGreaterThan(0);
+        for (const row of box) expect(displayWidth(row)).toBe(cols);
+      }
+    });
+
+    test("skips a bordered pane instead of degrading it below four inner columns", () => {
+      const decision = scenarios["conversation with decision overlay"];
+      const narrow = stripAnsi(renderAppFrame(decision, 5, 24).frame);
+      // Silent skip, like codex's `card_inner_width() -> None`; no notice text.
+      expect(narrow).not.toContain("\u256d");
+      expect(narrow.toLowerCase()).not.toContain("narrow");
+    });
+  });
+
+  describe("caches message layout by object identity", () => {
+    function message(text: string, extra: Partial<MessageDto> = {}): MessageDto {
+      return {
+        id: "m1",
+        topicId: "topic",
+        authorId: "ai",
+        text,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        ...extra,
+      } as MessageDto;
+    }
+
+    function withMessage(text: string, extra: Partial<MessageDto> = {}) {
+      return setMessages(setTopics(createInitialState("local"), [topic()]), "topic", [
+        message(text, extra),
+      ]);
+    }
+
+    test("reuses the layout while the store keeps the same message object", () => {
+      // The cache is keyed on the message reference, so an in-place mutation
+      // (which `state.ts` never performs) is deliberately not observed. This
+      // asserts the cache is actually live rather than silently missing.
+      const stored = message("original body text");
+      const state = setMessages(setTopics(createInitialState("local"), [topic()]), "topic", [
+        stored,
+      ]);
+      const first = stripAnsi(renderApp(state, 100, 30));
+      expect(first).toContain("original body text");
+
+      (stored as { text: string }).text = "mutated in place!!";
+      expect(stripAnsi(renderApp(state, 100, 30))).toBe(first);
+
+      clearMessageLayoutCache();
+      expect(stripAnsi(renderApp(state, 100, 30))).toContain("mutated in place!!");
+    });
+
+    test("invalidates when the store replaces the message object", () => {
+      // `upsertMessage` is how live edits reach the renderer; it swaps in a new
+      // object, so the new reference misses the cache on its own.
+      const base = setTopics(createInitialState("local"), [topic()]);
+      const first = upsertMessage(setMessages(base, "topic", []), message("alpha bravo"));
+      expect(stripAnsi(renderApp(first, 100, 30))).toContain("alpha bravo");
+
+      // Same length, different content: a length-based key would serve stale text.
+      const second = upsertMessage(first, message("alpha zulu!"));
+      const rendered = stripAnsi(renderApp(second, 100, 30));
+      expect(rendered).toContain("alpha zulu!");
+      expect(rendered).not.toContain("alpha bravo");
+    });
+
+    test("re-renders while a message grows one character at a time", () => {
+      // Every streaming delta allocates a new object, so it misses by design —
+      // no explicit "still streaming" flag is needed.
+      let state = setMessages(setTopics(createInitialState("local"), [topic()]), "topic", []);
+      let text = "";
+      for (const character of "streamed tokens arriving one by one") {
+        text += character;
+        state = upsertMessage(state, message(text));
+        expect(stripAnsi(renderApp(state, 100, 30))).toContain(text);
+      }
+    });
+
+    test("re-renders the same object at a different width", () => {
+      const state = withMessage("a fairly long sentence that wraps differently per width");
+      const wide = stripAnsi(renderApp(state, 100, 30));
+      const narrow = stripAnsi(renderApp(state, 44, 30));
+
+      expect(wide).toContain("a fairly long sentence that wraps differently per width");
+      expect(narrow).not.toContain("a fairly long sentence that wraps differently per width");
+      expect(narrow).toContain("a fairly long");
+      // Going back to the original width must not reuse the narrow layout.
+      expect(stripAnsi(renderApp(state, 100, 30))).toBe(wide);
+    });
+
+    test("re-renders the same object for a different viewer", () => {
+      const stored = message("who am I speaking as", { authorId: "local" });
+      const mine = setMessages(setTopics(createInitialState("local"), [topic()]), "topic", [
+        stored,
+      ]);
+      const theirs = { ...mine, userId: "someone-else" };
+
+      expect(stripAnsi(renderApp(mine, 100, 30))).toContain("\u203a who am I speaking as");
+      expect(stripAnsi(renderApp(theirs, 100, 30))).toContain("\u2022 who am I speaking as");
+    });
+
+    test("re-renders an edited tool message with the same text", () => {
+      const original = stripAnsi(
+        renderApp(withMessage("Edit \u00b7 file.ts", { kind: "tool" }), 100, 30),
+      );
+      const finished = stripAnsi(
+        renderApp(
+          withMessage("Edit \u00b7 file.ts", {
+            kind: "tool",
+            editedAt: "2026-01-01T00:01:00.000Z",
+          }),
+          100,
+          30,
+        ),
+      );
+
+      // The pending marker becomes a completion marker once editedAt is set.
+      expect(original).toContain("\u25cf Edit \u00b7 file.ts");
+      expect(finished).toContain("\u2713 Edit \u00b7 file.ts");
+    });
+
+    test("re-renders a subagent card when only its status changes", () => {
+      const card = {
+        topicId: "child",
+        subagentTopicId: "child",
+        name: "Worker",
+        task: "do the thing",
+        reportMode: "auto" as const,
+      };
+      const running = stripAnsi(
+        renderApp(
+          withMessage("subagent", {
+            kind: "subagent",
+            subagentCard: { ...card, status: "running" },
+          }),
+          100,
+          30,
+        ),
+      );
+      const done = stripAnsi(
+        renderApp(
+          withMessage("subagent", {
+            kind: "subagent",
+            subagentCard: { ...card, status: "completed", resultSummary: "all done" },
+          }),
+          100,
+          30,
+        ),
+      );
+
+      expect(running).toContain("Worker  running");
+      expect(done).toContain("Worker  completed");
+      expect(done).toContain("all done");
+    });
   });
 
   test("renders the Orchgraph subagent canvas through a movable viewport", () => {
@@ -706,6 +1092,61 @@ describe("terminal renderer", () => {
 
   test("strips terminal escape sequences", () => {
     expect(stripAnsi("safe\u001b[2Jbad")).toBe("safebad");
+  });
+
+  test("strips OSC 8 hyperlink escapes back to the plain label", () => {
+    const ESC = String.fromCharCode(0x1b);
+    const BEL = String.fromCharCode(0x07);
+    const url = "https://example.com";
+    const wrapped = `see ${ESC}]8;;${url}${BEL}${url}${ESC}]8;;${BEL} now`;
+    expect(stripAnsi(wrapped)).toBe(`see ${url} now`);
+  });
+
+  test("wraps a bare URL in a message body as a clickable OSC 8 hyperlink", () => {
+    const ESC = String.fromCharCode(0x1b);
+    const BEL = String.fromCharCode(0x07);
+    const message: MessageDto = {
+      id: "message",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text: "See https://example.com/docs for details.",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [message]);
+    const rendered = renderAppFrame(state, 100, 30);
+
+    const url = "https://example.com/docs";
+    expect(rendered.frame).toContain(`${ESC}]8;;${url}${BEL}${url}${ESC}]8;;${BEL}`);
+    // Trailing sentence punctuation stays outside the link target.
+    expect(rendered.frame).not.toContain(`${url}.`);
+    // The escape bytes are display-invisible, so stripping them still reads
+    // exactly like the message would without a hyperlink.
+    expect(stripAnsi(rendered.frame)).toContain("See https://example.com/docs for details.");
+  });
+
+  test("keeps selection highlighting aligned across a hyperlinked URL", () => {
+    const message: MessageDto = {
+      id: "message",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text: "https://example.com",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [message]);
+    const rendered = renderAppFrame(state, 100, 30);
+    const lineIndex = rendered.frame.split("\n").findIndex((row) => row.includes("example.com"));
+    expect(lineIndex).toBeGreaterThanOrEqual(0);
+
+    const highlighted = highlightScreenSelection(rendered.frame, {
+      anchor: { x: 1, y: lineIndex + 1 },
+      focus: { x: 40, y: lineIndex + 1 },
+    });
+    // Highlighting must not corrupt the escape bytes or duplicate the label.
+    expect(stripAnsi(highlighted)).toBe(stripAnsi(rendered.frame));
   });
 
   test("renders markdown lists and fenced code in the conversation flow", () => {
@@ -1512,5 +1953,136 @@ describe("terminal renderer", () => {
 
     expect(anchored.scrollOffset).toBeGreaterThan(previous.scrollOffset);
     expect(after).toEqual(before);
+  });
+});
+
+describe("topic picker filter rendering", () => {
+  function room(id: string, title: string, extra: Partial<TopicDto> = {}): TopicDto {
+    return { ...topic(), id, title, ...extra };
+  }
+
+  const rooms = [room("a", "Design review"), room("b", "설계 회의"), room("c", "Deploy pipeline")];
+
+  function picker(query: string, cols = 100) {
+    const state = setTopicFilter(
+      openTopicPicker(setTopics(createInitialState("local"), rooms)),
+      query,
+    );
+    return stripAnsi(renderApp(state, cols, 20));
+  }
+
+  /** Overlay rows only; the footer separately echoes the *active* topic title. */
+  function listRows(output: string): string {
+    return output
+      .split("\n")
+      .filter((row) => row.includes("  ○ "))
+      .join("\n");
+  }
+
+  test("shows the active query and hides non-matching topics", () => {
+    const output = picker("회의");
+    expect(output).toContain("Filter: 회의");
+    expect(output).toContain("설계 회의");
+    expect(listRows(output)).not.toContain("Design review");
+    expect(listRows(output)).not.toContain("Deploy pipeline");
+    // Escape is re-advertised as "clear the filter" while a query is live.
+    expect(output).toContain("Esc clears the filter");
+  });
+
+  test("matches case-insensitively", () => {
+    const output = picker("DESIGN");
+    expect(output).toContain("Design review");
+    expect(listRows(output)).not.toContain("Deploy pipeline");
+  });
+
+  test("explains an empty result instead of showing a blank list", () => {
+    const output = picker("nothing-matches");
+    expect(output).toContain("No topics match");
+    expect(output).toContain("Esc clears the filter");
+  });
+
+  test("omits the filter row entirely when no query is active", () => {
+    const output = picker("");
+    expect(output).not.toContain("Filter:");
+    expect(output).toContain("Design review");
+    expect(output).toContain("설계 회의");
+  });
+
+  test("advertises the new chords and no longer mentions the removed ones", () => {
+    const output = picker("", 140);
+    expect(output).toContain("type to filter");
+    expect(output).toContain("Ctrl-N new");
+    expect(output).toContain("Ctrl-D delete");
+    expect(output).not.toContain("· N new");
+    expect(output).not.toContain("D/Del delete");
+  });
+
+  test("the help overlay drops the retired Ctrl-P/N topic cycling", () => {
+    const state = { ...setTopics(createInitialState("local"), rooms), overlay: "help" as const };
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).not.toContain("Ctrl-P/N");
+    expect(output).not.toContain("previous/next topic");
+  });
+
+  test("anchors the hardware cursor at the end of the filter query", () => {
+    // The composer is hidden behind the picker, so its caret is gone. Without an
+    // explicit one the frame reported `cursor: null` and the terminal left the
+    // hardware cursor wherever the previous frame put it — which is where a
+    // Hangul IME draws its preedit, so composing a Korean query showed the
+    // in-progress syllable in the wrong place.
+    const state = setTopicFilter(
+      openTopicPicker(setTopics(createInitialState("local"), rooms)),
+      "회의",
+    );
+    const rendered = renderAppFrame(state, 100, 24);
+    expect(rendered.cursor).not.toBeNull();
+    const rows = stripAnsi(rendered.frame).split("\n");
+    const row = rows[(rendered.cursor?.y ?? 1) - 1];
+    expect(row).toContain("Filter: 회의");
+    // One cell past the last character of the query, counting Hangul as wide.
+    expect(rendered.cursor?.x).toBe(displayWidth("  Filter: 회의") + 1);
+
+    // An empty query still gets a caret, parked where the first character will
+    // be drawn. Hangul preedit starts *before* anything is committed, so this
+    // is precisely the state in which the first syllable of a Korean search is
+    // composed; returning null here left it at the previous frame's cursor.
+    const unfiltered = openTopicPicker(setTopics(createInitialState("local"), rooms));
+    const empty = renderAppFrame(unfiltered, 100, 24).cursor;
+    expect(empty).toEqual({ x: displayWidth("  Filter: ") + 1, y: 3 });
+    // Committing the first character advances the caret by exactly one cell.
+    const typed = renderAppFrame(setTopicFilter(unfiltered, "D"), 100, 24).cursor;
+    expect(typed).toEqual({ x: (empty?.x ?? 0) + 1, y: 3 });
+  });
+
+  test("keeps the filter caret inside the frame at every width", () => {
+    const state = setTopicFilter(
+      openTopicPicker(setTopics(createInitialState("local"), rooms)),
+      "e 설계 회의 매우 긴 필터 문자열",
+    );
+    for (const cols of [1, 2, 3, 5, 8, 12, 20, 31, 40, 80, 120]) {
+      for (const rows of [14, 20, 24, 60]) {
+        const cursor = renderAppFrame(state, cols, rows).cursor;
+        expect({ cols, rows, cursor: cursor === null }).toEqual({ cols, rows, cursor: false });
+        expect(cursor?.x).toBeGreaterThanOrEqual(1);
+        expect(cursor?.x).toBeLessThanOrEqual(cols);
+        expect(cursor?.y).toBeGreaterThanOrEqual(1);
+        expect(cursor?.y).toBeLessThanOrEqual(Math.max(14, rows));
+      }
+    }
+  });
+
+  test("keeps every row within the terminal width while filtering", () => {
+    const state = setTopicFilter(
+      openTopicPicker(setTopics(createInitialState("local"), [rooms[0], rooms[1], rooms[2]])),
+      "e 설계 회의 매우 긴 필터 문자열",
+    );
+    for (const cols of [1, 2, 3, 5, 8, 12, 20, 31, 40, 80, 120]) {
+      const rendered = renderAppFrame(state, cols, 24);
+      const rows = rendered.frame.split("\n");
+      expect({ cols, widths: rows.map((row) => displayWidth(stripAnsi(row))) }).toEqual({
+        cols,
+        widths: rows.map(() => cols),
+      });
+    }
   });
 });

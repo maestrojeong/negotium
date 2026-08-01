@@ -2,6 +2,15 @@ const ESC = "\u001b[";
 const DISABLE_AUTOWRAP = `${ESC}?7l`;
 const ENABLE_AUTOWRAP = `${ESC}?7h`;
 
+/**
+ * DECSET 2026 (synchronized output). The terminal buffers everything between
+ * begin and end and presents it as one atomic update, so a multi-row patch is
+ * never shown half-drawn. Terminals that do not implement the mode ignore both
+ * sequences, so no capability probe is needed.
+ */
+export const BEGIN_SYNCHRONIZED_UPDATE = `${ESC}?2026h`;
+export const END_SYNCHRONIZED_UPDATE = `${ESC}?2026l`;
+
 export function placeTerminalCursor(cursor: { x: number; y: number }): string {
   const x = Math.max(1, Math.trunc(cursor.x));
   const y = Math.max(1, Math.trunc(cursor.y));
@@ -57,7 +66,10 @@ export class TerminalScreenRenderer {
       }
     }
 
-    if (output) output += `${ESC}H`;
+    // Wrap the whole patch so the terminal never presents a partially drawn
+    // frame. The trailing home move keeps the pending-autowrap guard above from
+    // leaking, and stays inside the synchronized block.
+    if (output) output = `${BEGIN_SYNCHRONIZED_UPDATE}${output}${ESC}H${END_SYNCHRONIZED_UPDATE}`;
     this.#previousLines = lines;
     this.#invalidated = false;
     return output;

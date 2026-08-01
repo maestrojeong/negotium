@@ -12,6 +12,7 @@ import {
   TerminalApp,
   terminalDeletionShortcut,
   terminalNeedsAnimation,
+  topicFilterInsertion,
   vaultFormBlocksOverlaySwitch,
 } from "@/app";
 import {
@@ -23,6 +24,7 @@ import {
 import { stripAnsi, WORKING_FRAME_INTERVAL_MS } from "@/render";
 import { highlightScreenSelection, screenSelectionText } from "@/selection";
 import { applyRuntimeEvent, createInitialState, setTopics, startTopicCreation } from "@/state";
+import { TerminalAlreadyOwnedError, terminalRestoreInstalled } from "@/terminal-restore";
 
 const TOPIC = {
   id: "topic",
@@ -160,6 +162,44 @@ test("extracts and highlights screen-column selections with wide glyphs", () => 
   expect(stripAnsi(highlighted)).toBe("a한bc");
   expect(highlighted).toContain("\u001b[7m");
   expect(highlighted).toContain("\u001b[27m");
+});
+
+// Explicit escapes: a composed-looking `\u00e9` in the source would silently
+// test the wrong thing.
+const E_ACUTE = "e\u0301"; // NFD: e + COMBINING ACUTE ACCENT
+const HEART_VS16 = "\u2764\ufe0f"; // heart + VARIATION SELECTOR-16
+
+test("keeps combining marks with the cell they decorate when copying a selection", () => {
+  const cell = (x: number) => ({ anchor: { x, y: 1 }, focus: { x, y: 1 } });
+  const line = `${E_ACUTE}x`;
+
+  // The accent occupies no column of its own, so column arithmetic alone
+  // dropped it: selecting the first cell yielded a bare "e". That is silent
+  // data loss on the way to the clipboard.
+  expect(screenSelectionText([line], cell(1))).toBe(E_ACUTE);
+  // It belongs to the *preceding* cell, so selecting the next one must not
+  // drag it along.
+  expect(screenSelectionText([line], cell(2))).toBe("x");
+  expect(screenSelectionText([line], { anchor: { x: 1, y: 1 }, focus: { x: 2, y: 1 } })).toBe(line);
+
+  // A stack of marks all attach to the same base.
+  expect(screenSelectionText([`e\u0301\u0308x`], cell(1))).toBe("e\u0301\u0308");
+  // Variation selectors and ZWJ are zero-width for the same reason.
+  expect(screenSelectionText([`a${HEART_VS16}b`], cell(2))).toBe(HEART_VS16);
+  // A defective cluster (mark with no base) still belongs to the first cell.
+  expect(screenSelectionText(["\u0301ab"], cell(1))).toBe("\u0301a");
+});
+
+test("extends the selection highlight over combining marks", () => {
+  const highlighted = highlightScreenSelection(`${E_ACUTE}x`, {
+    anchor: { x: 1, y: 1 },
+    focus: { x: 1, y: 1 },
+  });
+  // Plain text is never altered by highlighting.
+  expect(stripAnsi(highlighted)).toBe(`${E_ACUTE}x`);
+  // The inverse video used to end between the `e` and its accent, leaving the
+  // accent drawn on an unhighlighted cell.
+  expect(highlighted).toBe(`\u001b[7m${E_ACUTE}\u001b[27mx`);
 });
 
 test("Esc stops a running turn only from the active conversation", () => {
@@ -328,6 +368,348 @@ test("stops a started client when terminal initialization fails", async () => {
     await expect(app.run()).rejects.toThrow("topic store unavailable");
     expect(stopped).toBe(1);
   } finally {
+    restoreStdin();
+    restoreStdout();
+  }
+});
+
+test("bare letters type into the topic picker filter instead of firing actions", () => {
+  // The whole point of the Ctrl-N/Ctrl-D migration: n and d are now text.
+  expect(topicFilterInsertion("n")).toBe("n");
+  expect(topicFilterInsertion("d")).toBe("d");
+  expect(topicFilterInsertion("y")).toBe("y");
+  // Hangul jamo and completed syllables are literal text as well.
+  expect(topicFilterInsertion("ㅜ")).toBe("ㅜ");
+  expect(topicFilterInsertion("ㅇ")).toBe("ㅇ");
+  expect(topicFilterInsertion("회")).toBe("회");
+  expect(topicFilterInsertion(" ")).toBe(" ");
+});
+
+test("control chords and escape sequences never reach the topic picker filter", () => {
+  for (const chunk of [
+    "\u000e", // Ctrl-N, new topic
+    "\u0004", // Ctrl-D, delete topic
+    "\u0010", // Ctrl-P, deliberately unbound after topic cycling was removed
+    "\u0003", // Ctrl-C
+    "\r",
+    "\t",
+    "\u007f", // Backspace
+    "\u001b", // Escape
+    "\u001b[A", // Up
+    "\u001b[B", // Down
+    "\u001b[3~", // Delete
+    "\u001b[200~", // bracketed paste start
+    "",
+  ]) {
+    expect(topicFilterInsertion(chunk)).toBeNull();
+  }
+});
+
+const CTRL_O = "\u000f"; // Ctrl-O toggles the topic picker
+const OPEN_PASTE = "\u001b[200~";
+const CLOSE_PASTE = "\u001b[201~";
+
+test("a paste made while the topic picker is open lands in the filter, not the hidden composer", async () => {
+  // The composer is hidden behind the picker, so inserting there put the text
+  // somewhere invisible; it only surfaced once the overlay was closed again.
+  const client: NegotiumClient = {
+    async start() {},
+    async stop() {},
+    listTopics: () => [TOPIC],
+    listMessages: () => [],
+    createTopic() {
+      throw new Error("not reached");
+    },
+    async deriveTopic() {
+      throw new Error("not reached");
+    },
+    async resetTopic() {
+      throw new Error("not reached");
+    },
+    async compactTopic() {
+      throw new Error("not reached");
+    },
+    setModel() {
+      throw new Error("not reached");
+    },
+    setEffort() {
+      throw new Error("not reached");
+    },
+    setAccessMode() {
+      throw new Error("not reached");
+    },
+    async deleteTopic() {
+      throw new Error("not reached");
+    },
+    sendMessage() {
+      throw new Error("not reached");
+    },
+    answerQuestion: () => ({ ok: false }),
+    abort: () => false,
+    runVaultCommand: () => null,
+  };
+  const restoreStdin = setTty(process.stdin, true);
+  const restoreStdout = setTty(process.stdout, true);
+  const stdin = process.stdin as unknown as Record<string, unknown>;
+  const hadRawMode = typeof stdin.setRawMode === "function";
+  if (!hadRawMode) stdin.setRawMode = () => process.stdin;
+  const realWrite = process.stdout.write.bind(process.stdout);
+  const frames: string[] = [];
+  (process.stdout as unknown as { write: (chunk: string) => boolean }).write = (chunk: string) => {
+    frames.push(String(chunk));
+    return true;
+  };
+  const app = new TerminalApp(client, { userId: "local", preferredTopic: TOPIC.title });
+  const finished = app.run();
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
+  const feed = (data: string) => process.stdin.emit("data", data);
+  const screen = () => stripAnsi(frames.join(""));
+
+  try {
+    await settle();
+    feed(CTRL_O);
+    await settle();
+    frames.length = 0;
+    feed(`${OPEN_PASTE}zz\nqq${CLOSE_PASTE}`);
+    await settle();
+    // Newlines become spaces: the filter is a single line, and keeping only the
+    // first line would silently discard what the user pasted.
+    expect(screen()).toContain("Filter: zz qq");
+
+    // A bare ESC is held briefly because it could have begun a longer escape
+    // sequence. With no following byte it must flush to the picker, where this
+    // first Escape clears the filter rather than leaving the key unresponsive.
+    frames.length = 0;
+    feed("\u001b");
+    await settle();
+    expect(screen()).not.toContain("Filter: zz qq");
+
+    // Ctrl-O closes the picker without touching the composer (Escape clears the
+    // draft, which would hide the very thing under test).
+    frames.length = 0;
+    feed(CTRL_O);
+    await settle();
+    const closed = screen();
+    expect(closed).not.toContain("zz");
+    expect(closed).not.toContain("qq");
+  } finally {
+    app.stop();
+    await finished;
+    (process.stdout as unknown as { write: typeof realWrite }).write = realWrite;
+    if (!hadRawMode) delete stdin.setRawMode;
+    restoreStdin();
+    restoreStdout();
+  }
+});
+
+test("rejects a second terminal adapter without disturbing the running one", async () => {
+  const client: NegotiumClient = {
+    async start() {},
+    async stop() {},
+    listTopics: () => [TOPIC],
+    listMessages: () => [],
+    createTopic() {
+      throw new Error("not reached");
+    },
+    async deriveTopic() {
+      throw new Error("not reached");
+    },
+    async resetTopic() {
+      throw new Error("not reached");
+    },
+    async compactTopic() {
+      throw new Error("not reached");
+    },
+    setModel() {
+      throw new Error("not reached");
+    },
+    setEffort() {
+      throw new Error("not reached");
+    },
+    setAccessMode() {
+      throw new Error("not reached");
+    },
+    async deleteTopic() {
+      throw new Error("not reached");
+    },
+    sendMessage() {
+      throw new Error("not reached");
+    },
+    answerQuestion: () => ({ ok: false }),
+    abort: () => false,
+    runVaultCommand: () => null,
+  };
+  const restoreStdin = setTty(process.stdin, true);
+  const restoreStdout = setTty(process.stdout, true);
+  const stdin = process.stdin as unknown as Record<string, unknown>;
+  const hadRawMode = typeof stdin.setRawMode === "function";
+  let rawMode = false;
+  const realRawMode = stdin.setRawMode;
+  stdin.setRawMode = (value: boolean) => {
+    rawMode = value;
+    return process.stdin;
+  };
+  const realWrite = process.stdout.write.bind(process.stdout);
+  const frames: string[] = [];
+  (process.stdout as unknown as { write: (chunk: string) => boolean }).write = (chunk: string) => {
+    frames.push(String(chunk));
+    return true;
+  };
+  const first = new TerminalApp(client, { userId: "local", preferredTopic: TOPIC.title });
+  const firstFinished = first.run();
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
+
+  try {
+    await settle();
+    expect(rawMode).toBe(true);
+    const framesBefore = frames.length;
+    const listenersBefore = process.listenerCount("SIGHUP");
+
+    // Two TUIs cannot share one terminal: the second would push the kitty flag
+    // again and, on exit, drop the process-global stdin out of raw mode under
+    // the first one. It is rejected before it writes a single byte.
+    const second = new TerminalApp(client, { userId: "local", preferredTopic: TOPIC.title });
+    await expect(second.run()).rejects.toThrow(TerminalAlreadyOwnedError);
+
+    expect(frames.length).toBe(framesBefore);
+    expect(rawMode).toBe(true);
+    expect(process.listenerCount("SIGHUP")).toBe(listenersBefore);
+    expect(terminalRestoreInstalled()).toBe(true);
+  } finally {
+    first.stop();
+    await firstFinished;
+    (process.stdout as unknown as { write: typeof realWrite }).write = realWrite;
+    if (hadRawMode) stdin.setRawMode = realRawMode;
+    else delete stdin.setRawMode;
+    restoreStdin();
+    restoreStdout();
+  }
+
+  // Ownership was handed back, so a fresh adapter can start.
+  expect(terminalRestoreInstalled()).toBe(false);
+});
+
+const PASTE_OPEN = "\u001b[200~";
+const PASTE_CLOSE = "\u001b[201~";
+const SGR_CLICK = "\u001b[<0;10;5M"; // a real one starts a drag selection
+const CTRL_O_CHORD = "\u000f"; // a real one opens the topic overlay
+
+test("a spoofed paste-end cannot turn the rest of the burst into actions", async () => {
+  const sent: string[] = [];
+  const client: NegotiumClient = {
+    async start() {},
+    async stop() {},
+    listTopics: () => [TOPIC],
+    listMessages: () => [],
+    createTopic() {
+      throw new Error("not reached");
+    },
+    async deriveTopic() {
+      throw new Error("not reached");
+    },
+    async resetTopic() {
+      throw new Error("not reached");
+    },
+    async compactTopic() {
+      throw new Error("not reached");
+    },
+    setModel() {
+      throw new Error("not reached");
+    },
+    setEffort() {
+      throw new Error("not reached");
+    },
+    setAccessMode() {
+      throw new Error("not reached");
+    },
+    async deleteTopic() {
+      throw new Error("not reached");
+    },
+    sendMessage(topic, text) {
+      sent.push(text);
+      return {
+        id: `message-${sent.length}`,
+        topicId: topic.id,
+        authorId: "local",
+        text,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      };
+    },
+    answerQuestion: () => ({ ok: false }),
+    abort: () => false,
+    runVaultCommand: () => null,
+  };
+  const restoreStdin = setTty(process.stdin, true);
+  const restoreStdout = setTty(process.stdout, true);
+  const stdin = process.stdin as unknown as Record<string, unknown>;
+  const hadRawMode = typeof stdin.setRawMode === "function";
+  if (!hadRawMode) stdin.setRawMode = () => process.stdin;
+  const realWrite = process.stdout.write.bind(process.stdout);
+  const frames: string[] = [];
+  (process.stdout as unknown as { write: (chunk: string) => boolean }).write = (chunk: string) => {
+    frames.push(String(chunk));
+    return true;
+  };
+  const app = new TerminalApp(client, { userId: "local", preferredTopic: TOPIC.title });
+  const finished = app.run();
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
+  const screen = () => stripAnsi(frames.join(""));
+
+  try {
+    await settle();
+    frames.length = 0;
+    // Payload carrying its own end marker, a mouse report and a re-open, then
+    // the real end marker: the splitter is obliged to believe the first end
+    // marker, so the middle arrives as a separate keys segment.
+    process.stdin.emit(
+      "data",
+      `${PASTE_OPEN}head${PASTE_CLOSE}${SGR_CLICK}tail${PASTE_OPEN}rest${PASTE_CLOSE}`,
+    );
+    await settle();
+    const output = screen();
+
+    // Every printable part survives, in order, as composer text, and the escape
+    // bytes are sanitised rather than typed.
+    expect(output).toContain("head");
+    expect(output).toContain("tail");
+    expect(output).toContain("rest");
+    expect(output).not.toContain("[<0;10;5M");
+
+    // A chord alone in the tail is the case that actually *acts*: on its own it
+    // would open the topic overlay. After a paste it must not.
+    frames.length = 0;
+    process.stdin.emit("data", `${PASTE_OPEN}x${PASTE_CLOSE}${CTRL_O_CHORD}`);
+    await settle();
+    expect(screen()).not.toContain("Topics");
+    expect(sent).toEqual([]);
+
+    // Sanity check that the chord does work when it is not riding a paste.
+    frames.length = 0;
+    process.stdin.emit("data", CTRL_O_CHORD);
+    await settle();
+    expect(screen()).toContain("Topics");
+
+    // A normal paste followed by real, later input is not affected. The left
+    // arrow proves a separate escape-sequence chunk still dispatches, and the
+    // subsequent Enter sends the resulting composer text.
+    process.stdin.emit("data", CTRL_O_CHORD);
+    await settle();
+    process.stdin.emit("data", "\u001b");
+    await settle();
+    process.stdin.emit("data", `${PASTE_OPEN}normal${PASTE_CLOSE}`);
+    await settle();
+    process.stdin.emit("data", "\u001b[D");
+    await settle();
+    process.stdin.emit("data", "!");
+    await settle();
+    process.stdin.emit("data", "\r");
+    await settle();
+    expect(sent).toEqual(["norma!l"]);
+  } finally {
+    app.stop();
+    await finished;
+    (process.stdout as unknown as { write: typeof realWrite }).write = realWrite;
+    if (!hadRawMode) delete stdin.setRawMode;
     restoreStdin();
     restoreStdout();
   }

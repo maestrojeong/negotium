@@ -26,7 +26,7 @@ export async function runTerminalCommand(
     if (outcome.kind === "open-manager") await context.openVault();
     else if (context.state.overlay === "vault") await context.openVault(outcome.notice);
     else {
-      context.state = { ...context.state, notice: outcome.notice };
+      context.state = { ...context.state, notice: outcome.notice, noticeLevel: "info" };
       context.queueRender();
     }
     return;
@@ -52,13 +52,13 @@ export async function runTerminalCommand(
   }
   if (command === "model") {
     if (args.length > 0) {
-      context.state = { ...context.state, notice: "Usage: /model" };
+      context.state = { ...context.state, notice: "Usage: /model", noticeLevel: "warn" };
       context.queueRender();
       return;
     }
     const topic = activeTopic(context.state);
     if (!topic) {
-      context.state = { ...context.state, notice: "No topic selected" };
+      context.state = { ...context.state, notice: "No topic selected", noticeLevel: "warn" };
       context.queueRender();
       return;
     }
@@ -76,13 +76,13 @@ export async function runTerminalCommand(
   }
   if (command === "effort") {
     if (args.length > 0) {
-      context.state = { ...context.state, notice: "Usage: /effort" };
+      context.state = { ...context.state, notice: "Usage: /effort", noticeLevel: "warn" };
       context.queueRender();
       return;
     }
     const topic = activeTopic(context.state);
     if (!topic) {
-      context.state = { ...context.state, notice: "No topic selected" };
+      context.state = { ...context.state, notice: "No topic selected", noticeLevel: "warn" };
       context.queueRender();
       return;
     }
@@ -98,13 +98,13 @@ export async function runTerminalCommand(
   }
   if (command === "public" || command === "private") {
     if (args.length > 0) {
-      context.state = { ...context.state, notice: `Usage: /${command}` };
+      context.state = { ...context.state, notice: `Usage: /${command}`, noticeLevel: "warn" };
       context.queueRender();
       return;
     }
     const topic = activeTopic(context.state);
     if (!topic) {
-      context.state = { ...context.state, notice: "No topic selected" };
+      context.state = { ...context.state, notice: "No topic selected", noticeLevel: "warn" };
       context.queueRender();
       return;
     }
@@ -114,11 +114,12 @@ export async function runTerminalCommand(
         command === "public" ? "shared" : "private",
       );
       await context.refreshTopics(topic.title);
-      context.state = { ...context.state, notice };
+      context.state = { ...context.state, notice, noticeLevel: "success" };
     } catch (error) {
       context.state = {
         ...context.state,
         notice: error instanceof Error ? error.message : String(error),
+        noticeLevel: "error",
       };
     }
     context.queueRender();
@@ -127,13 +128,13 @@ export async function runTerminalCommand(
   if (command === "compact") {
     const topic = activeTopic(context.state);
     if (!topic) {
-      context.state = { ...context.state, notice: "No topic selected" };
+      context.state = { ...context.state, notice: "No topic selected", noticeLevel: "warn" };
       context.queueRender();
       return;
     }
     const queryId = `terminal-compact-${Date.now()}`;
     context.state = applyRuntimeEvent(
-      { ...context.state, notice: "Compacting context…" },
+      { ...context.state, notice: "Compacting context…", noticeLevel: "info" },
       {
         type: "ai-status",
         topicId: topic.id,
@@ -144,7 +145,7 @@ export async function runTerminalCommand(
     try {
       const notice = await context.client.compactTopic(topic);
       context.state = applyRuntimeEvent(
-        { ...context.state, notice },
+        { ...context.state, notice, noticeLevel: "success" },
         {
           type: "ai-status",
           topicId: topic.id,
@@ -154,7 +155,7 @@ export async function runTerminalCommand(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       context.state = applyRuntimeEvent(
-        { ...context.state, notice: message },
+        { ...context.state, notice: message, noticeLevel: "error" },
         {
           type: "ai-status",
           topicId: topic.id,
@@ -171,23 +172,24 @@ export async function runTerminalCommand(
   }
   if (command === "new") {
     if (args.length > 0) {
-      context.state = { ...context.state, notice: "Usage: /new" };
+      context.state = { ...context.state, notice: "Usage: /new", noticeLevel: "warn" };
       context.queueRender();
       return;
     }
     const topic = activeTopic(context.state);
     if (!topic) {
-      context.state = { ...context.state, notice: "No topic selected" };
+      context.state = { ...context.state, notice: "No topic selected", noticeLevel: "warn" };
       context.queueRender();
       return;
     }
     try {
       const notice = await context.client.resetTopic(topic);
-      context.state = { ...context.state, notice };
+      context.state = { ...context.state, notice, noticeLevel: "success" };
     } catch (error) {
       context.state = {
         ...context.state,
         notice: error instanceof Error ? error.message : String(error),
+        noticeLevel: "error",
       };
     }
     context.queueRender();
@@ -196,7 +198,7 @@ export async function runTerminalCommand(
   if (command === "fork" || command === "spawn") {
     const topic = activeTopic(context.state);
     if (!topic) {
-      context.state = { ...context.state, notice: "No topic selected" };
+      context.state = { ...context.state, notice: "No topic selected", noticeLevel: "warn" };
       context.queueRender();
       return;
     }
@@ -205,13 +207,13 @@ export async function runTerminalCommand(
   }
   if (command === "del") {
     if (args.length > 0) {
-      context.state = { ...context.state, notice: "Usage: /del" };
+      context.state = { ...context.state, notice: "Usage: /del", noticeLevel: "warn" };
       context.queueRender();
       return;
     }
     const topic = activeTopic(context.state);
     if (!topic) {
-      context.state = { ...context.state, notice: "No topic selected" };
+      context.state = { ...context.state, notice: "No topic selected", noticeLevel: "warn" };
       context.queueRender();
       return;
     }
@@ -220,13 +222,13 @@ export async function runTerminalCommand(
   }
   if (command === "copy") {
     if (args.length > 0) {
-      context.state = { ...context.state, notice: "Usage: /copy" };
+      context.state = { ...context.state, notice: "Usage: /copy", noticeLevel: "warn" };
       context.queueRender();
       return;
     }
     void context.copy();
     return;
   }
-  context.state = { ...context.state, notice: `Unknown command: /${command}` };
+  context.state = { ...context.state, notice: `Unknown command: /${command}`, noticeLevel: "warn" };
   context.queueRender();
 }

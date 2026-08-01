@@ -17,12 +17,18 @@ import {
   ctrlCExitsTopicPicker,
   escapeStopsActiveTurn,
   maestroVaultKeyForModel,
+  normalizeKeySequences,
   pasteCollapseDisabled,
   runtimeEventInvalidatesSelection,
   runtimeEventWaitsForMessageLoad,
+  sanitizePastedText,
   selectableEfforts,
+  splitBracketedPaste,
   type TerminalMouseEvent,
   terminalDeletionShortcut,
+  terminalNewlineShortcut,
+  topicFilterInsertion,
+  topicFilterPasteText,
   vaultFormBlocksOverlaySwitch,
 } from "@/app-helpers";
 import {
@@ -33,6 +39,7 @@ import {
 } from "@/client";
 import { copyToClipboard } from "@/clipboard";
 import { CollapsedPasteStore, cursorForTextOffset, textOffsetForCursor } from "@/collapsed-pastes";
+import { type ColorDepth, detectColorDepth, rgbToAnsi16, rgbToAnsi256 } from "@/color-depth";
 import { runTerminalCommand } from "@/command-router";
 import { commandSuggestions, completeCommand } from "@/commands";
 import {
@@ -51,7 +58,11 @@ import {
   stripAnsi,
   WORKING_FRAME_INTERVAL_MS,
 } from "@/render";
-import { placeTerminalCursor, TerminalScreenRenderer } from "@/screen-renderer";
+import {
+  END_SYNCHRONIZED_UPDATE,
+  placeTerminalCursor,
+  TerminalScreenRenderer,
+} from "@/screen-renderer";
 import {
   highlightScreenSelection,
   type ScreenPoint,
@@ -63,7 +74,9 @@ import {
   activeMessages,
   activeQuestion,
   activeTopic,
+  appendTopicFilter,
   applyRuntimeEvent,
+  backspaceTopicFilter,
   createInitialState,
   focusCreatedTopic,
   moveTopicPickerSelection,
@@ -75,6 +88,7 @@ import {
   setBackgroundSessions,
   setMessageHistoryStatus,
   setMessages,
+  setTopicFilter,
   setTopics,
   startTopicCreation,
   toggleTaskSidebar,
@@ -87,16 +101,148 @@ import {
   layoutSubagentGraph,
   subagentGraphSignature,
 } from "@/subagent-graph";
-import { InputHistory, TextBuffer } from "@/text-buffer";
+import { installTerminalRestore, upgradeTerminalRestore } from "@/terminal-restore";
+import { type BufferCursor, InputHistory, TextBuffer } from "@/text-buffer";
 
-export const ENTER_ALT_SCREEN =
-  "\u001b]11;#0a0b0f\u0007\u001b[?1049h\u001b[48;2;10;11;15m\u001b[2J\u001b[H\u001b[?25l\u001b[?2004h\u001b[?1002h\u001b[?1006h";
-export const EXIT_ALT_SCREEN =
-  "\u001b[0m\u001b[?7h\u001b[?1006l\u001b[?1002l\u001b[?2004l\u001b[?25h\u001b[?1049l\u001b]111\u0007";
-const NEW_TOPIC_KEYS = new Set(["n", "ㅜ"]);
-const DELETE_TOPIC_KEYS = new Set(["d", "ㅇ", "\u007f", "\b", "\u001b[3~"]);
+// `[?1l` resets DECCKM (application cursor key mode) so arrow/Home/End keys
+// arrive as CSI rather than SS3. `?1049h` does not save this mode, so the exit
+// sequence re-asserts the same reset instead of restoring an unknown previous
+// value: DECCKM-reset is the terminal default and every app that sets it (vim,
+// less) clears it on its own exit, so both sides agreeing on `?1l` never leaves
+// the parent shell in a state we did not put it in. XTSAVE/XTRESTORE
+// (`[?1s`/`[?1r`) would be the textbook pair, but a terminal without
+// XTRESTORE can misparse `CSI ? 1 r` as DECSTBM and clobber the scroll region.
+//
+// `\u001b[>1u` pushes exactly one kitty-keyboard flag, `DISAMBIGUATE_ESCAPE_CODES`.
+// That single flag is what makes a bare Escape arrive as `CSI 27 u` instead of a
+// lone `ESC` byte that is indistinguishable from the start of any other escape
+// sequence, and it is what makes Shift-Enter/Ctrl-Enter reach us at all.
+// Deliberately *not* pushed: `REPORT_EVENT_TYPES` and
+// `REPORT_ALL_KEYS_AS_ESCAPE_CODES`. Those are the flags that force per-terminal
+// exception tables (iTerm2 leaking key releases into the parent shell, tmux's
+// xterm extended-key format dropping Shift-Enter). With flag 1 alone no terminal
+// needs special casing, so we push unconditionally with no capability probe and
+// let unsupporting terminals ignore the sequence.
+// `\u001b[<u` pops that one stack entry back off and is the *first* thing in the exit
+// sequence, so even a truncated restore hands the keyboard back first.
+export const KITTY_KEYBOARD_PUSH = "\u001b[>1u";
+export const KITTY_KEYBOARD_POP = "\u001b[<u";
+
+/** Escape hatch: `NEGOTIUM_TUI_DISABLE_KITTY_KEYBOARD=1` skips push *and* pop. */
+export function kittyKeyboardEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NEGOTIUM_TUI_DISABLE_KITTY_KEYBOARD;
+  return value !== "1" && value !== "true" && value !== "yes";
+}
+
+/** `theme.canvas` from `render.ts`. Kept in sync by the alt-screen tests. */
+const CANVAS_RGB = [10, 11, 15] as const;
+
+/**
+ * Background SGR for the initial canvas wipe, at the depth actually detected.
+ *
+ * Mirrors `render.ts`'s `bg()` — an ansi16 terminal receiving `CSI 48;2;…` may
+ * ignore it (leaving the wipe transparent) or, worse, misparse the parameters,
+ * so the one paint that happens outside the renderer must downshift like every
+ * other one does.
+ */
+function canvasFill(depth: ColorDepth): string {
+  switch (depth) {
+    case "none":
+      return "";
+    case "ansi16": {
+      const code = rgbToAnsi16(CANVAS_RGB);
+      return `\u001b[${code < 8 ? 40 + code : 100 + (code - 8)}m`;
+    }
+    case "ansi256":
+      return `\u001b[48;5;${rgbToAnsi256(CANVAS_RGB)}m`;
+    default:
+      return `\u001b[48;2;${CANVAS_RGB[0]};${CANVAS_RGB[1]};${CANVAS_RGB[2]}m`;
+  }
+}
+
+export function altScreenSequences(env: NodeJS.ProcessEnv = process.env): {
+  enter: string;
+  exit: string;
+  abortEnter: string;
+} {
+  const push = kittyKeyboardEnabled(env) ? KITTY_KEYBOARD_PUSH : "";
+  const pop = kittyKeyboardEnabled(env) ? KITTY_KEYBOARD_POP : "";
+  // These bytes only ever reach a real terminal, so the TTY test in
+  // `detectColorDepth` is short-circuited here; what matters is whether the
+  // user asked for no colour (`NO_COLOR`, `TERM=dumb`, `NEGOTIUM_TUI_COLOR`).
+  // Under `none` neither the OSC 11 background repaint nor the truecolour
+  // canvas fill is emitted, so the terminal keeps its own theme — and the
+  // matching OSC 111 restore is dropped too, since restoring a colour we never
+  // set would clobber a background the user configured themselves.
+  const depth = detectColorDepth({ env, isTty: true });
+  const colored = depth !== "none";
+  const setBackground = colored ? "\u001b]11;#0a0b0f\u0007" : "";
+  const fillCanvas = canvasFill(depth);
+  const resetBackground = colored ? "\u001b]111\u0007" : "";
+  // Private-mode resets only. Every one of these is a no-op on a terminal where
+  // the mode was never set, which is what makes them safe to emit at a point
+  // where we may not have changed anything yet.
+  const modeResets =
+    "\u001b[0m\u001b[?7h\u001b[?1l\u001b[?1006l\u001b[?1002l\u001b[?2004l\u001b[?25h\u001b[?1049l";
+  return {
+    enter: `${setBackground}\u001b[?1049h${fillCanvas}\u001b[2J\u001b[H\u001b[?25l\u001b[?2004h\u001b[?1002h\u001b[?1006h\u001b[?1l${push}`,
+    // `END_SYNCHRONIZED_UPDATE` leads: every render patch opens with
+    // `CSI ?2026h`, so a process that dies mid-patch leaves the terminal
+    // holding its output back. Ending the update is idempotent — a terminal
+    // that never saw a begin, or does not implement DECSET 2026 at all, ignores
+    // it — so two bytes buy an unconditional way out of a frozen screen.
+    exit: `${END_SYNCHRONIZED_UPDATE}${pop}${modeResets}${resetBackground}`,
+    // What to emit if the process dies *between* claiming the terminal and
+    // finishing the `enter` write. Two pieces of `exit` are deliberately absent
+    // because neither is idempotent:
+    //
+    //  - OSC 111 resets the background to the terminal default. Sending it
+    //    without having sent OSC 11 first would discard a background the user
+    //    configured themselves.
+    //  - The kitty pop removes one entry from the keyboard stack. Popping
+    //    without having pushed takes an entry that belongs to an outer app.
+    //
+    // Everything that remains is a mode reset, harmless on a mode that was
+    // never set, so a half-written `enter` is still undone.
+    abortEnter: `${END_SYNCHRONIZED_UPDATE}${modeResets}`,
+  };
+}
+
+export const ENTER_ALT_SCREEN = altScreenSequences().enter;
+export const EXIT_ALT_SCREEN = altScreenSequences().exit;
+export const ABORT_ENTER_ALT_SCREEN = altScreenSequences().abortEnter;
+/**
+ * Topic-picker actions live on control chords, not bare letters.
+ *
+ * The picker is a type-to-filter surface now, so every printable key — Latin
+ * and Hangul jamo alike — has to reach the query buffer. The old bare `n`/`d`
+ * (and their two-set jamo twins `ㅜ`/`ㅇ`) plus Backspace/Delete bindings were
+ * exactly the keys a filter needs most, and `d` in particular turned "filter
+ * for a topic starting with d" into a *destructive* confirmation prompt.
+ *
+ * `Ctrl-D` is the Unix EOF convention, but this app puts stdin in raw mode,
+ * where 0x04 arrives as an ordinary byte and never terminates the stream. That
+ * was measured, not assumed: injecting bytes into a real `pty.fork()` pty with
+ * `setRawMode(true)` applied delivers `0x04` to the application verbatim, and
+ * the same holds inside a tmux session (measured on macOS + tmux 3.7b; other
+ * terminals and multi-hop ssh are unverified). It is also scoped to the picker
+ * overlay, so it cannot leak into composer editing, where Ctrl-D is not bound
+ * at all.
+ */
+const NEW_TOPIC_KEY = "\u000e"; // Ctrl-N
+const DELETE_TOPIC_KEY = "\u0004"; // Ctrl-D
+/** Backspace, in both the DEL and BS encodings terminals send. */
+const FILTER_BACKSPACE_KEYS = new Set(["\u007f", "\b"]);
 const CONFIRM_KEYS = new Set(["y", "ㅛ"]);
 const CANCEL_KEYS = new Set(["n", "ㅜ"]);
+/**
+ * How long a partial escape sequence may be held before it is treated as
+ * ordinary keys. The two halves of a torn sequence arrive from the same
+ * terminal write, microseconds apart; a human keypress never does. Short
+ * enough to be imperceptible on the Esc key, long enough to bridge a stdin
+ * chunk boundary.
+ */
+const INPUT_CARRY_FLUSH_MS = 15;
 
 export {
   animationFrameAt,
@@ -105,11 +251,17 @@ export {
   ctrlCExitsTopicPicker,
   escapeStopsActiveTurn,
   maestroVaultKeyForModel,
+  normalizeKeySequences,
   pasteCollapseDisabled,
   runTerminalVaultCommand,
   runtimeEventInvalidatesSelection,
   runtimeEventWaitsForMessageLoad,
+  sanitizePastedText,
+  splitBracketedPaste,
   terminalDeletionShortcut,
+  terminalNewlineShortcut,
+  topicFilterInsertion,
+  topicFilterPasteText,
   vaultFormBlocksOverlaySwitch,
 } from "@/app-helpers";
 
@@ -140,6 +292,9 @@ export class TerminalApp {
   #pendingModelSwitch: { topicId: string; model: string } | undefined;
   #pasting = false;
   #pasteChunks: string[] = [];
+  /** Trailing bytes of an incomplete escape sequence. See `splitBracketedPaste`. */
+  #inputCarry = "";
+  #inputCarryTimer: ReturnType<typeof setTimeout> | undefined;
   readonly #collapsedPastes = new CollapsedPasteStore();
   #renderQueued = false;
   #renderTimer: ReturnType<typeof setTimeout> | undefined;
@@ -177,7 +332,7 @@ export class TerminalApp {
     this.#screen.invalidate();
     this.#queueRender();
   };
-  #onSignal = () => this.#requestExit();
+  #uninstallTerminalRestore: (() => void) | null = null;
 
   constructor(client: NegotiumClient, options: TerminalAppOptions) {
     this.#client = client;
@@ -219,15 +374,35 @@ export class TerminalApp {
       }
       this.#running = true;
 
-      process.stdout.write(ENTER_ALT_SCREEN);
+      // Claim the terminal *before* the first byte reaches it. The claim is
+      // exclusive, so a second adapter in the same process is rejected here —
+      // with nothing written, no raw mode touched and the running adapter's
+      // hooks untouched, which is what makes the rejection safe.
+      //
+      // It also closes the window between "the terminal is half configured" and
+      // "something can put it back". The hooks start armed with the reduced
+      // `abortEnter` sequence, which undoes a partial entry without touching
+      // anything we have not set yet, and are upgraded to the full restore the
+      // moment the entry is complete.
+      this.#uninstallTerminalRestore = installTerminalRestore(ABORT_ENTER_ALT_SCREEN, {
+        onSignal: () => this.#requestExit(),
+      });
+      try {
+        process.stdout.write(ENTER_ALT_SCREEN);
+      } catch (error) {
+        // Never entered, so hand the claim straight back: a host retrying the
+        // adapter must not be told the terminal is still owned.
+        this.#uninstallTerminalRestore();
+        this.#uninstallTerminalRestore = null;
+        throw error;
+      }
+      upgradeTerminalRestore(EXIT_ALT_SCREEN);
       uiActive = true;
       process.stdin.setEncoding("utf8");
       process.stdin.setRawMode(true);
       process.stdin.resume();
       process.stdin.on("data", this.#onData);
       process.stdout.on("resize", this.#onResize);
-      process.once("SIGINT", this.#onSignal);
-      process.once("SIGTERM", this.#onSignal);
       this.#render();
       this.#animationTimer = setInterval(() => {
         if (!terminalNeedsAnimation(this.#state)) return;
@@ -322,6 +497,7 @@ export class TerminalApp {
       this.#state = {
         ...this.#state,
         notice: `Node connection error: ${error instanceof Error ? error.message : String(error)}`,
+        noticeLevel: "error",
       };
     }
     this.#queueRender();
@@ -396,6 +572,7 @@ export class TerminalApp {
         overlay: null,
         subagentGraphLoading: false,
         notice: `Graph layout failed: ${error instanceof Error ? error.message : String(error)}`,
+        noticeLevel: "error",
       };
     }
   }
@@ -514,6 +691,7 @@ export class TerminalApp {
             older.length === 0 || !page.hasMore
               ? "Start of conversation"
               : `Loaded ${older.length} older messages`,
+          noticeLevel: "info",
         };
       }
     } catch (error) {
@@ -528,6 +706,7 @@ export class TerminalApp {
       this.#state = {
         ...this.#state,
         notice: `History load failed: ${error instanceof Error ? error.message : String(error)}`,
+        noticeLevel: "error",
       };
     }
     this.#queueRender();
@@ -579,7 +758,7 @@ export class TerminalApp {
     );
     const graph = buildSubagentGraph(this.#state.topics, topicId, runningTopicIds);
     if (graph.nodes.length === 0) {
-      this.#state = { ...this.#state, notice: "No subagents in this topic" };
+      this.#state = { ...this.#state, notice: "No subagents in this topic", noticeLevel: "info" };
       this.#queueRender();
       return;
     }
@@ -596,6 +775,7 @@ export class TerminalApp {
       subagentGraphLoading: true,
       subagentGraphOffset: { x: 0, y: 0 },
       notice: undefined,
+      noticeLevel: undefined,
     };
     this.#queueRender();
     try {
@@ -622,6 +802,7 @@ export class TerminalApp {
         overlay: null,
         subagentGraphLoading: false,
         notice: `Graph layout failed: ${error instanceof Error ? error.message : String(error)}`,
+        noticeLevel: "error",
       };
     }
     this.#queueRender();
@@ -665,6 +846,7 @@ export class TerminalApp {
       subagentGraphSpacing: spacing,
       subagentGraphLoading: true,
       notice: undefined,
+      noticeLevel: undefined,
     };
     this.#queueRender();
 
@@ -688,6 +870,7 @@ export class TerminalApp {
         subagentGraphSpacing: previousSpacing,
         subagentGraphLoading: false,
         notice: `Graph layout failed: ${error instanceof Error ? error.message : String(error)}`,
+        noticeLevel: "error",
       };
     }
     this.#queueRender();
@@ -730,42 +913,125 @@ export class TerminalApp {
     }, 120);
   }
 
-  #replaceInput(value: string): void {
+  /**
+   * Swaps the composer contents wholesale. The caret defaults to the end, which
+   * is right for a history entry or a completion, but a restored *draft* passes
+   * the position it was abandoned at — see the Down-arrow handler.
+   */
+  #replaceInput(value: string, cursor?: BufferCursor): void {
     this.#collapsedPastes.clear();
-    this.#input.setText(value);
+    this.#input.setText(value, cursor ?? "end");
     this.#syncInput();
     this.#queueRender();
   }
 
+  /**
+   * Splits raw stdin on bracketed-paste markers before anything else. Paste
+   * payloads bypass the mouse and key parsers entirely: feeding them through
+   * `consumeMouseInput` made an SGR mouse report embedded in pasted text vanish
+   * from the buffer while firing a phantom click.
+   *
+   * Bytes that follow a completed paste *in the same read burst* are treated as
+   * text rather than dispatched as keys or mouse events. This is a mitigation,
+   * not a guarantee, and the distinction matters:
+   *
+   * Bracketed paste cannot be made airtight from inside the application. The
+   * end marker and the payload are the same bytes on the wire, so content that
+   * contains `ESC [ 2 0 1 ~` ends the paste as far as any reader is concerned;
+   * whatever follows looks exactly like typed input. Most current terminals
+   * filter the marker out of pasted content before sending it, which is what
+   * keeps real exposure low, and redesigning the protocol here would not change
+   * what the terminal put on the wire.
+   *
+   * What this *does* remove is the ability of such content to act. A spoofed
+   * end marker can still split one paste into two, but the tail cannot fire a
+   * click, a Ctrl-chord or an Enter — it goes through `sanitizePastedText` and
+   * lands in the composer, visible, where the user decides what happens next.
+   * The trade-off is that a genuine keystroke arriving in the same chunk as the
+   * end of a paste is typed instead of executed; human reaction time makes that
+   * essentially unreachable, whereas the same chunk is exactly where injected
+   * content lives. Recorded in docs/TERMINAL-DEFERRED.md.
+   */
   #handleInput(raw: string): void {
     if (!this.#running) return;
-    const mouse = consumeMouseInput(raw);
-    if (mouse.horizontalScrollDelta !== 0 && this.#state.overlay === "subagents") {
-      this.#selection = null;
-      this.#panSubagentGraph(-mouse.horizontalScrollDelta, 0);
+    if (this.#inputCarryTimer) {
+      clearTimeout(this.#inputCarryTimer);
+      this.#inputCarryTimer = undefined;
     }
-    if (mouse.scrollDelta !== 0) {
-      this.#selection = null;
-      this.#scroll(mouse.scrollDelta);
-    }
-    for (const event of mouse.events) {
-      if (this.#state.overlay === "subagents") this.#handleSubagentGraphMouse(event);
-      else this.#handleMouseSelection(event);
-    }
-    let chunk = mouse.input;
-    if (!chunk) return;
-    this.#selection = null;
-    const pasteStart = "\u001b[200~";
-    const pasteEnd = "\u001b[201~";
-    if (this.#pasting) {
-      const end = chunk.indexOf(pasteEnd);
-      if (end < 0) {
-        this.#pasteChunks.push(chunk);
-        return;
+    const split = splitBracketedPaste(raw, this.#pasting, this.#inputCarry);
+    let collecting = this.#pasting;
+    let commits = 0;
+    this.#pasting = split.pasting;
+    this.#inputCarry = split.carry;
+    this.#scheduleInputCarryFlush();
+    for (const segment of split.segments) {
+      if (segment.kind === "keys") {
+        // Text only once a paste has ended in this burst — see the note above.
+        if (commits > 0) this.#commitPaste(segment.text);
+        else this.#handleKeySegment(segment.text);
+        continue;
       }
-      this.#pasteChunks.push(chunk.slice(0, end));
-      const pasted = this.#pasteChunks.join("");
+      if (!collecting) {
+        this.#pasteChunks = [];
+        collecting = true;
+      }
+      this.#pasteChunks.push(segment.text);
+      if (segment.kind === "paste-chunk") continue;
+      const payload = this.#pasteChunks.join("");
       this.#pasteChunks = [];
+      collecting = false;
+      commits += 1;
+      this.#commitPaste(payload);
+    }
+    if (commits > 0) this.#queueRender();
+  }
+
+  /**
+   * A held-back marker fragment is only ever resolved by more input. Outside a
+   * paste that is not guaranteed to arrive: a lone `ESC` keypress is a proper
+   * prefix of `ESC [ 2 0 0 ~`, so without this the Esc key would stall until the
+   * user pressed something else. Inside a paste we keep waiting instead — the
+   * terminal owes us the end marker, and flushing early would tear it again.
+   */
+  #scheduleInputCarryFlush(): void {
+    if (!this.#inputCarry || this.#pasting) return;
+    this.#inputCarryTimer = setTimeout(() => {
+      this.#inputCarryTimer = undefined;
+      this.#flushInputCarry();
+    }, INPUT_CARRY_FLUSH_MS);
+    this.#inputCarryTimer.unref?.();
+  }
+
+  #flushInputCarry(): void {
+    const carry = this.#inputCarry;
+    if (!carry || this.#pasting || !this.#running) return;
+    this.#inputCarry = "";
+    this.#handleKeySegment(carry);
+  }
+
+  /**
+   * The topic picker owns the keyboard while it is open, so a paste has to land
+   * in the filter rather than in the composer hidden behind it: appending to
+   * `#input` put the text somewhere the user could not see, and it reappeared
+   * only after closing the picker. Appending to the filter is what typing does,
+   * and pasting a topic name to jump to it is the obvious intent.
+   *
+   * The filter is a single line, so newlines collapse to spaces — dropping all
+   * but the first line would silently discard input, and the filter is a
+   * substring match where a space is just another character.
+   */
+  #commitPaste(payload: string): void {
+    this.#selection = null;
+    if (this.#state.overlay === "topics") {
+      const filterText = topicFilterPasteText(payload);
+      if (filterText) {
+        this.#state = appendTopicFilter(this.#state, filterText);
+        this.#queueRender();
+      }
+      return;
+    }
+    const pasted = sanitizePastedText(payload);
+    if (pasted) {
       if (pasteCollapseDisabled(this.#state)) {
         this.#input.insert(pasted);
       } else {
@@ -779,23 +1045,27 @@ export class TerminalApp {
           cursorForTextOffset(inserted.text, inserted.cursorOffset),
         );
       }
-      this.#pasting = false;
-      chunk = chunk.slice(end + pasteEnd.length);
-      this.#syncInput();
-      if (!chunk) {
-        this.#queueRender();
-        return;
-      }
     }
-    const start = chunk.indexOf(pasteStart);
-    if (start >= 0) {
-      const before = chunk.slice(0, start);
-      if (before) this.#handleInput(before);
-      this.#pasting = true;
-      this.#pasteChunks = [];
-      this.#handleInput(chunk.slice(start + pasteStart.length));
-      return;
+    this.#syncInput();
+  }
+
+  #handleKeySegment(segment: string): void {
+    const mouse = consumeMouseInput(segment);
+    if (mouse.horizontalScrollDelta !== 0 && this.#state.overlay === "subagents") {
+      this.#selection = null;
+      this.#panSubagentGraph(-mouse.horizontalScrollDelta, 0);
     }
+    if (mouse.scrollDelta !== 0) {
+      this.#selection = null;
+      this.#scroll(mouse.scrollDelta);
+    }
+    for (const event of mouse.events) {
+      if (this.#state.overlay === "subagents") this.#handleSubagentGraphMouse(event);
+      else this.#handleMouseSelection(event);
+    }
+    const chunk = normalizeKeySequences(mouse.input);
+    if (!chunk) return;
+    this.#selection = null;
     if (chunk === "\u0003") {
       this.#handleInterrupt(); // Ctrl-C
       return;
@@ -809,14 +1079,6 @@ export class TerminalApp {
     const editingVaultSecret = vaultFormBlocksOverlaySwitch(this.#state);
     if (chunk === "\u0018") {
       void this.#abort(); // Ctrl-X
-      return;
-    }
-    if (chunk === "\u0010") {
-      this.#cycleTopic(-1); // Ctrl-P
-      return;
-    }
-    if (chunk === "\u000e") {
-      this.#cycleTopic(1); // Ctrl-N
       return;
     }
     if (chunk === "\u000f") {
@@ -906,13 +1168,13 @@ export class TerminalApp {
       this.#queueRender();
       return;
     }
-    if (chunk === "\u001bb" || chunk === "\u001b[1;5D") {
+    if (chunk === "\u001bb" || chunk === "\u001b[1;5D" || chunk === "\u001b[1;3D") {
       this.#input.moveWordLeft();
       this.#syncInput();
       this.#queueRender();
       return;
     }
-    if (chunk === "\u001bf" || chunk === "\u001b[1;5C") {
+    if (chunk === "\u001bf" || chunk === "\u001b[1;5C" || chunk === "\u001b[1;3C") {
       this.#input.moveWordRight();
       this.#syncInput();
       this.#queueRender();
@@ -1003,7 +1265,14 @@ export class TerminalApp {
       if (activeQuestion(this.#state)) this.#moveAskChoice(-1);
       else if (this.#suggestionCount() > 0) this.#moveSuggestion(-1);
       else if (this.#input.isOnFirstLine) {
-        const previous = this.#history.previous(this.#input.text);
+        // Search on the text in front of the caret; remember the whole draft
+        // *and* where the caret was, so walking back down restores the edit
+        // exactly as it was abandoned.
+        const previous = this.#history.previous(
+          this.#input.text,
+          this.#input.textBeforeCursor,
+          this.#input.cursor,
+        );
         if (previous !== null) this.#replaceInput(previous);
       } else {
         this.#input.moveUp();
@@ -1017,7 +1286,11 @@ export class TerminalApp {
       else if (this.#suggestionCount() > 0) this.#moveSuggestion(1);
       else if (this.#input.isOnLastLine) {
         const next = this.#history.next();
-        if (next !== null) this.#replaceInput(next);
+        // Back on the draft: restore its caret too. History entries have no
+        // caret of their own and land at the end, like text just typed.
+        if (next !== null) {
+          this.#replaceInput(next, this.#history.atDraft ? this.#history.draftCursor : undefined);
+        }
       } else {
         this.#input.moveDown();
         this.#syncInput();
@@ -1048,7 +1321,7 @@ export class TerminalApp {
       void this.#submit();
       return;
     }
-    if (chunk === "\u001b\r" || chunk === "\u001b\n") {
+    if (terminalNewlineShortcut(chunk)) {
       this.#input.insert("\n");
       this.#syncInput();
       this.#queueRender();
@@ -1108,6 +1381,7 @@ export class TerminalApp {
         ...this.#state,
         askChoiceIndex: 0,
         notice: result.ok ? undefined : result.error,
+        noticeLevel: result.ok ? undefined : "error",
       };
       this.#queueRender();
       return;
@@ -1133,7 +1407,12 @@ export class TerminalApp {
       this.#input.setText("");
       this.#collapsedPastes.clear();
       this.#syncInput();
-      this.#state = { ...this.#state, creatingTopic: false, notice: undefined };
+      this.#state = {
+        ...this.#state,
+        creatingTopic: false,
+        notice: undefined,
+        noticeLevel: undefined,
+      };
       await this.#createTopic(text);
       return;
     }
@@ -1151,6 +1430,7 @@ export class TerminalApp {
       ...this.#state,
       overlay: keepVaultOpen ? "vault" : null,
       notice: undefined,
+      noticeLevel: undefined,
     };
     if (text.startsWith("/")) {
       await this.#runCommand(text);
@@ -1158,7 +1438,7 @@ export class TerminalApp {
     }
     const topic = activeTopic(this.#state);
     if (!topic) {
-      this.#state = { ...this.#state, notice: "No topic selected" };
+      this.#state = { ...this.#state, notice: "No topic selected", noticeLevel: "info" };
       this.#queueRender();
       return;
     }
@@ -1190,6 +1470,7 @@ export class TerminalApp {
       this.#state = {
         ...this.#state,
         notice: error instanceof Error ? error.message : String(error),
+        noticeLevel: "error",
       };
     }
     this.#queueRender();
@@ -1228,17 +1509,10 @@ export class TerminalApp {
       this.#state = {
         ...this.#state,
         notice: error instanceof Error ? error.message : String(error),
+        noticeLevel: "error",
       };
     }
     this.#queueRender();
-  }
-
-  #cycleTopic(delta: number): void {
-    if (this.#state.topics.length === 0) return;
-    const index = this.#state.topics.findIndex((topic) => topic.id === this.#state.activeTopicId);
-    const next =
-      (Math.max(0, index) + delta + this.#state.topics.length) % this.#state.topics.length;
-    void this.#activateTopic(this.#state.topics[next].id);
   }
 
   #toggleTopics(forceOpen = false): void {
@@ -1250,26 +1524,69 @@ export class TerminalApp {
   }
 
   #handleTopicPickerInput(chunk: string): void {
-    const key = chunk.toLowerCase();
-    if (chunk === "\u001b[A") this.#moveTopicPicker(-1);
-    else if (chunk === "\u001b[B") this.#moveTopicPicker(1);
-    else if (chunk === "\r") this.#selectPickedTopic();
-    else if (NEW_TOPIC_KEYS.has(key)) {
+    if (chunk === "\u001b[A") {
+      this.#moveTopicPicker(-1);
+      return;
+    }
+    if (chunk === "\u001b[B") {
+      this.#moveTopicPicker(1);
+      return;
+    }
+    if (chunk === "\r") {
+      this.#selectPickedTopic();
+      return;
+    }
+    if (chunk === NEW_TOPIC_KEY) {
       this.#openNewTopicComposer();
-    } else if (DELETE_TOPIC_KEYS.has(key)) {
+      return;
+    }
+    if (chunk === DELETE_TOPIC_KEY) {
       const topic = pickedTopic(this.#state);
-      if (topic) this.#requestTopicDelete(topic);
-      else {
-        this.#state = { ...this.#state, notice: "Background sessions are read-only" };
-        this.#queueRender();
+      if (topic) {
+        this.#requestTopicDelete(topic);
+        return;
       }
-    } else if (chunk === "\u001b") {
+      // No selection at all (the filter matched nothing) is not the same as a
+      // background session being highlighted: there is nothing to explain, so
+      // say nothing.
+      if (!this.#state.topicPickerBackgroundId) return;
+      this.#state = {
+        ...this.#state,
+        notice: "Background sessions are read-only",
+        noticeLevel: "warn",
+      };
+      this.#queueRender();
+      return;
+    }
+    if (FILTER_BACKSPACE_KEYS.has(chunk)) {
+      if (this.#state.topicFilter.length === 0) return;
+      this.#state = backspaceTopicFilter(this.#state);
+      this.#queueRender();
+      return;
+    }
+    if (chunk === "\u001b") {
+      // Two-stage Escape, the convention in fuzzy pickers (fzf, VS Code's
+      // command palette, Telescope): the first press undoes the narrowing, the
+      // second leaves. Closing outright on the first press would make a typo in
+      // a long query cost the whole overlay — and in root mode it quits the app,
+      // which is far too destructive to hang off a key the user is pressing to
+      // "get back to the full list".
+      if (this.#state.topicFilter.length > 0) {
+        this.#state = setTopicFilter(this.#state, "");
+        this.#queueRender();
+        return;
+      }
       if (this.#state.topicPickerRoot) this.#requestExit();
       else {
         this.#state = { ...this.#state, overlay: null };
         this.#queueRender();
       }
+      return;
     }
+    const typed = topicFilterInsertion(chunk);
+    if (typed === null) return;
+    this.#state = appendTopicFilter(this.#state, typed);
+    this.#queueRender();
   }
 
   #openNewTopicComposer(): void {
@@ -1285,11 +1602,12 @@ export class TerminalApp {
       await this.#refreshTopics(created.title);
       this.#state = selectTopic(this.#state, created.id);
       await this.#loadActiveMessages();
-      this.#state = { ...this.#state, notice: `Created ${created.title}` };
+      this.#state = { ...this.#state, notice: `Created ${created.title}`, noticeLevel: "success" };
     } catch (error) {
-      const failed = {
+      const failed: AppState = {
         ...this.#state,
         notice: error instanceof Error ? error.message : String(error),
+        noticeLevel: "error",
       };
       this.#state = topicPickerRoot ? openTopicPicker(failed, failed.notice, true) : failed;
     }
@@ -1306,11 +1624,13 @@ export class TerminalApp {
       this.#state = {
         ...this.#state,
         notice: copyHistory ? `forked into "${derived.title}"` : `spawned "${derived.title}"`,
+        noticeLevel: "success",
       };
     } catch (error) {
       this.#state = {
         ...this.#state,
         notice: error instanceof Error ? error.message : String(error),
+        noticeLevel: "error",
       };
     }
     this.#queueRender();
@@ -1329,6 +1649,7 @@ export class TerminalApp {
         overlay: "background-session",
         backgroundScrollOffset: 0,
         notice: undefined,
+        noticeLevel: undefined,
       };
       this.#queueRender();
       return;
@@ -1349,7 +1670,11 @@ export class TerminalApp {
 
   async #openVault(vaultNotice?: string): Promise<void> {
     if (!this.#client.listVaultEntries || !this.#client.runVaultCommand) {
-      this.#state = { ...this.#state, notice: "Vault management is unavailable for this client." };
+      this.#state = {
+        ...this.#state,
+        notice: "Vault management is unavailable for this client.",
+        noticeLevel: "warn",
+      };
       this.#queueRender();
       return;
     }
@@ -1360,6 +1685,7 @@ export class TerminalApp {
         ...this.#state,
         overlay: "vault",
         notice: undefined,
+        noticeLevel: undefined,
         vaultEntries: entries,
         vaultPickerIndex: Math.min(this.#state.vaultPickerIndex, Math.max(0, entries.length - 1)),
         vaultMode: "list",
@@ -1372,6 +1698,7 @@ export class TerminalApp {
       this.#state = {
         ...this.#state,
         notice: error instanceof Error ? error.message : String(error),
+        noticeLevel: "error",
       };
     }
     this.#queueRender();
@@ -1386,7 +1713,7 @@ export class TerminalApp {
   async #openVaultForKey(key: string, notice: string): Promise<void> {
     if (!this.#client.listVaultEntries || !this.#client.saveVaultEntry) {
       this.#pendingModelSwitch = undefined;
-      this.#state = { ...this.#state, notice };
+      this.#state = { ...this.#state, notice, noticeLevel: "info" };
       this.#queueRender();
       return;
     }
@@ -1397,6 +1724,7 @@ export class TerminalApp {
         ...this.#state,
         overlay: "vault",
         notice: undefined,
+        noticeLevel: undefined,
         vaultEntries: entries,
         vaultPickerIndex: Math.min(this.#state.vaultPickerIndex, Math.max(0, entries.length - 1)),
         vaultMode: "value",
@@ -1411,6 +1739,7 @@ export class TerminalApp {
       this.#state = {
         ...this.#state,
         notice: error instanceof Error ? error.message : String(error),
+        noticeLevel: "error",
       };
     }
     this.#queueRender();
@@ -1525,7 +1854,13 @@ export class TerminalApp {
           try {
             const notice = await this.#client.setModel(topic, pending.model);
             await this.#refreshTopics(topic.title);
-            this.#state = { ...this.#state, overlay: null, vaultNotice: undefined, notice };
+            this.#state = {
+              ...this.#state,
+              overlay: null,
+              vaultNotice: undefined,
+              notice,
+              noticeLevel: "success",
+            };
             this.#queueRender();
             return;
           } catch (error) {
@@ -1534,6 +1869,7 @@ export class TerminalApp {
               overlay: null,
               vaultNotice: undefined,
               notice: error instanceof Error ? error.message : String(error),
+              noticeLevel: "error",
             };
             this.#queueRender();
             return;
@@ -1595,12 +1931,17 @@ export class TerminalApp {
     const topic = activeTopic(this.#state);
     const selected = SELECTABLE_MODELS[this.#state.modelPickerIndex];
     if (!topic || !selected) return;
-    this.#state = { ...this.#state, overlay: null, notice: `Switching to ${selected.model}…` };
+    this.#state = {
+      ...this.#state,
+      overlay: null,
+      notice: `Switching to ${selected.model}…`,
+      noticeLevel: "info",
+    };
     this.#queueRender();
     try {
       const notice = await this.#client.setModel(topic, selected.model);
       await this.#refreshTopics(topic.title);
-      this.#state = { ...this.#state, notice };
+      this.#state = { ...this.#state, notice, noticeLevel: "success" };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const vaultKey = maestroVaultKeyForModel(selected.model);
@@ -1612,7 +1953,7 @@ export class TerminalApp {
         );
         return;
       }
-      this.#state = { ...this.#state, notice: message };
+      this.#state = { ...this.#state, notice: message, noticeLevel: "error" };
     }
     this.#queueRender();
   }
@@ -1630,16 +1971,22 @@ export class TerminalApp {
     const topic = activeTopic(this.#state);
     const effort = selectableEfforts(topic)[this.#state.effortPickerIndex];
     if (!topic || !effort) return;
-    this.#state = { ...this.#state, overlay: null, notice: `Setting effort to ${effort}…` };
+    this.#state = {
+      ...this.#state,
+      overlay: null,
+      notice: `Setting effort to ${effort}…`,
+      noticeLevel: "info",
+    };
     this.#queueRender();
     try {
       const notice = await this.#client.setEffort(topic, effort);
       await this.#refreshTopics(topic.title);
-      this.#state = { ...this.#state, notice };
+      this.#state = { ...this.#state, notice, noticeLevel: "success" };
     } catch (error) {
       this.#state = {
         ...this.#state,
         notice: error instanceof Error ? error.message : String(error),
+        noticeLevel: "error",
       };
     }
     this.#queueRender();
@@ -1691,8 +2038,8 @@ export class TerminalApp {
     if (topic.kind === "manager") {
       const notice = "Manager topics cannot be deleted";
       this.#state = this.#state.topicPickerRoot
-        ? openTopicPicker(this.#state, notice, true)
-        : { ...this.#state, overlay: null, notice };
+        ? openTopicPicker(this.#state, notice, true, "warn")
+        : { ...this.#state, overlay: null, notice, noticeLevel: "warn" };
       this.#queueRender();
       return;
     }
@@ -1720,17 +2067,24 @@ export class TerminalApp {
       overlay: null,
       pendingDeleteTopicId: undefined,
       notice: `Deleting ${topic.title}…`,
+      noticeLevel: "info",
     };
     this.#queueRender();
     try {
       await this.#client.deleteTopic(topic);
       await this.#refreshTopics();
-      this.#state = openTopicPicker(this.#state, `Deleted ${topic.title}`, topicPickerRoot);
+      this.#state = openTopicPicker(
+        this.#state,
+        `Deleted ${topic.title}`,
+        topicPickerRoot,
+        "success",
+      );
       if (!topicPickerRoot) await this.#loadActiveMessages();
     } catch (error) {
-      const failed = {
+      const failed: AppState = {
         ...this.#state,
         notice: error instanceof Error ? error.message : String(error),
+        noticeLevel: "error",
       };
       this.#state = topicPickerRoot ? openTopicPicker(failed, failed.notice, true) : failed;
     }
@@ -1746,6 +2100,7 @@ export class TerminalApp {
       this.#state = {
         ...this.#state,
         notice: "No agent response to copy",
+        noticeLevel: "warn",
       };
       this.#queueRender();
       return;
@@ -1755,11 +2110,13 @@ export class TerminalApp {
       this.#state = {
         ...this.#state,
         notice: `Last response copied via ${result.method}${result.truncated ? " (truncated)" : ""}`,
+        noticeLevel: "success",
       };
     } catch (error) {
       this.#state = {
         ...this.#state,
         notice: `Copy failed: ${error instanceof Error ? error.message : String(error)}`,
+        noticeLevel: "error",
       };
     }
     this.#queueRender();
@@ -1826,11 +2183,13 @@ export class TerminalApp {
       this.#state = {
         ...this.#state,
         notice: `Selection copied via ${result.method}${result.truncated ? " (truncated)" : ""}`,
+        noticeLevel: "success",
       };
     } catch (error) {
       this.#state = {
         ...this.#state,
         notice: `Copy failed: ${error instanceof Error ? error.message : String(error)}`,
+        noticeLevel: "error",
       };
     }
     this.#queueRender();
@@ -1842,11 +2201,13 @@ export class TerminalApp {
       this.#state = {
         ...this.#state,
         notice: `Code block copied via ${result.method}${result.truncated ? " (truncated)" : ""}`,
+        noticeLevel: "success",
       };
     } catch (error) {
       this.#state = {
         ...this.#state,
         notice: `Copy failed: ${error instanceof Error ? error.message : String(error)}`,
+        noticeLevel: "error",
       };
     }
     this.#queueRender();
@@ -1866,7 +2227,7 @@ export class TerminalApp {
     const history = this.#messageHistory.get(topic.id);
     if (!history || history.loading) return;
     if (!history.hasMore || !history.cursor) {
-      this.#state = { ...this.#state, notice: "Start of conversation" };
+      this.#state = { ...this.#state, notice: "Start of conversation", noticeLevel: "info" };
       this.#queueRender();
       return;
     }
@@ -1944,6 +2305,7 @@ export class TerminalApp {
       this.#state = {
         ...this.#state,
         notice: error instanceof Error ? error.message : String(error),
+        noticeLevel: "error",
       };
       this.#queueRender();
       return;
@@ -1951,6 +2313,7 @@ export class TerminalApp {
     this.#state = {
       ...this.#state,
       notice: aborted ? "Turn aborted" : "Nothing is running",
+      noticeLevel: "info",
     };
     this.#queueRender();
   }
@@ -1987,6 +2350,7 @@ export class TerminalApp {
         pendingDeleteTopicId: undefined,
         creatingTopic: false,
         notice: "Input cleared",
+        noticeLevel: "info",
       };
       this.#queueRender();
       return;
@@ -1998,7 +2362,11 @@ export class TerminalApp {
       return;
     }
     this.#lastInterruptAt = now;
-    this.#state = { ...this.#state, notice: "Press Ctrl-C again to exit" };
+    this.#state = {
+      ...this.#state,
+      notice: "Press Ctrl-C again to exit",
+      noticeLevel: "warn",
+    };
     this.#queueRender();
   }
 
@@ -2014,6 +2382,9 @@ export class TerminalApp {
     this.#subagentGraphAbortController?.abort();
     this.#subagentGraphAbortController = null;
     if (this.#renderTimer) clearTimeout(this.#renderTimer);
+    if (this.#inputCarryTimer) clearTimeout(this.#inputCarryTimer);
+    this.#inputCarryTimer = undefined;
+    this.#inputCarry = "";
     if (this.#pathSearchTimer) clearTimeout(this.#pathSearchTimer);
     if (this.#animationTimer) clearInterval(this.#animationTimer);
     if (this.#backgroundRefreshTimer) clearInterval(this.#backgroundRefreshTimer);
@@ -2026,11 +2397,14 @@ export class TerminalApp {
     if (uiActive) {
       process.stdin.off("data", this.#onData);
       process.stdout.off("resize", this.#onResize);
-      process.off("SIGINT", this.#onSignal);
-      process.off("SIGTERM", this.#onSignal);
       if (process.stdin.isTTY) process.stdin.setRawMode(false);
       process.stdin.pause();
-      process.stdout.write(EXIT_ALT_SCREEN);
+      // The disposer writes `EXIT_ALT_SCREEN` synchronously and then removes
+      // the hooks. It is idempotent, so a signal that already restored the
+      // terminal on the way here does not double-emit the sequence, and an
+      // embedding host is left with no process-level listeners of ours.
+      this.#uninstallTerminalRestore?.();
+      this.#uninstallTerminalRestore = null;
     }
     if (clientStartAttempted) await this.#client.stop();
   }

@@ -68,6 +68,19 @@ export class TextBuffer {
     );
   }
 
+  /**
+   * Everything to the left of the caret, newlines included.
+   *
+   * This is the prefix history search filters on: what the user has typed *so
+   * far* is a prediction of what they want, whereas the text after the caret is
+   * the tail of something they already rejected.
+   */
+  get textBeforeCursor(): string {
+    const head = this.#lines.slice(0, this.#cursor.row);
+    const current = [...(this.#lines[this.#cursor.row] ?? "")].slice(0, this.#cursor.col).join("");
+    return [...head, current].join("\n");
+  }
+
   get isOnFirstLine(): boolean {
     return this.#cursor.row === 0;
   }
@@ -249,11 +262,20 @@ export class TextBuffer {
   }
 }
 
-/** Shell-like history navigation with restoration of the unfinished draft. */
+/**
+ * Shell-like history navigation with restoration of the unfinished draft.
+ *
+ * Navigation is a bash `history-search-backward`: the draft present when the
+ * traversal starts becomes a prefix filter, so only entries beginning with it
+ * are visited. An empty draft falls back to walking every entry.
+ */
 export class InputHistory {
   #entries: string[];
   #index: number;
   #draft = "";
+  /** Caret the draft was left at, so walking back restores the edit, not just the text. */
+  #draftCursor: BufferCursor | undefined;
+  #prefix = "";
 
   constructor(
     entries: readonly string[] = [],
@@ -275,21 +297,83 @@ export class InputHistory {
     this.reset();
   }
 
-  previous(currentDraft: string): string | null {
+  /** Prefix filtering the current traversal, or `""` while unfiltered. */
+  get searchPrefix(): string {
+    return this.#prefix;
+  }
+
+  /** True while the traversal is back on the draft rather than on an entry. */
+  get atDraft(): boolean {
+    return this.#index >= this.#entries.length;
+  }
+
+  /**
+   * Caret position captured with the draft, if the caller supplied one.
+   *
+   * Only meaningful while {@link atDraft}: restoring a *history entry* has no
+   * caret to speak of, so those land at the end like typed text.
+   */
+  get draftCursor(): BufferCursor | undefined {
+    return this.#draftCursor;
+  }
+
+  /**
+   * Walks back to the previous history entry matching the search prefix.
+   *
+   * `currentDraft` is what a walk back down restores; `searchPrefix` is what
+   * entries are filtered on. They are separate because the caret splits the
+   * draft: with `"git stash"` typed and the caret after `"git st"`, the user is
+   * asking for history starting with `"git st"` — filtering on the whole draft
+   * (the text *after* the caret, plus any following lines) matched nothing and
+   * made Up look broken. Defaults to the old behaviour of filtering on the whole
+   * draft, which is what an empty caret prefix would mean anyway.
+   *
+   * `draftCursor` is captured alongside the text so that walking back down puts
+   * the caret where the user left it. Restoring the characters but dropping the
+   * caret to the end silently moved the edit point, which is worse than not
+   * restoring at all on a multi-line draft.
+   */
+  previous(
+    currentDraft: string,
+    searchPrefix: string = currentDraft,
+    draftCursor?: BufferCursor,
+  ): string | null {
     if (this.#entries.length === 0 || this.#index === 0) return null;
-    if (this.#index === this.#entries.length) this.#draft = currentDraft;
-    this.#index -= 1;
-    return this.#entries[this.#index] ?? null;
+    if (this.#index === this.#entries.length) {
+      this.#draft = currentDraft;
+      this.#draftCursor = draftCursor;
+      this.#prefix = searchPrefix;
+    }
+    for (let index = this.#index - 1; index >= 0; index -= 1) {
+      const entry = this.#entries[index];
+      if (!this.#matches(entry)) continue;
+      this.#index = index;
+      return entry;
+    }
+    return null;
   }
 
   next(): string | null {
     if (this.#index >= this.#entries.length) return null;
-    this.#index += 1;
-    return this.#index === this.#entries.length ? this.#draft : (this.#entries[this.#index] ?? "");
+    for (let index = this.#index + 1; index < this.#entries.length; index += 1) {
+      const entry = this.#entries[index];
+      if (!this.#matches(entry)) continue;
+      this.#index = index;
+      return entry;
+    }
+    // Walked past the newest match: hand back the draft the traversal started from.
+    this.#index = this.#entries.length;
+    return this.#draft;
   }
 
   reset(): void {
     this.#index = this.#entries.length;
     this.#draft = "";
+    this.#draftCursor = undefined;
+    this.#prefix = "";
+  }
+
+  #matches(entry: string): boolean {
+    return this.#prefix === "" || entry.startsWith(this.#prefix);
   }
 }
