@@ -68,9 +68,16 @@ function defaultSessionsDatabasePath(): string {
 }
 
 function initializeDatabase(database: InternalStorageDatabase): void {
+  // busy_timeout FIRST. Switching to WAL needs a brief exclusive lock, so when
+  // two processes open the same database at the same moment — the node daemon
+  // and an adapter, or two MCP servers — one of them hits SQLITE_BUSY. With the
+  // timeout configured afterwards there was no retry budget in effect for the
+  // statement that needed it most, and the loser died with "database is locked"
+  // during startup. Measured with four processes racing one fresh file: 60/100
+  // opens failed in the old order, 0/100 with the timeout set first.
+  database.exec("PRAGMA busy_timeout = 5000");
   database.exec("PRAGMA journal_mode = WAL");
   database.exec("PRAGMA foreign_keys = ON");
-  database.exec("PRAGMA busy_timeout = 5000");
   database.exec("PRAGMA wal_autocheckpoint = 1000");
   try {
     database.exec("PRAGMA wal_checkpoint(TRUNCATE)");

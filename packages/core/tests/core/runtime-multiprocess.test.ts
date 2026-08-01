@@ -13,9 +13,36 @@ class LineReader {
   };
   readonly #decoder = new TextDecoder();
   #buffer = "";
+  readonly #label: string;
+  readonly #child: Bun.Subprocess<"pipe", "pipe", "pipe">;
 
-  constructor(stream: ReadableStream<Uint8Array>) {
-    this.#reader = stream.getReader();
+  constructor(child: Bun.Subprocess<"pipe", "pipe", "pipe">, label: string) {
+    this.#reader = child.stdout.getReader();
+    this.#child = child;
+    this.#label = label;
+  }
+
+  /**
+   * Everything the child wrote to stderr, plus how it exited.
+   *
+   * The harness used to leave stderr piped and unread, so a worker that died
+   * during startup surfaced only as `expect("").toBe("READY")` — no exit code,
+   * no stack, nothing to act on. That is what made this suite's intermittent
+   * failure undiagnosable for so long.
+   */
+  async #childDiagnostics(): Promise<string> {
+    let stderr = "";
+    try {
+      stderr = (await new Response(this.#child.stderr).text()).trim();
+    } catch {
+      stderr = "(stderr unavailable)";
+    }
+    const exitCode = this.#child.exitCode;
+    return [
+      `worker "${this.#label}" produced no line`,
+      `exit code: ${exitCode === null ? "still running" : exitCode}`,
+      stderr ? `stderr:\n${stderr}` : "stderr: (empty)",
+    ].join("\n");
   }
 
   async next(timeoutMs = 3_000): Promise<string> {
@@ -28,14 +55,28 @@ class LineReader {
           return line;
         }
         const { done, value } = await this.#reader.read();
-        if (done) return this.#buffer;
+        if (done) {
+          // Stream closed with no complete line: the child exited early.
+          // Returning the empty buffer here would assert `"" === "READY"` and
+          // hide the reason, so surface what the child actually said.
+          if (!this.#buffer) throw new Error(await this.#childDiagnostics());
+          return this.#buffer;
+        }
         if (value) this.#buffer += this.#decoder.decode(value, { stream: true });
       }
     };
     return Promise.race([
       read(),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("timed out waiting for child output")), timeoutMs),
+        setTimeout(
+          () =>
+            void this.#childDiagnostics().then((detail) =>
+              reject(
+                new Error(`timed out after ${timeoutMs}ms waiting for child output\n${detail}`),
+              ),
+            ),
+          timeoutMs,
+        ),
       ),
     ]);
   }
@@ -68,7 +109,7 @@ function spawnWorker(
     stderr: "pipe",
   });
   children.push(child);
-  return { child, lines: new LineReader(child.stdout) };
+  return { child, lines: new LineReader(child, args.join(" ")) };
 }
 
 afterEach(async () => {
