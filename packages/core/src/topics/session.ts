@@ -645,29 +645,25 @@ export function shouldCompactForkEntries(
   thresholdTokens = AUTO_FORK_COMPACTION_TOKENS,
 ): boolean {
   const messages: ProviderMessage[] = [];
-  let cjkChars = 0;
   for (const pair of extractChatPairs(entries)) {
     messages.push(
       { role: "user", content: pair.userText },
       { role: "assistant", content: pair.assistantText },
     );
-    cjkChars += (
-      pair.userText.match(
-        /[\p{Script=Han}\p{Script=Hangul}\p{Script=Hiragana}\p{Script=Katakana}]/gu,
-      ) ?? []
-    ).length;
-    cjkChars += (
-      pair.assistantText.match(
-        /[\p{Script=Han}\p{Script=Hangul}\p{Script=Hiragana}\p{Script=Katakana}]/gu,
-      ) ?? []
-    ).length;
   }
-  // The SDK's cheap estimator is English-leaning (roughly chars / 3.5).
-  // CJK text is commonly close to one token per character, so add the
-  // missing conservative charge instead of letting long Korean/Japanese/
-  // Chinese histories bypass automatic fork compaction.
-  const cjkAdjustment = Math.ceil(cjkChars * (1 - 1 / 3.5));
-  return estimateTokens(messages) + cjkAdjustment >= thresholdTokens;
+  // No local CJK surcharge: maestro-agent-sdk 0.1.53 made `estimateTokens`
+  // script-aware, so it already charges CJK code points at a conservative
+  // rate. This used to add `chars * (1 - 1/3.5)` on top of an English-leaning
+  // estimate; against the new estimator that is double counting. Measured on
+  // 1000 identical characters:
+  //
+  //   ASCII    0.29 tokens/char
+  //   Korean   1.12 tokens/char   (Japanese and Chinese identical)
+  //
+  // so the old surcharge pushed Korean to 1.83 tokens/char — roughly 1.6x
+  // over-charged, firing automatic fork compaction on Korean topics well
+  // before they approached the threshold.
+  return estimateTokens(messages) >= thresholdTokens;
 }
 
 export async function createCompactedRolloutEntries(

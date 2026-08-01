@@ -301,21 +301,34 @@ describe("restartTopicSession", () => {
 });
 
 describe("compactTopicSession", () => {
+  function koreanEntries(chars: number) {
+    return [
+      {
+        ts: new Date().toISOString(),
+        agent: "codex" as const,
+        event: { type: "user_message" as const, content: "가".repeat(chars) },
+      },
+      {
+        ts: new Date().toISOString(),
+        agent: "codex" as const,
+        event: { type: "result" as const, content: "확인", stopReason: "end_turn" },
+      },
+    ];
+  }
+
   test("charges CJK text conservatively for automatic fork compaction", () => {
-    expect(
-      shouldCompactForkEntries([
-        {
-          ts: new Date().toISOString(),
-          agent: "codex",
-          event: { type: "user_message", content: "가".repeat(30_000) },
-        },
-        {
-          ts: new Date().toISOString(),
-          agent: "codex",
-          event: { type: "result", content: "확인", stopReason: "end_turn" },
-        },
-      ]),
-    ).toBe(true);
+    // maestro-agent-sdk 0.1.53 estimates ~1.12 tokens per CJK character, so
+    // 30k characters clears the 28k threshold.
+    expect(shouldCompactForkEntries(koreanEntries(30_000))).toBe(true);
+  });
+
+  test("does not over-charge CJK into premature compaction", () => {
+    // The counterpart the old test lacked. `shouldCompactForkEntries` used to
+    // add its own `chars * (1 - 1/3.5)` surcharge on top of what became a
+    // script-aware estimator, reaching ~1.83 tokens/char. At that rate 20k
+    // Korean characters scored ~36.6k and tripped the 28k threshold even
+    // though the real cost is ~22.3k — Korean topics compacted far too early.
+    expect(shouldCompactForkEntries(koreanEntries(20_000))).toBe(false);
   });
 
   test("aborts a compactor that exceeds its deadline", async () => {
