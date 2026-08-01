@@ -125,6 +125,12 @@ describe("shared background-bash runtime", () => {
 
     try {
       await client.connect(transport);
+      const runTool = (await client.listTools()).tools.find(
+        (tool) => tool.name === "background_bash_run",
+      );
+      expect(runTool?.description).toContain("longer than about 2 minutes");
+      expect(runTool?.description).toContain("ordinary builds, tests");
+      expect(runTool?.description).toContain("do not use this merely to avoid waiting");
       const started = JSON.parse(
         toolText(
           await client.callTool({

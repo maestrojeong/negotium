@@ -369,6 +369,8 @@ function buildMcpServer(context: BgContext): McpServer {
     "background_bash_run",
     [
       "Start a long-running shell command in the background. Returns bash_id immediately.",
+      "Use this only for independent commands expected to run longer than about 2 minutes or survive beyond the current agent turn.",
+      "Run ordinary builds, tests, and commands whose result is needed for the next step in the foreground; do not use this merely to avoid waiting.",
       "The process runs independently of this agent turn.",
       "When it exits, its output is injected into this session as a new turn.",
       `Each stream is previewed up to ${Math.floor(MAX_OUTPUT_BYTES / 1024)} KiB (head + tail);`,
