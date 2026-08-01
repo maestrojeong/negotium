@@ -46,17 +46,13 @@ export async function reserveAvailableLoopbackPort(
 
 /**
  * Kill all leftover browser-MCP processes from previous bot runs. The gateway
- * may own a Browser.rs child, so match both layers plus the legacy server.
+ * owns a Browser.rs child, so match both layers plus the legacy server.
  */
 export function cleanupZombiePlaywright(): void {
   try {
-    const pids = execFileSync(
-      "pgrep",
-      ["-f", "mcp-patchright-http\\.mjs|browser-rs|playwright-mcp"],
-      {
-        stdio: "pipe",
-      },
-    )
+    const pids = execFileSync("pgrep", ["-f", "browser-rs-http\\.mjs|browser-rs|playwright-mcp"], {
+      stdio: "pipe",
+    })
       .toString()
       .trim();
     if (pids) {

@@ -118,13 +118,22 @@ export {
   flushPeerRuntimeEvents,
   registerPeerRuntimeBridge,
 } from "#mcp/peer-bridge";
-export type { RuntimeMcpContext } from "#mcp/runtime-spec";
+export type {
+  HostedMcpContext,
+  HostedMcpSurface,
+  RuntimeMcpContext,
+} from "#mcp/runtime-spec";
 export {
+  buildHostedMcpSpec,
   buildRuntimeMcpSpec,
   getRuntimeMcpPort,
+  HOSTED_MCP_SURFACES,
+  isHostedMcpSurface,
+  issueHostedMcpToken,
   issueRuntimeMcpToken,
   RUNTIME_MCP_BASE_PATH,
   RUNTIME_MCP_KEY,
+  resolveHostedMcpToken,
   resolveRuntimeMcpToken,
   setRuntimeMcpPort,
 } from "#mcp/runtime-spec";
@@ -182,6 +191,7 @@ export {
   getNodeMcpServers,
   markPlaywrightUnavailable,
   OPTIONAL_FORUM_MCP_SERVERS,
+  REQUIRED_FORUM_MCP_SERVERS,
   registerRuntimeMcpServer,
   setNodeMcpServers,
   setPlaywrightUnavailableNotifier,

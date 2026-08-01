@@ -17,7 +17,7 @@ import {
   isParticipant,
   logger,
   type UploadAccess,
-} from "@negotium/core";
+} from "@negotium/core/node-host";
 
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
 const FILE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

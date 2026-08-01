@@ -1,11 +1,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { hasActiveMaestroSession, maestroSessionPath } from "maestro-agent-sdk";
-import { claudeProvider } from "#agents/claude-provider";
-import { codexProvider } from "#agents/codex-provider";
-import { maestroProvider } from "#agents/maestro-provider";
-import { getRegistry } from "#agents/registry";
+import { getRegistryOperations } from "#agents/registry";
 import { encodeClaudeCwd } from "#agents/rollout/claude";
 import { resolveTaskEventScope, withTaskSnapshots } from "#agents/task-events";
 import { logger } from "#platform/logger";
@@ -21,15 +17,21 @@ export { isAgentKind, SUPPORTED_AGENTS } from "#types";
  */
 async function* dispatchAgent(opts: AgentQueryOptions): AsyncGenerator<UnifiedEvent> {
   switch (opts.agent) {
-    case "claude":
+    case "claude": {
+      const { claudeProvider } = await import("#agents/claude-provider");
       yield* claudeProvider(opts);
       return;
-    case "codex":
+    }
+    case "codex": {
+      const { codexProvider } = await import("#agents/codex-provider");
       yield* codexProvider(opts);
       return;
-    case "maestro":
+    }
+    case "maestro": {
+      const { maestroProvider } = await import("#agents/maestro-provider");
       yield* maestroProvider(opts);
       return;
+    }
     default: {
       const exhaustive: never = opts.agent;
       throw new Error(`runAgent: unknown agent '${exhaustive}'`);
@@ -114,6 +116,7 @@ export async function resolveSessionFileMissing(
       return true; // no match found
     }
     case "maestro": {
+      const { hasActiveMaestroSession, maestroSessionPath } = await import("maestro-agent-sdk");
       return !existsSync(maestroSessionPath(sessionId)) && !hasActiveMaestroSession(sessionId);
     }
     default: {
@@ -152,8 +155,8 @@ async function maybeRebuildSession(
       return false;
     }
 
-    const registry = getRegistry(opts.agent);
-    const result = registry.writeRollout({
+    const operations = getRegistryOperations(opts.agent);
+    const result = operations.writeRollout({
       cwd: opts.cwd,
       entries,
       reuseSessionId: opts.sessionId,

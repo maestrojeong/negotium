@@ -31,7 +31,7 @@ export function mcpCommand(args: string[]): void {
       if (!raw) {
         console.error(
           'usage: negotium mcp add \'{"key":"browser","transport":"http","command":"bunx",' +
-            '"args":["mcp-patchright","--port","{port}"],"portRange":{"base":9100,"max":9199},"scope":"instance"}\'',
+            '"args":["browser-rs","--port","{port}"],"portRange":{"base":9100,"max":9199},"scope":"instance"}\'',
         );
         process.exitCode = 1;
         return;

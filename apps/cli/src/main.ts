@@ -16,18 +16,23 @@ function numericOption(values: string[], name: string, fallback: number): number
 }
 
 async function runCanonicalNode(port: number): Promise<void> {
-  const { onShutdown } = await import("@negotium/core");
-  const { MAX_PEER_INPUT_REQUEST_BYTES, mountConfiguredOtiumNodeRuntime } = await import(
-    "@negotium/adapter-otium/node-runtime"
-  );
+  const { hasConfiguredOtiumJoin } = await import("@negotium/adapter-otium/join-status");
   const { startDefaultNode } = await import("@negotium/node");
-  const otiumRuntime = mountConfiguredOtiumNodeRuntime();
-  if (otiumRuntime) onShutdown("otium-node-runtime", 125, () => otiumRuntime.stop());
+  let maxRequestBodySize: number | undefined;
+  if (hasConfiguredOtiumJoin()) {
+    const { onShutdown } = await import("@negotium/core/node-host");
+    const { MAX_PEER_INPUT_REQUEST_BYTES, mountConfiguredOtiumNodeRuntime } = await import(
+      "@negotium/adapter-otium/node-runtime"
+    );
+    const otiumRuntime = mountConfiguredOtiumNodeRuntime();
+    if (otiumRuntime) onShutdown("otium-node-runtime", 125, () => otiumRuntime.stop());
+    maxRequestBodySize = MAX_PEER_INPUT_REQUEST_BYTES;
+  }
   const node = await startDefaultNode({
     port,
     advertise: true,
     singleton: true,
-    maxRequestBodySize: MAX_PEER_INPUT_REQUEST_BYTES,
+    ...(maxRequestBodySize ? { maxRequestBodySize } : {}),
   });
   console.log(`negotium node listening on 127.0.0.1:${node.port} (ctrl-c to stop)`);
   await node.completed;

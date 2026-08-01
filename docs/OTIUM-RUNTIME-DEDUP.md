@@ -40,7 +40,6 @@ interface PlaywrightManagerHost {
   readonly basePort: number;
   readonly maxPort: number;
   readonly browserBin: string;
-  readonly fallbackBrowserBin: string;
   readonly browserRsBin?: string;
   readonly resolveProxy: () => BrowserProxyConfig | null;
   readonly resolveTopicBinding:

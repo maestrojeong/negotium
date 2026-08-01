@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { maestroSessionsDir } from "maestro-agent-sdk";
-import { getRegistry } from "#agents/registry";
+import { getRegistryOperations } from "#agents/registry";
 import { resolveTopicWorkspaceDir } from "#platform/config";
 import { deleteTopicProfileDir, resolveTopicProfileDir } from "#platform/playwright/manager";
 import { appendApiMessage, getAllMessagesForTopic } from "#storage/api-messages";
@@ -88,7 +88,7 @@ describe("createDerivedTopic", () => {
       expect(JSON.stringify(childEntries)).not.toContain("canonical after boundary");
     } finally {
       if (childSessionId && childId) {
-        await getRegistry("maestro").cleanupRollouts({
+        await getRegistryOperations("maestro").cleanupRollouts({
           cwd: resolveTopicWorkspaceDir(childId),
           sessionIds: [childSessionId],
         });
@@ -327,7 +327,7 @@ describe("createDerivedTopic", () => {
       expect(readFileSync(rolloutPath, "utf8")).toContain("fallback context remembered");
     } finally {
       if (childSessionId && childId) {
-        await getRegistry("maestro").cleanupRollouts({
+        await getRegistryOperations("maestro").cleanupRollouts({
           cwd: resolveTopicWorkspaceDir(childId),
           sessionIds: [childSessionId],
         });
@@ -366,7 +366,7 @@ describe("createDerivedTopic", () => {
       aiMode: "always",
     });
     mkdirSync(sourceCwd, { recursive: true });
-    const nativeRollout = getRegistry("maestro").writeRollout({
+    const nativeRollout = getRegistryOperations("maestro").writeRollout({
       cwd: sourceCwd,
       entries: [
         {
@@ -411,13 +411,13 @@ describe("createDerivedTopic", () => {
       expect(childRollout).not.toContain("native-only response");
     } finally {
       if (sourceSessionId) {
-        await getRegistry("maestro").cleanupRollouts({
+        await getRegistryOperations("maestro").cleanupRollouts({
           cwd: sourceCwd,
           sessionIds: [sourceSessionId],
         });
       }
       if (childSessionId && childId) {
-        await getRegistry("maestro").cleanupRollouts({
+        await getRegistryOperations("maestro").cleanupRollouts({
           cwd: resolveTopicWorkspaceDir(childId),
           sessionIds: [childSessionId],
         });
@@ -517,7 +517,7 @@ describe("createDerivedTopic", () => {
       );
     } finally {
       if (childSessionId && childId) {
-        await getRegistry("maestro").cleanupRollouts({
+        await getRegistryOperations("maestro").cleanupRollouts({
           cwd: resolveTopicWorkspaceDir(childId),
           sessionIds: [childSessionId],
         });
@@ -625,7 +625,7 @@ describe("createDerivedTopic", () => {
     } finally {
       releaseRuntimeTurnLease(sourceTopicId, queryId, leaseOwner);
       if (childSessionId && childId) {
-        await getRegistry("maestro").cleanupRollouts({
+        await getRegistryOperations("maestro").cleanupRollouts({
           cwd: resolveTopicWorkspaceDir(childId),
           sessionIds: [childSessionId],
         });
@@ -722,7 +722,7 @@ describe("createDerivedTopic", () => {
       expect(getApiTopicConfig(child.id)?.model).toBe("kimi-k3");
     } finally {
       if (childSessionId && childId) {
-        await getRegistry("maestro").cleanupRollouts({
+        await getRegistryOperations("maestro").cleanupRollouts({
           cwd: resolveTopicWorkspaceDir(childId),
           sessionIds: [childSessionId],
         });

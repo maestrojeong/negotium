@@ -444,16 +444,16 @@ describe("browserProcessMatchesExpectedProfile", () => {
   it("requires an exact user-data-dir before killing a stale browser process", () => {
     expect(
       browserProcessMatchesExpectedProfile(
-        "node mcp-patchright --port 9000 --user-data-dir /profiles/alice",
+        "browser-rs --port 9000 --user-data-dir /profiles/alice",
         "/profiles/alice",
       ),
     ).toBe(true);
-    expect(
-      browserProcessMatchesExpectedProfile("node mcp-patchright --port 9000", "/profiles/alice"),
-    ).toBe(false);
+    expect(browserProcessMatchesExpectedProfile("browser-rs --port 9000", "/profiles/alice")).toBe(
+      false,
+    );
     expect(
       browserProcessMatchesExpectedProfile(
-        "node mcp-patchright --port 9000 --user-data-dir /profiles/bob",
+        "browser-rs --port 9000 --user-data-dir /profiles/bob",
         "/profiles/alice",
       ),
     ).toBe(false);

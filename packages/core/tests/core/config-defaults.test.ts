@@ -11,6 +11,7 @@ import {
   resolveDefaultModel,
   SESSION_MODEL,
   TSX_BIN,
+  TSX_LOADER,
 } from "#platform/config";
 
 const MODEL_ENV_KEYS = [
@@ -61,6 +62,7 @@ describe("role default models", () => {
 
   test("tsx executable resolves across hoisted workspace installs", () => {
     expect(existsSync(TSX_BIN)).toBe(true);
+    expect(existsSync(TSX_LOADER)).toBe(true);
   });
 
   test("unset model env leaves registry defaults authoritative", () => {

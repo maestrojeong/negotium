@@ -36,7 +36,10 @@ describe("node-assigned MCP servers (manifest wiring)", () => {
   test("entries shadowing built-in catalog keys are ignored", () => {
     setNodeMcpServers([{ key: "wiki", kind: "http", port: 9155 }]);
     const servers = getForumMcpServers({ userId: "u", session: "t", agent: "claude" });
-    // built-in wiki (stdio launch shape) must win over the impostor
-    expect((servers.wiki as { url?: string }).url).toBeUndefined();
+    // The authenticated built-in wiki surface must win over the impostor.
+    expect((servers.wiki as { url: string }).url).toMatch(
+      /^http:\/\/127\.0\.0\.1:\d+\/mcp\/runtime\/wiki\/sse\?token=/,
+    );
+    expect((servers.wiki as { url: string }).url).not.toContain(":9155/");
   });
 });

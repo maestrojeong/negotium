@@ -32,7 +32,7 @@ import {
   type TopicDto,
   TopicValidationError,
   textResult,
-} from "@negotium/core";
+} from "@negotium/core/mcp-runtime-host";
 import { z } from "zod";
 
 /**

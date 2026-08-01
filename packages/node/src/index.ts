@@ -11,6 +11,7 @@
  */
 
 import { createServer } from "node:net";
+import { migrateLegacyCompactedConversations } from "@negotium/core/conversation-migration";
 import {
   abortAllRooms,
   acquireRuntimeProcessLease,
@@ -42,9 +43,8 @@ import {
   stopAskUserQuestionGateOwner,
   sweepStaleSubagentCards,
   WORKSPACE_DIR,
-} from "@negotium/core";
-import { migrateLegacyCompactedConversations } from "@negotium/core/conversation-migration";
-import { handleNegotiumMcpRequest } from "@negotium/mcp";
+} from "@negotium/core/node-host";
+import { closeNegotiumMcpSessions, handleNegotiumMcpRequest } from "@negotium/mcp";
 import { McpHost, McpManifest } from "@negotium/mcp-host";
 import {
   createNodeControlHandler,
@@ -285,6 +285,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     });
   }
   if (processLease) onShutdown("node-daemon-lease", 128, () => processLease.stop());
+  onShutdown("runtime-mcp-sessions", 125, closeNegotiumMcpSessions);
   onShutdown("active-agent-turns", 120, async () => {
     abortAllRooms();
     await killOwnedCodexTreesForShutdown();

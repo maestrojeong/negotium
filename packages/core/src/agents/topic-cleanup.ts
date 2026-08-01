@@ -15,7 +15,7 @@
 import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { SUPPORTED_AGENTS } from "#agents/index";
-import { getRegistry } from "#agents/registry";
+import { getRegistryOperations } from "#agents/registry";
 import { logger } from "#platform/logger";
 import {
   getActiveConversationPath,
@@ -260,7 +260,7 @@ const defaultTopicLogMaintenance = createTopicLogMaintenance({
   activeConversationPath: getActiveConversationPath,
   rawConversationPath: getConversationPath,
   async cleanupRollouts(agent, cwd, sessionIds) {
-    await getRegistry(agent).cleanupRollouts({ cwd, sessionIds });
+    await getRegistryOperations(agent).cleanupRollouts({ cwd, sessionIds });
   },
   warn: logger.warn.bind(logger),
 });

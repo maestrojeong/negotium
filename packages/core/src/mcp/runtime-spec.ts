@@ -15,6 +15,17 @@ import { type AgentKind, isAgentKind, type PeerRuntimeBridgeContext } from "#typ
 export const RUNTIME_MCP_KEY = "runtime";
 
 export const RUNTIME_MCP_BASE_PATH = "/mcp/runtime";
+export const HOSTED_MCP_SURFACES = [
+  "task",
+  "token-stats",
+  "system-health",
+  "vault",
+  "wiki",
+  "skills",
+  "session-comm",
+  "agent-health",
+] as const;
+export type HostedMcpSurface = (typeof HOSTED_MCP_SURFACES)[number];
 const TOKEN_TTL_MS = 4 * 60 * 60 * 1000;
 const CLAUDE_MCP_TOOL_TIMEOUT_MS = 600_000;
 
@@ -35,10 +46,33 @@ export interface RuntimeMcpContext {
   peerBridge?: PeerRuntimeBridgeContext;
 }
 
+/** Signed identity/capability context shared by hosted built-in MCP surfaces. */
+export interface HostedMcpContext {
+  userId: string;
+  topicTitle: string;
+  topicId?: string;
+  queryId?: string;
+  wikiTopicId?: string;
+  subagentParentTopicId?: string;
+  cwd: string;
+  agent: AgentKind;
+  model?: string;
+  depth?: number;
+  silent?: boolean;
+  peerBridge?: PeerRuntimeBridgeContext;
+}
+
 type RuntimeTokenPayload = {
   v: 1;
   exp: number;
   ctx: RuntimeMcpContext;
+};
+
+type HostedTokenPayload = {
+  v: 2;
+  exp: number;
+  aud: HostedMcpSurface;
+  ctx: HostedMcpContext;
 };
 
 let runtimePort = NEGOTIUM_PORT;
@@ -94,6 +128,34 @@ function isRuntimeMcpContext(value: unknown): value is RuntimeMcpContext {
   );
 }
 
+export function isHostedMcpSurface(value: string): value is HostedMcpSurface {
+  return (HOSTED_MCP_SURFACES as readonly string[]).includes(value);
+}
+
+function isHostedMcpContext(value: unknown): value is HostedMcpContext {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const ctx = value as Partial<HostedMcpContext>;
+  return (
+    typeof ctx.userId === "string" &&
+    typeof ctx.topicTitle === "string" &&
+    typeof ctx.cwd === "string" &&
+    typeof ctx.agent === "string" &&
+    isAgentKind(ctx.agent) &&
+    (ctx.topicId === undefined || typeof ctx.topicId === "string") &&
+    (ctx.queryId === undefined || typeof ctx.queryId === "string") &&
+    (ctx.wikiTopicId === undefined || typeof ctx.wikiTopicId === "string") &&
+    (ctx.subagentParentTopicId === undefined || typeof ctx.subagentParentTopicId === "string") &&
+    (ctx.model === undefined || typeof ctx.model === "string") &&
+    (ctx.depth === undefined || (Number.isInteger(ctx.depth) && ctx.depth >= 0)) &&
+    (ctx.silent === undefined || typeof ctx.silent === "boolean") &&
+    (ctx.peerBridge === undefined ||
+      (typeof ctx.peerBridge.hubCellId === "string" &&
+        typeof ctx.peerBridge.hostTopicId === "string" &&
+        typeof ctx.peerBridge.hostQueryId === "string" &&
+        typeof ctx.peerBridge.canSpawnSubagents === "boolean"))
+  );
+}
+
 export function issueRuntimeMcpToken(ctx: RuntimeMcpContext): string {
   const payloadPart = encodeTokenPart({
     v: 1,
@@ -120,6 +182,41 @@ export function resolveRuntimeMcpToken(token: string | null): RuntimeMcpContext 
   }
 }
 
+export function issueHostedMcpToken(surface: HostedMcpSurface, ctx: HostedMcpContext): string {
+  const payloadPart = encodeTokenPart({
+    v: 2,
+    exp: Date.now() + TOKEN_TTL_MS,
+    aud: surface,
+    ctx,
+  } satisfies HostedTokenPayload);
+  return `${payloadPart}.${signTokenPayload(payloadPart)}`;
+}
+
+export function resolveHostedMcpToken(
+  token: string | null,
+  surface: HostedMcpSurface,
+): HostedMcpContext | null {
+  if (!token) return null;
+  const [payloadPart, signature, extra] = token.split(".");
+  if (!payloadPart || !signature || extra !== undefined) return null;
+  if (!safeEqual(signature, signTokenPayload(payloadPart))) return null;
+
+  try {
+    const payload = decodeTokenPart(payloadPart) as Partial<HostedTokenPayload>;
+    if (
+      payload.v !== 2 ||
+      payload.aud !== surface ||
+      typeof payload.exp !== "number" ||
+      payload.exp <= Date.now()
+    ) {
+      return null;
+    }
+    return isHostedMcpContext(payload.ctx) ? payload.ctx : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * MCP server spec injected into an agent session's MCP config so the agent
  * connects back to this node's runtime endpoint with its per-turn token.
@@ -130,6 +227,23 @@ export function buildRuntimeMcpSpec(
 ): Record<string, unknown> {
   const token = issueRuntimeMcpToken(ctx);
   const base = `http://127.0.0.1:${runtimePort}${RUNTIME_MCP_BASE_PATH}`;
+  const query = `token=${encodeURIComponent(token)}`;
+  if (agent === "codex") return { url: `${base}/mcp?${query}` };
+  return {
+    type: "sse" as const,
+    url: `${base}/sse?${query}`,
+    timeout: CLAUDE_MCP_TOOL_TIMEOUT_MS,
+  };
+}
+
+/** Build an agent transport spec for one logical MCP surface on the shared runtime process. */
+export function buildHostedMcpSpec(
+  agent: AgentKind,
+  surface: HostedMcpSurface,
+  ctx: HostedMcpContext,
+): Record<string, unknown> {
+  const token = issueHostedMcpToken(surface, ctx);
+  const base = `http://127.0.0.1:${runtimePort}${RUNTIME_MCP_BASE_PATH}/${surface}`;
   const query = `token=${encodeURIComponent(token)}`;
   if (agent === "codex") return { url: `${base}/mcp?${query}` };
   return {

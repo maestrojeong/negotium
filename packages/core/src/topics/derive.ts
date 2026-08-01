@@ -11,7 +11,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, unlinkSync } from "node:fs";
 import { cleanupAgentFork, type ForkHandle } from "#agents/fork";
 import { resolveCompactionExecution, resolveModelForAgent } from "#agents/model-catalog";
-import { getRegistry } from "#agents/registry";
+import { getRegistry, getRegistryOperations } from "#agents/registry";
 import { WsHub } from "#bus";
 import { resolveTopicWorkspaceDir } from "#platform/config";
 import { logger } from "#platform/logger";
@@ -344,7 +344,7 @@ async function createDerivedTopicImpl(
               },
               opts?.summarizeFork,
             );
-            const rollout = registry.writeRollout({
+            const rollout = getRegistryOperations(agent).writeRollout({
               cwd,
               entries: compactedForkEntries,
               model: rolloutModel,
@@ -361,7 +361,7 @@ async function createDerivedTopicImpl(
           }
         }
         if (!sessionId) {
-          const rollout = registry.writeRollout({
+          const rollout = getRegistryOperations(agent).writeRollout({
             cwd,
             entries: forkSnapshot.entries,
             model: rolloutModel,
@@ -385,7 +385,7 @@ async function createDerivedTopicImpl(
           );
         }
       } else {
-        const rollout = registry.writeRollout({
+        const rollout = getRegistryOperations(agent).writeRollout({
           cwd,
           entries: [],
           model: rolloutModel,

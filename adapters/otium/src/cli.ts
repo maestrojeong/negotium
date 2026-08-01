@@ -113,14 +113,19 @@ async function ensureCanonicalNode(): Promise<void> {
 }
 
 async function runCanonicalNodeChild(): Promise<void> {
-  const { onShutdown } = await import("@negotium/core");
-  const { MAX_PEER_INPUT_REQUEST_BYTES, mountConfiguredOtiumNodeRuntime } = await import(
-    "@/node-runtime"
-  );
+  const { hasConfiguredOtiumJoin } = await import("@/join-status");
   const { runNodeDaemon } = await import("@negotium/node");
-  const runtime = mountConfiguredOtiumNodeRuntime();
-  if (runtime) onShutdown("otium-node-runtime", 125, () => runtime.stop());
-  await runNodeDaemon({ port: 0, maxRequestBodySize: MAX_PEER_INPUT_REQUEST_BYTES });
+  let maxRequestBodySize: number | undefined;
+  if (hasConfiguredOtiumJoin()) {
+    const { onShutdown } = await import("@negotium/core/node-host");
+    const { MAX_PEER_INPUT_REQUEST_BYTES, mountConfiguredOtiumNodeRuntime } = await import(
+      "@/node-runtime"
+    );
+    const runtime = mountConfiguredOtiumNodeRuntime();
+    if (runtime) onShutdown("otium-node-runtime", 125, () => runtime.stop());
+    maxRequestBodySize = MAX_PEER_INPUT_REQUEST_BYTES;
+  }
+  await runNodeDaemon({ port: 0, ...(maxRequestBodySize ? { maxRequestBodySize } : {}) });
 }
 
 export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {

@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { registerCanonicalMcpBridgeEnvProvider } from "#mcp/canonical-bridge-config";
-import { BROWSER_MCP_SSE_PROXY_SERVER } from "#platform/config";
+import {
+  type HostedMcpContext,
+  type HostedMcpSurface,
+  resolveHostedMcpToken,
+} from "#mcp/runtime-spec";
+import { BROWSER_MCP_SSE_PROXY_SERVER, TSX_LOADER } from "#platform/config";
 import {
   browserOwnerCapability,
+  buildStdioMcpServer,
   consumePlaywrightUnavailable,
   getCronMcpServers,
   getDmMcpServers,
@@ -30,6 +36,21 @@ describe("mcp-config: playwright transport selection per agent", () => {
   const playwrightPort = 39001;
   const playwrightCapability = "test-capability";
   const capabilityFor = (owner: string) => browserOwnerCapability(playwrightCapability, owner);
+  const hostedContext = (spec: unknown, surface: HostedMcpSurface): HostedMcpContext => {
+    const url = new URL((spec as { url: string }).url);
+    expect(url.pathname).toContain(`/mcp/runtime/${surface}/`);
+    const ctx = resolveHostedMcpToken(url.searchParams.get("token"), surface);
+    expect(ctx).not.toBeNull();
+    return ctx!;
+  };
+
+  test("codex stdio servers use the in-process tsx loader", () => {
+    expect(buildStdioMcpServer("codex", "/tmp/server.ts", ["--flag"])).toEqual({
+      command: "node",
+      args: ["--import", TSX_LOADER, "/tmp/server.ts", "--flag"],
+      env: { TSX_TSCONFIG_PATH: expect.any(String) },
+    });
+  });
 
   test("no-tool auxiliary calls receive no MCP servers", () => {
     expect(
@@ -191,8 +212,14 @@ describe("mcp-config: playwright transport selection per agent", () => {
       agent: "claude",
       enabled: [],
     });
-    expect((codex.vault as { args: string[] }).args).not.toContain("--list-only=true");
-    expect((claude.vault as { args: string[] }).args).toContain("--list-only=true");
+    expect((codex.vault as { url: string }).url).toContain("/mcp/runtime/vault/mcp?");
+    expect(claude.vault).toEqual({
+      type: "sse",
+      url: expect.stringContaining("/mcp/runtime/vault/sse?"),
+      timeout: 600000,
+    });
+    expect(hostedContext(codex.vault, "vault").agent).toBe("codex");
+    expect(hostedContext(claude.vault, "vault").agent).toBe("claude");
   });
 
   test("manager/codex omits heavyweight browser tools even with a port", () => {
@@ -208,8 +235,8 @@ describe("mcp-config: playwright transport selection per agent", () => {
     expect(servers.runtime).toEqual({
       url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp\/runtime\/mcp\?token=.+/),
     });
-    expect((servers["session-comm"] as { args: string[] }).args).toContain(`--topic-id=${topicId}`);
-    expect((servers.wiki as { args: string[] }).args).toContain(`--topic-id=${topicId}`);
+    expect(hostedContext(servers["session-comm"], "session-comm").topicId).toBe(topicId);
+    expect(hostedContext(servers.wiki, "wiki").wikiTopicId).toBe(topicId);
   });
 
   test("no port + claude → playwright omitted (no stdio child)", () => {
@@ -299,7 +326,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
     expect(servers.runtime).toEqual({
       url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp\/runtime\/mcp\?token=.+/),
     });
-    expect((servers.task as { args: string[] }).args).toContain("--topic-id=runtime-codex");
+    expect(hostedContext(servers.task, "task").topicId).toBe("runtime-codex");
     expect(servers.visuals).toBeUndefined();
     expect(servers["send-file"]).toBeUndefined();
     expect(servers["topic-config"]).toBeUndefined();
@@ -312,9 +339,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
       topicId: "topic-abc-123",
       agent: "claude",
     });
-    expect((servers["session-comm"] as { args: string[] }).args).toContain(
-      "--topic-id=topic-abc-123",
-    );
+    expect(hostedContext(servers["session-comm"], "session-comm").topicId).toBe("topic-abc-123");
   });
 
   test("session-comm receives the subagent parent id in forum scope", () => {
@@ -325,8 +350,8 @@ describe("mcp-config: playwright transport selection per agent", () => {
       subagentParentTopicId: "parent-topic",
       agent: "claude",
     });
-    expect((servers["session-comm"] as { args: string[] }).args).toContain(
-      "--subagent-parent-topic-id=parent-topic",
+    expect(hostedContext(servers["session-comm"], "session-comm").subagentParentTopicId).toBe(
+      "parent-topic",
     );
   });
 
@@ -387,7 +412,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
       url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp\/runtime\/mcp\?token=.+/),
     });
     expect(servers.wiki).toBeDefined();
-    expect((servers.task as { args: string[] }).args).toContain("--topic-id=cron-topic-id");
+    expect(hostedContext(servers.task, "task").topicId).toBe("cron-topic-id");
     expect(servers["session-comm"]).toBeUndefined();
     expect(servers["cron-manager"]).toBeUndefined();
     expect(servers["background-bash"]).toBeUndefined();
@@ -407,8 +432,8 @@ describe("mcp-config: playwright transport selection per agent", () => {
     expect(servers.runtime).toEqual({
       url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp\/runtime\/mcp\?token=.+/),
     });
-    expect((servers.wiki as { args: string[] }).args).toContain("--topic-id=general");
-    expect((servers.task as { args: string[] }).args).toContain("--topic-id=general");
+    expect(hostedContext(servers.wiki, "wiki").wikiTopicId).toBe("general");
+    expect(hostedContext(servers.task, "task").topicId).toBe("general");
   });
 
   test("runtime-managed tools stay active outside the optional whitelist", () => {
@@ -433,11 +458,8 @@ describe("mcp-config: playwright transport selection per agent", () => {
       agent: "codex",
       enabled: ["wiki"],
     });
-    const wiki = servers.wiki as { args: string[] };
-    expect(wiki.args).toContain("--topic-id=topic-abc-123");
-    expect(wiki.args).not.toContain("--topic-id=Roadmap Notes");
-    expect(wiki.args).toContain("--surface=wiki");
-    expect((servers.skills as { args: string[] }).args).toContain("--surface=skills");
+    expect(hostedContext(servers.wiki, "wiki").wikiTopicId).toBe("topic-abc-123");
+    expect(hostedContext(servers.skills, "skills").topicId).toBe("topic-abc-123");
   });
 
   test("placed turns proxy canonical task/wiki while vault and skills stay node-local", () => {
@@ -465,17 +487,20 @@ describe("mcp-config: playwright transport selection per agent", () => {
       });
       const task = servers.task as { args: string[]; env: Record<string, string> };
       const wiki = servers.wiki as { args: string[]; env: Record<string, string> };
-      const skills = servers.skills as { args: string[]; env?: Record<string, string> };
-      const vault = servers.vault as { args: string[]; env?: Record<string, string> };
+      const skills = servers.skills;
+      const vault = servers.vault;
 
       expect(task.args).toContain("--surface=task");
       expect(wiki.args).toContain("--surface=wiki");
       expect(task.env.NEGOTIUM_CANONICAL_MCP_BRIDGE_TOKEN).toBe("token-task");
       expect(wiki.env.NEGOTIUM_CANONICAL_MCP_BRIDGE_TOKEN).toBe("token-wiki");
-      expect(skills.args).toContain("--surface=skills");
-      expect(skills.args).toContain("--topic-id=local-mirror-topic");
-      expect(skills.env?.NEGOTIUM_CANONICAL_MCP_BRIDGE_TOKEN).toBeUndefined();
-      expect(vault.env?.NEGOTIUM_CANONICAL_MCP_BRIDGE_TOKEN).toBeUndefined();
+      expect(hostedContext(skills, "skills").topicId).toBe("local-mirror-topic");
+      expect(hostedContext(vault, "vault").peerBridge).toEqual({
+        hubCellId: "hub-cell",
+        hostTopicId: "hub-topic",
+        hostQueryId: "hub-query",
+        canSpawnSubagents: false,
+      });
     } finally {
       unregister();
     }
@@ -490,9 +515,9 @@ describe("mcp-config: playwright transport selection per agent", () => {
       agent: "codex",
       enabled: ["wiki"],
     });
-    const wiki = servers.wiki as { args: string[] };
-    expect(wiki.args).toContain("--topic-id=root-topic-456");
-    expect(wiki.args).not.toContain("--topic-id=child-topic-123");
+    const wiki = hostedContext(servers.wiki, "wiki");
+    expect(wiki.wikiTopicId).toBe("root-topic-456");
+    expect(wiki.topicId).toBe("child-topic-123");
   });
 
   test("wiki falls back to session when no REST topic id is available", () => {
@@ -502,8 +527,35 @@ describe("mcp-config: playwright transport selection per agent", () => {
       agent: "codex",
       enabled: ["wiki"],
     });
-    const wiki = servers.wiki as { args: string[] };
-    expect(wiki.args).toContain("--topic-id=__archiver_deleted-topic");
+    expect(hostedContext(servers.wiki, "wiki").wikiTopicId).toBe("__archiver_deleted-topic");
+  });
+
+  test("built-in MCP transport can roll back to stdio", () => {
+    const previous = process.env.NEGOTIUM_BUILTIN_MCP_TRANSPORT;
+    process.env.NEGOTIUM_BUILTIN_MCP_TRANSPORT = "stdio";
+    try {
+      const servers = getForumMcpServers({
+        userId,
+        session: "rollback",
+        topicId: "rollback-topic",
+        agent: "codex",
+      });
+      expect(servers.task).toEqual({
+        command: "node",
+        args: [
+          "--import",
+          TSX_LOADER,
+          expect.stringContaining("task-server.ts"),
+          `--user-id=${userId}`,
+          "--topic=rollback",
+          "--topic-id=rollback-topic",
+        ],
+        env: { TSX_TSCONFIG_PATH: expect.any(String) },
+      });
+    } finally {
+      if (previous === undefined) delete process.env.NEGOTIUM_BUILTIN_MCP_TRANSPORT;
+      else process.env.NEGOTIUM_BUILTIN_MCP_TRANSPORT = previous;
+    }
   });
 
   test("playwright unavailable marker is consumable exactly once", () => {

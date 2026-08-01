@@ -1,5 +1,5 @@
 import { existsSync, unlinkSync } from "node:fs";
-import { getRegistry } from "#agents/registry";
+import { getRegistryOperations } from "#agents/registry";
 import { logger } from "#platform/logger";
 import type { AgentKind, EffortLevel } from "#types";
 
@@ -78,7 +78,7 @@ export function createAgentForkHelpers(host: AgentForkHost): AgentForkHelpers {
 }
 
 const defaultForkHelpers = createAgentForkHelpers({
-  forkSession: (agent, options) => getRegistry(agent).forkSession(options),
+  forkSession: (agent, options) => getRegistryOperations(agent).forkSession(options),
   exists: existsSync,
   unlink: unlinkSync,
   warn: (details, message) => logger.warn(details, message),

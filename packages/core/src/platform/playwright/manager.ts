@@ -15,7 +15,6 @@ import {
   BROWSER_PROFILES_DIR,
   BROWSER_RS_BIN,
   type BrowserProxyConfig,
-  PATCHRIGHT_MCP_BIN,
   PLAYWRIGHT_BASE_PORT,
   PLAYWRIGHT_MAX_PORT,
   PLAYWRIGHT_MCP_BIN,
@@ -37,6 +36,10 @@ import {
   resolveHeadedPlaywrightSpawn,
 } from "#platform/playwright/headed-launch";
 import { probePlaywrightMcpTransports } from "#platform/playwright/transport-probe";
+import {
+  type BrowserVaultBrokerHandle,
+  createBrowserVaultBroker,
+} from "#platform/playwright/vault-broker";
 import { sanitizeTopicName } from "#security/sanitize";
 import {
   assignTopicBrowserProfile,
@@ -72,7 +75,6 @@ export interface PlaywrightManagerHost {
   readonly basePort: number;
   readonly maxPort: number;
   readonly browserBin: string;
-  readonly fallbackBrowserBin: string;
   readonly browserRsBin?: string;
   readonly resolveProxy: () => BrowserProxyConfig | null;
   readonly resolveTopicBinding: (userId: string, topic?: string) => PlaywrightProfileBinding;
@@ -182,21 +184,32 @@ function migrateLegacyTopicProfile(ownerId: string, topic: string): string {
 }
 
 function defaultChildEnvironment(context: PlaywrightChildEnvironmentContext): NodeJS.ProcessEnv {
-  const { capability, ownerId, proxy, browserRsBin, environment } = context;
-  return {
-    ...environment,
-    NEGOTIUM_BROWSER_CAPABILITY: capability,
-    NEGOTIUM_BROWSER_VAULT_USER_ID: ownerId,
-    ...(browserRsBin && !proxy ? { NEGOTIUM_BROWSER_RS_BIN: browserRsBin } : {}),
-    ...(proxy
-      ? {
-          NEGOTIUM_BROWSER_PROXY_SERVER: proxy.server,
-          ...(proxy.username ? { NEGOTIUM_BROWSER_PROXY_USERNAME: proxy.username } : {}),
-          ...(proxy.password ? { NEGOTIUM_BROWSER_PROXY_PASSWORD: proxy.password } : {}),
-          ...(proxy.bypass ? { NEGOTIUM_BROWSER_PROXY_BYPASS: proxy.bypass } : {}),
-        }
-      : {}),
-  };
+  const childEnvironment: NodeJS.ProcessEnv = {};
+  for (const key of [
+    "HOME",
+    "PATH",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_DATA_HOME",
+    "AB_CHROME",
+    "AB_CONNECT",
+    "RUST_LOG",
+    "RUST_BACKTRACE",
+  ]) {
+    if (context.environment[key] !== undefined) childEnvironment[key] = context.environment[key];
+  }
+  return childEnvironment;
 }
 
 const defaultManagerHost: Readonly<PlaywrightManagerHost> = Object.freeze({
@@ -204,7 +217,6 @@ const defaultManagerHost: Readonly<PlaywrightManagerHost> = Object.freeze({
   basePort: PLAYWRIGHT_BASE_PORT,
   maxPort: PLAYWRIGHT_MAX_PORT,
   browserBin: PLAYWRIGHT_MCP_BIN,
-  fallbackBrowserBin: PATCHRIGHT_MCP_BIN,
   browserRsBin: BROWSER_RS_BIN,
   resolveProxy: resolveBrowserProxy,
   resolveTopicBinding: defaultTopicBinding,
@@ -237,8 +249,8 @@ export function configurePlaywrightManagerHost(
   if (next.basePort < 1 || next.maxPort > 65_535 || next.basePort > next.maxPort) {
     throw new Error("invalid Playwright manager port range");
   }
-  if (!next.browserBin || !next.fallbackBrowserBin) {
-    throw new Error("Playwright manager browser binaries are required");
+  if (!next.browserBin) {
+    throw new Error("Browser manager gateway is required");
   }
   if (
     next.resolveInstanceDataDir !== defaultManagerHost.resolveInstanceDataDir &&
@@ -319,6 +331,7 @@ interface PlaywrightInstance {
   startedAt: number;
   lastUsedAt: number;
   capability: string;
+  vaultBroker: BrowserVaultBrokerHandle;
 }
 
 const instances = new Map<string, PlaywrightInstance>();
@@ -591,6 +604,7 @@ function killInstance(instanceKey: string, opts?: { keepPort?: boolean }) {
   } catch (e) {
     logger.warn({ err: e, instanceKey }, "Failed to kill playwright instance");
   }
+  void inst.vaultBroker.close();
 
   // Drop the spawn-time error/exit handlers. Cleanup is done synchronously
   // here, so the late-firing listeners only add duplicate instances.delete()
@@ -679,8 +693,10 @@ async function spawnPlaywright(
   ownerId: string,
   reservedPort?: number,
   browserBin = managerHost.browserBin,
-  allowFallback = true,
 ): Promise<number> {
+  if (!managerHost.browserRsBin) {
+    throw new Error("Browser.rs is unavailable or below the minimum secure version");
+  }
   const userDataDir = resolveUserDataDir(instanceKey);
   const port = reservedPort ?? (await allocatePort());
   mkdirSync(userDataDir, { recursive: true });
@@ -701,21 +717,24 @@ async function spawnPlaywright(
     "--headed",
     "--user-data-dir",
     userDataDir,
-    // NOTE: mcp-patchright throws on unknown CLI args, so the old
-    // @playwright/mcp flags are intentionally gone:
-    //   --shared-browser-context → mcp-patchright always uses one persistent
-    //     context per userDataDir (launchPersistentContext), so it's implicit.
-    //   --browser chrome         → defaults to the "chrome" channel already
-    //     (requires real Google Chrome at /opt/google/chrome/chrome).
-    //   --init-script <stealth>  → unneeded; Patchright is stealth by default.
   ];
   // Pass the egress proxy to the child through the environment rather than
   // argv so the credentials never surface in `ps`/`/proc` command lines. The
-  // launcher (scripts/mcp-patchright-http.mjs) reads these NEGOTIUM_BROWSER_PROXY_*
-  // vars and hands them to Playwright's per-context proxy option.
+  // Browser.rs currently rejects this configuration rather than bypassing it.
   const proxy = managerHost.resolveProxy();
+  if (proxy) {
+    releasePort(port);
+    throw new Error("Browser.rs managed mode does not support authenticated egress proxies");
+  }
   const capability = randomBytes(32).toString("hex");
   const spawnNonce = randomBytes(32).toString("hex");
+  let vaultBroker: BrowserVaultBrokerHandle;
+  try {
+    vaultBroker = await createBrowserVaultBroker(ownerId);
+  } catch (error) {
+    releasePort(port);
+    throw error;
+  }
   const childEnv = {
     ...managerHost.createChildEnvironment({
       instanceKey,
@@ -725,22 +744,21 @@ async function spawnPlaywright(
       browserRsBin: managerHost.browserRsBin,
       environment: process.env,
     }),
-    NEGOTIUM_BROWSER_CAPABILITY: capability,
-    NEGOTIUM_BROWSER_SPAWN_NONCE: spawnNonce,
+    AB_MANAGED: "1",
+    AB_HTTP_CAPABILITY: capability,
+    AB_SPAWN_NONCE: spawnNonce,
+    AB_SECRET_BROKER_SOCKET: vaultBroker.socketPath,
+    AB_SECRET_BROKER_TOKEN: vaultBroker.token,
   };
-  // Every supported wrapper authenticates owner-scoped transports with this
-  // capability. Product-specific environment hooks may add Vault callbacks,
-  // but cannot remove transport authentication.
-  if (proxy) {
-    logger.info({ instanceKey, proxyServer: proxy.server }, "Browser egress proxy enabled");
-  }
-
+  // Managed Browser.rs authenticates owner-scoped transports with this root
+  // capability. Product hooks may add launch details but cannot remove it.
   const command = browserBin.endsWith(".mjs") ? process.execPath : browserBin;
   const args = browserBin.endsWith(".mjs") ? [browserBin, ...mcpArgs] : mcpArgs;
   let spawnSpec: HeadedPlaywrightSpawnSpec;
   try {
     spawnSpec = resolveHeadedPlaywrightSpawn(command, args, { environment: childEnv });
   } catch (err) {
+    await vaultBroker.close();
     releasePort(port);
     throw err;
   }
@@ -752,6 +770,7 @@ async function spawnPlaywright(
       env: childEnv,
     });
   } catch (err) {
+    await vaultBroker.close();
     releasePort(port);
     throw err;
   }
@@ -774,6 +793,7 @@ async function spawnPlaywright(
     if (instances.get(instanceKey)?.process === proc) {
       releasePort(port);
       instances.delete(instanceKey);
+      void vaultBroker.close();
       reapCrashedBrowser();
       notifyPlaywrightFailure(instanceKey, {
         reason: "process-error",
@@ -793,6 +813,7 @@ async function spawnPlaywright(
     if (wasOurs) {
       releasePort(port);
       instances.delete(instanceKey);
+      void vaultBroker.close();
       reapCrashedBrowser();
       notifyPlaywrightFailure(instanceKey, { reason: "exit", code });
     }
@@ -806,6 +827,7 @@ async function spawnPlaywright(
     startedAt: now,
     lastUsedAt: now,
     capability,
+    vaultBroker,
   });
 
   let startupError: Error | undefined;
@@ -833,25 +855,6 @@ async function spawnPlaywright(
   if (!ready) {
     const exitCode = proc.exitCode;
     killInstance(instanceKey);
-    if (allowFallback && browserBin !== managerHost.fallbackBrowserBin) {
-      logger.warn(
-        {
-          err: startupError,
-          instanceKey,
-          browserBin,
-          fallback: managerHost.fallbackBrowserBin,
-          stderr: stderrTail() || undefined,
-        },
-        "Preferred browser MCP unavailable or lacks owner isolation; using Patchright fallback",
-      );
-      return spawnPlaywright(
-        instanceKey,
-        ownerId,
-        undefined,
-        managerHost.fallbackBrowserBin,
-        false,
-      );
-    }
     if (startupError) throw startupError;
     throw new Error(
       `Playwright MCP failed health check after spawn on port ${port}` +

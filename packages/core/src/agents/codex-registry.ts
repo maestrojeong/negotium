@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AgentRegistry } from "#agents/contracts";
+import type { AgentRegistry, AgentRegistryOperations } from "#agents/contracts";
 import { writeCodexRollout } from "#agents/rollout/codex";
 import { logger } from "#platform/logger";
 import { readConversation } from "#storage/conversations";
@@ -45,7 +45,9 @@ export const codexRegistry: AgentRegistry = {
     // the user can distinguish from claude (which always has a default).
     return `${model} · ${effort ?? "(off)"}`;
   },
+};
 
+export const codexRegistryOperations: AgentRegistryOperations = {
   writeRollout(opts) {
     // Codex SDK exposes the resume key as `threadId`; AgentRegistry unifies
     // the name to `sessionId` so callers don't branch on agent.

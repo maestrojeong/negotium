@@ -1,7 +1,7 @@
 import { unlinkSync } from "node:fs";
 import { checkAgentModelAuth } from "#agents/auth-check";
 import { resolveModelForAgent } from "#agents/model-catalog";
-import { getRegistry } from "#agents/registry";
+import { getRegistry, getRegistryOperations } from "#agents/registry";
 import { logger } from "#platform/logger";
 import { setApiTopicConfig, type TopicConfig } from "#storage/api-topic-config";
 import { clearTopicSessionId, setApiTopicAgent, setTopicSessionId } from "#storage/api-topics";
@@ -100,7 +100,8 @@ export function switchApiTopicAgent(opts: SwitchApiTopicAgentOptions): ApiTopicS
       requestedEffort && registry.validateEffort(requestedEffort)
         ? requestedEffort
         : registry.defaultEffort;
-    const result = registry.writeRollout({
+    const operations = getRegistryOperations(opts.agent);
+    const result = operations.writeRollout({
       cwd: opts.cwd,
       entries,
       model,

@@ -1,11 +1,17 @@
 import { canonicalMcpBridgeEnv } from "#mcp/canonical-bridge-config";
-import { buildRuntimeMcpSpec, RUNTIME_MCP_KEY } from "#mcp/runtime-spec";
+import {
+  buildHostedMcpSpec,
+  buildRuntimeMcpSpec,
+  type HostedMcpSurface,
+  RUNTIME_MCP_KEY,
+} from "#mcp/runtime-spec";
 import { peerSessionBridgeIpcEnv } from "#mcp/session-comm/bridge-ipc-config";
 import { bgBashContextCapability } from "#platform/background-bash/manager";
 import {
   AGENT_HEALTH_SERVER,
   BROWSER_MCP_SSE_PROXY_SERVER,
   CANONICAL_MCP_PROXY_SERVER,
+  envText,
   FALLBACK_AGENT,
   resolveTopicWorkspaceDir,
   SESSION_COMM_SERVER,
@@ -13,7 +19,7 @@ import {
   TASK_SERVER,
   TOKEN_STATS_SERVER,
   TSCONFIG_PATH,
-  TSX_BIN,
+  TSX_LOADER,
   VAULT_SERVER,
   WIKI_SERVER,
 } from "#platform/config";
@@ -50,7 +56,7 @@ export function buildStdioMcpServer(
   if (agent === "codex") {
     return {
       command: "node",
-      args: [TSX_BIN, serverFile, ...serverArgs],
+      args: ["--import", TSX_LOADER, serverFile, ...serverArgs],
       // Merged onto codex's inherited env (not a replacement) — verified.
       env: { TSX_TSCONFIG_PATH: TSCONFIG_PATH, ...env },
     };
@@ -60,6 +66,33 @@ export function buildStdioMcpServer(
     args: ["run", serverFile, ...serverArgs],
     ...(env ? { env } : {}),
   };
+}
+
+function useHostedBuiltinMcp(): boolean {
+  return envText("NEGOTIUM_BUILTIN_MCP_TRANSPORT") !== "stdio";
+}
+
+function buildBuiltinMcpServer(
+  surface: HostedMcpSurface,
+  ctx: RuntimeMcpBuildContext,
+  stdio: () => Record<string, unknown>,
+): Record<string, unknown> {
+  if (!useHostedBuiltinMcp()) return stdio();
+  const agent = ctx.agent ?? FALLBACK_AGENT;
+  return buildHostedMcpSpec(agent, surface, {
+    userId: ctx.userId,
+    topicTitle: ctx.session,
+    ...(ctx.topicId ? { topicId: ctx.topicId } : {}),
+    ...(ctx.queryId ? { queryId: ctx.queryId } : {}),
+    ...(ctx.wikiTopicId ? { wikiTopicId: ctx.wikiTopicId } : {}),
+    ...(ctx.subagentParentTopicId ? { subagentParentTopicId: ctx.subagentParentTopicId } : {}),
+    cwd: ctx.cwd ?? (ctx.topicId ? resolveTopicWorkspaceDir(ctx.topicId) : process.cwd()),
+    agent,
+    ...(ctx.model ? { model: ctx.model } : {}),
+    ...(ctx.depth !== undefined ? { depth: ctx.depth } : {}),
+    ...(ctx.silent !== undefined ? { silent: ctx.silent } : {}),
+    ...(ctx.peerBridge ? { peerBridge: ctx.peerBridge } : {}),
+  });
 }
 
 // --- Playwright unavailable notifier + per-turn state ---
@@ -349,8 +382,10 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   },
   "token-stats": {
     ...commonRuntimeMcpPolicy("token-stats"),
-    build({ userId, agent }) {
-      return buildStdioMcpServer(agent, TOKEN_STATS_SERVER, [`--user-id=${userId}`]);
+    build(ctx) {
+      return buildBuiltinMcpServer("token-stats", ctx, () =>
+        buildStdioMcpServer(ctx.agent, TOKEN_STATS_SERVER, [`--user-id=${ctx.userId}`]),
+      );
     },
   },
   // Otium-owned shared task system. This is the only authoritative task/todo
@@ -358,7 +393,8 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   // blocked or ignored because they do not survive agent switches.
   task: {
     ...commonRuntimeMcpPolicy("task"),
-    build({ userId, session, topicId, queryId, agent, peerBridge }) {
+    build(ctx) {
+      const { userId, session, topicId, queryId, agent, peerBridge } = ctx;
       if (peerBridge) {
         if (!topicId || !queryId) return null;
         const env = canonicalMcpBridgeEnv({
@@ -374,7 +410,9 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
       }
       const args = [`--user-id=${userId}`, `--topic=${session}`];
       if (topicId) args.push(`--topic-id=${topicId}`);
-      return buildStdioMcpServer(agent, TASK_SERVER, args);
+      return buildBuiltinMcpServer("task", ctx, () =>
+        buildStdioMcpServer(agent, TASK_SERVER, args),
+      );
     },
   },
   "session-comm": {
@@ -383,16 +421,17 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
     // create_topic. Without this, a newly-created topic would stay in the
     // "fresh-start ready" state until the user manually visits it.
     ...commonRuntimeMcpPolicy("session-comm"),
-    build({
-      userId,
-      session,
-      topicId,
-      subagentParentTopicId,
-      agent,
-      depth = 0,
-      silent,
-      peerBridge,
-    }) {
+    build(ctx) {
+      const {
+        userId,
+        session,
+        topicId,
+        subagentParentTopicId,
+        agent,
+        depth = 0,
+        silent,
+        peerBridge,
+      } = ctx;
       const effectiveAgent = agent ?? FALLBACK_AGENT;
       const args = [
         `--user-id=${userId}`,
@@ -404,17 +443,20 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
         ...(silent ? ["--reply-only=true"] : []),
         ...(peerBridge ? [`--peer-host-query-id=${peerBridge.hostQueryId}`] : []),
       ];
-      return buildStdioMcpServer(
-        effectiveAgent,
-        SESSION_COMM_SERVER,
-        args,
-        peerBridge ? peerSessionBridgeIpcEnv() : undefined,
+      return buildBuiltinMcpServer("session-comm", ctx, () =>
+        buildStdioMcpServer(
+          effectiveAgent,
+          SESSION_COMM_SERVER,
+          args,
+          peerBridge ? peerSessionBridgeIpcEnv() : undefined,
+        ),
       );
     },
   },
   wiki: {
     ...commonRuntimeMcpPolicy("wiki"),
-    build({ userId, session, topicId, queryId, wikiTopicId, agent, peerBridge }) {
+    build(ctx) {
+      const { userId, session, topicId, queryId, wikiTopicId, agent, peerBridge } = ctx;
       if (peerBridge) {
         if (!topicId || !queryId) return null;
         const env = canonicalMcpBridgeEnv({
@@ -435,21 +477,28 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
         wikiTopicId ?? topicId ?? (session !== "dm" ? session : undefined);
       if (resolvedWikiTopicId) args.push(`--topic-id=${resolvedWikiTopicId}`);
       args.push("--surface=wiki");
-      return buildStdioMcpServer(agent, WIKI_SERVER, args);
+      return buildBuiltinMcpServer("wiki", { ...ctx, wikiTopicId: resolvedWikiTopicId }, () =>
+        buildStdioMcpServer(agent, WIKI_SERVER, args),
+      );
     },
   },
   skills: {
     ...commonRuntimeMcpPolicy("skills"),
-    build({ userId, topicId, agent }) {
+    build(ctx) {
+      const { userId, topicId, agent } = ctx;
       const args = [`--user-id=${userId}`, "--surface=skills"];
       if (topicId) args.push(`--topic-id=${topicId}`);
-      return buildStdioMcpServer(agent, WIKI_SERVER, args);
+      return buildBuiltinMcpServer("skills", ctx, () =>
+        buildStdioMcpServer(agent, WIKI_SERVER, args),
+      );
     },
   },
   "system-health": {
     ...commonRuntimeMcpPolicy("system-health"),
-    build({ agent }) {
-      return buildStdioMcpServer(agent, SYSTEM_HEALTH_SERVER, []);
+    build(ctx) {
+      return buildBuiltinMcpServer("system-health", ctx, () =>
+        buildStdioMcpServer(ctx.agent, SYSTEM_HEALTH_SERVER, []),
+      );
     },
   },
   "background-bash": {
@@ -467,20 +516,26 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   },
   "agent-health": {
     ...commonRuntimeMcpPolicy("agent-health"),
-    build({ userId, agent }) {
+    build(ctx) {
+      const { userId, agent } = ctx;
       const args = [`--user-id=${userId}`];
-      return buildStdioMcpServer(agent, AGENT_HEALTH_SERVER, args);
+      return buildBuiltinMcpServer("agent-health", ctx, () =>
+        buildStdioMcpServer(agent, AGENT_HEALTH_SERVER, args),
+      );
     },
   },
   vault: {
     ...commonRuntimeMcpPolicy("vault"),
-    build({ userId, agent }) {
+    build(ctx) {
+      const { userId, agent } = ctx;
       // Normal turns use {{KEY}} directly in tool inputs. Keep the Vault MCP
       // surface focused on key discovery; broker tools remain available from
       // the public factory for compatibility but are no longer the default UX.
       const args = [`--user-id=${userId}`];
       if (agent !== "codex") args.push("--list-only=true");
-      return buildStdioMcpServer(agent, VAULT_SERVER, args);
+      return buildBuiltinMcpServer("vault", ctx, () =>
+        buildStdioMcpServer(agent, VAULT_SERVER, args),
+      );
     },
   },
 };

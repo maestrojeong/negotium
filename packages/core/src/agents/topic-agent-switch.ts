@@ -19,7 +19,7 @@ import { unlinkSync } from "node:fs";
 import { checkAgentModelAuth } from "#agents/auth-check";
 import { isAgentKind } from "#agents/index";
 import { resolveModelForAgent } from "#agents/model-catalog";
-import { getRegistry } from "#agents/registry";
+import { getRegistry, getRegistryOperations } from "#agents/registry";
 import { SESSION_WORKSPACE_DIR } from "#platform/config";
 import { logger } from "#platform/logger";
 import {
@@ -115,8 +115,8 @@ export function switchTopicAgent(
   let bridgedSessionId: string;
   let rolloutPath: string;
   try {
-    const registry = getRegistry(agent);
-    const result = registry.writeRollout({
+    const operations = getRegistryOperations(agent);
+    const result = operations.writeRollout({
       cwd,
       entries: conversationEntries,
       model: resolveModelForAgent(agent, undefined, registry),

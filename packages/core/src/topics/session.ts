@@ -4,12 +4,12 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ACTIVE_TASK_TEMPLATE, estimateTokens, type ProviderMessage } from "maestro-agent-sdk";
+import { ACTIVE_TASK_TEMPLATE, estimateConversationTokens } from "#agents/compaction-support";
 import { archiveActiveTopicForMemory, cancelIdleArchiveForTopic } from "#agents/idle-archiver";
 import { runAgent } from "#agents/index";
 import { MIN_MEMORY_ARCHIVE_EXCHANGES } from "#agents/memory-archive-policy";
 import { resolveCompactionExecution, resolveModelForAgent } from "#agents/model-catalog";
-import { getRegistry } from "#agents/registry";
+import { getRegistry, getRegistryOperations } from "#agents/registry";
 import { extractChatPairs } from "#agents/rollout/shared";
 import { cleanupTopicRolloutsFromEntries, purgeTopicLogs } from "#agents/topic-cleanup";
 import { WsHub } from "#bus";
@@ -390,7 +390,6 @@ function formatCompactElapsed(startedAt: number): string {
 
 async function summarizeTopicContext(request: CompactSummaryRequest): Promise<string> {
   const startedAt = Date.now();
-  const registry = getRegistry(request.agent);
   const sessionIds: string[] = [];
   const compactCwd = mkdtempSync(join(tmpdir(), "negotium-compact-"));
   const abortController = new AbortController();
@@ -548,7 +547,10 @@ async function summarizeTopicContext(request: CompactSummaryRequest): Promise<st
     }
     if (sessionIds.length > 0) {
       try {
-        await registry.cleanupRollouts({ cwd: compactCwd, sessionIds });
+        await getRegistryOperations(request.agent).cleanupRollouts({
+          cwd: compactCwd,
+          sessionIds,
+        });
       } catch (cleanupError) {
         logger.warn(
           { err: cleanupError, topicId: request.topicId, sessionIds },
@@ -644,7 +646,7 @@ export function shouldCompactForkEntries(
   entries: ConversationEntry[],
   thresholdTokens = AUTO_FORK_COMPACTION_TOKENS,
 ): boolean {
-  const messages: ProviderMessage[] = [];
+  const messages: { role: "user" | "assistant"; content: string }[] = [];
   for (const pair of extractChatPairs(entries)) {
     messages.push(
       { role: "user", content: pair.userText },
@@ -663,7 +665,7 @@ export function shouldCompactForkEntries(
   // so the old surcharge pushed Korean to 1.83 tokens/char — roughly 1.6x
   // over-charged, firing automatic fork compaction on Korean topics well
   // before they approached the threshold.
-  return estimateTokens(messages) >= thresholdTokens;
+  return estimateConversationTokens(messages) >= thresholdTokens;
 }
 
 export async function createCompactedRolloutEntries(
@@ -703,7 +705,7 @@ export async function createCompactedRolloutEntries(
 
 async function cleanupNewRollout(agent: AgentKind, cwd: string, sessionId: string): Promise<void> {
   try {
-    await getRegistry(agent).cleanupRollouts({ cwd, sessionIds: [sessionId] });
+    await getRegistryOperations(agent).cleanupRollouts({ cwd, sessionIds: [sessionId] });
   } catch (error) {
     logger.warn({ err: error, agent, sessionId }, "compact: replacement rollout cleanup failed");
   }
@@ -770,9 +772,9 @@ export async function compactTopicSession(
     }
 
     const now = new Date().toISOString();
-    let replacement: ReturnType<typeof registry.writeRollout>;
+    let replacement: import("#agents/contracts").WriteRolloutResult;
     try {
-      replacement = registry.writeRollout({
+      replacement = getRegistryOperations(agent).writeRollout({
         cwd,
         entries: compactEntries,
         model,

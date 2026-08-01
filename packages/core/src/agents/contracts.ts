@@ -63,6 +63,10 @@ export interface AgentRegistry {
   validEfforts: readonly EffortLevel[];
   validateEffort(s: EffortLevel): boolean;
   footerLabel(model: string, effort?: EffortLevel): string;
+}
+
+/** Provider file/session operations, kept separate from startup-safe metadata. */
+export interface AgentRegistryOperations {
   writeRollout(opts: WriteRolloutOptions): WriteRolloutResult;
   forkSession(opts: ForkRegistryOptions): Promise<ForkRegistryResult>;
   cleanupRollouts(opts: CleanupRolloutsOptions): Promise<void>;

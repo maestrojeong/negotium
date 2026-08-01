@@ -13,7 +13,7 @@
  * spawn_subagent), while token/spec logic lives in `@negotium/core`.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { basename, extname, resolve } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -35,6 +35,8 @@ import {
   FROM_AUTO_CONTINUE,
   getApiTopicConfig,
   getTopic,
+  type HostedMcpSurface,
+  isHostedMcpSurface,
   isSensitivePath,
   logger,
   type MessageDto,
@@ -42,6 +44,7 @@ import {
   RUNTIME_MCP_BASE_PATH,
   RUNTIME_MCP_KEY,
   type RuntimeMcpContext,
+  resolveHostedMcpToken,
   resolveRuntimeMcpToken,
   type SelfConfigContext,
   sessionInboxPath,
@@ -49,8 +52,13 @@ import {
   textResult,
   visualToolDefinitions,
   WsHub,
-} from "@negotium/core";
+} from "@negotium/core/mcp-runtime-host";
 import { z } from "zod";
+import {
+  buildHostedSurfaceServer,
+  type HostedMcpServer,
+  isActiveHostedMcpSurface,
+} from "#hosted-surfaces";
 import { registerNodeTools } from "#node-tools";
 import { SseTransport } from "#sse-transport";
 
@@ -66,14 +74,30 @@ const FILE_DELIVERY_ACK_TIMEOUT_MS = 30_000;
 // adapter process claim the message without imposing the full delivery wait
 // on web-only or otherwise unclaimed uploads.
 const FILE_DELIVERY_CLAIM_TIMEOUT_MS = 500;
+const MCP_SESSION_IDLE_MS = 30 * 60_000;
+const MCP_SESSION_MAX_LIFETIME_MS = 6 * 60 * 60_000;
+const MAX_MCP_SESSIONS = 256;
+
+interface McpSessionBase {
+  tokenFingerprint: string;
+  surface: string;
+  createdAt: number;
+  lastAccessAt: number;
+  activeRequests: number;
+  server: HostedMcpServer;
+}
 
 const sseSessions = new Map<
   string,
-  { token: string; transport: SseTransport; server: McpServer }
+  McpSessionBase & {
+    transport: SseTransport;
+  }
 >();
 const streamableSessions = new Map<
   string,
-  { token: string; transport: WebStandardStreamableHTTPServerTransport; server: McpServer }
+  McpSessionBase & {
+    transport: WebStandardStreamableHTTPServerTransport;
+  }
 >();
 
 function requireTopicAccess(
@@ -389,9 +413,9 @@ function unauthorized(): Response {
 // McpServer.close() closes its transport, whose onclose hook comes back here.
 // Keep the teardown idempotent so that callback cannot recursively close the
 // same server until the stack overflows.
-const closingServers = new WeakSet<McpServer>();
+const closingServers = new WeakSet<HostedMcpServer>();
 
-async function closeServer(server: McpServer): Promise<void> {
+async function closeServer(server: HostedMcpServer): Promise<void> {
   if (closingServers.has(server)) return;
   closingServers.add(server);
   try {
@@ -401,15 +425,75 @@ async function closeServer(server: McpServer): Promise<void> {
   }
 }
 
-async function handleSse(req: Request, token: string, ctx: RuntimeMcpContext): Promise<Response> {
-  if (req.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
+/** Close every context-bound MCP session before the embedding runtime tears down its hosts. */
+export async function closeNegotiumMcpSessions(): Promise<void> {
+  const servers = new Set<HostedMcpServer>();
+  for (const session of sseSessions.values()) servers.add(session.server);
+  for (const session of streamableSessions.values()) servers.add(session.server);
+  sseSessions.clear();
+  streamableSessions.clear();
+  await Promise.all([...servers].map((server) => closeServer(server)));
+}
 
-  const endpoint = `${SSE_MESSAGE_PATH}?token=${encodeURIComponent(token)}`;
-  const server = buildNegotiumMcpServer(ctx);
+function tokenFingerprint(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+async function enforceSessionBounds(reserve = 0): Promise<boolean> {
+  const now = Date.now();
+  const sessions = [
+    ...[...sseSessions].map(([id, session]) => ({ id, kind: "sse" as const, session })),
+    ...[...streamableSessions].map(([id, session]) => ({
+      id,
+      kind: "streamable" as const,
+      session,
+    })),
+  ].sort((a, b) => a.session.lastAccessAt - b.session.lastAccessAt);
+
+  let remaining = sessions.length;
+  for (const entry of sessions) {
+    const expired =
+      entry.session.activeRequests === 0 &&
+      (now - entry.session.lastAccessAt >= MCP_SESSION_IDLE_MS ||
+        now - entry.session.createdAt >= MCP_SESSION_MAX_LIFETIME_MS);
+    if (!expired) continue;
+    if (entry.kind === "sse") sseSessions.delete(entry.id);
+    else streamableSessions.delete(entry.id);
+    remaining -= 1;
+    await closeServer(entry.session.server);
+  }
+  return remaining + reserve <= MAX_MCP_SESSIONS;
+}
+
+async function handleSse(
+  req: Request,
+  token: string,
+  surface: string,
+  messagePath: string,
+  server: HostedMcpServer,
+): Promise<Response> {
+  if (req.method !== "GET") {
+    await closeServer(server);
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+  if (!(await enforceSessionBounds(1))) {
+    await closeServer(server);
+    return new Response("MCP session capacity reached", { status: 503 });
+  }
+
+  const endpoint = `${messagePath}?token=${encodeURIComponent(token)}`;
   const transport = new SseTransport(endpoint, req);
   const response = transport.response();
 
-  sseSessions.set(transport.sessionId, { token, transport, server });
+  sseSessions.set(transport.sessionId, {
+    tokenFingerprint: tokenFingerprint(token),
+    surface,
+    createdAt: Date.now(),
+    lastAccessAt: Date.now(),
+    activeRequests: 0,
+    transport,
+    server,
+  });
   transport.onclose = () => {
     sseSessions.delete(transport.sessionId);
     void closeServer(server);
@@ -430,13 +514,23 @@ async function handleSse(req: Request, token: string, ctx: RuntimeMcpContext): P
   return response;
 }
 
-async function handleSseMessage(req: Request, url: URL, token: string): Promise<Response> {
+async function handleSseMessage(
+  req: Request,
+  url: URL,
+  token: string,
+  surface: string,
+): Promise<Response> {
   if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
   const sessionId = url.searchParams.get("sessionId");
   if (!sessionId) return new Response("Missing sessionId", { status: 400 });
   const session = sseSessions.get(sessionId);
-  if (!session || session.token !== token)
+  if (
+    !session ||
+    session.surface !== surface ||
+    session.tokenFingerprint !== tokenFingerprint(token)
+  )
     return new Response("SSE session not found", { status: 404 });
+  session.lastAccessAt = Date.now();
 
   let body: unknown;
   try {
@@ -445,23 +539,34 @@ async function handleSseMessage(req: Request, url: URL, token: string): Promise<
     return new Response("Invalid JSON", { status: 400 });
   }
 
+  session.activeRequests += 1;
   try {
     await session.transport.handleMessage(body, req);
   } catch (err) {
     logger.warn({ err, sessionId }, "negotium MCP: invalid SSE message");
     return new Response("Invalid JSON-RPC message", { status: 400 });
+  } finally {
+    session.activeRequests -= 1;
+    session.lastAccessAt = Date.now();
   }
 
   return new Response("Accepted", { status: 202 });
 }
 
-async function createStreamableSession(token: string, ctx: RuntimeMcpContext) {
-  const server = buildNegotiumMcpServer(ctx);
+async function createStreamableSession(token: string, surface: string, server: HostedMcpServer) {
   let transport!: WebStandardStreamableHTTPServerTransport;
   transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
     onsessioninitialized: (sessionId) => {
-      streamableSessions.set(sessionId, { token, transport, server });
+      streamableSessions.set(sessionId, {
+        tokenFingerprint: tokenFingerprint(token),
+        surface,
+        createdAt: Date.now(),
+        lastAccessAt: Date.now(),
+        activeRequests: 0,
+        transport,
+        server,
+      });
     },
     onsessionclosed: (sessionId) => {
       streamableSessions.delete(sessionId);
@@ -476,17 +581,32 @@ async function createStreamableSession(token: string, ctx: RuntimeMcpContext) {
     logger.warn({ err }, "negotium MCP: streamable HTTP transport error");
   };
   await server.connect(transport);
-  return { token, transport, server };
+  return {
+    tokenFingerprint: tokenFingerprint(token),
+    surface,
+    createdAt: Date.now(),
+    lastAccessAt: Date.now(),
+    activeRequests: 0,
+    transport,
+    server,
+  };
 }
 
 async function handleStreamable(
   req: Request,
   token: string,
-  ctx: RuntimeMcpContext | null,
+  surface: string,
+  server: HostedMcpServer | null,
 ): Promise<Response> {
   const sessionId = req.headers.get("mcp-session-id");
   let session = sessionId ? streamableSessions.get(sessionId) : undefined;
-  if (session && session.token !== token) return unauthorized();
+  let createdForRequest = false;
+  if (
+    session &&
+    (session.surface !== surface || session.tokenFingerprint !== tokenFingerprint(token))
+  ) {
+    return unauthorized();
+  }
 
   if (!session) {
     if (sessionId) return jsonRpcError(404, -32001, "Session not found");
@@ -494,11 +614,29 @@ async function handleStreamable(
       return jsonRpcError(400, -32000, "Mcp-Session-Id header is required");
     }
     // New streamable session requires a valid (non-expired) token.
-    if (!ctx) return unauthorized();
-    session = await createStreamableSession(token, ctx);
+    if (!server) return unauthorized();
+    if (!(await enforceSessionBounds(1))) {
+      await closeServer(server);
+      return new Response("MCP session capacity reached", { status: 503 });
+    }
+    session = await createStreamableSession(token, surface, server);
+    createdForRequest = true;
   }
 
-  return session.transport.handleRequest(req);
+  session.lastAccessAt = Date.now();
+  session.activeRequests += 1;
+  try {
+    return await session.transport.handleRequest(req);
+  } finally {
+    session.activeRequests -= 1;
+    session.lastAccessAt = Date.now();
+    // Invalid initial requests never receive a session id and therefore never
+    // enter streamableSessions. Close their server here so malformed traffic
+    // cannot bypass the global session bound and accumulate transports.
+    if (createdForRequest && !session.transport.sessionId) {
+      await closeServer(session.server);
+    }
+  }
 }
 
 /**
@@ -518,18 +656,58 @@ export async function handleNegotiumMcpRequest(req: Request): Promise<Response |
   const token = url.searchParams.get("token") ?? "";
 
   try {
+    const hostedMatch = url.pathname.match(
+      new RegExp(`^${RUNTIME_MCP_BASE_PATH}/([^/]+)/(sse|message|mcp)$`),
+    );
+    if (hostedMatch) {
+      const surfaceName = hostedMatch[1] ?? "";
+      const endpoint = hostedMatch[2];
+      if (!isHostedMcpSurface(surfaceName) || !isActiveHostedMcpSurface(surfaceName)) {
+        return jsonRpcError(404, -32001, `Hosted MCP surface not found: ${surfaceName}`);
+      }
+      const surface: HostedMcpSurface = surfaceName;
+      if (endpoint === "sse") {
+        const ctx = resolveHostedMcpToken(token, surface);
+        if (!ctx) return unauthorized();
+        return handleSse(
+          req,
+          token,
+          surface,
+          `${RUNTIME_MCP_BASE_PATH}/${surface}/message`,
+          await buildHostedSurfaceServer(surface, ctx),
+        );
+      }
+      if (endpoint === "message") return handleSseMessage(req, url, token, surface);
+      const ctx = resolveHostedMcpToken(token, surface);
+      const isNewSession = !req.headers.get("mcp-session-id");
+      return handleStreamable(
+        req,
+        token,
+        surface,
+        isNewSession && ctx ? await buildHostedSurfaceServer(surface, ctx) : null,
+      );
+    }
+
     // SSE init: resolve context from token (required to build the per-session server).
     if (url.pathname === SSE_PATH) {
       const ctx = resolveRuntimeMcpToken(token);
       if (!ctx) return unauthorized();
-      return handleSse(req, token, ctx);
+      return handleSse(req, token, RUNTIME_MCP_KEY, SSE_MESSAGE_PATH, buildNegotiumMcpServer(ctx));
     }
     // Established SSE messages: the session-level token check in handleSseMessage
     // is sufficient — skip the short-lived top-level token so 4h+ turns keep working.
-    if (url.pathname === SSE_MESSAGE_PATH) return handleSseMessage(req, url, token);
+    if (url.pathname === SSE_MESSAGE_PATH)
+      return handleSseMessage(req, url, token, RUNTIME_MCP_KEY);
     // Streamable: existing sessions don't need a fresh token lookup either.
     if (url.pathname === STREAMABLE_PATH) {
-      return handleStreamable(req, token, resolveRuntimeMcpToken(token));
+      const ctx = resolveRuntimeMcpToken(token);
+      const isNewSession = !req.headers.get("mcp-session-id");
+      return handleStreamable(
+        req,
+        token,
+        RUNTIME_MCP_KEY,
+        isNewSession && ctx ? buildNegotiumMcpServer(ctx) : null,
+      );
     }
     return jsonRpcError(404, -32001, `${RUNTIME_MCP_KEY} endpoint not found`);
   } catch (err) {

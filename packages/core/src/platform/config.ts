@@ -9,6 +9,7 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -93,28 +94,10 @@ export function resolveOutputLanguage(): string {
   return raw && raw.length > 0 ? raw : DEFAULT_OUTPUT_LANGUAGE;
 }
 
-// Browser automation uses the authenticated local gateway. The historical
-// wrapper filename is retained for compatibility with existing deployments.
-export function resolveBrowserMcpBin(envValue?: string): string {
-  const override = envValue?.trim();
-  if (override) {
-    if (!/(^|\/)(mcp-patchright|mcp-patchright-http\.mjs)$/.test(override)) {
-      throw new Error(
-        "NEGOTIUM_BROWSER_MCP_BIN must point to the authenticated mcp-patchright wrapper.",
-      );
-    }
-    return override;
-  }
-  return PATCHRIGHT_MCP_BIN;
-}
-
-export const PATCHRIGHT_MCP_BIN = resolve(PROJECT_ROOT, "scripts/mcp-patchright-http.mjs");
-export const PLAYWRIGHT_MCP_BIN = resolveBrowserMcpBin(envText("NEGOTIUM_BROWSER_MCP_BIN"));
-
 /** Browser.rs release tested with this Negotium version. */
-export const BROWSER_RS_VERSION = "v0.1.13";
+export const BROWSER_RS_VERSION = "v0.1.15";
 /** Require the authenticated listener and the current Browser.rs tool contract. */
-export const BROWSER_RS_MIN_SECURE_VERSION = "0.1.13";
+export const BROWSER_RS_MIN_SECURE_VERSION = "0.1.15";
 
 function versionAtLeast(actualVersion: string, minimumVersion: string): boolean {
   const actual = actualVersion.split(".").map(Number);
@@ -167,6 +150,17 @@ export function resolveBrowserRsBin(envValue?: string): string | undefined {
 }
 
 export const BROWSER_RS_BIN = resolveBrowserRsBin(envText("NEGOTIUM_BROWSER_RS_BIN"));
+
+// Managed Browser.rs terminates MCP transports and security policy itself.
+export function resolveBrowserMcpBin(envValue?: string): string {
+  const override = envValue?.trim();
+  if (override) return resolve(override);
+  return (
+    BROWSER_RS_BIN ?? resolve(STATE_DIR, "bin", "browser-rs", BROWSER_RS_VERSION, "browser-rs")
+  );
+}
+
+export const PLAYWRIGHT_MCP_BIN = resolveBrowserMcpBin(envText("NEGOTIUM_BROWSER_MCP_BIN"));
 
 // --- Browser egress proxy ---
 //
@@ -223,6 +217,8 @@ export function resolveBrowserProxy(): BrowserProxyConfig | null {
 // explicitly via env. Requires package.json `"type": "module"` so the servers'
 // top-level `await` loads as ESM under node.
 export const TSX_BIN = resolveDependencyBin("tsx");
+/** In-process tsx loader used by Node MCP entrypoints (avoids the tsx CLI child process). */
+export const TSX_LOADER = createRequire(import.meta.url).resolve("tsx");
 export const TSCONFIG_PATH = resolve(PROJECT_ROOT, "tsconfig.json");
 
 export const SESSION_COMM_SERVER = resolve(PROJECT_ROOT, "src/mcp/session-comm/server.ts");

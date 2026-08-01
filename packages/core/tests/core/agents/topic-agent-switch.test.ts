@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getRegistry } from "#agents/registry";
+import { getRegistryOperations } from "#agents/registry";
 import { switchTopicAgent } from "#agents/topic-agent-switch";
 import { SESSION_WORKSPACE_DIR, WORKSPACE_DIR } from "#platform/config";
 import {
@@ -79,7 +79,10 @@ afterAll(async () => {
       ),
     ];
     try {
-      await getRegistry(agent).cleanupRollouts({ cwd: SESSION_WORKSPACE_DIR, sessionIds });
+      await getRegistryOperations(agent).cleanupRollouts({
+        cwd: SESSION_WORKSPACE_DIR,
+        sessionIds,
+      });
     } catch {}
   }
   try {

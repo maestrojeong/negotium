@@ -7,10 +7,18 @@
  */
 
 export {
+  buildHostedMcpSpec,
   buildRuntimeMcpSpec,
+  HOSTED_MCP_SURFACES,
+  type HostedMcpContext,
+  type HostedMcpSurface,
   RUNTIME_MCP_BASE_PATH,
   type RuntimeMcpContext,
-} from "@negotium/core";
+} from "@negotium/core/mcp-runtime-host";
 export { registerNodeTools } from "#node-tools";
-export { buildNegotiumMcpServer, handleNegotiumMcpRequest } from "#server";
+export {
+  buildNegotiumMcpServer,
+  closeNegotiumMcpSessions,
+  handleNegotiumMcpRequest,
+} from "#server";
 export { SseTransport } from "#sse-transport";

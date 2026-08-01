@@ -24,6 +24,17 @@ const packageEntrypoints = new Map<string, string>([
   ["@negotium/core/prompts", "packages/core/src/prompts/builders.ts"],
   ["@negotium/core/runtime-helpers", "packages/core/src/runtime/public-helpers.ts"],
   ["@negotium/core/mcp-factories", "packages/core/src/mcp/factories/index.ts"],
+  ["@negotium/core/mcp-factories/agent-health", "packages/core/src/mcp/factories/agent-health.ts"],
+  [
+    "@negotium/core/mcp-factories/system-health",
+    "packages/core/src/mcp/factories/system-health.ts",
+  ],
+  ["@negotium/core/mcp-factories/task", "packages/core/src/mcp/factories/task.ts"],
+  ["@negotium/core/mcp-factories/token-stats", "packages/core/src/mcp/factories/token-stats.ts"],
+  ["@negotium/core/mcp-factories/vault", "packages/core/src/mcp/factories/vault.ts"],
+  ["@negotium/core/mcp-factories/wiki", "packages/core/src/mcp/wiki-server.ts"],
+  ["@negotium/core/mcp-factories/session-comm", "packages/core/src/mcp/factories/session-comm.ts"],
+  ["@negotium/core/session-comm-host", "packages/core/src/mcp/session-comm/default-host.ts"],
   ["@negotium/core/agent-helpers", "packages/core/src/agents/public-helpers.ts"],
   ["@negotium/core/mcp-catalog", "packages/core/src/platform/mcp-catalog-policy.ts"],
   ["@negotium/core/background-bash", "packages/core/src/platform/background-bash/manager.ts"],
@@ -31,6 +42,9 @@ const packageEntrypoints = new Map<string, string>([
   ["@negotium/core/outbox", "packages/core/src/outbox/index.ts"],
   ["@negotium/core/query-runtime", "packages/core/src/query/public-runtime.ts"],
   ["@negotium/core/platform-runtime", "packages/core/src/platform/public-runtime.ts"],
+  ["@negotium/core/node-host", "packages/core/src/node-host.ts"],
+  ["@negotium/core/mcp-runtime-host", "packages/core/src/mcp-runtime-host.ts"],
+  ["@negotium/core/config", "packages/core/src/config-public.ts"],
   ["@negotium/core/sqlite", "packages/core/src/storage/sqlite.ts"],
   [
     "@negotium/core/peer-session-bridge-ipc",
@@ -48,6 +62,7 @@ const packageEntrypoints = new Map<string, string>([
   ["@negotium/adapter-otium", "adapters/otium/src/index.ts"],
   ["@negotium/adapter-otium/cli", "adapters/otium/src/cli.ts"],
   ["@negotium/adapter-otium/node-runtime", "adapters/otium/src/node-runtime.ts"],
+  ["@negotium/adapter-otium/join-status", "adapters/otium/src/join-status.ts"],
   ["@negotium/adapter-otium/relay", "adapters/otium/src/relay.ts"],
   ["@negotium/adapter-otium/sidecar", "adapters/otium/src/sidecar.ts"],
   ["@negotium/cli", "apps/cli/src/main.ts"],
@@ -139,9 +154,8 @@ await rm(outdir, { recursive: true, force: true });
 await bundle(["apps/cli/src/main.ts"], false);
 await bundle(["apps/negotium/src/hosted-agent.ts", "apps/negotium/src/canonical-mcp-bridge.ts"]);
 
-// Registry writers consume the mutable rollout-host configuration. Keep both
-// public entrypoints in one graph so configureRolloutHost() and getRegistry()
-// observe the same singleton instead of two independently bundled copies.
+// Keep the registry and rollout public entrypoints in one graph so rollout
+// configuration is never duplicated if registry operations are exposed again.
 await bundle(["apps/negotium/src/registry.ts", "apps/negotium/src/rollout.ts"]);
 
 // These remaining leaf entrypoints do not share mutable runtime registrations

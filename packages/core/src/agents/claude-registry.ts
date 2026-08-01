@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, renameSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AgentRegistry } from "#agents/contracts";
+import type { AgentRegistry, AgentRegistryOperations } from "#agents/contracts";
 import { encodeClaudeCwd, writeClaudeRollout } from "#agents/rollout/claude";
 import { MODEL_FABLE, MODEL_OPUS, MODEL_SONNET } from "#platform/config";
 import { logger } from "#platform/logger";
@@ -37,7 +37,9 @@ export const claudeRegistry: AgentRegistry = {
   footerLabel(model, effort) {
     return effort ? `${model} · ${effort}` : model;
   },
+};
 
+export const claudeRegistryOperations: AgentRegistryOperations = {
   writeRollout(opts) {
     // `reuseSessionId` (if any) becomes the SDK resume key + path component,
     // so claude→codex→claude lands at the original `~/.claude/projects/<dir>/<id>.jsonl`

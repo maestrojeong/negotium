@@ -1,42 +1,116 @@
-/**
- * Maestro agent registry — local re-export of `maestro-agent-sdk` with
- * a project-specific default-model override.
- *
- * Mirrors the pattern of claude-registry.ts / codex-registry.ts so that
- * agents/registry.ts can resolve all three AgentRegistry instances from
- * sibling `@/agents/*` paths, keeping the import topology consistent.
- *
- * maestro-agent-sdk supports DeepSeek and Kimi (Moonshot AI). The
- * SDK's own default is `deepseek-pro`, which matches this override. Negotium
- * intentionally does not expose the retired DeepSeek Flash aliases.
- */
-import "#platform/maestro-bootstrap-env";
-import { existsSync } from "node:fs";
-import {
-  deleteMaestroSession,
-  maestroActiveSessionPath,
-  maestroSessionPath,
-  setConversationReader,
-  maestroRegistry as upstreamMaestroRegistry,
-} from "maestro-agent-sdk";
-import type { AgentRegistry } from "#agents/contracts";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import type { AgentRegistry, AgentRegistryOperations } from "#agents/contracts";
+import { assertUuidLike, ensureCwdExists, extractChatPairs } from "#agents/rollout/shared";
+import { logger } from "#platform/logger";
 import { readConversation } from "#storage/conversations";
+import { MAESTRO_EFFORT_VALUES } from "#types";
 
-const DISABLED_MODEL_ALIASES = new Set(["deepseek", "deepseek-flash", "deepseek-v4-flash"]);
-
-const upstream = upstreamMaestroRegistry as AgentRegistry;
-
-// The SDK intentionally defaults its conversation reader to `() => []` so it
-// can stay storage-agnostic. Wire Negotium's unified log into it once at module
-// load; otherwise Maestro forkSession() creates a valid but empty rollout.
-setConversationReader(readConversation as Parameters<typeof setConversationReader>[0]);
+const ALIAS_MAP: Record<string, string> = {
+  "deepseek-pro": "deepseek-v4-pro",
+  kimi: "kimi-k3",
+  "kimi-pro": "kimi-k3",
+  "kimi-code": "kimi-k2.7-code",
+};
+const VALID_MODELS = new Set([...Object.keys(ALIAS_MAP), ...Object.values(ALIAS_MAP)]);
+const VALID_EFFORTS = new Set(MAESTRO_EFFORT_VALUES);
 
 export const maestroRegistry: AgentRegistry = {
-  ...upstream,
+  kind: "maestro",
   defaultModel: "deepseek-pro",
-  async cleanupRollouts({ sessionIds }) {
+  defaultEffort: "medium",
+  expandModelAlias(model) {
+    return ALIAS_MAP[model] ?? model;
+  },
+  validateModel(model) {
+    return VALID_MODELS.has(model);
+  },
+  validEfforts: MAESTRO_EFFORT_VALUES,
+  validateEffort(effort) {
+    return VALID_EFFORTS.has(effort);
+  },
+  footerLabel(model, effort) {
+    return effort ? `${model} · ${effort}` : model;
+  },
+};
+
+function maestroSessionsDir(): string {
+  return join(
+    process.env.MAESTRO_DATA_DIR
+      ? resolve(process.env.MAESTRO_DATA_DIR)
+      : join(homedir(), ".maestro"),
+    "sessions",
+  );
+}
+
+function maestroSessionPath(sessionId: string): string {
+  return join(maestroSessionsDir(), `${sessionId}.jsonl`);
+}
+
+function maestroActiveSessionPath(sessionId: string): string {
+  return join(maestroSessionsDir(), `${sessionId}.active.jsonl`);
+}
+
+function existingCreatedAt(path: string): string | undefined {
+  if (!existsSync(path)) return undefined;
+  try {
+    const firstLine = readFileSync(path, "utf8").split("\n", 1)[0];
+    const parsed = JSON.parse(firstLine) as { _meta?: { createdAt?: unknown } };
+    return typeof parsed._meta?.createdAt === "string" ? parsed._meta.createdAt : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeRollout(options: Parameters<AgentRegistryOperations["writeRollout"]>[0]) {
+  const sessionId = options.reuseSessionId ?? randomUUID();
+  assertUuidLike("sessionId", sessionId);
+  ensureCwdExists(options.cwd);
+  const path = maestroSessionPath(sessionId);
+  mkdirSync(maestroSessionsDir(), { recursive: true });
+  const messages = extractChatPairs(options.entries).flatMap((pair) => [
+    { role: "user", content: pair.userText },
+    { role: "assistant", content: pair.assistantText },
+  ]);
+  const lines = [
+    {
+      _meta: {
+        version: 1,
+        cwd: options.cwd,
+        createdAt: existingCreatedAt(path) ?? new Date().toISOString(),
+        sdkVersion: "0.1.53",
+      },
+    },
+    ...messages,
+  ];
+  writeFileSync(path, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`, {
+    mode: 0o600,
+  });
+  return { sessionId, rolloutPath: path };
+}
+
+export const maestroRegistryOperations: AgentRegistryOperations = {
+  writeRollout(options) {
+    return writeRollout(options);
+  },
+  async forkSession(options) {
+    const rollout = writeRollout({
+      cwd: options.cwd,
+      entries: readConversation(options.userId, options.topicName),
+      ...(options.model ? { model: options.model } : {}),
+      ...(options.effort ? { effort: options.effort } : {}),
+    });
+    return { forkId: rollout.sessionId, rolloutPath: rollout.rolloutPath };
+  },
+  async cleanupRollouts(options) {
+    // Keep the SDK off the daemon startup path, but use its canonical cleanup
+    // once a Maestro session is actually being removed. It also clears memory,
+    // task, todo, and in-process file-state sidecars.
+    const { deleteMaestroSession } = await import("maestro-agent-sdk");
     const failures: unknown[] = [];
-    for (const sessionId of sessionIds) {
+    for (const sessionId of options.sessionIds) {
       try {
         deleteMaestroSession(sessionId);
         const remaining = [
@@ -47,14 +121,12 @@ export const maestroRegistry: AgentRegistry = {
           throw new Error(`Maestro session files remain after cleanup: ${remaining.join(", ")}`);
         }
       } catch (error) {
+        logger.warn({ err: error, sessionId }, "maestro cleanupRollouts: cleanup failed");
         failures.push(error);
       }
     }
     if (failures.length > 0) {
       throw new AggregateError(failures, "Maestro rollout cleanup failed");
     }
-  },
-  validateModel(model) {
-    return !DISABLED_MODEL_ALIASES.has(model) && upstream.validateModel(model);
   },
 };

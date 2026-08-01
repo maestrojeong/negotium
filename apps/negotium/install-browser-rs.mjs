@@ -5,16 +5,16 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { arch, homedir, platform } from "node:os";
 import { resolve } from "node:path";
 
-const VERSION = "v0.1.13";
+const VERSION = "v0.1.15";
 const RELEASE_BASE = `https://github.com/maestrojeong/browser-rs-mcp/releases/download/${VERSION}`;
 const TARGETS = {
   "darwin-arm64": {
     asset: "browser-rs-macos-arm64",
-    sha256: "618c75dc4f9c3297ba85d4e1ddaa9aaf67a671bc8abb393e1f64523dc084b310",
+    sha256: "e17f740c7e1781d69ffe7c210ef04b762ec30ef847f8cbe80103374c53bffaad",
   },
   "linux-x64": {
     asset: "browser-rs-linux-x64",
-    sha256: "ae0e4f5d2a4e6a90a0f050c50a55fcb86aab7cdda7d1ea2fec1aa54a321e3f1c",
+    sha256: "ff2fd217db80c0765856ff7f9cc26dcad1fd9f267b585afedc8754ef5a8ba40e",
   },
 };
 
@@ -27,7 +27,7 @@ async function install() {
   const target = TARGETS[`${platform()}-${arch()}`];
   if (!target) {
     console.warn(
-      `negotium: Browser.rs ${VERSION} has no binary for ${platform()}-${arch()}; Patchright will be used`,
+      `negotium: Browser.rs ${VERSION} has no binary for ${platform()}-${arch()}; browser tools will be unavailable`,
     );
     return;
   }
@@ -71,7 +71,7 @@ async function install() {
 
 install().catch((error) => {
   console.warn(
-    `negotium: Browser.rs install unavailable (${error instanceof Error ? error.message : String(error)}); Patchright will be used`,
+    `negotium: Browser.rs install unavailable (${error instanceof Error ? error.message : String(error)}); browser tools will be unavailable`,
   );
   process.exitCode = 0;
 });

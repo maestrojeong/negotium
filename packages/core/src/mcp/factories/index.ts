@@ -22,6 +22,10 @@ export {
   type WikiTopicBrief,
 } from "../wiki-server";
 export {
+  type AgentHealthMcpContext,
+  createAgentHealthMcpServer,
+} from "./agent-health";
+export {
   type CompactionLogMcpContext,
   createCompactionLogMcpServer,
 } from "./compaction-log";

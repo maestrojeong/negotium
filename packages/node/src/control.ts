@@ -46,7 +46,7 @@ import {
   TopicServiceError,
   TopicTitleConflictError,
   topicService,
-} from "@negotium/core";
+} from "@negotium/core/node-host";
 import { nodeFileStore } from "./files";
 import { createPollingSseStream } from "./polling-sse";
 

@@ -84,7 +84,7 @@ interface PendingAskScope {
 interface AskForkPlanOptions {
   entries: ConversationEntry[];
   forkNative?: () => Promise<ForkHandle>;
-  synthesize: (entries: ConversationEntry[]) => ForkHandle;
+  synthesize: (entries: ConversationEntry[]) => ForkHandle | Promise<ForkHandle>;
   onNativeForkError?: (error: unknown) => void;
 }
 
@@ -843,7 +843,7 @@ async function handleAskEntry(
   // inbox entry is consumed (just like clawgram). The ask session reads the
   // history that exists right now, not after any in-flight user turn finishes.
   const { forkAgentSession } = await import("#agents/fork");
-  const { getRegistry } = await import("#agents/registry");
+  const { getRegistry, getRegistryOperations } = await import("#agents/registry");
   const { resolveModelForAgent } = await import("#agents/model-catalog");
   const { getApiTopicConfig } = await import("#storage/api-topic-config");
   const { readConversation } = await import("#storage/conversations");
@@ -882,8 +882,8 @@ async function handleAskEntry(
               }),
           }
         : {}),
-      synthesize: (entries) => {
-        const rollout = registry.writeRollout({
+      synthesize: async (entries) => {
+        const rollout = getRegistryOperations(agentOverride).writeRollout({
           cwd,
           entries,
           model,

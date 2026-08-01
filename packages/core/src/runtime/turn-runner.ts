@@ -16,7 +16,7 @@ import {
   settleSubagentFailure,
   subagentReportMode,
 } from "#agents/mcp-tools/spawn-subagent";
-import { getRegistry } from "#agents/registry";
+import { getRegistryOperations } from "#agents/registry";
 import { WsHub } from "#bus";
 import { ensureBgBash } from "#platform/background-bash/manager";
 import { FROM_AUTO_CONTINUE } from "#platform/constants";
@@ -518,7 +518,7 @@ function tryReconstructTopicRollout(opts: {
   try {
     const entries = readConversation(userId, topicTitle);
     if (entries.length === 0) return null;
-    const result = getRegistry(agent).writeRollout({
+    const result = getRegistryOperations(agent).writeRollout({
       cwd,
       entries,
       model,
