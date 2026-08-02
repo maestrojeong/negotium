@@ -1,11 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { maestroActiveSessionPath, maestroSessionPath } from "maestro-agent-sdk";
+import {
+  deleteMaestroSession,
+  loadMaestroSessionMeta,
+  loadRawMaestroSession,
+  maestroActiveSessionPath,
+  maestroSessionPath,
+} from "maestro-agent-sdk";
 import { resolveSessionFileMissing } from "#agents/index";
 import { maestroRegistry, maestroRegistryOperations } from "#agents/maestro-registry";
+import { WORKSPACE_DIR } from "#platform/config";
 
 describe("maestroRegistry model policy", () => {
   test("accepts Kimi models and aliases", () => {
@@ -23,6 +30,47 @@ describe("maestroRegistry model policy", () => {
 });
 
 describe("maestroRegistry session storage", () => {
+  test("forks the native Maestro session at its full raw history", async () => {
+    mkdirSync(WORKSPACE_DIR, { recursive: true });
+    const cwd = mkdtempSync(join(WORKSPACE_DIR, "test-maestro-registry-fork-"));
+    const now = new Date().toISOString();
+    const parent = maestroRegistryOperations.writeRollout({
+      cwd,
+      entries: [
+        {
+          ts: now,
+          agent: "maestro",
+          event: { type: "user_message", content: "cacheable question" },
+        },
+        {
+          ts: now,
+          agent: "maestro",
+          event: { type: "result", content: "cacheable answer", stopReason: "end_turn" },
+        },
+      ],
+    });
+    let forkSessionId: string | undefined;
+
+    try {
+      const fork = await maestroRegistryOperations.forkSession({
+        parentSessionId: parent.sessionId,
+        cwd,
+        userId: "fork-user",
+        topicName: "unused-by-native-fork",
+      });
+      forkSessionId = fork.forkId;
+
+      expect(loadRawMaestroSession(fork.forkId)).toEqual(loadRawMaestroSession(parent.sessionId));
+      expect(loadMaestroSessionMeta(fork.forkId)?.parentSessionId).toBe(parent.sessionId);
+      expect(loadMaestroSessionMeta(fork.forkId)?.userId).toBe("fork-user");
+      expect(fork.rolloutPath).toBe(maestroSessionPath(fork.forkId));
+    } finally {
+      deleteMaestroSession(parent.sessionId);
+      if (forkSessionId) deleteMaestroSession(forkSessionId);
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test("treats an active-only projection as resumable", async () => {
     const sessionId = randomUUID();
     const activePath = maestroActiveSessionPath(sessionId);

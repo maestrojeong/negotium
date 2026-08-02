@@ -325,7 +325,8 @@ async function createDerivedTopicImpl(
       if (copyHistory) {
         if (!forkSnapshot) throw new Error("fork snapshot was not captured");
         const parentSessionId = getTopicSessionId(sourceTopicId);
-        if (agent === "codex" && parentSessionId) {
+        const nativeSameAgentFork = agent === "codex" || agent === "maestro";
+        if (nativeSameAgentFork && parentSessionId) {
           try {
             rollbackHandle = await forkAgentSession({
               agent,
@@ -340,22 +341,21 @@ async function createDerivedTopicImpl(
             sessionId = rollbackHandle.forkId;
             logger.info(
               { sourceTopicId, derivedTopicId: derived.id, parentSessionId, sessionId },
-              "createDerivedTopic: native Codex fork materialized",
+              "createDerivedTopic: native provider fork materialized",
             );
           } catch (error) {
             logger.warn(
               { err: error, sourceTopicId, derivedTopicId: derived.id, parentSessionId },
-              "createDerivedTopic: native Codex fork failed; using snapshot fallback",
+              "createDerivedTopic: native provider fork failed; using snapshot fallback",
             );
           }
         }
-        // A same-agent Codex fork must retain the exact conversation prefix so
-        // provider prompt caching can reuse it. Native thread/fork is preferred;
-        // its synthetic fallback also keeps the full snapshot rather than
-        // replacing history with a summary. Cross-provider/model bridging owns
-        // its own compaction policy outside this derived-topic path.
+        // A native same-agent fork must retain the provider's exact working
+        // prefix so prompt caching can reuse it. Its synthetic fallback also
+        // keeps the full snapshot rather than replacing history with a summary.
+        // Cross-provider/model bridging owns its compaction policy elsewhere.
         const compactionRequired =
-          agent !== "codex" && !sessionId && shouldCompactForkEntries(forkSnapshot.entries);
+          !nativeSameAgentFork && !sessionId && shouldCompactForkEntries(forkSnapshot.entries);
         if (compactionRequired) {
           try {
             compactedForkEntries = await createCompactedRolloutEntries(

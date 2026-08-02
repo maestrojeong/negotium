@@ -5,7 +5,6 @@ import { join, resolve } from "node:path";
 import type { AgentRegistry, AgentRegistryOperations } from "#agents/contracts";
 import { assertUuidLike, ensureCwdExists, extractChatPairs } from "#agents/rollout/shared";
 import { logger } from "#platform/logger";
-import { readConversation } from "#storage/conversations";
 import { MAESTRO_EFFORT_VALUES } from "#types";
 
 const ALIAS_MAP: Record<string, string> = {
@@ -96,13 +95,21 @@ export const maestroRegistryOperations: AgentRegistryOperations = {
     return writeRollout(options);
   },
   async forkSession(options) {
-    const rollout = writeRollout({
+    // Fork the SDK's full-fidelity raw history. Maestro >=0.1.55 also carries
+    // the compacted active projection and promoted tool schemas so the fork's
+    // first request retains the parent's cacheable provider prefix.
+    const { forkSessionAt, loadRawMaestroSession } = await import("maestro-agent-sdk");
+    const parentMessages = loadRawMaestroSession(options.parentSessionId);
+    if (!parentMessages) {
+      throw new Error(`Maestro parent session not found: ${options.parentSessionId}`);
+    }
+    const fork = forkSessionAt({
+      parentSessionId: options.parentSessionId,
+      messageIndex: parentMessages.length,
       cwd: options.cwd,
-      entries: readConversation(options.userId, options.topicName),
-      ...(options.model ? { model: options.model } : {}),
-      ...(options.effort ? { effort: options.effort } : {}),
+      userId: String(options.userId),
     });
-    return { forkId: rollout.sessionId, rolloutPath: rollout.rolloutPath };
+    return { forkId: fork.sessionId, rolloutPath: fork.rolloutPath };
   },
   async cleanupRollouts(options) {
     // Keep the SDK off the daemon startup path, but use its canonical cleanup

@@ -342,7 +342,7 @@ describe("createDerivedTopic", () => {
     }
   });
 
-  test("fork bypasses a mutable native rollout and uses the captured canonical snapshot", async () => {
+  test("forks the native Maestro rollout instead of reserializing canonical history", async () => {
     const sourceTopicId = randomUUID();
     const sourceTitle = `active-native-source-${randomUUID()}`;
     const childTitle = `active-native-child-${randomUUID()}`;
@@ -407,8 +407,8 @@ describe("createDerivedTopic", () => {
         join(maestroSessionsDir(), `${childSessionId}.jsonl`),
         "utf8",
       );
-      expect(childRollout).toContain("canonical snapshot response");
-      expect(childRollout).not.toContain("native-only response");
+      expect(childRollout).toContain("native-only response");
+      expect(childRollout).not.toContain("canonical snapshot response");
     } finally {
       if (sourceSessionId) {
         await getRegistryOperations("maestro").cleanupRollouts({
@@ -446,19 +446,19 @@ describe("createDerivedTopic", () => {
       id: sourceTopicId,
       title: sourceTitle,
       kind: "agent",
-      agent: "maestro",
-      defaultModel: "kimi-k3",
+      agent: "claude",
+      defaultModel: "sonnet",
       defaultEffort: "medium",
       participants: [{ userId, role: "owner" }],
       createdAt: now,
       lastMessageAt: now,
       aiMode: "always",
     });
-    appendConversationEventStrict(userId, sourceTitle, "maestro", {
+    appendConversationEventStrict(userId, sourceTitle, "claude", {
       type: "user_message",
       content: `large request ${"x".repeat(100_000)}`,
     });
-    appendConversationEventStrict(userId, sourceTitle, "maestro", {
+    appendConversationEventStrict(userId, sourceTitle, "claude", {
       type: "result",
       content: "large response",
       stopReason: "end_turn",
@@ -479,7 +479,7 @@ describe("createDerivedTopic", () => {
           expect(request.source).toContain("large response");
           expect(request.source).toContain("Provider conversation snapshot");
           expect(request.source).toContain("Visible conversation snapshot");
-          expect(request.model).toBe("deepseek-v4-pro");
+          expect(request.model).toBe("claude-sonnet-5");
           expect(request.effort).toBe("medium");
           return "Compact fork summary with decisions and next steps.";
         },
@@ -489,7 +489,7 @@ describe("createDerivedTopic", () => {
       childId = child.id;
       childSessionId = getTopicSessionId(child.id);
       expect(childSessionId).toBeTruthy();
-      expect(child.defaultModel).toBe("kimi-k3");
+      expect(child.defaultModel).toBe("sonnet");
 
       const childEntries = readConversation(userId, childTitle);
       expect(childEntries.map((entry) => entry.event.type)).toEqual([
@@ -510,14 +510,9 @@ describe("createDerivedTopic", () => {
       expect(getAllMessagesForTopic(child.id).map((message) => message.text)).toContain(
         "large request remains available in visible history",
       );
-
-      const rolloutPath = join(maestroSessionsDir(), `${childSessionId}.jsonl`);
-      expect(readFileSync(rolloutPath, "utf8")).toContain(
-        "Compact fork summary with decisions and next steps.",
-      );
     } finally {
       if (childSessionId && childId) {
-        await getRegistryOperations("maestro").cleanupRollouts({
+        await getRegistryOperations("claude").cleanupRollouts({
           cwd: resolveTopicWorkspaceDir(childId),
           sessionIds: [childSessionId],
         });
@@ -532,69 +527,73 @@ describe("createDerivedTopic", () => {
     }
   });
 
-  test("does not compact a same-model Codex fork fallback", async () => {
-    const sourceTopicId = randomUUID();
-    const sourceTitle = `codex-cache-source-${randomUUID()}`;
-    const childTitle = `codex-cache-child-${randomUUID()}`;
-    const userId = `codex-cache-user-${randomUUID()}`;
-    const now = new Date().toISOString();
-    let childId: string | undefined;
-    let childSessionId: string | null = null;
-    let summarizeCalls = 0;
+  for (const agent of ["codex", "maestro"] as const) {
+    test(`does not compact a same-model ${agent} fork fallback`, async () => {
+      const sourceTopicId = randomUUID();
+      const sourceTitle = `codex-cache-source-${randomUUID()}`;
+      const childTitle = `codex-cache-child-${randomUUID()}`;
+      const userId = `codex-cache-user-${randomUUID()}`;
+      const now = new Date().toISOString();
+      let childId: string | undefined;
+      let childSessionId: string | null = null;
+      let summarizeCalls = 0;
 
-    upsertTopic({
-      id: sourceTopicId,
-      title: sourceTitle,
-      kind: "agent",
-      agent: "codex",
-      defaultModel: "gpt-5.6-luna",
-      defaultEffort: "medium",
-      participants: [{ userId, role: "owner" }],
-      createdAt: now,
-      lastMessageAt: now,
-      aiMode: "always",
-    });
-    appendConversationEventStrict(userId, sourceTitle, "codex", {
-      type: "user_message",
-      content: `cacheable request ${"x".repeat(100_000)}`,
-    });
-    appendConversationEventStrict(userId, sourceTitle, "codex", {
-      type: "result",
-      content: "cacheable response",
-      stopReason: "end_turn",
-    });
-
-    try {
-      const child = await createDerivedTopic(sourceTopicId, userId, true, {
-        name: childTitle,
-        summarizeFork: async () => {
-          summarizeCalls++;
-          return "unexpected compact summary";
-        },
+      upsertTopic({
+        id: sourceTopicId,
+        title: sourceTitle,
+        kind: "agent",
+        agent,
+        defaultModel: agent === "codex" ? "gpt-5.6-luna" : "deepseek-pro",
+        defaultEffort: "medium",
+        participants: [{ userId, role: "owner" }],
+        createdAt: now,
+        lastMessageAt: now,
+        aiMode: "always",
       });
-      expect(child).not.toBeNull();
-      if (!child) return;
-      childId = child.id;
-      childSessionId = getTopicSessionId(child.id);
-      expect(childSessionId).toBeTruthy();
-      expect(summarizeCalls).toBe(0);
-      expect(JSON.stringify(readConversation(userId, childTitle))).toContain("cacheable response");
-    } finally {
-      if (childSessionId && childId) {
-        await getRegistryOperations("codex").cleanupRollouts({
-          cwd: resolveTopicWorkspaceDir(childId),
-          sessionIds: [childSessionId],
+      appendConversationEventStrict(userId, sourceTitle, agent, {
+        type: "user_message",
+        content: `cacheable request ${"x".repeat(100_000)}`,
+      });
+      appendConversationEventStrict(userId, sourceTitle, agent, {
+        type: "result",
+        content: "cacheable response",
+        stopReason: "end_turn",
+      });
+
+      try {
+        const child = await createDerivedTopic(sourceTopicId, userId, true, {
+          name: childTitle,
+          summarizeFork: async () => {
+            summarizeCalls++;
+            return "unexpected compact summary";
+          },
         });
+        expect(child).not.toBeNull();
+        if (!child) return;
+        childId = child.id;
+        childSessionId = getTopicSessionId(child.id);
+        expect(childSessionId).toBeTruthy();
+        expect(summarizeCalls).toBe(0);
+        expect(JSON.stringify(readConversation(userId, childTitle))).toContain(
+          "cacheable response",
+        );
+      } finally {
+        if (childSessionId && childId) {
+          await getRegistryOperations(agent).cleanupRollouts({
+            cwd: resolveTopicWorkspaceDir(childId),
+            sessionIds: [childSessionId],
+          });
+        }
+        if (childId) {
+          deleteTopic(childId);
+          rmSync(resolveTopicWorkspaceDir(childId), { recursive: true, force: true });
+        }
+        deleteTopic(sourceTopicId);
+        rmSync(getConversationPath(userId, sourceTitle), { force: true });
+        rmSync(getConversationPath(userId, childTitle), { force: true });
       }
-      if (childId) {
-        deleteTopic(childId);
-        rmSync(resolveTopicWorkspaceDir(childId), { recursive: true, force: true });
-      }
-      deleteTopic(sourceTopicId);
-      rmSync(getConversationPath(userId, sourceTitle), { force: true });
-      rmSync(getConversationPath(userId, childTitle), { force: true });
-    }
-  });
+    });
+  }
 
   test("fork compaction uses one immutable snapshot while an active source advances", async () => {
     const sourceTopicId = randomUUID();
@@ -611,19 +610,19 @@ describe("createDerivedTopic", () => {
       id: sourceTopicId,
       title: sourceTitle,
       kind: "agent",
-      agent: "maestro",
-      defaultModel: "deepseek-pro",
+      agent: "claude",
+      defaultModel: "sonnet",
       defaultEffort: "medium",
       participants: [{ userId, role: "owner" }],
       createdAt: now,
       lastMessageAt: now,
       aiMode: "always",
     });
-    appendConversationEventStrict(userId, sourceTitle, "maestro", {
+    appendConversationEventStrict(userId, sourceTitle, "claude", {
       type: "user_message",
       content: `snapshot request ${"x".repeat(100_000)}`,
     });
-    appendConversationEventStrict(userId, sourceTitle, "maestro", {
+    appendConversationEventStrict(userId, sourceTitle, "claude", {
       type: "result",
       content: "snapshot response",
       stopReason: "end_turn",
@@ -649,7 +648,7 @@ describe("createDerivedTopic", () => {
         name: childTitle,
         summarizeFork: async (request) => {
           expect(request.source).toContain("visible before snapshot");
-          appendConversationEventStrict(userId, sourceTitle, "maestro", {
+          appendConversationEventStrict(userId, sourceTitle, "claude", {
             type: "user_message",
             content: "canonical after snapshot",
           });
@@ -689,7 +688,7 @@ describe("createDerivedTopic", () => {
     } finally {
       releaseRuntimeTurnLease(sourceTopicId, queryId, leaseOwner);
       if (childSessionId && childId) {
-        await getRegistryOperations("maestro").cleanupRollouts({
+        await getRegistryOperations("claude").cleanupRollouts({
           cwd: resolveTopicWorkspaceDir(childId),
           sessionIds: [childSessionId],
         });
@@ -715,19 +714,19 @@ describe("createDerivedTopic", () => {
       id: sourceTopicId,
       title: sourceTitle,
       kind: "agent",
-      agent: "maestro",
-      defaultModel: "deepseek-pro",
+      agent: "claude",
+      defaultModel: "sonnet",
       defaultEffort: "medium",
       participants: [{ userId, role: "owner" }],
       createdAt: now,
       lastMessageAt: now,
       aiMode: "always",
     });
-    appendConversationEventStrict(userId, sourceTitle, "maestro", {
+    appendConversationEventStrict(userId, sourceTitle, "claude", {
       type: "user_message",
       content: `must compact ${"x".repeat(100_000)}`,
     });
-    appendConversationEventStrict(userId, sourceTitle, "maestro", {
+    appendConversationEventStrict(userId, sourceTitle, "claude", {
       type: "result",
       content: "large response",
       stopReason: "end_turn",
