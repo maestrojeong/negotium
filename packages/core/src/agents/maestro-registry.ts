@@ -80,7 +80,7 @@ function writeRollout(options: Parameters<AgentRegistryOperations["writeRollout"
         version: 1,
         cwd: options.cwd,
         createdAt: existingCreatedAt(path) ?? new Date().toISOString(),
-        sdkVersion: "0.1.53",
+        sdkVersion: "0.1.54",
       },
     },
     ...messages,

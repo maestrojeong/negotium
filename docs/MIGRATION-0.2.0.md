@@ -6,6 +6,10 @@ and wire compatibility, but standalone state has one canonical end-user
 principal: `local`. Runtime process and lease `owner_id` values remain distinct
 and are not rewritten.
 
+The bundled Maestro runtime is `maestro-agent-sdk` 0.1.54. Its successful
+login-PATH no-op bootstrap is silent, so importing the SDK no longer emits the
+`login PATH already a subset` debug message.
+
 ## Before migrating
 
 Stop the node and every adapter. The migration refuses to run when the state

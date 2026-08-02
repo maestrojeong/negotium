@@ -1,6 +1,5 @@
 {
   "lockfileVersion": 1,
-  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "negotium",
@@ -96,7 +95,7 @@
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@openai/codex-sdk": "0.146.0",
         "diff": "^9.0.0",
-        "maestro-agent-sdk": "0.1.52",
+        "maestro-agent-sdk": "0.1.54",
         "node-telegram-bot-api": "^1.1.2",
         "orchgraph": "0.2.0",
         "pino": "^10.3.1",
@@ -128,7 +127,7 @@
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@openai/codex-sdk": "0.146.0",
         "diff": "^9.0.0",
-        "maestro-agent-sdk": "0.1.53",
+        "maestro-agent-sdk": "0.1.54",
         "pino": "^10.3.1",
         "pino-pretty": "^13.1.3",
         "tsx": "^4.22.4",
@@ -516,7 +515,7 @@
 
     "json-schema-typed": ["json-schema-typed@8.0.2", "", {}, "sha512-fQhoXdcvc3V28x7C7BMs4P5+kNlgUURe2jmUT1T//oBRMDrqy1QPelJimwZGo7Hg9VPV3EQV5Bnq4hbFy2vetA=="],
 
-    "maestro-agent-sdk": ["maestro-agent-sdk@0.1.53", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.27.1", "cheerio": "^1.2.0", "pdfjs-dist": "^5.7.284", "undici": "^6.27.0" } }, "sha512-obtsH577fkbGJT9bQKA9QcyxnNYlOFxB/4ZDjfiu2XcZYTSBx+bdLSWpkbZV8QLXqdtDEkVMzT5gOcC0r+ljkQ=="],
+    "maestro-agent-sdk": ["maestro-agent-sdk@0.1.54", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.27.1", "cheerio": "^1.2.0", "pdfjs-dist": "^5.7.284", "undici": "^6.27.0" } }, "sha512-ma6x8FCR5or0QCrYpl9UpU18zswQpgYBcLS+EOk5jy6vEbdBW3vVjLdBGo+YcHJWRbBoFWJAQ5qS1XgD85CQ7Q=="],
 
     "math-intrinsics": ["math-intrinsics@1.1.0", "", {}, "sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g=="],
 
@@ -671,8 +670,6 @@
     "encoding-sniffer/iconv-lite": ["iconv-lite@0.6.3", "", { "dependencies": { "safer-buffer": ">= 2.1.2 < 3.0.0" } }, "sha512-4fCk79wshMdzMp2rH06qWrJE4iolqLhCUH+OiuIgU++RB0+94NlDL81atO7GX55uUKueo0txHNtvEyI6D7WdMw=="],
 
     "htmlparser2/entities": ["entities@7.0.1", "", {}, "sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA=="],
-
-    "negotium/maestro-agent-sdk": ["maestro-agent-sdk@0.1.52", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.27.1", "cheerio": "^1.2.0", "pdfjs-dist": "^5.7.284", "undici": "^6.27.0" } }, "sha512-LYD15khPEUFVL75oqlQVRqb6Wp9IYXxd9kL0LTJaxXzmTdgjlJfnWLenL5ZcoTv2SRtvieGwDP/LwnJpxVk0ig=="],
 
     "orchgraph/zod": ["zod@4.3.6", "", {}, "sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg=="],
 
