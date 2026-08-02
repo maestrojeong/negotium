@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import ts from "typescript";
 
 type ReleaseMode = "check" | "dry-run" | "smoke" | "publish" | "status";
 
@@ -16,6 +18,14 @@ type PackageManifest = {
   dependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
+  exports?: Record<
+    string,
+    {
+      types?: string;
+      import?: string;
+      default?: string;
+    }
+  >;
 };
 
 type ReleasePackage = {
@@ -450,6 +460,97 @@ async function dryRun(packages: ReleasePackage[]): Promise<void> {
   }
 }
 
+function isTypeOnlyExport(symbol: ts.Symbol): boolean {
+  const declarations = symbol.getDeclarations();
+  return Boolean(
+    declarations?.length &&
+      declarations.every((declaration) => {
+        if (ts.isExportSpecifier(declaration)) {
+          return declaration.isTypeOnly || declaration.parent.parent.isTypeOnly;
+        }
+        if (ts.isExportDeclaration(declaration)) return declaration.isTypeOnly;
+        return false;
+      }),
+  );
+}
+
+async function assertPackedExportParity(
+  smokeRoot: string,
+  packages: ReleasePackage[],
+): Promise<void> {
+  const publicEntries: Array<{
+    packageName: string;
+    packageRoot: string;
+    runtimePath: string;
+    subpath: string;
+    typePath: string;
+  }> = [];
+  for (const pkg of packages) {
+    const packageRoot = join(smokeRoot, "node_modules", ...pkg.name.split("/"));
+    const manifest = (await Bun.file(join(packageRoot, "package.json")).json()) as PackageManifest;
+    for (const [subpath, entry] of Object.entries(manifest.exports ?? {})) {
+      const runtimePath = entry.import ?? entry.default;
+      if (!entry.types || !runtimePath) continue;
+      publicEntries.push({
+        packageName: pkg.name,
+        packageRoot,
+        runtimePath,
+        subpath,
+        typePath: entry.types,
+      });
+    }
+  }
+  const typeFiles = publicEntries.map((entry) => resolve(entry.packageRoot, entry.typePath));
+  const program = ts.createProgram(typeFiles, {
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    skipLibCheck: true,
+    target: ts.ScriptTarget.ES2022,
+  });
+  const checker = program.getTypeChecker();
+  const failures: string[] = [];
+
+  for (const entry of publicEntries) {
+    const typeFile = resolve(entry.packageRoot, entry.typePath);
+    const sourceFile = program.getSourceFile(typeFile);
+    const moduleSymbol = sourceFile && checker.getSymbolAtLocation(sourceFile);
+    if (!moduleSymbol) {
+      failures.push(
+        `${entry.packageName}${entry.subpath}: could not inspect declarations at ${entry.typePath}`,
+      );
+      continue;
+    }
+
+    const declaredValues = checker
+      .getExportsOfModule(moduleSymbol)
+      .filter((symbol) => !isTypeOnlyExport(symbol))
+      .filter((symbol) => {
+        const target =
+          symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
+        return Boolean(target.flags & ts.SymbolFlags.Value);
+      })
+      .map((symbol) => symbol.getName())
+      .filter((name) => name !== "default")
+      .sort();
+    const runtimeModule = (await import(
+      pathToFileURL(resolve(entry.packageRoot, entry.runtimePath)).href
+    )) as Record<string, unknown>;
+    const runtimeValues = new Set(Object.keys(runtimeModule));
+    const missing = declaredValues.filter((name) => !runtimeValues.has(name));
+    if (missing.length > 0)
+      failures.push(
+        `${entry.packageName}${entry.subpath}: missing runtime exports ${missing.join(", ")}`,
+      );
+  }
+
+  if (failures.length > 0) {
+    fail(
+      `packed declaration/runtime export mismatch:\n${failures.map((item) => `- ${item}`).join("\n")}`,
+    );
+  }
+  console.log(`verified declaration/runtime parity for ${publicEntries.length} public subpaths`);
+}
+
 async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
   if (packages.length !== releasePackages.length) {
     fail("smoke mode installs the complete release graph and does not support --only or --from");
@@ -504,6 +605,7 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
       TMPDIR: installTmp,
     };
     await run("npm", ["install", "--ignore-scripts=false"], smokeRoot, true, smokeEnv);
+    await assertPackedExportParity(smokeRoot, packages);
 
     await Bun.write(
       join(smokeRoot, "imports.ts"),

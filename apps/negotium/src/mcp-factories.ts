@@ -1,4 +1,8 @@
 export {
+  type AgentHealthMcpContext,
+  type CompactionLogMcpContext,
+  createAgentHealthMcpServer,
+  createCompactionLogMcpServer,
   createSessionCommMcpServer,
   createSessionTargetCatalog,
   createSystemHealthMcpServer,
