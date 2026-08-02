@@ -608,6 +608,43 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
     await assertPackedExportParity(smokeRoot, packages);
 
     await Bun.write(
+      join(smokeRoot, "cron-mcp-smoke.ts"),
+      `import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { resolve } from "node:path";
+
+const client = new Client({ name: "packed-cron-smoke", version: "1.0.0" });
+const env = Object.fromEntries(
+  Object.entries(process.env).filter(
+    (entry): entry is [string, string] => typeof entry[1] === "string",
+  ),
+);
+env.NEGOTIUM_STATE_DIR = resolve("cron-smoke-state");
+const transport = new StdioClientTransport({
+  command: process.execPath,
+  args: [
+    "run",
+    resolve("node_modules/negotium/dist/runtime/cron/mcp-server.ts"),
+    "--user-id=local",
+  ],
+  env,
+  stderr: "pipe",
+});
+
+await client.connect(transport);
+try {
+  const names = (await client.listTools()).tools.map((tool) => tool.name);
+  if (!names.includes("cron_list") || !names.includes("cron_create")) {
+    throw new Error("packed cron MCP contract is incomplete");
+  }
+} finally {
+  await client.close();
+}
+`,
+    );
+    await run("bun", ["cron-mcp-smoke.ts"], smokeRoot, true, smokeEnv);
+
+    await Bun.write(
       join(smokeRoot, "imports.ts"),
       `import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -1318,22 +1355,36 @@ try {
     if (!expectedVersion || version !== expectedVersion) {
       fail(`packed negotium binary reported version ${version}, expected ${expectedVersion}`);
     }
-    const legacyRun = join(smokeEnv.NEGOTIUM_STATE_DIR, "run");
-    await mkdir(legacyRun, { recursive: true });
+    const migrationEnv = {
+      ...smokeEnv,
+      NEGOTIUM_STATE_DIR: join(smokeRoot, "migration-state"),
+    };
+    const legacyRun = join(migrationEnv.NEGOTIUM_STATE_DIR, "run");
+    await mkdir(join(legacyRun, "session-asks"), { recursive: true });
     await Bun.write(join(legacyRun, "packed-smoke"), "legacy runtime entry\n");
+    await Bun.write(join(legacyRun, "session-asks", "ask.json"), "{}\n");
     await run(
       bin,
       ["migrate", "single-user", "--source=local", "--delete-other-users", "--yes"],
       smokeRoot,
       true,
-      smokeEnv,
+      migrationEnv,
     );
-    if (!(await Bun.file(join(smokeEnv.NEGOTIUM_STATE_DIR, "runtime", "packed-smoke")).exists())) {
+    if (
+      !(await Bun.file(join(migrationEnv.NEGOTIUM_STATE_DIR, "runtime", "packed-smoke")).exists())
+    ) {
       fail("packed migration did not move run to runtime");
     }
     if (
       !(await Bun.file(
-        join(smokeEnv.NEGOTIUM_STATE_DIR, ".migration-0.2.0-single-user.json"),
+        join(migrationEnv.NEGOTIUM_STATE_DIR, "runtime", "session-asks", "ask.json"),
+      ).exists())
+    ) {
+      fail("packed migration did not move the legacy session-asks directory");
+    }
+    if (
+      !(await Bun.file(
+        join(migrationEnv.NEGOTIUM_STATE_DIR, ".migration-0.2.0-single-user.json"),
       ).exists())
     ) {
       fail("packed migration did not write its completion marker");

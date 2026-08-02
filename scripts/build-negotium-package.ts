@@ -203,7 +203,9 @@ for (const entry of await readdir(resolve(runtimeRoot, "cron"))) {
   if (!entry.endsWith(".ts")) continue;
   const path = resolve(runtimeRoot, "cron", entry);
   const source = await readFile(path, "utf8");
-  const portable = source.replaceAll("@negotium/core/cron-host", "../src/cron-host.ts");
+  const portable = source
+    .replaceAll("@negotium/core/cron-host", "../src/cron-host.ts")
+    .replaceAll('from "@negotium/core"', 'from "../src/index.ts"');
   if (portable !== source) await writeFile(path, portable);
 }
 // Cron's stateful core dependencies contain ESM cycles that Bun handles

@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { sanitizeTopicName } from "#security/sanitize";
 import { Database } from "#storage/sqlite";
-import { decryptVaultValue, encryptVaultValue } from "#storage/vault-crypto";
+import { decryptVaultValueWithKey, encryptVaultValueWithKey } from "#storage/vault-crypto-core";
 
 export const CANONICAL_LOCAL_USER_ID = "local";
 export const SINGLE_USER_MIGRATION_ID = "negotium-0.2.0-single-user";
@@ -239,11 +239,11 @@ function migrateDatabase(
           )
           .all(source);
         for (const row of rows) {
-          const plaintext = decryptVaultValue(source, row.key, row.value, masterKey).value;
+          const plaintext = decryptVaultValueWithKey(source, row.key, row.value, masterKey).value;
           database
             .query("UPDATE vault SET value = ? WHERE user_id = ? AND key = ?")
             .run(
-              encryptVaultValue(CANONICAL_LOCAL_USER_ID, row.key, plaintext, masterKey),
+              encryptVaultValueWithKey(CANONICAL_LOCAL_USER_ID, row.key, plaintext, masterKey),
               source,
               row.key,
             );
