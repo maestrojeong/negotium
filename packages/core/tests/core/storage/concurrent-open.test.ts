@@ -18,17 +18,18 @@ import { join } from "node:path";
  */
 const OPENER = `
 import { Database } from "bun:sqlite";
+const { initializeDatabase } = await import(process.env.INIT_MODULE);
 const handle = new Database(process.env.TARGET, { create: true });
 try {
-  handle.exec("PRAGMA busy_timeout = 5000");
-  handle.exec("PRAGMA journal_mode = WAL");
-  handle.exec("PRAGMA foreign_keys = ON");
+  initializeDatabase(handle);
   handle.exec("CREATE TABLE IF NOT EXISTS probe (id TEXT PRIMARY KEY)");
   console.log("OK");
 } catch (e) {
   console.log("FAIL " + (e instanceof Error ? e.message : String(e)));
 }
 `;
+
+const INIT_MODULE = new URL("../../../src/storage/storage-host.ts", import.meta.url).href;
 
 test("concurrent processes can open and initialize the same database", async () => {
   const dir = mkdtempSync(join(tmpdir(), "concurrent-open-"));
@@ -38,7 +39,7 @@ test("concurrent processes can open and initialize the same database", async () 
     // process that performs the WAL switch.
     const openers = Array.from({ length: 4 }, () =>
       Bun.spawn([process.execPath, "-e", OPENER], {
-        env: { ...process.env, TARGET: target },
+        env: { ...process.env, TARGET: target, INIT_MODULE },
         stdout: "pipe",
         stderr: "pipe",
       }),

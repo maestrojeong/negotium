@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   countMemoryArchiveExchanges,
   MIN_MEMORY_ARCHIVE_EXCHANGES,
+  meetsMemoryArchiveExchangeThreshold,
 } from "#agents/memory-archive-policy";
 
 describe("memory archive policy", () => {
@@ -23,5 +24,27 @@ describe("memory archive policy", () => {
         { author_id: "owner" },
       ]),
     ).toBe(2);
+  });
+
+  test("lets explicit-memory subagents archive one completed exchange only", () => {
+    expect(
+      meetsMemoryArchiveExchangeThreshold(1, MIN_MEMORY_ARCHIVE_EXCHANGES, {
+        isSubagent: true,
+        memoryTopicId: "memory-topic",
+      }),
+    ).toBe(true);
+    expect(
+      meetsMemoryArchiveExchangeThreshold(0, MIN_MEMORY_ARCHIVE_EXCHANGES, {
+        isSubagent: true,
+        memoryTopicId: "memory-topic",
+      }),
+    ).toBe(false);
+    expect(
+      meetsMemoryArchiveExchangeThreshold(1, MIN_MEMORY_ARCHIVE_EXCHANGES, {
+        isSubagent: true,
+      }),
+    ).toBe(false);
+    expect(meetsMemoryArchiveExchangeThreshold(1, MIN_MEMORY_ARCHIVE_EXCHANGES, {})).toBe(false);
+    expect(meetsMemoryArchiveExchangeThreshold(6, MIN_MEMORY_ARCHIVE_EXCHANGES, {})).toBe(true);
   });
 });

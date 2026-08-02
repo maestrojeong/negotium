@@ -9,7 +9,10 @@ import { rmSync } from "node:fs";
 import { runArchiverTurn } from "#agents/archiver";
 import { cancelIdleArchiveForTopic } from "#agents/idle-archiver";
 import { cancelSubagentWatchForDeletedTopic } from "#agents/mcp-tools/spawn-subagent";
-import { MIN_MEMORY_ARCHIVE_EXCHANGES } from "#agents/memory-archive-policy";
+import {
+  MIN_MEMORY_ARCHIVE_EXCHANGES,
+  meetsMemoryArchiveExchangeThreshold,
+} from "#agents/memory-archive-policy";
 import { type PurgeSessionRef, purgeTopicLogs } from "#agents/topic-cleanup";
 import { WsHub } from "#bus";
 import { killBgBash } from "#platform/background-bash/manager";
@@ -238,7 +241,14 @@ async function deleteTopicCascadeImpl(
       }
     }
 
-    if (archived && archived.exchangeCount >= MIN_MEMORY_ARCHIVE_EXCHANGES) {
+    if (
+      archived &&
+      meetsMemoryArchiveExchangeThreshold(
+        archived.exchangeCount,
+        MIN_MEMORY_ARCHIVE_EXCHANGES,
+        topic,
+      )
+    ) {
       try {
         const memoryTopic = getTopicMemoryOrigin(topicId) ?? topic;
         runArchiverTurn({

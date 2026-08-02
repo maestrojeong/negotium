@@ -67,16 +67,42 @@ function defaultSessionsDatabasePath(): string {
   return envPath("SESSIONS_DB_PATH", join(resolveStorageDataDir(), "sessions.db"));
 }
 
-function initializeDatabase(database: InternalStorageDatabase): void {
+const SQLITE_INIT_RETRY_MS = 25;
+const SQLITE_INIT_TIMEOUT_MS = 5_000;
+const SQLITE_INIT_SLEEP = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+
+function isSqliteBusy(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /database is (?:locked|busy)|SQLITE_(?:BUSY|LOCKED)/i.test(message);
+}
+
+function execWithBusyRetry(
+  database: InternalStorageDatabase,
+  sql: string,
+  timeoutMs = SQLITE_INIT_TIMEOUT_MS,
+): void {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    try {
+      database.exec(sql);
+      return;
+    } catch (error) {
+      if (!isSqliteBusy(error) || Date.now() >= deadline) throw error;
+      Atomics.wait(SQLITE_INIT_SLEEP, 0, 0, Math.min(SQLITE_INIT_RETRY_MS, deadline - Date.now()));
+    }
+  }
+}
+
+export function initializeDatabase(database: InternalStorageDatabase): void {
   // busy_timeout FIRST. Switching to WAL needs a brief exclusive lock, so when
   // two processes open the same database at the same moment — the node daemon
   // and an adapter, or two MCP servers — one of them hits SQLITE_BUSY. With the
   // timeout configured afterwards there was no retry budget in effect for the
-  // statement that needed it most, and the loser died with "database is locked"
-  // during startup. Measured with four processes racing one fresh file: 60/100
-  // opens failed in the old order, 0/100 with the timeout set first.
+  // statement that needed it most. Older Bun releases can still surface
+  // SQLITE_BUSY immediately for journal_mode, so keep a bounded host-level
+  // retry around that one exclusive transition as well.
   database.exec("PRAGMA busy_timeout = 5000");
-  database.exec("PRAGMA journal_mode = WAL");
+  execWithBusyRetry(database, "PRAGMA journal_mode = WAL");
   database.exec("PRAGMA foreign_keys = ON");
   database.exec("PRAGMA wal_autocheckpoint = 1000");
   try {

@@ -12,6 +12,26 @@ export interface MemoryArchiveMessage {
  */
 export const MIN_MEMORY_ARCHIVE_EXCHANGES = 6;
 
+export interface MemoryArchiveTopicContext {
+  isSubagent?: boolean;
+  memoryTopicId?: string;
+}
+
+/**
+ * Explicit-memory subagents are usually short, focused turns. Persist one
+ * completed exchange back to their selected memory topic, while retaining the
+ * normal threshold for regular topics and incomplete/failed turns.
+ */
+export function meetsMemoryArchiveExchangeThreshold(
+  exchangeCount: number,
+  minExchanges: number,
+  topic: MemoryArchiveTopicContext,
+): boolean {
+  if (exchangeCount <= 0) return false;
+  if (topic.isSubagent && topic.memoryTopicId) return true;
+  return exchangeCount >= minExchanges;
+}
+
 /** Count completed conversational exchanges while ignoring system/tool/card noise. */
 export function countMemoryArchiveExchanges(rows: readonly MemoryArchiveMessage[]): number {
   let waitingForAssistant = false;

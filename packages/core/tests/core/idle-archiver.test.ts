@@ -16,7 +16,7 @@ const ORIGINAL_DELAY = process.env.NEGOTIUM_IDLE_ARCHIVE_DELAY_MS;
 const ORIGINAL_ENABLED = process.env.NEGOTIUM_IDLE_ARCHIVER_ENABLED;
 const createdTopicIds: string[] = [];
 
-function makeTopic(aiMention: boolean): TopicDto {
+function makeTopic(aiMention: boolean, overrides: Partial<TopicDto> = {}): TopicDto {
   const now = new Date().toISOString();
   const topic: TopicDto = {
     id: `idle-archiver-${randomUUID()}`,
@@ -28,6 +28,7 @@ function makeTopic(aiMention: boolean): TopicDto {
     participants: [{ userId: "idle-owner", role: "owner" }],
     createdAt: now,
     lastMessageAt: now,
+    ...overrides,
   };
   createdTopicIds.push(topic.id);
   upsertTopic(topic);
@@ -204,6 +205,50 @@ describe("idle archiver defaults", () => {
     expect(archiveCalls).toBe(1);
     expect(launches).toBe(0);
     expect(getTopicArchiveState(topic.id)?.lastArchivedRowid).toBe(41);
+  });
+
+  test("explicit-memory subagents archive a short completed exchange into that memory topic", () => {
+    const memoryTopic = makeTopic(false, { title: `Memory Origin ${randomUUID()}` });
+    const topic = makeTopic(false, {
+      isSubagent: true,
+      memoryTopicId: memoryTopic.id,
+    });
+    for (const [index, authorId] of ["idle-owner", "ai"].entries()) {
+      appendApiMessage({
+        id: randomUUID(),
+        topicId: topic.id,
+        authorId,
+        text: `short-subagent-${index}`,
+        createdAt: new Date(3_000 + index).toISOString(),
+      });
+    }
+    const launches: RunArchiverTurnParams[] = [];
+
+    expect(
+      archiveActiveTopicForMemory(topic.id, "idle-owner", {
+        reason: "reset",
+        minMessages: 1,
+        minExchanges: 6,
+        allowMentionOnly: true,
+        skipBusyCheck: true,
+        archiveMessages: () => ({
+          path: "/tmp/reset-memory-short-subagent.jsonl",
+          messageCount: 2,
+          exchangeCount: 1,
+          lastRowid: 43,
+        }),
+        launchArchiver: (params) => {
+          launches.push(params);
+          params.onSettled?.(true);
+          return true;
+        },
+      }),
+    ).toBe("archived");
+    expect(launches).toHaveLength(1);
+    expect(launches[0]).toMatchObject({
+      topicId: memoryTopic.id,
+      topicTitle: memoryTopic.title,
+    });
   });
 
   test("keeps a failed memory launch pending and retries without rewriting its archive", () => {

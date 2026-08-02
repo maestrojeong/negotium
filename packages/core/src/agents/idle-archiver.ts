@@ -1,5 +1,8 @@
 import { runArchiverTurn } from "#agents/archiver";
-import { countMemoryArchiveExchanges } from "#agents/memory-archive-policy";
+import {
+  countMemoryArchiveExchanges,
+  meetsMemoryArchiveExchangeThreshold,
+} from "#agents/memory-archive-policy";
 import { logger } from "#platform/logger";
 import { getRoomQuery } from "#query/active-rooms";
 import { getMessagesForTopicAfterRowid } from "#storage/api-messages";
@@ -141,7 +144,9 @@ export function archiveActiveTopicForMemory(
       return null;
     }
     const exchangeCount = countMemoryArchiveExchanges(pending);
-    skipMemoryTurn = options.minExchanges !== undefined && exchangeCount < options.minExchanges;
+    skipMemoryTurn =
+      options.minExchanges !== undefined &&
+      !meetsMemoryArchiveExchangeThreshold(exchangeCount, options.minExchanges, topic);
     const archived = (options.archiveMessages ?? archiveTopicMessages)(topicId, topic.title, {
       afterRowid,
       reason: options.reason,

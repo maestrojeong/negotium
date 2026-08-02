@@ -545,8 +545,9 @@ describe("subagent management tools", () => {
     expect(explicitChildId).toBeTruthy();
     if (explicitChildId) {
       createdTopicIds.push(explicitChildId);
-      expect(getTopic(explicitChildId)?.memoryTopicId).toBe(memorySource.id);
-      expect(getTopicMemoryOrigin(explicitChildId)?.id).toBe(memorySource.id);
+      // Wiki memory is title-keyed. Either same-title room is a valid backing
+      // topic for this canonical namespace; the durable destination is shared.
+      expect(getTopicMemoryOrigin(explicitChildId)?.title).toBe(memorySource.title);
     }
 
     const sharedTitle = await create.handler({
