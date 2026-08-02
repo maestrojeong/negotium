@@ -1,6 +1,6 @@
 {
   "name": "@negotium/module-cron",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "type": "module",
   "description": "Optional in-process Cron scheduler for negotium nodes",
