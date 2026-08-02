@@ -532,6 +532,70 @@ describe("createDerivedTopic", () => {
     }
   });
 
+  test("does not compact a same-model Codex fork fallback", async () => {
+    const sourceTopicId = randomUUID();
+    const sourceTitle = `codex-cache-source-${randomUUID()}`;
+    const childTitle = `codex-cache-child-${randomUUID()}`;
+    const userId = `codex-cache-user-${randomUUID()}`;
+    const now = new Date().toISOString();
+    let childId: string | undefined;
+    let childSessionId: string | null = null;
+    let summarizeCalls = 0;
+
+    upsertTopic({
+      id: sourceTopicId,
+      title: sourceTitle,
+      kind: "agent",
+      agent: "codex",
+      defaultModel: "gpt-5.6-luna",
+      defaultEffort: "medium",
+      participants: [{ userId, role: "owner" }],
+      createdAt: now,
+      lastMessageAt: now,
+      aiMode: "always",
+    });
+    appendConversationEventStrict(userId, sourceTitle, "codex", {
+      type: "user_message",
+      content: `cacheable request ${"x".repeat(100_000)}`,
+    });
+    appendConversationEventStrict(userId, sourceTitle, "codex", {
+      type: "result",
+      content: "cacheable response",
+      stopReason: "end_turn",
+    });
+
+    try {
+      const child = await createDerivedTopic(sourceTopicId, userId, true, {
+        name: childTitle,
+        summarizeFork: async () => {
+          summarizeCalls++;
+          return "unexpected compact summary";
+        },
+      });
+      expect(child).not.toBeNull();
+      if (!child) return;
+      childId = child.id;
+      childSessionId = getTopicSessionId(child.id);
+      expect(childSessionId).toBeTruthy();
+      expect(summarizeCalls).toBe(0);
+      expect(JSON.stringify(readConversation(userId, childTitle))).toContain("cacheable response");
+    } finally {
+      if (childSessionId && childId) {
+        await getRegistryOperations("codex").cleanupRollouts({
+          cwd: resolveTopicWorkspaceDir(childId),
+          sessionIds: [childSessionId],
+        });
+      }
+      if (childId) {
+        deleteTopic(childId);
+        rmSync(resolveTopicWorkspaceDir(childId), { recursive: true, force: true });
+      }
+      deleteTopic(sourceTopicId);
+      rmSync(getConversationPath(userId, sourceTitle), { force: true });
+      rmSync(getConversationPath(userId, childTitle), { force: true });
+    }
+  });
+
   test("fork compaction uses one immutable snapshot while an active source advances", async () => {
     const sourceTopicId = randomUUID();
     const sourceTitle = `snapshot-source-${randomUUID()}`;

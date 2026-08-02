@@ -40,7 +40,7 @@ const SAFE_BUNDLED_CODEX_VERSION = BUNDLED_CODEX_VERSION.replace(/[^a-zA-Z0-9._-
 const NEGOTIUM_MODEL_CACHE = `negotium-models-cache-${SAFE_BUNDLED_CODEX_VERSION}.json`;
 const NEGOTIUM_MODEL_CATALOG = `negotium-model-catalog-${SAFE_BUNDLED_CODEX_VERSION}.json`;
 
-function codexCliScriptPath(): string {
+export function codexCliScriptPath(): string {
   return join(dirname(bundledCodexPackagePath), "bin", "codex.js");
 }
 

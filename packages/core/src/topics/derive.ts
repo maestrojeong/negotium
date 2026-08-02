@@ -9,7 +9,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, unlinkSync } from "node:fs";
-import { cleanupAgentFork, type ForkHandle } from "#agents/fork";
+import { cleanupAgentFork, type ForkHandle, forkAgentSession } from "#agents/fork";
 import { resolveCompactionExecution, resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry, getRegistryOperations } from "#agents/registry";
 import { WsHub } from "#bus";
@@ -26,6 +26,7 @@ import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config"
 import {
   findTopicTitleConflict,
   getTopic,
+  getTopicSessionId,
   inferTopicKind,
   isTopicVisible,
   listTopics,
@@ -323,7 +324,38 @@ async function createDerivedTopicImpl(
 
       if (copyHistory) {
         if (!forkSnapshot) throw new Error("fork snapshot was not captured");
-        const compactionRequired = shouldCompactForkEntries(forkSnapshot.entries);
+        const parentSessionId = getTopicSessionId(sourceTopicId);
+        if (agent === "codex" && parentSessionId) {
+          try {
+            rollbackHandle = await forkAgentSession({
+              agent,
+              parentSessionId,
+              cwd,
+              userId,
+              topicName: topic.title,
+              title,
+              model: rolloutModel,
+              ...(rolloutEffort ? { effort: rolloutEffort } : {}),
+            });
+            sessionId = rollbackHandle.forkId;
+            logger.info(
+              { sourceTopicId, derivedTopicId: derived.id, parentSessionId, sessionId },
+              "createDerivedTopic: native Codex fork materialized",
+            );
+          } catch (error) {
+            logger.warn(
+              { err: error, sourceTopicId, derivedTopicId: derived.id, parentSessionId },
+              "createDerivedTopic: native Codex fork failed; using snapshot fallback",
+            );
+          }
+        }
+        // A same-agent Codex fork must retain the exact conversation prefix so
+        // provider prompt caching can reuse it. Native thread/fork is preferred;
+        // its synthetic fallback also keeps the full snapshot rather than
+        // replacing history with a summary. Cross-provider/model bridging owns
+        // its own compaction policy outside this derived-topic path.
+        const compactionRequired =
+          agent !== "codex" && !sessionId && shouldCompactForkEntries(forkSnapshot.entries);
         if (compactionRequired) {
           try {
             compactedForkEntries = await createCompactedRolloutEntries(

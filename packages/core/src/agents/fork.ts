@@ -7,9 +7,9 @@ import type { AgentKind, EffortLevel } from "#types";
  * Agent-aware fork primitives.
  *
  * Strategy lives in each agent's registry (`*-registry.ts:forkSession`).
- * Claude uses the SDK's native `forkSession` (byte-equivalent rollout copy);
- * Codex synthesizes a rollout from the provider-agnostic conversation log
- * because the SDK has no fork API. Both surfaces converge on `ForkHandle`.
+ * Claude uses the SDK's native `forkSession`; Codex uses App Server's native
+ * `thread/fork`. Providers without a native branch primitive synthesize from
+ * the provider-agnostic conversation log. All surfaces converge on ForkHandle.
  */
 
 export interface ForkAgentSessionOptions {

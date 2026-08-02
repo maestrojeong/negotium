@@ -1,10 +1,10 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { forkCodexSession } from "#agents/codex-app-server";
 import type { AgentRegistry, AgentRegistryOperations } from "#agents/contracts";
 import { writeCodexRollout } from "#agents/rollout/codex";
 import { logger } from "#platform/logger";
-import { readConversation } from "#storage/conversations";
 import { CODEX_EFFORT_VALUES, type EffortLevel } from "#types";
 
 const VALID_EFFORTS = new Set<EffortLevel>(CODEX_EFFORT_VALUES);
@@ -64,20 +64,12 @@ export const codexRegistryOperations: AgentRegistryOperations = {
     return { sessionId: threadId, rolloutPath };
   },
 
-  // Codex SDK has no fork API. We synthesize a rollout from the
-  // provider-agnostic conversation log (same path as `set_agent` cross-agent
-  // bridging). Caveats: extractChatPairs folds tool_use/tool_result into
-  // assistant text as `[Tool: ...]` annotations, so structural tool history
-  // is lost.
-  async forkSession({ cwd, userId, topicName, model, effort }) {
-    const entries = readConversation(userId, topicName);
-    const { threadId, rolloutPath } = writeCodexRollout({
-      cwd,
-      entries,
-      model: model ?? codexRegistry.defaultModel,
-      ...(effort ? { effort } : {}),
-    });
-    return { forkId: threadId, rolloutPath };
+  // The TypeScript SDK does not expose forking yet, but the bundled Codex App
+  // Server does. Native thread/fork preserves the provider's stored prefix,
+  // including tool structure, which gives prompt caching the best chance to
+  // reuse the parent context. Callers retain unified-log synthesis as fallback.
+  async forkSession({ parentSessionId }) {
+    return await forkCodexSession(parentSessionId);
   },
 
   // Codex stores rollouts at `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<threadId>.jsonl`.

@@ -10,8 +10,9 @@
  * synthesized `response_item`/`event_msg` pairs per turn.
  *
  * Tool history is folded into assistant text as `[Tool: ...]` annotations
- * (see shared.ts:extractChatPairs) — the SDK has no fork API and synthetic
- * tool_use IDs across SDKs are too fragile to reconstruct structurally.
+ * (see shared.ts:extractChatPairs). Native same-agent forks use App Server's
+ * `thread/fork`; this encoder remains the fallback and cross-agent bridge,
+ * where synthetic tool_use IDs are too fragile to reconstruct structurally.
  */
 
 import { randomBytes } from "node:crypto";
@@ -420,7 +421,7 @@ export function migrateCodexRolloutNativeMultiAgentMetadata(threadId: string): b
   }
 }
 
-function latestCodexRolloutPath(threadId: string): string | undefined {
+export function latestCodexRolloutPath(threadId: string): string | undefined {
   const sessionsDir = codexSessionsDir();
   const candidates: string[] = [];
   const buckets = candidateDateBuckets(threadId);
