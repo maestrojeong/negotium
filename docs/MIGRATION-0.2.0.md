@@ -1,5 +1,10 @@
 # Migrating to Negotium 0.2.0
 
+> Historical note: the one-time migration command shipped through 0.2.2 and
+> was removed in 0.2.3 after the managed installations completed migration.
+> Successful installations retain `.migration-0.2.0-single-user.json` as an
+> audit marker.
+
 Negotium 0.2.0 is a breaking single-user filesystem release. It keeps public
 `userId` arguments and database identity columns for adapter, authentication,
 and wire compatibility, but standalone state has one canonical end-user

@@ -8,10 +8,10 @@
  */
 
 import { mkdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import {
   DM_WORKSPACE_DIR,
+  PROJECT_ROOT,
   SESSION_WORKSPACE_DIR,
   TOPIC_WORKSPACE_DIR,
   WORKSPACE_DIR,
@@ -19,8 +19,6 @@ import {
 import { logger } from "#platform/logger";
 import { renderUserPromptBatch } from "#runtime/user-turn-envelope";
 import type { ConversationEntry } from "#storage/conversations";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export interface RolloutHostOptions {
   /** Absolute workspace roots under which synthetic provider sessions may be written. */
@@ -69,7 +67,7 @@ export function configureRolloutHost(options: RolloutHostOptions): () => void {
  * non-conversational entries from the resulting rollout file, and update
  * `src/agents/fixtures/{codex-shell,claude-attachments}.jsonl`.
  */
-export let FIXTURES_DIR = join(__dirname, "..", "fixtures");
+export let FIXTURES_DIR = resolve(PROJECT_ROOT, "src", "agents", "fixtures");
 
 /** Deep-clone to avoid mutating cached fixture objects. */
 export function clone<T>(obj: T): T {

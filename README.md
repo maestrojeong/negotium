@@ -198,9 +198,10 @@ the browser profile store. The older `NEGOTIUM_DATA_DIR`, `NEGOTIUM_LOG_DIR`,
 `NEGOTIUM_RUN_DIR`, and `NEGOTIUM_WORKSPACE_DIR` overrides remain compatibility
 inputs; `NEGOTIUM_RUN_DIR` now overrides the `runtime/` location.
 
-Version 0.2 is a breaking single-user filesystem release. Existing 0.1 state is
-never changed during startup; run the explicit migration described in
-[Migration 0.2.0](./docs/MIGRATION-0.2.0.md) while Negotium is stopped.
+Version 0.2 is a breaking single-user filesystem release. The one-time 0.1
+migration command shipped through 0.2.2 and was removed in 0.2.3 after the
+managed installations completed it. See [Migration 0.2.0](./docs/MIGRATION-0.2.0.md)
+for the historical layout and marker format.
 Set `NEGOTIUM_LANG` (default `English`) to the user's mother tongue to localize the assistant's replies and memory; it stays a fallback since the assistant mirrors whatever language the user writes in.
 
 The vault encrypts values at rest and keeps plaintext out of normal agent
