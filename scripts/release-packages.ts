@@ -571,7 +571,11 @@ import type {
   WikiMcpContext,
   WikiMcpHost,
 } from "negotium/mcp-factories";
-import type { AgentRegistry, WriteRolloutOptions } from "negotium/registry";
+import type {
+  AgentRegistry,
+  AgentRegistryOperations,
+  WriteRolloutOptions,
+} from "negotium/registry";
 import type { ChatPair, CodexContextUsage } from "negotium/rollout";
 import type { VaultStorageOptions } from "negotium/vault";
 import type {
@@ -848,10 +852,19 @@ if (typeof agentHelpers.resolveTaskEventScope !== "function") {
 }
 if (
   typeof registry.getRegistry !== "function" ||
+  typeof registry.getRegistryOperations !== "function" ||
   typeof rollout.writeCodexRollout !== "function" ||
   typeof rollout.encodeClaudeCwd !== "function"
 ) {
   throw new Error("packed registry/rollout export is missing");
+}
+const packedRegistryOperations: AgentRegistryOperations = registry.getRegistryOperations("codex");
+if (
+  typeof packedRegistryOperations.writeRollout !== "function" ||
+  typeof packedRegistryOperations.forkSession !== "function" ||
+  typeof packedRegistryOperations.cleanupRollouts !== "function"
+) {
+  throw new Error("packed registry operations export is incomplete");
 }
 const rolloutRoot = join(process.cwd(), "rollout-smoke");
 const restoreRolloutHost = rollout.configureRolloutHost({ workspaceRoots: [rolloutRoot] });
