@@ -40,7 +40,9 @@ interface MoveOperation {
   source: string;
   staged: string;
   destination?: string;
-  state: "pending" | "staged" | "placed";
+  destinationStaged?: string;
+  collision?: "keep-destination" | "replace-destination" | "merge-jsonl" | "merge-tasks";
+  state: "pending" | "staged" | "source-staged" | "destination-staged" | "placed";
 }
 
 interface MigrationJournal {
@@ -70,7 +72,9 @@ function assertNoActiveNode(stateDir: string): void {
     const infoPath = join(stateDir, runtimeName, "node-daemon.json");
     if (!existsSync(infoPath)) continue;
     try {
-      const value = JSON.parse(readFileSync(infoPath, "utf8")) as { pid?: number };
+      const value = JSON.parse(readFileSync(infoPath, "utf8")) as {
+        pid?: number;
+      };
       if (typeof value.pid === "number" && processIsAlive(value.pid)) {
         throw new Error(`Refusing migration while Negotium pid ${value.pid} is active.`);
       }
@@ -121,17 +125,60 @@ function addDirectoryContents(
   }
 }
 
-function assertNoCollisions(operations: MoveOperation[]): void {
+function pathWithin(path: string, root: string): boolean {
+  return path === root || path.startsWith(`${root}/`);
+}
+
+function collisionPolicy(
+  operation: MoveOperation,
+  stateDir: string,
+): NonNullable<MoveOperation["collision"]> | undefined {
+  const destination = operation.destination;
+  if (!destination || !existsSync(destination)) return undefined;
+  if (pathWithin(destination, join(stateDir, "runtime"))) return "keep-destination";
+  if (pathWithin(destination, join(stateDir, "binaries"))) return "keep-destination";
+  if (pathWithin(destination, join(stateDir, "secrets"))) return "replace-destination";
+  if (destination === join(stateDir, "data", "vault", "vault.db")) {
+    return "replace-destination";
+  }
+  if (pathWithin(destination, join(stateDir, "browser", "profiles"))) {
+    return "replace-destination";
+  }
+  if (
+    pathWithin(destination, join(stateDir, "data", "conversations")) &&
+    destination.endsWith(".jsonl")
+  ) {
+    return "merge-jsonl";
+  }
+  if (pathWithin(destination, join(stateDir, "data", "tasks")) && destination.endsWith(".json")) {
+    return "merge-tasks";
+  }
+  if (
+    statSync(operation.source).isFile() &&
+    statSync(destination).isFile() &&
+    readFileSync(operation.source).equals(readFileSync(destination))
+  ) {
+    return "keep-destination";
+  }
+  throw new Error(`Migration collision at ${destination}.`);
+}
+
+function configureCollisions(
+  operations: MoveOperation[],
+  stateDir: string,
+  stagingRoot: string,
+): void {
   const destinations = new Set<string>();
   for (const operation of operations) {
     if (!operation.destination) continue;
-    if (existsSync(operation.destination)) {
-      throw new Error(`Migration collision at ${operation.destination}.`);
-    }
     if (destinations.has(operation.destination)) {
       throw new Error(`Multiple legacy paths target ${operation.destination}.`);
     }
     destinations.add(operation.destination);
+    operation.collision = collisionPolicy(operation, stateDir);
+    if (operation.collision && operation.collision !== "keep-destination") {
+      operation.destinationStaged = join(stagingRoot, randomUUID());
+    }
   }
 }
 
@@ -141,14 +188,113 @@ function writeJournal(path: string, journal: MigrationJournal): void {
 
 function rollbackFilesystem(journal: MigrationJournal, journalPath: string): void {
   for (const operation of [...journal.operations].reverse()) {
-    const current = operation.state === "placed" ? operation.destination : operation.staged;
-    if (!current || !existsSync(current) || existsSync(operation.source)) continue;
-    mkdirSync(dirname(operation.source), { recursive: true });
-    renameSync(current, operation.source);
+    if (operation.state === "placed") {
+      if (operation.collision === "keep-destination" || !operation.destination) {
+        if (existsSync(operation.staged) && !existsSync(operation.source)) {
+          mkdirSync(dirname(operation.source), { recursive: true });
+          renameSync(operation.staged, operation.source);
+        }
+      } else if (operation.destination && existsSync(operation.destination)) {
+        if (operation.collision === "merge-jsonl" || operation.collision === "merge-tasks") {
+          rmSync(operation.destination, { recursive: true, force: true });
+          if (existsSync(operation.staged) && !existsSync(operation.source)) {
+            mkdirSync(dirname(operation.source), { recursive: true });
+            renameSync(operation.staged, operation.source);
+          }
+        } else if (!existsSync(operation.source)) {
+          mkdirSync(dirname(operation.source), { recursive: true });
+          renameSync(operation.destination, operation.source);
+        }
+      }
+    } else if (existsSync(operation.staged) && !existsSync(operation.source)) {
+      mkdirSync(dirname(operation.source), { recursive: true });
+      renameSync(operation.staged, operation.source);
+    }
+    if (
+      operation.destination &&
+      operation.destinationStaged &&
+      existsSync(operation.destinationStaged) &&
+      !existsSync(operation.destination)
+    ) {
+      mkdirSync(dirname(operation.destination), { recursive: true });
+      renameSync(operation.destinationStaged, operation.destination);
+    }
     operation.state = "pending";
   }
   journal.phase = "filesystem";
   writeJournal(journalPath, journal);
+}
+
+function mergedJsonl(source: string, destination: string): string {
+  const lines = new Set<string>();
+  for (const path of [source, destination]) {
+    for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
+      if (line) lines.add(line);
+    }
+  }
+  return lines.size > 0 ? `${[...lines].join("\n")}\n` : "";
+}
+
+interface TaskFileShape {
+  version: 1;
+  tasks: Array<{ id: string; blockedBy?: string[]; [key: string]: unknown }>;
+}
+
+function readTaskFile(path: string): TaskFileShape {
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<TaskFileShape>;
+  if (parsed.version !== 1 || !Array.isArray(parsed.tasks)) {
+    throw new Error(`Invalid task file during migration: ${path}`);
+  }
+  return parsed as TaskFileShape;
+}
+
+function mergedTasks(source: string, destination: string): string {
+  const legacy = readTaskFile(source).tasks;
+  const current = readTaskFile(destination).tasks;
+  const merged = legacy.map((task) => ({ ...task }));
+  const usedIds = new Set(merged.map((task) => String(task.id)));
+  let nextId = Math.max(0, ...[...usedIds].map(Number).filter(Number.isInteger)) + 1;
+  const remapped = new Map<string, string>();
+
+  for (const task of current) {
+    const originalId = String(task.id);
+    const exact = merged.find(
+      (candidate) =>
+        candidate.id === originalId && JSON.stringify(candidate) === JSON.stringify(task),
+    );
+    if (exact) {
+      remapped.set(originalId, originalId);
+      continue;
+    }
+    const id = usedIds.has(originalId) ? String(nextId++) : originalId;
+    usedIds.add(id);
+    remapped.set(originalId, id);
+    merged.push({ ...task, id });
+  }
+  for (const task of merged.slice(legacy.length)) {
+    if (task.blockedBy) task.blockedBy = task.blockedBy.map((id) => remapped.get(id) ?? id);
+  }
+  return `${JSON.stringify({ version: 1, tasks: merged }, null, 2)}\n`;
+}
+
+function placeOperation(operation: MoveOperation): void {
+  if (!operation.destination || operation.collision === "keep-destination") return;
+  mkdirSync(dirname(operation.destination), { recursive: true });
+  if (operation.collision === "merge-jsonl") {
+    writeFileSync(
+      operation.destination,
+      mergedJsonl(operation.staged, operation.destinationStaged!),
+    );
+    return;
+  }
+  if (operation.collision === "merge-tasks") {
+    writeFileSync(
+      operation.destination,
+      mergedTasks(operation.staged, operation.destinationStaged!),
+    );
+    return;
+  }
+  renameSync(operation.staged, operation.destination);
 }
 
 function tablesWithColumn(database: InstanceType<typeof Database>, columnName: string): string[] {
@@ -512,7 +658,7 @@ export function migrateSingleUserState(
         state: "pending",
       });
     }
-    assertNoCollisions(operations);
+    configureCollisions(operations, stateDir, stagingRoot);
     journal = {
       id: SINGLE_USER_MIGRATION_ID,
       sourcePrincipal: source,
@@ -529,30 +675,57 @@ export function migrateSingleUserState(
   try {
     for (const operation of journal.operations) {
       // Reconcile a crash between rename(2) and the following journal write.
-      if (
-        operation.state === "pending" &&
-        !existsSync(operation.source) &&
-        existsSync(operation.staged)
-      ) {
-        operation.state = "staged";
+      if (operation.state === "staged") operation.state = "source-staged";
+      if (operation.state === "pending" && !existsSync(operation.source)) {
+        if (existsSync(operation.staged)) operation.state = "source-staged";
+        else if (operation.destination && existsSync(operation.destination)) {
+          operation.state = "placed";
+        }
+      }
+      if (operation.state === "pending") {
+        mkdirSync(dirname(operation.staged), { recursive: true });
+        renameSync(operation.source, operation.staged);
+        operation.state = "source-staged";
+        writeJournal(journalPath, journal);
       }
       if (
-        operation.state === "staged" &&
+        operation.state === "source-staged" &&
+        operation.collision === "replace-destination" &&
+        operation.destination &&
+        operation.destinationStaged &&
+        !existsSync(operation.staged) &&
+        existsSync(operation.destination) &&
+        existsSync(operation.destinationStaged)
+      ) {
+        operation.state = "placed";
+        writeJournal(journalPath, journal);
+      }
+      if (
+        operation.state === "destination-staged" &&
+        operation.collision !== "merge-jsonl" &&
+        operation.collision !== "merge-tasks" &&
+        operation.collision !== "keep-destination" &&
         operation.destination &&
         !existsSync(operation.staged) &&
         existsSync(operation.destination)
       ) {
         operation.state = "placed";
-      }
-      if (operation.state === "pending") {
-        mkdirSync(dirname(operation.staged), { recursive: true });
-        renameSync(operation.source, operation.staged);
-        operation.state = "staged";
         writeJournal(journalPath, journal);
       }
-      if (operation.state === "staged" && operation.destination) {
-        mkdirSync(dirname(operation.destination), { recursive: true });
-        renameSync(operation.staged, operation.destination);
+      if (operation.state === "source-staged") {
+        if (operation.destination && operation.destinationStaged) {
+          if (existsSync(operation.destination) && !existsSync(operation.destinationStaged)) {
+            renameSync(operation.destination, operation.destinationStaged);
+          }
+          if (!existsSync(operation.destinationStaged)) {
+            throw new Error(`Missing collision backup for ${operation.destination}.`);
+          }
+        }
+        operation.state = "destination-staged";
+        writeJournal(journalPath, journal);
+      }
+      if (operation.state === "destination-staged") {
+        placeOperation(operation);
         operation.state = "placed";
         writeJournal(journalPath, journal);
       }
@@ -598,10 +771,21 @@ export function migrateSingleUserState(
       migratedTables,
     };
     for (const store of ["conversations", "tasks", "users"]) {
-      rmSync(join(stateDir, "data", store, source), { recursive: true, force: true });
+      rmSync(join(stateDir, "data", store, source), {
+        recursive: true,
+        force: true,
+      });
     }
-    rmSync(join(stateDir, "workspace", "browser-profiles"), { recursive: true, force: true });
-    writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+    rmSync(join(stateDir, "run"), { recursive: true, force: true });
+    rmSync(join(stateDir, "bin"), { recursive: true, force: true });
+    rmSync(join(stateDir, "workspace", "browser-profiles"), {
+      recursive: true,
+      force: true,
+    });
+    writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`, {
+      mode: 0o600,
+      flag: "wx",
+    });
     journal.phase = "complete";
     rmSync(stagingRoot, { recursive: true, force: true });
     return {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -1361,8 +1361,68 @@ try {
     };
     const legacyRun = join(migrationEnv.NEGOTIUM_STATE_DIR, "run");
     await mkdir(join(legacyRun, "session-asks"), { recursive: true });
+    await mkdir(join(migrationEnv.NEGOTIUM_STATE_DIR, "runtime", "session-asks"), {
+      recursive: true,
+    });
     await Bun.write(join(legacyRun, "packed-smoke"), "legacy runtime entry\n");
     await Bun.write(join(legacyRun, "session-asks", "ask.json"), "{}\n");
+    await Bun.write(
+      join(migrationEnv.NEGOTIUM_STATE_DIR, "runtime", "session-asks", "current.json"),
+      "{}\n",
+    );
+    await mkdir(join(migrationEnv.NEGOTIUM_STATE_DIR, "data", "conversations", "local"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(migrationEnv.NEGOTIUM_STATE_DIR, "data", "conversations", "local", "topic.jsonl"),
+      "legacy\nshared\n",
+    );
+    await Bun.write(
+      join(migrationEnv.NEGOTIUM_STATE_DIR, "data", "conversations", "topic.jsonl"),
+      "shared\ncurrent\n",
+    );
+    await mkdir(join(migrationEnv.NEGOTIUM_STATE_DIR, "data", "tasks", "local"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(migrationEnv.NEGOTIUM_STATE_DIR, "data", "tasks", "local", "topic.json"),
+      JSON.stringify({ version: 1, tasks: [{ id: "1", subject: "legacy" }] }),
+    );
+    await Bun.write(
+      join(migrationEnv.NEGOTIUM_STATE_DIR, "data", "tasks", "topic.json"),
+      JSON.stringify({ version: 1, tasks: [{ id: "1", subject: "current" }] }),
+    );
+    const localOwner = `local_${createHash("sha256").update("local").digest("hex").slice(0, 16)}`;
+    await mkdir(
+      join(
+        migrationEnv.NEGOTIUM_STATE_DIR,
+        "workspace",
+        "browser-profiles",
+        "profiles",
+        localOwner,
+        "default",
+      ),
+      { recursive: true },
+    );
+    await mkdir(join(migrationEnv.NEGOTIUM_STATE_DIR, "browser", "profiles", "default"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(
+        migrationEnv.NEGOTIUM_STATE_DIR,
+        "workspace",
+        "browser-profiles",
+        "profiles",
+        localOwner,
+        "default",
+        "state",
+      ),
+      "legacy-browser",
+    );
+    await Bun.write(
+      join(migrationEnv.NEGOTIUM_STATE_DIR, "browser", "profiles", "default", "state"),
+      "current-browser",
+    );
     await run(
       bin,
       ["migrate", "single-user", "--source=local", "--delete-other-users", "--yes"],
@@ -1377,10 +1437,34 @@ try {
     }
     if (
       !(await Bun.file(
-        join(migrationEnv.NEGOTIUM_STATE_DIR, "runtime", "session-asks", "ask.json"),
+        join(migrationEnv.NEGOTIUM_STATE_DIR, "runtime", "session-asks", "current.json"),
       ).exists())
     ) {
-      fail("packed migration did not move the legacy session-asks directory");
+      fail("packed migration did not preserve the current runtime directory");
+    }
+    const mergedConversation = await Bun.file(
+      join(migrationEnv.NEGOTIUM_STATE_DIR, "data", "conversations", "topic.jsonl"),
+    ).text();
+    if (mergedConversation !== "legacy\nshared\ncurrent\n") {
+      fail("packed migration did not merge conversation logs");
+    }
+    const mergedTaskFile = (await Bun.file(
+      join(migrationEnv.NEGOTIUM_STATE_DIR, "data", "tasks", "topic.json"),
+    ).json()) as { tasks?: Array<{ id?: string; subject?: string }> };
+    if (
+      mergedTaskFile.tasks?.length !== 2 ||
+      mergedTaskFile.tasks[0]?.subject !== "legacy" ||
+      mergedTaskFile.tasks[1]?.subject !== "current" ||
+      mergedTaskFile.tasks[1]?.id !== "2"
+    ) {
+      fail("packed migration did not merge task stores");
+    }
+    if (
+      (await Bun.file(
+        join(migrationEnv.NEGOTIUM_STATE_DIR, "browser", "profiles", "default", "state"),
+      ).text()) !== "legacy-browser"
+    ) {
+      fail("packed migration did not preserve the legacy browser profile");
     }
     if (
       !(await Bun.file(
