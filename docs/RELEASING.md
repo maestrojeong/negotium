@@ -5,7 +5,7 @@ Negotium publishes two npm packages at one lockstep version:
 1. `@negotium/adapter-sdk` for third-party adapter contracts, outbox helpers, and testkit utilities.
 2. `negotium` for the CLI, runtime, MCP services, Cron module, and first-party adapters.
 
-The other ten workspaces are private source boundaries. They are built and tested in the monorepo
+The other nine workspaces are private source boundaries. They are built and tested in the monorepo
 but must never be published or referenced by a public package manifest.
 
 ## One-time setup
