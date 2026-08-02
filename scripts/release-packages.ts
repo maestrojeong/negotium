@@ -208,7 +208,7 @@ async function withPackedNodeDaemon(
 ): Promise<void> {
   const stateDir = env.NEGOTIUM_STATE_DIR;
   if (!stateDir) fail("packed node daemon smoke requires NEGOTIUM_STATE_DIR");
-  const infoPath = join(stateDir, "run", "node-daemon.json");
+  const infoPath = join(stateDir, "runtime", "node-daemon.json");
   const child = Bun.spawn([bin, "__node-daemon", "--port=0"], {
     cwd,
     env,
@@ -1317,6 +1317,26 @@ try {
     const version = (await run(bin, ["--version"], smokeRoot, false, smokeEnv)).trim();
     if (!expectedVersion || version !== expectedVersion) {
       fail(`packed negotium binary reported version ${version}, expected ${expectedVersion}`);
+    }
+    const legacyRun = join(smokeEnv.NEGOTIUM_STATE_DIR, "run");
+    await mkdir(legacyRun, { recursive: true });
+    await Bun.write(join(legacyRun, "packed-smoke"), "legacy runtime entry\n");
+    await run(
+      bin,
+      ["migrate", "single-user", "--source=local", "--delete-other-users", "--yes"],
+      smokeRoot,
+      true,
+      smokeEnv,
+    );
+    if (!(await Bun.file(join(smokeEnv.NEGOTIUM_STATE_DIR, "runtime", "packed-smoke")).exists())) {
+      fail("packed migration did not move run to runtime");
+    }
+    if (
+      !(await Bun.file(
+        join(smokeEnv.NEGOTIUM_STATE_DIR, ".migration-0.2.0-single-user.json"),
+      ).exists())
+    ) {
+      fail("packed migration did not write its completion marker");
     }
     const otiumHelp = await run(bin, ["otium", "--help"], smokeRoot, false, smokeEnv);
     if (!otiumHelp.includes("usage: negotium otium")) {

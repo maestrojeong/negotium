@@ -184,13 +184,23 @@ State lives under `~/.negotium` by default:
 
 ```text
 ~/.negotium/
-├── data/       SQLite databases and generated node secrets
-├── run/        transient queues and process state
-├── workspace/  topic files, wiki, skills, browser profiles, Cron scripts
-└── logs/       activity and token-usage logs
+├── data/       sessions.db, conversations, tasks, uploads, and encrypted vault data
+├── runtime/    transient queues, asks, progress, ports, and background outputs
+├── workspace/  topics, wiki, and Cron state
+├── browser/    shared named browser profiles
+├── binaries/   versioned private runtime binaries
+├── logs/       activity and token-usage logs
+└── secrets/    owner-only node, runtime MCP, and vault keys
 ```
 
-Set `NEGOTIUM_STATE_DIR` to move the state root.
+Set `NEGOTIUM_STATE_DIR` to move the state root. `NEGOTIUM_BROWSER_DIR` moves only
+the browser profile store. The older `NEGOTIUM_DATA_DIR`, `NEGOTIUM_LOG_DIR`,
+`NEGOTIUM_RUN_DIR`, and `NEGOTIUM_WORKSPACE_DIR` overrides remain compatibility
+inputs; `NEGOTIUM_RUN_DIR` now overrides the `runtime/` location.
+
+Version 0.2 is a breaking single-user filesystem release. Existing 0.1 state is
+never changed during startup; run the explicit migration described in
+[Migration 0.2.0](./docs/MIGRATION-0.2.0.md) while Negotium is stopped.
 Set `NEGOTIUM_LANG` (default `English`) to the user's mother tongue to localize the assistant's replies and memory; it stays a fallback since the assistant mirrors whatever language the user writes in.
 
 The vault encrypts values at rest and keeps plaintext out of normal agent

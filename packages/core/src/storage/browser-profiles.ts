@@ -55,11 +55,12 @@ export function hasBrowserProfileTopic(topicId: string): boolean {
 }
 
 export function createBrowserProfile(ownerId: string, rawName: string): string {
+  void ownerId;
   const name = normalizeBrowserProfileName(rawName);
   if (name === DEFAULT_BROWSER_PROFILE) return name;
   db.query(
     "INSERT OR IGNORE INTO browser_profiles (owner_id, name, created_at) VALUES (?, ?, ?)",
-  ).run(ownerId, name, new Date().toISOString());
+  ).run("local", name, new Date().toISOString());
   return name;
 }
 
@@ -84,18 +85,18 @@ export function assignTopicBrowserProfile(opts: {
 }
 
 export function listBrowserProfiles(ownerId: string): BrowserProfileRecord[] {
+  void ownerId;
   const records = db
     .query<{ name: string; created_at: string }, string>(
       "SELECT name, created_at FROM browser_profiles WHERE owner_id = ? ORDER BY name",
     )
-    .all(ownerId);
+    .all("local");
   const topics = db
-    .query<{ id: string; title: string; browser_profile: string | null }, string>(
+    .query<{ id: string; title: string; browser_profile: string | null }, []>(
       `SELECT t.id, t.title, t.browser_profile FROM api_topics t
-       WHERE t.browser_profile_owner = ?
        ORDER BY t.title`,
     )
-    .all(ownerId);
+    .all();
 
   const byName = new Map<string, BrowserProfileRecord>();
   byName.set(DEFAULT_BROWSER_PROFILE, {
@@ -120,14 +121,15 @@ export function listBrowserProfiles(ownerId: string): BrowserProfileRecord[] {
 }
 
 export function deleteBrowserProfile(ownerId: string, rawName: string): void {
+  void ownerId;
   const name = normalizeBrowserProfileName(rawName);
   if (name === DEFAULT_BROWSER_PROFILE) throw new Error("The default profile cannot be deleted.");
   const used = db
-    .query<{ count: number }, [string, string]>(
+    .query<{ count: number }, string>(
       `SELECT COUNT(*) AS count FROM api_topics t
-       WHERE t.browser_profile = ? AND t.browser_profile_owner = ?`,
+       WHERE t.browser_profile = ?`,
     )
-    .get(name, ownerId)?.count;
+    .get(name)?.count;
   if (used) throw new Error(`Profile "${name}" is assigned to ${used} topic(s).`);
-  db.query("DELETE FROM browser_profiles WHERE owner_id = ? AND name = ?").run(ownerId, name);
+  db.query("DELETE FROM browser_profiles WHERE owner_id = ? AND name = ?").run("local", name);
 }

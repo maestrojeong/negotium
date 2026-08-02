@@ -35,7 +35,7 @@ async function install() {
   const stateDir = process.env.NEGOTIUM_STATE_DIR?.trim()
     ? resolve(process.env.NEGOTIUM_STATE_DIR.trim())
     : resolve(homedir(), ".negotium");
-  const installDir = resolve(stateDir, "bin", "browser-rs", VERSION);
+  const installDir = resolve(stateDir, "binaries", "browser-rs", VERSION);
   const destination = resolve(installDir, "browser-rs");
   await mkdir(installDir, { recursive: true });
 

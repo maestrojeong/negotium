@@ -902,7 +902,7 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
   if (opts.sessionType === "cron") {
     if (!opts.topicId) throw new Error("getMcpServersForQuery: cron sessionType requires topicId");
     return getCronMcpServers({
-      userId: opts.userId || "default",
+      userId: opts.userId || "local",
       session: opts.session || "cron",
       topicId: opts.topicId,
       queryId: opts.queryId,
@@ -919,7 +919,7 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
   }
   if (opts.sessionType === "dm" || opts.sessionType === "ephemeral") {
     return getDmMcpServers({
-      userId: opts.userId || "default",
+      userId: opts.userId || "local",
       agent: opts.agent,
       playwrightPort: opts.playwrightPort,
       playwrightCapability: opts.playwrightCapability,
@@ -927,7 +927,7 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
   }
   if (opts.sessionType === "manager") {
     return getManagerMcpServers({
-      userId: opts.userId || "default",
+      userId: opts.userId || "local",
       session: opts.session,
       topicId: opts.topicId,
       queryId: opts.queryId,
@@ -944,7 +944,7 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
     });
   }
   return getForumMcpServers({
-    userId: opts.userId || "default",
+    userId: opts.userId || "local",
     session: opts.session || "default",
     topicId: opts.topicId,
     subagentParentTopicId: opts.subagentParentTopicId,

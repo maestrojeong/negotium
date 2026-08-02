@@ -59,7 +59,7 @@ function defaultWorkspaceDir(): string {
 }
 
 function defaultSessionAsksDir(): string {
-  const runDir = envPath("NEGOTIUM_RUN_DIR", join(defaultStateDir(), "run"));
+  const runDir = envPath("NEGOTIUM_RUN_DIR", join(defaultStateDir(), "runtime"));
   return join(runDir, "session-asks");
 }
 

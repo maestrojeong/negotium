@@ -114,7 +114,7 @@ function parseArgv(): {
   topicId?: string;
   surface: WikiSurface;
 } {
-  let userId = "default";
+  let userId = "local";
   let topicId: string | undefined;
   let surface: WikiSurface = "all";
 

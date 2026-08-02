@@ -50,7 +50,7 @@ describe("Vault secret boundary", () => {
     try {
       vaultSet("embedded-user", "HOST_TOKEN", "embedded-secret");
       expect(vaultGetValue("embedded-user", "HOST_TOKEN")).toBe("embedded-secret");
-      const database = new Database(join(dataDir, "vault.db"), {
+      const database = new Database(join(dataDir, "vault", "vault.db"), {
         readonly: true,
       });
       try {
@@ -92,7 +92,7 @@ describe("Vault secret boundary", () => {
     remember(userId, "EXACT_VALUE", value);
 
     expect(vaultGetValue(userId, "EXACT_VALUE")).toBe(value);
-    const db = new Database(join(DATA_DIR, "vault.db"), { readonly: true });
+    const db = new Database(join(DATA_DIR, "vault", "vault.db"), { readonly: true });
     try {
       const row = db
         .prepare("SELECT value FROM vault WHERE user_id = ? AND key = ?")

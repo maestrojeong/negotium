@@ -10,7 +10,12 @@
 import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DM_WORKSPACE_DIR, TOPIC_WORKSPACE_DIR, WORKSPACE_DIR } from "#platform/config";
+import {
+  DM_WORKSPACE_DIR,
+  SESSION_WORKSPACE_DIR,
+  TOPIC_WORKSPACE_DIR,
+  WORKSPACE_DIR,
+} from "#platform/config";
 import { logger } from "#platform/logger";
 import { renderUserPromptBatch } from "#runtime/user-turn-envelope";
 import type { ConversationEntry } from "#storage/conversations";
@@ -24,9 +29,12 @@ export interface RolloutHostOptions {
   fixturesDir?: string;
 }
 
-let trustedWorkspaceRoots = [WORKSPACE_DIR, DM_WORKSPACE_DIR, TOPIC_WORKSPACE_DIR].map((root) =>
-  resolve(root),
-);
+let trustedWorkspaceRoots = [
+  WORKSPACE_DIR,
+  DM_WORKSPACE_DIR,
+  SESSION_WORKSPACE_DIR,
+  TOPIC_WORKSPACE_DIR,
+].map((root) => resolve(root));
 
 /** Configure the embedding host's trusted workspace roots. */
 export function configureRolloutHost(options: RolloutHostOptions): () => void {

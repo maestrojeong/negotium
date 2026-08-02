@@ -186,12 +186,12 @@ describe("extractUserDataDirArg", () => {
 
 describe("makeInstanceKey", () => {
   it("falls back to the caller's default profile for unknown synthetic topics", () => {
-    expect(makeInstanceKey("alice", "topic-123")).toBe("profile:alice:default");
-    expect(makeInstanceKey("bob", "topic-123")).toBe("profile:bob:default");
+    expect(makeInstanceKey("alice", "topic-123")).toBe("profile:default");
+    expect(makeInstanceKey("bob", "topic-123")).toBe("profile:default");
   });
 
-  it("uses a user-scoped default profile for dm", () => {
-    expect(makeInstanceKey("alice", undefined)).toBe("profile:alice:default");
+  it("uses the shared default profile for dm", () => {
+    expect(makeInstanceKey("alice", undefined)).toBe("profile:default");
   });
 });
 
@@ -383,8 +383,8 @@ describe("withPlaywrightProfileMaintenance", () => {
 
     expect(result).toEqual({
       binding: {
-        instanceKey: "profile:alice:default",
-        ownerId: "alice",
+        instanceKey: "profile:default",
+        ownerId: "local",
         profile: "default",
       },
       stopped: false,

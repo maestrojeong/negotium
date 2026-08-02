@@ -14,6 +14,7 @@ const packageEntrypoints = new Map<string, string>([
   ["@negotium/adapter-sdk/testkit", "packages/adapter-sdk/src/testkit.ts"],
   ["@negotium/core", "packages/core/src/index.ts"],
   ["@negotium/core/conversation-migration", "packages/core/src/storage/conversation-migration.ts"],
+  ["@negotium/core/single-user-migration", "packages/core/src/migration/single-user.ts"],
   ["@negotium/core/cron-host", "packages/core/src/cron-host.ts"],
   ["@negotium/core/hosted-agent", "packages/core/src/agents/hosted-agent.ts"],
   ["@negotium/core/registry", "packages/core/src/agents/registry.ts"],

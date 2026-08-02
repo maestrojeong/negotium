@@ -24,7 +24,7 @@ export async function connectStdio(server: McpServer): Promise<void> {
 /**
  * Parse the `--user-id=<N>` CLI flag from argv and return the raw decimal
  * string. Returns empty string on missing/invalid values so callers can
- * retain their existing "userId || default" guards.
+ * retain their existing "userId || local" guards.
  *
  * Rejects unsafe values so the id stays usable as a storage key / process arg
  * if spawn args ever come from an untrusted source.

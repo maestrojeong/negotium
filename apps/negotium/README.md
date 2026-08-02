@@ -296,7 +296,7 @@ const restoreStorageHost = configureStorageHost({
   database,
   dataDir: "/srv/otium/state/data",
   logDir: "/srv/otium/logs",
-  sessionAsksDir: "/srv/otium/state/run/session-asks",
+  sessionAsksDir: "/srv/otium/state/runtime/session-asks",
   workspaceDir: "/srv/otium/state/workspace",
   sharedWikiDir: "/srv/otium/state/workspace/wiki",
   usersLogDir: "/srv/otium/state/data/users",

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { resolveTopicWorkspaceDir } from "#platform/config";
+import { resolveTopicWorkspaceDir, UPLOADS_DIR } from "#platform/config";
 import { logger } from "#platform/logger";
 import { resolveAttachmentByFileId, resolveUploadedFilePathByFileId } from "#runtime/file-hooks";
 import type { AgentInputAttachment } from "#types";
@@ -104,13 +104,13 @@ export interface IngestedAttachment {
 }
 
 /**
- * Store an inbound channel attachment in the topic's workspace (`uploads/`)
+ * Store an inbound channel attachment in the canonical data upload store.
  * and return the canonical prompt fragment for it. Single implementation of
  * the "download → workspace → [Attached file: …] line" intake used by every
  * channel adapter (ported from clawgram's buildPromptFromMessage convention).
  */
 export function ingestAttachment(args: IngestAttachmentArgs): IngestedAttachment {
-  const destDir = join(workspaceCwdFor(args.topicId), "uploads");
+  const destDir = join(UPLOADS_DIR, args.topicId);
   mkdirSync(destDir, { recursive: true });
   const safeName = safeAttachmentFilename(args.filename, "upload");
   // Timestamp alone collides for same-name files ingested in the same ms

@@ -18,8 +18,8 @@ import type { AgentKind, UnifiedEvent } from "#types";
  * **provider-agnostic source of truth** for cross-agent portability.
  *
  * Storage layout:
- *   {DATA_DIR}/conversations/{userId}/{sanitizedTopicName}.jsonl
- *   {DATA_DIR}/conversations/{userId}/{sanitizedTopicName}.active.jsonl
+ *   {DATA_DIR}/conversations/{sanitizedTopicName}.jsonl
+ *   {DATA_DIR}/conversations/{sanitizedTopicName}.active.jsonl
  *
  * The first file is append-only and retains every yielded UnifiedEvent for
  * archive and teardown. The optional active file is a replaceable provider
@@ -44,22 +44,9 @@ export interface ConversationEntry {
   event: UnifiedEvent;
 }
 
-/**
- * Validate that a userId stringifies to a safe path component. Rejects empties,
- * slashes, and traversal sequences before they touch the filesystem. The
- * conversation log is local-only so we keep this strict but simple if a
- * caller sends something unexpected it is their bug to fix, not ours to coerce.
- */
-function safeUserIdComponent(userId: number | string): string {
-  const str = String(userId);
-  if (!str || /[/\\]|\.\./.test(str)) {
-    throw new Error(`conversations: refusing unsafe userId path component: ${str}`);
-  }
-  return str;
-}
-
-function conversationDir(userId: number | string): string {
-  return join(resolveStorageDataDir(), "conversations", safeUserIdComponent(userId));
+/** Public userId remains in the API, but standalone storage has one flat local namespace. */
+function conversationDir(_userId: number | string): string {
+  return join(resolveStorageDataDir(), "conversations");
 }
 
 function topicFilename(topicName: string): string {

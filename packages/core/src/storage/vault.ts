@@ -60,8 +60,9 @@ function initializeVaultDatabase(database: VaultDatabase): void {
 }
 
 function openVaultDatabase(dataDir: string): VaultDatabase {
-  const path = join(dataDir, "vault.db");
-  mkdirSync(dataDir, { recursive: true });
+  const vaultDir = join(dataDir, "vault");
+  const path = join(vaultDir, "vault.db");
+  mkdirSync(vaultDir, { recursive: true, mode: 0o700 });
   const database = new Database(path, { create: true });
   // Defense in depth: the database and its sidecars are owner-only, while each
   // value is also encrypted independently by vault-crypto.

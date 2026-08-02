@@ -1,6 +1,6 @@
 /**
  * Channel-adapter media surface: [FILE:] tag extraction/stripping, attachment
- * intake into the topic workspace, local transcription wrapper, and the turn
+ * intake into the canonical upload store, local transcription wrapper, and the turn
  * footer. These are the shared pieces every channel adapter (Telegram, …)
  * consumes instead of reimplementing.
  */
@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { extractFileTagPaths, stripFileTags } from "#media/file-events";
 import { isTranscriptionConfigured, transcribeAudio } from "#media/text-extractor";
-import { resolveTopicWorkspaceDir } from "#platform/config";
+import { DATA_DIR } from "#platform/config";
 import { composeAttachmentPrompt, ingestAttachment } from "#runtime/attachments";
 import { renderTurnFooter } from "#runtime/footer";
 
@@ -34,14 +34,14 @@ describe("[FILE:] tag helpers", () => {
 });
 
 describe("ingestAttachment", () => {
-  test("stores bytes in the topic workspace uploads dir and returns the canonical prompt line", () => {
+  test("stores bytes in the canonical data uploads dir and returns the prompt line", () => {
     const topicId = "channel-media-ingest-topic";
     const ingested = ingestAttachment({
       topicId,
       filename: "photo.jpg",
       bytes: new Uint8Array([1, 2, 3]),
     });
-    expect(ingested.path.startsWith(join(resolveTopicWorkspaceDir(topicId), "uploads"))).toBe(true);
+    expect(ingested.path.startsWith(join(DATA_DIR, "uploads", topicId))).toBe(true);
     expect(readFileSync(ingested.path)).toEqual(Buffer.from([1, 2, 3]));
     expect(ingested.promptLine).toBe(`[Attached file: photo.jpg at path: ${ingested.path}]`);
   });

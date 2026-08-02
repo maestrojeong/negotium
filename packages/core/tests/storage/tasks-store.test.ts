@@ -18,13 +18,15 @@ describe("task store paths", () => {
     expect(taskScopeKey({ topicId: "topic-123", session: "Research" })).toBe("topic-123");
   });
 
-  test("sanitizes scope keys into a per-user JSON file", () => {
+  test("sanitizes scope keys into the flat canonical-user task directory", () => {
     const path = getTaskFilePath("user-1", "Topic / A");
-    expect(path.endsWith("/tasks/user-1/Topic___A.json")).toBe(true);
+    expect(path.endsWith("/tasks/Topic___A.json")).toBe(true);
   });
 
-  test("rejects unsafe user id path components", () => {
-    expect(() => getTaskFilePath("../evil", "topic")).toThrow();
+  test("ignores user id path components retained for wire compatibility", () => {
+    expect(getTaskFilePath("../ignored-for-wire-compat", "topic")).toBe(
+      getTaskFilePath("local", "topic"),
+    );
   });
 });
 

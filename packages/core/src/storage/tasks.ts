@@ -22,14 +22,6 @@ interface TaskFileShape {
   tasks: StoredTask[];
 }
 
-function safeUserIdComponent(userId: number | string): string {
-  const str = String(userId);
-  if (!str || /[/\\]|\.\./.test(str)) {
-    throw new Error(`tasks: refusing unsafe userId path component: ${str}`);
-  }
-  return str;
-}
-
 function safeTaskScopeKey(scopeKey: string): string {
   const safe = sanitizeFileName(scopeKey);
   if (!safe || safe === "." || safe === "..") {
@@ -43,12 +35,8 @@ export function taskScopeKey(opts: { topicId?: string; session: string }): strin
 }
 
 export function getTaskFilePath(userId: number | string, scopeKey: string): string {
-  return join(
-    resolveStorageDataDir(),
-    "tasks",
-    safeUserIdComponent(userId),
-    `${safeTaskScopeKey(scopeKey)}.json`,
-  );
+  void userId;
+  return join(resolveStorageDataDir(), "tasks", `${safeTaskScopeKey(scopeKey)}.json`);
 }
 
 export function readTasks(userId: number | string, scopeKey: string): StoredTask[] {

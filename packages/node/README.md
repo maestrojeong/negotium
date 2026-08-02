@@ -22,5 +22,5 @@ through the same SQLite state, while Terminal clients connect to one advertised 
 
 Start at most one advertised node per `NEGOTIUM_STATE_DIR`. It writes mode-0600 connection metadata
 under the state run directory and exposes an authenticated REST/SSE control surface on
-`127.0.0.1`. The state-directory bearer token is stored separately as `node-control-token`; a
+`127.0.0.1`. The state-directory bearer token is stored separately as `secrets/node-control-token`; a
 SQLite process lease prevents duplicate daemon ownership.

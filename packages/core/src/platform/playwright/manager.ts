@@ -5,7 +5,6 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   unlinkSync,
   writeFileSync,
@@ -123,7 +122,7 @@ export function resolvePlaywrightTopicBinding(
 function defaultTopicBinding(userId: string, topic: string | undefined): PlaywrightProfileBinding {
   if (!topic) return managerHost.resolveNamedBinding(userId, "default");
   const ownerId = getBrowserProfileOwner(topic, userId);
-  const profile = migrateLegacyTopicProfile(ownerId, topic);
+  const profile = getTopicBrowserProfile(topic);
   return managerHost.resolveNamedBinding(ownerId, profile);
 }
 
@@ -153,34 +152,18 @@ function validateProfileBinding(binding: PlaywrightProfileBinding): PlaywrightPr
   return Object.freeze({ ...binding });
 }
 
-function defaultNamedBinding(ownerId: string, rawProfile: string): PlaywrightProfileBinding {
+function defaultNamedBinding(_ownerId: string, rawProfile: string): PlaywrightProfileBinding {
   const profile = normalizeBrowserProfileName(rawProfile);
-  const instanceKey = `profile:${encodeURIComponent(ownerId)}:${profile}`;
+  const instanceKey = `profile:${profile}`;
   return {
     instanceKey,
-    ownerId,
+    ownerId: "local",
     profile,
   };
 }
 
 export function legacyBrowserProfileName(topic: string): string {
   return `legacy_${createHash("sha256").update(topic).digest("hex").slice(0, 12)}`;
-}
-
-function migrateLegacyTopicProfile(ownerId: string, topic: string): string {
-  const current = getTopicBrowserProfile(topic);
-  if (current !== "default" || !hasBrowserProfileTopic(topic)) return current;
-
-  const legacyDir = resolve(BROWSER_PROFILES_DIR, sanitizeTopicName(topic));
-  if (!existsSync(legacyDir)) return current;
-
-  const profile = legacyBrowserProfileName(topic);
-  const profileDir = defaultProfileDir(ownerId, profile);
-  mkdirSync(dirname(profileDir), { recursive: true });
-  if (!existsSync(profileDir)) renameSync(legacyDir, profileDir);
-  assignTopicBrowserProfile({ topicId: topic, actorUserId: ownerId, profile });
-  logger.info({ ownerId, topic, profile }, "Adopted legacy topic browser profile");
-  return profile;
 }
 
 function defaultChildEnvironment(context: PlaywrightChildEnvironmentContext): NodeJS.ProcessEnv {
@@ -281,6 +264,10 @@ interface InstanceKeyParts {
 }
 
 function parseInstanceKey(instanceKey: string): InstanceKeyParts {
+  const shared = /^profile:(.+)$/.exec(instanceKey);
+  if (shared && !shared[1]!.includes(":")) {
+    return { ownerId: "local", profile: normalizeBrowserProfileName(shared[1]!) };
+  }
   const match = /^profile:([^:]+):(.+)$/.exec(instanceKey);
   if (!match) return { ownerId: "legacy", profile: sanitizeTopicName(instanceKey) };
   return {
@@ -571,13 +558,8 @@ function releasePort(port: number) {
   usedPorts.delete(port);
 }
 
-function ownerDirectory(ownerId: string): string {
-  const digest = createHash("sha256").update(ownerId).digest("hex").slice(0, 16);
-  return `${sanitizeTopicName(ownerId).slice(0, 24)}_${digest}`;
-}
-
-function defaultProfileDir(ownerId: string, profile: string): string {
-  return resolve(BROWSER_PROFILES_DIR, "profiles", ownerDirectory(ownerId), profile);
+function defaultProfileDir(_ownerId: string, profile: string): string {
+  return resolve(BROWSER_PROFILES_DIR, profile);
 }
 
 /** Resolve the shared profile userDataDir for an instanceKey. */

@@ -69,10 +69,15 @@ function parsePortEnv(envValue: string | undefined, fallback: number): number {
 export const WORKSPACE_DIR = resolveLocalStateDir("NEGOTIUM_WORKSPACE_DIR", "workspace");
 export const TOPIC_WORKSPACE_DIR = resolve(WORKSPACE_DIR, "topics");
 export const SHARED_WIKI_DIR = resolve(WORKSPACE_DIR, "wiki");
-export const CONTEXTS_DIR = resolve(WORKSPACE_DIR, "contexts");
-export const BROWSER_PROFILES_DIR = resolve(WORKSPACE_DIR, "browser-profiles");
-export const DM_WORKSPACE_DIR = resolve(WORKSPACE_DIR, "dm");
-export const SESSION_WORKSPACE_DIR = resolve(WORKSPACE_DIR, "sessions");
+export const CRON_WORKSPACE_DIR = resolve(WORKSPACE_DIR, "cron");
+export const BROWSER_DIR = resolveLocalStateDir("NEGOTIUM_BROWSER_DIR", "browser");
+export const BROWSER_PROFILES_DIR = resolve(BROWSER_DIR, "profiles");
+export const BINARIES_DIR = resolve(STATE_DIR, "binaries");
+export const SECRETS_DIR = resolve(STATE_DIR, "secrets");
+// Legacy names remain public, but their durable contents now live under data.
+export const CONTEXTS_DIR = resolve(STATE_DIR, "data", "contexts");
+export const DM_WORKSPACE_DIR = resolve(STATE_DIR, "data", "dm");
+export const SESSION_WORKSPACE_DIR = resolve(STATE_DIR, "data", "sessions");
 // The Claude Agent SDK ships a platform-matched Claude Code binary. Keep that
 // SDK/CLI pair together by default; only use an external executable when an
 // operator explicitly opts in. This avoids silently pairing an older SDK with
@@ -140,7 +145,7 @@ export function resolveBrowserRsBin(envValue?: string): string | undefined {
   }
   const candidate = override
     ? resolve(override)
-    : resolve(STATE_DIR, "bin", "browser-rs", BROWSER_RS_VERSION, "browser-rs");
+    : resolve(BINARIES_DIR, "browser-rs", BROWSER_RS_VERSION, "browser-rs");
   try {
     accessSync(candidate, constants.X_OK);
     return browserRsMeetsMinimumVersion(candidate) ? candidate : undefined;
@@ -155,9 +160,7 @@ export const BROWSER_RS_BIN = resolveBrowserRsBin(envText("NEGOTIUM_BROWSER_RS_B
 export function resolveBrowserMcpBin(envValue?: string): string {
   const override = envValue?.trim();
   if (override) return resolve(override);
-  return (
-    BROWSER_RS_BIN ?? resolve(STATE_DIR, "bin", "browser-rs", BROWSER_RS_VERSION, "browser-rs")
-  );
+  return BROWSER_RS_BIN ?? resolve(BINARIES_DIR, "browser-rs", BROWSER_RS_VERSION, "browser-rs");
 }
 
 export const PLAYWRIGHT_MCP_BIN = resolveBrowserMcpBin(envText("NEGOTIUM_BROWSER_MCP_BIN"));
@@ -269,7 +272,7 @@ function loadOrCreateLocalSecret(
   options: { persistEnvValue?: boolean } = {},
 ): string {
   const envValue = envText(envKey);
-  const secretFile = resolve(STATE_DIR, filename);
+  const secretFile = resolve(SECRETS_DIR, filename);
   mkdirSync(dirname(secretFile), { recursive: true });
   if (envValue) {
     if (options.persistEnvValue) {
@@ -325,6 +328,8 @@ export const hostname = process.env.HOSTNAME || "127.0.0.1";
 // Persistent state (survives restarts, long-lived)
 export const DATA_DIR = resolveLocalStateDir("NEGOTIUM_DATA_DIR", "data");
 export const LOG_DIR = resolveLocalStateDir("NEGOTIUM_LOG_DIR", "logs");
+export const UPLOADS_DIR = resolve(DATA_DIR, "uploads");
+export const VAULT_DIR = resolve(DATA_DIR, "vault");
 // SESSIONS_DB_PATH env override lets tests point the DB singleton at a temp file.
 export const SESSIONS_DB = process.env.SESSIONS_DB_PATH
   ? resolve(process.env.SESSIONS_DB_PATH)
@@ -333,7 +338,9 @@ export const DEBUG_FILE = resolve(DATA_DIR, "debug-users.json");
 export const USERS_LOG_DIR = resolve(DATA_DIR, "users");
 
 // Runtime IPC queues (transient, safe to clear on restart)
-export const RUN_DIR = resolveLocalStateDir("NEGOTIUM_RUN_DIR", "run");
+/** @deprecated Use the runtime layout name; NEGOTIUM_RUN_DIR remains a compatibility override. */
+export const RUN_DIR = resolveLocalStateDir("NEGOTIUM_RUN_DIR", "runtime");
+export const RUNTIME_DIR = RUN_DIR;
 export const PROGRESS_DIR = resolve(RUN_DIR, "progress");
 export const DM_CMD_DIR = resolve(RUN_DIR, "dm-commands");
 export const DM_RESP_DIR = resolve(RUN_DIR, "dm-responses");
@@ -344,6 +351,8 @@ export const PLAYWRIGHT_MAX_PORT = parsePortEnv(process.env.PLAYWRIGHT_MAX_PORT,
 export const PLAYWRIGHT_PORTS_DIR = resolve(RUN_DIR, "playwright-ports");
 mkdirSync(STATE_DIR, { recursive: true });
 mkdirSync(DATA_DIR, { recursive: true });
+mkdirSync(UPLOADS_DIR, { recursive: true });
+mkdirSync(VAULT_DIR, { recursive: true, mode: 0o700 });
 mkdirSync(LOG_DIR, { recursive: true });
 mkdirSync(PROGRESS_DIR, { recursive: true });
 mkdirSync(DM_CMD_DIR, { recursive: true });
@@ -354,10 +363,14 @@ mkdirSync(PLAYWRIGHT_PORTS_DIR, { recursive: true });
 mkdirSync(WORKSPACE_DIR, { recursive: true });
 mkdirSync(TOPIC_WORKSPACE_DIR, { recursive: true });
 mkdirSync(SHARED_WIKI_DIR, { recursive: true });
+mkdirSync(CRON_WORKSPACE_DIR, { recursive: true });
 mkdirSync(CONTEXTS_DIR, { recursive: true });
-mkdirSync(BROWSER_PROFILES_DIR, { recursive: true });
 mkdirSync(DM_WORKSPACE_DIR, { recursive: true });
 mkdirSync(SESSION_WORKSPACE_DIR, { recursive: true });
+mkdirSync(BROWSER_DIR, { recursive: true });
+mkdirSync(BROWSER_PROFILES_DIR, { recursive: true });
+mkdirSync(BINARIES_DIR, { recursive: true });
+mkdirSync(SECRETS_DIR, { recursive: true, mode: 0o700 });
 
 /** Stale threshold for active-query state files (crash recovery) */
 export const ACTIVE_QUERY_STALE_MS = 10 * 60 * 1000; // 10 minutes

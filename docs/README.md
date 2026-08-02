@@ -12,6 +12,7 @@ instead of copying the explanation.
 | [Otium enrollment and sharing](./OTIUM-ENROLLMENT-AND-SHARING.md) | Node invitation, enrollment security, topic-sharing product model, UX, and delivery plan |
 | [Feature review](./FEATURE-REVIEW.md) | Review order, acceptance questions, source areas, and regression coverage |
 | [Releasing](./RELEASING.md) | Package validation and npm publication |
+| [Migration 0.2.0](./MIGRATION-0.2.0.md) | Breaking single-user filesystem migration and rollback-safe command |
 | [Migration 0.1.18](./MIGRATION-0.1.18.md) | Public helper adoption and Otium thin-adapter upgrade order |
 | [Migration 0.1.19](./MIGRATION-0.1.19.md) | Reset memory safety and the next Otium deduplication boundary |
 | [Migration 0.1.20](./MIGRATION-0.1.20.md) | Direct Vault placeholders and browser credential substitution |

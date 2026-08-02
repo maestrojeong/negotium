@@ -71,7 +71,7 @@ describe("browser profiles", () => {
     }
   });
 
-  test("the same profile name remains isolated between owners", () => {
+  test("the same profile name shares the single local process and directory", () => {
     const firstOwner = `owner-${randomUUID()}`;
     const secondOwner = `owner-${randomUUID()}`;
     const first = createOwnedTopic(firstOwner, `first-${randomUUID()}`);
@@ -79,8 +79,8 @@ describe("browser profiles", () => {
     try {
       assignTopicBrowserProfile({ topicId: first, actorUserId: firstOwner, profile: "work" });
       assignTopicBrowserProfile({ topicId: second, actorUserId: secondOwner, profile: "work" });
-      expect(makeInstanceKey(firstOwner, first)).not.toBe(makeInstanceKey(secondOwner, second));
-      expect(resolveTopicProfileDir(firstOwner, first)).not.toBe(
+      expect(makeInstanceKey(firstOwner, first)).toBe(makeInstanceKey(secondOwner, second));
+      expect(resolveTopicProfileDir(firstOwner, first)).toBe(
         resolveTopicProfileDir(secondOwner, second),
       );
     } finally {
@@ -105,7 +105,7 @@ describe("browser profiles", () => {
     }
   });
 
-  test("only the canonical first owner can access a multi-owner topic profile", () => {
+  test("keeps owner authorization while listing the shared profile namespace", () => {
     const canonicalOwner = `owner-${randomUUID()}`;
     const additionalOwner = `owner-${randomUUID()}`;
     const title = `multi-owner-${randomUUID()}`;
@@ -138,7 +138,7 @@ describe("browser profiles", () => {
       expect(isTopicBrowserProfileOwner(topicId, additionalOwner)).toBe(false);
       expect(
         listBrowserProfiles(additionalOwner).flatMap((profile) => profile.topics),
-      ).not.toContainEqual(expect.objectContaining({ id: topicId }));
+      ).toContainEqual(expect.objectContaining({ id: topicId }));
       expect(
         listBrowserProfiles(canonicalOwner).flatMap((profile) => profile.topics),
       ).toContainEqual(expect.objectContaining({ id: topicId }));

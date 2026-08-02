@@ -59,6 +59,11 @@ switch (command) {
     initCommand();
     break;
   }
+  case "migrate": {
+    const { migrateCommand } = await import("@/commands/migrate");
+    migrateCommand(args);
+    break;
+  }
   case "-v":
   case "--version": {
     const { NEGOTIUM_VERSION } = await import("@negotium/core/version");

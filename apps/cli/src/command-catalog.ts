@@ -16,6 +16,12 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     group: "Setup",
   },
   {
+    name: "migrate",
+    usage: "migrate single-user [--source=local] --delete-other-users --yes",
+    description: "explicitly migrate a 0.1 state tree to the 0.2 single-user layout",
+    group: "Setup",
+  },
+  {
     name: "serve",
     usage: "serve [otium]",
     description: "run the canonical node, optionally with the Otium sidecar",
