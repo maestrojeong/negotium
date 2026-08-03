@@ -3,7 +3,7 @@ import { chmodSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { normalizeVaultKey, redactVaultSecrets, vaultListWithValues } from "#storage/vault-public";
+import { redactVaultSecrets, vaultGetValue, vaultSubstituteDetailed } from "#storage/vault-public";
 
 const MAX_REQUEST_BYTES = 16 * 1024 * 1024;
 const DEFAULT_OUTPUT_LIMIT = 100_000;
@@ -158,16 +158,15 @@ export async function createBrowserVaultBroker(userId: string): Promise<BrowserV
       if (leases.size >= MAX_ACTIVE_LEASES) {
         return { id, ok: false, error: "too many active leases" };
       }
-      const entries = new Map(vaultListWithValues(userId).map((entry) => [entry.key, entry.value]));
-      const substituted = deepMapStrings(request.value, (text) =>
-        text.replace(/\{\{([^}]+)\}\}/g, (match, rawKey: string) => {
-          const key = normalizeVaultKey(rawKey);
-          const secret = entries.get(key);
-          if (secret === undefined) return match;
+      const substituted = deepMapStrings(request.value, (text) => {
+        const result = vaultSubstituteDetailed(userId, text);
+        for (const key of result.usedKeys) {
+          const secret = vaultGetValue(userId, key);
+          if (secret === undefined) continue;
           for (const form of encodedSecretForms(secret)) retainedForms.set(form, key);
-          return secret;
-        }),
-      );
+        }
+        return result.text;
+      });
       const prepared = prepareInput(request.tool, substituted);
       const lease = randomBytes(24).toString("hex");
       leases.set(lease, { boundary: prepared.boundary, createdAt: Date.now() });

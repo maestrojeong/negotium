@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { dirname } from "node:path";
 import {
   referencesRuntimeSecretStorage as defaultReferencesRuntimeSecretStorage,
   shouldRedirectVaultTool as defaultShouldRedirectVaultTool,
@@ -122,4 +123,9 @@ export function hostedClaudeCodeExecutablePath(): string | undefined {
 
 export function hostedCodexAuthFilePath(): string {
   return activeHost().codexAuthFilePath();
+}
+
+/** The one Codex state root used by auth, rollouts, native forks, and SDK resume. */
+export function hostedCodexHomePath(): string {
+  return dirname(hostedCodexAuthFilePath());
 }

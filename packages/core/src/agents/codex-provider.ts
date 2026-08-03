@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type {
   FileChangeItem,
@@ -21,7 +22,11 @@ import {
   snapshotCodexChildren,
   unregisterOwnedCodexPids,
 } from "#agents/codex-tree-kill";
-import { hostedCodexAuthFilePath, hostedMcpServers } from "#agents/execution-host";
+import {
+  hostedCodexAuthFilePath,
+  hostedCodexHomePath,
+  hostedMcpServers,
+} from "#agents/execution-host";
 import {
   migrateCodexRolloutNativeMultiAgentMetadata,
   readCodexPatchCallIds,
@@ -635,19 +640,24 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
     "codexProvider: starting turn",
   );
 
-  const codex = new Codex({
-    ...(scopedBrowserCapability
+  const hostedCodexHome = hostedCodexHomePath();
+  const inheritedCodexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
+  const codexEnvironment =
+    scopedBrowserCapability || resolve(hostedCodexHome) !== resolve(inheritedCodexHome)
       ? {
-          env: {
-            ...Object.fromEntries(
-              Object.entries(process.env).filter(
-                (entry): entry is [string, string] => typeof entry[1] === "string",
-              ),
+          ...Object.fromEntries(
+            Object.entries(process.env).filter(
+              (entry): entry is [string, string] => typeof entry[1] === "string",
             ),
-            [CODEX_BROWSER_CAPABILITY_ENV]: scopedBrowserCapability,
-          },
+          ),
+          CODEX_HOME: hostedCodexHome,
+          ...(scopedBrowserCapability
+            ? { [CODEX_BROWSER_CAPABILITY_ENV]: scopedBrowserCapability }
+            : {}),
         }
-      : {}),
+      : undefined;
+  const codex = new Codex({
+    ...(codexEnvironment ? { env: codexEnvironment } : {}),
     config: {
       // Otium exposes delegation through runtime.spawn_subagent so child work
       // gets its own room/card and its result is routed back to the parent.

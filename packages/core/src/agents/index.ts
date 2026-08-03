@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { hostedCodexHomePath } from "#agents/execution-host";
 import { getRegistryOperations } from "#agents/registry";
 import { encodeClaudeCwd } from "#agents/rollout/claude";
 import { resolveTaskEventScope, withTaskSnapshots } from "#agents/task-events";
@@ -108,7 +109,7 @@ export async function resolveSessionFileMissing(
       return !existsSync(path);
     }
     case "codex": {
-      const sessionsDir = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
+      const sessionsDir = join(hostedCodexHomePath(), "sessions");
       const glob = new Bun.Glob(`**/rollout-*-${sessionId}.jsonl`);
       for await (const _rel of glob.scan({ cwd: sessionsDir, onlyFiles: true })) {
         return false; // found at least one match → session exists

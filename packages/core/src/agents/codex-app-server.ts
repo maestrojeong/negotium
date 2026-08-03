@@ -1,7 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { dirname } from "node:path";
 import { codexCliScriptPath } from "#agents/codex-native-multi-agent";
-import { hostedCodexAuthFilePath } from "#agents/execution-host";
+import { hostedCodexHomePath } from "#agents/execution-host";
 import { latestCodexRolloutPath } from "#agents/rollout/codex";
 import { NEGOTIUM_VERSION } from "#version";
 
@@ -123,9 +122,8 @@ export function createCodexAppServerForker(host: CodexAppServerForkHost) {
 
 const forkCodexThread = createCodexAppServerForker({
   spawnServer() {
-    const authFilePath = hostedCodexAuthFilePath();
     return spawn(process.execPath, [codexCliScriptPath(), "app-server", "--stdio"], {
-      env: { ...process.env, CODEX_HOME: dirname(authFilePath) },
+      env: { ...process.env, CODEX_HOME: hostedCodexHomePath() },
       stdio: ["pipe", "pipe", "pipe"],
     });
   },

@@ -1,8 +1,8 @@
 import { existsSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { forkCodexSession } from "#agents/codex-app-server";
 import type { AgentRegistry, AgentRegistryOperations } from "#agents/contracts";
+import { hostedCodexHomePath } from "#agents/execution-host";
 import { writeCodexRollout } from "#agents/rollout/codex";
 import { logger } from "#platform/logger";
 import { CODEX_EFFORT_VALUES, type EffortLevel } from "#types";
@@ -79,7 +79,7 @@ export const codexRegistryOperations: AgentRegistryOperations = {
   // is well under a millisecond on a warm filesystem.
   async cleanupRollouts({ sessionIds }) {
     if (sessionIds.length === 0) return;
-    const sessionsDir = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
+    const sessionsDir = join(hostedCodexHomePath(), "sessions");
     // No sessions directory means there are no provider rollouts left to remove.
     if (!existsSync(sessionsDir)) return;
     const failures: unknown[] = [];

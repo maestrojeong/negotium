@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { claudeRegistry } from "#agents/claude-registry";
 import { codexRegistry } from "#agents/codex-registry";
 import { maestroRegistry } from "#agents/maestro-registry";
 import { resolveCompactionExecution } from "#agents/model-catalog";
 import {
+  codexAuthFilePath,
   FALLBACK_MODEL,
   GATEWAY_MODEL,
   MODEL_OPUS,
@@ -123,6 +126,26 @@ describe("session communication defaults", () => {
         `../../src/platform/config.ts?tell-depth-invalid-${Date.now()}-${Math.random()}`
       );
       expect(invalid.MAX_TELL_DEPTH).toBe(20);
+    } finally {
+      restoreEnv(snapshot);
+    }
+  });
+});
+
+describe("Codex state root", () => {
+  test("keeps auth under CODEX_HOME unless the hosted auth override wins", () => {
+    const snapshot = snapshotEnv(["CODEX_HOME", "NEGOTIUM_CODEX_AUTH_FILE"]);
+    try {
+      process.env.CODEX_HOME = "/tmp/negotium-codex-home";
+      delete process.env.NEGOTIUM_CODEX_AUTH_FILE;
+      expect(codexAuthFilePath()).toBe(join("/tmp/negotium-codex-home", "auth.json"));
+
+      process.env.NEGOTIUM_CODEX_AUTH_FILE = "/tmp/hosted-codex/auth.json";
+      expect(codexAuthFilePath()).toBe("/tmp/hosted-codex/auth.json");
+
+      delete process.env.CODEX_HOME;
+      delete process.env.NEGOTIUM_CODEX_AUTH_FILE;
+      expect(codexAuthFilePath()).toBe(join(homedir(), ".codex", "auth.json"));
     } finally {
       restoreEnv(snapshot);
     }

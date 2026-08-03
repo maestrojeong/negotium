@@ -143,6 +143,33 @@ export function vaultListWithValues(userId: string): VaultEntryWithValue[] {
   }));
 }
 
+/**
+ * Return only rows that can still be authenticated with the active master key.
+ *
+ * This is intentionally limited to redaction indexes: one damaged credential
+ * must not disable unrelated tools, while direct access to that credential
+ * continues to fail closed through vaultGetValue().
+ */
+export function vaultListDecryptableValues(userId: string): VaultEntryWithValue[] {
+  const rows = activeVaultDatabase()
+    .prepare("SELECT key, description, value FROM vault WHERE user_id = ? ORDER BY key")
+    .all(userId) as VaultEntryWithValue[];
+  const entries: VaultEntryWithValue[] = [];
+  for (const row of rows) {
+    try {
+      entries.push({
+        key: row.key,
+        description: row.description,
+        value: decryptRow(userId, row.key, row.value),
+      });
+    } catch {
+      // A value that cannot be authenticated cannot be exposed by substitution,
+      // so there is no plaintext form available to add to the redaction index.
+    }
+  }
+  return entries;
+}
+
 export function vaultSet(userId: string, key: string, value: string, description = ""): void {
   const normalizedKey = normalizeVaultKey(key);
   activeVaultDatabase()
@@ -203,10 +230,11 @@ export interface VaultSubstitutionResult {
 
 /** Replace {{KEY}} placeholders and report which credentials were consumed. */
 export function vaultSubstituteDetailed(userId: string, text: string): VaultSubstitutionResult {
-  const entries = new Map(vaultListWithValues(userId).map((entry) => [entry.key, entry.value]));
+  const entries = new Map<string, string | undefined>();
   const usedKeys = new Set<string>();
   const substituted = text.replace(/\{\{([^}]+)\}\}/g, (match, rawKey: string) => {
     const key = normalizeVaultKey(rawKey);
+    if (!entries.has(key)) entries.set(key, vaultGetValue(userId, key));
     const value = entries.get(key);
     if (value === undefined) return match;
     usedKeys.add(key);
@@ -248,7 +276,7 @@ function encodedSecretForms(value: string): string[] {
 
 /** Scrub raw and common encoded forms before tool output reaches a model. */
 export function redactVaultSecrets(userId: string, text: string): string {
-  const candidates = vaultListWithValues(userId)
+  const candidates = vaultListDecryptableValues(userId)
     .flatMap((entry) => encodedSecretForms(entry.value).map((form) => ({ form, key: entry.key })))
     .sort((a, b) => b.form.length - a.form.length || a.key.localeCompare(b.key));
   if (candidates.length === 0) return text;

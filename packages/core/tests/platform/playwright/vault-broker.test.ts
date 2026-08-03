@@ -7,7 +7,9 @@ import {
   type BrowserVaultBrokerHandle,
   createBrowserVaultBroker,
 } from "#platform/playwright/vault-broker";
+import { Database } from "#storage/sqlite";
 import { configureVaultStorage, vaultDel, vaultSet } from "#storage/vault";
+import { encryptVaultValue } from "#storage/vault-crypto";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 
@@ -37,7 +39,9 @@ async function request(
   });
 }
 
-async function setup(userId: string): Promise<BrowserVaultBrokerHandle> {
+async function setup(
+  userId: string,
+): Promise<{ broker: BrowserVaultBrokerHandle; dataDir: string }> {
   const dir = mkdtempSync(join(tmpdir(), "negotium-vault-broker-test-"));
   const dispose = configureVaultStorage({
     dataDir: dir,
@@ -49,12 +53,12 @@ async function setup(userId: string): Promise<BrowserVaultBrokerHandle> {
     dispose();
     rmSync(dir, { recursive: true, force: true });
   });
-  return broker;
+  return { broker, dataDir: dir };
 }
 
 describe("browser Vault broker", () => {
   test("uses a private socket and rejects a bad token", async () => {
-    const broker = await setup("broker-auth-user");
+    const { broker } = await setup("broker-auth-user");
     expect(statSync(broker.socketPath).mode & 0o777).toBe(0o600);
     const result = await new Promise<Record<string, unknown>>((resolveResponse) => {
       const socket = connect(broker.socketPath);
@@ -72,9 +76,19 @@ describe("browser Vault broker", () => {
 
   test("substitutes, retains rotated secrets, redacts, then bounds output", async () => {
     const userId = "broker-redaction-user";
-    const broker = await setup(userId);
+    const { broker, dataDir } = await setup(userId);
     const secret = "secret+/ broker?value=old";
     vaultSet(userId, "TOKEN", secret);
+    vaultSet(userId, "DAMAGED", "unreadable secret");
+    const database = new Database(join(dataDir, "vault", "vault.db"));
+    database
+      .prepare("UPDATE vault SET value = ? WHERE user_id = ? AND key = ?")
+      .run(
+        encryptVaultValue(userId, "DAMAGED", "unreadable secret", "wrong-master-key"),
+        userId,
+        "DAMAGED",
+      );
+    database.close();
     const transformed = await request(broker, {
       id: 1,
       op: "transform_input",
@@ -113,7 +127,7 @@ describe("browser Vault broker", () => {
   });
 
   test("rejects lease replay", async () => {
-    const broker = await setup("broker-lease-user");
+    const { broker } = await setup("broker-lease-user");
     const transformed = await request(broker, {
       id: 1,
       op: "transform_input",

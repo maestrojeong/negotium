@@ -17,8 +17,8 @@
 
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { hostedCodexHomePath } from "#agents/execution-host";
 import {
   assertUuidLike,
   type ChatPair,
@@ -41,7 +41,7 @@ interface CodexShell {
 }
 
 function codexSessionsDir(): string {
-  return join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
+  return join(hostedCodexHomePath(), "sessions");
 }
 
 let _shellCache: CodexShell | null = null;

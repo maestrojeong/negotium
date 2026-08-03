@@ -376,6 +376,27 @@ describe("writeCodexRollout", () => {
     expect(migrated.every((line) => line.payload.multi_agent_version === "disabled")).toBe(true);
   });
 
+  test("uses the hosted auth directory as the rollout store when CODEX_HOME differs", async () => {
+    const { writeCodexRollout } = await import("#agents/rollout/codex");
+    const hostedHome = mkdtempSync(join(WORKSPACE_DIR, "test-hosted-codex-home-"));
+    const otherHome = mkdtempSync(join(WORKSPACE_DIR, "test-other-codex-home-"));
+    const previousHome = process.env.CODEX_HOME;
+    const previousAuthFile = process.env.NEGOTIUM_CODEX_AUTH_FILE;
+    process.env.CODEX_HOME = otherHome;
+    process.env.NEGOTIUM_CODEX_AUTH_FILE = join(hostedHome, "auth.json");
+    try {
+      const result = writeCodexRollout({ cwd: TMP_CWD, pairs: [] });
+      expect(result.rolloutPath.startsWith(join(hostedHome, "sessions"))).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousHome;
+      if (previousAuthFile === undefined) delete process.env.NEGOTIUM_CODEX_AUTH_FILE;
+      else process.env.NEGOTIUM_CODEX_AUTH_FILE = previousAuthFile;
+      rmSync(hostedHome, { recursive: true, force: true });
+      rmSync(otherHome, { recursive: true, force: true });
+    }
+  });
+
   test("migrates a rollout stored in a local-date bucket that skews from the UUID's UTC day", async () => {
     const { migrateCodexRolloutNativeMultiAgentMetadata, readLatestCodexContextUsage } =
       await import("#agents/rollout/codex");
@@ -388,7 +409,9 @@ describe("writeCodexRollout", () => {
 
     const codexHome = mkdtempSync(join(WORKSPACE_DIR, "test-codex-home-"));
     const previousEnv = process.env.CODEX_HOME;
+    const previousAuthFile = process.env.NEGOTIUM_CODEX_AUTH_FILE;
     process.env.CODEX_HOME = codexHome;
+    delete process.env.NEGOTIUM_CODEX_AUTH_FILE;
     try {
       const bucketDir = join(codexHome, "sessions", "2026", "07", "16");
       mkdirSync(bucketDir, { recursive: true });
@@ -423,6 +446,8 @@ describe("writeCodexRollout", () => {
     } finally {
       if (previousEnv === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousEnv;
+      if (previousAuthFile === undefined) delete process.env.NEGOTIUM_CODEX_AUTH_FILE;
+      else process.env.NEGOTIUM_CODEX_AUTH_FILE = previousAuthFile;
       rmSync(codexHome, { recursive: true, force: true });
     }
   });
@@ -435,7 +460,9 @@ describe("writeCodexRollout", () => {
 
     const codexHome = mkdtempSync(join(WORKSPACE_DIR, "test-codex-home-"));
     const previousEnv = process.env.CODEX_HOME;
+    const previousAuthFile = process.env.NEGOTIUM_CODEX_AUTH_FILE;
     process.env.CODEX_HOME = codexHome;
+    delete process.env.NEGOTIUM_CODEX_AUTH_FILE;
     try {
       const unexpectedDir = join(codexHome, "sessions", "2025", "01", "02");
       mkdirSync(unexpectedDir, { recursive: true });
@@ -461,6 +488,8 @@ describe("writeCodexRollout", () => {
     } finally {
       if (previousEnv === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousEnv;
+      if (previousAuthFile === undefined) delete process.env.NEGOTIUM_CODEX_AUTH_FILE;
+      else process.env.NEGOTIUM_CODEX_AUTH_FILE = previousAuthFile;
       rmSync(codexHome, { recursive: true, force: true });
     }
   });

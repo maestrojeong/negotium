@@ -453,7 +453,10 @@ export const MAX_TELL_DEPTH =
 /** Codex CLI auth file. 호출 시점에 env를 읽는다 — 테스트가 런타임에
  *  NEGOTIUM_CODEX_AUTH_FILE을 바꾸므로 모듈 로드 상수로 만들면 안 된다. */
 export function codexAuthFilePath(): string {
-  return process.env.NEGOTIUM_CODEX_AUTH_FILE || join(homedir(), ".codex", "auth.json");
+  return (
+    process.env.NEGOTIUM_CODEX_AUTH_FILE ||
+    join(process.env.CODEX_HOME || join(homedir(), ".codex"), "auth.json")
+  );
 }
 
 // System defaults moved to per-agent registries
