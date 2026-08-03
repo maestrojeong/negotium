@@ -185,11 +185,16 @@ describe("session-comm MCP factory", () => {
 
     const withProfiles = await connected(
       context,
-      host({ getBrowserProfile: () => mcpOk("profile"), setBrowserProfile: () => mcpOk("set") }),
+      host({
+        getBrowserProfile: () => mcpOk("profile"),
+        setBrowserProfile: () => mcpOk("set"),
+        deleteBrowserProfile: () => mcpOk("deleted"),
+      }),
     );
     const names = (await withProfiles.listTools()).tools.map((tool) => tool.name);
     expect(names).toContain("get_browser_profile");
     expect(names).toContain("set_browser_profile");
+    expect(names).toContain("delete_browser_profile");
     await withProfiles.close();
   });
 });

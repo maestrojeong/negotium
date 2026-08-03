@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import {
   cloneProfileForChild,
   configurePlaywrightManagerHost,
@@ -7,9 +10,12 @@ import {
   resetPlaywrightManagerHost,
   resolveTopicProfileDir,
 } from "#platform/playwright/manager";
+import { deleteManagedBrowserProfile } from "#platform/playwright/profile-management";
 import { deleteTopic, upsertTopic } from "#storage/api-topics";
 import {
   assignTopicBrowserProfile,
+  createBrowserProfile,
+  deleteBrowserProfile,
   getBrowserProfileOwner,
   getTopicBrowserProfile,
   isTopicBrowserProfileOwner,
@@ -48,6 +54,138 @@ describe("browser profiles", () => {
     expect(normalizeBrowserProfileName(" Work_1 ")).toBe("work_1");
     expect(() => normalizeBrowserProfileName("../work")).toThrow();
     expect(() => normalizeBrowserProfileName("UPPER SPACE")).toThrow();
+  });
+
+  test("rejects deleting default and assigned profiles, then removes unused metadata", () => {
+    const ownerId = `owner-${randomUUID()}`;
+    const topicId = createOwnedTopic(ownerId, `assigned-${randomUUID()}`);
+    const profile = `unused_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    try {
+      createBrowserProfile(ownerId, profile);
+      expect(() => deleteBrowserProfile(ownerId, "default")).toThrow(
+        "default profile cannot be deleted",
+      );
+      assignTopicBrowserProfile({ topicId, actorUserId: ownerId, profile });
+      expect(() => deleteBrowserProfile(ownerId, profile)).toThrow(topicId);
+      expect(listBrowserProfiles(ownerId).find((item) => item.name === profile)?.deletable).toBe(
+        false,
+      );
+
+      assignTopicBrowserProfile({ topicId, actorUserId: ownerId, profile: "default" });
+      expect(deleteBrowserProfile(ownerId, profile)).toBe(true);
+      expect(listBrowserProfiles(ownerId).some((item) => item.name === profile)).toBe(false);
+    } finally {
+      deleteTopic(topicId);
+      deleteBrowserProfile(ownerId, profile);
+    }
+  });
+
+  test("deletes unused metadata and data through the configured profile boundary", async () => {
+    const ownerId = `owner-${randomUUID()}`;
+    const profile = `remove_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    const root = mkdtempSync(join(tmpdir(), "negotium-profile-delete-"));
+    const dataDir = join(root, profile);
+    const cleaned: string[] = [];
+    try {
+      configurePlaywrightManagerHost({
+        resolveNamedBinding(bindingOwnerId, rawProfile) {
+          return {
+            instanceKey: `delete:${bindingOwnerId}:${rawProfile}`,
+            ownerId: bindingOwnerId,
+            profile: rawProfile,
+          };
+        },
+        resolveInstanceDataDir(instanceKey) {
+          return join(root, instanceKey.split(":").at(-1)!);
+        },
+        cleanupBrowserProcessesForDataDir(path) {
+          cleaned.push(path);
+        },
+        removeProfileDataDir(path) {
+          if (dirname(resolve(path)) !== resolve(root))
+            throw new Error("outside test profile root");
+          rmSync(path, { recursive: true, force: true });
+          return true;
+        },
+        reapOrphanBrowsers() {},
+      });
+      createBrowserProfile(ownerId, profile);
+      mkdirSync(dataDir, { recursive: true });
+      writeFileSync(join(dataDir, "Cookies"), "test");
+
+      const result = await deleteManagedBrowserProfile(ownerId, ` ${profile.toUpperCase()} `);
+
+      expect(result).toEqual({
+        profile,
+        metadataRemoved: true,
+        dataRemoved: true,
+        processStopped: false,
+      });
+      expect(cleaned).toEqual([dataDir]);
+      expect(listBrowserProfiles(ownerId).some((item) => item.name === profile)).toBe(false);
+    } finally {
+      resetPlaywrightManagerHost();
+      rmSync(root, { recursive: true, force: true });
+      deleteBrowserProfile(ownerId, profile);
+    }
+  });
+
+  test("rechecks profile usage after shutdown before removing data", async () => {
+    const ownerId = `owner-${randomUUID()}`;
+    const profile = `raced_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    const topicId = createOwnedTopic(ownerId, `raced-${randomUUID()}`);
+    const root = mkdtempSync(join(tmpdir(), "negotium-profile-race-"));
+    const dataDir = join(root, profile);
+    let cleanupCalled = false;
+    let removeCalled = false;
+    try {
+      configurePlaywrightManagerHost({
+        resolveNamedBinding(bindingOwnerId, rawProfile) {
+          return {
+            instanceKey: `race:${bindingOwnerId}:${rawProfile}`,
+            ownerId: bindingOwnerId,
+            profile: rawProfile,
+          };
+        },
+        resolveInstanceDataDir(instanceKey) {
+          return join(root, instanceKey.split(":").at(-1)!);
+        },
+        cleanupBrowserProcessesForDataDir() {
+          cleanupCalled = true;
+        },
+        removeProfileDataDir(path) {
+          removeCalled = true;
+          rmSync(path, { recursive: true, force: true });
+          return true;
+        },
+        reapOrphanBrowsers() {},
+      });
+      createBrowserProfile(ownerId, profile);
+      mkdirSync(dataDir, { recursive: true });
+      writeFileSync(join(dataDir, "Cookies"), "preserve-me");
+
+      const deletion = deleteManagedBrowserProfile(ownerId, profile);
+      // The initial usage check has passed and process shutdown has yielded.
+      // Assign the profile before the maintenance callback resumes.
+      assignTopicBrowserProfile({ topicId, actorUserId: ownerId, profile });
+      await expect(deletion).rejects.toThrow(topicId);
+
+      // Exact-process cleanup may run, but the second usage check must happen
+      // before the profile directory or metadata is removed.
+      expect(cleanupCalled).toBe(true);
+      expect(removeCalled).toBe(false);
+      expect(readFileSync(join(dataDir, "Cookies"), "utf8")).toBe("preserve-me");
+      expect(listBrowserProfiles(ownerId).find((item) => item.name === profile)).toMatchObject({
+        deletable: false,
+        topics: [expect.objectContaining({ id: topicId })],
+      });
+    } finally {
+      resetPlaywrightManagerHost();
+      assignTopicBrowserProfile({ topicId, actorUserId: ownerId, profile: "default" });
+      deleteTopic(topicId);
+      deleteBrowserProfile(ownerId, profile);
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("topics with the same owner and profile share one instance and directory", () => {
@@ -191,6 +329,9 @@ describe("browser profiles", () => {
           return `/tmp/custom-browser-profiles/${instanceKey}`;
         },
         cleanupBrowserProcessesForDataDir() {},
+        removeProfileDataDir() {
+          return false;
+        },
         reapOrphanBrowsers() {},
       });
       assignTopicBrowserProfile({ topicId: source, actorUserId: ownerId, profile: "research" });

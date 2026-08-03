@@ -11,6 +11,7 @@ import { ACTIVE_QUERY_STALE_MS, MAX_TELL_DEPTH, USERS_LOG_DIR } from "#platform/
 import { appendJsonlEntry, readJsonFile } from "#platform/jsonl";
 import { OPTIONAL_FORUM_MCP_SERVERS, REQUIRED_FORUM_MCP_SERVERS } from "#platform/mcp-config";
 import { closeBrowserOwnerTabs } from "#platform/playwright/manager";
+import { deleteManagedBrowserProfile } from "#platform/playwright/profile-management";
 import { sessionInboxPath } from "#query/session-inbox-path";
 import { sanitizeId } from "#security/sanitize";
 import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
@@ -194,6 +195,21 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
           await closeBrowserOwnerTabs(context.userId, result.previous, `topic:${topic.id}`);
         }
         return ok(`Browser profile changed: ${result.previous} -> ${result.profile}.`);
+      } catch (err) {
+        return error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+
+    async deleteBrowserProfile(context, profile) {
+      const topic = currentTopic(context);
+      if (!topic) return error("Error: No current API topic.");
+      if (!isTopicBrowserProfileOwner(topic.id, context.userId)) {
+        return error("Error: Only the topic owner can delete its browser profiles.");
+      }
+      try {
+        const ownerId = getBrowserProfileOwner(topic.id, context.userId);
+        const result = await deleteManagedBrowserProfile(ownerId, profile);
+        return ok(JSON.stringify(result, null, 2));
       } catch (err) {
         return error(`Error: ${err instanceof Error ? err.message : String(err)}`);
       }

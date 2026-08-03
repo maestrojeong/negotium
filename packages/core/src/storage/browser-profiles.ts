@@ -6,6 +6,7 @@ export interface BrowserProfileRecord {
   name: string;
   createdAt: string | null;
   topics: Array<{ id: string; title: string }>;
+  deletable: boolean;
 }
 
 export function normalizeBrowserProfileName(name: string): string {
@@ -103,14 +104,26 @@ export function listBrowserProfiles(ownerId: string): BrowserProfileRecord[] {
     name: DEFAULT_BROWSER_PROFILE,
     createdAt: null,
     topics: [],
+    deletable: false,
   });
   for (const row of records) {
-    byName.set(row.name, { name: row.name, createdAt: row.created_at, topics: [] });
+    byName.set(row.name, {
+      name: row.name,
+      createdAt: row.created_at,
+      topics: [],
+      deletable: true,
+    });
   }
   for (const topic of topics) {
     const name = topic.browser_profile || DEFAULT_BROWSER_PROFILE;
-    const record = byName.get(name) ?? { name, createdAt: null, topics: [] };
+    const record = byName.get(name) ?? {
+      name,
+      createdAt: null,
+      topics: [],
+      deletable: name !== DEFAULT_BROWSER_PROFILE,
+    };
     record.topics.push({ id: topic.id, title: topic.title });
+    record.deletable = false;
     byName.set(name, record);
   }
   return [...byName.values()].sort((a, b) => {
@@ -120,16 +133,28 @@ export function listBrowserProfiles(ownerId: string): BrowserProfileRecord[] {
   });
 }
 
-export function deleteBrowserProfile(ownerId: string, rawName: string): void {
+export function assertBrowserProfileDeletable(ownerId: string, rawName: string): string {
   void ownerId;
   const name = normalizeBrowserProfileName(rawName);
   if (name === DEFAULT_BROWSER_PROFILE) throw new Error("The default profile cannot be deleted.");
-  const used = db
-    .query<{ count: number }, string>(
-      `SELECT COUNT(*) AS count FROM api_topics t
-       WHERE t.browser_profile = ?`,
+  const topics = db
+    .query<{ id: string; title: string }, string>(
+      `SELECT t.id, t.title FROM api_topics t
+       WHERE t.browser_profile = ?
+       ORDER BY t.title`,
     )
-    .get(name)?.count;
-  if (used) throw new Error(`Profile "${name}" is assigned to ${used} topic(s).`);
-  db.query("DELETE FROM browser_profiles WHERE owner_id = ? AND name = ?").run("local", name);
+    .all(name);
+  if (topics.length > 0) {
+    const assigned = topics.map((topic) => `${topic.title} (${topic.id})`).join(", ");
+    throw new Error(`Profile "${name}" is assigned to ${topics.length} topic(s): ${assigned}.`);
+  }
+  return name;
+}
+
+export function deleteBrowserProfile(ownerId: string, rawName: string): boolean {
+  const name = assertBrowserProfileDeletable(ownerId, rawName);
+  const result = db
+    .query("DELETE FROM browser_profiles WHERE owner_id = ? AND name = ?")
+    .run("local", name);
+  return Number(result.changes ?? 0) > 0;
 }

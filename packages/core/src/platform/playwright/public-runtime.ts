@@ -20,6 +20,7 @@ export {
   type PlaywrightProfileBinding,
   pinPlaywrightInstance,
   reapPlaywrightOrphans,
+  removePlaywrightProfileData,
   resetPlaywrightManagerHost,
   resolvePlaywrightCapabilityOwner,
   resolvePlaywrightProfileBinding,
@@ -39,6 +40,10 @@ export {
   waitForChildProcessExit,
   waitForChildProcessSpawnError,
 } from "./manager-utils";
+export {
+  type DeleteManagedBrowserProfileResult,
+  deleteManagedBrowserProfile,
+} from "./profile-management";
 export {
   probeMcpTransport,
   probePlaywrightMcpTransports,

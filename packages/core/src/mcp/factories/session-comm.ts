@@ -22,6 +22,10 @@ export interface SessionCommMcpHost {
     context: SessionCommContext,
     profile: string,
   ): MaybePromise<SessionCommMcpResult>;
+  deleteBrowserProfile?(
+    context: SessionCommContext,
+    profile: string,
+  ): MaybePromise<SessionCommMcpResult>;
   peekSession(context: SessionCommContext): MaybePromise<SessionCommMcpResult>;
   setDescription(
     context: SessionCommContext,
@@ -88,6 +92,14 @@ export function createSessionCommMcpServer(
       "Assign this topic to a named shared browser profile. Takes effect next turn.",
       { profile: z.string() },
       async ({ profile }) => host.setBrowserProfile!(context, profile),
+    );
+  }
+  if (host.deleteBrowserProfile) {
+    server.tool(
+      "delete_browser_profile",
+      "Delete an unused named browser profile and its on-disk data. The default or an assigned profile cannot be deleted.",
+      { profile: z.string() },
+      async ({ profile }) => host.deleteBrowserProfile!(context, profile),
     );
   }
   server.tool(

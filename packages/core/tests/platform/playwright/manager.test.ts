@@ -219,6 +219,9 @@ describe("configurePlaywrightManagerHost", () => {
           };
         },
         cleanupBrowserProcessesForDataDir() {},
+        removeProfileDataDir() {
+          return false;
+        },
         reapOrphanBrowsers() {},
       });
 
@@ -330,7 +333,9 @@ describe("configurePlaywrightManagerHost", () => {
           return `/tmp/custom-browser-profiles/${instanceKey}`;
         },
       }),
-    ).toThrow("custom Playwright profile paths require host crash cleanup and orphan sweep hooks");
+    ).toThrow(
+      "custom Playwright profile paths require host crash cleanup, profile removal, and orphan sweep hooks",
+    );
     resetPlaywrightManagerHost();
   });
 });
@@ -389,6 +394,27 @@ describe("withPlaywrightProfileMaintenance", () => {
       },
       stopped: false,
     });
+  });
+
+  it("refuses custom profile paths unless the host supplies its own bounded remover", async () => {
+    try {
+      expect(() =>
+        configurePlaywrightManagerHost({
+          resolveNamedBinding(ownerId, profile) {
+            return { instanceKey: `custom:${ownerId}:${profile}`, ownerId, profile };
+          },
+          resolveInstanceDataDir() {
+            return "/tmp/custom-profile-root/research";
+          },
+          cleanupBrowserProcessesForDataDir() {},
+          reapOrphanBrowsers() {},
+        }),
+      ).toThrow(
+        "custom Playwright profile paths require host crash cleanup, profile removal, and orphan sweep hooks",
+      );
+    } finally {
+      resetPlaywrightManagerHost();
+    }
   });
 });
 

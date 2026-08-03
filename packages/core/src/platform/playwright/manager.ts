@@ -84,8 +84,21 @@ export interface PlaywrightManagerHost {
   ) => NodeJS.ProcessEnv;
   /** Reap an orphan that owns this exact host-managed data directory. */
   readonly cleanupBrowserProcessesForDataDir: (userDataDir: string) => void;
+  /** Remove an exact host-managed profile directory, rejecting paths outside the host's root. */
+  readonly removeProfileDataDir?: (userDataDir: string) => boolean;
   /** Reap host-managed browsers that are not represented by the supplied live directories. */
   readonly reapOrphanBrowsers: (liveUserDataDirs: Iterable<string>) => void;
+}
+
+function removeDefaultProfileDataDir(userDataDir: string): boolean {
+  const root = resolve(BROWSER_PROFILES_DIR);
+  const target = resolve(userDataDir);
+  if (dirname(target) !== root) {
+    throw new Error(`Refusing to delete browser profile outside managed root: ${target}`);
+  }
+  const existed = existsSync(target);
+  rmSync(target, { recursive: true, force: true });
+  return existed;
 }
 
 export {
@@ -210,6 +223,7 @@ const defaultManagerHost: Readonly<PlaywrightManagerHost> = Object.freeze({
   },
   createChildEnvironment: defaultChildEnvironment,
   cleanupBrowserProcessesForDataDir: killBrowserProcsForUserDataDir,
+  removeProfileDataDir: removeDefaultProfileDataDir,
   reapOrphanBrowsers,
 });
 
@@ -239,10 +253,12 @@ export function configurePlaywrightManagerHost(
     next.resolveInstanceDataDir !== defaultManagerHost.resolveInstanceDataDir &&
     (next.cleanupBrowserProcessesForDataDir ===
       defaultManagerHost.cleanupBrowserProcessesForDataDir ||
+      !next.removeProfileDataDir ||
+      next.removeProfileDataDir === defaultManagerHost.removeProfileDataDir ||
       next.reapOrphanBrowsers === defaultManagerHost.reapOrphanBrowsers)
   ) {
     throw new Error(
-      "custom Playwright profile paths require host crash cleanup and orphan sweep hooks",
+      "custom Playwright profile paths require host crash cleanup, profile removal, and orphan sweep hooks",
     );
   }
   managerHost = Object.freeze(next);
@@ -293,6 +309,7 @@ function deletePortFile(instanceKey: string) {
   try {
     unlinkSync(join(managerHost.portsDir, portFileName(instanceKey)));
   } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
     logger.warn({ err: e, instanceKey }, "Failed to delete playwright port file");
   }
 }
@@ -430,6 +447,45 @@ export function withPlaywrightProfileMaintenance<T>(
 export function stopPlaywrightProfile(ownerId: string, rawProfile: string): Promise<boolean> {
   return withPlaywrightProfileMaintenance(ownerId, rawProfile, (binding, { stopInstance }) =>
     stopInstance(binding.instanceKey),
+  );
+}
+
+export interface RemovePlaywrightProfileDataResult {
+  dataDir: string;
+  processStopped: boolean;
+  dataRemoved: boolean;
+}
+
+export interface RemovePlaywrightProfileDataOptions {
+  /** Revalidate external ownership immediately before the synchronous removal. */
+  beforeRemove?: () => void;
+  /** Commit external metadata before releasing the profile lifecycle barrier. */
+  afterRemove?: () => void;
+}
+
+/** Stop all exact-profile processes and remove its data through the configured host boundary. */
+export function removePlaywrightProfileData(
+  ownerId: string,
+  rawProfile: string,
+  options: RemovePlaywrightProfileDataOptions = {},
+): Promise<RemovePlaywrightProfileDataResult> {
+  return withPlaywrightProfileMaintenance(
+    ownerId,
+    rawProfile,
+    async (binding, { stopInstance }) => {
+      const dataDir = resolveUserDataDir(binding.instanceKey);
+      const processStopped = await stopInstance(binding.instanceKey);
+      managerHost.cleanupBrowserProcessesForDataDir(dataDir);
+      deletePortFile(binding.instanceKey);
+      options.beforeRemove?.();
+      const removeProfileDataDir = managerHost.removeProfileDataDir;
+      if (!removeProfileDataDir) {
+        throw new Error("Browser profile deletion is not configured for this host.");
+      }
+      const dataRemoved = removeProfileDataDir(dataDir);
+      options.afterRemove?.();
+      return { dataDir, processStopped, dataRemoved };
+    },
   );
 }
 

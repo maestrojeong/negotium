@@ -12,6 +12,7 @@ import {
   REQUIRED_FORUM_MCP_SERVERS,
 } from "#platform/mcp-config";
 import { closeBrowserOwnerTabs } from "#platform/playwright/manager";
+import { deleteManagedBrowserProfile } from "#platform/playwright/profile-management";
 import { sanitizeId } from "#security/sanitize";
 import { getTopic } from "#storage/api-topics";
 import {
@@ -312,6 +313,30 @@ server.tool(
       return mcpOk(
         `Browser profile changed: ${result.previous} -> ${result.profile}. It takes effect next turn.${cleanupWarning}`,
       );
+    } catch (err) {
+      return mcpError(`Error: ${errMsg(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "delete_browser_profile",
+  "Delete an unused named browser profile and its on-disk data. The default or an assigned profile cannot be deleted.",
+  {
+    profile: z
+      .string()
+      .describe("Unused named profile to delete; the default profile cannot be deleted"),
+  },
+  async ({ profile }) => {
+    const topicId = currentApiTopicId();
+    if (!topicId || !userId) return mcpError("Error: No current API topic.");
+    if (!isTopicBrowserProfileOwner(topicId, userId)) {
+      return mcpError("Error: Only the topic owner can delete its browser profiles.");
+    }
+    try {
+      const ownerId = getBrowserProfileOwner(topicId, userId);
+      const result = await deleteManagedBrowserProfile(ownerId, profile);
+      return mcpOk(JSON.stringify(result, null, 2));
     } catch (err) {
       return mcpError(`Error: ${errMsg(err)}`);
     }
