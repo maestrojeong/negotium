@@ -79,7 +79,7 @@ function writeRollout(options: Parameters<AgentRegistryOperations["writeRollout"
         version: 1,
         cwd: options.cwd,
         createdAt: existingCreatedAt(path) ?? new Date().toISOString(),
-        sdkVersion: "0.1.54",
+        sdkVersion: "0.2.0",
       },
     },
     ...messages,
@@ -95,21 +95,33 @@ export const maestroRegistryOperations: AgentRegistryOperations = {
     return writeRollout(options);
   },
   async forkSession(options) {
-    // Fork the SDK's full-fidelity raw history. Maestro >=0.1.55 also carries
-    // the compacted active projection and promoted tool schemas so the fork's
-    // first request retains the parent's cacheable provider prefix.
-    const { forkSessionAt, loadRawMaestroSession } = await import("maestro-agent-sdk");
+    // Fork the full raw history while preserving the compacted working view.
+    // A compacted parent that cannot copy its active projection is not a usable
+    // cache-preserving fork, so let the caller fall back to bounded synthesis.
+    const { deleteMaestroSession, forkSessionAt, loadRawMaestroSession } = await import(
+      "maestro-agent-sdk"
+    );
     const parentMessages = loadRawMaestroSession(options.parentSessionId);
     if (!parentMessages) {
       throw new Error(`Maestro parent session not found: ${options.parentSessionId}`);
     }
+    const parentHasActiveProjection = existsSync(maestroActiveSessionPath(options.parentSessionId));
     const fork = forkSessionAt({
       parentSessionId: options.parentSessionId,
       messageIndex: parentMessages.length,
       cwd: options.cwd,
       userId: String(options.userId),
     });
-    return { forkId: fork.sessionId, rolloutPath: fork.rolloutPath };
+    if (parentHasActiveProjection && !fork.activeProjectionForked) {
+      deleteMaestroSession(fork.sessionId);
+      throw new Error(`Maestro active projection could not be forked: ${options.parentSessionId}`);
+    }
+    const activePath = maestroActiveSessionPath(fork.sessionId);
+    return {
+      forkId: fork.sessionId,
+      rolloutPath: fork.rolloutPath,
+      ...(existsSync(activePath) ? { cleanupPaths: [activePath] } : {}),
+    };
   },
   async cleanupRollouts(options) {
     // Keep the SDK off the daemon startup path, but use its canonical cleanup

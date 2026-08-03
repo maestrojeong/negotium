@@ -43,6 +43,8 @@ export interface ForkRegistryOptions {
 export interface ForkRegistryResult {
   forkId: string;
   rolloutPath: string;
+  /** Additional provider-owned files created for the fork. */
+  cleanupPaths?: string[];
 }
 
 export interface CleanupRolloutsOptions {

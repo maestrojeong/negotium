@@ -1,4 +1,5 @@
 import { existsSync, unlinkSync } from "node:fs";
+import type { ForkRegistryResult } from "#agents/contracts";
 import { getRegistryOperations } from "#agents/registry";
 import { logger } from "#platform/logger";
 import type { AgentKind, EffortLevel } from "#types";
@@ -36,13 +37,15 @@ export interface ForkHandle {
   forkId: string;
   /** Absolute path of the rollout file to remove on cleanup. */
   rolloutPath: string;
+  /** Additional provider-owned files removed with the primary rollout. */
+  cleanupPaths?: string[];
 }
 
 export interface AgentForkHost {
   forkSession(
     agent: AgentKind,
     options: Omit<ForkAgentSessionOptions, "agent">,
-  ): Promise<{ forkId: string; rolloutPath: string }>;
+  ): Promise<ForkRegistryResult>;
   exists(path: string): boolean;
   unlink(path: string): void;
   warn(details: Record<string, unknown>, message: string): void;
@@ -57,22 +60,24 @@ export function createAgentForkHelpers(host: AgentForkHost): AgentForkHelpers {
   return {
     async forkAgentSession(options) {
       const { agent, ...forkOptions } = options;
-      const { forkId, rolloutPath } = await host.forkSession(agent, forkOptions);
-      return { agent, forkId, rolloutPath };
+      const { forkId, rolloutPath, cleanupPaths } = await host.forkSession(agent, forkOptions);
+      return { agent, forkId, rolloutPath, ...(cleanupPaths?.length ? { cleanupPaths } : {}) };
     },
     cleanupAgentFork(handle) {
-      try {
-        if (host.exists(handle.rolloutPath)) host.unlink(handle.rolloutPath);
-      } catch (error) {
-        host.warn(
-          {
-            error,
-            agent: handle.agent,
-            forkId: handle.forkId,
-            rolloutPath: handle.rolloutPath,
-          },
-          "cleanupAgentFork: failed to remove rollout",
-        );
+      for (const path of [handle.rolloutPath, ...(handle.cleanupPaths ?? [])]) {
+        try {
+          if (host.exists(path)) host.unlink(path);
+        } catch (error) {
+          host.warn(
+            {
+              error,
+              agent: handle.agent,
+              forkId: handle.forkId,
+              path,
+            },
+            "cleanupAgentFork: failed to remove rollout",
+          );
+        }
       }
     },
   };

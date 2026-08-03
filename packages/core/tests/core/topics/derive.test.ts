@@ -528,7 +528,7 @@ describe("createDerivedTopic", () => {
   });
 
   for (const agent of ["codex", "maestro"] as const) {
-    test(`does not compact a same-model ${agent} fork fallback`, async () => {
+    test(`compacts an oversized ${agent} fork fallback when native state is unavailable`, async () => {
       const sourceTopicId = randomUUID();
       const sourceTitle = `codex-cache-source-${randomUUID()}`;
       const childTitle = `codex-cache-child-${randomUUID()}`;
@@ -565,7 +565,7 @@ describe("createDerivedTopic", () => {
           name: childTitle,
           summarizeFork: async () => {
             summarizeCalls++;
-            return "unexpected compact summary";
+            return "bounded fallback summary";
           },
         });
         expect(child).not.toBeNull();
@@ -573,10 +573,10 @@ describe("createDerivedTopic", () => {
         childId = child.id;
         childSessionId = getTopicSessionId(child.id);
         expect(childSessionId).toBeTruthy();
-        expect(summarizeCalls).toBe(0);
-        expect(JSON.stringify(readConversation(userId, childTitle))).toContain(
-          "cacheable response",
-        );
+        expect(summarizeCalls).toBe(1);
+        const childConversation = JSON.stringify(readConversation(userId, childTitle));
+        expect(childConversation).toContain("bounded fallback summary");
+        expect(childConversation).not.toContain("cacheable response");
       } finally {
         if (childSessionId && childId) {
           await getRegistryOperations(agent).cleanupRollouts({

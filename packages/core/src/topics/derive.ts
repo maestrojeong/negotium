@@ -313,6 +313,11 @@ async function createDerivedTopicImpl(
         (subagent?.agent ? undefined : sourceConfig?.model) ??
         derived.defaultModel;
       const rolloutModel = resolveModelForAgent(agent, requestedRolloutModel, registry);
+      const sourceRolloutModel = resolveModelForAgent(
+        agent,
+        sourceConfig?.model ?? topic.defaultModel,
+        registry,
+      );
       const requestedRolloutEffort = subagent?.agent
         ? registry.defaultEffort
         : (sourceConfig?.effort ?? derived.defaultEffort);
@@ -325,8 +330,9 @@ async function createDerivedTopicImpl(
       if (copyHistory) {
         if (!forkSnapshot) throw new Error("fork snapshot was not captured");
         const parentSessionId = getTopicSessionId(sourceTopicId);
-        const nativeSameAgentFork = agent === "codex" || agent === "maestro";
-        if (nativeSameAgentFork && parentSessionId) {
+        const cachePreservingNativeFork =
+          (agent === "codex" || agent === "maestro") && sourceRolloutModel === rolloutModel;
+        if (cachePreservingNativeFork && parentSessionId) {
           try {
             rollbackHandle = await forkAgentSession({
               agent,
@@ -350,12 +356,10 @@ async function createDerivedTopicImpl(
             );
           }
         }
-        // A native same-agent fork must retain the provider's exact working
-        // prefix so prompt caching can reuse it. Its synthetic fallback also
-        // keeps the full snapshot rather than replacing history with a summary.
-        // Cross-provider/model bridging owns its compaction policy elsewhere.
-        const compactionRequired =
-          !nativeSameAgentFork && !sessionId && shouldCompactForkEntries(forkSnapshot.entries);
+        // Successful native forks retain the exact provider prefix. Once that
+        // path is unavailable, cache continuity is already lost; keep a small
+        // snapshot verbatim and compact only an oversized fallback.
+        const compactionRequired = !sessionId && shouldCompactForkEntries(forkSnapshot.entries);
         if (compactionRequired) {
           try {
             compactedForkEntries = await createCompactedRolloutEntries(
