@@ -46,6 +46,35 @@ describe("checkAgentAuth host boundary", () => {
     });
   });
 
+  test("falls back to the credentials file on macOS when the keychain entry is missing", () => {
+    // Some Claude Code installs write ~/.claude/.credentials.json instead of
+    // (or in addition to) the system keychain, even on macOS.
+    expect(
+      checkAgentAuth(
+        "claude",
+        host({
+          operatingSystem: () => "darwin",
+          hasMacOsCredential: () => false,
+          homeDirectory: () => "/host/home",
+          exists: (path) => path === "/host/home/.claude/.credentials.json",
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("reports both missing sources when macOS has neither keychain nor file credentials", () => {
+    expect(
+      checkAgentAuth(
+        "claude",
+        host({ operatingSystem: () => "darwin", hasMacOsCredential: () => false }),
+      ),
+    ).toEqual({
+      ok: false,
+      error:
+        "claude is not logged in (no macOS keychain entry 'Claude Code-credentials' and no credentials at /host/home/.claude/.credentials.json). Run `claude` and complete login first",
+    });
+  });
+
   test("checks the credential for the selected Maestro model", () => {
     const deepSeekOnly = host({ environment: { DEEPSEEK_API_KEY: "deepseek" } });
     const moonshotOnly = host({ environment: { MOONSHOT_API_KEY: "moonshot" } });

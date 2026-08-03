@@ -83,17 +83,20 @@ export function checkAgentAuth(
     }
     case "claude": {
       if (host.environment.ANTHROPIC_API_KEY) return { ok: true };
+      const path = join(host.homeDirectory(), ".claude", ".credentials.json");
       if (host.operatingSystem() === "darwin") {
-        if (host.hasMacOsCredential("Claude Code-credentials")) {
+        // Most macOS installs store the OAuth session in the system keychain,
+        // but some Claude Code versions/configs write the plain file instead
+        // (observed on 2.1.220) — check both before failing, the same way
+        // the non-macOS branch below already checks the file alone.
+        if (host.hasMacOsCredential("Claude Code-credentials") || host.exists(path)) {
           return { ok: true };
         }
         return {
           ok: false,
-          error:
-            "claude is not logged in (no macOS keychain entry 'Claude Code-credentials'). Run `claude` and complete login first",
+          error: `claude is not logged in (no macOS keychain entry 'Claude Code-credentials' and no credentials at ${path}). Run \`claude\` and complete login first`,
         };
       }
-      const path = join(host.homeDirectory(), ".claude", ".credentials.json");
       if (host.exists(path)) return { ok: true };
       return {
         ok: false,
