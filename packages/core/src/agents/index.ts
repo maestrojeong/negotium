@@ -129,18 +129,17 @@ export async function resolveSessionFileMissing(
 
 /**
  * Rebuild a missing SDK session file from the unified conversation log, or
- * fall back to a fresh session. Returns true when the session file is confirmed
- * to exist (either pre-existing or successfully rebuilt), false when the agent
- * should start a fresh session (no entries, rebuild failed, etc.).
+ * report whether the session is ready, genuinely has no history, or could not
+ * be repaired. Repair failures must not silently discard conversation context.
  */
 async function maybeRebuildSession(
   opts: AgentQueryOptions & { userId: string; session: string },
-): Promise<boolean> {
-  if (!opts.sessionId) return true; // fresh session, nothing to rebuild
+): Promise<"ready" | "fresh" | "failed"> {
+  if (!opts.sessionId) return "ready"; // fresh session, nothing to rebuild
 
   try {
     const missing = await resolveSessionFileMissing(opts.agent, opts.sessionId, opts.cwd);
-    if (!missing) return true; // file still on disk
+    if (!missing) return "ready"; // file still on disk
 
     logger.info(
       { agent: opts.agent, sessionId: opts.sessionId, topic: opts.session },
@@ -153,7 +152,7 @@ async function maybeRebuildSession(
         { agent: opts.agent, sessionId: opts.sessionId },
         "no unified log entries to rebuild — starting fresh session",
       );
-      return false;
+      return "fresh";
     }
 
     const operations = getRegistryOperations(opts.agent);
@@ -168,13 +167,13 @@ async function maybeRebuildSession(
       { agent: opts.agent, sessionId: result.sessionId, rolloutPath: result.rolloutPath },
       "session rebuilt from unified log",
     );
-    return true;
+    return "ready";
   } catch (err) {
     logger.warn(
       { err, agent: opts.agent, sessionId: opts.sessionId },
-      "session rebuild failed — starting fresh session",
+      "session rebuild failed — preserving resume key",
     );
-    return false;
+    return "failed";
   }
 }
 
@@ -183,11 +182,17 @@ export async function* runAgent(opts: AgentQueryOptions): AsyncGenerator<Unified
   const dispatchOpts: AgentQueryOptions = { ...opts };
 
   if (hasSessionRepairContext(dispatchOpts)) {
-    const ok = await maybeRebuildSession(dispatchOpts);
-    if (!ok) {
-      // Rebuild failed / no entries → clear sessionId so the agent starts
-      // a fresh session instead of trying to resume a non-existent one.
+    const repair = await maybeRebuildSession(dispatchOpts);
+    if (repair === "fresh") {
+      // No unified history exists, so a new provider session is intentional.
       dispatchOpts.sessionId = undefined;
+    } else if (repair === "failed") {
+      yield {
+        type: "error",
+        content:
+          "Provider session could not be rebuilt from conversation history; the existing session was preserved for retry.",
+      };
+      return;
     }
   }
 

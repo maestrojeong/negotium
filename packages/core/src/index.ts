@@ -176,6 +176,10 @@ export { FROM_AUTO_CONTINUE } from "#platform/constants";
 export { errMsg } from "#platform/error";
 export { appendJsonlEntry } from "#platform/jsonl";
 export { onShutdown, runShutdown } from "#platform/lifecycle";
+export {
+  DEFAULT_DAEMON_LOG_ROTATE_BYTES,
+  rotateOversizedLog,
+} from "#platform/log-rotation";
 export { logger } from "#platform/logger";
 export type {
   NodeMcpEntry,

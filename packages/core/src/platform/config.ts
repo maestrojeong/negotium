@@ -75,7 +75,6 @@ export const BROWSER_PROFILES_DIR = resolve(BROWSER_DIR, "profiles");
 export const BINARIES_DIR = resolve(STATE_DIR, "binaries");
 export const SECRETS_DIR = resolve(STATE_DIR, "secrets");
 // Legacy names remain public, but their durable contents now live under data.
-export const CONTEXTS_DIR = resolve(STATE_DIR, "data", "contexts");
 export const DM_WORKSPACE_DIR = resolve(STATE_DIR, "data", "dm");
 export const SESSION_WORKSPACE_DIR = resolve(STATE_DIR, "data", "sessions");
 // The Claude Agent SDK ships a platform-matched Claude Code binary. Keep that
@@ -364,7 +363,6 @@ mkdirSync(WORKSPACE_DIR, { recursive: true });
 mkdirSync(TOPIC_WORKSPACE_DIR, { recursive: true });
 mkdirSync(SHARED_WIKI_DIR, { recursive: true });
 mkdirSync(CRON_WORKSPACE_DIR, { recursive: true });
-mkdirSync(CONTEXTS_DIR, { recursive: true });
 mkdirSync(DM_WORKSPACE_DIR, { recursive: true });
 mkdirSync(SESSION_WORKSPACE_DIR, { recursive: true });
 mkdirSync(BROWSER_DIR, { recursive: true });

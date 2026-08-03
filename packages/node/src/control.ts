@@ -256,6 +256,16 @@ export function createNodeControlHandler(
           if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
           const topicId = requiredText(body.topicId, "topicId");
           const userId = requiredText(body.userId, "userId");
+          const actorUserId =
+            body.actorUserId === undefined
+              ? undefined
+              : requiredText(body.actorUserId, "actorUserId");
+          const actorLabel =
+            body.actorLabel === undefined ? undefined : requiredText(body.actorLabel, "actorLabel");
+          const vaultUserId =
+            body.vaultUserId === undefined
+              ? undefined
+              : requiredText(body.vaultUserId, "vaultUserId");
           const text = requiredText(body.text, "text");
           const clientMessageId = requiredText(body.clientMessageId, "clientMessageId");
           const requestId =
@@ -268,6 +278,9 @@ export function createNodeControlHandler(
           const submission = submitRuntimeGatewayTurn({
             topic,
             userId,
+            actorUserId,
+            actorLabel,
+            vaultUserId,
             text,
             clientMessageId,
             requestId,

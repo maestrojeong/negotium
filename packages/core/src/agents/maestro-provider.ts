@@ -242,7 +242,7 @@ export function maestroProvider(opts: AgentQueryOptions): AsyncGenerator<Unified
   if (opts.agent !== undefined && opts.agent !== "maestro") {
     throw new Error(`maestroProvider: unexpected agent "${opts.agent}", expected "maestro"`);
   }
-  const userId = opts.userId ?? "";
+  const userId = opts.vaultUserId ?? opts.userId ?? "";
   // The SDK deliberately ships with an empty MCP resolver. Keep this wiring in
   // the provider adapter rather than every host bootstrap so a new Negotium
   // channel cannot accidentally run Maestro with zero runtime/wiki/task MCPs.

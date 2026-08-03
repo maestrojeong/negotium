@@ -69,7 +69,8 @@ import {
 import {
   flattenUserTurnAttachments,
   legacyUserTurnEnvelope,
-  renderUserPromptBatch,
+  renderUserTurnBatch,
+  renderUserTurnPrompt,
   type UserTurnEnvelope,
 } from "#runtime/user-turn-envelope";
 import { getActiveVisualForPrompt } from "#runtime/visual-store";
@@ -119,7 +120,7 @@ export * from "#runtime/channel-context";
 export * from "#runtime/errors";
 export * from "#runtime/tasks";
 export * from "#runtime/turn-session";
-export { renderUserPromptBatch } from "#runtime/user-turn-envelope";
+export { renderUserPromptBatch, renderUserTurnBatch } from "#runtime/user-turn-envelope";
 export * from "#runtime/visuals";
 
 // In-flight AI turns are tracked room-keyed (topicId → control) in
@@ -321,6 +322,7 @@ function redispatchInject(inject: DeferredInject): void {
       aiMention: topic.aiMention,
     },
     userId: inject.userId,
+    vaultUserId: inject.vaultUserId,
     prompt: inject.prompt,
     allowAutoContinue: false,
     origin: inject.origin,
@@ -501,7 +503,12 @@ async function deliverAskError(queryId: string, sourceLabel: string, error: stri
   }
 }
 
-function tryReconstructTopicRollout(opts: {
+export type TopicRolloutReconstruction =
+  | { kind: "rebuilt"; sessionId: string }
+  | { kind: "no-history" }
+  | { kind: "failed"; error: string };
+
+export function tryReconstructTopicRollout(opts: {
   topicId: string;
   topicTitle: string;
   userId: string;
@@ -510,14 +517,12 @@ function tryReconstructTopicRollout(opts: {
   cwd: string;
   model: string;
   effort?: EffortLevel;
-  allowFreshSession?: boolean;
-}): string | null {
+}): TopicRolloutReconstruction {
   const { topicId, topicTitle, userId, agent, sessionId, cwd, model, effort } = opts;
-  if (!sessionId && !opts.allowFreshSession) return null;
 
   try {
     const entries = readConversation(userId, topicTitle);
-    if (entries.length === 0) return null;
+    if (entries.length === 0) return { kind: "no-history" };
     const result = getRegistryOperations(agent).writeRollout({
       cwd,
       entries,
@@ -537,14 +542,18 @@ function tryReconstructTopicRollout(opts: {
         ? "ai: session expired — rollout reconstructed from unified log"
         : "ai: provider session bridged from shared conversation log",
     );
-    return result.sessionId;
+    return { kind: "rebuilt", sessionId: result.sessionId };
   } catch (err) {
     logger.warn({ err, topicId, agent, sessionId }, "ai: session reconstruct failed");
-    return null;
+    return { kind: "failed", error: stringifyError(err) };
   }
 }
 
-function resolveSessionRetryId(opts: {
+export type SessionRetryResolution =
+  | { kind: "retry"; sessionId: string | null }
+  | { kind: "failed"; error: string };
+
+export function resolveSessionRetry(opts: {
   topicId: string;
   topicTitle: string;
   userId: string;
@@ -556,9 +565,12 @@ function resolveSessionRetryId(opts: {
   effort?: EffortLevel;
   externalSessionOwner?: boolean;
   onSessionReset?: () => void;
-}): string | null {
+}): SessionRetryResolution {
   const reconstructed = tryReconstructTopicRollout(opts);
-  if (reconstructed) return reconstructed;
+  if (reconstructed.kind === "rebuilt") {
+    return { kind: "retry", sessionId: reconstructed.sessionId };
+  }
+  if (reconstructed.kind === "failed") return reconstructed;
   if (opts.onSessionReset) opts.onSessionReset();
   else if (!opts.silent && !opts.externalSessionOwner) {
     clearTopicSessionId(opts.topicId, "session-expired");
@@ -567,7 +579,7 @@ function resolveSessionRetryId(opts: {
     { topicId: opts.topicId, agent: opts.agent, hadSessionId: Boolean(opts.sessionId) },
     "ai: session expired — retrying with fresh session",
   );
-  return null;
+  return { kind: "retry", sessionId: null };
 }
 
 export interface AiTurnSettlement {
@@ -630,6 +642,8 @@ export interface AiTurnExecutionOptions {
 export interface StartAiTurnParams extends AiTurnExecutionOptions {
   topic: AiTurnTopic;
   userId: string;
+  /** Credential namespace. Defaults to userId for backwards compatibility. */
+  vaultUserId?: string;
   prompt: string;
   allowAutoContinue: boolean;
   agentOverride?: AgentKind;
@@ -675,7 +689,7 @@ export function mergeSupersedingUserTurn(
     ...(incoming.userMessages ?? [legacyUserTurnEnvelope(incoming.prompt, incoming.attachments)]),
   ];
   return {
-    prompt: renderUserPromptBatch(userMessages.map((message) => message.prompt)),
+    prompt: renderUserTurnBatch(userMessages),
     userMessages,
     attachments: flattenUserTurnAttachments(userMessages),
     sessionId: running.sessionId,
@@ -710,13 +724,18 @@ function serializableUserTurnExecution(params: StartAiTurnParams): RuntimeUserTu
     bridgeSessionFromHistory: params.bridgeSessionFromHistory,
     peerBridge: params.peerBridge,
     from: params.from,
+    vaultUserId: params.vaultUserId,
     conversationPrompts: params._conversationPrompts ??
       params._userMessages?.map((message) => message.prompt) ?? [params.prompt],
     loggedUserMessageCount: params._loggedUserMessageCount,
   };
 }
 
-function waitToStartRemoteUserTurn(params: StartAiTurnParams, queryId: string): string {
+function waitToStartRemoteUserTurn(
+  params: StartAiTurnParams,
+  queryId: string,
+  options?: { omitRequestIds?: string[] },
+): string {
   const execution = serializableUserTurnExecution(params);
   const incomingUserMessages = params._userMessages ?? [
     legacyUserTurnEnvelope(params.prompt, params.attachments),
@@ -730,6 +749,7 @@ function waitToStartRemoteUserTurn(params: StartAiTurnParams, queryId: string): 
     execution,
     topicEpoch: execution.runtimeEpoch ?? getRuntimeTopicEpoch(params.topic.id),
     alreadyIncludedRequestIds: params._durableRequestIds,
+    omitRequestIds: options?.omitRequestIds,
   });
   for (const supersededRequestId of merged.supersededRequestIds) {
     if (supersededRequestId !== merged.requestId) {
@@ -785,6 +805,7 @@ async function drainOneDurableUserTurn(): Promise<void> {
     const queryId = startAiTurn({
       topic,
       userId: request.userId,
+      vaultUserId: execution?.vaultUserId,
       prompt: request.prompt,
       _userMessages: request.userMessages,
       _conversationPrompts: execution?.conversationPrompts ?? [request.prompt],
@@ -873,6 +894,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   }
   const topic: TopicDto = storedTopic;
   const { userId, allowAutoContinue, onDispatched } = params;
+  const vaultUserId = params.vaultUserId ?? userId;
   const origin = params.origin ?? "user";
   const conversationPrompts = params._conversationPrompts ?? [params.prompt];
   let loggedUserMessageCount = params._loggedUserMessageCount;
@@ -880,9 +902,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   let userMessages = isUserOrigin(origin)
     ? (params._userMessages ?? [legacyUserTurnEnvelope(params.prompt, params.attachments)])
     : undefined;
-  let prompt = userMessages
-    ? renderUserPromptBatch(userMessages.map((message) => message.prompt))
-    : params.prompt;
+  let prompt = userMessages ? renderUserTurnBatch(userMessages) : params.prompt;
   let attachments = userMessages ? flattenUserTurnAttachments(userMessages) : params.attachments;
   const execution = resolveTopicTurnExecution(topic, params);
   const sessionResolution = resolveTopicTurnSession(topic, params.sessionId, {
@@ -953,6 +973,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       topicId,
       runtimeEpoch,
       userId,
+      vaultUserId,
       prompt,
       origin,
       sourceNode,
@@ -1051,18 +1072,27 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   }
   if (decision.action === "abort-replace") {
     const running = decision.running;
+    let omitRequestIds: string[] | undefined;
     if (isUserOrigin(running.origin)) {
-      const merged = mergeSupersedingUserTurn(running, { prompt, userMessages, attachments });
-      userMessages = merged.userMessages;
-      prompt = merged.prompt;
-      attachments = merged.attachments;
-      // Resume from the session that existed before the interrupted batch.
-      // The aborted provider may or may not have persisted its partial turn.
-      sessionId = merged.sessionId;
-      loggedUserMessageCount = running.userMessages?.length ?? 1;
-      durableRequestIds = [
-        ...new Set([...(running.durableRequestIds ?? []), ...durableRequestIds]),
-      ];
+      if (running.providerTurnContentObserved && running.sessionId) {
+        // The native rollout already contains the interrupted user turn and
+        // any partial assistant/tool history. Send only the new envelope after
+        // the old provider process has exited; replaying the prior prompt makes
+        // the model restart the work and can race two writers on one rollout.
+        sessionId = running.sessionId;
+        omitRequestIds = running.durableRequestIds;
+      } else {
+        const merged = mergeSupersedingUserTurn(running, { prompt, userMessages, attachments });
+        userMessages = merged.userMessages;
+        prompt = merged.prompt;
+        attachments = merged.attachments;
+        // No provider session was observed, so replay from the pre-turn base.
+        sessionId = merged.sessionId;
+        loggedUserMessageCount = running.userMessages?.length ?? 1;
+        durableRequestIds = [
+          ...new Set([...(running.durableRequestIds ?? []), ...durableRequestIds]),
+        ];
+      }
     }
     // The preempted turn was itself a session-inject → re-queue it so the
     // inter-session work isn't lost; it resumes after the user's turn.
@@ -1095,6 +1125,28 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       { topicId, supersededQueryId: running.queryId, supersededOrigin: running.origin },
       "ai: new user message superseded running turn",
     );
+    // Do not synchronously start another provider against the same native
+    // session while the aborted process is still flushing its rollout. The
+    // durable worker can claim this replacement only after the old room lease
+    // is released in streamAgentEvents' finally block.
+    const queuedQueryId = waitToStartRemoteUserTurn(
+      {
+        ...params,
+        topic,
+        prompt,
+        attachments,
+        sessionId,
+        _userMessages: userMessages,
+        _conversationPrompts: conversationPrompts,
+        _loggedUserMessageCount: loggedUserMessageCount,
+        _durableRequestIds: durableRequestIds,
+        _runtimeEpoch: runtimeEpoch,
+      },
+      queryId,
+      { omitRequestIds },
+    );
+    announceQueuedUserTurn({ ...params, topic }, queuedQueryId);
+    return queuedQueryId;
   }
 
   const abortController = new AbortController();
@@ -1117,6 +1169,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           topicId,
           runtimeEpoch,
           userId,
+          vaultUserId,
           prompt,
           origin,
           requestId,
@@ -1203,8 +1256,9 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
 
   const workspaceCwd = cwd ?? workspaceCwdFor(topicId);
   mkdirSync(workspaceCwd, { recursive: true });
+  let historyBridgeError: string | undefined;
   if (bridgeSessionFromHistory && !sessionId) {
-    const bridgedSessionId = tryReconstructTopicRollout({
+    const bridge = tryReconstructTopicRollout({
       topicId,
       topicTitle: sessionName,
       userId,
@@ -1213,20 +1267,22 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       cwd: workspaceCwd,
       model: resolvedModel,
       ...(resolvedEffort ? { effort: resolvedEffort } : {}),
-      allowFreshSession: true,
     });
-    if (bridgedSessionId) {
-      sessionId = bridgedSessionId;
-      control.sessionId = bridgedSessionId;
-      if (control.injectParams) control.injectParams.sessionId = bridgedSessionId;
+    if (bridge.kind === "rebuilt") {
+      sessionId = bridge.sessionId;
+      control.sessionId = bridge.sessionId;
+      if (control.injectParams) control.injectParams.sessionId = bridge.sessionId;
       try {
-        onSessionId?.(bridgedSessionId);
+        onSessionId?.(bridge.sessionId);
       } catch (err) {
         logger.warn(
           { err, topicId, queryId, agent: agentKind },
           "ai: isolated session owner rejected bridged provider session id",
         );
       }
+    } else if (bridge.kind === "failed") {
+      historyBridgeError =
+        "Conversation history could not be encoded into a provider session; no fresh session was started.";
     }
   }
   const messageAttachmentGroups = userMessages?.map((message, index) =>
@@ -1235,15 +1291,19 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   const promptAttachments =
     messageAttachmentGroups?.flat() ?? materializePromptAttachments(topicId, queryId, attachments);
   const promptWithFiles = userMessages
-    ? renderUserPromptBatch(
-        userMessages.map((message, index) =>
-          promptWithAttachments(message.prompt, messageAttachmentGroups?.[index] ?? []),
-        ),
+    ? renderUserTurnBatch(
+        userMessages.map((message, index) => ({
+          ...message,
+          prompt: promptWithAttachments(message.prompt, messageAttachmentGroups?.[index] ?? []),
+        })),
       )
     : promptWithAttachments(prompt, promptAttachments);
   const renderedUserPrompts = userMessages
     ? userMessages.map((message, index) =>
-        promptWithAttachments(message.prompt, messageAttachmentGroups?.[index] ?? []),
+        renderUserTurnPrompt({
+          ...message,
+          prompt: promptWithAttachments(message.prompt, messageAttachmentGroups?.[index] ?? []),
+        }),
       )
     : undefined;
   const agentPrompt =
@@ -1419,6 +1479,10 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     : enabledMcp.filter((name) => name !== "playwright");
   const wantsBgBash = !isManager && enabledMcp.includes("background-bash");
   async function* runWithPlaywright(): AsyncGenerator<UnifiedEvent> {
+    if (historyBridgeError) {
+      yield { type: "error", content: historyBridgeError };
+      return;
+    }
     if (prepareSession && !sessionId) {
       if (abortController.signal.aborted) return;
       try {
@@ -1495,6 +1559,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         systemPrompt: effectiveSystemPrompt,
         sessionId,
         userId,
+        vaultUserId,
         session: sessionName,
         sessionType: sessionType ?? (isManager ? "manager" : "forum"),
         abortController,
@@ -1557,10 +1622,10 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     onSessionId,
     { silent, peerBridge, sourceNode },
   )
-    .then(async (outcome) => {
+    .then(async (streamOutcome) => {
+      let outcome = streamOutcome;
       if (outcome.kind === "session-expired") {
-        if (!silent) WsHub.get().broadcastAborted(topicId, queryId, "stopped");
-        const retrySessionId = resolveSessionRetryId({
+        const retry = resolveSessionRetry({
           topicId,
           topicTitle: sessionName,
           userId,
@@ -1573,63 +1638,74 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           externalSessionOwner: Boolean(onSessionId),
           onSessionReset,
         });
-        logger.info(
-          {
-            topicId,
-            prevQueryId: queryId,
-            agent: agentKind,
-            retrySessionId: retrySessionId ? retrySessionId.slice(0, 8) : null,
-          },
-          "ai: retrying query after session expiry",
-        );
-        if (!retrySessionId && prepareSession && forkHandle) {
-          // The retry will invoke the recipe and mint a different rollout.
-          // The expired fork is no longer in use after stream cleanup.
-          cleanupAgentFork(forkHandle);
-          forkHandle = undefined;
+        if (retry.kind === "failed") {
+          outcome = {
+            kind: "provider-error",
+            error:
+              "Provider session expired and conversation history could not be rebuilt; the existing session was preserved for retry.",
+          };
+        } else {
+          if (!silent) WsHub.get().broadcastAborted(topicId, queryId, "stopped");
+          const retrySessionId = retry.sessionId;
+          logger.info(
+            {
+              topicId,
+              prevQueryId: queryId,
+              agent: agentKind,
+              retrySessionId: retrySessionId ? retrySessionId.slice(0, 8) : null,
+            },
+            "ai: retrying query after session expiry",
+          );
+          if (!retrySessionId && prepareSession && forkHandle) {
+            // The retry will invoke the recipe and mint a different rollout.
+            // The expired fork is no longer in use after stream cleanup.
+            cleanupAgentFork(forkHandle);
+            forkHandle = undefined;
+          }
+          startAiTurn({
+            topic,
+            userId,
+            vaultUserId,
+            prompt,
+            _userMessages: userMessages,
+            _conversationPrompts: conversationPrompts,
+            _loggedUserMessageCount: loggedUserMessageCount,
+            _durableRequestIds: durableRequestIds,
+            attachments,
+            allowAutoContinue,
+            origin,
+            onDispatched,
+            requestId,
+            depth,
+            silent,
+            contextId,
+            agentOverride,
+            modelOverride,
+            effortOverride,
+            sessionId: retrySessionId,
+            sessionScope,
+            turnConcurrency,
+            forkHandle,
+            // Keep the recipe so a later user preemption can replay from a
+            // clean snapshot. A non-empty retrySessionId suppresses immediate
+            // preparation in runWithPlaywright.
+            prepareSession,
+            cwd,
+            sessionName,
+            sessionType,
+            visualTools,
+            fileDeliveryTools,
+            onSessionId,
+            onSessionReset,
+            bridgeSessionFromHistory,
+            onSettled,
+            peerBridge,
+            askReplySources,
+            _runtimeEpoch: runtimeEpoch,
+            _sessionRetried: true,
+          });
+          return;
         }
-        startAiTurn({
-          topic,
-          userId,
-          prompt,
-          _userMessages: userMessages,
-          _conversationPrompts: conversationPrompts,
-          _loggedUserMessageCount: loggedUserMessageCount,
-          _durableRequestIds: durableRequestIds,
-          attachments,
-          allowAutoContinue,
-          origin,
-          onDispatched,
-          requestId,
-          depth,
-          silent,
-          contextId,
-          agentOverride,
-          modelOverride,
-          effortOverride,
-          sessionId: retrySessionId,
-          sessionScope,
-          turnConcurrency,
-          forkHandle,
-          // Keep the recipe so a later user preemption can replay from a
-          // clean snapshot. A non-empty retrySessionId suppresses immediate
-          // preparation in runWithPlaywright.
-          prepareSession,
-          cwd,
-          sessionName,
-          sessionType,
-          visualTools,
-          fileDeliveryTools,
-          onSessionId,
-          onSessionReset,
-          bridgeSessionFromHistory,
-          onSettled,
-          peerBridge,
-          askReplySources,
-          _runtimeEpoch: runtimeEpoch,
-          _sessionRetried: true,
-        });
-        return;
       }
 
       if (outcome.kind === "provider-error") {

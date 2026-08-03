@@ -64,6 +64,7 @@ export function isSessionExpiredError(message: string): boolean {
   return (
     message.includes(SESSION_EXPIRED_MSG) ||
     /session was recorded with model .+ but is resuming with/i.test(message) ||
+    /failed to resolve rollout path .+file does not exist/i.test(message) ||
     /session.*not found|session.*expired|unknown conversation/i.test(message)
   );
 }

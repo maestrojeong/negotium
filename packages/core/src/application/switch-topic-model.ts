@@ -1,11 +1,10 @@
 import { switchApiTopicAgent } from "#agents/api-topic-agent-switch";
 import { checkAgentModelAuth } from "#agents/auth-check";
-import { resolveModelForAgent, selectableModel } from "#agents/model-catalog";
-import { getRegistry } from "#agents/registry";
+import { selectableModel } from "#agents/model-catalog";
 import { WsHub } from "#bus";
 import { resolveTopicWorkspaceDir } from "#platform/config";
 import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
-import { clearTopicSessionId, getTopic } from "#storage/api-topics";
+import { getTopic } from "#storage/api-topics";
 
 export type SwitchTopicModelResult =
   | { ok: true; model: string; text: string }
@@ -63,14 +62,12 @@ export function switchTopicModel(params: SwitchTopicModelParams): SwitchTopicMod
     });
     if (!switched.ok) return { ok: false, error: switched.error };
   } else {
-    const registry = getRegistry(currentAgent);
-    const previousModel = resolveModelForAgent(
-      currentAgent,
-      currentConfig.model ?? topic.defaultModel,
-      registry,
-    );
     setApiTopicConfig(topic.id, nextConfig);
-    if (previousModel !== target.model) clearTopicSessionId(topic.id, "user-model-switch");
+    // A provider session is not owned by one model. Codex, Claude, and Maestro
+    // all accept the selected model when resuming, so keep the durable resume
+    // key and let the next turn continue the same rollout with the new model.
+    // Clearing it here silently discarded native tool/history structure and
+    // made an ordinary model change look like `/new`.
   }
 
   WsHub.get().broadcastTopicUpdated(topic.id);

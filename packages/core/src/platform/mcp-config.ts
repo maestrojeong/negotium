@@ -207,6 +207,8 @@ export function consumePlaywrightUnavailable(userId: string, topic: string | und
 
 export interface RuntimeMcpBuildContext {
   userId: string;
+  /** Vault namespace when credentials belong to a different principal. */
+  vaultUserId?: string;
   /** "dm" for DM scope, topic/session name for forum/fork. */
   session: string;
   /** REST/WS topic id when known. Prefer for authorization/scope checks. */
@@ -527,13 +529,13 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   vault: {
     ...commonRuntimeMcpPolicy("vault"),
     build(ctx) {
-      const { userId, agent } = ctx;
+      const { userId, vaultUserId, agent } = ctx;
       // Normal turns use {{KEY}} directly in tool inputs. Keep the Vault MCP
       // surface focused on key discovery; broker tools remain available from
       // the public factory for compatibility but are no longer the default UX.
-      const args = [`--user-id=${userId}`];
+      const args = [`--user-id=${vaultUserId ?? userId}`];
       if (agent !== "codex") args.push("--list-only=true");
-      return buildBuiltinMcpServer("vault", ctx, () =>
+      return buildBuiltinMcpServer("vault", { ...ctx, userId: vaultUserId ?? userId }, () =>
         buildStdioMcpServer(agent, VAULT_SERVER, args),
       );
     },
@@ -767,6 +769,7 @@ export function getManagerMcpServers(opts: {
  */
 export function getForumMcpServers(opts: {
   userId: string;
+  vaultUserId?: string;
   session: string;
   topicId?: string;
   subagentParentTopicId?: string;
@@ -790,6 +793,7 @@ export function getForumMcpServers(opts: {
 }) {
   const {
     userId,
+    vaultUserId,
     session,
     topicId,
     subagentParentTopicId,
@@ -824,6 +828,7 @@ export function getForumMcpServers(opts: {
     "forum",
     {
       userId,
+      vaultUserId,
       session,
       topicId,
       subagentParentTopicId,
@@ -945,6 +950,7 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
   }
   return getForumMcpServers({
     userId: opts.userId || "local",
+    vaultUserId: opts.vaultUserId,
     session: opts.session || "default",
     topicId: opts.topicId,
     subagentParentTopicId: opts.subagentParentTopicId,

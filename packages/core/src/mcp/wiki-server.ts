@@ -439,23 +439,28 @@ function wikiLastConversation(args: Record<string, unknown>): CallToolResult {
 
   const name = slugify(topicNameFrom(rawTopic));
 
-  // Try per-topic archive dir first, then flat file
+  // Try per-topic archive dir first, then flat file. This is a read path —
+  // it must never create directories on lookup (that previously left an
+  // empty `wiki/archive/<topic>/` behind for every topic name ever queried,
+  // even when nothing was ever archived under the per-topic layout).
   const archiveDir = resolve(runtime().archiveDir, name);
-  ensureDir(archiveDir);
 
   try {
     // List archive files sorted by name (which should be date-sorted)
-    let files = readdirSync(archiveDir)
-      .filter((f) => f.endsWith(".jsonl"))
-      .sort()
-      .reverse();
+    let files = existsSync(archiveDir)
+      ? readdirSync(archiveDir)
+          .filter((f) => f.endsWith(".jsonl"))
+          .sort()
+          .reverse()
+      : [];
     if (files.length === 0) {
       // Try flat archive
-      ensureDir(runtime().archiveDir);
-      files = readdirSync(runtime().archiveDir)
-        .filter((f) => f.startsWith(name) && f.endsWith(".jsonl"))
-        .sort()
-        .reverse();
+      files = existsSync(runtime().archiveDir)
+        ? readdirSync(runtime().archiveDir)
+            .filter((f) => f.startsWith(name) && f.endsWith(".jsonl"))
+            .sort()
+            .reverse()
+        : [];
     }
     if (files.length === 0) {
       return {
@@ -467,7 +472,9 @@ function wikiLastConversation(args: Record<string, unknown>): CallToolResult {
     const actualPath = files[0].includes("/")
       ? files[0]
       : resolve(
-          readdirSync(archiveDir).includes(files[0]) ? archiveDir : runtime().archiveDir,
+          existsSync(archiveDir) && readdirSync(archiveDir).includes(files[0])
+            ? archiveDir
+            : runtime().archiveDir,
           files[0],
         );
 

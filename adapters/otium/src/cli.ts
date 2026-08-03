@@ -92,14 +92,16 @@ async function resolveHostNodeId(explicit?: string): Promise<string> {
 async function spawnCanonicalNode(): Promise<void> {
   const entry = process.argv[1];
   if (!entry) throw new Error("cannot locate the Negotium CLI entrypoint");
-  const { LOG_DIR } = await import("@negotium/core");
+  const { LOG_DIR, rotateOversizedLog } = await import("@negotium/core");
+  const daemonLogPath = `${LOG_DIR}/node-daemon.log`;
+  rotateOversizedLog(daemonLogPath);
   const child = Bun.spawn({
     cmd: [process.execPath, entry, "__node-daemon", "--port=0"],
     detached: true,
     env: { ...process.env, LOG_LEVEL: process.env.NEGOTIUM_NODE_LOG_LEVEL?.trim() || "info" },
     stdin: "ignore",
     stdout: "ignore",
-    stderr: Bun.file(`${LOG_DIR}/node-daemon.log`),
+    stderr: Bun.file(daemonLogPath),
   });
   child.unref();
 }

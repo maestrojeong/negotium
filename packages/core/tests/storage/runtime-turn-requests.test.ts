@@ -14,6 +14,7 @@ import {
   ensureRuntimeUserTurnRequestsSchema,
   getRuntimeUserTurnRequest,
   markRuntimeUserTurnMessagesLogged,
+  markRuntimeUserTurnProviderSessionObserved,
   markRuntimeUserTurnRunning,
   mergeRuntimeUserTurnRequest,
 } from "#storage/runtime-turn-requests";
@@ -344,6 +345,114 @@ describe("runtime user turn requests", () => {
         conversationPrompts: ["pending between turns", "running"],
       },
     });
+  });
+
+  test("omits a turn already committed to the provider session from its replacement prompt", () => {
+    const topic = topicId();
+    const committedId = enqueueRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      prompt: "already in native rollout",
+      userMessages: [{ prompt: "already in native rollout" }],
+      allowAutoContinue: true,
+      supersedeExisting: false,
+      execution: {
+        sessionId: "native-session",
+        sessionIdSpecified: true,
+        conversationPrompts: [],
+        loggedUserMessageCount: 1,
+      },
+    });
+    enqueueRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      prompt: "queued while stopping",
+      userMessages: [{ prompt: "queued while stopping" }],
+      allowAutoContinue: true,
+      supersedeExisting: false,
+      execution: {
+        sessionId: "native-session",
+        sessionIdSpecified: true,
+        conversationPrompts: ["queued while stopping"],
+        loggedUserMessageCount: 0,
+      },
+    });
+
+    const merged = mergeRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      userMessages: [{ prompt: "new steering message" }],
+      allowAutoContinue: true,
+      requestId: "replacement",
+      execution: {
+        sessionId: "native-session",
+        sessionIdSpecified: true,
+        conversationPrompts: ["new steering message"],
+        loggedUserMessageCount: 0,
+      },
+      topicEpoch: 0,
+      omitRequestIds: [committedId],
+    });
+
+    expect(merged.supersededRequestIds).toHaveLength(2);
+    expect(getRuntimeUserTurnRequest(topic)).toMatchObject({
+      requestId: "replacement",
+      userMessages: [{ prompt: "queued while stopping" }, { prompt: "new steering message" }],
+      execution: {
+        sessionId: "native-session",
+        sessionIdSpecified: true,
+        loggedUserMessageCount: 0,
+        conversationPrompts: ["queued while stopping", "new steering message"],
+      },
+    });
+  });
+
+  test("omits a provider-content-confirmed turn when another process merges its replacement", () => {
+    const topic = topicId();
+    const committedId = enqueueRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      prompt: "already in remote native rollout",
+      userMessages: [{ prompt: "already in remote native rollout" }],
+      allowAutoContinue: true,
+      execution: {
+        sessionId: "base-session",
+        sessionIdSpecified: true,
+        conversationPrompts: [],
+        loggedUserMessageCount: 1,
+      },
+    });
+    expect(
+      markRuntimeUserTurnProviderSessionObserved(topic, committedId, "live-native-session"),
+    ).toBe(true);
+
+    mergeRuntimeUserTurnRequest({
+      topicId: topic,
+      userId: "user",
+      userMessages: [{ prompt: "remote steering message" }],
+      allowAutoContinue: true,
+      requestId: "replacement",
+      execution: {
+        sessionId: "live-native-session",
+        sessionIdSpecified: true,
+        conversationPrompts: ["remote steering message"],
+        loggedUserMessageCount: 0,
+      },
+      topicEpoch: 0,
+    });
+
+    expect(getRuntimeUserTurnRequest(topic)).toMatchObject({
+      requestId: "replacement",
+      userMessages: [{ prompt: "remote steering message" }],
+      execution: {
+        sessionId: "live-native-session",
+        conversationPrompts: ["remote steering message"],
+      },
+    });
+    expect(getRuntimeUserTurnRequest(topic)?.execution?.providerSessionId).toBeUndefined();
+    expect(markRuntimeUserTurnProviderSessionObserved(topic, committedId, "late-session")).toBe(
+      false,
+    );
   });
 
   test("carries an append acknowledgement onto a concurrent replacement", () => {

@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { submitRuntimeGatewayTurn } from "#application/submit-runtime-gateway-turn";
+import {
+  RuntimeGatewayIdempotencyConflictError,
+  submitRuntimeGatewayTurn,
+} from "#application/submit-runtime-gateway-turn";
 import { topicService } from "#application/topic-service";
 import { deleteTopic, getTopic, setTopicSessionId } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
@@ -19,18 +22,129 @@ test("runtime gateway snapshots the pre-turn provider session for durable handof
   try {
     const freshTopic = getTopic(topic.id);
     if (!freshTopic) throw new Error("topic was not created");
-    submitRuntimeGatewayTurn({
+    const firstSubmission = submitRuntimeGatewayTurn({
       topic: freshTopic,
       userId,
+      actorUserId: "actor-alice",
+      actorLabel: "Alice",
+      vaultUserId: "topic-owner",
       text: "fresh gateway turn",
       clientMessageId: randomUUID(),
     });
-    expect(getRuntimeUserTurnRequest(topic.id)?.execution).toMatchObject({
-      sessionId: null,
-      sessionIdSpecified: true,
-      conversationPrompts: ["fresh gateway turn"],
-      loggedUserMessageCount: 0,
+    expect(firstSubmission.message).toMatchObject({
+      authorId: "actor-alice",
+      authorName: "Alice",
     });
+    const duplicate = submitRuntimeGatewayTurn({
+      topic: freshTopic,
+      userId,
+      actorUserId: "actor-alice",
+      actorLabel: "Alice",
+      vaultUserId: "topic-owner",
+      text: "fresh gateway turn",
+      clientMessageId: firstSubmission.clientMessageId,
+      requestId: firstSubmission.requestId,
+    });
+    expect(duplicate.deduplicated).toBe(true);
+    expect(duplicate.message.id).toBe(firstSubmission.message.id);
+    expect(() =>
+      submitRuntimeGatewayTurn({
+        topic: freshTopic,
+        userId,
+        actorUserId: "actor-alice",
+        text: "changed payload",
+        clientMessageId: firstSubmission.clientMessageId,
+        requestId: firstSubmission.requestId,
+      }),
+    ).toThrow(RuntimeGatewayIdempotencyConflictError);
+    expect(() =>
+      submitRuntimeGatewayTurn({
+        topic: freshTopic,
+        userId,
+        actorUserId: "actor-alice",
+        actorLabel: "Alicia",
+        vaultUserId: "topic-owner",
+        text: "fresh gateway turn",
+        clientMessageId: firstSubmission.clientMessageId,
+        requestId: firstSubmission.requestId,
+      }),
+    ).toThrow(RuntimeGatewayIdempotencyConflictError);
+    expect(() =>
+      submitRuntimeGatewayTurn({
+        topic: freshTopic,
+        userId,
+        actorUserId: "actor-alice",
+        actorLabel: "Alice",
+        vaultUserId: "different-owner",
+        text: "fresh gateway turn",
+        clientMessageId: firstSubmission.clientMessageId,
+        requestId: firstSubmission.requestId,
+      }),
+    ).toThrow(RuntimeGatewayIdempotencyConflictError);
+    expect(() =>
+      submitRuntimeGatewayTurn({
+        topic: freshTopic,
+        userId,
+        actorUserId: "actor-alice",
+        actorLabel: "Alice",
+        vaultUserId: "topic-owner",
+        text: "fresh gateway turn",
+        clientMessageId: firstSubmission.clientMessageId,
+        requestId: firstSubmission.requestId,
+        allowAutoContinue: false,
+      }),
+    ).toThrow(RuntimeGatewayIdempotencyConflictError);
+    expect(() =>
+      submitRuntimeGatewayTurn({
+        topic: freshTopic,
+        userId,
+        actorUserId: "actor-mallory",
+        text: "fresh gateway turn",
+        clientMessageId: firstSubmission.clientMessageId,
+        requestId: firstSubmission.requestId,
+      }),
+    ).toThrow(RuntimeGatewayIdempotencyConflictError);
+    expect(getRuntimeUserTurnRequest(topic.id)).toMatchObject({
+      userId,
+      userMessages: [
+        {
+          prompt: "fresh gateway turn",
+          actorUserId: "actor-alice",
+          actorLabel: "Alice",
+        },
+      ],
+      execution: {
+        sessionId: null,
+        sessionIdSpecified: true,
+        conversationPrompts: ["fresh gateway turn"],
+        loggedUserMessageCount: 0,
+        vaultUserId: "topic-owner",
+      },
+    });
+
+    submitRuntimeGatewayTurn({
+      topic: freshTopic,
+      userId,
+      actorUserId: "actor-bob",
+      actorLabel: "Bob",
+      vaultUserId: "topic-owner",
+      text: "fresh gateway turn",
+      clientMessageId: randomUUID(),
+    });
+    expect(getRuntimeUserTurnRequest(topic.id)?.userMessages).toEqual([
+      {
+        prompt: "fresh gateway turn",
+        actorUserId: "actor-alice",
+        actorLabel: "Alice",
+      },
+      {
+        prompt: "fresh gateway turn",
+        actorUserId: "actor-bob",
+        actorLabel: "Bob",
+      },
+    ]);
+
+    cancelRuntimeUserTurnRequests(topic.id);
 
     setTopicSessionId(topic.id, "stable-session", { reason: "test", agent: "codex" });
     submitRuntimeGatewayTurn({

@@ -64,6 +64,10 @@ import {
   updateApiMessageUsage,
 } from "#storage/api-messages";
 import { getTopic, setTopicSessionId } from "#storage/api-topics";
+import {
+  getRuntimeUserTurnRequest,
+  markRuntimeUserTurnProviderSessionObserved,
+} from "#storage/runtime-turn-requests";
 import { recordUsage } from "#storage/token-stats";
 import type { AgentKind, EffortLevel, PeerRuntimeBridgeContext, UnifiedEvent } from "#types";
 import type { MessageDto } from "#types/api";
@@ -266,6 +270,30 @@ export async function runTurnEventStream(
   try {
     for await (const event of events) {
       if (abortController.signal.aborted) break;
+
+      // A provider may publish its session id before it appends the user
+      // prompt to the native rollout. Only semantic provider output proves
+      // that the prompt made it into that session. This distinction matters
+      // when a second user message preempts the turn in that short window:
+      // the replacement must replay both messages instead of dropping the
+      // first one merely because a session event was seen.
+      if (
+        !control.providerTurnContentObserved &&
+        (event.type === "text_delta" ||
+          event.type === "text" ||
+          event.type === "reasoning" ||
+          event.type === "tool_use" ||
+          event.type === "tool_result" ||
+          event.type === "file" ||
+          event.type === "result")
+      ) {
+        control.providerTurnContentObserved = true;
+        if (control.sessionId) {
+          for (const requestId of control.durableRequestIds ?? []) {
+            markRuntimeUserTurnProviderSessionObserved(topicId, requestId, control.sessionId);
+          }
+        }
+      }
 
       switch (event.type) {
         case "text_delta": {
@@ -672,6 +700,16 @@ export async function runTurnEventStream(
           }
           break;
         case "session":
+          // Keep the control synchronized with the provider, not merely the
+          // topic row. A superseding user message can then resume the partial
+          // native rollout after this process has fully unwound.
+          control.sessionId = event.sessionId;
+          control.providerSessionObserved = true;
+          if (control.providerTurnContentObserved) {
+            for (const requestId of control.durableRequestIds ?? []) {
+              markRuntimeUserTurnProviderSessionObserved(topicId, requestId, event.sessionId);
+            }
+          }
           // Persist visible topic turns only. Silent ask_session forks use
           // temporary session ids and must not clobber the topic's durable
           // session; visible tell/reply injects do belong to the main topic
@@ -788,7 +826,14 @@ export async function runTurnEventStream(
     // Drain one deferred session-inject if the room is now idle. If a
     // replacement turn already occupies the slot, leave it queued — that
     // turn's finally will drain it when it completes.
-    if (roomId === topicId && outcome.kind !== "session-expired" && !getRoomQuery(topicId)) {
+    const queuedUserTurn = roomId === topicId ? getRuntimeUserTurnRequest(topicId) : null;
+    const hasReplacementUserTurn = queuedUserTurn !== null && queuedUserTurn.requestId !== queryId;
+    if (
+      roomId === topicId &&
+      outcome.kind !== "session-expired" &&
+      !getRoomQuery(topicId) &&
+      !hasReplacementUserTurn
+    ) {
       const next = takeDeferredInject(topicId);
       if (next) redispatchInject(next);
     }

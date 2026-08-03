@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   flattenUserTurnAttachments,
   legacyUserTurnEnvelope,
-  renderUserPromptBatch,
+  renderUserTurnBatch,
   type UserTurnEnvelope,
 } from "#runtime/user-turn-envelope";
 import { db } from "#storage/forum-db";
@@ -31,10 +31,14 @@ export interface RuntimeUserTurnExecution {
   bridgeSessionFromHistory?: boolean;
   peerBridge?: PeerRuntimeBridgeContext;
   from?: string;
+  /** Vault namespace for this turn, independent from the local execution principal. */
+  vaultUserId?: string;
   /** Newly accepted user texts not yet recorded in the unified conversation log. */
   conversationPrompts?: string[];
   /** Number of leading userMessages already present in the unified conversation log. */
   loggedUserMessageCount?: number;
+  /** Native session whose provider output proves it accepted this request's user turn. */
+  providerSessionId?: string;
   /** Request ids whose ordered messages were folded into this replacement. */
   supersededRequestIds?: string[];
 }
@@ -175,7 +179,11 @@ function rowToRequest(row: RuntimeUserTurnRequestRow): RuntimeUserTurnRequest {
               (Array.isArray((item as UserTurnEnvelope).attachments) &&
                 (item as UserTurnEnvelope).attachments?.every(
                   (attachment) => typeof attachment === "string",
-                ))),
+                ))) &&
+            ((item as UserTurnEnvelope).actorUserId === undefined ||
+              typeof (item as UserTurnEnvelope).actorUserId === "string") &&
+            ((item as UserTurnEnvelope).actorLabel === undefined ||
+              typeof (item as UserTurnEnvelope).actorLabel === "string"),
         )
       ) {
         userMessages = parsed as UserTurnEnvelope[];
@@ -285,6 +293,8 @@ export function mergeRuntimeUserTurnRequest(input: {
   execution: RuntimeUserTurnExecution;
   topicEpoch: number;
   alreadyIncludedRequestIds?: string[];
+  /** Requests already committed to the provider's native session; keep their lineage, not prompts. */
+  omitRequestIds?: string[];
 }): { requestId: string; supersededRequestIds: string[] } {
   const now = Date.now();
   return db
@@ -295,14 +305,23 @@ export function mergeRuntimeUserTurnRequest(input: {
         )
         .all(input.topicId);
       const previous = rows.map(rowToRequest);
+      const omittedRequestIds = new Set([
+        ...(input.omitRequestIds ?? []),
+        ...previous
+          .filter((request) => Boolean(request.execution?.providerSessionId))
+          .map((request) => request.requestId),
+      ]);
+      const carried = previous.filter((request) => !omittedRequestIds.has(request.requestId));
       const alreadyIncludedRequestIds = new Set(input.alreadyIncludedRequestIds ?? []);
-      const alreadyIncludedMessages = previous
+      const alreadyIncludedMessages = carried
         .filter((request) => alreadyIncludedRequestIds.has(request.requestId))
         .flatMap((request) => request.userMessages);
       const includedPrefixMatches = alreadyIncludedMessages.every((message, index) => {
         const candidate = input.userMessages[index];
         return (
           candidate?.prompt === message.prompt &&
+          candidate.actorUserId === message.actorUserId &&
+          candidate.actorLabel === message.actorLabel &&
           JSON.stringify(candidate.attachments ?? []) === JSON.stringify(message.attachments ?? [])
         );
       });
@@ -310,7 +329,7 @@ export function mergeRuntimeUserTurnRequest(input: {
         ? alreadyIncludedMessages.length
         : 0;
       const userMessages = [
-        ...previous.flatMap((request) => request.userMessages),
+        ...carried.flatMap((request) => request.userMessages),
         ...input.userMessages.slice(alreadyIncludedMessageCount),
       ];
       const incomingLoggedCount = Math.min(
@@ -318,7 +337,7 @@ export function mergeRuntimeUserTurnRequest(input: {
         input.userMessages.length,
       );
       const loggedUserMessageCount =
-        previous.reduce((count, request) => count + loggedMessageCount(request), 0) +
+        carried.reduce((count, request) => count + loggedMessageCount(request), 0) +
         Math.max(0, incomingLoggedCount - alreadyIncludedMessageCount);
       const execution: RuntimeUserTurnExecution = {
         ...input.execution,
@@ -335,7 +354,7 @@ export function mergeRuntimeUserTurnRequest(input: {
           .slice(loggedUserMessageCount)
           .map((message) => message.prompt),
       };
-      const sessionBase = previous.find(
+      const sessionBase = carried.find(
         (request) => request.execution?.sessionIdSpecified,
       )?.execution;
       if (sessionBase?.sessionIdSpecified) {
@@ -355,7 +374,7 @@ export function mergeRuntimeUserTurnRequest(input: {
         input.requestId,
         input.topicId,
         input.userId,
-        renderUserPromptBatch(userMessages.map((message) => message.prompt)),
+        renderUserTurnBatch(userMessages),
         JSON.stringify(userMessages),
         attachments?.length ? JSON.stringify(attachments) : null,
         input.allowAutoContinue ? 1 : 0,
@@ -367,6 +386,46 @@ export function mergeRuntimeUserTurnRequest(input: {
         requestId: input.requestId,
         supersededRequestIds: previous.map((request) => request.requestId),
       };
+    })
+    .immediate();
+}
+
+/**
+ * Record that provider output proves the native session contains this durable
+ * turn. A session-id event alone is insufficient: some providers publish it
+ * before appending the user prompt. This marker lets a different runtime
+ * process omit only a demonstrably committed prompt when it merges a steering
+ * message after preemption.
+ *
+ * Match only the exact request id. A late session event from a superseded turn
+ * must not mark its replacement (whose prompts have not reached the provider).
+ */
+export function markRuntimeUserTurnProviderSessionObserved(
+  topicId: string,
+  requestId: string,
+  sessionId: string,
+): boolean {
+  return db
+    .transaction(() => {
+      const row = db
+        .query<RuntimeUserTurnRequestRow, [string, string]>(
+          "SELECT * FROM runtime_user_turn_requests WHERE topic_id = ? AND request_id = ?",
+        )
+        .get(topicId, requestId);
+      if (!row) return false;
+      const request = rowToRequest(row);
+      const execution: RuntimeUserTurnExecution = {
+        ...request.execution,
+        providerSessionId: sessionId,
+      };
+      const result = db
+        .query(
+          `UPDATE runtime_user_turn_requests
+           SET execution_json = ?
+           WHERE topic_id = ? AND request_id = ?`,
+        )
+        .run(JSON.stringify(execution), topicId, requestId);
+      return result.changes === 1;
     })
     .immediate();
 }
@@ -392,6 +451,8 @@ export function markRuntimeUserTurnMessagesLogged(
           const candidate = request.userMessages[index];
           return (
             candidate?.prompt === message.prompt &&
+            candidate.actorUserId === message.actorUserId &&
+            candidate.actorLabel === message.actorLabel &&
             JSON.stringify(candidate.attachments ?? []) ===
               JSON.stringify(message.attachments ?? [])
           );

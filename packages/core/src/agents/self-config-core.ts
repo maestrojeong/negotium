@@ -89,7 +89,7 @@ export type SelfConfigAgentSwitchResult =
   | {
       ok: true;
       outcome:
-        | { kind: "fresh"; agent: AgentKind; reason: "no-history" | "bridge-failed" }
+        | { kind: "fresh"; agent: AgentKind; reason: "no-history" }
         | {
             kind: "bridged";
             agent: AgentKind;
@@ -386,9 +386,7 @@ export function createSelfConfigCore(
     const sessionNote =
       switched.outcome.kind === "bridged"
         ? ` Conversation history was bridged into a ${agent} session (${switched.outcome.bridgedSessionId}).`
-        : switched.outcome.reason === "bridge-failed"
-          ? " Conversation history bridge failed; the next turn starts fresh."
-          : " No prior conversation history was found; the next turn starts fresh.";
+        : " No prior conversation history was found; the next turn starts fresh.";
     return ok(
       `Agent for this topic set to '${agent}'. Model/effort reset to '${agent}' defaults.${sessionNote}`,
     );

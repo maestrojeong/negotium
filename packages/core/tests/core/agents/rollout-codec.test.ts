@@ -699,13 +699,40 @@ describe("writeCodexRollout", () => {
     });
     writtenPaths.push(second.rolloutPath);
     expect(second.threadId).toBe(first.threadId);
+    expect(second.rolloutPath).toBe(first.rolloutPath);
   });
 
-  // Round-trip prior-cleanup (I1 fix): when a reused threadId has a rollout
-  // sitting at the ORIGINAL write date (set_agent claude→codex→...claude→codex
-  // pattern where the first codex turn was, say, last week), the second write
-  // must unlink it so `codex resume <tid>` sees exactly one match. Before the
-  // fix the SDK could pick either file depending on glob order with no spec.
+  test("reused threadId keeps the canonical local creation-time path", async () => {
+    const { writeCodexRollout } = await import("#agents/rollout/codex");
+    const createdAt = new Date(2026, 6, 17, 9, 8, 7, 123);
+    const hex = createdAt.getTime().toString(16).padStart(12, "0");
+    const threadId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-7abc-8abc-abcdef012345`;
+
+    const first = writeCodexRollout({
+      cwd: TMP_CWD,
+      threadId,
+      pairs: [{ userText: "before", assistantText: "bridge me" }],
+    });
+    writtenPaths.push(first.rolloutPath);
+
+    expect(first.rolloutPath).toContain(
+      join("2026", "07", "17", `rollout-2026-07-17T09-08-07-${threadId}.jsonl`),
+    );
+
+    const second = writeCodexRollout({
+      cwd: TMP_CWD,
+      threadId,
+      pairs: [{ userText: "after", assistantText: "still bridged" }],
+    });
+    writtenPaths.push(second.rolloutPath);
+
+    expect(second.rolloutPath).toBe(first.rolloutPath);
+    expect(readFileSync(second.rolloutPath, "utf8")).toContain("still bridged");
+  });
+
+  // Round-trip prior-cleanup: a legacy writer may have put a reused threadId
+  // in a non-canonical rewrite-date directory. The next write must unlink it
+  // so `codex resume <tid>` sees exactly one canonical match.
   //
   // Same-second / same-day collisions are handled by overwrite (path matches),
   // so we simulate the real failure case: a threadId whose embedded timestamp
@@ -731,8 +758,9 @@ describe("writeCodexRollout", () => {
       pairs: [{ userText: "old", assistantText: "old-reply" }],
     });
 
-    // Relocate to the threadId's encoded date directory — that's where the
-    // SDK would have originally put it.
+    // Relocate to a non-canonical directory to mimic the old rewrite-date
+    // writer. The exact fixture date is unimportant; it must differ from the
+    // UUID-derived canonical path.
     const sessionsDir = CODEX_SESSIONS_DIR;
     const oldDir = join(sessionsDir, "2025", "01", "01");
     mkdirSync(oldDir, { recursive: true });
@@ -754,7 +782,7 @@ describe("writeCodexRollout", () => {
     expect(second.threadId).toBe(first.threadId);
     // The relocated (different-date) old file is gone — sweep caught it.
     expect(existsSync(oldPath)).toBe(false);
-    // The new write survives at today's date directory.
+    // The new write survives at the UUID-derived canonical path.
     expect(existsSync(second.rolloutPath)).toBe(true);
     const lines = readFileSync(second.rolloutPath, "utf8")
       .trim()

@@ -198,8 +198,10 @@ describe("mcp-config: playwright transport selection per agent", () => {
   });
 
   test("Vault uses direct substitution except for Codex native shell/HTTP", () => {
+    const vaultUserId = "topic-owner";
     const codex = getForumMcpServers({
       userId,
+      vaultUserId,
       session: "coding",
       topicId: "vault-codex",
       agent: "codex",
@@ -207,6 +209,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
     });
     const claude = getForumMcpServers({
       userId,
+      vaultUserId,
       session: "coding",
       topicId: "vault-claude",
       agent: "claude",
@@ -220,6 +223,8 @@ describe("mcp-config: playwright transport selection per agent", () => {
     });
     expect(hostedContext(codex.vault, "vault").agent).toBe("codex");
     expect(hostedContext(claude.vault, "vault").agent).toBe("claude");
+    expect(hostedContext(codex.vault, "vault").userId).toBe(vaultUserId);
+    expect(hostedContext(claude.vault, "vault").userId).toBe(vaultUserId);
   });
 
   test("manager/codex omits heavyweight browser tools even with a port", () => {

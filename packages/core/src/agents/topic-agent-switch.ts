@@ -39,7 +39,7 @@ export type SwitchAgentOutcome =
   | {
       kind: "fresh";
       agent: AgentKind;
-      reason: "no-history" | "bridge-failed";
+      reason: "no-history";
     }
   | {
       kind: "bridged";
@@ -128,17 +128,11 @@ export function switchTopicAgent(
   } catch (err) {
     logger.warn(
       { err, userId, topicName, from: oldAgent, to: agent },
-      "switchTopicAgent: rollout encoding failed — falling back to fresh session",
+      "switchTopicAgent: rollout encoding failed — preserving current agent session",
     );
-    const changed = setTopicAgentAndClearSession({
-      userId,
-      topicName,
-      agent,
-    });
-    if (!changed) return { ok: false, error: `failed to set agent for "${topicName}"` };
     return {
-      ok: true,
-      outcome: { kind: "fresh", agent, reason: "bridge-failed" },
+      ok: false,
+      error: `failed to preserve conversation while switching agent for "${topicName}"`,
     };
   }
 

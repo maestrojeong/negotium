@@ -141,6 +141,79 @@ describe("turn stream ordering", () => {
     });
   });
 
+  test("records the live provider session on the running control", async () => {
+    const topicId = seedTopic();
+    const queryId = randomUUID();
+    const control: RoomQueryControl = {
+      topicId,
+      queryId,
+      origin: "user",
+      prompt: "test",
+      sessionId: null,
+      abortController: new AbortController(),
+      abortReason: AbortReason.None,
+    };
+    async function* sessionEvents(): AsyncGenerator<UnifiedEvent> {
+      yield { type: "session", sessionId: "live-native-session" };
+      yield { type: "result", content: "done", stopReason: "end_turn" };
+    }
+
+    await streamAgentEvents(
+      topicId,
+      "stream order",
+      queryId,
+      sessionEvents(),
+      control,
+      "codex",
+      "gpt-5.6-luna",
+      "medium",
+      "owner",
+      true,
+      undefined,
+      { silent: true },
+    );
+
+    expect(control.sessionId).toBe("live-native-session");
+    expect(control.providerSessionObserved).toBe(true);
+    expect(control.providerTurnContentObserved).toBe(true);
+  });
+
+  test("does not treat a session event alone as proof that the prompt was committed", async () => {
+    const topicId = seedTopic();
+    const queryId = randomUUID();
+    const control: RoomQueryControl = {
+      topicId,
+      queryId,
+      origin: "user",
+      prompt: "test",
+      sessionId: null,
+      abortController: new AbortController(),
+      abortReason: AbortReason.None,
+    };
+    async function* sessionEvents(): AsyncGenerator<UnifiedEvent> {
+      yield { type: "session", sessionId: "session-before-prompt" };
+    }
+
+    await streamAgentEvents(
+      topicId,
+      "stream order",
+      queryId,
+      sessionEvents(),
+      control,
+      "codex",
+      "gpt-5.6-luna",
+      "medium",
+      "owner",
+      true,
+      undefined,
+      { silent: true },
+    );
+
+    expect(control.sessionId).toBe("session-before-prompt");
+    expect(control.providerSessionObserved).toBe(true);
+    expect(control.providerTurnContentObserved).toBeUndefined();
+  });
+
   test("only suppresses settlement after a replay was actually queued locally", () => {
     const injectParams = {
       topicId: "topic",

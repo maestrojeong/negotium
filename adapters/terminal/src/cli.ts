@@ -35,7 +35,9 @@ export function terminalOptionsFromArgs(args: string[]): {
 async function spawnNodeDaemon(port: number): Promise<void> {
   const entry = process.argv[1];
   if (!entry) throw new Error("cannot locate the Negotium CLI entrypoint");
-  const { LOG_DIR } = await import("@negotium/core");
+  const { LOG_DIR, rotateOversizedLog } = await import("@negotium/core");
+  const daemonLogPath = `${LOG_DIR}/node-daemon.log`;
+  rotateOversizedLog(daemonLogPath);
   const child = Bun.spawn({
     cmd: [process.execPath, entry, "__node-daemon", `--port=${port}`],
     detached: true,
@@ -45,7 +47,7 @@ async function spawnNodeDaemon(port: number): Promise<void> {
     },
     stdin: "ignore",
     stdout: "ignore",
-    stderr: Bun.file(`${LOG_DIR}/node-daemon.log`),
+    stderr: Bun.file(daemonLogPath),
   });
   child.unref();
 }

@@ -13,7 +13,7 @@ import {
 import type { AgentKind, EffortLevel } from "#types";
 
 export type ApiTopicSwitchOutcome =
-  | { kind: "fresh"; agent: AgentKind; reason: "no-history" | "bridge-failed" }
+  | { kind: "fresh"; agent: AgentKind; reason: "no-history" }
   | { kind: "bridged"; agent: AgentKind; bridgedSessionId: string; rolloutPath: string };
 
 export type ApiTopicSwitchResult =
@@ -119,18 +119,12 @@ export function switchApiTopicAgent(opts: SwitchApiTopicAgentOptions): ApiTopicS
         from: opts.fromAgent,
         to: opts.agent,
       },
-      "api-topic switch: rollout encoding failed — falling back to fresh session",
+      "api-topic switch: rollout encoding failed — preserving current agent session",
     );
-    try {
-      commitApiTopicSwitch(opts, null);
-    } catch (commitErr) {
-      logger.warn(
-        { err: commitErr, topicId: opts.topicId, agent: opts.agent },
-        "api-topic switch fallback commit failed",
-      );
-      return { ok: false, error: `failed to set agent for "${opts.topicTitle}"` };
-    }
-    return { ok: true, outcome: { kind: "fresh", agent: opts.agent, reason: "bridge-failed" } };
+    return {
+      ok: false,
+      error: `failed to preserve conversation while switching agent for "${opts.topicTitle}"`,
+    };
   }
 
   try {

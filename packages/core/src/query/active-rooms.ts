@@ -42,6 +42,8 @@ export interface DeferredInject {
   /** Topic execution epoch captured when this work was accepted. */
   runtimeEpoch?: number;
   userId: string;
+  /** Credential namespace when the executor and Vault owner differ. */
+  vaultUserId?: string;
   prompt: string;
   /** Inject source — the topic name/id this inject came from (never "user"). */
   origin: string;
@@ -120,8 +122,12 @@ export interface RoomQueryControl {
   durableRequestIds?: string[];
   /** Attachment ids currently being processed. User-turn preemption carries them forward. */
   attachments?: string[];
-  /** Provider session id this turn resumed from. Superseding user turns restart from this base. */
+  /** Latest provider session id observed for this turn. */
   sessionId?: string | null;
+  /** True once the provider has published the native session backing this turn. */
+  providerSessionObserved?: boolean;
+  /** True once provider output proves that this turn's prompt reached the native session. */
+  providerTurnContentObserved?: boolean;
   abortController: AbortController;
   abortReason: AbortReason;
   /** Specific failure surfaced when infrastructure aborts the turn. */

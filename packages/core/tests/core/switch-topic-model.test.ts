@@ -75,7 +75,7 @@ describe("topic model picker", () => {
     expect(selectableModel("deepseek-flash")).toBeUndefined();
   });
 
-  test("persists and locks a selected model without exposing its agent", () => {
+  test("persists a selected model without resetting the provider session", () => {
     const topicId = seedTopic();
     setTopicSessionId(topicId, "old-codex-session", { reason: "test", agent: "codex" });
 
@@ -91,7 +91,7 @@ describe("topic model picker", () => {
       agentLocked: true,
       modelLocked: true,
     });
-    expect(getTopicSessionId(topicId)).toBeNull();
+    expect(getTopicSessionId(topicId)).toBe("old-codex-session");
   });
 
   test("resolves a cross-runtime model to its agent internally", () => {

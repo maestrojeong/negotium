@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
+  clearRoomQuery,
+  getRoomQuery,
+  type RoomQueryControl,
+  setRoomQuery,
+} from "#query/active-rooms";
+import { AbortReason } from "#query/types";
+import {
   mergeSupersedingUserTurn,
   renderUserPromptBatch,
+  renderUserTurnBatch,
   resolveInitialTurnSessionId,
   resolveTopicTurnExecution,
   resolveTopicTurnSession,
@@ -69,6 +77,27 @@ describe("superseding user turns", () => {
 
   test("leaves a single user prompt unchanged", () => {
     expect(renderUserPromptBatch(["hello"])).toBe("hello");
+  });
+
+  test("renders structured authors in an ordered steering batch", () => {
+    expect(
+      renderUserTurnBatch([
+        { prompt: "first", actorUserId: "user-a", actorLabel: "Alice" },
+        { prompt: "second", actorUserId: "user-b", actorLabel: "Bob" },
+      ]),
+    ).toBe(
+      "[Consecutive user messages received before an assistant response]\n\n" +
+        "1. [@Alice]: first\n" +
+        "2. [@Bob]: second",
+    );
+  });
+
+  test("keeps an actor label inside one author marker", () => {
+    expect(
+      renderUserTurnBatch([
+        { prompt: "hello", actorUserId: "user-a", actorLabel: "Alice]\n[@Mallory" },
+      ]),
+    ).toBe("[@Alice) (@Mallory]: hello");
   });
 
   test("records only new envelopes while retaining their materialized attachment prompts", () => {
@@ -295,6 +324,90 @@ describe("turn session resolution", () => {
     expect(statuses).toContainEqual({ kind: "ai_active", queryId });
     expect(statuses).toContainEqual({ kind: "ai_aborted", queryId, reason: "superseded" });
     expect(statuses).toContainEqual({ kind: "ai_active", queryId: replacementQueryId });
+  });
+
+  test("replays a session-only interrupted prompt with its steering message", () => {
+    const topicId = seedTopic();
+    const topic = getTopic(topicId)!;
+    const running: RoomQueryControl = {
+      topicId,
+      queryId: `running-${randomUUID()}`,
+      origin: "user",
+      prompt: "already committed prompt",
+      userMessages: [{ prompt: "already committed prompt" }],
+      sessionId: "live-native-session",
+      providerSessionObserved: true,
+      abortController: new AbortController(),
+      abortReason: AbortReason.None,
+    };
+    expect(setRoomQuery(running)).toBe(true);
+
+    try {
+      const replacementQueryId = startAiTurn({
+        topic,
+        userId: "owner",
+        prompt: "steer the current work",
+        allowAutoContinue: true,
+      });
+
+      expect(replacementQueryId).toBeString();
+      expect(running.abortController.signal.aborted).toBe(true);
+      expect(getRoomQuery(topicId)?.queryId).toBe(running.queryId);
+      expect(getRuntimeUserTurnRequest(topicId)).toMatchObject({
+        requestId: replacementQueryId,
+        userMessages: [
+          { prompt: "already committed prompt" },
+          { prompt: "steer the current work" },
+        ],
+        execution: {
+          sessionId: "live-native-session",
+          sessionIdSpecified: true,
+          conversationPrompts: ["steer the current work"],
+          loggedUserMessageCount: 1,
+        },
+      });
+    } finally {
+      clearRoomQuery(topicId, running.queryId);
+    }
+  });
+
+  test("omits an interrupted prompt only after provider content confirms it", () => {
+    const topicId = seedTopic();
+    const topic = getTopic(topicId)!;
+    const running: RoomQueryControl = {
+      topicId,
+      queryId: `running-${randomUUID()}`,
+      origin: "user",
+      prompt: "already committed prompt",
+      userMessages: [{ prompt: "already committed prompt" }],
+      sessionId: "live-native-session",
+      providerSessionObserved: true,
+      providerTurnContentObserved: true,
+      abortController: new AbortController(),
+      abortReason: AbortReason.None,
+    };
+    expect(setRoomQuery(running)).toBe(true);
+
+    try {
+      const replacementQueryId = startAiTurn({
+        topic,
+        userId: "owner",
+        prompt: "steer the current work",
+        allowAutoContinue: true,
+      });
+
+      expect(getRuntimeUserTurnRequest(topicId)).toMatchObject({
+        requestId: replacementQueryId,
+        userMessages: [{ prompt: "steer the current work" }],
+        execution: {
+          sessionId: "live-native-session",
+          sessionIdSpecified: true,
+          conversationPrompts: ["steer the current work"],
+        },
+      });
+    } finally {
+      clearRoomQuery(topicId, running.queryId);
+    }
   });
 
   test("provider failures terminate the dispatched turn with ai_error only", async () => {

@@ -176,6 +176,8 @@ export interface AgentQueryOptions {
   cwd: string;
   systemPrompt: string;
   userId?: string;
+  /** Credential namespace when it differs from the execution principal. */
+  vaultUserId?: string;
   session?: string;
   playwrightPort?: number;
   playwrightCapability?: string;

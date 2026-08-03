@@ -450,7 +450,7 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
               // Resolve Vault placeholders only for explicitly allowlisted
               // transient execution tools. Messaging and persistence tools
               // must retain {{KEY}} verbatim.
-              const userId = opts.userId ?? "";
+              const userId = opts.vaultUserId ?? opts.userId ?? "";
               const withVault = substituteClaudeToolInput(userId, tool_name, tool_input);
               if (JSON.stringify(withVault) === JSON.stringify(tool_input)) {
                 return { continue: true };
@@ -470,7 +470,7 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
           hooks: [
             async (input: HookInput) => {
               const { tool_response } = input as PostToolUseHookInput;
-              const userId = opts.userId ?? "";
+              const userId = opts.vaultUserId ?? opts.userId ?? "";
               const redacted = deepMapStrings(tool_response, (value) =>
                 redactHostedSecrets(userId, value),
               );

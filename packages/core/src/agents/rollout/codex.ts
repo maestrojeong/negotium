@@ -157,6 +157,19 @@ export interface CodexPatchPreview {
   changes: CodexPatchChangePreview[];
 }
 
+function codexRolloutPath(threadId: string, fallback: Date): string {
+  const threadCreatedAt = decodeUuidV7Timestamp(threadId);
+  const createdAt = threadCreatedAt === null ? fallback : new Date(threadCreatedAt);
+  const yyyy = String(createdAt.getFullYear());
+  const mm = String(createdAt.getMonth() + 1).padStart(2, "0");
+  const dd = String(createdAt.getDate()).padStart(2, "0");
+  const hh = String(createdAt.getHours()).padStart(2, "0");
+  const min = String(createdAt.getMinutes()).padStart(2, "0");
+  const ss = String(createdAt.getSeconds()).padStart(2, "0");
+  const dir = join(codexSessionsDir(), yyyy, mm, dd);
+  return join(dir, `rollout-${yyyy}-${mm}-${dd}T${hh}-${min}-${ss}-${threadId}.jsonl`);
+}
+
 function canonicalFilePath(path: string): string {
   const absolute = resolve(path);
   try {
@@ -564,22 +577,17 @@ export function writeCodexRollout(opts: CodexRolloutOptions): CodexRolloutResult
     payload: { type: "task_complete" },
   });
 
-  const yyyy = now.getUTCFullYear();
-  const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(now.getUTCDate()).padStart(2, "0");
-  const tsStr = tsIso.replace(/[:.]/g, "-").slice(0, 19);
-  const dir = join(codexSessionsDir(), String(yyyy), mm, dd);
-  const path = join(dir, `rollout-${tsStr}-${threadId}.jsonl`);
+  // Codex indexes a thread by the local wall-clock timestamp encoded in its
+  // UUIDv7 creation time. A cross-agent round-trip may rewrite the rollout
+  // much later, but the path must remain the original canonical path or
+  // `thread/resume` rejects it as missing and the provider starts fresh.
+  const path = codexRolloutPath(threadId, now);
 
   // Round-trip cleanup: when the caller reused a threadId (claude→codex→...
   // or maestro→codex→... cycles via `findLastSessionIdForAgent`), the SDK's
-  // original rollout for that threadId still sits at its ORIGINAL-date
-  // directory (`~/.codex/sessions/<orig-yyyy>/<orig-mm>/<orig-dd>/...`).
-  // Writing today's synthetic rollout next to it leaves two jsonls sharing
-  // the same threadId — `codex resume <tid>` globs `~/.codex/sessions/**`
-  // and the SDK has no spec for which match it picks, so behavior becomes
-  // environment-/codex-version-dependent. Sweep every prior file for this
-  // threadId BEFORE writing the new one so resume always reads our synth.
+  // original rollout for that threadId still sits at its canonical path.
+  // Sweep every prior file for this threadId BEFORE replacing that path so
+  // legacy writers cannot leave ambiguous duplicates behind.
   //
   // Synchronous on purpose: writeCodexRollout's signature is sync (called
   // inside set_agent's DB transaction), and an async sweep would race with
@@ -672,11 +680,10 @@ function sweepPriorRolloutsFullTree(threadId: string, sessionsDir: string): void
 }
 
 /**
- * UUIDv7 ids encode their creation time in the first 48 bits. `writeCodexRollout`
- * buckets new files at `<yyyy>/<mm>/<dd>/` keyed off the WRITE time, so a
- * thread's rollouts can only live between (threadId's birth date) and
- * (today's date) — typically a 0-2 day span. We enumerate every day in that
- * inclusive range so a Mon-bridge / Tue-rebridge picks up both.
+ * UUIDv7 ids encode their creation time in the first 48 bits. Current writers
+ * always use that canonical birth-date bucket, but older writers used the
+ * rewrite date during cross-agent bridges. Enumerate the inclusive range from
+ * birth date to today so cleanup also removes those legacy misplaced files.
  *
  * Returns null when:
  *   - threadId isn't a parseable UUIDv7 (atypical fixture / future format)

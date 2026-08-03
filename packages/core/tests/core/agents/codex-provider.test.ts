@@ -110,9 +110,26 @@ describe("codexProvider stale rollout recovery", () => {
     restoreExecutionHost = undefined;
   });
 
-  test("falls back to a fresh thread when resume cannot find a rollout", async () => {
+  test("does not discard topic context when resume cannot find a rollout", async () => {
     const events = [];
     for await (const event of codexProvider(opts())) events.push(event);
+
+    expect(resumeThread).toHaveBeenCalledWith(
+      "3f471a7f-2995-40d7-9aaa-aaaaaaaaaaaa",
+      expect.any(Object),
+    );
+    expect(startThread).not.toHaveBeenCalled();
+    expect(events).toContainEqual({
+      type: "error",
+      content: "thread/resume failed: no rollout found",
+    });
+  });
+
+  test("allows context-free calls to fall back to a fresh thread", async () => {
+    const events = [];
+    for await (const event of codexProvider(opts({ userId: undefined, session: undefined }))) {
+      events.push(event);
+    }
 
     expect(resumeThread).toHaveBeenCalledWith(
       "3f471a7f-2995-40d7-9aaa-aaaaaaaaaaaa",

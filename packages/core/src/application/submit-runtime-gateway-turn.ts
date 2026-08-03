@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { appendApiMessage, getApiMessage } from "#storage/api-messages";
 import { getTopicSessionId } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
@@ -8,12 +8,20 @@ import {
   type RuntimeGatewaySubmission,
   recordRuntimeGatewaySubmission,
 } from "#storage/runtime-gateway-submissions";
-import { enqueueRuntimeUserTurnRequest } from "#storage/runtime-turn-requests";
+import { requestRuntimeTurnAbort } from "#storage/runtime-leases";
+import { getRuntimeTopicEpoch } from "#storage/runtime-topic-state";
+import { mergeRuntimeUserTurnRequest } from "#storage/runtime-turn-requests";
 import type { MessageDto, TopicDto } from "#types/api";
 
 export interface SubmitRuntimeGatewayTurnParams {
   topic: TopicDto;
+  /** Canonical execution principal, normally `local`. */
   userId: string;
+  /** Authenticated upstream author retained independently from execution. */
+  actorUserId?: string;
+  actorLabel?: string;
+  /** Topic owner's credential namespace. */
+  vaultUserId?: string;
   text: string;
   clientMessageId: string;
   requestId?: string;
@@ -25,14 +33,57 @@ export interface SubmitRuntimeGatewayTurnResult extends RuntimeGatewaySubmission
   deduplicated: boolean;
 }
 
-function duplicateResult(submission: RuntimeGatewaySubmission): SubmitRuntimeGatewayTurnResult {
+function duplicateResult(
+  submission: RuntimeGatewaySubmission,
+  params: SubmitRuntimeGatewayTurnParams,
+  requestId: string,
+  actorUserId: string,
+  payloadHash: string,
+): SubmitRuntimeGatewayTurnResult {
   const message = getApiMessage(submission.topicId, submission.messageId);
   if (!message) throw new Error("gateway submission references a missing canonical message");
+  if (submission.payloadHash && submission.payloadHash !== payloadHash) {
+    throw new RuntimeGatewayIdempotencyConflictError();
+  }
+  if (
+    (!submission.payloadHash &&
+      (message.authorName !== params.actorLabel ||
+        message.authorId !== actorUserId ||
+        message.text !== params.text)) ||
+    submission.clientMessageId !== params.clientMessageId ||
+    submission.requestId !== requestId ||
+    submission.topicId !== params.topic.id ||
+    submission.userId !== params.userId
+  ) {
+    throw new RuntimeGatewayIdempotencyConflictError();
+  }
   return {
     ...submission,
     message,
     deduplicated: true,
   };
+}
+
+function gatewayPayloadHash(
+  params: SubmitRuntimeGatewayTurnParams,
+  requestId: string,
+  actorUserId: string,
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        params.topic.id,
+        params.userId,
+        actorUserId,
+        params.actorLabel ?? null,
+        params.vaultUserId ?? null,
+        params.text,
+        params.clientMessageId,
+        requestId,
+        params.allowAutoContinue ?? true,
+      ]),
+    )
+    .digest("hex");
 }
 
 /**
@@ -45,8 +96,7 @@ function duplicateResult(submission: RuntimeGatewaySubmission): SubmitRuntimeGat
  *
  * A distinct type rather than a plain `Error` because the control plane maps
  * this to 409, and it must not be confused with a *missing* `clientMessageId`,
- * which is a malformed request (400). Matching on message text conflated the
- * two.
+ * which is a malformed request (400).
  */
 export class RuntimeGatewayIdempotencyConflictError extends Error {
   constructor(message = "clientMessageId or requestId is already bound to another turn") {
@@ -59,24 +109,19 @@ export function submitRuntimeGatewayTurn(
   params: SubmitRuntimeGatewayTurnParams,
 ): SubmitRuntimeGatewayTurnResult {
   const requestId = params.requestId ?? params.clientMessageId;
+  const actorUserId = params.actorUserId ?? params.userId;
+  const payloadHash = gatewayPayloadHash(params, requestId, actorUserId);
   const existing = findRuntimeGatewaySubmission(params.clientMessageId, requestId);
   if (existing) {
-    if (
-      existing.clientMessageId !== params.clientMessageId ||
-      existing.requestId !== requestId ||
-      existing.topicId !== params.topic.id ||
-      existing.userId !== params.userId
-    ) {
-      throw new RuntimeGatewayIdempotencyConflictError();
-    }
-    return duplicateResult(existing);
+    return duplicateResult(existing, params, requestId, actorUserId, payloadHash);
   }
 
   const createdAt = new Date().toISOString();
   const message: MessageDto = {
     id: randomUUID(),
     topicId: params.topic.id,
-    authorId: params.userId,
+    authorId: actorUserId,
+    authorName: params.actorLabel,
     sourceAdapter: "runtime-gateway",
     sourceMessageId: params.clientMessageId,
     text: params.text,
@@ -91,23 +136,31 @@ export function submitRuntimeGatewayTurn(
     createdAt,
     ackCursor: 0,
     messageCursor: 0,
+    payloadHash,
   };
 
   try {
     db.transaction(() => {
       appendApiMessage(message, { notify: false });
-      enqueueRuntimeUserTurnRequest({
+      mergeRuntimeUserTurnRequest({
         topicId: params.topic.id,
         userId: params.userId,
-        prompt: params.text,
+        userMessages: [
+          {
+            prompt: params.text,
+            actorUserId,
+            ...(params.actorLabel ? { actorLabel: params.actorLabel } : {}),
+          },
+        ],
         allowAutoContinue: params.allowAutoContinue ?? true,
         requestId,
-        supersedeExisting: false,
+        topicEpoch: getRuntimeTopicEpoch(params.topic.id),
         execution: {
           sessionId: getTopicSessionId(params.topic.id),
           sessionIdSpecified: true,
           conversationPrompts: [params.text],
           loggedUserMessageCount: 0,
+          vaultUserId: params.vaultUserId,
         },
       });
       const acceptedEvent = appendRuntimeEvent("runtime-gateway-ingress", {
@@ -131,9 +184,14 @@ export function submitRuntimeGatewayTurn(
     })();
   } catch {
     const raced = findRuntimeGatewaySubmission(params.clientMessageId, requestId);
-    if (raced) return duplicateResult(raced);
+    if (raced) return duplicateResult(raced, params, requestId, actorUserId, payloadHash);
     throw new Error("failed to persist gateway turn idempotency record");
   }
+
+  // A new human message steers the active topic turn. The durable replacement
+  // is committed first; the provider observes this abort on its next lease
+  // heartbeat and the worker resumes the merged batch after unwind.
+  requestRuntimeTurnAbort(params.topic.id, "internal");
 
   return { ...submission, message, deduplicated: false };
 }

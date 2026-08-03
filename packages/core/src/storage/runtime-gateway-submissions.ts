@@ -9,6 +9,8 @@ export interface RuntimeGatewaySubmission {
   createdAt: string;
   ackCursor: number;
   messageCursor: number;
+  /** Hash of every ingress field that can change canonical or execution semantics. */
+  payloadHash?: string;
 }
 
 interface RuntimeGatewaySubmissionRow {
@@ -20,6 +22,7 @@ interface RuntimeGatewaySubmissionRow {
   created_at: string;
   ack_cursor: number | bigint;
   message_cursor: number | bigint;
+  payload_hash: string | null;
 }
 
 db.exec(`
@@ -31,13 +34,17 @@ db.exec(`
     user_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
     ack_cursor INTEGER NOT NULL DEFAULT 0,
-    message_cursor INTEGER NOT NULL DEFAULT 0
+    message_cursor INTEGER NOT NULL DEFAULT 0,
+    payload_hash TEXT
   )
 `);
 try {
   db.exec(
     "ALTER TABLE runtime_gateway_submissions ADD COLUMN ack_cursor INTEGER NOT NULL DEFAULT 0",
   );
+} catch {}
+try {
+  db.exec("ALTER TABLE runtime_gateway_submissions ADD COLUMN payload_hash TEXT");
 } catch {}
 try {
   db.exec(
@@ -58,6 +65,7 @@ function rowToSubmission(row: RuntimeGatewaySubmissionRow): RuntimeGatewaySubmis
     createdAt: row.created_at,
     ackCursor: Number(row.ack_cursor),
     messageCursor: Number(row.message_cursor),
+    payloadHash: row.payload_hash ?? undefined,
   };
 }
 
@@ -80,8 +88,8 @@ export function recordRuntimeGatewaySubmission(submission: RuntimeGatewaySubmiss
   db.query(
     `INSERT INTO runtime_gateway_submissions
        (client_message_id, request_id, topic_id, message_id, user_id, created_at,
-        ack_cursor, message_cursor)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ack_cursor, message_cursor, payload_hash)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     submission.clientMessageId,
     submission.requestId,
@@ -91,5 +99,6 @@ export function recordRuntimeGatewaySubmission(submission: RuntimeGatewaySubmiss
     submission.createdAt,
     submission.ackCursor,
     submission.messageCursor,
+    submission.payloadHash ?? null,
   );
 }

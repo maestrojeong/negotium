@@ -774,6 +774,7 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
         } catch (err) {
           if (err instanceof Error && err.name === "AbortError") throw err;
           if (!currentSessionId || !isMissingCodexRolloutError(err)) throw err;
+          if (opts.userId && opts.session) throw err;
           logger.warn(
             { staleSessionId: currentSessionId, err: errMsg(err) },
             "codexProvider: stale/missing rollout, restarting fresh thread",
