@@ -4,6 +4,7 @@ import { getTopicSessionId } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
 import { appendRuntimeEvent } from "#storage/runtime-events";
 import {
+  backfillRuntimeGatewaySubmissionPayloadHash,
   findRuntimeGatewaySubmission,
   type RuntimeGatewaySubmission,
   recordRuntimeGatewaySubmission,
@@ -46,10 +47,13 @@ function duplicateResult(
     throw new RuntimeGatewayIdempotencyConflictError();
   }
   if (
+    // `MessageDto.authorName` is never persisted — `api_messages` has no
+    // `author_name` column, so a message fetched back from storage always
+    // has `authorName: undefined`. Comparing it here would either always
+    // fail (once `actorLabel` is set) or always pass (once it's cleared);
+    // it is dropped in favor of the fields that actually round-trip.
     (!submission.payloadHash &&
-      (message.authorName !== params.actorLabel ||
-        message.authorId !== actorUserId ||
-        message.text !== params.text)) ||
+      (message.authorId !== actorUserId || message.text !== params.text)) ||
     submission.clientMessageId !== params.clientMessageId ||
     submission.requestId !== requestId ||
     submission.topicId !== params.topic.id ||
@@ -57,8 +61,18 @@ function duplicateResult(
   ) {
     throw new RuntimeGatewayIdempotencyConflictError();
   }
+  if (!submission.payloadHash) {
+    // Pre-0.2.5 rows never recorded `actorLabel`/`vaultUserId`/
+    // `allowAutoContinue` anywhere retrievable, so this replay could not
+    // actually be checked against them above. Adopt this call's hash as
+    // canonical for the key now, so any *later* replay with a different
+    // actor label, Vault, or auto-continue flag is caught instead of
+    // silently reusing this ACK forever.
+    backfillRuntimeGatewaySubmissionPayloadHash(submission.clientMessageId, payloadHash);
+  }
   return {
     ...submission,
+    payloadHash: submission.payloadHash ?? payloadHash,
     message,
     deduplicated: true,
   };

@@ -84,6 +84,26 @@ export function findRuntimeGatewaySubmission(
   return row ? rowToSubmission(row) : null;
 }
 
+/**
+ * Attach a payload hash to a submission recorded before the `payload_hash`
+ * column existed (or before it was populated for that row). Called the first
+ * time a legacy row is confirmed to match a duplicate request on every field
+ * we *can* verify, so every subsequent replay under the same key is checked
+ * against the full semantic payload instead of the narrower legacy field set.
+ * A no-op once the row already has a hash, so it never overwrites a value
+ * `submitRuntimeGatewayTurn` already trusts.
+ */
+export function backfillRuntimeGatewaySubmissionPayloadHash(
+  clientMessageId: string,
+  payloadHash: string,
+): void {
+  db.query(
+    `UPDATE runtime_gateway_submissions
+       SET payload_hash = ?
+       WHERE client_message_id = ? AND payload_hash IS NULL`,
+  ).run(payloadHash, clientMessageId);
+}
+
 export function recordRuntimeGatewaySubmission(submission: RuntimeGatewaySubmission): void {
   db.query(
     `INSERT INTO runtime_gateway_submissions
