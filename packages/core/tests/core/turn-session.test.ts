@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   clearRoomQuery,
   getRoomQuery,
@@ -452,5 +454,49 @@ describe("turn session resolution", () => {
       error: "failed to prepare isolated session: provider unavailable",
     });
     expect(statuses.some((status) => status.kind === "ai_done")).toBe(false);
+  });
+});
+
+describe("prompt cache stability", () => {
+  // A provider's prefix cache invalidates from the first diverging byte, so any
+  // per-turn text in the system prompt forces the whole prompt to be re-read on
+  // every flip. Measured against the live DeepSeek API: one browser-availability
+  // flip at turn 15 of a 20-turn conversation cost 17,852 uncached tokens
+  // (hit=0) with the reminder in the system prompt, versus 1,215 with it on the
+  // user turn — 40% more uncached tokens across the run.
+  //
+  // This is a source-level invariant because the placement lives inside the
+  // turn generator, where the assembled strings are not observable from a unit
+  // test. Same approach as tests/core/daemon-import-boundaries.test.ts.
+  const source = readFileSync(resolve(import.meta.dir, "../../src/runtime/turn-runner.ts"), "utf8");
+
+  test("per-turn reminders never enter the system prompt", () => {
+    // Catches `systemPrompt +=`, `systemPrompt = \`${systemPrompt}...\``, and the
+    // `effectiveSystemPrompt` variant this replaced.
+    expect(source).not.toMatch(/systemPrompt\s*(?:\+=|=)[^;]*<system-reminder>/);
+    expect(source).not.toMatch(/<system-reminder>[^`"]*`\s*;?\s*\n?\s*effectiveSystemPrompt/);
+    expect(source).not.toContain("effectiveSystemPrompt");
+  });
+
+  test("per-turn reminders ride the user prompt tail", () => {
+    expect(source).toContain("const turnReminders: string[] = []");
+    expect(source).toContain("prompt: effectivePrompt,");
+    // Every reminder *literal* in this file must be routed through the
+    // collector. Matching on the opening quote skips prose mentions in comments.
+    const reminders = source.match(/"<system-reminder>/g) ?? [];
+    const pushes = source.match(/turnReminders\.push\(/g) ?? [];
+    expect(reminders.length).toBeGreaterThan(0);
+    expect(pushes.length).toBe(reminders.length);
+  });
+
+  test("a reminder is not recorded as part of the user message", () => {
+    // The conversation log must hold `agentPrompt`, not the reminder-suffixed
+    // `effectivePrompt` — otherwise the reminder persists into synthesized
+    // rollouts and pollutes every later turn's history.
+    const recordIndex = source.indexOf("userConversationPromptsToRecord(");
+    const effectiveIndex = source.indexOf("const effectivePrompt =");
+    expect(recordIndex).toBeGreaterThan(-1);
+    expect(effectiveIndex).toBeGreaterThan(-1);
+    expect(effectiveIndex).toBeGreaterThan(recordIndex);
   });
 });

@@ -1423,9 +1423,29 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     ].join("\n");
   }
 
+  /**
+   * Per-turn `<system-reminder>` blocks, appended to the *user* prompt rather
+   * than the system prompt.
+   *
+   * These facts flip between turns on the same model — whether the browser MCP
+   * came up, whether this turn is an auto-resume. A prompt cache invalidates
+   * from the first diverging byte, so putting them in the system prompt means
+   * every flip re-reads the entire prompt: measured against the live DeepSeek
+   * API, one flip at turn 15 of a 20-turn conversation cost 17,852 uncached
+   * tokens (hit=0) versus 1,215 with the reminder on the user turn — 40% more
+   * uncached tokens across the run. On the user turn the divergence lands at
+   * the tail, where the text is new anyway.
+   *
+   * Applied after the conversation log is written, so a reminder never becomes
+   * part of the recorded user message (it would then persist into synthesized
+   * rollouts and defeat the point).
+   */
+  const turnReminders: string[] = [];
+
   if (params.from === FROM_AUTO_CONTINUE) {
-    systemPrompt +=
-      "\n\n<system-reminder>이 턴은 설정 자동 조정(effort/model/agent) 후 자동 재개된 턴이다. effort/model/agent 난이도 재평가 및 설정 변경 없이 즉시 작업을 시작할 것.</system-reminder>";
+    turnReminders.push(
+      "<system-reminder>이 턴은 설정 자동 조정(effort/model/agent) 후 자동 재개된 턴이다. effort/model/agent 난이도 재평가 및 설정 변경 없이 즉시 작업을 시작할 것.</system-reminder>",
+    );
   }
 
   if (!silent && !sessionRetried) {
@@ -1538,25 +1558,28 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         );
       }
     }
-    let effectiveSystemPrompt = systemPrompt;
     if (playwrightRequested && !browserProfileOwner) {
-      const ownerOnlyNote =
-        "<system-reminder>Browser tools are unavailable in this turn because browser profiles are private to the topic owner. Do not attempt browser calls or ask to reuse the owner's login state.</system-reminder>";
-      effectiveSystemPrompt = `${effectiveSystemPrompt}\n\n${ownerOnlyNote}`;
+      turnReminders.push(
+        "<system-reminder>Browser tools are unavailable in this turn because browser profiles are private to the topic owner. Do not attempt browser calls or ask to reuse the owner's login state.</system-reminder>",
+      );
     }
     if (consumePlaywrightUnavailable(userId, topic.title)) {
-      const playwrightNote =
-        "<system-reminder>Playwright browser tools are UNAVAILABLE this turn. The `mcp__playwright__*` tools have been removed from this turn's catalog because the long-lived browser MCP could not be prepared. Do not attempt to call browser tools. If browser interaction is required, ask the user to retry shortly or use a non-browser alternative.</system-reminder>";
-      effectiveSystemPrompt = `${effectiveSystemPrompt}\n\n${playwrightNote}`;
+      turnReminders.push(
+        "<system-reminder>Playwright browser tools are UNAVAILABLE this turn. The `mcp__playwright__*` tools have been removed from this turn's catalog because the long-lived browser MCP could not be prepared. Do not attempt to call browser tools. If browser interaction is required, ask the user to retry shortly or use a non-browser alternative.</system-reminder>",
+      );
     }
+    // The system prompt is now byte-identical across turns of a topic, so the
+    // provider's prefix cache survives; per-turn facts ride the prompt tail.
+    const effectivePrompt =
+      turnReminders.length > 0 ? `${agentPrompt}\n\n${turnReminders.join("\n\n")}` : agentPrompt;
 
     try {
       yield* runAgent({
         agent: agentKind,
-        prompt: agentPrompt,
+        prompt: effectivePrompt,
         attachments: promptAttachments,
         cwd: workspaceCwd,
-        systemPrompt: effectiveSystemPrompt,
+        systemPrompt,
         sessionId,
         userId,
         vaultUserId,
