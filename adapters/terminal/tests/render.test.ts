@@ -540,7 +540,7 @@ describe("terminal renderer", () => {
     expect(selected).not.toContain("codex");
     expect(output).toContain("Default Claude route for capable, efficient everyday work.");
     expect(output).toContain("API-priced Sonnet-level route for cost-efficient everyday work.");
-    expect(output).not.toContain("deepseek-flash");
+    expect(output).toContain("deepseek-flash");
   });
 
   test("keeps the selected model visible in a short terminal", () => {

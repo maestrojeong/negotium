@@ -55,7 +55,8 @@ export interface SelectableModel {
 }
 
 /**
- * Pricing and quota observations were checked on 2026-07-19.
+ * Pricing and quota observations were checked on 2026-07-19, DeepSeek pricing
+ * re-checked 2026-08-04 for the new deepseek-v4-flash model.
  * Official references:
  * - https://learn.chatgpt.com/docs/pricing
  * - https://help.openai.com/en/articles/20001106
@@ -67,9 +68,9 @@ export interface SelectableModel {
  * meter cached input, fresh input, output, reasoning, speed, and model choice
  * differently and may change server-side weights without publishing a token cap.
  */
-export const MODEL_COST_RESEARCHED_AT = "2026-07-19";
+export const MODEL_COST_RESEARCHED_AT = "2026-08-04";
 export const MODEL_COST_ROUTING_SUMMARY =
-  "Cost basis (2026-07-19): Codex Pro 20x and Claude Max 20x are each $200/month; Maestro models are pay-per-token. DeepSeek Pro is cheapest.";
+  "Cost basis (2026-08-04): Codex Pro 20x and Claude Max 20x are each $200/month; Maestro models are pay-per-token. DeepSeek Flash is cheapest.";
 
 const CODEX_PRO_20X_COST = "ChatGPT Pro 20x subscription: $200/month";
 const CODEX_COMMUNITY_WEEKLY =
@@ -173,12 +174,25 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
     agent: "maestro",
     description: "API-priced Sonnet-level route for cost-efficient everyday work.",
     intelligenceTier: "sonnet",
-    routingSummary: "cost-efficient everyday work; pay-per-token and cheapest route",
+    routingSummary: "cost-efficient everyday work; pay-per-token, pricier than DeepSeek Flash",
     accessCost: "DeepSeek V4 Pro pay-as-you-go API; no monthly subscription required",
     marginalTokenCost:
       "DeepSeek API: $0.435/M uncached input, $0.003625/M cached input, $0.87/M output",
     estimatedUsage:
       "No subscription token cap; pay per token. Official account concurrency limit is 500 requests.",
+  },
+  {
+    model: "deepseek-flash",
+    agent: "maestro",
+    description:
+      "Faster, cheaper DeepSeek V4 variant (DeepSeek-V4-Flash-0731) at similar Sonnet-level quality for high-volume everyday work.",
+    intelligenceTier: "sonnet",
+    routingSummary: "cheapest overall route; pay-per-token, 1M context, 5x Pro's concurrency limit",
+    accessCost: "DeepSeek V4 Flash pay-as-you-go API; no monthly subscription required",
+    marginalTokenCost:
+      "DeepSeek API: $0.14/M uncached input, $0.0028/M cached input, $0.28/M output",
+    estimatedUsage:
+      "No subscription token cap; pay per token. Official account concurrency limit is 2500 requests.",
   },
 ];
 

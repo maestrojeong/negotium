@@ -23,11 +23,16 @@ describe("maestroRegistry model policy", () => {
     }
   });
 
-  test("rejects retired DeepSeek Flash aliases", () => {
-    for (const model of ["deepseek", "deepseek-flash", "deepseek-v4-flash"]) {
-      expect(maestroRegistry.validateModel(model)).toBe(false);
+  test("accepts DeepSeek Flash (the current model) and rejects the bare, versionless alias", () => {
+    // "deepseek-flash" was disabled in 0.1.25 because DeepSeek had retired its
+    // old flash model at the time. DeepSeek-V4-Flash-0731 (released
+    // 2026-07-31) is an unrelated, currently-live model that reuses a
+    // similar-looking id — re-enabled after verifying it with a live call.
+    for (const model of ["deepseek-pro", "deepseek-flash", "deepseek-v4-flash"]) {
+      expect(maestroRegistry.validateModel(model)).toBe(true);
     }
-    expect(maestroRegistry.validateModel("deepseek-pro")).toBe(true);
+    // "deepseek" alone was never a real model id, just an ambiguous prefix.
+    expect(maestroRegistry.validateModel("deepseek")).toBe(false);
   });
 });
 

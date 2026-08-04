@@ -9,6 +9,11 @@ import { MAESTRO_EFFORT_VALUES } from "#types";
 
 const ALIAS_MAP: Record<string, string> = {
   "deepseek-pro": "deepseek-v4-pro",
+  // "deepseek-flash" was disabled in 0.1.25 because DeepSeek had retired its
+  // old flash model. "DeepSeek-V4-Flash-0731" (released 2026-07-31) is an
+  // unrelated, currently-live model reusing a similar name — verified with a
+  // live API call before re-enabling this alias.
+  "deepseek-flash": "deepseek-v4-flash",
   kimi: "kimi-k3",
   "kimi-pro": "kimi-k3",
   "kimi-code": "kimi-k2.7-code",

@@ -55,6 +55,7 @@ describe("topic model picker", () => {
       "kimi-k3",
       "kimi-k2.7-code",
       "deepseek-pro",
+      "deepseek-flash",
     ]);
     expect(selectableModel("GPT-5.6-SOL")?.model).toBe("gpt-5.6-sol");
     expect(selectableModel("gpt-5.6-sol")?.intelligenceTier).toBe("fable");
@@ -72,7 +73,7 @@ describe("topic model picker", () => {
     expect(selectableModel("kimi-k3")?.intelligenceTier).toBe("fable");
     expect(selectableModel("kimi-k2.7-code")?.intelligenceTier).toBe("opus");
     expect(selectableModel("gpt-5.5")).toBeUndefined();
-    expect(selectableModel("deepseek-flash")).toBeUndefined();
+    expect(selectableModel("deepseek-flash")?.marginalTokenCost).toContain("$0.14/M");
   });
 
   test("persists a selected model without resetting the provider session", () => {
