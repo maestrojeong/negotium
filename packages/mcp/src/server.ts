@@ -24,6 +24,7 @@ import {
   canSpawnSubagentsFromTopic,
   createAskUserToolDefinition,
   createPrepareSubagentToolDefinition,
+  createPublishHtmlToolDefinitions,
   createSelfConfigToolDefinitions,
   createSpawnSubagentToolDefinition,
   createSubagentManagementToolDefinitions,
@@ -247,6 +248,13 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
           ? async () => textResult("Visual queued for ordered display on the canonical hub.")
           : def.handler;
       server.tool(def.name, def.description, def.schema as any, handler as any);
+    }
+    // Publishing is the same capability as show_html — render HTML for the
+    // user — with a shareable link instead of an in-app panel, so it rides
+    // the same gate. Unlike the show_* tools it does its own work, and it is
+    // node-agnostic, so it keeps its real handler even behind a peer bridge.
+    for (const def of createPublishHtmlToolDefinitions({ cwd: ctx.cwd })) {
+      server.tool(def.name, def.description, def.schema as any, def.handler as any);
     }
   }
 

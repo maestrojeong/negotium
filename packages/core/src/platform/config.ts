@@ -153,6 +153,18 @@ export function resolveBrowserRsBin(envValue?: string): string | undefined {
   }
 }
 
+/**
+ * Backend that stores documents published by `publish_html` and serves them
+ * at `<base>/snippets/<id>`. Unset means the deployment has nowhere to
+ * publish, and the publish tools are omitted from the catalog rather than
+ * offering a link that cannot be minted.
+ */
+export const SNIPPETS_API_URL = (
+  envText("NEGOTIUM_SNIPPETS_API_URL") ??
+  envText("SNIPPETS_API_URL") ??
+  ""
+).replace(/\/+$/, "");
+
 export const BROWSER_RS_BIN = resolveBrowserRsBin(envText("NEGOTIUM_BROWSER_RS_BIN"));
 
 // Managed Browser.rs terminates MCP transports and security policy itself.

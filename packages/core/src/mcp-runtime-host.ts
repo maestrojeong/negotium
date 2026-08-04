@@ -1,6 +1,7 @@
 /** Stable core surface used by the embedded runtime MCP endpoint. */
 export { createAskUserToolDefinition } from "#agents/mcp-tools/ask-user";
 export { errorResult, textResult } from "#agents/mcp-tools/common";
+export { createPublishHtmlToolDefinitions } from "#agents/mcp-tools/publish-html";
 export type { SelfConfigContext } from "#agents/mcp-tools/self-config";
 export { createSelfConfigToolDefinitions } from "#agents/mcp-tools/self-config";
 export {
