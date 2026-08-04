@@ -204,8 +204,11 @@ describe("shared background-bash runtime", () => {
     return client;
   }
 
+  // Generous budget: the timeout-watch test alone needs its own 1s
+  // `timeout_seconds` to actually elapse before the file can appear, and a
+  // loaded CI runner adds real slack on top of that.
   async function waitForInbox(inboxFile: string): Promise<string> {
-    for (let attempt = 0; attempt < 40 && !existsSync(inboxFile); attempt++) await delay(25);
+    for (let attempt = 0; attempt < 200 && !existsSync(inboxFile); attempt++) await delay(25);
     return existsSync(inboxFile) ? readFileSync(inboxFile, "utf-8") : "";
   }
 
