@@ -37,6 +37,42 @@ describe("maestroRegistry model policy", () => {
 });
 
 describe("maestroRegistry session storage", () => {
+  test("never writes a blank user or assistant turn (Moonshot 400s the whole request)", () => {
+    // Verified against the live Moonshot API (kimi-k3): a history message with
+    // empty content rejects the entire request with
+    //   "the message at position N with role 'user' must not be empty".
+    // An attachment-only submission records `user_message` with content "",
+    // which used to reach the synthesized session verbatim.
+    mkdirSync(WORKSPACE_DIR, { recursive: true });
+    const cwd = mkdtempSync(join(WORKSPACE_DIR, "test-maestro-registry-blank-"));
+    const now = new Date().toISOString();
+    const written = maestroRegistryOperations.writeRollout({
+      cwd,
+      entries: [
+        { ts: now, agent: "maestro", event: { type: "user_message", content: "" } },
+        {
+          ts: now,
+          agent: "maestro",
+          event: { type: "result", content: "answered the attachment", stopReason: "end_turn" },
+        },
+      ],
+    });
+
+    try {
+      const messages = loadRawMaestroSession(written.sessionId);
+      if (!messages) throw new Error("synthesized maestro session did not load");
+      expect(messages.length).toBeGreaterThan(0);
+      for (const message of messages) {
+        expect(typeof message.content).toBe("string");
+        expect((message.content as string).trim().length).toBeGreaterThan(0);
+      }
+      expect(messages[0]).toMatchObject({ role: "user" });
+    } finally {
+      deleteMaestroSession(written.sessionId);
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test("forks the native Maestro session at its full raw history", async () => {
     mkdirSync(WORKSPACE_DIR, { recursive: true });
     const cwd = mkdtempSync(join(WORKSPACE_DIR, "test-maestro-registry-fork-"));

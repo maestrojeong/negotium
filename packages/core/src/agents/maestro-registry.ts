@@ -68,6 +68,31 @@ function existingCreatedAt(path: string): string | undefined {
   }
 }
 
+/**
+ * Placeholder for a synthesized turn whose text is blank.
+ *
+ * Moonshot (Kimi) hard-rejects the *whole* request when any history message has
+ * empty content — `Kimi API 400: the message at position N with role 'user'
+ * must not be empty` (verified against the live API, kimi-k3). DeepSeek's
+ * validator is laxer today but the same shape is not worth relying on.
+ *
+ * maestro-agent-sdk 0.2.1 drops empty assistant slots, but only in the
+ * *content-block* form (`content: []`); the pair encoder below writes plain
+ * strings, and `content: ""` still reaches the wire and 400s. Blank sides are
+ * reachable here from real conversations — an attachment-only user submission
+ * records a `user_message` with `content: ""`, and `renderUserPromptBatch`
+ * passes it through verbatim — so the synthesized session must not contain one.
+ *
+ * We substitute rather than drop: dropping a pair would silently delete a turn
+ * from the historical narrative the next agent reads, while a one-line marker
+ * keeps the turn boundary and tells the model why the slot is thin.
+ */
+const BLANK_TURN_PLACEHOLDER = "(no text content in this turn)";
+
+function nonEmptyTurnText(text: string): string {
+  return text.trim().length > 0 ? text : BLANK_TURN_PLACEHOLDER;
+}
+
 function writeRollout(options: Parameters<AgentRegistryOperations["writeRollout"]>[0]) {
   const sessionId = options.reuseSessionId ?? randomUUID();
   assertUuidLike("sessionId", sessionId);
@@ -75,8 +100,8 @@ function writeRollout(options: Parameters<AgentRegistryOperations["writeRollout"
   const path = maestroSessionPath(sessionId);
   mkdirSync(maestroSessionsDir(), { recursive: true });
   const messages = extractChatPairs(options.entries).flatMap((pair) => [
-    { role: "user", content: pair.userText },
-    { role: "assistant", content: pair.assistantText },
+    { role: "user", content: nonEmptyTurnText(pair.userText) },
+    { role: "assistant", content: nonEmptyTurnText(pair.assistantText) },
   ]);
   const lines = [
     {
@@ -84,6 +109,11 @@ function writeRollout(options: Parameters<AgentRegistryOperations["writeRollout"
         version: 1,
         cwd: options.cwd,
         createdAt: existingCreatedAt(path) ?? new Date().toISOString(),
+        // Deliberately a literal, not the SDK's `MAESTRO_SDK_VERSION`: this
+        // module must not statically import maestro-agent-sdk (asserted by
+        // tests/core/daemon-import-boundaries.test.ts — the SDK stays off the
+        // daemon startup path). The value names the session *format* version
+        // this encoder targets, which is what a reader of the header needs.
         sdkVersion: "0.2.0",
       },
     },
