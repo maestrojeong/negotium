@@ -55,6 +55,10 @@ export {
   normalizeAskUserQuestionInput,
 } from "#agents/mcp-tools/ask-user";
 export {
+  createPublishHtmlToolDefinitions,
+  type PublishHtmlContext,
+} from "#agents/mcp-tools/publish-html";
+export {
   createSelfConfigRuntime,
   createSelfConfigToolDefinitionsForCore,
   type SelfConfigRuntime,
