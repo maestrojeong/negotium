@@ -43,6 +43,13 @@ const CLAUDE_DEFAULT_DISALLOWED_TOOLS = [
   "TaskUpdate",
   "TaskList",
   "TaskGet",
+  // Native scheduling/cron tools duplicate Negotium's own runtime MCP surface
+  // (`mcp__runtime__schedule_self`, the `cron-manager` server) and bypass its
+  // persistence/host wiring if used directly.
+  "ScheduleWakeup",
+  "CronCreate",
+  "CronList",
+  "CronDelete",
 ] as const;
 
 const CLAUDE_NATIVE_AGENT_TOOLS = ["Task", "Agent", "TaskOutput", "TaskStop"] as const;
