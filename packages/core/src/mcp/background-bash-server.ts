@@ -65,9 +65,28 @@ const COMPLETED_RETENTION_MS = 60 * 60_000;
 const MAX_COMPLETED_PROCS = 100;
 /** Count-based pruning ignores jobs this fresh; their turn may still be queued. */
 const PRUNE_GRACE_MS = 5 * 60_000;
+const DEFAULT_WATCH_TIMEOUT_SECONDS = 3_600;
+const MAX_WATCH_TIMEOUT_SECONDS = 86_400;
 
 /** Root for full-output spill files, one directory per bash id. */
 const SPILL_ROOT = join(RUN_DIR, "bg-bash-output");
+
+/**
+ * One-shot match-and-notify state for `background_bash_watch`. `matched` and
+ * `finished` are distinct: `matched` records the specific outcome (a line hit
+ * `regex`) for the injected message; `finished` guards against `finishProc`
+ * double-delivering once a match or timeout has already sent the one turn a
+ * watch job promises.
+ */
+interface WatchState {
+  regex: RegExp;
+  target: "stdout" | "stderr" | "both";
+  matched: boolean;
+  finished: boolean;
+  timeoutTimer?: ReturnType<typeof setTimeout>;
+  stdoutCarry: string;
+  stderrCarry: string;
+}
 
 interface BgProc {
   bashId: string;
@@ -86,6 +105,8 @@ interface BgProc {
   startedAt: number;
   killTimer?: ReturnType<typeof setTimeout>;
   cleanupTimer?: ReturnType<typeof setTimeout>;
+  /** Present only for jobs started via `background_bash_watch`. */
+  watch?: WatchState;
 }
 
 const procs = new Map<string, BgProc>();
@@ -175,30 +196,33 @@ function describeStream(label: string, snapshot: OutputSnapshot): string | undef
   return `${label} (${notes.join(" · ")}):\n${body}`;
 }
 
-/**
- * Deliver the completion turn.
- *
- * Returns false when the inbox write failed. The tool promises the caller it
- * need not poll, so a dropped completion is the one failure that leaves a
- * background job silently unfinished — the caller must not treat it as done.
- */
-function injectCompletion(proc: BgProc): boolean {
+/** Render the shared header+output body used by every injected message. */
+function buildOutputMessage(proc: BgProc, header: string): string {
   const parts: string[] = [];
   const stdout = describeStream("stdout", proc.stdout.snapshot());
   const stderr = describeStream("stderr", proc.stderr.snapshot());
   if (stdout) parts.push(stdout);
   if (stderr) parts.push(stderr);
   const output = parts.join("\n") || "(no output)";
-
   // English on purpose: this text is injected into the model's context, and
   // every other model-facing string in this server — the tool descriptions it
   // sits alongside — is English. It is also cheaper in tokens.
-  const message =
-    `[background_bash ${proc.bashId} finished]\n` +
+  return (
+    `${header}\n` +
     `command: ${proc.command.slice(0, 200)}\n` +
     `exit code: ${proc.exitCode ?? "unknown"}\n` +
-    output;
+    output
+  );
+}
 
+/**
+ * Deliver one turn to the topic's inbox.
+ *
+ * Returns false when the inbox write failed. Every caller promises the
+ * caller it need not poll, so a dropped delivery is the one failure that
+ * leaves a background job silently unfinished — treat it as not-done.
+ */
+function injectMessage(proc: BgProc, message: string, label: string): boolean {
   // `proc.topic` is the canonical topic id (see mcp-config background-bash
   // build: `topicId ?? session`). Route through the shared helper so the
   // filename is the `topic-id-{base64url}` form the session-inbox worker
@@ -212,16 +236,71 @@ function injectCompletion(proc: BgProc): boolean {
       depth: 0,
       timestamp: new Date().toISOString(),
     });
-    process.stderr.write(`[bg-bash] injected completion ${proc.bashId} exit=${proc.exitCode}\n`);
+    process.stderr.write(`[bg-bash] injected ${label} ${proc.bashId} exit=${proc.exitCode}\n`);
     return true;
   } catch (e) {
     process.stderr.write(
-      `[bg-bash] FAILED to deliver completion ${proc.bashId} (exit=${proc.exitCode}): ${e}\n` +
+      `[bg-bash] FAILED to deliver ${label} ${proc.bashId} (exit=${proc.exitCode}): ${e}\n` +
         `[bg-bash] the topic will never be told this job finished; ` +
         `its output is kept at ${spillDir(proc.bashId)}\n`,
     );
     return false;
   }
+}
+
+function injectCompletion(proc: BgProc): boolean {
+  return injectMessage(
+    proc,
+    buildOutputMessage(proc, `[background_bash ${proc.bashId} finished]`),
+    "completion",
+  );
+}
+
+/**
+ * Test newly arrived bytes for `watch.regex`, line by line, carrying any
+ * trailing partial line to the next chunk so a match split across two reads
+ * is never missed. Returns the first matching line, if any.
+ */
+function checkWatchMatch(
+  proc: BgProc,
+  stream: "stdout" | "stderr",
+  chunk: Buffer,
+): string | undefined {
+  const watch = proc.watch;
+  if (!watch || watch.matched) return undefined;
+  if (watch.target !== "both" && watch.target !== stream) return undefined;
+  const carryKey = stream === "stdout" ? "stdoutCarry" : "stderrCarry";
+  const lines = (watch[carryKey] + chunk.toString("utf8")).split("\n");
+  watch[carryKey] = lines.pop() ?? "";
+  for (const line of lines) {
+    if (watch.regex.test(line)) return line;
+  }
+  return undefined;
+}
+
+/** A watch line matched: deliver the one promised turn and stop the process. */
+function handleWatchMatch(proc: BgProc, line: string): void {
+  const watch = proc.watch;
+  if (!watch || watch.matched) return;
+  watch.matched = true;
+  watch.finished = true;
+  if (watch.timeoutTimer) {
+    clearTimeout(watch.timeoutTimer);
+    watch.timeoutTimer = undefined;
+  }
+  const header = `[background_bash_watch ${proc.bashId} matched]\nmatched line: ${line.slice(0, 500)}`;
+  proc.delivered = injectMessage(proc, buildOutputMessage(proc, header), "watch match");
+  terminateProc(proc);
+}
+
+/** No line matched within the deadline: deliver a timeout turn and stop. */
+function handleWatchTimeout(proc: BgProc): void {
+  const watch = proc.watch;
+  if (!watch || watch.finished) return;
+  watch.finished = true;
+  const header = `[background_bash_watch ${proc.bashId} timed out without a match]`;
+  proc.delivered = injectMessage(proc, buildOutputMessage(proc, header), "watch timeout");
+  terminateProc(proc);
 }
 
 function signalProcessTree(child: ChildProcess, signal: NodeJS.Signals): boolean {
@@ -288,7 +367,23 @@ function finishProc(proc: BgProc, exitCode: number | null): void {
   // paths, so anything reading them sees a closed, complete file.
   proc.stdout.close();
   proc.stderr.close();
-  proc.delivered = injectCompletion(proc);
+  if (proc.watch) {
+    if (proc.watch.timeoutTimer) {
+      clearTimeout(proc.watch.timeoutTimer);
+      proc.watch.timeoutTimer = undefined;
+    }
+    if (!proc.watch.finished) {
+      // The command exited on its own — no match, no timeout yet. This is
+      // still exactly one delivered turn, same one-shot guarantee.
+      proc.watch.finished = true;
+      const header = `[background_bash_watch ${proc.bashId} exited before matching]`;
+      proc.delivered = injectMessage(proc, buildOutputMessage(proc, header), "watch exit");
+    }
+    // Else: a match or timeout already delivered the one promised turn
+    // (`proc.delivered` was set there) — do not inject a second one.
+  } else {
+    proc.delivered = injectCompletion(proc);
+  }
   if (proc.delivered) {
     proc.cleanupTimer = setTimeout(() => forgetProc(proc), COMPLETED_RETENTION_MS);
     proc.cleanupTimer.unref?.();
@@ -299,10 +394,17 @@ function finishProc(proc: BgProc, exitCode: number | null): void {
   pruneCompletedProcs();
 }
 
+interface WatchConfig {
+  regex: RegExp;
+  target: "stdout" | "stderr" | "both";
+  timeoutSeconds: number;
+}
+
 function spawnBash(
   context: BgContext,
   command: string,
   cwd?: string,
+  watchConfig?: WatchConfig,
 ): { bashId: string } | { error: string } {
   if (!command.trim()) return { error: "empty command" };
   const bashId = newBashId();
@@ -337,11 +439,29 @@ function spawnBash(
     exitCode: null,
     delivered: false,
     startedAt: Date.now(),
+    watch: watchConfig
+      ? {
+          regex: watchConfig.regex,
+          target: watchConfig.target,
+          matched: false,
+          finished: false,
+          stdoutCarry: "",
+          stderrCarry: "",
+        }
+      : undefined,
   };
   // Raw Buffers: decoding per chunk would split multi-byte characters that
   // straddle a chunk boundary. The buffer decodes at read time instead.
-  child.stdout?.on("data", (c: Buffer) => proc.stdout.append(c));
-  child.stderr?.on("data", (c: Buffer) => proc.stderr.append(c));
+  child.stdout?.on("data", (c: Buffer) => {
+    proc.stdout.append(c);
+    const line = checkWatchMatch(proc, "stdout", c);
+    if (line !== undefined) handleWatchMatch(proc, line);
+  });
+  child.stderr?.on("data", (c: Buffer) => {
+    proc.stderr.append(c);
+    const line = checkWatchMatch(proc, "stderr", c);
+    if (line !== undefined) handleWatchMatch(proc, line);
+  });
   child.on("close", (code) => {
     finishProc(proc, code);
   });
@@ -350,6 +470,13 @@ function spawnBash(
     finishProc(proc, -1);
   });
   procs.set(bashId, proc);
+  if (proc.watch) {
+    proc.watch.timeoutTimer = setTimeout(
+      () => handleWatchTimeout(proc),
+      watchConfig!.timeoutSeconds * 1_000,
+    );
+    proc.watch.timeoutTimer.unref?.();
+  }
   process.stderr.write(`[bg-bash] started ${bashId}: ${command.slice(0, 80)}\n`);
   return { bashId };
 }
@@ -418,6 +545,56 @@ function buildMcpServer(context: BgContext): McpServer {
           ...(proc.stderr.spillPath ? { stderrPath: proc.stderr.spillPath } : {}),
         }),
       );
+    },
+  );
+
+  server.tool(
+    "background_bash_watch",
+    [
+      "Start a background shell command and watch its stdout/stderr for a regex match, one line at a time.",
+      "The moment a line matches `match`, the process is stopped and the matching line plus buffered",
+      "output is injected into this session as a new turn — you do NOT need to poll.",
+      "If nothing matches within `timeout_seconds` (default 3600), or the command exits on its own first,",
+      "a final status turn is injected instead. Exactly one turn is ever injected per watch — this is",
+      "one-shot only, there is no repeat/streaming mode yet.",
+      "Prefer this over `background_bash_run` + manual `background_bash_output` polling when you are",
+      "waiting for a specific condition to appear (a deploy readiness line, an error) rather than for",
+      "the command itself to finish.",
+    ].join(" "),
+    {
+      command: z.string().describe("Shell command (executed via bash -c)"),
+      match: z.string().describe("Regular expression tested against each output line"),
+      cwd: z.string().optional().describe("Working directory (absolute path)"),
+      stream: z
+        .enum(["stdout", "stderr", "both"])
+        .optional()
+        .describe("Which stream(s) to test against `match` (default both)"),
+      timeout_seconds: z
+        .number()
+        .int()
+        .positive()
+        .max(MAX_WATCH_TIMEOUT_SECONDS)
+        .optional()
+        .describe(
+          `Give up waiting for a match after this many seconds (default ${DEFAULT_WATCH_TIMEOUT_SECONDS}, max ${MAX_WATCH_TIMEOUT_SECONDS})`,
+        ),
+    },
+    async ({ command, match, cwd, stream, timeout_seconds }) => {
+      let regex: RegExp;
+      try {
+        regex = new RegExp(match);
+      } catch (e) {
+        return mcpError(
+          `invalid regex in \`match\`: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      const result = spawnBash(context, command, cwd, {
+        regex,
+        target: stream ?? "both",
+        timeoutSeconds: timeout_seconds ?? DEFAULT_WATCH_TIMEOUT_SECONDS,
+      });
+      if ("error" in result) return mcpError(result.error);
+      return mcpOk(JSON.stringify({ bash_id: result.bashId, status: "watching" }));
     },
   );
 

@@ -187,4 +187,150 @@ describe("shared background-bash runtime", () => {
       rmSync(inboxDir, { recursive: true, force: true });
     }
   }, 10_000);
+
+  async function connectWatchClient(userId: string, topic: string) {
+    const port = await ensureBgBash(userId, topic);
+    const client = new Client({ name: "background-bash-watch-test", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
+      requestInit: {
+        headers: {
+          "X-Background-Bash-User": userId,
+          "X-Background-Bash-Topic": topic,
+          "X-Background-Bash-Capability": bgBashContextCapability(userId, topic),
+        },
+      },
+    });
+    await client.connect(transport);
+    return client;
+  }
+
+  async function waitForInbox(inboxFile: string): Promise<string> {
+    for (let attempt = 0; attempt < 40 && !existsSync(inboxFile); attempt++) await delay(25);
+    return existsSync(inboxFile) ? readFileSync(inboxFile, "utf-8") : "";
+  }
+
+  test("watch injects exactly one turn on match and stops the process", async () => {
+    const userId = `bg-bash-watch-${randomUUID()}`;
+    const topic = `topic-${randomUUID()}`;
+    const inboxDir = join(SESSION_INBOX_DIR, userId);
+    const inboxFile = sessionInboxPath(userId, topic);
+    const client = await connectWatchClient(userId, topic);
+    try {
+      const watchTool = (await client.listTools()).tools.find(
+        (tool) => tool.name === "background_bash_watch",
+      );
+      expect(watchTool?.description).toContain("one-shot");
+
+      const started = JSON.parse(
+        toolText(
+          await client.callTool({
+            name: "background_bash_watch",
+            arguments: {
+              command:
+                'printf "line one\\n"; sleep 0.1; printf "target-ready\\n"; sleep 5; echo NEVER_RUNS',
+              match: "^target-ready$",
+            },
+          }),
+        ),
+      ) as { bash_id: string; status: string };
+      expect(started.bash_id).toMatch(/^bash_[0-9a-f]{12}$/);
+      expect(started.status).toBe("watching");
+
+      const completion = await waitForInbox(inboxFile);
+      expect(completion).toContain(`[background_bash_watch ${started.bash_id} matched]`);
+      expect(completion).toContain("matched line: target-ready");
+      // Only one injected turn: the process must have been killed before the
+      // `sleep 5` elapsed, so NEVER_RUNS's *output* (not the echoed command
+      // string, which always contains the literal command text) never
+      // appears in the captured stdout section.
+      const stdoutSection = (JSON.parse(completion.trim()) as { message: string }).message.split(
+        "stdout:\n",
+      )[1];
+      expect(stdoutSection).not.toContain("NEVER_RUNS");
+      const injectedEntries = completion
+        .trim()
+        .split("\n")
+        .filter((line) => line.includes(started.bash_id));
+      expect(injectedEntries).toHaveLength(1);
+    } finally {
+      await client.close();
+      rmSync(inboxDir, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  test("watch injects a timeout turn when nothing matches in time", async () => {
+    const userId = `bg-bash-watch-timeout-${randomUUID()}`;
+    const topic = `topic-${randomUUID()}`;
+    const inboxDir = join(SESSION_INBOX_DIR, userId);
+    const inboxFile = sessionInboxPath(userId, topic);
+    const client = await connectWatchClient(userId, topic);
+    try {
+      const started = JSON.parse(
+        toolText(
+          await client.callTool({
+            name: "background_bash_watch",
+            arguments: {
+              command: "sleep 5",
+              match: "this-never-appears",
+              timeout_seconds: 1,
+            },
+          }),
+        ),
+      ) as { bash_id: string };
+
+      const completion = await waitForInbox(inboxFile);
+      expect(completion).toContain(
+        `[background_bash_watch ${started.bash_id} timed out without a match]`,
+      );
+    } finally {
+      await client.close();
+      rmSync(inboxDir, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  test("watch injects an exit turn when the command finishes before matching", async () => {
+    const userId = `bg-bash-watch-exit-${randomUUID()}`;
+    const topic = `topic-${randomUUID()}`;
+    const inboxDir = join(SESSION_INBOX_DIR, userId);
+    const inboxFile = sessionInboxPath(userId, topic);
+    const client = await connectWatchClient(userId, topic);
+    try {
+      const started = JSON.parse(
+        toolText(
+          await client.callTool({
+            name: "background_bash_watch",
+            arguments: {
+              command: 'printf "nothing interesting here\\n"',
+              match: "this-never-appears",
+            },
+          }),
+        ),
+      ) as { bash_id: string };
+
+      const completion = await waitForInbox(inboxFile);
+      expect(completion).toContain(
+        `[background_bash_watch ${started.bash_id} exited before matching]`,
+      );
+      expect(completion).toContain("nothing interesting here");
+    } finally {
+      await client.close();
+      rmSync(inboxDir, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  test("watch rejects an invalid regex", async () => {
+    const userId = `bg-bash-watch-badregex-${randomUUID()}`;
+    const topic = `topic-${randomUUID()}`;
+    const client = await connectWatchClient(userId, topic);
+    try {
+      const result = await client.callTool({
+        name: "background_bash_watch",
+        arguments: { command: "true", match: "(unclosed" },
+      });
+      expect(result.isError).toBe(true);
+      expect(toolText(result)).toContain("invalid regex");
+    } finally {
+      await client.close();
+    }
+  }, 10_000);
 });
