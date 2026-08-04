@@ -20,7 +20,7 @@ afterEach(() => {
 
 describe("Browser.rs executable resolution", () => {
   test("keeps the tested Browser.rs release pinned", () => {
-    expect(BROWSER_RS_VERSION).toBe("v0.1.16");
+    expect(BROWSER_RS_VERSION).toBe("v0.1.17");
     expect(BROWSER_RS_MIN_SECURE_VERSION).toBe("0.1.15");
   });
 

@@ -145,4 +145,37 @@ describe("browser Vault broker", () => {
       error: "invalid lease",
     });
   });
+
+  test("raises maxLength and redacts+truncates the plain-text browser_iframe_read result", async () => {
+    // browser_iframe_read (browser-rs 0.1.17) returns a raw string, not
+    // `{content: ...}` JSON, so redaction/truncation goes through
+    // `redactTextEntry`'s non-JSON fallback path instead of the field-aware one.
+    const userId = "broker-iframe-read-user";
+    const { broker } = await setup(userId);
+    const secret = "iframe-secret-value";
+    vaultSet(userId, "TOKEN", secret);
+
+    const transformed = await request(broker, {
+      id: 1,
+      op: "transform_input",
+      tool: "browser_iframe_read",
+      value: { page: "p1", frame_selector: "#f", maxLength: 40 },
+    });
+    expect(transformed.ok).toBe(true);
+    expect((transformed.value as Record<string, unknown>).maxLength).toBe(Number.MAX_SAFE_INTEGER);
+
+    const longText = `prefix ${secret} ${"x".repeat(100)} suffix`;
+    const redacted = await request(broker, {
+      id: 2,
+      op: "redact_output",
+      lease: transformed.lease,
+      boundary: { field: "content", limit: 40 },
+      value: { content: [{ type: "text", text: longText }] },
+    });
+    expect(redacted.ok).toBe(true);
+    const content = (redacted.value as { content: Array<{ text: string }> }).content[0];
+    expect(content.text).not.toContain(secret);
+    expect(content.text.length).toBeLessThanOrEqual(40 + "\n[truncated]".length);
+    expect(content.text).toContain("[truncated]");
+  });
 });

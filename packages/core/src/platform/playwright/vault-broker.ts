@@ -14,6 +14,13 @@ const BOUNDED_OUTPUTS: Record<string, { argument: string; field: string }> = {
   browser_api_request: { argument: "maxBytes", field: "body" },
   browser_get_visible_text: { argument: "maxLength", field: "text" },
   browser_get_visible_html: { argument: "maxLength", field: "html" },
+  // browser-rs 0.1.17's own `maxLength` doc comment: "Managed hosts may raise
+  // this so secrets are redacted before the caller-visible limit is applied."
+  // `field` is unused here (the tool returns a plain string, not `{content}`
+  // JSON — see `redactTextEntry`'s non-JSON fallback), but the `argument`
+  // override is what matters: it raises the request to MAX_SAFE_INTEGER so
+  // browser-rs never truncates a secret mid-string before redaction sees it.
+  browser_iframe_read: { argument: "maxLength", field: "content" },
 };
 
 interface RedactionBoundary {
