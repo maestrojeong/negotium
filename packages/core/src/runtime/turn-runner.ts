@@ -1556,6 +1556,12 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           { topicId, err },
           "ai: ensureBgBash failed — proceeding without background bash tools",
         );
+        // Say so in the turn. Losing the tool silently makes the model plan
+        // around a capability it does not have, and the operator only finds
+        // out by reading server logs.
+        turnReminders.push(
+          "<system-reminder>Background bash tools are UNAVAILABLE this turn. The `background_bash_*` tools could not be prepared, most often because the bash-rs binary is not installed on this host. Do not attempt to call them; run short commands in the foreground instead, and tell the user if the work genuinely needs a background job.</system-reminder>",
+        );
       }
     }
     if (playwrightRequested && !browserProfileOwner) {

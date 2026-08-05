@@ -1214,7 +1214,7 @@ for (const path of [
 ]) {
   if (!existsSync(path)) throw new Error(\`packed runtime resource is missing: \${path}\`);
 }
-for (const name of mcpServers.MCP_SERVER_NAMES) {
+for (const name of mcpServers.MCP_SERVER_FILE_NAMES) {
   const path = mcpServers.resolveMcpServerFile(name);
   if (!existsSync(path)) throw new Error(\`packed MCP server is missing: \${name} at \${path}\`);
 }

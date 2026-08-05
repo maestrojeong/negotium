@@ -23,6 +23,16 @@ export type McpServerName = (typeof MCP_SERVER_NAMES)[number];
  */
 export type McpServerFileName = Exclude<McpServerName, "background-bash">;
 
+/**
+ * The subset of `MCP_SERVER_NAMES` that resolves to a file. Iterate this, not
+ * `MCP_SERVER_NAMES`, when you mean "every server with an entry file" — the
+ * two diverged when background-bash moved to the bash-rs binary, and a
+ * consumer walking the full list gets a name `resolveMcpServerFile` rejects.
+ */
+export const MCP_SERVER_FILE_NAMES = MCP_SERVER_NAMES.filter(
+  (name): name is McpServerFileName => name !== "background-bash",
+);
+
 const runtimeFile = (relativePath: string): string =>
   fileURLToPath(new URL(`./runtime/${relativePath}`, import.meta.url));
 

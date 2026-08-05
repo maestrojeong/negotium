@@ -141,17 +141,22 @@ export function createBackgroundBashManager(
     reservedPort?: number,
     excludedPorts: ReadonlySet<number> = new Set(),
   ): Promise<number> {
-    const port = reservedPort ?? (await allocatePort(excludedPorts));
     // bash-rs is the only implementation. A TS server used to stand in when the
     // binary was absent, but the two agreed on the HTTP protocol while exposing
     // different MCP tool names (bash_run vs background_bash_run), so which one
     // spawned silently changed the tool surface an agent saw. Failing loudly
     // beats serving a different API than the caller was told to expect.
+    //
+    // Checked before allocating: the caller retries once per turn, and a port
+    // reserved by a throw is never released, so allocating first leaked one
+    // port per attempt until the range was exhausted and the real cause was
+    // buried under "No available ports".
     if (!BASH_RS_BIN) {
       throw new Error(
         `background-bash requires the bash-rs ${BASH_RS_VERSION} binary; run install-bash-rs.mjs (or set NEGOTIUM_BASH_RS_BIN)`,
       );
     }
+    const port = reservedPort ?? (await allocatePort(excludedPorts));
     const process = spawnImpl(BASH_RS_BIN, [String(port)], {
       stdio: "ignore",
       detached: false,

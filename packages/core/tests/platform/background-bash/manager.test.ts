@@ -28,10 +28,14 @@ afterEach(async () => {
   await killAllBgBash();
 });
 
-// These spawn a real server, and bash-rs is the only implementation — there is
-// no TS stand-in to fall back to. tests/setup.ts points NEGOTIUM_BASH_RS_BIN at
-// an installed binary when one exists.
-describe.skipIf(!process.env.NEGOTIUM_BASH_RS_BIN)("shared background-bash runtime", () => {
+// Split deliberately. The mocked cases below assert manager bookkeeping with a
+// fake spawn/fetch and must run everywhere, including CI; only the cases that
+// spawn a real bash-rs are skipped when no binary is installed, since there is
+// no TS stand-in to fall back to. Wrapping both in one skipIf meant CI proved
+// nothing about this file at all.
+const hasBashRs = Boolean(process.env.NEGOTIUM_BASH_RS_BIN);
+
+describe("background-bash manager bookkeeping", () => {
   test("caller-owned managers isolate capability, port, and context state", async () => {
     const deletedA: string[] = [];
     const deletedB: string[] = [];
@@ -99,7 +103,9 @@ describe.skipIf(!process.env.NEGOTIUM_BASH_RS_BIN)("shared background-bash runti
     expect(bgBashContextCapability("alice", "topic-b")).not.toBe(current);
     expect(bgBashContextCapability("bob", "topic-a")).not.toBe(current);
   });
+});
 
+describe.skipIf(!hasBashRs)("shared background-bash runtime", () => {
   test("different topics reuse one healthy HTTP server", async () => {
     const first = await ensureBgBash("alice", "topic-a");
     const second = await ensureBgBash("bob", "topic-b");
