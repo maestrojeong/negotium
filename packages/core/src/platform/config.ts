@@ -168,13 +168,15 @@ export const SNIPPETS_API_URL = (
 export const BROWSER_RS_BIN = resolveBrowserRsBin(envText("NEGOTIUM_BROWSER_RS_BIN"));
 
 /** bash-rs release tested with this Negotium version — see apps/negotium/install-bash-rs.mjs. */
-export const BASH_RS_VERSION = "v0.1.2";
+export const BASH_RS_VERSION = "v0.1.3";
 
 /**
  * Resolve the bash-rs binary the same way `resolveBrowserRsBin` resolves
  * Browser.rs: a versioned private location, no PATH lookup, `undefined`
- * (rather than throwing) when it's missing — callers fall back to the TS
- * `background-bash-server.ts` in that case (see `background-bash/manager.ts`).
+ * (rather than throwing) when it's missing. There is no substitute — the
+ * manager turns a missing binary into a startup error (see
+ * `background-bash/manager.ts`), so background-bash is simply unavailable
+ * on a platform without a prebuilt binary.
  */
 export function resolveBashRsBin(envValue?: string): string | undefined {
   const override = envValue?.trim();
@@ -280,8 +282,6 @@ export const COMPACTION_LOG_SERVER = resolve(PROJECT_ROOT, "src/mcp/compaction-l
 export const SYSTEM_HEALTH_SERVER = resolve(PROJECT_ROOT, "src/mcp/system-health-server.ts");
 
 export const AGENT_HEALTH_SERVER = resolve(PROJECT_ROOT, "src/mcp/agent-health-server.ts");
-
-export const BACKGROUND_BASH_SERVER = resolve(PROJECT_ROOT, "src/mcp/background-bash-server.ts");
 
 export const VAULT_SERVER = resolve(PROJECT_ROOT, "src/mcp/vault-server.ts");
 

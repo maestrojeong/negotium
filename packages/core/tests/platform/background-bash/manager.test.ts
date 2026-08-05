@@ -16,6 +16,7 @@ import {
 import { SESSION_INBOX_DIR } from "#platform/config";
 import { delay } from "#platform/delay";
 import { sessionInboxPath } from "#query/session-inbox-path";
+import { flushBashrsCompletions } from "#runtime/bashrs-completions";
 
 function toolText(result: Awaited<ReturnType<Client["callTool"]>>): string {
   return (result.content as Array<{ type: string; text?: string }>)
@@ -27,7 +28,10 @@ afterEach(async () => {
   await killAllBgBash();
 });
 
-describe("shared background-bash runtime", () => {
+// These spawn a real server, and bash-rs is the only implementation — there is
+// no TS stand-in to fall back to. tests/setup.ts points NEGOTIUM_BASH_RS_BIN at
+// an installed binary when one exists.
+describe.skipIf(!process.env.NEGOTIUM_BASH_RS_BIN)("shared background-bash runtime", () => {
   test("caller-owned managers isolate capability, port, and context state", async () => {
     const deletedA: string[] = [];
     const deletedB: string[] = [];
@@ -50,7 +54,7 @@ describe("shared background-bash runtime", () => {
       (async (input: string | URL | Request, init?: RequestInit) => {
         const url = String(input);
         if (init?.method === "DELETE") deleted.push(url);
-        return new Response(serverId, { status: 200 });
+        return new Response(JSON.stringify({ instance_id: serverId }), { status: 200 });
       }) as typeof fetch;
     const common = {
       basePort: 47_000,
@@ -101,7 +105,7 @@ describe("shared background-bash runtime", () => {
     const second = await ensureBgBash("bob", "topic-b");
     expect(second).toBe(first);
     expect((await fetch(`http://127.0.0.1:${first}/health`)).status).toBe(200);
-    expect((await fetch(`http://127.0.0.1:${first}/sse`)).status).toBe(403);
+    expect((await fetch(`http://127.0.0.1:${first}/sse`)).status).toBe(401);
   });
 
   test("run returns an id, output is incremental, and completion is injected", async () => {
@@ -128,9 +132,8 @@ describe("shared background-bash runtime", () => {
       const runTool = (await client.listTools()).tools.find(
         (tool) => tool.name === "background_bash_run",
       );
-      expect(runTool?.description).toContain("longer than about 2 minutes");
-      expect(runTool?.description).toContain("ordinary builds, tests");
-      expect(runTool?.description).toContain("do not use this merely to avoid waiting");
+      expect(runTool?.description).toContain("outlive the current turn");
+      expect(runTool?.description).toContain("background_bash_output");
       const started = JSON.parse(
         toolText(
           await client.callTool({
@@ -173,13 +176,12 @@ describe("shared background-bash runtime", () => {
       }
       const final = JSON.parse(finalOutput) as {
         exited: boolean;
-        exitCode: number | null;
+        exit_code: number | null;
       };
-      expect(final).toMatchObject({ exited: true, exitCode: 0 });
+      expect(final).toMatchObject({ exited: true, exit_code: 0 });
       expect(observedStdout).toBe("firstsecond");
 
-      for (let attempt = 0; attempt < 20 && !existsSync(inboxFile); attempt++) await delay(25);
-      const completion = readFileSync(inboxFile, "utf-8");
+      const completion = await waitForInbox(inboxFile);
       expect(completion).toContain(`[background_bash ${started.bash_id} finished]`);
       expect(completion).toContain("firstsecond");
     } finally {
@@ -207,8 +209,14 @@ describe("shared background-bash runtime", () => {
   // Generous budget: the timeout-watch test alone needs its own 1s
   // `timeout_seconds` to actually elapse before the file can appear, and a
   // loaded CI runner adds real slack on top of that.
+  // bash-rs only writes result.json; negotium's watcher is what turns that into
+  // a session-inbox tell, so drive it explicitly instead of running the worker.
   async function waitForInbox(inboxFile: string): Promise<string> {
-    for (let attempt = 0; attempt < 200 && !existsSync(inboxFile); attempt++) await delay(25);
+    for (let attempt = 0; attempt < 200 && !existsSync(inboxFile); attempt++) {
+      await flushBashrsCompletions();
+      if (existsSync(inboxFile)) break;
+      await delay(25);
+    }
     return existsSync(inboxFile) ? readFileSync(inboxFile, "utf-8") : "";
   }
 
@@ -222,7 +230,7 @@ describe("shared background-bash runtime", () => {
       const watchTool = (await client.listTools()).tools.find(
         (tool) => tool.name === "background_bash_watch",
       );
-      expect(watchTool?.description).toContain("one-shot");
+      expect(watchTool?.description).toContain("One-shot only");
 
       const started = JSON.parse(
         toolText(
@@ -231,7 +239,7 @@ describe("shared background-bash runtime", () => {
             arguments: {
               command:
                 'printf "line one\\n"; sleep 0.1; printf "target-ready\\n"; sleep 5; echo NEVER_RUNS',
-              match: "^target-ready$",
+              pattern: "^target-ready$",
             },
           }),
         ),
@@ -274,17 +282,18 @@ describe("shared background-bash runtime", () => {
             name: "background_bash_watch",
             arguments: {
               command: "sleep 5",
-              match: "this-never-appears",
+              pattern: "this-never-appears",
               timeout_seconds: 1,
             },
           }),
         ),
       ) as { bash_id: string };
 
+      // bash-rs's result.json records only `matched_line`, with no field saying
+      // whether an unmatched watch timed out or simply exited, so both collapse
+      // into the generic completion notice.
       const completion = await waitForInbox(inboxFile);
-      expect(completion).toContain(
-        `[background_bash_watch ${started.bash_id} timed out without a match]`,
-      );
+      expect(completion).toContain(`[background_bash ${started.bash_id} finished]`);
     } finally {
       await client.close();
       rmSync(inboxDir, { recursive: true, force: true });
@@ -304,16 +313,15 @@ describe("shared background-bash runtime", () => {
             name: "background_bash_watch",
             arguments: {
               command: 'printf "nothing interesting here\\n"',
-              match: "this-never-appears",
+              pattern: "this-never-appears",
             },
           }),
         ),
       ) as { bash_id: string };
 
+      // Same collapse as the timeout case; the captured output still arrives.
       const completion = await waitForInbox(inboxFile);
-      expect(completion).toContain(
-        `[background_bash_watch ${started.bash_id} exited before matching]`,
-      );
+      expect(completion).toContain(`[background_bash ${started.bash_id} finished]`);
       expect(completion).toContain("nothing interesting here");
     } finally {
       await client.close();
@@ -328,10 +336,10 @@ describe("shared background-bash runtime", () => {
     try {
       const result = await client.callTool({
         name: "background_bash_watch",
-        arguments: { command: "true", match: "(unclosed" },
+        arguments: { command: "true", pattern: "(unclosed" },
       });
       expect(result.isError).toBe(true);
-      expect(toolText(result)).toContain("invalid regex");
+      expect(toolText(result)).toContain("invalid regex in `pattern`");
     } finally {
       await client.close();
     }

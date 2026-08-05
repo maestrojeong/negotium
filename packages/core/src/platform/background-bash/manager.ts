@@ -1,8 +1,8 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
-  BACKGROUND_BASH_SERVER,
   BASH_RS_BIN,
+  BASH_RS_VERSION,
   BASHRS_SPILL_ROOT,
   BG_BASH_BASE_PORT,
   BG_BASH_MAX_PORT,
@@ -31,7 +31,6 @@ export interface BackgroundBashManager {
 }
 
 export interface BackgroundBashManagerOptions {
-  serverFile?: string;
   basePort?: number;
   maxPort?: number;
   capability?: string;
@@ -71,7 +70,6 @@ export function createBackgroundBashManager(
   const knownContexts = new Map<string, { userId: string; topic: string }>();
   const runtimeCapability = options.capability ?? randomBytes(32).toString("hex");
   const runtimeServerId = options.serverId ?? randomBytes(16).toString("hex");
-  const serverFile = options.serverFile ?? BACKGROUND_BASH_SERVER;
   const basePort = options.basePort ?? BG_BASH_BASE_PORT;
   const maxPort = options.maxPort ?? BG_BASH_MAX_PORT;
   const fetchImpl = options.fetch ?? globalThis.fetch;
@@ -110,20 +108,17 @@ export function createBackgroundBashManager(
         signal: AbortSignal.timeout(2000),
       });
       if (!response.ok) return false;
+      // Confirm this port answers for *our* spawned process rather than a
+      // stale one left behind by a previous manager instance.
       const body = await response.text();
-      // bash-rs (Rust binary) answers with JSON + `instance_id`; the legacy
-      // TS server answers with the bare id as `text/plain`. Both exist to
-      // confirm this port is answering *our* spawned process, not a stale
-      // one left over from a previous manager instance.
       try {
         const parsed = JSON.parse(body);
-        if (parsed && typeof parsed === "object" && "instance_id" in parsed) {
-          return parsed.instance_id === runtimeServerId;
-        }
+        return (
+          Boolean(parsed) && typeof parsed === "object" && parsed.instance_id === runtimeServerId
+        );
       } catch {
-        // Not JSON — fall through to the plain-text comparison below.
+        return false;
       }
-      return body === runtimeServerId;
     } catch {
       return false;
     }
@@ -147,16 +142,17 @@ export function createBackgroundBashManager(
     excludedPorts: ReadonlySet<number> = new Set(),
   ): Promise<number> {
     const port = reservedPort ?? (await allocatePort(excludedPorts));
-    // Prefer the Rust binary when the installer (install-bash-rs.mjs) put
-    // one in place; otherwise fall back to the TS server unconditionally —
-    // e.g. no prebuilt binary for this platform/arch yet. Both speak the
-    // same wire protocol (X-Background-Bash-* headers, HMAC capability
-    // derived from the same `runtimeCapability` root secret), so either one
-    // is a transparent swap from the caller's point of view.
-    const [command, args] = BASH_RS_BIN
-      ? [BASH_RS_BIN, [String(port)]]
-      : ["bun", ["run", serverFile, `--port=${port}`]];
-    const process = spawnImpl(command, args, {
+    // bash-rs is the only implementation. A TS server used to stand in when the
+    // binary was absent, but the two agreed on the HTTP protocol while exposing
+    // different MCP tool names (bash_run vs background_bash_run), so which one
+    // spawned silently changed the tool surface an agent saw. Failing loudly
+    // beats serving a different API than the caller was told to expect.
+    if (!BASH_RS_BIN) {
+      throw new Error(
+        `background-bash requires the bash-rs ${BASH_RS_VERSION} binary; run install-bash-rs.mjs (or set NEGOTIUM_BASH_RS_BIN)`,
+      );
+    }
+    const process = spawnImpl(BASH_RS_BIN, [String(port)], {
       stdio: "ignore",
       detached: false,
       env: {
