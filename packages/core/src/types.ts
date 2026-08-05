@@ -175,6 +175,12 @@ export interface AgentQueryOptions {
   sessionId?: string | null;
   cwd: string;
   systemPrompt: string;
+  /**
+   * Trusted system-level instructions for this Maestro invocation only.
+   * Maestro projects them onto the invocation-start user message without
+   * persisting them in session history or compaction. Omitted for Claude/Codex.
+   */
+  ephemeralSystemPrompt?: string;
   userId?: string;
   /** Credential namespace when it differs from the execution principal. */
   vaultUserId?: string;

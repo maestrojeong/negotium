@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   buildMaestroDisallowedTools,
   buildMaestroToolHooks,
@@ -8,6 +10,14 @@ import {
 import { vaultDel, vaultSet } from "#storage/vault";
 
 describe("maestroProvider host tool policy", () => {
+  test("forwards the invocation-only system prompt to maestro-agent-sdk", () => {
+    const source = readFileSync(
+      resolve(import.meta.dir, "../../../src/agents/maestro-provider.ts"),
+      "utf8",
+    );
+    expect(source).toContain("ephemeralSystemPrompt: opts.ephemeralSystemPrompt,");
+  });
+
   test("disallows provider-native ask/task/subagent tools through the SDK denylist", () => {
     expect(buildMaestroDisallowedTools()).toEqual([
       "AskUserQuestion",

@@ -139,6 +139,17 @@ export function withDefaultPlaywright(configuredMcp: string[], isManager: boolea
   return [...enabled];
 }
 
+export function buildTurnReminderQuery(
+  agent: AgentKind,
+  prompt: string,
+  reminders: string[],
+): { prompt: string; ephemeralSystemPrompt?: string } {
+  const reminderPrompt = reminders.join("\n\n");
+  if (!reminderPrompt) return { prompt };
+  if (agent === "maestro") return { prompt, ephemeralSystemPrompt: reminderPrompt };
+  return { prompt: `${prompt}\n\n${reminderPrompt}` };
+}
+
 // dequeueAll() is the merge primitive; this short gate makes the first reply
 // to an idle caller wait long enough for sibling ask replies to join it.
 const askReplyInjectBatcher = new DeferredInjectBatcher({
@@ -1424,8 +1435,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   }
 
   /**
-   * Per-turn `<system-reminder>` blocks, appended to the *user* prompt rather
-   * than the system prompt.
+   * Per-turn `<system-reminder>` blocks kept out of the stable system prompt.
    *
    * These facts flip between turns on the same model — whether the browser MCP
    * came up, whether this turn is an auto-resume. A prompt cache invalidates
@@ -1433,8 +1443,9 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
    * every flip re-reads the entire prompt: measured against the live DeepSeek
    * API, one flip at turn 15 of a 20-turn conversation cost 17,852 uncached
    * tokens (hit=0) versus 1,215 with the reminder on the user turn — 40% more
-   * uncached tokens across the run. On the user turn the divergence lands at
-   * the tail, where the text is new anyway.
+   * uncached tokens across the run. Claude/Codex receive them at the user prompt
+   * tail. Maestro projects them onto its invocation-start user wire message via
+   * `ephemeralSystemPrompt`, fixed across that invocation's tool iterations.
    *
    * Applied after the conversation log is written, so a reminder never becomes
    * part of the recorded user message (it would then persist into synthesized
@@ -1574,15 +1585,15 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         "<system-reminder>Playwright browser tools are UNAVAILABLE this turn. The `mcp__playwright__*` tools have been removed from this turn's catalog because the long-lived browser MCP could not be prepared. Do not attempt to call browser tools. If browser interaction is required, ask the user to retry shortly or use a non-browser alternative.</system-reminder>",
       );
     }
-    // The system prompt is now byte-identical across turns of a topic, so the
-    // provider's prefix cache survives; per-turn facts ride the prompt tail.
-    const effectivePrompt =
-      turnReminders.length > 0 ? `${agentPrompt}\n\n${turnReminders.join("\n\n")}` : agentPrompt;
+    // Build this after conversation recording: transient runtime facts must be
+    // supplied again by the host on a later external turn, never resumed from
+    // Negotium's canonical conversation state.
+    const reminderQuery = buildTurnReminderQuery(agentKind, agentPrompt, turnReminders);
 
     try {
       yield* runAgent({
         agent: agentKind,
-        prompt: effectivePrompt,
+        ...reminderQuery,
         attachments: promptAttachments,
         cwd: workspaceCwd,
         systemPrompt,

@@ -256,6 +256,9 @@ export function maestroProvider(opts: AgentQueryOptions): AsyncGenerator<Unified
     ...opts,
     enableToolSearch: !opts.toolPolicy && opts.enableToolSearch !== false,
     toolResultTruncation: buildMaestroToolResultTruncation(opts),
+    // Invocation-only runtime facts stay out of the stable system prompt and
+    // the SDK's persisted session projections.
+    ephemeralSystemPrompt: opts.ephemeralSystemPrompt,
     // Resolve this after spreading caller options so untrusted runtime input
     // cannot replace a topic owner's Vault credentials with another key.
     apiKeyOverrides: resolveMaestroApiKeyOverrides(userId),
