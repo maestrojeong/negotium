@@ -250,8 +250,13 @@ export {
   listBackgroundSessionsForUser,
   registerBackgroundSessionProvider,
 } from "#runtime/background-sessions";
+export type {
+  BashrsCompletion,
+  BashrsCompletionSink,
+} from "#runtime/bashrs-completions";
 export {
   flushBashrsCompletions,
+  setBashrsCompletionSink,
   startBashrsCompletionsWorker,
 } from "#runtime/bashrs-completions";
 export type { DeliveryAckResult } from "#runtime/delivery-ack";

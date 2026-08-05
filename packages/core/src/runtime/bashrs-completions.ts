@@ -40,6 +40,46 @@ import {
   type RuntimeProcessLeaseHandle,
 } from "#storage/runtime-process-leases";
 
+/**
+ * Where a finished background job's turn is delivered.
+ *
+ * The default appends to negotium's own session inbox. An embedding host that
+ * owns a different inbox installs its own sink here — otium, for one, resolves
+ * `RUN_DIR` to its own state dir and runs its own inbox worker, so writing to
+ * negotium's path would drop the turn on the floor rather than deliver it.
+ * Mirrors the `setFileHooks()` seam in `runtime/file-hooks.ts`.
+ *
+ * A sink must throw to signal failure: the caller leaves `result.json` in
+ * place so the next sweep retries, which is what keeps delivery at-least-once.
+ */
+export interface BashrsCompletion {
+  userId: string;
+  topicId: string;
+  /** Stable per-job id; use it to collapse a retried delivery into one turn. */
+  bashId: string;
+  message: string;
+}
+
+export type BashrsCompletionSink = (completion: BashrsCompletion) => void;
+
+const defaultSink: BashrsCompletionSink = ({ userId, topicId, bashId, message }) => {
+  appendJsonlEntry(sessionInboxPath(userId, topicId), {
+    type: "tell",
+    from: "__bg_bash__",
+    message,
+    depth: 0,
+    requestId: bashId,
+    timestamp: new Date().toISOString(),
+  });
+};
+
+let completionSink: BashrsCompletionSink = defaultSink;
+
+/** Install a host's delivery sink, or pass null to restore the default. */
+export function setBashrsCompletionSink(sink: BashrsCompletionSink | null): void {
+  completionSink = sink ?? defaultSink;
+}
+
 const PROCESS_ROLE = "worker:bashrs-completions";
 /** How long a delivered job's spill dir (logs + result.json.injected) is kept
  * around before being swept — mirrors the TS server's own
@@ -193,16 +233,14 @@ export async function flushBashrsCompletions(): Promise<void> {
     }
 
     try {
-      appendJsonlEntry(sessionInboxPath(parsed.userId, parsed.topicId), {
-        type: "tell",
-        from: "__bg_bash__",
+      // The stable bash_id is carried through so at-least-once delivery on
+      // either side — this watcher crashing before the rename, or the sink's
+      // own retry semantics — collapses to one turn rather than several.
+      completionSink({
+        userId: parsed.userId,
+        topicId: parsed.topicId,
+        bashId: result.bash_id,
         message: buildMessage(dir, result),
-        depth: 0,
-        // Stable per-job id: at-least-once delivery on both sides (this
-        // watcher's own crash-before-rename, and the session-inbox worker's
-        // own at-least-once semantics) collapses to one turn, not several.
-        requestId: result.bash_id,
-        timestamp: new Date().toISOString(),
       });
       renameSync(resultPath, marker);
       logger.info(
