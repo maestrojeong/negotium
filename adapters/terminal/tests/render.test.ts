@@ -309,10 +309,10 @@ describe("terminal renderer", () => {
     });
 
     const wide = stripAnsi(renderApp(state, 140, 30));
-    expect(wide).toContain("104K/258K 40%");
-    expect(wide).not.toContain("ctx 104K");
-    expect(wide).toContain("Σ 12.3K in/4.5K out");
-    expect(wide).toContain("cache 90.0K");
+    expect(wide).toContain("104k/258k 40%");
+    expect(wide).not.toContain("ctx 104k");
+    expect(wide).toContain("Σ 12.3k in/4.5k out");
+    expect(wide).toContain("cache 90.0k");
     expect(wide).toContain("est $1.25");
 
     for (const row of renderApp(state, 44, 20).split("\n")) {
@@ -341,7 +341,7 @@ describe("terminal renderer", () => {
     });
 
     const footer = stripAnsi(renderApp(state, 120, 30));
-    expect(footer).toContain("20.0K/200K 10%");
+    expect(footer).toContain("20.0k/200k 10%");
     expect(footer).not.toContain("Σ 0 in/0 out");
     expect(footer).not.toContain("est $0.00");
 
@@ -1173,13 +1173,13 @@ describe("terminal renderer", () => {
     };
 
     const output = stripAnsi(renderApp(state, 120, 30));
-    expect(output).toContain("104K / 258K (40%)");
+    expect(output).toContain("104k / 258k (40%)");
     expect(output).toContain("input 1.34M");
     expect(output).toContain("Cache read  1.23M");
     expect(output).toContain("not context size");
     expect(output).toContain("Topic cumulative");
     expect(output).toContain("Queries     9");
-    expect(output).toContain("Input       114K cache miss");
+    expect(output).toContain("Input       114k cache miss");
     expect(output).toContain("Est. cost   $2.5000");
   });
 
