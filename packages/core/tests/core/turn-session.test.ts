@@ -10,6 +10,7 @@ import {
 } from "#query/active-rooms";
 import { AbortReason } from "#query/types";
 import {
+  buildTurnReminderQuery,
   mergeSupersedingUserTurn,
   renderUserPromptBatch,
   renderUserTurnBatch,
@@ -478,25 +479,30 @@ describe("prompt cache stability", () => {
     expect(source).not.toContain("effectiveSystemPrompt");
   });
 
-  test("per-turn reminders ride the user prompt tail", () => {
-    expect(source).toContain("const turnReminders: string[] = []");
-    expect(source).toContain("prompt: effectivePrompt,");
-    // Every reminder *literal* in this file must be routed through the
-    // collector. Matching on the opening quote skips prose mentions in comments.
-    const reminders = source.match(/"<system-reminder>/g) ?? [];
-    const pushes = source.match(/turnReminders\.push\(/g) ?? [];
-    expect(reminders.length).toBeGreaterThan(0);
-    expect(pushes.length).toBe(reminders.length);
+  test("Maestro receives reminders only through the transient SDK option", () => {
+    expect(buildTurnReminderQuery("maestro", "user prompt", ["first", "second"])).toEqual({
+      prompt: "user prompt",
+      ephemeralSystemPrompt: "first\n\nsecond",
+    });
+  });
+
+  test("Claude and Codex receive reminders at the user tail without the Maestro option", () => {
+    for (const agent of ["claude", "codex"] as const) {
+      const query = buildTurnReminderQuery(agent, "user prompt", ["runtime fact"]);
+      expect(query).toEqual({ prompt: "user prompt\n\nruntime fact" });
+      expect("ephemeralSystemPrompt" in query).toBe(false);
+    }
   });
 
   test("a reminder is not recorded as part of the user message", () => {
-    // The conversation log must hold `agentPrompt`, not the reminder-suffixed
-    // `effectivePrompt` — otherwise the reminder persists into synthesized
+    // The conversation log must hold `agentPrompt`, and reminder query assembly
+    // must happen later, otherwise the reminder persists into synthesized
     // rollouts and pollutes every later turn's history.
     const recordIndex = source.indexOf("userConversationPromptsToRecord(");
-    const effectiveIndex = source.indexOf("const effectivePrompt =");
+    const reminderQueryIndex = source.indexOf("const reminderQuery = buildTurnReminderQuery(");
     expect(recordIndex).toBeGreaterThan(-1);
-    expect(effectiveIndex).toBeGreaterThan(-1);
-    expect(effectiveIndex).toBeGreaterThan(recordIndex);
+    expect(reminderQueryIndex).toBeGreaterThan(-1);
+    expect(reminderQueryIndex).toBeGreaterThan(recordIndex);
+    expect(source).toContain("loggedUserMessageCount,\n      agentPrompt,");
   });
 });
