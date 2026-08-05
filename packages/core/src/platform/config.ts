@@ -173,10 +173,11 @@ export const BASH_RS_VERSION = "v0.1.5";
 /**
  * Resolve the bash-rs binary the same way `resolveBrowserRsBin` resolves
  * Browser.rs: a versioned private location, no PATH lookup, `undefined`
- * (rather than throwing) when it's missing. There is no substitute — the
- * manager turns a missing binary into a startup error (see
- * `background-bash/manager.ts`), so background-bash is simply unavailable
- * on a platform without a prebuilt binary.
+ * (rather than throwing) when it's missing. There is no substitute: the manager
+ * throws when a turn tries to prepare background-bash without a binary (see
+ * `background-bash/manager.ts`), the turn runner catches that and continues
+ * with a reminder that the tools are gone, so background-bash is simply
+ * unavailable on a platform without a prebuilt binary.
  */
 export function resolveBashRsBin(envValue?: string): string | undefined {
   const override = envValue?.trim();
@@ -385,8 +386,8 @@ export const SESSION_ASKS_DIR = resolve(RUN_DIR, "session-asks");
  * Passed to `bash-rs` as `BASHRS_SPILL_ROOT`. Each job gets a subdirectory
  * here (`{bash_id}/meta.json`, `result.json`, `stdout.log`, `stderr.log`) —
  * see bash-rs-mcp's `journal.rs`. `runtime/bashrs-completions.ts` watches
- * this directory and turns `result.json` into a session-inbox `tell`, the
- * same way `background-bash-server.ts` used to write one directly.
+ * this directory and turns `result.json` into a session-inbox `tell`. The
+ * retired TypeScript server used to write one directly instead.
  */
 export const BASHRS_SPILL_ROOT = resolve(RUN_DIR, "bashrs");
 export const PLAYWRIGHT_BASE_PORT = parsePortEnv(process.env.PLAYWRIGHT_BASE_PORT, 9100);

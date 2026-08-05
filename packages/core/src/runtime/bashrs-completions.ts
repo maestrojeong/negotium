@@ -1,7 +1,7 @@
 /**
  * bash-rs completion watcher — turns `result.json` files written by the Rust
- * `bash-rs` background-bash daemon into session-inbox `tell`s, the same way
- * `background-bash-server.ts` used to call `injectMessage()` directly.
+ * `bash-rs` background-bash daemon into session-inbox `tell`s. bash-rs is the
+ * only backend; the retired TypeScript server called `injectMessage()` itself.
  *
  * Why a watcher instead of bash-rs calling back into negotium: bash-rs is a
  * standalone project (github.com/maestrojeong/bash-rs-mcp, sibling of

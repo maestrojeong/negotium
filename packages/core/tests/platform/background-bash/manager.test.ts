@@ -61,6 +61,10 @@ describe("background-bash manager bookkeeping", () => {
         return new Response(JSON.stringify({ instance_id: serverId }), { status: 200 });
       }) as typeof fetch;
     const common = {
+      // Never executed: `spawn` below is a fake. Supplied so the suite proves
+      // manager bookkeeping on a host with no bash-rs installed, which is what
+      // CI is.
+      bashRsBin: "/nonexistent/bash-rs",
       basePort: 47_000,
       maxPort: 47_000,
       portPids: () => [],

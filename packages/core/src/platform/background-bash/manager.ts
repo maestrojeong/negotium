@@ -31,6 +31,12 @@ export interface BackgroundBashManager {
 }
 
 export interface BackgroundBashManagerOptions {
+  /**
+   * bash-rs executable. Defaults to the installed binary; injectable so a test
+   * can drive the manager's bookkeeping with a fake `spawn` on a host that has
+   * no binary at all.
+   */
+  bashRsBin?: string;
   basePort?: number;
   maxPort?: number;
   capability?: string;
@@ -70,6 +76,7 @@ export function createBackgroundBashManager(
   const knownContexts = new Map<string, { userId: string; topic: string }>();
   const runtimeCapability = options.capability ?? randomBytes(32).toString("hex");
   const runtimeServerId = options.serverId ?? randomBytes(16).toString("hex");
+  const bashRsBin = options.bashRsBin ?? BASH_RS_BIN;
   const basePort = options.basePort ?? BG_BASH_BASE_PORT;
   const maxPort = options.maxPort ?? BG_BASH_MAX_PORT;
   const fetchImpl = options.fetch ?? globalThis.fetch;
@@ -151,13 +158,13 @@ export function createBackgroundBashManager(
     // reserved by a throw is never released, so allocating first leaked one
     // port per attempt until the range was exhausted and the real cause was
     // buried under "No available ports".
-    if (!BASH_RS_BIN) {
+    if (!bashRsBin) {
       throw new Error(
         `background-bash requires the bash-rs ${BASH_RS_VERSION} binary; run install-bash-rs.mjs (or set NEGOTIUM_BASH_RS_BIN)`,
       );
     }
     const port = reservedPort ?? (await allocatePort(excludedPorts));
-    const process = spawnImpl(BASH_RS_BIN, [String(port)], {
+    const process = spawnImpl(bashRsBin, [String(port)], {
       stdio: "ignore",
       detached: false,
       env: {
