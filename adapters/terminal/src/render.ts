@@ -1284,6 +1284,7 @@ function statusLines(state: AppState): UiLine[] {
   const usage = latestActiveUsage(state);
   const contextUsage = activeContextUsage(state);
   const total = topic ? state.topicUsage[topic.id] : undefined;
+  const hasTopicUsage = total !== undefined && total.queries > 0;
   const ratio =
     contextUsage?.context !== undefined && contextUsage.contextWindow
       ? Math.round((contextUsage.context / contextUsage.contextWindow) * 100)
@@ -1310,12 +1311,18 @@ function statusLines(state: AppState): UiLine[] {
     }),
     line(""),
     line("  Topic cumulative", { fg: theme.cyan, bold: true }),
-    line(`  Queries     ${total?.queries.toLocaleString() ?? "unavailable"}`),
-    line(`  Input       ${tokenCount(total?.inputTokens)} cache miss`),
-    line(`  Output      ${tokenCount(total?.outputTokens)}`),
-    line(`  Cache write ${tokenCount(total?.cacheCreationInputTokens)}`),
-    line(`  Cache read  ${tokenCount(total?.cacheReadInputTokens)}`),
-    line(`  Est. cost   ${total ? `$${total.estimatedCostUsd.toFixed(4)}` : "unavailable"}`),
+    line(`  Queries     ${hasTopicUsage ? total.queries.toLocaleString() : "unavailable"}`),
+    line(
+      `  Input       ${hasTopicUsage ? tokenCount(total.inputTokens) : "unavailable"} cache miss`,
+    ),
+    line(`  Output      ${hasTopicUsage ? tokenCount(total.outputTokens) : "unavailable"}`),
+    line(
+      `  Cache write ${hasTopicUsage ? tokenCount(total.cacheCreationInputTokens) : "unavailable"}`,
+    ),
+    line(`  Cache read  ${hasTopicUsage ? tokenCount(total.cacheReadInputTokens) : "unavailable"}`),
+    line(
+      `  Est. cost   ${hasTopicUsage ? `$${total.estimatedCostUsd.toFixed(4)}` : "unavailable"}`,
+    ),
     line(""),
     line("  Esc close", { fg: theme.muted }),
   ];
@@ -2250,15 +2257,17 @@ function footerUsageText(state: AppState): string[] {
       : undefined;
   const context =
     contextUsage?.context !== undefined && contextUsage.contextWindow
-      ? `ctx ${tokenCount(contextUsage.context)}/${tokenCount(contextUsage.contextWindow)} ${ratio}%`
+      ? `${tokenCount(contextUsage.context)}/${tokenCount(contextUsage.contextWindow)} ${ratio}%`
       : "";
-  const cumulative = total
+  const hasTopicUsage = total !== undefined && total.queries > 0;
+  const cumulative = hasTopicUsage
     ? `Σ ${tokenCount(total.inputTokens)} in/${tokenCount(total.outputTokens)} out`
     : "";
-  const cache = total?.cacheReadInputTokens
-    ? `cache ${tokenCount(total.cacheReadInputTokens)}`
-    : "";
-  const cost = total ? `est $${total.estimatedCostUsd.toFixed(2)}` : "";
+  const cache =
+    hasTopicUsage && total.cacheReadInputTokens
+      ? `cache ${tokenCount(total.cacheReadInputTokens)}`
+      : "";
+  const cost = hasTopicUsage ? `est $${total.estimatedCostUsd.toFixed(2)}` : "";
   const parts = [context, cumulative, cache, cost].filter(Boolean);
   return [
     `${parts.join(" · ")}  `,

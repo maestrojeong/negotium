@@ -309,7 +309,8 @@ describe("terminal renderer", () => {
     });
 
     const wide = stripAnsi(renderApp(state, 140, 30));
-    expect(wide).toContain("ctx 104K/258K 40%");
+    expect(wide).toContain("104K/258K 40%");
+    expect(wide).not.toContain("ctx 104K");
     expect(wide).toContain("Σ 12.3K in/4.5K out");
     expect(wide).toContain("cache 90.0K");
     expect(wide).toContain("est $1.25");
@@ -317,6 +318,36 @@ describe("terminal renderer", () => {
     for (const row of renderApp(state, 44, 20).split("\n")) {
       expect(displayWidth(row)).toBeLessThanOrEqual(44);
     }
+  });
+
+  test("does not present missing topic history as zero usage", () => {
+    const state = setTopicUsage(setTopics(createInitialState("local"), [topic()]), {
+      topicId: "topic",
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      queries: 0,
+      estimatedCostUsd: 0,
+      currentSession: {
+        timestamp: "2026-01-01T00:00:00.000Z",
+        topicId: "topic",
+        topicTitle: "Terminal",
+        agent: "codex",
+        model: "gpt",
+        contextTokens: 20_000,
+        contextWindow: 200_000,
+      },
+    });
+
+    const footer = stripAnsi(renderApp(state, 120, 30));
+    expect(footer).toContain("20.0K/200K 10%");
+    expect(footer).not.toContain("Σ 0 in/0 out");
+    expect(footer).not.toContain("est $0.00");
+
+    const status = stripAnsi(renderApp({ ...state, overlay: "status" }, 120, 30));
+    expect(status).toContain("Queries     unavailable");
+    expect(status).toContain("Est. cost   unavailable");
   });
 
   test("shows both the agent and effective model in the topic picker", () => {
