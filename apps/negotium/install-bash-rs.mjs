@@ -5,16 +5,16 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { arch, homedir, platform } from "node:os";
 import { resolve } from "node:path";
 
-const VERSION = "v0.1.3";
+const VERSION = "v0.1.4";
 const RELEASE_BASE = `https://github.com/maestrojeong/bash-rs-mcp/releases/download/${VERSION}`;
 const TARGETS = {
   "darwin-arm64": {
     asset: "bash-rs-macos-arm64",
-    sha256: "3cb3b69b1e98bbe3536fe598ea4d214bab111833a434bdcac2c70c14c395ff1b",
+    sha256: "a9bd78bf8a1c5257bb96f18691f5f56a1c1ab969d9eae71ab5b9156693f0a780",
   },
   "linux-x64": {
     asset: "bash-rs-linux-x64",
-    sha256: "594f267c4a4b9ba907f25698c3edafc0ac1178c192df12af5efcc7eabd5f51a2",
+    sha256: "cd98833fd891d712bfd64b4e2617b08252d7ca3b161e1883ba882af6f20be594",
   },
 };
 

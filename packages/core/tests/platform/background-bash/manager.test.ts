@@ -132,8 +132,9 @@ describe.skipIf(!process.env.NEGOTIUM_BASH_RS_BIN)("shared background-bash runti
       const runTool = (await client.listTools()).tools.find(
         (tool) => tool.name === "background_bash_run",
       );
-      expect(runTool?.description).toContain("outlive the current turn");
-      expect(runTool?.description).toContain("background_bash_output");
+      expect(runTool?.description).toContain("longer than about 2 minutes");
+      expect(runTool?.description).toContain("ordinary builds, tests");
+      expect(runTool?.description).toContain("do not use this merely to avoid waiting");
       const started = JSON.parse(
         toolText(
           await client.callTool({
@@ -176,9 +177,9 @@ describe.skipIf(!process.env.NEGOTIUM_BASH_RS_BIN)("shared background-bash runti
       }
       const final = JSON.parse(finalOutput) as {
         exited: boolean;
-        exit_code: number | null;
+        exitCode: number | null;
       };
-      expect(final).toMatchObject({ exited: true, exit_code: 0 });
+      expect(final).toMatchObject({ exited: true, exitCode: 0 });
       expect(observedStdout).toBe("firstsecond");
 
       const completion = await waitForInbox(inboxFile);
@@ -230,7 +231,7 @@ describe.skipIf(!process.env.NEGOTIUM_BASH_RS_BIN)("shared background-bash runti
       const watchTool = (await client.listTools()).tools.find(
         (tool) => tool.name === "background_bash_watch",
       );
-      expect(watchTool?.description).toContain("One-shot only");
+      expect(watchTool?.description).toContain("one-shot");
 
       const started = JSON.parse(
         toolText(
@@ -239,7 +240,7 @@ describe.skipIf(!process.env.NEGOTIUM_BASH_RS_BIN)("shared background-bash runti
             arguments: {
               command:
                 'printf "line one\\n"; sleep 0.1; printf "target-ready\\n"; sleep 5; echo NEVER_RUNS',
-              pattern: "^target-ready$",
+              match: "^target-ready$",
             },
           }),
         ),
@@ -282,18 +283,17 @@ describe.skipIf(!process.env.NEGOTIUM_BASH_RS_BIN)("shared background-bash runti
             name: "background_bash_watch",
             arguments: {
               command: "sleep 5",
-              pattern: "this-never-appears",
+              match: "this-never-appears",
               timeout_seconds: 1,
             },
           }),
         ),
       ) as { bash_id: string };
 
-      // bash-rs's result.json records only `matched_line`, with no field saying
-      // whether an unmatched watch timed out or simply exited, so both collapse
-      // into the generic completion notice.
       const completion = await waitForInbox(inboxFile);
-      expect(completion).toContain(`[background_bash ${started.bash_id} finished]`);
+      expect(completion).toContain(
+        `[background_bash_watch ${started.bash_id} timed out without a match]`,
+      );
     } finally {
       await client.close();
       rmSync(inboxDir, { recursive: true, force: true });
@@ -313,15 +313,16 @@ describe.skipIf(!process.env.NEGOTIUM_BASH_RS_BIN)("shared background-bash runti
             name: "background_bash_watch",
             arguments: {
               command: 'printf "nothing interesting here\\n"',
-              pattern: "this-never-appears",
+              match: "this-never-appears",
             },
           }),
         ),
       ) as { bash_id: string };
 
-      // Same collapse as the timeout case; the captured output still arrives.
       const completion = await waitForInbox(inboxFile);
-      expect(completion).toContain(`[background_bash ${started.bash_id} finished]`);
+      expect(completion).toContain(
+        `[background_bash_watch ${started.bash_id} exited before matching]`,
+      );
       expect(completion).toContain("nothing interesting here");
     } finally {
       await client.close();
@@ -336,10 +337,10 @@ describe.skipIf(!process.env.NEGOTIUM_BASH_RS_BIN)("shared background-bash runti
     try {
       const result = await client.callTool({
         name: "background_bash_watch",
-        arguments: { command: "true", pattern: "(unclosed" },
+        arguments: { command: "true", match: "(unclosed" },
       });
       expect(result.isError).toBe(true);
-      expect(toolText(result)).toContain("invalid regex in `pattern`");
+      expect(toolText(result)).toContain("invalid regex in `match`");
     } finally {
       await client.close();
     }

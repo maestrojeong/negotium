@@ -56,6 +56,12 @@ interface JobResult {
   exit_code: number | null;
   finished_at_ms: number;
   matched_line: string | null;
+  /**
+   * Which arm ended a watch. Absent for a plain background run, and absent
+   * from results written by bash-rs before v0.1.4 — those fall back to the
+   * generic completion notice.
+   */
+  watch_outcome?: "matched" | "timeout" | "exited";
   unknown: boolean;
 }
 
@@ -96,13 +102,29 @@ function buildMessage(dir: string, result: JobResult): string {
       `stderr${stderr.truncated ? ` (truncated, full output: ${join(dir, "stderr.log")})` : ""}:\n${stderr.text.trim()}`,
     );
   }
-  const header = result.matched_line
-    ? `[background_bash_watch ${result.bash_id} matched]\nmatched line: ${result.matched_line.slice(0, 500)}`
-    : `[background_bash ${result.bash_id} finished]`;
+  const header = watchHeader(result) ?? `[background_bash ${result.bash_id} finished]`;
   const exitLine = result.unknown
     ? "exit code: unknown (bash-rs restarted while this job was running)"
     : `exit code: ${result.exit_code ?? "unknown"}`;
   return `${header}\n${exitLine}\n${parts.join("\n") || "(no output)"}`;
+}
+
+/**
+ * A watch promises exactly one turn, and which outcome produced it is the
+ * whole point of the notice: "timed out" and "exited before matching" mean
+ * opposite things about whether the condition is still coming.
+ */
+function watchHeader(result: JobResult): string | null {
+  if (result.matched_line) {
+    return `[background_bash_watch ${result.bash_id} matched]\nmatched line: ${result.matched_line.slice(0, 500)}`;
+  }
+  if (result.watch_outcome === "timeout") {
+    return `[background_bash_watch ${result.bash_id} timed out without a match]`;
+  }
+  if (result.watch_outcome === "exited") {
+    return `[background_bash_watch ${result.bash_id} exited before matching]`;
+  }
+  return null;
 }
 
 function parseOwner(owner: string): { userId: string; topicId: string } | null {
