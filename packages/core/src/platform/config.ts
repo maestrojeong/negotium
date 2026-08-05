@@ -168,7 +168,7 @@ export const SNIPPETS_API_URL = (
 export const BROWSER_RS_BIN = resolveBrowserRsBin(envText("NEGOTIUM_BROWSER_RS_BIN"));
 
 /** bash-rs release tested with this Negotium version — see apps/negotium/install-bash-rs.mjs. */
-export const BASH_RS_VERSION = "v0.1.4";
+export const BASH_RS_VERSION = "v0.1.5";
 
 /**
  * Resolve the bash-rs binary the same way `resolveBrowserRsBin` resolves

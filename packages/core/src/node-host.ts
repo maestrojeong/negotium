@@ -52,6 +52,7 @@ export {
 } from "#platform/playwright/manager";
 export { abortAllRooms, listRunningTopicQueries } from "#query/active-rooms";
 export { listBackgroundSessionsForUser } from "#runtime/background-sessions";
+export { flushBashrsCompletions, startBashrsCompletionsWorker } from "#runtime/bashrs-completions";
 export type { FileHooks, UploadAccess } from "#runtime/file-hooks";
 export { setFileHooks } from "#runtime/file-hooks";
 export { startSessionInboxWorker } from "#runtime/inbox";

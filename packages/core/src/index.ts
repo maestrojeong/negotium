@@ -250,6 +250,10 @@ export {
   listBackgroundSessionsForUser,
   registerBackgroundSessionProvider,
 } from "#runtime/background-sessions";
+export {
+  flushBashrsCompletions,
+  startBashrsCompletionsWorker,
+} from "#runtime/bashrs-completions";
 export type { DeliveryAckResult } from "#runtime/delivery-ack";
 export {
   claimDeliveryAck,

@@ -37,6 +37,7 @@ import {
   setNodeMcpServers,
   setRuntimeMcpPort,
   startAskUserQuestionGateOwner,
+  startBashrsCompletionsWorker,
   startDurableTurnRequestWorker,
   startNegotiumNodeModules,
   startSessionInboxWorker,
@@ -227,6 +228,9 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   setRuntimeMcpPort(port);
   const stopTurnRequests = startDurableTurnRequestWorker();
   const stopInbox = startSessionInboxWorker();
+  // bash-rs only writes result.json; this watcher is the sole path that
+  // turns a finished background job into the turn the caller was promised.
+  const stopBashrsCompletions = startBashrsCompletionsWorker();
   let modules: StartedNegotiumNodeModules;
   try {
     modules = startNegotiumNodeModules(opts.modules ?? [], {
@@ -240,6 +244,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   } catch (error) {
     stopTurnRequests();
     stopInbox();
+    stopBashrsCompletions();
     server.stop(true);
     processLease?.stop();
     stopAskUserQuestionGateOwner();
@@ -263,6 +268,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     stopSweeper();
     stopTurnRequests();
     stopInbox();
+    stopBashrsCompletions();
     server.stop(true);
     processLease?.stop();
     stopAskUserQuestionGateOwner();
@@ -277,6 +283,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   onShutdown("node-server", 130, () => {
     stopTurnRequests();
     stopInbox();
+    stopBashrsCompletions();
     server.stop(true);
   });
   if (advertised) {
