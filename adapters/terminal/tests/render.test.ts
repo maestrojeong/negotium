@@ -201,7 +201,7 @@ describe("terminal renderer", () => {
           ...createInitialState("local"),
           input: "/",
           inputCursor: { row: 0, col: 1 },
-          suggestionIndex: 7,
+          suggestionIndex: 8,
         },
         100,
         24,
@@ -359,6 +359,60 @@ describe("terminal renderer", () => {
         .find((row) => stripAnsi(row).includes(`(${percent}%)`));
       expect(contextLine).toContain(colour);
     }
+  });
+
+  test("updates the footer and context breakdown from live stream progress", () => {
+    const confirmed: MessageDto = {
+      id: "confirmed",
+      topicId: "topic",
+      authorId: "ai",
+      text: "previous answer",
+      usage: {
+        input: 100_000,
+        output: 500,
+        context: 100_000,
+        contextWindow: 200_000,
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const user: MessageDto = {
+      id: "user",
+      topicId: "topic",
+      authorId: "local",
+      text: "hello",
+      createdAt: "2026-01-01T00:01:00.000Z",
+    };
+    let state = setMessages(setTopics(createInitialState("local"), [topic()]), "topic", [
+      confirmed,
+      user,
+    ]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: { kind: "ai_active", queryId: "live" },
+    });
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: {
+        kind: "context_progress",
+        queryId: "live",
+        assistantTokens: 500,
+        toolTokens: 1_000,
+      },
+    });
+
+    const footer = stripAnsi(renderApp(state, 140, 30));
+    expect(footer).toContain("~102k/200k 51%");
+
+    const overlay = stripAnsi(renderApp({ ...state, overlay: "context" }, 100, 30));
+    expect(overlay).toContain("Estimated    ~102k / 200k (51%)");
+    expect(overlay).toContain("Confirmed    100k");
+    expect(overlay).toContain("New user     6");
+    expect(overlay).toContain("Assistant    500");
+    expect(overlay).toContain("Tools        1.0k");
+    expect(overlay).toContain("Free         98.5k");
+    expect(overlay).toContain("System prompt and tool schemas are included in Confirmed");
   });
 
   test("does not present missing topic history as zero usage", () => {

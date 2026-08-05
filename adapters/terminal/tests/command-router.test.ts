@@ -44,6 +44,15 @@ describe("terminal command router", () => {
     expect(rendered()).toBe(1);
   });
 
+  test("opens the context breakdown overlay", async () => {
+    const { context, rendered } = commandContext();
+
+    await runTerminalCommand("/context", context);
+
+    expect(context.state.overlay).toBe("context");
+    expect(rendered()).toBe(1);
+  });
+
   test("delegates abort without coupling to terminal state", async () => {
     const { context, aborted } = commandContext();
 

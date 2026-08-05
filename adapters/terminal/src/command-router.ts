@@ -50,6 +50,11 @@ export async function runTerminalCommand(
     context.queueRender();
     return;
   }
+  if (command === "context") {
+    context.state = { ...context.state, overlay: "context" };
+    context.queueRender();
+    return;
+  }
   if (command === "model") {
     if (args.length > 0) {
       context.state = { ...context.state, notice: "Usage: /model", noticeLevel: "warn" };

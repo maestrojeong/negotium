@@ -9,6 +9,7 @@ import {
 import { terminalNowMs } from "@/clock";
 import { type ColorDepth, detectColorDepth, rgbToAnsi16, rgbToAnsi256 } from "@/color-depth";
 import { commandSuggestions } from "@/commands";
+import { activeContextBreakdown } from "@/context-usage";
 import { pathSuggestions } from "@/path-suggest";
 import {
   type AppState,
@@ -1244,9 +1245,9 @@ function helpLines(): UiLine[] {
     line("  Esc/Ctrl-C stop active turn · Ctrl-C twice when idle to quit"),
     line(""),
     line("  Commands", { fg: theme.cyan, bold: true }),
-    line("  /new  /model  /effort  /topics  /public  /private"),
-    line("  /fork  /spawn  /del  /copy"),
-    line("  /abort  /help  /quit", { fg: theme.muted }),
+    line("  /new  /model  /effort  /status  /context"),
+    line("  /topics  /public  /private  /fork  /spawn"),
+    line("  /del  /copy  /abort  /help  /quit", { fg: theme.muted }),
   ];
 }
 
@@ -1264,21 +1265,6 @@ function latestActiveUsage(state: AppState): MessageDto["usage"] {
     .find((message) => message.authorId === "ai" && message.usage)?.usage;
 }
 
-function activeContextUsage(
-  state: AppState,
-): { context: number; contextWindow: number } | undefined {
-  const usage = latestActiveUsage(state);
-  if (usage?.context !== undefined && usage.contextWindow) {
-    return { context: usage.context, contextWindow: usage.contextWindow };
-  }
-
-  const topic = activeTopic(state);
-  const current = topic ? state.topicUsage[topic.id]?.currentSession : undefined;
-  return current
-    ? { context: current.contextTokens, contextWindow: current.contextWindow }
-    : undefined;
-}
-
 function contextUsageColor(ratio: number | undefined): Rgb {
   if (ratio !== undefined && ratio >= 90) return theme.red;
   if (ratio !== undefined && ratio >= 80) return theme.amber;
@@ -1288,7 +1274,7 @@ function contextUsageColor(ratio: number | undefined): Rgb {
 function statusLines(state: AppState): UiLine[] {
   const topic = activeTopic(state);
   const usage = latestActiveUsage(state);
-  const contextUsage = activeContextUsage(state);
+  const contextUsage = activeContextBreakdown(state);
   const total = topic ? state.topicUsage[topic.id] : undefined;
   const hasTopicUsage = total !== undefined && total.queries > 0;
   const ratio =
@@ -1304,10 +1290,15 @@ function statusLines(state: AppState): UiLine[] {
     line(`  Effort      ${topic?.effectiveEffort ?? topic?.defaultEffort ?? "-"}`),
     line(""),
     line(
-      `  Context     ${tokenCount(contextUsage?.context)} / ${tokenCount(contextUsage?.contextWindow)}${ratio === undefined ? "" : ` (${ratio}%)`}`,
+      `  Context     ${contextUsage?.estimated ? "~" : ""}${tokenCount(contextUsage?.context)} / ${tokenCount(contextUsage?.contextWindow)}${ratio === undefined ? "" : ` (${ratio}%)`}`,
       { fg: contextUsageColor(ratio) },
     ),
-    line("  Measured on the latest model request", { fg: theme.muted, dim: true }),
+    line(
+      contextUsage?.estimated
+        ? "  Live estimate; replaced by provider usage when the turn finishes"
+        : "  Measured on the latest model request",
+      { fg: theme.muted, dim: true },
+    ),
     line(""),
     line(`  Last turn   input ${tokenCount(usage?.input)} · output ${tokenCount(usage?.output)}`),
     line(`  Cache read  ${tokenCount(usage?.cachedInput)}`),
@@ -1329,6 +1320,40 @@ function statusLines(state: AppState): UiLine[] {
     line(
       `  Est. cost   ${hasTopicUsage ? `$${total.estimatedCostUsd.toFixed(4)}` : "unavailable"}`,
     ),
+    line(""),
+    line("  Esc close", { fg: theme.muted }),
+  ];
+}
+
+function contextLines(state: AppState): UiLine[] {
+  const usage = activeContextBreakdown(state);
+  const ratio = usage ? Math.round((usage.context / usage.contextWindow) * 100) : undefined;
+  const value = (tokens: number | undefined) => tokenCount(tokens);
+  return [
+    line("  Context", { fg: theme.accent, bold: true }),
+    line(""),
+    line(
+      `  ${usage?.estimated ? "Estimated" : "Current"}    ${usage?.estimated ? "~" : ""}${value(usage?.context)} / ${value(usage?.contextWindow)}${ratio === undefined ? "" : ` (${ratio}%)`}`,
+      { fg: contextUsageColor(ratio) },
+    ),
+    line(""),
+    line("  Breakdown", { fg: theme.cyan, bold: true }),
+    line(`  Confirmed    ${value(usage?.confirmed)}`),
+    line(`  New user     ${value(usage?.user)}`),
+    line(`  Assistant    ${value(usage?.assistant)}`),
+    line(`  Tools        ${value(usage?.tools)}`),
+    line(`  Free         ${value(usage?.free)}`),
+    line(""),
+    line(
+      usage?.estimated
+        ? "  Live estimate; final provider usage replaces it"
+        : "  Provider-confirmed latest request; live categories appear during a turn",
+      { fg: theme.muted, dim: true },
+    ),
+    line("  System prompt and tool schemas are included in Confirmed", {
+      fg: theme.muted,
+      dim: true,
+    }),
     line(""),
     line("  Esc close", { fg: theme.muted }),
   ];
@@ -1916,6 +1941,7 @@ function conversationLines(
 ): UiLine[] {
   if (state.overlay === "help") return helpLines().slice(0, height);
   if (state.overlay === "status") return statusLines(state).slice(0, height);
+  if (state.overlay === "context") return contextLines(state).slice(0, height);
   if (state.overlay === "topics")
     return topicOverlayLines(state, width, height, animationFrame).slice(0, height);
   if (state.overlay === "subagents")
@@ -2260,7 +2286,7 @@ interface FooterVariant {
 function footerUsageText(state: AppState): FooterVariant[] {
   const topic = activeTopic(state);
   if (!topic) return [{ text: "", spans: [] }];
-  const contextUsage = activeContextUsage(state);
+  const contextUsage = activeContextBreakdown(state);
   const total = state.topicUsage[topic.id];
   const ratio =
     contextUsage?.context !== undefined && contextUsage.contextWindow
@@ -2268,7 +2294,7 @@ function footerUsageText(state: AppState): FooterVariant[] {
       : undefined;
   const context =
     contextUsage?.context !== undefined && contextUsage.contextWindow
-      ? `${tokenCount(contextUsage.context)}/${tokenCount(contextUsage.contextWindow)} ${ratio}%`
+      ? `${contextUsage.estimated ? "~" : ""}${tokenCount(contextUsage.context)}/${tokenCount(contextUsage.contextWindow)} ${ratio}%`
       : "";
   const hasTopicUsage = total !== undefined && total.queries > 0;
   const cumulative = hasTopicUsage

@@ -601,6 +601,23 @@ describe("turn stream ordering", () => {
       "final answer",
     ]);
     expect(listApiMessages(topicId).page.at(-1)?.usage).toEqual({ input: 10, output: 3 });
+    const progress = listRuntimeEventsAfter(after)
+      .filter(
+        (event) =>
+          event.topicId === topicId &&
+          event.type === "ai-status" &&
+          (event.payload as { kind?: string }).kind === "context_progress",
+      )
+      .map(
+        (event) =>
+          event.payload as {
+            assistantTokens: number;
+            toolTokens: number;
+          },
+      );
+    expect(progress.length).toBeGreaterThan(0);
+    expect(progress.at(-1)?.assistantTokens).toBeGreaterThan(0);
+    expect(progress.at(-1)?.toolTokens).toBeGreaterThan(0);
   });
 
   test("accepts a completed-only text segment after an earlier streamed segment", async () => {

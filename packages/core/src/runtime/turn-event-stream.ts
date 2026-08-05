@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { estimateTextTokens } from "#agents/compaction-support";
 import { cleanupAgentFork } from "#agents/fork";
 import { scheduleIdleArchiveForTopic } from "#agents/idle-archiver";
 import { cancelPendingAskUserQuestions } from "#agents/mcp-tools/ask-user";
@@ -145,6 +146,9 @@ export async function runTurnEventStream(
   let pendingSawDelta = false;
   let accumulatedText = "";
   let pendingText = "";
+  let assistantContextTokens = 0;
+  let toolContextTokens = 0;
+  let lastContextProgressAt = 0;
   let lastVisibleMessageId: string | null = null;
   const visibleMessageIds: string[] = [];
   let lastTaskPanelText: string | null = null;
@@ -161,6 +165,18 @@ export async function runTurnEventStream(
       ...(control.sessionId ? { providerSessionId: control.sessionId } : {}),
       agent: agentType,
       model,
+    });
+  };
+  const broadcastContextProgress = (force = false): void => {
+    if (silent) return;
+    const now = Date.now();
+    if (!force && lastContextProgressAt > 0 && now - lastContextProgressAt < 250) return;
+    lastContextProgressAt = now;
+    hub.broadcastAiStatus(topicId, {
+      kind: "context_progress",
+      queryId,
+      assistantTokens: assistantContextTokens,
+      toolTokens: toolContextTokens,
     });
   };
   const nextSyntheticToolUseId = () => `tool-${queryId}-${++syntheticToolCounter}`;
@@ -315,6 +331,8 @@ export async function runTurnEventStream(
           const incoming = event.content;
           accumulatedText += incoming;
           pendingText += incoming;
+          assistantContextTokens = estimateTextTokens(accumulatedText);
+          broadcastContextProgress();
           break;
         }
         case "text":
@@ -322,6 +340,8 @@ export async function runTurnEventStream(
             const incoming = event.content;
             accumulatedText += incoming;
             pendingText += incoming;
+            assistantContextTokens = estimateTextTokens(accumulatedText);
+            broadcastContextProgress();
           }
           break;
         case "tool_use":
@@ -330,6 +350,10 @@ export async function runTurnEventStream(
           // original assistant → tool → assistant ordering instead of a block
           // of tools followed by one consolidated answer at turn completion.
           emitPendingAssistantMessage();
+          toolContextTokens += estimateTextTokens(
+            `${event.name}\n${JSON.stringify(event.input ?? {})}`,
+          );
+          broadcastContextProgress(true);
           // Match both the bare name (Codex reports MCP server/tool separately)
           // and each provider's public MCP-name form.
           if (isVisualsShowHtmlTool(event.name)) {
@@ -543,6 +567,8 @@ export async function runTurnEventStream(
           }
           break;
         case "tool_result":
+          toolContextTokens += estimateTextTokens(event.content);
+          broadcastContextProgress(true);
           if (isVisualToolResultHandled(event.toolUseId)) break;
           if (!silent) {
             hub.broadcastToolOutput(

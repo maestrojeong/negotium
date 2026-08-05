@@ -343,6 +343,40 @@ describe("terminal adapter state", () => {
     }
   });
 
+  test("tracks live context progress only for the current query", () => {
+    let state = setTopics(createInitialState("local"), [topic("a", "A")]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      payload: { kind: "ai_active", queryId: "current" },
+    });
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      payload: {
+        kind: "context_progress",
+        queryId: "current",
+        assistantTokens: 321,
+        toolTokens: 654,
+      },
+    });
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      payload: {
+        kind: "context_progress",
+        queryId: "stale",
+        assistantTokens: 999,
+        toolTokens: 999,
+      },
+    });
+
+    expect(state.activity.a?.contextProgress).toEqual({
+      assistantTokens: 321,
+      toolTokens: 654,
+    });
+  });
+
   test("ignores late tool events from a superseded query", () => {
     const staleTools = [
       { kind: "tool_call", queryId: "old", toolUseId: "late", name: "Bash", label: "Bash(pwd)" },

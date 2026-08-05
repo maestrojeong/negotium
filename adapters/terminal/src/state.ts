@@ -14,6 +14,7 @@ import { DEFAULT_SUBAGENT_GRAPH_SPACING } from "@/subagent-graph";
 type Overlay =
   | "help"
   | "status"
+  | "context"
   | "topics"
   | "subagents"
   | "background-session"
@@ -50,7 +51,7 @@ interface ToolActivity {
   sessionTarget?: string;
 }
 
-interface TopicActivity {
+export interface TopicActivity {
   running: boolean;
   queryId?: string;
   snapshot?: true;
@@ -58,6 +59,10 @@ interface TopicActivity {
   status?: string;
   error?: string;
   tools: ToolActivity[];
+  contextProgress?: {
+    assistantTokens: number;
+    toolTokens: number;
+  };
 }
 
 export type VaultMode = "list" | "key" | "value" | "description" | "confirm-delete";
@@ -787,6 +792,18 @@ function applyAiStatus(
           : activityStartMs(createdAt),
       status: "Thinking…",
       tools: [],
+    });
+  }
+  if (kind === "context_progress") {
+    if (isStaleTerminalStatus(current, status)) return state;
+    return setActivity(state, topicId, {
+      ...liveCurrent,
+      running: true,
+      queryId: typeof status.queryId === "string" ? status.queryId : current.queryId,
+      contextProgress: {
+        assistantTokens: Math.max(0, Number(status.assistantTokens) || 0),
+        toolTokens: Math.max(0, Number(status.toolTokens) || 0),
+      },
     });
   }
   if (kind === "ai_done") {

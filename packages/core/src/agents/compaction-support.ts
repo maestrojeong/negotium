@@ -54,7 +54,7 @@ function isCjkCodePoint(code: number): boolean {
   );
 }
 
-function estimateTextTokens(text: string): number {
+export function estimateTextTokens(text: string): number {
   let cjkChars = 0;
   let cjkUnits = 0;
   for (let index = 0; index < text.length; index++) {

@@ -11,6 +11,7 @@ import "#platform/maestro-bootstrap-env";
 // ── Agents ──────────────────────────────────────────────────────────
 export { checkAgentAuth, checkAgentModelAuth } from "#agents/auth-check";
 export { killOwnedCodexTreesForShutdown } from "#agents/codex-tree-kill";
+export { estimateTextTokens } from "#agents/compaction-support";
 export type { ForkHandle } from "#agents/fork";
 export { cleanupAgentFork, forkAgentSession } from "#agents/fork";
 export { runAgent, SUPPORTED_AGENTS } from "#agents/index";

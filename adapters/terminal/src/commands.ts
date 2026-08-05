@@ -8,6 +8,7 @@ const TERMINAL_COMMANDS: readonly TerminalCommand[] = [
   { name: "new", usage: "/new", description: "reset the current session" },
   { name: "compact", usage: "/compact", description: "summarize and shrink context" },
   { name: "status", usage: "/status", description: "show model and token usage" },
+  { name: "context", usage: "/context", description: "show live context breakdown" },
   { name: "model", usage: "/model", description: "choose the model" },
   { name: "effort", usage: "/effort", description: "choose reasoning effort" },
   { name: "topics", usage: "/topics", description: "open topic picker" },

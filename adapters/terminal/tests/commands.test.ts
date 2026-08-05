@@ -21,6 +21,8 @@ describe("terminal slash command completion", () => {
   test("suggests context parity commands", () => {
     expect(commandSuggestions("/comp").map((command) => command.name)).toEqual(["compact"]);
     expect(commandSuggestions("/stat").map((command) => command.name)).toEqual(["status"]);
+    expect(commandSuggestions("/con").map((command) => command.name)).toEqual(["context"]);
+    expect(completeCommand("/con", 0)).toBe("/context");
     expect(commandSuggestions("/mo").map((command) => command.name)).toEqual(["model"]);
     expect(completeCommand("/mo", 0)).toBe("/model");
     expect(commandSuggestions("/ef").map((command) => command.name)).toEqual(["effort"]);
