@@ -16,6 +16,7 @@ import {
   ensurePersonalGeneral,
   executeVaultCommand,
   getTopic,
+  getTopicStats,
   getVisibleTopics,
   isParticipant,
   latestRuntimeEventSeq,
@@ -483,6 +484,14 @@ export function createNodeControlHandler(
         if (!topicForUser(topicId, userId)) return jsonError(404, "Topic not found");
         const events = listRecentRuntimeEventsForTopic(topicId).map(runtimeEvent);
         return Response.json({ ok: true, events });
+      }
+
+      const usageMatch = path.match(/^\/topics\/([^/]+)\/usage$/);
+      if (usageMatch && req.method === "GET") {
+        const topicId = decodeURIComponent(usageMatch[1]);
+        const userId = requiredText(url.searchParams.get("user"), "user");
+        if (!topicForUser(topicId, userId)) return jsonError(404, "Topic not found");
+        return Response.json({ ok: true, usage: getTopicStats(userId, topicId) });
       }
 
       const modelMatch = path.match(/^\/topics\/([^/]+)\/model$/);

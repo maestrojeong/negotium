@@ -27,6 +27,7 @@ import {
   topicService,
   type VaultEntry,
 } from "@negotium/core";
+import { getTopicStats, type TopicUsageSummary } from "@negotium/core/storage";
 import {
   NODE_CONTROL_BASE_PATH,
   NODE_CONTROL_PROTOCOL_VERSION,
@@ -55,6 +56,7 @@ export interface NegotiumClient {
   listTopics(): ClientResult<TopicDto[]>;
   listBackgroundSessions?(): ClientResult<BackgroundSessionDto[]>;
   listMessages(topicId: string): ClientResult<MessageDto[]>;
+  listTopicUsage?(topicId: string): ClientResult<TopicUsageSummary>;
   listMessagePage?(
     topicId: string,
     cursor?: string,
@@ -158,6 +160,10 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
     return rows
       .map((row) => (typeof row.id === "string" ? getApiMessage(topicId, row.id) : null))
       .filter((message): message is MessageDto => message !== null);
+  }
+
+  listTopicUsage(topicId: string): TopicUsageSummary {
+    return getTopicStats(this.#userId, topicId);
   }
 
   listMessagePage(
@@ -401,6 +407,13 @@ export class RemoteNegotiumClient implements NegotiumClient {
       `/topics/${encodeURIComponent(topicId)}/messages?user=${encodeURIComponent(this.#userId)}`,
     );
     return (result.messages ?? []) as MessageDto[];
+  }
+
+  async listTopicUsage(topicId: string): Promise<TopicUsageSummary> {
+    const result = await this.#request(
+      `/topics/${encodeURIComponent(topicId)}/usage?user=${encodeURIComponent(this.#userId)}`,
+    );
+    return result.usage as TopicUsageSummary;
   }
 
   async listMessagePage(

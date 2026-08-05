@@ -6,6 +6,7 @@ import {
   type TopicDto,
   type VaultEntry,
 } from "@negotium/core";
+import type { TopicUsageSummary } from "@negotium/core/storage";
 import type { TerminalCanvas, TerminalEdge } from "orchgraph";
 import { terminalNowMs } from "@/clock";
 import { DEFAULT_SUBAGENT_GRAPH_SPACING } from "@/subagent-graph";
@@ -76,6 +77,7 @@ export interface AppState {
   backgroundSessions: BackgroundSessionDto[];
   activeTopicId: string | null;
   messages: Record<string, TerminalMessage[]>;
+  topicUsage: Record<string, TopicUsageSummary>;
   messageHistory: Record<string, MessageHistoryStatus>;
   activity: Record<string, TopicActivity>;
   input: string;
@@ -134,6 +136,7 @@ export function createInitialState(userId: string): AppState {
     backgroundSessions: [],
     activeTopicId: null,
     messages: {},
+    topicUsage: {},
     messageHistory: {},
     activity: {},
     input: "",
@@ -171,6 +174,13 @@ export function activeTopic(state: AppState): TopicDto | null {
 
 export function activeMessages(state: AppState): TerminalMessage[] {
   return state.activeTopicId ? (state.messages[state.activeTopicId] ?? []) : [];
+}
+
+export function setTopicUsage(state: AppState, usage: TopicUsageSummary): AppState {
+  return {
+    ...state,
+    topicUsage: { ...state.topicUsage, [usage.topicId]: usage },
+  };
 }
 
 export function activeQuestion(state: AppState): TerminalMessage | null {

@@ -24,6 +24,7 @@ import {
   setMessages,
   setTopicFilter,
   setTopics,
+  setTopicUsage,
   upsertMessage,
 } from "@/state";
 
@@ -270,6 +271,52 @@ describe("terminal renderer", () => {
     const state = setTopics(createInitialState("local"), [current]);
     const output = stripAnsi(renderApp(state, 120, 30));
     expect(output).toContain("Release Planning · codex ·");
+  });
+
+  test("shows current context and exact topic totals in the conversation footer", () => {
+    const message: MessageDto = {
+      id: "usage-footer-message",
+      topicId: "topic",
+      authorId: "ai",
+      text: "done",
+      usage: {
+        input: 200,
+        output: 30,
+        cachedInput: 150,
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const withMessages = setMessages(setTopics(createInitialState("local"), [topic()]), "topic", [
+      message,
+    ]);
+    const state = setTopicUsage(withMessages, {
+      topicId: "topic",
+      inputTokens: 12_300,
+      outputTokens: 4_500,
+      cacheCreationInputTokens: 500,
+      cacheReadInputTokens: 90_000,
+      queries: 8,
+      estimatedCostUsd: 1.25,
+      currentSession: {
+        timestamp: "2026-01-01T00:00:00.000Z",
+        topicId: "topic",
+        topicTitle: "Terminal",
+        agent: "codex",
+        model: "gpt",
+        contextTokens: 104_464,
+        contextWindow: 258_400,
+      },
+    });
+
+    const wide = stripAnsi(renderApp(state, 140, 30));
+    expect(wide).toContain("ctx 104K/258K 40%");
+    expect(wide).toContain("Σ 12.3K in/4.5K out");
+    expect(wide).toContain("cache 90.0K");
+    expect(wide).toContain("est $1.25");
+
+    for (const row of renderApp(state, 44, 20).split("\n")) {
+      expect(displayWidth(row)).toBeLessThanOrEqual(44);
+    }
   });
 
   test("shows both the agent and effective model in the topic picker", () => {
@@ -1079,7 +1126,18 @@ describe("terminal renderer", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
     };
     const state = {
-      ...setMessages(setTopics(createInitialState("local"), [topic()]), "topic", [message]),
+      ...setTopicUsage(
+        setMessages(setTopics(createInitialState("local"), [topic()]), "topic", [message]),
+        {
+          topicId: "topic",
+          inputTokens: 113_545,
+          outputTokens: 4_698,
+          cacheCreationInputTokens: 12_000,
+          cacheReadInputTokens: 1_230_336,
+          queries: 9,
+          estimatedCostUsd: 2.5,
+        },
+      ),
       overlay: "status" as const,
     };
 
@@ -1088,6 +1146,10 @@ describe("terminal renderer", () => {
     expect(output).toContain("input 1.34M");
     expect(output).toContain("Cache read  1.23M");
     expect(output).toContain("not context size");
+    expect(output).toContain("Topic cumulative");
+    expect(output).toContain("Queries     9");
+    expect(output).toContain("Input       114K cache miss");
+    expect(output).toContain("Est. cost   $2.5000");
   });
 
   test("strips terminal escape sequences", () => {

@@ -44,6 +44,11 @@ export interface CurrentSessionUsage {
   contextWindow: number;
 }
 
+export interface TopicUsageSummary extends Bucket {
+  topicId: string;
+  currentSession?: CurrentSessionUsage;
+}
+
 function emptyBucket(): Bucket {
   return {
     inputTokens: 0,
@@ -284,4 +289,41 @@ export function getStats(
     ignoredLegacyRecords,
     estimatedCostUsd: calcCost(total),
   };
+}
+
+/** Exact all-time usage for one topic, independent of transcript pagination. */
+export function getTopicStats(userId: number | string, topicId: string): TopicUsageSummary {
+  const total = emptyBucket();
+  let currentSession: CurrentSessionUsage | undefined;
+
+  for (const raw of loadRecords(userId)) {
+    if (!isQueryRecord(raw) || raw.topicId !== topicId) continue;
+
+    total.inputTokens += raw.inputTokens;
+    total.outputTokens += raw.outputTokens;
+    total.cacheCreationInputTokens += raw.cacheCreationInputTokens;
+    total.cacheReadInputTokens += raw.cacheReadInputTokens;
+    total.queries += 1;
+    total.estimatedCostUsd += raw.estimatedCostUsd;
+
+    if (
+      raw.contextTokens !== undefined &&
+      raw.contextWindow !== undefined &&
+      raw.contextWindow > 0 &&
+      (!currentSession || raw.timestamp > currentSession.timestamp)
+    ) {
+      currentSession = {
+        timestamp: raw.timestamp,
+        topicId: raw.topicId,
+        topicTitle: raw.session,
+        ...(raw.providerSessionId ? { providerSessionId: raw.providerSessionId } : {}),
+        agent: raw.agent,
+        model: raw.model,
+        contextTokens: raw.contextTokens,
+        contextWindow: raw.contextWindow,
+      };
+    }
+  }
+
+  return { topicId, ...total, ...(currentSession ? { currentSession } : {}) };
 }

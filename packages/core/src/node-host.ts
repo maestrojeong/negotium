@@ -74,6 +74,7 @@ export {
   listRuntimeEventsAfter,
 } from "#storage/runtime-events";
 export { acquireRuntimeProcessLease } from "#storage/runtime-process-leases";
+export { getTopicStats } from "#storage/token-stats";
 export {
   getVisibleTopics,
   isParticipant,

@@ -1257,16 +1257,36 @@ function tokenCount(value: number | undefined): string {
   return String(Math.round(value));
 }
 
-function statusLines(state: AppState): UiLine[] {
-  const topic = activeTopic(state);
-  const latest = activeMessages(state)
+function latestActiveUsage(state: AppState): MessageDto["usage"] {
+  return activeMessages(state)
     .slice()
     .reverse()
-    .find((message) => message.authorId === "ai" && message.usage);
-  const usage = latest?.usage;
+    .find((message) => message.authorId === "ai" && message.usage)?.usage;
+}
+
+function activeContextUsage(
+  state: AppState,
+): { context: number; contextWindow: number } | undefined {
+  const usage = latestActiveUsage(state);
+  if (usage?.context !== undefined && usage.contextWindow) {
+    return { context: usage.context, contextWindow: usage.contextWindow };
+  }
+
+  const topic = activeTopic(state);
+  const current = topic ? state.topicUsage[topic.id]?.currentSession : undefined;
+  return current
+    ? { context: current.contextTokens, contextWindow: current.contextWindow }
+    : undefined;
+}
+
+function statusLines(state: AppState): UiLine[] {
+  const topic = activeTopic(state);
+  const usage = latestActiveUsage(state);
+  const contextUsage = activeContextUsage(state);
+  const total = topic ? state.topicUsage[topic.id] : undefined;
   const ratio =
-    usage?.context !== undefined && usage.contextWindow
-      ? Math.round((usage.context / usage.contextWindow) * 100)
+    contextUsage?.context !== undefined && contextUsage.contextWindow
+      ? Math.round((contextUsage.context / contextUsage.contextWindow) * 100)
       : undefined;
   return [
     line("  Status", { fg: theme.accent, bold: true }),
@@ -1277,7 +1297,7 @@ function statusLines(state: AppState): UiLine[] {
     line(`  Effort      ${topic?.effectiveEffort ?? topic?.defaultEffort ?? "-"}`),
     line(""),
     line(
-      `  Context     ${tokenCount(usage?.context)} / ${tokenCount(usage?.contextWindow)}${ratio === undefined ? "" : ` (${ratio}%)`}`,
+      `  Context     ${tokenCount(contextUsage?.context)} / ${tokenCount(contextUsage?.contextWindow)}${ratio === undefined ? "" : ` (${ratio}%)`}`,
       { fg: ratio !== undefined && ratio >= 80 ? theme.amber : theme.text },
     ),
     line("  Measured on the latest model request", { fg: theme.muted, dim: true }),
@@ -1288,6 +1308,14 @@ function statusLines(state: AppState): UiLine[] {
       fg: theme.muted,
       dim: true,
     }),
+    line(""),
+    line("  Topic cumulative", { fg: theme.cyan, bold: true }),
+    line(`  Queries     ${total?.queries.toLocaleString() ?? "unavailable"}`),
+    line(`  Input       ${tokenCount(total?.inputTokens)} cache miss`),
+    line(`  Output      ${tokenCount(total?.outputTokens)}`),
+    line(`  Cache write ${tokenCount(total?.cacheCreationInputTokens)}`),
+    line(`  Cache read  ${tokenCount(total?.cacheReadInputTokens)}`),
+    line(`  Est. cost   ${total ? `$${total.estimatedCostUsd.toFixed(4)}` : "unavailable"}`),
     line(""),
     line("  Esc close", { fg: theme.muted }),
   ];
@@ -2211,6 +2239,49 @@ function footerStatusText(state: AppState): string[] {
   ];
 }
 
+function footerUsageText(state: AppState): string[] {
+  const topic = activeTopic(state);
+  if (!topic) return [""];
+  const contextUsage = activeContextUsage(state);
+  const total = state.topicUsage[topic.id];
+  const ratio =
+    contextUsage?.context !== undefined && contextUsage.contextWindow
+      ? Math.round((contextUsage.context / contextUsage.contextWindow) * 100)
+      : undefined;
+  const context =
+    contextUsage?.context !== undefined && contextUsage.contextWindow
+      ? `ctx ${tokenCount(contextUsage.context)}/${tokenCount(contextUsage.contextWindow)} ${ratio}%`
+      : "";
+  const cumulative = total
+    ? `Σ ${tokenCount(total.inputTokens)} in/${tokenCount(total.outputTokens)} out`
+    : "";
+  const cache = total?.cacheReadInputTokens
+    ? `cache ${tokenCount(total.cacheReadInputTokens)}`
+    : "";
+  const cost = total ? `est $${total.estimatedCostUsd.toFixed(2)}` : "";
+  const parts = [context, cumulative, cache, cost].filter(Boolean);
+  return [
+    `${parts.join(" · ")}  `,
+    `${[context, cumulative, cache].filter(Boolean).join(" · ")}  `,
+    `${[context, cumulative].filter(Boolean).join(" · ")}  `,
+    context ? `${context}  ` : "",
+    "",
+  ];
+}
+
+function footerStatusLine(state: AppState, width: number): string {
+  const leftCandidates = footerStatusText(state);
+  const rightCandidates = footerUsageText(state);
+  for (const right of rightCandidates) {
+    for (const left of leftCandidates) {
+      if (displayWidth(left) + (right ? 1 + displayWidth(right) : 0) <= width) {
+        return joinSides(left, right, width);
+      }
+    }
+  }
+  return joinSides(leftCandidates[leftCandidates.length - 1] ?? "", "", width);
+}
+
 /**
  * Glyph + colour per notice severity.
  *
@@ -2283,7 +2354,7 @@ function footerLines(state: AppState, width: number): string[] {
     ];
   }
   return [
-    paint(joinSides(pickFitting(footerStatusText(state), width), "", width), {
+    paint(footerStatusLine(state, width), {
       fg: theme.accent,
       bg: theme.surfaceRaised,
       bold: true,

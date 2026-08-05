@@ -1,6 +1,7 @@
 import {
   type AgentKind,
   isVaultCommandLine,
+  type MessageDto,
   normalizeVaultKey,
   type RuntimeBusEvent,
   SELECTABLE_MODELS,
@@ -90,6 +91,7 @@ import {
   setMessages,
   setTopicFilter,
   setTopics,
+  setTopicUsage,
   startTopicCreation,
   toggleTaskSidebar,
   upsertMessage,
@@ -305,6 +307,7 @@ export class TerminalApp {
   #backgroundRefreshRunning = false;
   #animationFrame = animationFrameAt();
   #topicsRefreshGeneration = 0;
+  readonly #topicUsageRefreshGeneration = new Map<string, number>();
   readonly #messageLoadGeneration = new Map<string, number>();
   readonly #messageHistory = new Map<
     string,
@@ -460,6 +463,13 @@ export class TerminalApp {
     }
     this.#applyRuntimeEvent(event);
     if (
+      (event.type === "message" && (event.payload as MessageDto).usage) ||
+      (event.type === "message-updated" &&
+        (event.payload as { patch?: Partial<MessageDto> }).patch?.usage)
+    ) {
+      void this.#refreshTopicUsage(event.topicId);
+    }
+    if (
       event.type === "topic-created" ||
       event.type === "topic-updated" ||
       event.type === "topic-deleted"
@@ -599,6 +609,20 @@ export class TerminalApp {
     }
   }
 
+  async #refreshTopicUsage(topicId: string): Promise<void> {
+    if (!this.#client.listTopicUsage) return;
+    const generation = (this.#topicUsageRefreshGeneration.get(topicId) ?? 0) + 1;
+    this.#topicUsageRefreshGeneration.set(topicId, generation);
+    try {
+      const usage = await this.#client.listTopicUsage(topicId);
+      if (this.#topicUsageRefreshGeneration.get(topicId) !== generation) return;
+      this.#state = setTopicUsage(this.#state, usage);
+      if (this.#state.activeTopicId === topicId) this.#queueRender();
+    } catch {
+      // Usage is supplementary; a stats read must not block the conversation.
+    }
+  }
+
   async #loadActiveMessages(): Promise<void> {
     const topic = activeTopic(this.#state);
     if (!topic) return;
@@ -646,6 +670,7 @@ export class TerminalApp {
     const queued = this.#queuedRuntimeEvents.get(topic.id) ?? [];
     this.#queuedRuntimeEvents.delete(topic.id);
     for (const event of queued) this.#applyRuntimeEvent(event);
+    void this.#refreshTopicUsage(topic.id);
   }
 
   async #loadOlderMessages(topicId: string, targetOffset: number): Promise<void> {

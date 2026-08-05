@@ -24,7 +24,7 @@ import {
   type StorageDatabase,
 } from "#storage/storage-host";
 import { getTaskFilePath, writeTasks } from "#storage/tasks";
-import { getStats, recordUsage, tokenStatsFileId } from "#storage/token-stats";
+import { getStats, getTopicStats, recordUsage, tokenStatsFileId } from "#storage/token-stats";
 import { getSharedWikiDir } from "#storage/wiki";
 
 const tempDirs: string[] = [];
@@ -196,6 +196,52 @@ describe("storage host", () => {
     expect(readdirSync(join(sessionAsksDir, "host-user"))).toEqual([
       expect.stringMatching(/^v3-[a-f0-9]{64}\.pending$/),
     ]);
+  });
+
+  test("aggregates exact all-time usage by topic id", () => {
+    const root = tempRoot();
+    disposers.push(configureStorageHost({ logDir: join(root, "logs") }));
+
+    recordUsage(
+      "topic-user",
+      "Same title",
+      {
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheCreationInputTokens: 10,
+        cacheReadInputTokens: 60,
+        contextTokens: 80,
+        contextWindow: 200,
+        costUsd: 0.25,
+      },
+      { topicId: "topic-a", providerSessionId: "provider-a", agent: "codex", model: "gpt" },
+    );
+    recordUsage(
+      "topic-user",
+      "Same title",
+      { inputTokens: 999, outputTokens: 999, costUsd: 9 },
+      { topicId: "topic-b", agent: "claude", model: "sonnet" },
+    );
+
+    expect(getTopicStats("topic-user", "topic-a")).toEqual({
+      topicId: "topic-a",
+      inputTokens: 40,
+      outputTokens: 20,
+      cacheCreationInputTokens: 10,
+      cacheReadInputTokens: 60,
+      queries: 1,
+      estimatedCostUsd: 0.25,
+      currentSession: {
+        timestamp: expect.any(String),
+        topicId: "topic-a",
+        topicTitle: "Same title",
+        providerSessionId: "provider-a",
+        agent: "codex",
+        model: "gpt",
+        contextTokens: 80,
+        contextWindow: 200,
+      },
+    });
   });
 
   test("initializes every schema per injected database and never closes borrowed connections", () => {

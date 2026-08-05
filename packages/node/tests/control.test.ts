@@ -19,6 +19,7 @@ import {
   vaultDel,
   vaultListWithValues,
 } from "@negotium/core";
+import { recordUsage } from "@negotium/core/storage";
 import {
   createNodeControlHandler,
   NODE_CONTROL_BASE_PATH,
@@ -367,6 +368,37 @@ test("background session route exposes only the requesting user's active Cron tu
     releaseRuntimeTurnLease(topic.id, queryId);
     releaseRuntimeTurnLease(hidden.id, hiddenQueryId);
   }
+});
+
+test("topic usage route returns exact totals only to a participant", async () => {
+  const topic = registerTopic({ title: `Usage ${randomUUID()}`, userId, agent: "codex" });
+  recordUsage(
+    userId,
+    topic.title,
+    { inputTokens: 120, outputTokens: 30, cacheReadInputTokens: 20, costUsd: 0.5 },
+    { topicId: topic.id, agent: "codex", model: "gpt-5.6-luna" },
+  );
+
+  const response = await handler(
+    request(`/topics/${encodeURIComponent(topic.id)}/usage?user=${encodeURIComponent(userId)}`),
+  );
+  expect(response?.status).toBe(200);
+  expect(await response?.json()).toMatchObject({
+    ok: true,
+    usage: {
+      topicId: topic.id,
+      inputTokens: 100,
+      outputTokens: 30,
+      cacheReadInputTokens: 20,
+      queries: 1,
+      estimatedCostUsd: 0.5,
+    },
+  });
+
+  const forbidden = await handler(
+    request(`/topics/${encodeURIComponent(topic.id)}/usage?user=not-a-participant`),
+  );
+  expect(forbidden?.status).toBe(404);
 });
 
 test("POST message broadcasts the persisted user message to peer Terminal clients", async () => {
