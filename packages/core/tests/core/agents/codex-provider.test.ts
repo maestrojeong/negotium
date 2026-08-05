@@ -75,9 +75,56 @@ mock.module("#platform/mcp-config", () => ({
   getMcpServersForQuery: () => ({}),
 }));
 
-const { codexProvider, toCodexMcpServers } = await import("#agents/codex-provider");
+const { codexProvider, normalizeCodexTurnUsage, toCodexMcpServers } = await import(
+  "#agents/codex-provider"
+);
 const { configureAgentExecutionHost } = await import("#agents/execution-host");
 let restoreExecutionHost: (() => void) | undefined;
+
+describe("Codex usage normalization", () => {
+  const baseline = {
+    inputTokens: 1_000,
+    outputTokens: 100,
+    cachedInputTokens: 800,
+    cacheWriteInputTokens: 10,
+  };
+  const cumulative = {
+    inputTokens: 1_500,
+    outputTokens: 160,
+    cachedInputTokens: 1_200,
+    cacheWriteInputTokens: 15,
+  };
+
+  test("subtracts the rollout baseline from cumulative turn.completed usage", () => {
+    expect(
+      normalizeCodexTurnUsage(
+        {
+          input_tokens: 1_500,
+          output_tokens: 160,
+          cached_input_tokens: 1_200,
+          cache_write_input_tokens: 15,
+        },
+        baseline,
+        cumulative,
+      ),
+    ).toEqual({
+      input_tokens: 500,
+      output_tokens: 60,
+      cached_input_tokens: 400,
+      cache_write_input_tokens: 5,
+    });
+  });
+
+  test("preserves SDK turn-local usage when it differs from the rollout total", () => {
+    const turnUsage = {
+      input_tokens: 500,
+      output_tokens: 60,
+      cached_input_tokens: 400,
+      cache_write_input_tokens: 5,
+    };
+    expect(normalizeCodexTurnUsage(turnUsage, baseline, cumulative)).toEqual(turnUsage);
+  });
+});
 
 function opts(overrides: Partial<AgentQueryOptions> = {}): AgentQueryOptions {
   return {

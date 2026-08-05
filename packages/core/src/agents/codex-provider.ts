@@ -28,10 +28,12 @@ import {
   hostedMcpServers,
 } from "#agents/execution-host";
 import {
+  type CodexTokenTotals,
   migrateCodexRolloutNativeMultiAgentMetadata,
   readCodexPatchCallIds,
   readLatestCodexContextUsage,
   readLatestCodexPatchPreview,
+  readLatestCodexTokenTotals,
 } from "#agents/rollout/codex";
 import { buildNumberedDiffSummary } from "#agents/tool-format";
 import { extractFileEvents } from "#media/file-events";
@@ -43,6 +45,46 @@ import {
   CODEX_BROWSER_CAPABILITY_ENV,
 } from "#platform/mcp-config";
 import type { AgentQueryOptions, EffortLevel, UnifiedEvent } from "#types";
+
+type CodexEventUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens?: number;
+  cache_write_input_tokens?: number;
+};
+
+function sameCodexUsage(usage: CodexEventUsage, total: CodexTokenTotals): boolean {
+  return (
+    usage.input_tokens === total.inputTokens &&
+    usage.output_tokens === total.outputTokens &&
+    (usage.cached_input_tokens ?? 0) === total.cachedInputTokens &&
+    (usage.cache_write_input_tokens ?? 0) === total.cacheWriteInputTokens
+  );
+}
+
+/**
+ * Some Codex CLI builds expose the thread-lifetime counter on turn.completed
+ * despite the SDK declaring turn-local usage. Only subtract a rollout baseline
+ * when the event exactly matches the rollout's cumulative counter.
+ */
+export function normalizeCodexTurnUsage(
+  usage: CodexEventUsage,
+  baseline: CodexTokenTotals | undefined,
+  rolloutTotal: CodexTokenTotals | undefined,
+): CodexEventUsage {
+  if (!baseline || !rolloutTotal || !sameCodexUsage(usage, rolloutTotal)) return usage;
+  const delta = (current: number, previous: number) =>
+    current >= previous ? current - previous : current;
+  return {
+    input_tokens: delta(rolloutTotal.inputTokens, baseline.inputTokens),
+    output_tokens: delta(rolloutTotal.outputTokens, baseline.outputTokens),
+    cached_input_tokens: delta(rolloutTotal.cachedInputTokens, baseline.cachedInputTokens),
+    cache_write_input_tokens: delta(
+      rolloutTotal.cacheWriteInputTokens,
+      baseline.cacheWriteInputTokens,
+    ),
+  };
+}
 
 /**
  * Pass Otium's EffortLevel through to Codex's ModelReasoningEffort.
@@ -696,6 +738,7 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
   };
 
   let currentSessionId = opts.sessionId;
+  let usageBaseline = currentSessionId ? readLatestCodexTokenTotals(currentSessionId) : undefined;
 
   // Codex SDK has no systemPrompt option. A resumed thread may have been
   // synthesized from a captured shell, so always refresh the current runtime
@@ -782,6 +825,7 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
           thread = codex.startThread(threadOptions);
           prompt = promptForThread(opts, true);
           currentSessionId = undefined;
+          usageBaseline = undefined;
           startResult = await startStreamedWithTracking(
             thread,
             prompt,
@@ -827,6 +871,7 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
               input_tokens: number;
               output_tokens: number;
               cached_input_tokens?: number;
+              cache_write_input_tokens?: number;
             };
             error?: { message?: string };
           };
@@ -931,9 +976,14 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
             }
 
             case "turn.completed": {
-              const usage = event.usage;
-              if (!usage) break;
+              const rawUsage = event.usage;
+              if (!rawUsage) break;
               attemptCompleted = true;
+              const usage = normalizeCodexTurnUsage(
+                rawUsage,
+                usageBaseline,
+                currentSessionId ? readLatestCodexTokenTotals(currentSessionId) : undefined,
+              );
               const contextUsage = currentSessionId
                 ? readLatestCodexContextUsage(currentSessionId)
                 : undefined;
@@ -944,6 +994,7 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
                 usage: {
                   inputTokens: usage.input_tokens,
                   outputTokens: usage.output_tokens,
+                  cacheCreationInputTokens: usage.cache_write_input_tokens,
                   cacheReadInputTokens: usage.cached_input_tokens,
                   ...contextUsage,
                 },

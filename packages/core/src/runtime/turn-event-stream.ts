@@ -69,7 +69,13 @@ import {
   markRuntimeUserTurnProviderSessionObserved,
 } from "#storage/runtime-turn-requests";
 import { recordUsage } from "#storage/token-stats";
-import type { AgentKind, EffortLevel, PeerRuntimeBridgeContext, UnifiedEvent } from "#types";
+import type {
+  AgentKind,
+  EffortLevel,
+  PeerRuntimeBridgeContext,
+  TokenUsage,
+  UnifiedEvent,
+} from "#types";
 import type { MessageDto } from "#types/api";
 
 export type StreamAgentOutcome =
@@ -148,6 +154,14 @@ export async function runTurnEventStream(
   const handledVisualToolResultIds = new Set<string>();
   const toolSummaryOptions = {
     cwd: control.injectParams?.cwd ?? workspaceCwdFor(topicId),
+  };
+  const recordEventUsage = (usage: TokenUsage): void => {
+    recordUsage(userId, topicTitle, usage, {
+      topicId,
+      ...(control.sessionId ? { providerSessionId: control.sessionId } : {}),
+      agent: agentType,
+      model,
+    });
   };
   const nextSyntheticToolUseId = () => `tool-${queryId}-${++syntheticToolCounter}`;
   const bindToolUseId = (providerToolUseId?: string, fallback?: string): string => {
@@ -578,7 +592,7 @@ export async function runTurnEventStream(
           }
           break;
         case "result":
-          if (event.usage) recordUsage(userId, topicTitle, event.usage);
+          if (event.usage) recordEventUsage(event.usage);
           {
             const usage: MessageDto["usage"] = event.usage
               ? {
@@ -648,6 +662,7 @@ export async function runTurnEventStream(
 
           break;
         case "error":
+          if (event.usage) recordEventUsage(event.usage);
           logger.warn(
             { topicId, queryId, agentType, model, silent, error: event.content },
             "ai: provider returned error",

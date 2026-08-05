@@ -145,6 +145,13 @@ export interface CodexContextUsage {
   contextWindow: number;
 }
 
+export interface CodexTokenTotals {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+}
+
 export interface CodexPatchChangePreview {
   path: string;
   before?: string;
@@ -389,6 +396,50 @@ export function extractLatestCodexContextUsage(jsonl: string): CodexContextUsage
   return undefined;
 }
 
+/** Latest cumulative token counter persisted in a native Codex rollout. */
+export function extractLatestCodexTokenTotals(jsonl: string): CodexTokenTotals | undefined {
+  const lines = jsonl.trimEnd().split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    try {
+      const entry = JSON.parse(lines[index] ?? "") as {
+        type?: string;
+        payload?: {
+          type?: string;
+          info?: {
+            total_token_usage?: {
+              input_tokens?: number;
+              output_tokens?: number;
+              cached_input_tokens?: number;
+              cache_write_input_tokens?: number;
+            };
+          };
+        };
+      };
+      if (entry.type !== "event_msg" || entry.payload?.type !== "token_count") continue;
+      const usage = entry.payload.info?.total_token_usage;
+      if (!usage) continue;
+      const values = [
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cached_input_tokens,
+        usage.cache_write_input_tokens,
+      ];
+      if (values.some((value) => value !== undefined && (!Number.isFinite(value) || value < 0))) {
+        continue;
+      }
+      return {
+        inputTokens: usage.input_tokens ?? 0,
+        outputTokens: usage.output_tokens ?? 0,
+        cachedInputTokens: usage.cached_input_tokens ?? 0,
+        cacheWriteInputTokens: usage.cache_write_input_tokens ?? 0,
+      };
+    } catch {
+      // A concurrently appended final line may be incomplete; keep scanning.
+    }
+  }
+  return undefined;
+}
+
 /** Resolve a thread's current rollout and return its latest context measurement. */
 export function readLatestCodexContextUsage(threadId: string): CodexContextUsage | undefined {
   const path = latestCodexRolloutPath(threadId);
@@ -397,6 +448,17 @@ export function readLatestCodexContextUsage(threadId: string): CodexContextUsage
     return extractLatestCodexContextUsage(readFileSync(path, "utf8"));
   } catch (error) {
     logger.debug({ error, threadId }, "codex context usage: rollout read failed");
+    return undefined;
+  }
+}
+
+export function readLatestCodexTokenTotals(threadId: string): CodexTokenTotals | undefined {
+  const path = latestCodexRolloutPath(threadId);
+  if (!path) return undefined;
+  try {
+    return extractLatestCodexTokenTotals(readFileSync(path, "utf8"));
+  } catch (error) {
+    logger.debug({ error, threadId }, "codex token totals: rollout read failed");
     return undefined;
   }
 }

@@ -372,6 +372,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
       type: "sse",
       url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp\/runtime\/sse\?token=.+/),
       timeout: 600000,
+      lifecycle: "turn",
     });
   });
 

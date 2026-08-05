@@ -36,5 +36,58 @@ describe("hosted MCP runtime spec", () => {
     expect(String(codex.url)).toStartWith("http://127.0.0.1:45678/mcp/runtime/task/mcp?token=");
     expect(claude.type).toBe("sse");
     expect(String(claude.url)).toStartWith("http://127.0.0.1:45678/mcp/runtime/task/sse?token=");
+    expect(claude.cacheKey).toBeUndefined();
+    expect(claude.lifecycle).toBeUndefined();
+  });
+
+  test("gives Maestro a stable semantic identity independent of per-turn tokens", () => {
+    const first = buildHostedMcpSpec("maestro", "wiki", {
+      ...context,
+      agent: "maestro",
+      topicId: "topic-1",
+      queryId: "query-1",
+    });
+    const second = buildHostedMcpSpec("maestro", "wiki", {
+      ...context,
+      agent: "maestro",
+      topicId: "topic-1",
+      queryId: "query-2",
+    });
+
+    expect(first.lifecycle).toBe("process");
+    expect(first.cacheKey).toBe(second.cacheKey);
+    expect(first.cacheKey).toStartWith("hosted:wiki:");
+    expect(first.url).not.toBe(second.url);
+  });
+
+  test("keeps context-sensitive hosted identities isolated", () => {
+    const first = buildHostedMcpSpec("maestro", "task", {
+      ...context,
+      agent: "maestro",
+      topicId: "topic-1",
+    });
+    const second = buildHostedMcpSpec("maestro", "task", {
+      ...context,
+      agent: "maestro",
+      topicId: "topic-2",
+    });
+    expect(first.cacheKey).not.toBe(second.cacheKey);
+  });
+
+  test("marks normal session-comm as session state and query-bound bridges as turn state", () => {
+    const normal = buildHostedMcpSpec("maestro", "session-comm", {
+      ...context,
+      agent: "maestro",
+      topicId: "topic-1",
+    });
+    const replyOnly = buildHostedMcpSpec("maestro", "session-comm", {
+      ...context,
+      agent: "maestro",
+      topicId: "topic-1",
+      silent: true,
+    });
+
+    expect(normal.lifecycle).toBe("session");
+    expect(replyOnly.lifecycle).toBe("turn");
   });
 });

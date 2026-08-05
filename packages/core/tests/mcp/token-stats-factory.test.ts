@@ -18,6 +18,7 @@ describe("token stats MCP factory", () => {
       cacheCreationInputTokens: 0,
       cacheReadInputTokens: 0,
       queries: 2,
+      estimatedCostUsd: 0.006,
     };
     const host: TokenStatsMcpHost = {
       getStats: (userId, from, to) => {
@@ -26,6 +27,19 @@ describe("token stats MCP factory", () => {
           total: bucket,
           byHour: {},
           bySession: { dev: bucket },
+          currentSessions: [
+            {
+              timestamp: "2026-01-01T01:00:00Z",
+              topicId: "topic-1",
+              topicTitle: "dev",
+              providerSessionId: "provider-session-1",
+              agent: "codex",
+              model: "gpt-5.6-luna",
+              contextTokens: 25_000,
+              contextWindow: 100_000,
+            },
+          ],
+          ignoredLegacyRecords: 3,
           estimatedCostUsd: 0.006,
         };
       },
@@ -46,6 +60,8 @@ describe("token stats MCP factory", () => {
       });
       expect(textOf(result)).toContain("쿼리 횟수: 2회");
       expect(textOf(result)).toContain("dev");
+      expect(textOf(result)).toContain("25,000 / 100,000 (25.0%)");
+      expect(textOf(result)).toContain("구형 레코드 제외: 3건");
       expect(textOf(result)).toContain("host metric");
       expect(seen).toEqual([{ userId: "user-1", from: "2026-01-01T00:00:00Z", to: undefined }]);
     } finally {

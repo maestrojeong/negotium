@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { getGlobalAiName, setGlobalAiName } from "#storage/app-settings";
@@ -162,8 +162,26 @@ describe("storage host", () => {
     expect(getGlobalAiName()).toBe("Hostium");
     expect(existsSync(join(dataDir, "otium-settings.json"))).toBe(true);
 
-    recordUsage("host-user", "host-topic", { inputTokens: 2, outputTokens: 1 });
-    expect(getStats("host-user").total.queries).toBe(1);
+    recordUsage(
+      "host-user",
+      "host-topic",
+      { inputTokens: 2, outputTokens: 1 },
+      { topicId: "host-topic-id", agent: "claude", model: "sonnet" },
+    );
+    appendFileSync(
+      join(logDir, "token-queries-host-user.jsonl"),
+      `${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        session: "legacy",
+        inputTokens: 1_000_000,
+        outputTokens: 1_000,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 900_000,
+      })}\n`,
+    );
+    const stats = getStats("host-user");
+    expect(stats.total.queries).toBe(1);
+    expect(stats.ignoredLegacyRecords).toBe(1);
     expect(readdirSync(logDir)).toEqual(["token-queries-host-user.jsonl"]);
     expect(tokenStatsFileId("tenant..escape")).toMatch(/^sha256-[a-f0-9]{64}$/);
 

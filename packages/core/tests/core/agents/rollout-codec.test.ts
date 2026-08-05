@@ -527,6 +527,34 @@ describe("writeCodexRollout", () => {
     });
   });
 
+  test("extracts the latest cumulative token totals from token-count events", async () => {
+    const { extractLatestCodexTokenTotals } = await import("#agents/rollout/codex");
+    const jsonl = [
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 1_500,
+              output_tokens: 160,
+              cached_input_tokens: 1_200,
+              cache_write_input_tokens: 15,
+            },
+          },
+        },
+      }),
+      '{"type":"event_msg","payload":',
+    ].join("\n");
+
+    expect(extractLatestCodexTokenTotals(jsonl)).toEqual({
+      inputTokens: 1_500,
+      outputTokens: 160,
+      cachedInputTokens: 1_200,
+      cacheWriteInputTokens: 15,
+    });
+  });
+
   test("extracts exact native Codex patch lines and skips consumed calls", async () => {
     const { extractCodexPatchCallIds, extractLatestCodexPatchPreview } = await import(
       "#agents/rollout/codex"

@@ -80,7 +80,16 @@ describe("turn stream ordering", () => {
     const userId = `nested/../../${outsideName.slice(0, -".jsonl".length)}`;
 
     expect(existsSync(outsidePath)).toBe(false);
-    recordUsage(userId, "path-safe", { inputTokens: 3, outputTokens: 2 });
+    recordUsage(
+      userId,
+      "path-safe",
+      { inputTokens: 3, outputTokens: 2 },
+      {
+        topicId: "path-safe-topic",
+        agent: "claude",
+        model: "sonnet",
+      },
+    );
 
     expect(existsSync(outsidePath)).toBe(false);
     expect(getStats(userId).bySession["path-safe"]).toMatchObject({
@@ -100,6 +109,7 @@ describe("turn stream ordering", () => {
       queryId,
       origin: "user",
       prompt: "test",
+      sessionId: "provider-session-1",
       abortController: new AbortController(),
       abortReason: AbortReason.None,
     };
@@ -113,6 +123,8 @@ describe("turn stream ordering", () => {
           outputTokens: 17,
           cacheCreationInputTokens: 13,
           cacheReadInputTokens: 29,
+          contextTokens: 25_000,
+          contextWindow: 100_000,
         },
       };
     }
@@ -132,13 +144,26 @@ describe("turn stream ordering", () => {
       { silent: true },
     );
 
-    expect(getStats(userId).bySession[topicTitle]).toEqual({
-      inputTokens: 101,
+    const stats = getStats(userId);
+    expect(stats.bySession[topicTitle]).toMatchObject({
+      inputTokens: 72,
       outputTokens: 17,
       cacheCreationInputTokens: 13,
       cacheReadInputTokens: 29,
       queries: 1,
     });
+    expect(stats.bySession[topicTitle]?.estimatedCostUsd).toBeCloseTo(0.0001769, 10);
+    expect(stats.currentSessions).toEqual([
+      expect.objectContaining({
+        topicId,
+        topicTitle,
+        providerSessionId: "provider-session-1",
+        agent: "codex",
+        model: "gpt-5.6-luna",
+        contextTokens: 25_000,
+        contextWindow: 100_000,
+      }),
+    ]);
   });
 
   test("records the live provider session on the running control", async () => {
@@ -788,6 +813,7 @@ describe("turn stream ordering", () => {
   test("returns provider errors and removes incomplete assistant segments", async () => {
     const topicId = seedTopic();
     const queryId = randomUUID();
+    const userId = randomUUID();
     const after = latestRuntimeEventSeq();
     const control: RoomQueryControl = {
       topicId,
@@ -799,7 +825,11 @@ describe("turn stream ordering", () => {
     };
     async function* failedStream(): AsyncGenerator<UnifiedEvent> {
       yield { type: "text", content: "incomplete answer" };
-      yield { type: "error", content: "provider unavailable" };
+      yield {
+        type: "error",
+        content: "provider unavailable",
+        usage: { inputTokens: 100, outputTokens: 5, cacheReadInputTokens: 40 },
+      };
     }
 
     const outcome = await streamAgentEvents(
@@ -811,10 +841,16 @@ describe("turn stream ordering", () => {
       "codex",
       "gpt-5.6-luna",
       "medium",
-      "owner",
+      userId,
     );
 
     expect(outcome).toEqual({ kind: "provider-error", error: "provider unavailable" });
+    expect(getStats(userId).bySession["stream order"]).toMatchObject({
+      inputTokens: 60,
+      cacheReadInputTokens: 40,
+      outputTokens: 5,
+      queries: 1,
+    });
     expect(listApiMessages(topicId).page).toHaveLength(0);
     expect(
       listRuntimeEventsAfter(after).some(

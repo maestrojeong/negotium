@@ -8,7 +8,7 @@
  * `mcp/runtime-server.ts` (transport-agnostic parts only).
  */
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { NEGOTIUM_PORT, RUNTIME_MCP_SECRET } from "#platform/config";
 import { type AgentKind, isAgentKind, type PeerRuntimeBridgeContext } from "#types";
 
@@ -233,7 +233,55 @@ export function buildRuntimeMcpSpec(
     type: "sse" as const,
     url: `${base}/sse?${query}`,
     timeout: CLAUDE_MCP_TOOL_TIMEOUT_MS,
+    ...(agent === "maestro" ? { lifecycle: "turn" as const } : {}),
   };
+}
+
+function hostedMcpCacheIdentity(surface: HostedMcpSurface, ctx: HostedMcpContext): string {
+  let semanticContext: unknown;
+  switch (surface) {
+    case "system-health":
+      semanticContext = {};
+      break;
+    case "token-stats":
+    case "agent-health":
+      semanticContext = { userId: ctx.userId };
+      break;
+    case "task":
+      semanticContext = {
+        userId: ctx.userId,
+        topicTitle: ctx.topicTitle,
+        topicId: ctx.topicId ?? null,
+      };
+      break;
+    case "wiki":
+    case "skills":
+      semanticContext = {
+        userId: ctx.userId,
+        topicId: ctx.wikiTopicId ?? ctx.topicId ?? null,
+      };
+      break;
+    case "vault":
+      semanticContext = { userId: ctx.userId, cwd: ctx.cwd, agent: ctx.agent };
+      break;
+    case "session-comm":
+      semanticContext = {
+        userId: ctx.userId,
+        topicTitle: ctx.topicTitle,
+        topicId: ctx.topicId ?? null,
+        subagentParentTopicId: ctx.subagentParentTopicId ?? null,
+        depth: ctx.depth ?? 0,
+        silent: ctx.silent ?? false,
+        agent: ctx.agent,
+        peerBridge: ctx.peerBridge ?? null,
+      };
+      break;
+  }
+  const digest = createHash("sha256")
+    .update(JSON.stringify([surface, semanticContext]))
+    .digest("hex")
+    .slice(0, 24);
+  return `hosted:${surface}:${digest}`;
 }
 
 /** Build an agent transport spec for one logical MCP surface on the shared runtime process. */
@@ -246,9 +294,18 @@ export function buildHostedMcpSpec(
   const base = `http://127.0.0.1:${runtimePort}${RUNTIME_MCP_BASE_PATH}/${surface}`;
   const query = `token=${encodeURIComponent(token)}`;
   if (agent === "codex") return { url: `${base}/mcp?${query}` };
+  const queryBound =
+    surface === "session-comm" && (ctx.silent === true || ctx.peerBridge !== undefined);
+  const lifecycle = queryBound ? "turn" : surface === "session-comm" ? "session" : "process";
   return {
     type: "sse" as const,
     url: `${base}/sse?${query}`,
     timeout: CLAUDE_MCP_TOOL_TIMEOUT_MS,
+    ...(agent === "maestro"
+      ? {
+          lifecycle,
+          cacheKey: hostedMcpCacheIdentity(surface, ctx),
+        }
+      : {}),
   };
 }

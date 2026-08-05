@@ -4,14 +4,24 @@ import { join } from "node:path";
 import { appendJsonlEntry, readJsonlLines } from "#platform/jsonl";
 import { logger } from "#platform/logger";
 import { resolveStorageLogDir } from "#storage/storage-host";
+import type { AgentKind, TokenUsage } from "#types";
 
 export interface QueryRecord {
+  schemaVersion: 2;
   timestamp: string; // ISO 8601 UTC
-  session: string; // topic name
+  session: string; // topic title (legacy output name)
+  topicId: string;
+  providerSessionId?: string;
+  agent: AgentKind;
+  model: string;
+  /** Cache-miss input only. */
   inputTokens: number;
   outputTokens: number;
   cacheCreationInputTokens: number;
   cacheReadInputTokens: number;
+  contextTokens?: number;
+  contextWindow?: number;
+  estimatedCostUsd: number;
 }
 
 export interface Bucket {
@@ -20,6 +30,18 @@ export interface Bucket {
   cacheCreationInputTokens: number;
   cacheReadInputTokens: number;
   queries: number;
+  estimatedCostUsd: number;
+}
+
+export interface CurrentSessionUsage {
+  timestamp: string;
+  topicId: string;
+  topicTitle: string;
+  providerSessionId?: string;
+  agent: AgentKind;
+  model: string;
+  contextTokens: number;
+  contextWindow: number;
 }
 
 function emptyBucket(): Bucket {
@@ -29,6 +51,7 @@ function emptyBucket(): Bucket {
     cacheCreationInputTokens: 0,
     cacheReadInputTokens: 0,
     queries: 0,
+    estimatedCostUsd: 0,
   };
 }
 
@@ -48,11 +71,11 @@ function queriesPath(userId: number | string): string {
   return join(logDir, `token-queries-${fileId}.jsonl`);
 }
 
-function loadRecords(userId: number | string): QueryRecord[] {
+function loadRecords(userId: number | string): unknown[] {
   try {
     return readJsonlLines(queriesPath(userId)).flatMap((line) => {
       try {
-        return [JSON.parse(line) as QueryRecord];
+        return [JSON.parse(line) as unknown];
       } catch {
         return [];
       }
@@ -65,14 +88,72 @@ function loadRecords(userId: number | string): QueryRecord[] {
 export function calcCost(
   b: Pick<
     Bucket,
+    | "inputTokens"
+    | "outputTokens"
+    | "cacheCreationInputTokens"
+    | "cacheReadInputTokens"
+    | "estimatedCostUsd"
+  >,
+): number {
+  return b.estimatedCostUsd;
+}
+
+type TokenPrices = {
+  input: number;
+  output: number;
+  cacheWrite?: number;
+  cacheRead: number;
+};
+
+const TOKEN_PRICES: Record<string, TokenPrices> = {
+  "codex:gpt-5.6-sol": { input: 5, cacheRead: 0.5, output: 30 },
+  "codex:gpt-5.6-terra": { input: 2.5, cacheRead: 0.25, output: 15 },
+  "codex:gpt-5.6-luna": { input: 1, cacheRead: 0.1, output: 6 },
+  "claude:fable": { input: 10, cacheWrite: 12.5, cacheRead: 1, output: 50 },
+  "claude:opus": { input: 5, cacheWrite: 6.25, cacheRead: 0.5, output: 25 },
+  "claude:sonnet": { input: 2, cacheWrite: 2.5, cacheRead: 0.2, output: 10 },
+  "maestro:kimi-k3": { input: 3, cacheRead: 0.3, output: 15 },
+  "maestro:kimi-k2.7-code": { input: 0.95, cacheRead: 0.19, output: 4 },
+  "maestro:deepseek-pro": { input: 0.435, cacheRead: 0.003625, output: 0.87 },
+  "maestro:deepseek-flash": { input: 0.14, cacheRead: 0.0028, output: 0.28 },
+};
+
+function estimateUsageCost(
+  agent: AgentKind,
+  model: string,
+  usage: Pick<
+    QueryRecord,
     "inputTokens" | "outputTokens" | "cacheCreationInputTokens" | "cacheReadInputTokens"
   >,
 ): number {
+  const prices = TOKEN_PRICES[`${agent}:${model}`];
+  if (!prices) return 0;
   return (
-    (b.inputTokens / 1_000_000) * 3.0 +
-    (b.outputTokens / 1_000_000) * 15.0 +
-    (b.cacheCreationInputTokens / 1_000_000) * 3.75 +
-    (b.cacheReadInputTokens / 1_000_000) * 0.3
+    (usage.inputTokens * prices.input +
+      usage.outputTokens * prices.output +
+      (agent === "claude"
+        ? usage.cacheCreationInputTokens * (prices.cacheWrite ?? prices.input)
+        : 0) +
+      usage.cacheReadInputTokens * prices.cacheRead) /
+    1_000_000
+  );
+}
+
+function isQueryRecord(value: unknown): value is QueryRecord {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<QueryRecord>;
+  return (
+    record.schemaVersion === 2 &&
+    typeof record.timestamp === "string" &&
+    typeof record.session === "string" &&
+    typeof record.topicId === "string" &&
+    typeof record.agent === "string" &&
+    typeof record.model === "string" &&
+    typeof record.inputTokens === "number" &&
+    typeof record.outputTokens === "number" &&
+    typeof record.cacheCreationInputTokens === "number" &&
+    typeof record.cacheReadInputTokens === "number" &&
+    typeof record.estimatedCostUsd === "number"
   );
 }
 
@@ -80,20 +161,39 @@ export function calcCost(
 export function recordUsage(
   userId: number | string,
   session: string,
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    cacheCreationInputTokens?: number;
-    cacheReadInputTokens?: number;
+  usage: TokenUsage,
+  context: {
+    topicId: string;
+    providerSessionId?: string;
+    agent: AgentKind;
+    model: string;
   },
 ) {
-  const record: QueryRecord = {
-    timestamp: new Date().toISOString(),
-    session,
-    inputTokens: usage.inputTokens,
+  const cacheReadInputTokens = usage.cacheReadInputTokens ?? 0;
+  // Claude reports cache buckets separately; Codex and Maestro include cache
+  // hits in their provider input total.
+  const inputTokens =
+    context.agent === "claude"
+      ? usage.inputTokens
+      : Math.max(0, usage.inputTokens - cacheReadInputTokens);
+  const normalized = {
+    inputTokens,
     outputTokens: usage.outputTokens,
     cacheCreationInputTokens: usage.cacheCreationInputTokens ?? 0,
-    cacheReadInputTokens: usage.cacheReadInputTokens ?? 0,
+    cacheReadInputTokens,
+  };
+  const record: QueryRecord = {
+    schemaVersion: 2,
+    timestamp: new Date().toISOString(),
+    session,
+    topicId: context.topicId,
+    ...(context.providerSessionId ? { providerSessionId: context.providerSessionId } : {}),
+    agent: context.agent,
+    model: context.model,
+    ...normalized,
+    ...(usage.contextTokens !== undefined ? { contextTokens: usage.contextTokens } : {}),
+    ...(usage.contextWindow !== undefined ? { contextWindow: usage.contextWindow } : {}),
+    estimatedCostUsd: usage.costUsd ?? estimateUsageCost(context.agent, context.model, normalized),
   };
   try {
     appendJsonlEntry(queriesPath(userId), record);
@@ -110,6 +210,8 @@ export function getStats(
   total: Bucket;
   byHour: Record<string, Bucket>;
   bySession: Record<string, Bucket>;
+  currentSessions: CurrentSessionUsage[];
+  ignoredLegacyRecords: number;
   estimatedCostUsd: number;
 } {
   const records = loadRecords(userId);
@@ -119,14 +221,28 @@ export function getStats(
 
   if ((from && Number.isNaN(fromTs)) || (to && Number.isNaN(toTs))) {
     logger.warn({ from, to }, "token-stats: Invalid date range, returning empty");
-    return { total: emptyBucket(), byHour: {}, bySession: {}, estimatedCostUsd: 0 };
+    return {
+      total: emptyBucket(),
+      byHour: {},
+      bySession: {},
+      currentSessions: [],
+      ignoredLegacyRecords: 0,
+      estimatedCostUsd: 0,
+    };
   }
 
   const total = emptyBucket();
   const byHour: Record<string, Bucket> = {};
   const bySession: Record<string, Bucket> = {};
+  const currentSessions = new Map<string, CurrentSessionUsage>();
+  let ignoredLegacyRecords = 0;
 
-  for (const r of records) {
+  for (const raw of records) {
+    if (!isQueryRecord(raw)) {
+      ignoredLegacyRecords += 1;
+      continue;
+    }
+    const r = raw;
     const ts = new Date(r.timestamp).getTime();
     if (ts < fromTs || ts > toTs) continue;
 
@@ -141,8 +257,31 @@ export function getStats(
       bucket.cacheCreationInputTokens += r.cacheCreationInputTokens;
       bucket.cacheReadInputTokens += r.cacheReadInputTokens;
       bucket.queries += 1;
+      bucket.estimatedCostUsd += r.estimatedCostUsd;
+    }
+
+    if (r.contextTokens !== undefined && r.contextWindow !== undefined && r.contextWindow > 0) {
+      currentSessions.set(r.topicId, {
+        timestamp: r.timestamp,
+        topicId: r.topicId,
+        topicTitle: r.session,
+        ...(r.providerSessionId ? { providerSessionId: r.providerSessionId } : {}),
+        agent: r.agent,
+        model: r.model,
+        contextTokens: r.contextTokens,
+        contextWindow: r.contextWindow,
+      });
     }
   }
 
-  return { total, byHour, bySession, estimatedCostUsd: calcCost(total) };
+  return {
+    total,
+    byHour,
+    bySession,
+    currentSessions: [...currentSessions.values()].sort((a, b) =>
+      b.timestamp.localeCompare(a.timestamp),
+    ),
+    ignoredLegacyRecords,
+    estimatedCostUsd: calcCost(total),
+  };
 }
