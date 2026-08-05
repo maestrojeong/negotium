@@ -167,6 +167,30 @@ export const SNIPPETS_API_URL = (
 
 export const BROWSER_RS_BIN = resolveBrowserRsBin(envText("NEGOTIUM_BROWSER_RS_BIN"));
 
+/** bash-rs release tested with this Negotium version — see apps/negotium/install-bash-rs.mjs. */
+export const BASH_RS_VERSION = "v0.1.2";
+
+/**
+ * Resolve the bash-rs binary the same way `resolveBrowserRsBin` resolves
+ * Browser.rs: a versioned private location, no PATH lookup, `undefined`
+ * (rather than throwing) when it's missing — callers fall back to the TS
+ * `background-bash-server.ts` in that case (see `background-bash/manager.ts`).
+ */
+export function resolveBashRsBin(envValue?: string): string | undefined {
+  const override = envValue?.trim();
+  const candidate = override
+    ? resolve(override)
+    : resolve(BINARIES_DIR, "bash-rs", BASH_RS_VERSION, "bash-rs");
+  try {
+    accessSync(candidate, constants.X_OK);
+    return candidate;
+  } catch {
+    return undefined;
+  }
+}
+
+export const BASH_RS_BIN = resolveBashRsBin(envText("NEGOTIUM_BASH_RS_BIN"));
+
 // Managed Browser.rs terminates MCP transports and security policy itself.
 export function resolveBrowserMcpBin(envValue?: string): string {
   const override = envValue?.trim();
@@ -357,6 +381,14 @@ export const DM_CMD_DIR = resolve(RUN_DIR, "dm-commands");
 export const DM_RESP_DIR = resolve(RUN_DIR, "dm-responses");
 export const SESSION_INBOX_DIR = resolve(RUN_DIR, "session-inbox");
 export const SESSION_ASKS_DIR = resolve(RUN_DIR, "session-asks");
+/**
+ * Passed to `bash-rs` as `BASHRS_SPILL_ROOT`. Each job gets a subdirectory
+ * here (`{bash_id}/meta.json`, `result.json`, `stdout.log`, `stderr.log`) —
+ * see bash-rs-mcp's `journal.rs`. `runtime/bashrs-completions.ts` watches
+ * this directory and turns `result.json` into a session-inbox `tell`, the
+ * same way `background-bash-server.ts` used to write one directly.
+ */
+export const BASHRS_SPILL_ROOT = resolve(RUN_DIR, "bashrs");
 export const PLAYWRIGHT_BASE_PORT = parsePortEnv(process.env.PLAYWRIGHT_BASE_PORT, 9100);
 export const PLAYWRIGHT_MAX_PORT = parsePortEnv(process.env.PLAYWRIGHT_MAX_PORT, 9499);
 export const PLAYWRIGHT_PORTS_DIR = resolve(RUN_DIR, "playwright-ports");

@@ -107,6 +107,7 @@
   "files": [
     "dist",
     "install-browser-rs.mjs",
+    "install-bash-rs.mjs",
     "README.md",
     "LICENSE"
   ],
@@ -129,7 +130,7 @@
     "build": "bun ../../scripts/build-negotium-package.ts",
     "check": "bunx tsc --noEmit",
     "lint": "biome check",
-    "postinstall": "node install-browser-rs.mjs",
+    "postinstall": "node install-browser-rs.mjs && node install-bash-rs.mjs",
     "prepack": "bun run build"
   },
   "dependencies": {

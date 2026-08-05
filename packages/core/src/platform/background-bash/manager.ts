@@ -1,6 +1,12 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { BACKGROUND_BASH_SERVER, BG_BASH_BASE_PORT, BG_BASH_MAX_PORT } from "#platform/config";
+import {
+  BACKGROUND_BASH_SERVER,
+  BASH_RS_BIN,
+  BASHRS_SPILL_ROOT,
+  BG_BASH_BASE_PORT,
+  BG_BASH_MAX_PORT,
+} from "#platform/config";
 import { delay } from "#platform/delay";
 import { logger } from "#platform/logger";
 import { deriveBgBashContextCapability } from "./context";
@@ -103,7 +109,21 @@ export function createBackgroundBashManager(
       const response = await fetchImpl(`http://127.0.0.1:${port}/health`, {
         signal: AbortSignal.timeout(2000),
       });
-      return response.ok && (await response.text()) === runtimeServerId;
+      if (!response.ok) return false;
+      const body = await response.text();
+      // bash-rs (Rust binary) answers with JSON + `instance_id`; the legacy
+      // TS server answers with the bare id as `text/plain`. Both exist to
+      // confirm this port is answering *our* spawned process, not a stale
+      // one left over from a previous manager instance.
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed && typeof parsed === "object" && "instance_id" in parsed) {
+          return parsed.instance_id === runtimeServerId;
+        }
+      } catch {
+        // Not JSON — fall through to the plain-text comparison below.
+      }
+      return body === runtimeServerId;
     } catch {
       return false;
     }
@@ -127,13 +147,25 @@ export function createBackgroundBashManager(
     excludedPorts: ReadonlySet<number> = new Set(),
   ): Promise<number> {
     const port = reservedPort ?? (await allocatePort(excludedPorts));
-    const process = spawnImpl("bun", ["run", serverFile, `--port=${port}`], {
+    // Prefer the Rust binary when the installer (install-bash-rs.mjs) put
+    // one in place; otherwise fall back to the TS server unconditionally —
+    // e.g. no prebuilt binary for this platform/arch yet. Both speak the
+    // same wire protocol (X-Background-Bash-* headers, HMAC capability
+    // derived from the same `runtimeCapability` root secret), so either one
+    // is a transparent swap from the caller's point of view.
+    const [command, args] = BASH_RS_BIN
+      ? [BASH_RS_BIN, [String(port)]]
+      : ["bun", ["run", serverFile, `--port=${port}`]];
+    const process = spawnImpl(command, args, {
       stdio: "ignore",
       detached: false,
       env: {
         ...(options.env ?? globalThis.process.env),
         NEGOTIUM_BG_BASH_CAPABILITY: runtimeCapability,
         NEGOTIUM_BG_BASH_SERVER_ID: runtimeServerId,
+        BASHRS_HTTP_CAPABILITY: runtimeCapability,
+        BASHRS_INSTANCE_ID: runtimeServerId,
+        BASHRS_SPILL_ROOT,
       },
     });
 
