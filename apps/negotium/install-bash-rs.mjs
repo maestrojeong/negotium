@@ -27,7 +27,7 @@ async function install() {
   const target = TARGETS[`${platform()}-${arch()}`];
   if (!target) {
     console.warn(
-      `negotium: bash-rs ${VERSION} has no binary for ${platform()}-${arch()}; background_bash falls back to the TS server`,
+      `negotium: bash-rs ${VERSION} has no binary for ${platform()}-${arch()}; background_bash will be unavailable on this host`,
     );
     return;
   }
@@ -71,7 +71,7 @@ async function install() {
 
 install().catch((error) => {
   console.warn(
-    `negotium: bash-rs install unavailable (${error instanceof Error ? error.message : String(error)}); background_bash falls back to the TS server`,
+    `negotium: bash-rs install unavailable (${error instanceof Error ? error.message : String(error)}); background_bash will be unavailable on this host`,
   );
   process.exitCode = 0;
 });
