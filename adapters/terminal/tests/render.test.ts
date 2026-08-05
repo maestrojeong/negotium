@@ -320,6 +320,47 @@ describe("terminal renderer", () => {
     }
   });
 
+  test("uses neutral, warning, and critical colours for context usage", () => {
+    const ESC = String.fromCharCode(0x1b);
+    const colours = [
+      [40_000, 40, `${ESC}[38;2;232;233;239m`],
+      [85_000, 85, `${ESC}[38;2;241;190;91m`],
+      [95_000, 95, `${ESC}[38;2;245;116;128m`],
+    ] as const;
+
+    for (const [contextTokens, percent, colour] of colours) {
+      const state = setTopicUsage(setTopics(createInitialState("local"), [topic()]), {
+        topicId: "topic",
+        inputTokens: 12_000,
+        outputTokens: 2_000,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 8_000,
+        queries: 1,
+        estimatedCostUsd: 0.25,
+        currentSession: {
+          timestamp: "2026-01-01T00:00:00.000Z",
+          topicId: "topic",
+          topicTitle: "Terminal",
+          agent: "codex",
+          model: "gpt",
+          contextTokens,
+          contextWindow: 100_000,
+        },
+      });
+
+      const frame = renderApp(state, 140, 30);
+      const footer = frame.split("\n").find((row) => stripAnsi(row).includes(`${percent}%`));
+      expect(footer).toContain(colour);
+      expect(footer).toContain(`${ESC}[38;2;137;141;158m`);
+
+      const status = renderApp({ ...state, overlay: "status" }, 100, 30);
+      const contextLine = status
+        .split("\n")
+        .find((row) => stripAnsi(row).includes(`(${percent}%)`));
+      expect(contextLine).toContain(colour);
+    }
+  });
+
   test("does not present missing topic history as zero usage", () => {
     const state = setTopicUsage(setTopics(createInitialState("local"), [topic()]), {
       topicId: "topic",

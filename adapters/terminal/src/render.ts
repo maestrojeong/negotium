@@ -1279,6 +1279,12 @@ function activeContextUsage(
     : undefined;
 }
 
+function contextUsageColor(ratio: number | undefined): Rgb {
+  if (ratio !== undefined && ratio >= 90) return theme.red;
+  if (ratio !== undefined && ratio >= 80) return theme.amber;
+  return theme.text;
+}
+
 function statusLines(state: AppState): UiLine[] {
   const topic = activeTopic(state);
   const usage = latestActiveUsage(state);
@@ -1299,7 +1305,7 @@ function statusLines(state: AppState): UiLine[] {
     line(""),
     line(
       `  Context     ${tokenCount(contextUsage?.context)} / ${tokenCount(contextUsage?.contextWindow)}${ratio === undefined ? "" : ` (${ratio}%)`}`,
-      { fg: ratio !== undefined && ratio >= 80 ? theme.amber : theme.text },
+      { fg: contextUsageColor(ratio) },
     ),
     line("  Measured on the latest model request", { fg: theme.muted, dim: true }),
     line(""),
@@ -2246,9 +2252,14 @@ function footerStatusText(state: AppState): string[] {
   ];
 }
 
-function footerUsageText(state: AppState): string[] {
+interface FooterVariant {
+  text: string;
+  spans: UiSpan[];
+}
+
+function footerUsageText(state: AppState): FooterVariant[] {
   const topic = activeTopic(state);
-  if (!topic) return [""];
+  if (!topic) return [{ text: "", spans: [] }];
   const contextUsage = activeContextUsage(state);
   const total = state.topicUsage[topic.id];
   const ratio =
@@ -2268,27 +2279,67 @@ function footerUsageText(state: AppState): string[] {
       ? `cache ${tokenCount(total.cacheReadInputTokens)}`
       : "";
   const cost = hasTopicUsage ? `est $${total.estimatedCostUsd.toFixed(2)}` : "";
-  const parts = [context, cumulative, cache, cost].filter(Boolean);
+  const variant = (values: readonly { text: string; fg: Rgb }[]): FooterVariant => {
+    const present = values.filter((value) => value.text);
+    const spans = present.flatMap((value, index) => [
+      ...(index > 0 ? [{ text: " · ", fg: theme.subtle }] : []),
+      { text: value.text, fg: value.fg },
+    ]);
+    if (spans.length > 0) spans.push({ text: "  ", fg: theme.muted });
+    return {
+      text: `${present.map((value) => value.text).join(" · ")}${present.length ? "  " : ""}`,
+      spans,
+    };
+  };
+  const values = {
+    context: { text: context, fg: contextUsageColor(ratio) },
+    cumulative: { text: cumulative, fg: theme.muted },
+    cache: { text: cache, fg: theme.muted },
+    cost: { text: cost, fg: theme.muted },
+  };
   return [
-    `${parts.join(" · ")}  `,
-    `${[context, cumulative, cache].filter(Boolean).join(" · ")}  `,
-    `${[context, cumulative].filter(Boolean).join(" · ")}  `,
-    context ? `${context}  ` : "",
-    "",
+    variant([values.context, values.cumulative, values.cache, values.cost]),
+    variant([values.context, values.cumulative, values.cache]),
+    variant([values.context, values.cumulative]),
+    variant([values.context]),
+    variant([]),
   ];
 }
 
-function footerStatusLine(state: AppState, width: number): string {
+function footerStatusLine(state: AppState, width: number): UiSpan[] {
   const leftCandidates = footerStatusText(state);
   const rightCandidates = footerUsageText(state);
   for (const right of rightCandidates) {
     for (const left of leftCandidates) {
-      if (displayWidth(left) + (right ? 1 + displayWidth(right) : 0) <= width) {
-        return joinSides(left, right, width);
+      const rightWidth = displayWidth(right.text);
+      if (displayWidth(left) + (rightWidth ? 1 + rightWidth : 0) <= width) {
+        const gap = width - displayWidth(left) - rightWidth;
+        return [
+          { text: left, fg: theme.accent, bold: true },
+          { text: " ".repeat(gap), bg: theme.surfaceRaised },
+          ...right.spans,
+        ];
       }
     }
   }
-  return joinSides(leftCandidates[leftCandidates.length - 1] ?? "", "", width);
+  const left = sliceWidth(leftCandidates[leftCandidates.length - 1] ?? "", width);
+  return [
+    { text: left, fg: theme.accent, bold: true },
+    { text: " ".repeat(Math.max(0, width - displayWidth(left))), bg: theme.surfaceRaised },
+  ];
+}
+
+function paintFooterSpans(spans: readonly UiSpan[]): string {
+  return spans
+    .map((span) =>
+      paint(span.text, {
+        fg: span.fg ?? theme.text,
+        bg: span.bg ?? theme.surfaceRaised,
+        bold: span.bold,
+        dim: span.dim,
+      }),
+    )
+    .join("");
 }
 
 /**
@@ -2363,11 +2414,7 @@ function footerLines(state: AppState, width: number): string[] {
     ];
   }
   return [
-    paint(footerStatusLine(state, width), {
-      fg: theme.accent,
-      bg: theme.surfaceRaised,
-      bold: true,
-    }),
+    paintFooterSpans(footerStatusLine(state, width)),
     paint(joinSides("", pickFitting(footerHintText(state), width), width), {
       fg: state.notice ? noticeStyle(state).fg : theme.muted,
       bg: theme.canvas,
