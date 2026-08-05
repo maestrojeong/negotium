@@ -724,6 +724,8 @@ import type {
 } from "negotium/prompts";
 import type {
   AgentKind,
+  BashrsCompletion,
+  BashrsCompletionSink,
   ContextOccupancy,
   ContextWarningState,
   LifecycleManager,
@@ -777,6 +779,12 @@ if (typeof queryRuntime.createQueryStateStore !== "function") {
 }
 if (typeof agentHelpers.formatToolUse !== "function") {
   throw new Error("packed tool-format helper is missing");
+}
+if (typeof runtimeHelpers.setBashrsCompletionSink !== "function") {
+  throw new Error("packed bash-rs completion sink configurator is missing");
+}
+if (typeof runtimeHelpers.startBashrsCompletionsWorker !== "function") {
+  throw new Error("packed bash-rs completion worker is missing");
 }
 if (
   typeof agentHelpers.defaultAskUserDurabilityHost !== "object" ||

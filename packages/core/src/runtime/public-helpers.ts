@@ -37,6 +37,14 @@ export {
   type ShutdownHandler,
   type SignalReason,
 } from "#platform/lifecycle";
+export type {
+  BashrsCompletion,
+  BashrsCompletionSink,
+} from "#runtime/bashrs-completions";
+export {
+  setBashrsCompletionSink,
+  startBashrsCompletionsWorker,
+} from "#runtime/bashrs-completions";
 export { escapeRegExp, mentionsAi } from "#runtime/channel-context";
 export {
   buildContextWarningText,
