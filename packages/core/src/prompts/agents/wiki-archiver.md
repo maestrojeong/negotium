@@ -92,16 +92,18 @@ Keep structural tokens in English regardless: frontmatter keys, `type:` values, 
    - Keep one canonical file per topic memory key — `save_topic_brief` handles the path + SQLite mirror.
      Never add a UUID or room id. Write a fresh compact brief using the **brief format** below.
 6. **Update the dual indexes via `mcp__wiki__index_upsert` — one call per entry.**
-   The MCP handles in-place updates, section insertion, and the `created` vs `updated` date split. Do **not** Read/Write the index files manually.
+   The MCP handles in-place updates and optional article section placement. Index-row dates are
+   catalog metadata, not a `created`/`updated` history: pass the source date when it matters, or the
+   MCP uses the current date. Do **not** Read/Write the index files manually.
 
    **For each new or updated article** (from step 4):
-   - First, scan `wiki/article-index.md` once with `Read` to see existing `## ...` headers, then pick the closest matching section. If no section fits, choose a short domain title in `output_language` (e.g. `Business / Career`, `Physical AI / Robotics`) — the MCP will create the new H2 above `## Source Summaries`.
-   - Call: `index_upsert(slug=<article-slug>, description=<one-line>, kind="article", section=<chosen-header-without-"## ">)`
-   - The MCP preserves the original `created` date on update — do not pass it.
+   - First, scan `wiki/article-index.md` once with `Read` to see existing `## ...` headers, then pick the closest matching section. If no section fits, choose a short domain title in `output_language` (e.g. `Business / Career`, `Physical AI / Robotics`) — the MCP appends a new H2 section.
+   - Call: `index_upsert(slug=<article-slug>, description=<one-line>, kind="article", section=<chosen-header-without-"## ">, date=<article-frontmatter-date>)`
 
    **For the new session summary** (from step 3):
-   - Call: `index_upsert(slug=<summary-slug>, description=<one-line>, kind="summary")`
-   - Goes under `## Source Summaries` automatically.
+   - Call: `index_upsert(slug=<summary-slug>, description=<one-line>, kind="summary", date=<summary-date>)`
+   - The server also discovers missing summary rows automatically; `index_upsert` supplies the
+     curated description and explicit catalog date.
 
    **For this session's topic brief** (from step 5):
    - Call: `index_upsert(slug=<canonical_topic>, description=<one-line summary of recent work>, kind="topic")`
@@ -114,8 +116,8 @@ Keep structural tokens in English regardless: frontmatter keys, `type:` values, 
 ## Section rules (recap, used when calling `index_upsert(kind="article", section=...)`)
 
 1. Scan existing `## ...` headers in `article-index.md` first. Pick the closest match.
-2. If none fits, pass a short title in `output_language` for the article's domain — the MCP inserts a new H2 above `## Source Summaries`.
-3. `## Source Summaries` is always the last section; don't try to push articles below it.
+2. If none fits, pass a short title in `output_language` for the article's domain — the MCP appends
+   the new H2. Do not rely on a particular ordering of generated and curated sections.
 
 ## wiki/summaries/ entry format
 

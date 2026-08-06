@@ -145,6 +145,9 @@ the principal remaining scale limitation. Repeated queries do not reopen source 
 - Internal Wiki writes invalidate the catalog signal immediately. New, deleted, or renamed files
   are detected through directory modification times. An external in-place content edit that does
   not touch the catalog can be visible up to five seconds later.
+- A failed root, subdirectory, or file-stat inventory marks that synchronization pass incomplete.
+  Missing rows are then retained from the prior derived generation, and every readable source
+  scope is scanned alongside indexed candidates until a complete inventory succeeds.
 - Schema mismatch or SQLite corruption removes only the derived database and rebuilds it. If the
   derived index is temporarily unavailable, retrieval falls back to the source scan so correctness
   is preferred over latency.

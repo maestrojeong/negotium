@@ -837,6 +837,91 @@ describe("createWikiMcpServer", () => {
     await client.close();
   });
 
+  test("retains indexed rows when a filesystem inventory is incomplete", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wiki-partial-inventory-"));
+    roots.push(root);
+    const protectedDir = join(root, "articles", "protected");
+    mkdirSync(protectedDir, { recursive: true });
+    writeFileSync(
+      join(protectedDir, "retained.md"),
+      "# Retained Article\n\nThe zephyr continuity token must remain searchable.",
+    );
+    const client = await connect(
+      createWikiMcpServer({ userId: "user", surface: "wiki" }, { wikiRoot: root }),
+    );
+
+    expect(
+      text(
+        await client.callTool({
+          name: "wiki_query",
+          arguments: { question: "zephyr continuity token", kind: "article" },
+        }),
+      ),
+    ).toContain("key: protected/retained");
+
+    chmodSync(protectedDir, 0o000);
+    let result = "";
+    try {
+      writeFileSync(join(root, "articles", "inventory-signal.md"), "# Inventory Signal");
+      result = text(
+        await client.callTool({
+          name: "wiki_query",
+          arguments: { question: "zephyr continuity token", kind: "article" },
+        }),
+      );
+    } finally {
+      chmodSync(protectedDir, 0o700);
+    }
+
+    expect(result).toContain("key: protected/retained");
+    await client.close();
+  });
+
+  test("applies summary date bounds before limiting temporal candidates", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wiki-temporal-bound-"));
+    roots.push(root);
+    const summariesDir = join(root, "summaries");
+    mkdirSync(summariesDir, { recursive: true });
+    writeFileSync(
+      join(summariesDir, "2019-03-14-historical-boundary.md"),
+      "# Historical Boundary\n\nArchived release boundary.",
+    );
+    writeFileSync(
+      join(summariesDir, "2020-06-16-nearest-after.md"),
+      "# Nearest After Boundary\n\nFirst release after the boundary.",
+    );
+    for (let index = 0; index < 120; index += 1) {
+      const month = String((index % 12) + 1).padStart(2, "0");
+      const day = String((index % 27) + 1).padStart(2, "0");
+      writeFileSync(
+        join(summariesDir, `2021-${month}-${day}-newer-${index}.md`),
+        `# Newer Summary ${index}\n\nRecent release record.`,
+      );
+    }
+    const client = await connect(
+      createWikiMcpServer({ userId: "user", surface: "wiki" }, { wikiRoot: root }),
+    );
+
+    const result = text(
+      await client.callTool({
+        name: "wiki_query",
+        arguments: { question: "summaries before 2020-06-15", kind: "summary" },
+      }),
+    );
+
+    expect(result).toContain("key: 2019-03-14-historical-boundary");
+    expect(result).not.toContain("key: 2021-");
+
+    const afterResult = text(
+      await client.callTool({
+        name: "wiki_query",
+        arguments: { question: "summaries after 2020-06-15", kind: "summary", limit: 1 },
+      }),
+    );
+    expect(afterResult).toContain("key: 2020-06-16-nearest-after");
+    await client.close();
+  });
+
   test("searches indexed articles and summaries without reopening source documents", async () => {
     const root = mkdtempSync(join(tmpdir(), "wiki-derived-search-index-"));
     roots.push(root);
