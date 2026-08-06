@@ -474,7 +474,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
       }
       const args = [`--user-id=${userId}`];
       if (topicId) args.push(`--current-topic-id=${topicId}`);
-      // Prefer the REST topic id so save_wiki_entry writes filenames and SQLite
+      // Prefer the REST topic id so wiki_write writes filenames and SQLite
       // briefs keyed the same way the topic wiki API reads them.
       const resolvedWikiTopicId =
         wikiTopicId ?? topicId ?? (session !== "dm" ? session : undefined);
