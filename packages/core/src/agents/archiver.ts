@@ -464,7 +464,7 @@ function distillOneLine(summaryMd: string): string {
 
 /**
  * Locate the summary the archiver turn just wrote. The wiki MCP's
- * `save_wiki_entry` writes `summaries/<date>-<title>[~N].md`.
+ * `wiki_write(kind="summary")` writes `summaries/<date>-<title>[~N].md`.
  */
 export function findSummaryFile(
   storage: ArchiverStorageHost,

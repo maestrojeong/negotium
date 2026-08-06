@@ -21,8 +21,7 @@ const TOOL_ALLOWLIST: Record<CanonicalMcpSurface, ReadonlySet<string>> = {
     "wiki_read",
     "wiki_topic_brief",
     "wiki_last_conversation",
-    "save_wiki_entry",
-    "save_topic_brief",
+    "wiki_write",
     "index_upsert",
   ]),
 };

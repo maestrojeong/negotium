@@ -126,27 +126,26 @@ const wikiTools: Tool[] = [
     },
   },
   {
-    name: "save_wiki_entry",
-    description: "Save a summary to the canonical workspace wiki.",
-    inputSchema: {
-      type: "object",
-      properties: { content: { type: "string" } },
-      required: ["content"],
-    },
-  },
-  {
-    name: "save_topic_brief",
+    name: "wiki_write",
     description:
-      "Write the accumulated persona/topic brief to the canonical workspace wiki (call after save_wiki_entry).",
+      "Write a canonical wiki document and its catalog row together (summary, article, or topic brief).",
     inputSchema: {
       type: "object",
-      properties: { content: { type: "string" } },
-      required: ["content"],
+      properties: {
+        kind: { type: "string", enum: ["summary", "article", "topic"] },
+        content: { type: "string" },
+        description: { type: "string" },
+        topic: { type: "string" },
+        slug: { type: "string" },
+        section: { type: "string" },
+        date: { type: "string" },
+      },
+      required: ["kind", "content", "description"],
     },
   },
   {
     name: "index_upsert",
-    description: "Upsert a canonical wiki index entry.",
+    description: "Correct the description or section of an existing canonical wiki entry.",
     inputSchema: {
       type: "object",
       properties: {

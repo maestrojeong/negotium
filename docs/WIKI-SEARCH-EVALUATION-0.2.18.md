@@ -159,3 +159,23 @@ The corpus is synthetic and targets known retrieval and safety failure classes. 
 that the implementation satisfies these deterministic regression cases; they do not establish
 perfect performance for arbitrary real-world language or future corpora. Production feedback and
 new failure cases should extend the evaluator rather than be inferred from these results.
+
+## Addendum: write-time indexing
+
+The evaluation above measured an implementation that read the content directories during retrieval.
+That cost grows with the size of the wiki, and rescanning was also being used to repair catalogs that
+a two-step write had left incomplete.
+
+Both problems are now addressed at the write boundary instead:
+
+- `wiki_write` writes the document, its catalog row, and the derived body cache in one call. A
+  document that no catalog knows about cannot be produced through the tool surface.
+- Retrieval matches catalog rows first, then fills remaining slots from the derived cache. It never
+  walks `articles/` or `summaries/`, so query cost no longer tracks corpus size.
+- `.wiki-search-index.sqlite` stays a disposable cache: deleting it degrades retrieval to catalogs
+  only, and `wiki_reindex` rebuilds it.
+- `wiki_reindex` is the single scanning path and runs only when asked. It also reports documents that
+  have no catalog row, which is the cheap invariant check that replaces scan-on-query repair.
+
+Documents added outside `wiki_write` — dropped into a folder by hand — are deliberately invisible to
+retrieval until a reindex. That is the accepted trade for removing per-query discovery.

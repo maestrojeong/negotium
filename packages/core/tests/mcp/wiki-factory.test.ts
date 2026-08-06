@@ -213,6 +213,10 @@ describe("createWikiMcpServer", () => {
       createWikiMcpServer({ userId: "user", surface: "wiki" }, { wikiRoot: root }),
     );
 
+    // Documents created directly on disk predate wiki_write, so the derived
+    // body index is filled by an explicit reindex. Retrieval never scans.
+    await client.callTool({ name: "wiki_reindex", arguments: {} });
+
     const result = text(
       await client.callTool({
         name: "wiki_query",
@@ -239,6 +243,10 @@ describe("createWikiMcpServer", () => {
     const client = await connect(
       createWikiMcpServer({ userId: "user", surface: "wiki" }, { wikiRoot: root }),
     );
+
+    // Documents created directly on disk predate wiki_write, so the derived
+    // body index is filled by an explicit reindex. Retrieval never scans.
+    await client.callTool({ name: "wiki_reindex", arguments: {} });
 
     const relevant = text(
       await client.callTool({
@@ -285,6 +293,10 @@ describe("createWikiMcpServer", () => {
     const client = await connect(
       createWikiMcpServer({ userId: "user", surface: "wiki" }, { wikiRoot: root }),
     );
+
+    // Documents created directly on disk predate wiki_write, so the derived
+    // body index is filled by an explicit reindex. Retrieval never scans.
+    await client.callTool({ name: "wiki_reindex", arguments: {} });
 
     const result = text(
       await client.callTool({
@@ -443,6 +455,10 @@ describe("createWikiMcpServer", () => {
       createWikiMcpServer({ userId: "user", surface: "wiki" }, { wikiRoot: root }),
     );
 
+    // Documents created directly on disk predate wiki_write, so the derived
+    // body index is filled by an explicit reindex. Retrieval never scans.
+    await client.callTool({ name: "wiki_reindex", arguments: {} });
+
     const ambiguousTopic = text(
       await client.callTool({
         name: "wiki_query",
@@ -599,22 +615,27 @@ describe("createWikiMcpServer", () => {
     for (const content of ["First session.", "Second session."]) {
       response = text(
         await client.callTool({
-          name: "save_wiki_entry",
-          arguments: { topic: "Roadmap Notes", content },
+          name: "wiki_write",
+          arguments: {
+            kind: "summary",
+            topic: "Roadmap Notes",
+            content,
+            description: "Roadmap session notes",
+          },
         }),
       );
     }
 
     const date = new Date().toISOString().slice(0, 10);
-    // save_wiki_entry records the latest summary and defensively backfills the
+    // A summary write records the latest summary and defensively backfills the
     // EXISTING brief file into brief_md (never emptying it). The authoritative
-    // fresh brief is written later by save_topic_brief (archive → summary → brief).
+    // fresh brief is written later by kind="topic" (archive → summary → brief).
     expect(response).toContain("SQLite latest-summary also updated.");
     expect(readdirSync(join(root, "summaries")).sort()).toEqual([
       `${date}-Roadmap-Notes.md`,
       `${date}-Roadmap-Notes~2.md`,
     ]);
-    // The accumulated brief file itself is left untouched by save_wiki_entry.
+    // The accumulated brief file itself is left untouched by a summary write.
     expect(readFileSync(join(topicDir, "Roadmap-Notes.md"), "utf-8")).toBe(brief);
     expect(writes.at(-1)).toEqual({
       key: "Roadmap-Notes",
@@ -627,7 +648,7 @@ describe("createWikiMcpServer", () => {
     await client.close();
   });
 
-  test("save_topic_brief writes the brief file and mirrors only brief_md", async () => {
+  test("wiki_write kind=topic writes the brief file and mirrors only brief_md", async () => {
     const root = mkdtempSync(join(tmpdir(), "wiki-save-brief-"));
     roots.push(root);
     const writes: Array<{
@@ -648,8 +669,13 @@ describe("createWikiMcpServer", () => {
       "---\ntopic: Roadmap Notes\ntype: topic-brief\n---\n# Roadmap Notes 토픽 브리프\n\n## 페르소나\n- 사용자: BlueHole 엔지니어";
     const response = text(
       await client.callTool({
-        name: "save_topic_brief",
-        arguments: { topic: "Roadmap Notes", content: brief },
+        name: "wiki_write",
+        arguments: {
+          kind: "topic",
+          topic: "Roadmap Notes",
+          content: brief,
+          description: "Roadmap Notes persona brief",
+        },
       }),
     );
 
@@ -678,8 +704,13 @@ describe("createWikiMcpServer", () => {
 
     const response = text(
       await client.callTool({
-        name: "save_wiki_entry",
-        arguments: { topic: "Roadmap Notes", content: "Durable summary." },
+        name: "wiki_write",
+        arguments: {
+          kind: "summary",
+          topic: "Roadmap Notes",
+          content: "Durable summary.",
+          description: "Durable summary of the roadmap session",
+        },
       }),
     );
 
@@ -688,7 +719,7 @@ describe("createWikiMcpServer", () => {
     await client.close();
   });
 
-  test("save_wiki_entry carries a legacy id-keyed brief into a new title row", async () => {
+  test("a summary write carries a legacy id-keyed brief into a new title row", async () => {
     // Regression: with no brief file and no title row yet, a summary-only write
     // must migrate the legacy id-keyed brief forward instead of inserting an
     // empty title row that shadows it (resolveTopicBrief prefers the title key).
@@ -713,8 +744,13 @@ describe("createWikiMcpServer", () => {
     );
 
     await client.callTool({
-      name: "save_wiki_entry",
-      arguments: { topic: "Roadmap Notes", content: "Fresh summary." },
+      name: "wiki_write",
+      arguments: {
+        kind: "summary",
+        topic: "Roadmap Notes",
+        content: "Fresh summary.",
+        description: "Fresh roadmap summary",
+      },
     });
 
     const date = new Date().toISOString().slice(0, 10);
@@ -722,6 +758,260 @@ describe("createWikiMcpServer", () => {
       key: "Roadmap-Notes",
       fields: { briefMd: "# legacy brief", latestSummaryMd: "Fresh summary.", summaryDate: date },
     });
+    await client.close();
+  });
+
+  test("wiki_write indexes every document kind in its own catalog", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wiki-write-index-"));
+    roots.push(root);
+    const client = await connect(
+      createWikiMcpServer(
+        { userId: "user", topicId: "room-id", surface: "wiki" },
+        { wikiRoot: root },
+      ),
+    );
+
+    const summary = text(
+      await client.callTool({
+        name: "wiki_write",
+        arguments: {
+          kind: "summary",
+          topic: "Roadmap Notes",
+          content: "# Roadmap\n\nShipped the catalog split.",
+          description: "Catalog split shipped",
+          date: "2026-08-06",
+        },
+      }),
+    );
+    expect(summary).toContain("Saved summary: summaries/2026-08-06-Roadmap-Notes.md");
+    expect(summary).toContain("Indexed: - [[summaries/2026-08-06-Roadmap-Notes]]");
+
+    const article = text(
+      await client.callTool({
+        name: "wiki_write",
+        arguments: {
+          kind: "article",
+          slug: "guides/catalog-split",
+          section: "Wiki",
+          content: "# Catalog Split\n\nOne call writes document and row.",
+          description: "Why the document and its row are written together",
+          date: "2026-08-06",
+        },
+      }),
+    );
+    expect(article).toContain("Saved article: articles/guides/catalog-split.md (created)");
+
+    await client.callTool({
+      name: "wiki_write",
+      arguments: {
+        kind: "topic",
+        topic: "Roadmap Notes",
+        content: "# Roadmap Notes\n\n## Persona\n- engineer",
+        description: "Roadmap Notes persona brief",
+        date: "2026-08-06",
+      },
+    });
+
+    // Each kind lands in exactly one catalog, and no catalog holds another's rows.
+    const summaryIndex = readFileSync(join(root, "summary-index.md"), "utf-8");
+    const articleIndex = readFileSync(join(root, "article-index.md"), "utf-8");
+    const topicIndex = readFileSync(join(root, "topic-index.md"), "utf-8");
+    expect(summaryIndex).toContain("[[summaries/2026-08-06-Roadmap-Notes]] Catalog split shipped");
+    expect(summaryIndex).not.toContain("[[articles/");
+    expect(articleIndex).toContain("## Wiki");
+    expect(articleIndex).toContain("[[articles/guides/catalog-split]] Why the document");
+    expect(articleIndex).not.toContain("[[summaries/");
+    expect(topicIndex).toContain("[[topic/Roadmap-Notes]] Roadmap Notes persona brief");
+
+    // Every written document is immediately retrievable through the catalog.
+    for (const [kind, question, key] of [
+      ["summary", "catalog split shipped", "2026-08-06-Roadmap-Notes"],
+      ["article", "document and its row", "guides/catalog-split"],
+    ] as const) {
+      const found = text(
+        await client.callTool({ name: "wiki_query", arguments: { question, kind } }),
+      );
+      expect(found).toContain(`kind: ${kind}`);
+      expect(found).toContain(`key: ${key}`);
+    }
+    await client.close();
+  });
+
+  test("wiki_write rejects inputs that would degrade the catalog", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wiki-write-guard-"));
+    roots.push(root);
+    const client = await connect(
+      createWikiMcpServer(
+        { userId: "user", topicId: "room-id", surface: "wiki" },
+        { wikiRoot: root },
+      ),
+    );
+
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ kind: "summary", topic: "T", content: "body" }, "description is required"],
+      [
+        { kind: "summary", topic: "T", content: "body", description: "   " },
+        "description is required",
+      ],
+      [{ kind: "article", content: "body", description: "d", section: "S" }, "slug is required"],
+      [
+        { kind: "article", slug: "../escape", content: "body", description: "d", section: "S" },
+        "relative path segments",
+      ],
+      [{ kind: "article", slug: "ok", content: "body", description: "d" }, "requires a section"],
+      [{ kind: "summary", content: "body", description: "d" }, "Missing topic"],
+      [{ kind: "skill", content: "body", description: "d" }, "kind must be one of"],
+    ];
+    for (const [args, expected] of cases) {
+      const result = await client.callTool({ name: "wiki_write", arguments: args });
+      expect(result.isError).toBe(true);
+      expect(text(result)).toContain(expected);
+    }
+    // A rejected call must not leave a document or a catalog behind.
+    expect(readdirSync(join(root, "summaries"))).toEqual([]);
+    expect(readdirSync(join(root, "articles"))).toEqual([]);
+    expect(existsSync(join(root, "summary-index.md"))).toBe(false);
+    await client.close();
+  });
+
+  test("index_upsert curates existing entries but cannot invent one", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wiki-index-upsert-guard-"));
+    roots.push(root);
+    const client = await connect(
+      createWikiMcpServer(
+        { userId: "user", topicId: "room-id", surface: "wiki" },
+        { wikiRoot: root },
+      ),
+    );
+
+    await client.callTool({
+      name: "wiki_write",
+      arguments: {
+        kind: "article",
+        slug: "catalog-authority",
+        section: "Wiki",
+        content: "# Catalog Authority\n\nDocument is truth.",
+        description: "auto description",
+        date: "2026-08-06",
+      },
+    });
+
+    const curated = await client.callTool({
+      name: "index_upsert",
+      arguments: {
+        kind: "article",
+        slug: "catalog-authority",
+        description: "Curated: the document is the only source of truth",
+        section: "Wiki",
+        date: "2026-08-06",
+      },
+    });
+    expect(text(curated)).toContain("Curated: the document is the only source of truth");
+
+    const invented = await client.callTool({
+      name: "index_upsert",
+      arguments: { kind: "article", slug: "never-written", description: "phantom row" },
+    });
+    expect(invented.isError).toBe(true);
+    expect(text(invented)).toContain("Use wiki_write");
+
+    const index = readFileSync(join(root, "article-index.md"), "utf-8");
+    expect(index.match(/\[\[articles\/catalog-authority\]\]/g)).toHaveLength(1);
+    expect(index).not.toContain("phantom row");
+    await client.close();
+  });
+
+  test("wiki_write makes a body phrase searchable without scanning the wiki", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wiki-incremental-search-"));
+    roots.push(root);
+    const client = await connect(
+      createWikiMcpServer(
+        { userId: "user", topicId: "room-id", surface: "wiki" },
+        { wikiRoot: root },
+      ),
+    );
+
+    await client.callTool({
+      name: "wiki_write",
+      arguments: {
+        kind: "article",
+        slug: "fence-cancellation",
+        section: "Runtime",
+        // The phrase lives only in the body, so a hit proves the derived index
+        // was filled at write time rather than the catalog being matched.
+        content: "# Fence Cancellation\n\nDrop the lease before awaiting the terminal channel.",
+        description: "Lease and fence ordering",
+        date: "2026-08-06",
+      },
+    });
+
+    const found = text(
+      await client.callTool({
+        name: "wiki_query",
+        arguments: { question: "awaiting the terminal channel", kind: "article" },
+      }),
+    );
+    expect(found).toContain("key: fence-cancellation");
+
+    // A document dropped in by hand is deliberately not discovered: retrieval
+    // never walks the tree. An explicit reindex is what picks it up.
+    writeFileSync(
+      join(root, "articles", "hand-dropped.md"),
+      "# Hand Dropped\n\nRotate the quarantined credential bundle.",
+    );
+    const missed = text(
+      await client.callTool({
+        name: "wiki_query",
+        arguments: { question: "quarantined credential bundle", kind: "article" },
+      }),
+    );
+    expect(missed).toBe("No matching wiki articles found.");
+
+    const report = text(await client.callTool({ name: "wiki_reindex", arguments: {} }));
+    expect(report).toContain("2 documents");
+    expect(report).toContain("missing rows: hand-dropped");
+
+    const recovered = text(
+      await client.callTool({
+        name: "wiki_query",
+        arguments: { question: "quarantined credential bundle", kind: "article" },
+      }),
+    );
+    expect(recovered).toContain("key: hand-dropped");
+    await client.close();
+  });
+
+  test("catalog retrieval survives a deleted body cache", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wiki-cache-loss-"));
+    roots.push(root);
+    const client = await connect(
+      createWikiMcpServer(
+        { userId: "user", topicId: "room-id", surface: "wiki" },
+        { wikiRoot: root },
+      ),
+    );
+
+    await client.callTool({
+      name: "wiki_write",
+      arguments: {
+        kind: "article",
+        slug: "cache-authority",
+        section: "Runtime",
+        content: "# Cache Authority\n\nThe derived cache is never the source of truth.",
+        description: "Why the derived cache is disposable",
+        date: "2026-08-06",
+      },
+    });
+
+    // The cache is a rebuildable artifact: deleting it must not lose an entry.
+    rmSync(join(root, ".wiki-search-index.sqlite"), { force: true });
+    const found = text(
+      await client.callTool({
+        name: "wiki_query",
+        arguments: { question: "derived cache is disposable", kind: "article" },
+      }),
+    );
+    expect(found).toContain("key: cache-authority");
     await client.close();
   });
 

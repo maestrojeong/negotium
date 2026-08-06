@@ -4,6 +4,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
+  type Dirent,
   existsSync,
   mkdirSync,
   openSync,
@@ -25,6 +26,13 @@ import {
   type ListToolsResult,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
+import {
+  type IndexedWikiKind,
+  type PreparedWikiSearchDocument,
+  resetCorruptWikiSearchIndex,
+  WikiSearchIndex,
+  type WikiSearchIndexSource,
+} from "#mcp/wiki-search-index";
 import { SHARED_WIKI_DIR } from "#platform/config";
 import {
   wikiBriefStorageKey,
@@ -484,6 +492,126 @@ function trigramSimilarity(left: string, right: string): number {
   return (2 * overlap) / (a.size + b.size);
 }
 
+const WIKI_SEARCH_INDEX_FILENAME = ".wiki-search-index.sqlite";
+
+/**
+ * Open the derived body-search index.
+ *
+ * The index is a rebuildable cache that is written only by the wiki write path,
+ * so a missing or unreadable file is a normal cold state rather than an error:
+ * catalog retrieval still works, and `wiki_reindex` refills the bodies.
+ */
+function openWikiSearchIndex(): WikiSearchIndex | undefined {
+  const path = resolve(runtime().wikiDir, WIKI_SEARCH_INDEX_FILENAME);
+  try {
+    return new WikiSearchIndex(path);
+  } catch (error) {
+    if (!/malformed|not a database|schema/i.test(String(error))) return undefined;
+    try {
+      resetCorruptWikiSearchIndex(path);
+      return new WikiSearchIndex(path);
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+/** Derive the indexed fields for one document body. */
+function prepareWikiSearchDocument(
+  kind: IndexedWikiKind,
+  key: string,
+  text: string,
+): PreparedWikiSearchDocument {
+  const titleLine = text.split("\n").find((line) => /^#+\s*/.test(line)) ?? "";
+  const title = titleLine ? titleLine.replace(/^#+\s*/, "") : basename(key);
+  return {
+    title,
+    text,
+    tokens: canonicalSearchTokens(`${key} ${title} ${text}`),
+    ...(kind === "summary" && /^\d{4}-\d{2}-\d{2}/.test(key)
+      ? { date: key.slice(0, 10), family: summaryTopicIdentity(key) }
+      : {}),
+  };
+}
+
+/**
+ * Mirror a freshly written document into the derived body index.
+ *
+ * Returns false when the cache could not be updated. The document and its
+ * catalog row are already durable at this point, so a cache miss degrades
+ * retrieval to catalog-only rather than failing the write.
+ */
+function indexWikiSearchDocument(kind: IndexedWikiKind, key: string, text: string): boolean {
+  const root = kind === "article" ? runtime().articlesDir : runtime().summariesDir;
+  const path = resolve(root, `${key}.md`);
+  const index = openWikiSearchIndex();
+  if (!index) return false;
+  try {
+    const stat = statSync(path);
+    index.upsert(
+      { kind, key, path, mtimeMs: stat.mtimeMs, size: stat.size },
+      prepareWikiSearchDocument(kind, key, text),
+    );
+    return true;
+  } catch {
+    return false;
+  } finally {
+    index.close();
+  }
+}
+
+type WikiIndexKind = "article" | "summary" | "topic" | "skill";
+
+const WIKI_INDEX_FILENAMES: Record<WikiIndexKind, string> = {
+  article: "article-index.md",
+  summary: "summary-index.md",
+  topic: "topic-index.md",
+  skill: "skill-index.md",
+};
+
+const WIKI_INDEX_NAMESPACES: Record<WikiIndexKind, string> = {
+  article: "articles",
+  summary: "summaries",
+  topic: "topic",
+  skill: "skills",
+};
+
+/** Resolve the human-readable catalog that owns a given entry kind. */
+function wikiIndexPath(kind: WikiIndexKind): string {
+  return resolve(runtime().wikiDir, WIKI_INDEX_FILENAMES[kind]);
+}
+
+const MAX_INDEX_DESCRIPTION_LENGTH = 400;
+
+/**
+ * Reduce a caller-supplied description to a single catalog line.
+ *
+ * Catalog rows are line-oriented, so an embedded newline would split one entry
+ * into an unparsable fragment. Rejecting empty text here is what keeps index
+ * quality a schema guarantee rather than a prompt convention.
+ */
+function normalizeIndexDescription(raw: string): { description: string } | { error: string } {
+  const description = raw.replaceAll(/\s+/g, " ").trim();
+  if (!description) return { error: "A non-empty one-line description is required." };
+  if (description.length > MAX_INDEX_DESCRIPTION_LENGTH) {
+    return {
+      error: `Description must be at most ${MAX_INDEX_DESCRIPTION_LENGTH} characters (got ${description.length}).`,
+    };
+  }
+  return { description };
+}
+
+/** Reject slugs that would escape their content directory or break a wikilink. */
+function normalizeWikiSlug(raw: string): { slug: string } | { error: string } {
+  const slug = raw.trim().replace(/\.md$/i, "").replace(/^\/+/, "");
+  if (!slug) return { error: "A non-empty slug is required." };
+  if (/[[\]|\\]/.test(slug)) return { error: "Slug must not contain [ ] | or backslashes." };
+  if (slug.split("/").some((segment) => segment === "" || segment === "." || segment === "..")) {
+    return { error: "Slug must not contain empty or relative path segments." };
+  }
+  return { slug };
+}
+
 function parseWikiIndex(path: string): WikiIndexCandidate[] {
   let text: string;
   try {
@@ -848,13 +976,53 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
     return score;
   }
 
-  if (kind === "all" || kind === "article") scan(runtime().articlesDir, "articles");
-  // Skills are node-local runtime knowledge, not canonical workspace memory.
-  // Keep the legacy all-in-one server compatible while ensuring the explicit
-  // wiki surface cannot read a node's skill library.
+  // Article and summary bodies come from the derived index, which the write path
+  // keeps current. Reading every file here is what made retrieval cost grow with
+  // the size of the wiki.
+  const bodyKinds: IndexedWikiKind[] = [
+    ...(kind === "all" || kind === "article" ? (["article"] as const) : []),
+    ...(kind === "all" || kind === "summary" ? (["summary"] as const) : []),
+  ];
+  if (bodyKinds.length > 0) {
+    const searchIndex = openWikiSearchIndex();
+    if (searchIndex) {
+      try {
+        const terms = canonicalSearchTokens(normalizedQuery);
+        const ids = searchIndex.matchingDocumentIds(bodyKinds, terms);
+        // "latest summary" carries no term any document contains, so a purely
+        // temporal question is answered from the indexed dates instead.
+        if (temporalDirection && bodyKinds.includes("summary")) {
+          for (const item of searchIndex.summaryMetadataByDate({
+            direction: temporalDirection === "newest" ? "latest" : "oldest",
+            limit,
+          })) {
+            ids.add(item.id);
+          }
+        }
+        for (const document of searchIndex.documents(ids)) {
+          scored.push({
+            kind: document.kind,
+            key: document.key,
+            keyScore: scoreIndexKey(question, document.key),
+            score: scoreMatch(document.text, document.key, document.kind),
+            path: `${document.kind === "article" ? "articles" : "summaries"}/${document.key}.md`,
+            text: document.text,
+            title: document.title,
+            ...(document.date ? { date: document.date } : {}),
+          });
+        }
+      } catch {
+        // A damaged cache must not make catalog retrieval unavailable.
+      } finally {
+        searchIndex.close();
+      }
+    }
+  }
+  // Topic briefs and skills are small, node-local sets that no derived index
+  // covers, so they are still read directly. Skills stay out of the explicit
+  // wiki surface: they are node runtime knowledge, not canonical memory.
   if (kind === "all" && runtime().surface === "all") scan(runtime().skillsDir, "skills");
   if (kind === "all" || kind === "topic") scan(runtime().topicsDir, "topic");
-  if (kind === "all" || kind === "summary") scan(runtime().summariesDir, "summaries");
 
   const merged = new Map<string, WikiSearchResult>();
   for (const { candidate, keyScore, score } of indexCandidates) {
@@ -1333,15 +1501,12 @@ function skillSave(args: Record<string, unknown>): CallToolResult {
   };
 }
 
-function saveWikiEntry(args: Record<string, unknown>): CallToolResult {
-  const rawTopic = safeExt(args, ["topic", "topicName"], "");
-  const content: string = safeExt(args, ["content", "text", "body"], "");
-
-  if (!rawTopic) return { content: [{ type: "text", text: "Missing topic." }] };
-  if (!content) return { content: [{ type: "text", text: "Missing content." }] };
-
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10);
+/** Write a write-once session summary and report the slug the catalog must use. */
+function writeSummaryDocument(
+  rawTopic: string,
+  content: string,
+  dateStr: string,
+): { slug: string; sqliteUpdated: boolean } {
   const topicId = runtime().topicId;
   const fileSlug = wikiBriefStorageKey(rawTopic, topicId);
 
@@ -1365,9 +1530,9 @@ function saveWikiEntry(args: Record<string, unknown>): CallToolResult {
   }
 
   // Record the latest summary. The fresh brief is written authoritatively by
-  // save_topic_brief (called after this step). We only backfill brief_md here so
-  // a summary-only write — e.g. the no-substance path, which skips
-  // save_topic_brief — can't create a title-key row with an empty brief_md that
+  // wiki_write(kind="topic") (called after this step). We only backfill brief_md
+  // here so a summary-only write — e.g. the no-substance path, which skips the
+  // brief — can't create a title-key row with an empty brief_md that
   // shadows an existing brief (see resolveTopicBrief precedence). Backfill order:
   // an existing brief file, else a legacy id-keyed row migrated forward. We
   // never overwrite an existing title brief_md with empty.
@@ -1395,25 +1560,14 @@ function saveWikiEntry(args: Record<string, unknown>): CallToolResult {
     }
   }
 
-  return {
-    content: [
-      {
-        type: "text",
-        text:
-          `Saved summary: summaries/${summaryName}` +
-          (sqliteUpdated ? "\nSQLite latest-summary also updated." : ""),
-      },
-    ],
-  };
+  return { slug: summaryName.replace(/\.md$/i, ""), sqliteUpdated };
 }
 
-function saveTopicBrief(args: Record<string, unknown>): CallToolResult {
-  const rawTopic = safeExt(args, ["topic", "topicName"], "");
-  const content: string = safeExt(args, ["content", "brief", "text", "body"], "");
-
-  if (!rawTopic) return { content: [{ type: "text", text: "Missing topic." }] };
-  if (!content) return { content: [{ type: "text", text: "Missing content." }] };
-
+/** Write the accumulated persona brief and mirror it for the next session start. */
+function writeTopicDocument(
+  rawTopic: string,
+  content: string,
+): { slug: string; existed: boolean; sqliteUpdated: boolean } {
   const topicId = runtime().topicId;
   const fileSlug = wikiBriefStorageKey(rawTopic, topicId);
 
@@ -1425,7 +1579,7 @@ function saveTopicBrief(args: Record<string, unknown>): CallToolResult {
 
   // Mirror the brief into SQLite so it is injected at the next session start.
   // Partial upsert: only brief_md is touched, leaving latest_summary_md and
-  // summary_date (written by save_wiki_entry) intact.
+  // summary_date (written by the summary path) intact.
   const setTopicBrief = runtime().host.setTopicBrief;
   let sqliteUpdated = false;
   if (topicId && setTopicBrief) {
@@ -1437,35 +1591,279 @@ function saveTopicBrief(args: Record<string, unknown>): CallToolResult {
     }
   }
 
+  return { slug: fileSlug, existed, sqliteUpdated };
+}
+
+/** Write a curated concept page. Articles are mergeable, so this overwrites. */
+function writeArticleDocument(slug: string, content: string): { existed: boolean } {
+  const articlePath = resolve(runtime().articlesDir, `${slug}.md`);
+  ensureDir(dirname(articlePath));
+  const existed = existsSync(articlePath);
+  atomicWriteFile(articlePath, content);
+  return { existed };
+}
+
+/**
+ * Write a wiki document and its catalog row in one call.
+ *
+ * This is the only way to create a wiki entry. Pairing the two writes here is
+ * what makes an unindexed document impossible to produce through the tool
+ * surface: a document write that cannot be indexed is reported as a failure so
+ * the caller retries, and the row upsert is idempotent.
+ */
+function wikiWrite(args: Record<string, unknown>): CallToolResult {
+  const rawKind: string = safeExt(args, ["kind", "type"], "");
+  const content: string = safeExt(args, ["content", "text", "body", "brief"], "");
+  const rawDescription = safeExt(args, ["description", "desc"], "");
+  const rawTopic = safeExt(args, ["topic", "topicName"], "");
+  const rawSlug = safeExt(args, ["slug", "id"], "");
+  const section = safeExt<string | undefined>(args, ["section", "category"], undefined);
+  const rawDate = safeExt<string | undefined>(args, ["date", "created"], undefined);
+
+  if (rawKind !== "summary" && rawKind !== "article" && rawKind !== "topic") {
+    return {
+      content: [{ type: "text", text: 'kind must be one of "summary", "article", "topic".' }],
+      isError: true,
+    };
+  }
+  if (!content.trim()) {
+    return { content: [{ type: "text", text: "Missing content." }], isError: true };
+  }
+  const descriptionResult = normalizeIndexDescription(rawDescription);
+  if ("error" in descriptionResult) {
+    return { content: [{ type: "text", text: descriptionResult.error }], isError: true };
+  }
+  const { description } = descriptionResult;
+  const today = new Date().toISOString().slice(0, 10);
+
+  if (rawKind === "article") {
+    const slugResult = normalizeWikiSlug(rawSlug);
+    if ("error" in slugResult) {
+      return { content: [{ type: "text", text: slugResult.error }], isError: true };
+    }
+    if (!section?.trim()) {
+      return {
+        content: [
+          { type: "text", text: "An article requires a section so the catalog stays navigable." },
+        ],
+        isError: true,
+      };
+    }
+    const { existed } = writeArticleDocument(slugResult.slug, content);
+    const link = indexRowOrPartialWrite("article", {
+      kind: "article",
+      slug: slugResult.slug,
+      description,
+      date: rawDate ?? today,
+      section: section.trim(),
+    });
+    if (typeof link !== "string") return link;
+    const searched = indexWikiSearchDocument("article", slugResult.slug, content);
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Saved article: articles/${slugResult.slug}.md (${existed ? "updated" : "created"})\nIndexed: ${link}` +
+            (searched ? "" : `\n${SEARCH_CACHE_SKIPPED_NOTE}`),
+        },
+      ],
+    };
+  }
+
+  const topic = rawTopic.trim();
+  if (!topic) {
+    return { content: [{ type: "text", text: "Missing topic." }], isError: true };
+  }
+
+  if (rawKind === "summary") {
+    const dateStr = rawDate ?? today;
+    const written = writeSummaryDocument(topic, content, dateStr);
+    const link = indexRowOrPartialWrite("summary", {
+      kind: "summary",
+      slug: written.slug,
+      description,
+      date: dateStr,
+    });
+    if (typeof link !== "string") return link;
+    const searched = indexWikiSearchDocument("summary", written.slug, content);
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Saved summary: summaries/${written.slug}.md\nIndexed: ${link}` +
+            (written.sqliteUpdated ? "\nSQLite latest-summary also updated." : "") +
+            (searched ? "" : `\n${SEARCH_CACHE_SKIPPED_NOTE}`),
+        },
+      ],
+    };
+  }
+
+  const written = writeTopicDocument(topic, content);
+  const link = indexRowOrPartialWrite("topic", {
+    kind: "topic",
+    slug: written.slug,
+    description,
+    date: rawDate ?? today,
+  });
+  if (typeof link !== "string") return link;
   return {
     content: [
       {
         type: "text",
         text:
-          `Saved brief: topic/${fileSlug}.md (${existed ? "updated" : "created"})` +
-          (sqliteUpdated ? "\nSQLite brief also updated." : ""),
+          `Saved brief: topic/${written.slug}.md (${written.existed ? "updated" : "created"})\nIndexed: ${link}` +
+          (written.sqliteUpdated ? "\nSQLite brief also updated." : ""),
       },
     ],
   };
 }
 
-function indexUpsert(args: Record<string, unknown>): CallToolResult {
-  const slug = safeExt(args, ["slug", "id"], "");
-  const desc = safeExt(args, ["description", "desc", "text"], "");
-  const kind: string = safeExt(args, ["kind", "type"], "article");
-  const section = safeExt<string | undefined>(args, ["section", "category"], undefined);
-  const date = safeExt<string | undefined>(args, ["date", "created"], undefined);
+/** Collect the article and summary documents currently on disk. */
+function collectIndexableDocuments(): WikiSearchIndexSource[] {
+  const sources: WikiSearchIndexSource[] = [];
+  function add(kind: IndexedWikiKind, key: string, path: string): void {
+    try {
+      const stat = statSync(path);
+      if (!stat.isFile()) return;
+      sources.push({ kind, key, path, mtimeMs: stat.mtimeMs, size: stat.size });
+    } catch {
+      // A file that vanished mid-walk is simply absent from this pass.
+    }
+  }
+  for (const [root, kind, allowSubdirectories] of [
+    [runtime().articlesDir, "article", true],
+    [runtime().summariesDir, "summary", false],
+  ] as const) {
+    let entries: Dirent<string>[];
+    try {
+      entries = readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith(".md")) {
+        add(kind, entry.name.replace(/\.md$/i, ""), join(root, entry.name));
+        continue;
+      }
+      if (!entry.isDirectory() || !allowSubdirectories) continue;
+      let nested: Dirent<string>[];
+      try {
+        nested = readdirSync(join(root, entry.name), { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const file of nested) {
+        if (!file.isFile() || !file.name.endsWith(".md")) continue;
+        add(
+          kind,
+          `${entry.name}/${file.name.replace(/\.md$/i, "")}`,
+          join(root, entry.name, file.name),
+        );
+      }
+    }
+  }
+  return sources;
+}
 
-  if (!slug) return { content: [{ type: "text", text: "Missing slug." }] };
+/**
+ * Refill the derived body index and report catalog gaps.
+ *
+ * This is the only place that walks the content directories, and it runs only
+ * when asked. Retrieval never scans, and this command deliberately does not
+ * invent catalog rows: it names the documents that need one so a description is
+ * written by whoever knows what the document is for.
+ */
+function wikiReindex(): CallToolResult {
+  const documents = collectIndexableDocuments();
+  const index = openWikiSearchIndex();
+  if (!index) {
+    return {
+      content: [{ type: "text", text: "Could not open the wiki search index." }],
+      isError: true,
+    };
+  }
+  let synced: { added: number; updated: number; removed: number };
+  try {
+    synced = index.sync(documents, (source, text) =>
+      prepareWikiSearchDocument(source.kind, source.key, text),
+    );
+  } catch (error) {
+    return {
+      content: [{ type: "text", text: `Failed to rebuild the search index: ${String(error)}` }],
+      isError: true,
+    };
+  } finally {
+    index.close();
+  }
 
-  const today = new Date().toISOString().slice(0, 10);
-  const dateStr = date ?? today;
+  // Compare the documents on disk against the catalogs. A document with no row
+  // is invisible to retrieval; a row with no document is a harmless tombstone.
+  const lines = [
+    `Search index: ${synced.added} added, ${synced.updated} updated, ${synced.removed} removed (${documents.length} documents).`,
+  ];
+  for (const kind of ["article", "summary"] as const) {
+    const rows = new Set(
+      parseWikiIndex(wikiIndexPath(kind))
+        .filter((candidate) => candidate.kind === kind)
+        .map((candidate) => candidate.key),
+    );
+    const keys = documents.filter((source) => source.kind === kind).map((source) => source.key);
+    const unindexed = keys.filter((key) => !rows.has(key));
+    const tombstones = [...rows].filter((key) => !keys.includes(key));
+    lines.push(
+      `${WIKI_INDEX_FILENAMES[kind]}: ${rows.size} rows for ${keys.length} documents` +
+        (unindexed.length > 0 ? `; missing rows: ${unindexed.join(", ")}` : "") +
+        (tombstones.length > 0 ? `; tombstones: ${tombstones.join(", ")}` : ""),
+    );
+  }
+  return { content: [{ type: "text", text: lines.join("\n") }] };
+}
 
-  const indexPath = (() => {
-    if (kind === "topic") return resolve(runtime().wikiDir, "topic-index.md");
-    if (kind === "skill") return resolve(runtime().wikiDir, "skill-index.md");
-    return resolve(runtime().wikiDir, "article-index.md");
-  })();
+const SEARCH_CACHE_SKIPPED_NOTE =
+  "Body-search cache was not updated; catalog retrieval still works. Run wiki_reindex to refill it.";
+
+/**
+ * Index a freshly written document, turning an index failure into an explicit
+ * partial-write error naming the document that still needs a catalog row.
+ */
+function indexRowOrPartialWrite(
+  label: string,
+  options: Parameters<typeof upsertIndexRow>[0],
+): string | CallToolResult {
+  try {
+    return upsertIndexRow(options);
+  } catch (error) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Wrote the ${label} document but failed to index it (${String(error)}). Retry the same wiki_write call: both writes are idempotent.`,
+        },
+      ],
+      isError: true,
+    };
+  }
+}
+
+/**
+ * Insert or update one catalog row in the index that owns `kind`.
+ *
+ * Shared by `wiki_write` (which pairs it with the document write) and
+ * `index_upsert` (which only curates an existing entry). Throwing here is what
+ * lets `wiki_write` report a partial write instead of silently leaving a
+ * document unindexed.
+ */
+function upsertIndexRow(options: {
+  kind: WikiIndexKind;
+  slug: string;
+  description: string;
+  date: string;
+  section?: string | undefined;
+}): string {
+  const { kind, slug, description, date, section } = options;
+  const indexPath = wikiIndexPath(kind);
 
   ensureDir(dirname(indexPath));
   const releaseLock = acquireFileLock(indexPath);
@@ -1479,34 +1877,11 @@ function indexUpsert(args: Record<string, unknown>): CallToolResult {
     }
 
     const lines = index.split("\n");
-    const link = (() => {
-      switch (kind) {
-        case "summary":
-          return `- [[summaries/${slug}]] ${desc} (${dateStr})`;
-        case "topic":
-          return `- [[topic/${slug}]] ${desc} (${dateStr})`;
-        case "skill":
-          return `- [[skills/${slug}]] ${desc} (${dateStr})`;
-        default:
-          return `- [[articles/${slug}]] ${desc} (${dateStr})`;
-      }
-    })();
-
+    const target = `${WIKI_INDEX_NAMESPACES[kind]}/${slug}`;
+    const link = `- [[${target}]] ${description} (${date})`;
     // Find every existing entry for this canonical target. Historical versions
     // appended duplicates because they searched for [[slug]] while writing
     // [[topic/slug]].
-    const target = (() => {
-      switch (kind) {
-        case "summary":
-          return `summaries/${slug}`;
-        case "topic":
-          return `topic/${slug}`;
-        case "skill":
-          return `skills/${slug}`;
-        default:
-          return `articles/${slug}`;
-      }
-    })();
     const slugPattern = `[[${target}]]`;
     let replaced = false;
     for (let i = lines.length - 1; i >= 0; i--) {
@@ -1551,10 +1926,83 @@ function indexUpsert(args: Record<string, unknown>): CallToolResult {
 
     atomicWriteFile(indexPath, lines.join("\n"));
 
-    return { content: [{ type: "text", text: `Index updated: ${link}` }] };
+    return link;
   } finally {
     releaseLock();
   }
+}
+
+/** Does the document backing a catalog row exist on disk? */
+function wikiDocumentExists(kind: WikiIndexKind, slug: string): boolean {
+  const root =
+    kind === "article"
+      ? runtime().articlesDir
+      : kind === "summary"
+        ? runtime().summariesDir
+        : kind === "topic"
+          ? runtime().topicsDir
+          : runtime().skillsDir;
+  const filePath = resolve(root, `${slug}.md`);
+  if (relative(root, filePath).startsWith("..")) return false;
+  try {
+    return statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Curate an existing catalog row.
+ *
+ * This tool deliberately cannot introduce a row for a document that does not
+ * exist: `wiki_write` is the only way to create an entry, so a description fix
+ * can never be the step that invents an unbacked row.
+ */
+function indexUpsert(args: Record<string, unknown>): CallToolResult {
+  const rawSlug = safeExt(args, ["slug", "id"], "");
+  const rawDescription = safeExt(args, ["description", "desc", "text"], "");
+  const rawKind: string = safeExt(args, ["kind", "type"], "article");
+  const section = safeExt<string | undefined>(args, ["section", "category"], undefined);
+  const date = safeExt<string | undefined>(args, ["date", "created"], undefined);
+
+  if (!(rawKind in WIKI_INDEX_FILENAMES)) {
+    return {
+      content: [{ type: "text", text: `Unsupported kind: ${rawKind}` }],
+      isError: true,
+    };
+  }
+  const kind = rawKind as WikiIndexKind;
+
+  const slugResult = normalizeWikiSlug(rawSlug);
+  if ("error" in slugResult) {
+    return { content: [{ type: "text", text: slugResult.error }], isError: true };
+  }
+  const descriptionResult = normalizeIndexDescription(rawDescription);
+  if ("error" in descriptionResult) {
+    return { content: [{ type: "text", text: descriptionResult.error }], isError: true };
+  }
+
+  // Topic rows may point at a DB-backed brief rather than a local file.
+  if (kind !== "topic" && !wikiDocumentExists(kind, slugResult.slug)) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `No ${kind} document named ${slugResult.slug}. Use wiki_write to create the document and its catalog row together.`,
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  const link = upsertIndexRow({
+    kind,
+    slug: slugResult.slug,
+    description: descriptionResult.description,
+    date: date ?? new Date().toISOString().slice(0, 10),
+    section,
+  });
+  return { content: [{ type: "text", text: `Index updated: ${link}` }] };
 }
 
 // --- MCP Tool definitions -------------------------------------------------
@@ -1641,36 +2089,49 @@ const WIKI_TOOLS: Tool[] = [
     },
   },
   {
-    name: "save_wiki_entry",
-    description: "Save a session summary directly to wiki/summaries/.",
+    name: "wiki_write",
+    description:
+      "Write a wiki document and its catalog row together. The only way to create a summary, article, or topic brief: summaries go to wiki/summaries/ + summary-index.md, articles to wiki/articles/ + article-index.md, briefs to wiki/topic/ + topic-index.md (also mirrored into SQLite for next-session injection). Never write wiki files by any other means.",
     inputSchema: {
       type: "object",
       properties: {
-        topic: { type: "string", description: "Topic name of the session" },
-        content: { type: "string", description: "Session summary in markdown" },
+        kind: {
+          type: "string",
+          enum: ["summary", "article", "topic"],
+          description: "Which document to write",
+        },
+        content: { type: "string", description: "Document body in markdown" },
+        description: {
+          type: "string",
+          description: "Single-line catalog description; required so the index stays useful",
+        },
+        topic: {
+          type: "string",
+          description: "Topic name; required for kind=summary and kind=topic",
+        },
+        slug: {
+          type: "string",
+          description: "Article slug in kebab-case; required for kind=article",
+        },
+        section: {
+          type: "string",
+          description: "H2 catalog section; required for kind=article",
+        },
+        date: { type: "string", description: "Override entry date YYYY-MM-DD (default: today)" },
       },
-      required: ["topic", "content"],
+      required: ["kind", "content", "description"],
     },
   },
   {
-    name: "save_topic_brief",
+    name: "wiki_reindex",
     description:
-      "Write the accumulated persona/topic brief to wiki/topic/<topic>.md and mirror it into SQLite for next-session injection. Call this AFTER save_wiki_entry (archive → summary → brief order).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        topic: { type: "string", description: "Topic name of the session" },
-        content: {
-          type: "string",
-          description: "Full accumulated topic brief in markdown (persona layer + recent work)",
-        },
-      },
-      required: ["topic", "content"],
-    },
+      "Rebuild the derived body-search cache from the documents on disk and report catalog gaps. Run this once after adding documents outside wiki_write; retrieval itself never scans the wiki.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
     name: "index_upsert",
-    description: "Upsert an entry in wiki/article-index.md, topic-index.md, or skill-index.md.",
+    description:
+      "Correct the description or section of an entry that already exists. Cannot create an entry — use wiki_write for that.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1790,8 +2251,8 @@ export function createWikiMcpServer(context: WikiMcpContext, host: WikiMcpHost):
         wiki_last_conversation: wikiLastConversation,
         skill_query: skillQuery,
         skill_save: skillSave,
-        save_wiki_entry: saveWikiEntry,
-        save_topic_brief: saveTopicBrief,
+        wiki_write: wikiWrite,
+        wiki_reindex: wikiReindex,
         index_upsert: indexUpsert,
       };
       const handler = tools.some((tool) => tool.name === name) ? handlers[name] : undefined;

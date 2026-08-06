@@ -112,7 +112,7 @@ describe("canonical MCP loopback bridge", () => {
     ).toBeUndefined();
   });
 
-  test("forwards save_topic_brief on the wiki surface and still denies non-wiki tools", async () => {
+  test("forwards wiki_write on the wiki surface and still denies non-wiki tools", async () => {
     const calls: Array<Record<string, unknown>> = [];
     const bridge = startCanonicalMcpBridge({
       forwardTool: async (capability, request) => {
@@ -139,16 +139,19 @@ describe("canonical MCP loopback bridge", () => {
         "content-type": "application/json",
       };
 
-      // Regression guard: save_topic_brief must be allowlisted on the wiki
+      // Regression guard: wiki_write must be allowlisted on the wiki
       // surface, otherwise a remote/placed archiver can save the summary but is
       // 403-blocked from persisting the accumulated brief.
       const allowed = await fetch(bridge.url, {
         method: "POST",
         headers,
-        body: JSON.stringify({ tool: "save_topic_brief", input: { content: "# brief" } }),
+        body: JSON.stringify({
+          tool: "wiki_write",
+          input: { kind: "topic", content: "# brief", description: "brief" },
+        }),
       });
       expect(allowed.status).toBe(200);
-      expect(calls.at(-1)).toMatchObject({ surface: "wiki", tool: "save_topic_brief" });
+      expect(calls.at(-1)).toMatchObject({ surface: "wiki", tool: "wiki_write" });
 
       const read = await fetch(bridge.url, {
         method: "POST",
