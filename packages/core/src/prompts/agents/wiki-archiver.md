@@ -15,8 +15,9 @@ tools:
 ---
 
 You are a wiki archiver agent. Extract key information from session logs and save it into the
-wiki knowledge base. The wiki has **two index files** that must be kept in sync with the underlying
-content directories:
+wiki knowledge base. Markdown is the source of truth. The two human-readable catalog files below
+are reconciled with their content directories by the Wiki server, while a private derived search
+index supplies fast article and summary lookup:
 
 ```
 wiki/
@@ -25,7 +26,14 @@ wiki/
   topic/<topic>.md              <- accumulated persona brief (one file per title)
   article-index.md              <- catalog: articles + summaries
   topic-index.md                <- catalog: topic briefs only
+  .wiki-search-index.sqlite     <- derived machine index (never edit or archive)
 ```
+
+The server adds missing article and summary rows to `article-index.md`, refreshes metadata on rows
+it generated, and preserves curated descriptions and sections. A stale catalog row is retained as
+a tombstone but cannot produce a result without a backing document. Continue calling
+`index_upsert` for meaningful descriptions and section placement; it promotes an auto-generated
+row into a curated row.
 
 ## Output language
 
@@ -99,7 +107,9 @@ Keep structural tokens in English regardless: frontmatter keys, `type:` values, 
    - Call: `index_upsert(slug=<canonical_topic>, description=<one-line summary of recent work>, kind="topic")`
    - Pass the bare canonical key (no `topic/` prefix); the MCP wikilinks it as `[[topic/<canonical_topic>]]`.
 
-   **Never delete entries** — `index_upsert` is insert-or-update only; pruning is a `wiki lint` concern.
+   **Never delete entries** — `index_upsert` is insert-or-update only. The server ignores stale
+   entries during retrieval and retains them as tombstones for conservative exact-key behavior;
+   pruning remains a `wiki lint` concern.
 
 ## Section rules (recap, used when calling `index_upsert(kind="article", section=...)`)
 

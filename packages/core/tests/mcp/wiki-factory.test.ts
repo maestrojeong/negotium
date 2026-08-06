@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -749,6 +751,162 @@ describe("createWikiMcpServer", () => {
     const index = readFileSync(join(root, "topic-index.md"), "utf-8");
     expect(index.match(/\[\[topic\/negotium\]\]/g)).toHaveLength(1);
     expect(index).toContain("- [[topic/negotium]] latest (2026-07-30)");
+    await client.close();
+  });
+
+  test("synchronizes article catalog additions and refreshes generated metadata", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wiki-article-index-sync-"));
+    roots.push(root);
+    mkdirSync(join(root, "articles", "guides"), { recursive: true });
+    mkdirSync(join(root, "summaries"), { recursive: true });
+    writeFileSync(
+      join(root, "article-index.md"),
+      [
+        "# Article Index",
+        "",
+        "## Curated",
+        "",
+        "- [[articles/manual]] Human-maintained description (2026-08-01)",
+        "- [[articles/manual]] Duplicate generated description <!-- negotium:auto-index mtime=1 size=1 --> (2026-08-01)",
+        "- [[articles/deleted]] Deliberate stale tombstone (2026-07-01)",
+      ].join("\n"),
+    );
+    writeFileSync(join(root, "articles", "manual.md"), "# Manual\n\nChanged body.");
+    const generatedPath = join(root, "articles", "guides", "recovery.md");
+    writeFileSync(generatedPath, "# Recovery Guide\n\nRestore the primary database safely.");
+    writeFileSync(
+      join(root, "summaries", "2026-08-06-recovery.md"),
+      "# Recovery Session\n\nValidated restore procedures.",
+    );
+    const client = await connect(
+      createWikiMcpServer({ userId: "user", surface: "wiki" }, { wikiRoot: root }),
+    );
+
+    await client.callTool({
+      name: "wiki_query",
+      arguments: { question: "primary database restore", kind: "article" },
+    });
+
+    let index = readFileSync(join(root, "article-index.md"), "utf-8");
+    expect(index.match(/\[\[articles\/manual\]\]/g)).toHaveLength(1);
+    expect(index).toContain("[[articles/manual]] Human-maintained description");
+    expect(index).toContain("[[articles/guides/recovery]] Recovery Guide: Restore the primary");
+    expect(index).toContain("[[summaries/2026-08-06-recovery]] Recovery Session");
+    expect(index).toContain("[[articles/deleted]] Deliberate stale tombstone");
+    expect(index.match(/## Auto-synchronized Articles/g)).toHaveLength(1);
+
+    writeFileSync(generatedPath, "# Recovery Guide\n\nRotate the recovery credentials safely.");
+    const changedTime = new Date(Date.now() + 5_000);
+    utimesSync(generatedPath, changedTime, changedTime);
+    writeFileSync(
+      join(root, "articles", "guides", "rollback.md"),
+      "# Rollback Guide\n\nReverse a failed deployment.",
+    );
+    await client.callTool({
+      name: "wiki_query",
+      arguments: { question: "recovery credentials", kind: "article" },
+    });
+
+    index = readFileSync(join(root, "article-index.md"), "utf-8");
+    expect(index).toContain("[[articles/guides/recovery]] Recovery Guide: Rotate the recovery");
+    expect(index).toContain("[[articles/guides/rollback]] Rollback Guide");
+    expect(index.match(/## Auto-synchronized Articles/g)).toHaveLength(1);
+
+    await client.callTool({
+      name: "index_upsert",
+      arguments: {
+        slug: "guides/recovery",
+        description: "Curated recovery procedures",
+        kind: "article",
+        section: "Curated",
+        date: "2026-08-06",
+      },
+    });
+    await client.callTool({
+      name: "wiki_query",
+      arguments: { question: "curated recovery", kind: "article" },
+    });
+    index = readFileSync(join(root, "article-index.md"), "utf-8");
+    expect(index).toContain("[[articles/guides/recovery]] Curated recovery procedures");
+    expect(index.indexOf("[[articles/guides/recovery]]")).toBeLessThan(
+      index.indexOf("## Auto-synchronized Articles"),
+    );
+    expect(
+      index.split("\n").find((line) => line.includes("[[articles/guides/recovery]]")),
+    ).not.toContain("negotium:auto-index");
+    await client.close();
+  });
+
+  test("searches indexed articles and summaries without reopening source documents", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wiki-derived-search-index-"));
+    roots.push(root);
+    mkdirSync(join(root, "articles"), { recursive: true });
+    mkdirSync(join(root, "summaries"), { recursive: true });
+    const articlePath = join(root, "articles", "database-recovery.md");
+    const summaryPath = join(root, "summaries", "2026-08-06-database-recovery.md");
+    writeFileSync(
+      articlePath,
+      "# Database Recovery\n\nRestore the primary ledger from immutable checkpoints.",
+    );
+    writeFileSync(
+      summaryPath,
+      "# Database Recovery Session\n\nValidated immutable checkpoint restoration.",
+    );
+    const client = await connect(
+      createWikiMcpServer({ userId: "user", surface: "wiki" }, { wikiRoot: root }),
+    );
+
+    expect(
+      text(
+        await client.callTool({
+          name: "wiki_query",
+          arguments: { question: "immutable checkpoint restoration", kind: "summary" },
+        }),
+      ),
+    ).toContain("key: 2026-08-06-database-recovery");
+    const searchIndexPath = join(root, ".wiki-search-index.sqlite");
+    expect(statSync(searchIndexPath).mode & 0o777).toBe(0o600);
+
+    chmodSync(articlePath, 0o000);
+    chmodSync(summaryPath, 0o000);
+    expect(
+      text(
+        await client.callTool({
+          name: "wiki_query",
+          arguments: { question: "primary ledger immutable checkpoints", kind: "article" },
+        }),
+      ),
+    ).toContain("key: database-recovery");
+    expect(
+      text(
+        await client.callTool({
+          name: "wiki_query",
+          arguments: { question: "immutable checkpoint restoration", kind: "summary" },
+        }),
+      ),
+    ).toContain("key: 2026-08-06-database-recovery");
+    chmodSync(articlePath, 0o600);
+    chmodSync(summaryPath, 0o600);
+
+    rmSync(articlePath);
+    expect(
+      text(
+        await client.callTool({
+          name: "wiki_query",
+          arguments: { question: "database-recovery", kind: "article" },
+        }),
+      ),
+    ).toBe("No matching wiki articles found.");
+
+    writeFileSync(searchIndexPath, "not a sqlite database");
+    expect(
+      text(
+        await client.callTool({
+          name: "wiki_query",
+          arguments: { question: "immutable checkpoint restoration", kind: "summary" },
+        }),
+      ),
+    ).toContain("key: 2026-08-06-database-recovery");
     await client.close();
   });
 

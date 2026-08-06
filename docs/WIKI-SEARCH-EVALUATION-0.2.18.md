@@ -89,49 +89,65 @@ Adapter errors were zero on both splits.
 ## Scale and latency experiment
 
 Search latency was measured separately from the relevance evaluation against the production Wiki
-MCP implementation at commit `701947e`. The benchmark used deterministic synthetic Markdown only;
-it did not copy filenames, text, or structure from a user Wiki.
+MCP implementation. The benchmark used deterministic synthetic Markdown only; it did not copy
+filenames, text, or structure from a user Wiki. The previous full-scan implementation was measured
+at commit `701947e`; the indexed candidate was measured from the `feat/wiki-index-sync` working
+tree after the relevance behavior was held constant.
 
 Each corpus contained 70% articles and 30% summaries. A long-lived in-memory MCP client issued ten
 queries per track, with one first-track call and nine steady-state calls. Every query retrieved its
 expected synthetic target. The reported latency is measured around the MCP tool call and excludes
 adapter process startup.
 
-### Steady-state p95 latency
+### Indexed steady-state latency
 
-| Total documents | Topic | Article | Summary | Process RSS |
+| Total documents | Topic p95 | Article p50 / p95 | Summary p50 / p95 | Process RSS |
 | ---: | ---: | ---: | ---: | ---: |
-| 1,000 | 0.8 ms | 108 ms | 17 ms | 171 MiB |
-| 2,000 | 1.0 ms | 219 ms | 112 ms | 174 MiB |
-| 5,000 | 7.6 ms | 525 ms | 245 ms | 198 MiB |
-| 10,000 | 3.4 ms | 1.06 s | 492 ms | 273 MiB |
-| 20,000 | 5.6 ms | 2.06 s | 923 ms | 335 MiB |
+| 1,000 | 0.4 ms | 1.6 / 2.3 ms | 4.3 / 5.6 ms | 132 MiB |
+| 2,000 | 0.7 ms | 2.4 / 5.8 ms | 4.1 / 5.0 ms | 143 MiB |
+| 5,000 | 0.5 ms | 2.5 / 4.7 ms | 4.3 / 5.0 ms | 168 MiB |
+| 10,000 | 0.4 ms | 2.6 / 4.9 ms | 4.7 / 6.0 ms | 212 MiB |
+| 20,000 | 0.4 ms | 2.8 / 6.5 ms | 4.3 / 5.1 ms | 285 MiB |
 
-Topic routing remains fast because a confident candidate can be resolved from the topic index.
-Article and summary latency grows approximately linearly because those tracks scan and score all
-Markdown files in the selected kind. The different article and summary slopes also reflect the
-70/30 corpus split.
+At 20,000 documents, article p95 improved from `2.06 s` to `6.5 ms` (about `317x`) and summary p95
+improved from `923 ms` to `5.1 ms` (about `181x`). Every benchmark query still retrieved its
+expected target.
 
-### First call per track
+### Initial index build
 
-| Total documents | Article | Summary |
-| ---: | ---: | ---: |
-| 1,000 | 263 ms | 47 ms |
-| 2,000 | 639 ms | 498 ms |
-| 5,000 | 3.90 s | 1.81 s |
-| 10,000 | 7.45 s | 5.45 s |
-| 20,000 | 18.20 s | 9.56 s |
+| Total documents | First indexed query |
+| ---: | ---: |
+| 1,000 | 0.91 s |
+| 2,000 | 2.32 s |
+| 5,000 | 7.96 s |
+| 10,000 | 17.10 s |
+| 20,000 | 44.38 s |
 
-First-call measurements include initial filesystem reads, operating-system cache state, and JIT
-effects, so they are more variable than steady-state measurements. They nevertheless show that
-full document scans are not a scalable terminal architecture.
+The harness queries articles first, so that call pays for building the shared article-and-summary
+index; whichever indexed query arrives first in production pays the same one-time cost. Initial
+construction reads every source document, normalizes it, and writes the derived database. This is
+the principal remaining scale limitation. Repeated queries do not reopen source Markdown.
 
-The 0.2.18 candidate prioritizes correctness and safe routing. A generic follow-up should preserve
-Markdown as the source of truth while caching normalized document metadata and term frequencies per
-Wiki root, invalidating internal writes immediately, and incrementally refreshing externally
-changed files by identity, size, and modification time. Authorization must remain request-scoped
-rather than being embedded in a shared corpus cache. An inverted index is appropriate only after
-the snapshot cache is measured at larger scales.
+### Index and synchronization design
+
+- Markdown remains the source of truth. `.wiki-search-index.sqlite` is a private, rebuildable cache
+  with mode `0600`; it stores normalized document text and an FTS5 term index.
+- `article-index.md` remains the human-readable catalog for both articles and source summaries.
+  Missing files receive generated rows, generated metadata is refreshed after changes, and manual
+  descriptions and sections take precedence. Stale rows remain as tombstones and cannot return a
+  missing document.
+- Article and summary source files are read only during initial construction or when path, size, or
+  modification time changes. A successful `wiki_query` retrieves and reranks candidates from the
+  derived index; `wiki_read` opens only the selected source document.
+- Summary rows carry parsed date and family metadata. Date-range candidate selection and latest or
+  oldest ordering use database indexes on `(kind, date)` and `(kind, family, date)` before the
+  normal relevance scorer applies topic/session constraints.
+- Internal Wiki writes invalidate the catalog signal immediately. New, deleted, or renamed files
+  are detected through directory modification times. An external in-place content edit that does
+  not touch the catalog can be visible up to five seconds later.
+- Schema mismatch or SQLite corruption removes only the derived database and rebuilds it. If the
+  derived index is temporarily unavailable, retrieval falls back to the source scan so correctness
+  is preferred over latency.
 
 ## Algorithm changes exercised by the evaluation
 
@@ -140,11 +156,13 @@ the snapshot cache is measured at larger scales.
 - Topic routing applies authorization before selection, scores lifecycle-aware collisions,
   exposes near-tied candidates as ambiguous, and never adopts an ambiguous or unauthorized topic.
 - Article retrieval verifies backing files, discards stale targets, and merges key, title, index
-  description, and term-frequency body evidence instead of allowing a weak index hit to suppress
+  description, and indexed body evidence instead of allowing a weak catalog hit to suppress
   document search.
 - Summary retrieval filters by topic/session family, parses English and Korean date expressions,
-  supports exact/latest/oldest and before/after constraints, and applies temporal ordering after
-  index and document evidence are merged.
+  supports exact/latest/oldest and before/after constraints, and uses date-indexed candidate
+  selection before deterministic temporal ordering.
+- FTS exact-token candidates are preferred. Key/title trigram candidates are built lazily only when
+  exact-token retrieval has no candidates, avoiding an eager fuzzy-index memory and startup cost.
 - Stable tie-breaking keeps repeated runs deterministic.
 
 ## Repository verification
@@ -159,3 +177,9 @@ The corpus is synthetic and targets known retrieval and safety failure classes. 
 that the implementation satisfies these deterministic regression cases; they do not establish
 perfect performance for arbitrary real-world language or future corpora. Production feedback and
 new failure cases should extend the evaluator rather than be inferred from these results.
+
+The derived index duplicates source text, so disk usage grows with the Wiki. Initial construction
+is synchronous and expensive at tens of thousands of documents, metadata freshness depends on
+filesystem timestamp/size signals, and FTS token retrieval is still followed by the existing
+precise scorer rather than a semantic embedding model. A future release should move cold rebuilds
+to an explicit prebuild or background maintenance path and add production-shaped latency traces.

@@ -2,6 +2,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import type { Dirent } from "node:fs";
 import {
   closeSync,
   existsSync,
@@ -31,6 +32,7 @@ import {
   wikiSummaryFilename,
   wikiSummarySlug,
 } from "#storage/wiki-summary-names";
+import { resetCorruptWikiSearchIndex, WikiSearchIndex } from "./wiki-search-index";
 
 // --- CLI parsing -----------------------------------------------------------
 
@@ -286,7 +288,46 @@ interface WikiIndexCandidate {
   key: string;
   description: string;
   date?: string;
+  generated?: boolean;
 }
+
+interface WikiIndexSyncResult {
+  added: number;
+  refreshed: number;
+  deduplicated: number;
+  stale: number;
+  changed: boolean;
+}
+
+interface WikiCatalogDocument {
+  kind: "article" | "summary";
+  key: string;
+  path: string;
+  mtimeMs: number;
+  size: number;
+}
+
+interface WikiSearchRuntimeState {
+  lastSyncAt: number;
+  signal: string;
+  articleSubdirectories: string[];
+  catalogTargets: Set<string>;
+  metadata?: ReturnType<WikiSearchIndex["metadata"]>;
+  metadataTrigramPostings?: Map<string, Set<string>>;
+}
+
+const WIKI_SEARCH_SYNC_INTERVAL_MS = 5_000;
+const wikiSearchRuntimeStates = new Map<string, WikiSearchRuntimeState>();
+const parsedWikiIndexCache = new Map<
+  string,
+  {
+    mtimeMs: number;
+    size: number;
+    candidates: WikiIndexCandidate[];
+    tokenPostings: Map<string, Set<number>>;
+    trigramPostings?: Map<string, Set<number>>;
+  }
+>();
 
 type WikiSearchResultKind = Exclude<WikiQueryKind, "all"> | "skill";
 
@@ -485,6 +526,16 @@ function trigramSimilarity(left: string, right: string): number {
 }
 
 function parseWikiIndex(path: string): WikiIndexCandidate[] {
+  try {
+    const stat = statSync(path);
+    const cached = parsedWikiIndexCache.get(path);
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      return cached.candidates;
+    }
+  } catch {
+    parsedWikiIndexCache.delete(path);
+    return [];
+  }
   let text: string;
   try {
     text = readFileSync(path, "utf-8");
@@ -498,7 +549,8 @@ function parseWikiIndex(path: string): WikiIndexCandidate[] {
     if (!match) continue;
     const namespace = match[1]!;
     const key = match[2]!.replace(/\.md$/i, "");
-    const tail = match[3]!.trim();
+    const generated = /<!--\s*negotium:auto-index[^>]*-->/.test(match[3]!);
+    const tail = match[3]!.replace(/<!--\s*negotium:auto-index[^>]*-->/g, "").trim();
     const dateMatch = tail.match(/\((\d{4}-\d{2}-\d{2})(?:[^)]*)\)\s*$/);
     const description = dateMatch ? tail.slice(0, dateMatch.index).trim() : tail;
     candidates.push({
@@ -506,14 +558,341 @@ function parseWikiIndex(path: string): WikiIndexCandidate[] {
       key,
       description,
       ...(dateMatch ? { date: dateMatch[1] } : {}),
+      ...(generated ? { generated: true } : {}),
     });
   }
+  try {
+    const stat = statSync(path);
+    const tokenPostings = new Map<string, Set<number>>();
+    for (const [index, candidate] of candidates.entries()) {
+      for (const token of new Set(
+        canonicalSearchTokens(`${candidate.key} ${candidate.description}`),
+      )) {
+        const postings = tokenPostings.get(token) ?? new Set<number>();
+        postings.add(index);
+        tokenPostings.set(token, postings);
+      }
+    }
+    parsedWikiIndexCache.set(path, {
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+      candidates,
+      tokenPostings,
+    });
+  } catch {
+    // A concurrent replacement will be parsed again on the next query.
+  }
   return candidates;
+}
+
+function searchWikiIndex(
+  path: string,
+  question: string,
+  includeAll: boolean,
+): WikiIndexCandidate[] {
+  const candidates = parseWikiIndex(path);
+  if (includeAll || candidates.length === 0) return candidates;
+  const cached = parsedWikiIndexCache.get(path);
+  if (!cached) return candidates;
+  const indexes = new Set<number>();
+  const structuralTerms = new Set([
+    ...SEARCH_RECENCY_TERMS,
+    ...SEARCH_MONTHS.keys(),
+    "article",
+    "articles",
+    "summary",
+    "summaries",
+    "before",
+    "after",
+  ]);
+  for (const token of canonicalSearchTokens(question)) {
+    if (structuralTerms.has(token) || /^\d{4}$/.test(token)) continue;
+    for (const index of cached.tokenPostings.get(token) ?? []) indexes.add(index);
+  }
+  if (indexes.size === 0) {
+    cached.trigramPostings ??= (() => {
+      const postings = new Map<string, Set<number>>();
+      for (const [index, candidate] of candidates.entries()) {
+        for (const gram of trigrams(candidate.key)) {
+          const indexesForGram = postings.get(gram) ?? new Set<number>();
+          indexesForGram.add(index);
+          postings.set(gram, indexesForGram);
+        }
+      }
+      return postings;
+    })();
+    for (const gram of trigrams(question)) {
+      for (const index of cached.trigramPostings.get(gram) ?? []) indexes.add(index);
+    }
+  }
+  return [...indexes].map((index) => candidates[index]!).filter(Boolean);
+}
+
+const AUTO_INDEX_MARKER = "negotium:auto-index";
+
+function discoverWikiCatalogDocuments(): WikiCatalogDocument[] {
+  const documents: WikiCatalogDocument[] = [];
+
+  function discover(
+    root: string,
+    kind: WikiCatalogDocument["kind"],
+    allowSubdirectories: boolean,
+  ): void {
+    ensureDir(root);
+    let entries: Dirent<string>[];
+    try {
+      entries = readdirSync(root, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith(".md")) {
+        const path = join(root, entry.name);
+        try {
+          const stat = statSync(path);
+          documents.push({
+            kind,
+            key: entry.name.replace(/\.md$/i, ""),
+            path,
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+          });
+        } catch {
+          // A concurrent rename or deletion will be reconciled on the next sync.
+        }
+        continue;
+      }
+      if (!allowSubdirectories || !entry.isDirectory()) continue;
+      const subdirectory = join(root, entry.name);
+      try {
+        for (const child of readdirSync(subdirectory, { withFileTypes: true })) {
+          if (!child.isFile() || !child.name.endsWith(".md")) continue;
+          const path = join(subdirectory, child.name);
+          try {
+            const stat = statSync(path);
+            documents.push({
+              kind,
+              key: `${entry.name}/${child.name.replace(/\.md$/i, "")}`,
+              path,
+              mtimeMs: stat.mtimeMs,
+              size: stat.size,
+            });
+          } catch {
+            // A concurrent rename or deletion will be reconciled on the next sync.
+          }
+        }
+      } catch {
+        // Ignore an unreadable or concurrently removed subdirectory.
+      }
+    }
+  }
+
+  discover(runtime().articlesDir, "article", true);
+  discover(runtime().summariesDir, "summary", false);
+  return documents.sort(
+    (left, right) => left.kind.localeCompare(right.kind) || left.key.localeCompare(right.key),
+  );
+}
+
+function wikiCatalogSignal(articleSubdirectories: string[]): string {
+  const paths = [
+    runtime().articlesDir,
+    runtime().summariesDir,
+    resolve(runtime().wikiDir, "article-index.md"),
+    ...articleSubdirectories,
+  ];
+  return paths
+    .map((path) => {
+      try {
+        const stat = statSync(path);
+        return `${path}:${stat.mtimeMs}:${stat.size}`;
+      } catch {
+        return `${path}:missing`;
+      }
+    })
+    .join("|");
+}
+
+function catalogTargets(documents: WikiCatalogDocument[]): Set<string> {
+  return new Set(documents.map((document) => `${document.kind}:${document.key}`));
+}
+
+function wikiMetadataTrigramPostings(
+  metadata: ReturnType<WikiSearchIndex["metadata"]>,
+): Map<string, Set<string>> {
+  const result = new Map<string, Set<string>>();
+  for (const item of metadata) {
+    for (const gram of new Set([...trigrams(item.key), ...trigrams(item.title)])) {
+      const ids = result.get(gram) ?? new Set<string>();
+      ids.add(item.id);
+      result.set(gram, ids);
+    }
+  }
+  return result;
+}
+
+function generatedIndexDescription(document: WikiCatalogDocument): string {
+  let text = "";
+  try {
+    text = readFileSync(document.path, "utf-8");
+  } catch {
+    return basename(document.key);
+  }
+  const withoutFrontmatter = text.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, "");
+  const title =
+    withoutFrontmatter
+      .split("\n")
+      .find((line) => /^#+\s+\S/.test(line))
+      ?.replace(/^#+\s+/, "")
+      .trim() || basename(document.key);
+  const excerpt = withoutFrontmatter
+    .split("\n")
+    .map((line) => line.replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+|>\s*)/, "").trim())
+    .find((line) => line.length > 0 && !/^#+\s+/.test(line) && line !== title);
+  const description = excerpt && excerpt !== title ? `${title}: ${excerpt}` : title;
+  return description.replaceAll(/\s+/g, " ").slice(0, 240).trim();
+}
+
+function autoIndexMarker(document: WikiCatalogDocument): string {
+  return `<!-- ${AUTO_INDEX_MARKER} mtime=${Math.trunc(document.mtimeMs)} size=${document.size} -->`;
+}
+
+function generatedIndexLine(document: WikiCatalogDocument): string {
+  const namespace = document.kind === "article" ? "articles" : "summaries";
+  const date = new Date(document.mtimeMs).toISOString().slice(0, 10);
+  return `- [[${namespace}/${document.key}]] ${generatedIndexDescription(document)} ${autoIndexMarker(document)} (${date})`;
+}
+
+/**
+ * Reconcile the human-readable article catalog with files on disk.
+ *
+ * Manual descriptions remain authoritative. Missing files are added as marked,
+ * generated rows and those rows are refreshed after source changes. Stale rows
+ * intentionally remain as tombstones: query-time backing-file validation keeps
+ * them out of results while preserving the stronger abstention policy for stale
+ * exact keys.
+ */
+function syncArticleIndex(
+  documents: WikiCatalogDocument[] = discoverWikiCatalogDocuments(),
+): WikiIndexSyncResult {
+  const result: WikiIndexSyncResult = {
+    added: 0,
+    refreshed: 0,
+    deduplicated: 0,
+    stale: 0,
+    changed: false,
+  };
+  const byTarget = new Map(
+    documents.map((document) => [
+      `${document.kind === "article" ? "articles" : "summaries"}/${document.key}`,
+      document,
+    ]),
+  );
+  const indexPath = resolve(runtime().wikiDir, "article-index.md");
+  ensureDir(dirname(indexPath));
+  const releaseLock = acquireFileLock(indexPath);
+  try {
+    let original = "";
+    try {
+      original = readFileSync(indexPath, "utf-8");
+    } catch {
+      // A new wiki starts with an empty catalog.
+    }
+    const lines = original.split("\n");
+    const rowPattern = /^\s*-\s*\[\[(articles|summaries)\/([^\]]+)\]\]/;
+    const rowsByTarget = new Map<string, number[]>();
+    for (const [index, line] of lines.entries()) {
+      const match = line.match(rowPattern);
+      if (!match) continue;
+      const target = `${match[1]}/${match[2]!.replace(/\.md$/i, "")}`;
+      const rows = rowsByTarget.get(target) ?? [];
+      rows.push(index);
+      rowsByTarget.set(target, rows);
+    }
+    const duplicateRows = new Set<number>();
+    for (const rows of rowsByTarget.values()) {
+      if (rows.length < 2) continue;
+      const manualRows = rows.filter((index) => !lines[index]!.includes(AUTO_INDEX_MARKER));
+      const retained = (manualRows.length > 0 ? manualRows : rows).at(-1)!;
+      for (const index of rows) {
+        if (index !== retained) duplicateRows.add(index);
+      }
+    }
+    for (const index of [...duplicateRows].sort((left, right) => right - left)) {
+      lines.splice(index, 1);
+      result.deduplicated += 1;
+    }
+
+    const keptTargets = new Set<string>();
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const match = lines[index]!.match(rowPattern);
+      if (!match) continue;
+      const target = `${match[1]}/${match[2]!.replace(/\.md$/i, "")}`;
+      keptTargets.add(target);
+      const document = byTarget.get(target);
+      if (!document) {
+        result.stale += 1;
+        continue;
+      }
+      if (lines[index]!.includes(`<!-- ${AUTO_INDEX_MARKER} `)) {
+        const marker = autoIndexMarker(document);
+        if (lines[index]!.includes(marker)) continue;
+        const refreshed = generatedIndexLine(document);
+        if (lines[index] !== refreshed) {
+          lines[index] = refreshed;
+          result.refreshed += 1;
+        }
+      }
+    }
+
+    const missingArticles: string[] = [];
+    const missingSummaries: string[] = [];
+    for (const [target, document] of byTarget) {
+      if (keptTargets.has(target)) continue;
+      const line = generatedIndexLine(document);
+      if (document.kind === "article") missingArticles.push(line);
+      else missingSummaries.push(line);
+      result.added += 1;
+    }
+    function appendSection(title: string, entries: string[]): void {
+      if (entries.length === 0) return;
+      const heading = `## ${title}`;
+      const existingSection = lines.findIndex((line) => line.trim() === heading);
+      if (existingSection >= 0) {
+        let insertAt = existingSection + 1;
+        while (insertAt < lines.length && !lines[insertAt]!.startsWith("## ")) insertAt += 1;
+        while (insertAt > existingSection + 1 && lines[insertAt - 1]!.trim() === "") {
+          insertAt -= 1;
+        }
+        lines.splice(insertAt, 0, ...entries);
+        return;
+      }
+      while (lines.length > 0 && lines.at(-1)?.trim() === "") lines.pop();
+      if (lines.length > 0) lines.push("");
+      lines.push(heading, "", ...entries);
+    }
+    appendSection("Auto-synchronized Articles", missingArticles);
+    appendSection("Auto-synchronized Summaries", missingSummaries);
+
+    const updated = lines
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/\s*$/, "\n");
+    if (updated !== original) {
+      atomicWriteFile(indexPath, updated);
+      result.changed = true;
+    }
+    return result;
+  } finally {
+    releaseLock();
+  }
 }
 
 function indexCandidateExists(candidate: WikiIndexCandidate): boolean {
   // Topic indexes may point at canonical DB-backed memories rather than local files.
   if (candidate.kind === "topic") return true;
+  const synchronized = wikiSearchRuntimeStates.get(runtime().wikiDir);
+  if (synchronized) return synchronized.catalogTargets.has(`${candidate.kind}:${candidate.key}`);
   const root = candidate.kind === "article" ? runtime().articlesDir : runtime().summariesDir;
   const filePath = resolve(root, `${candidate.key}.md`);
   const relativePath = relative(root, filePath);
@@ -601,15 +980,98 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
   }
 
   const canReadTopicMemory = runtime().host.canReadTopicMemory;
+  let searchIndex: WikiSearchIndex | undefined;
+  if (kind === "all" || kind === "article" || kind === "summary") {
+    const searchIndexPath = resolve(runtime().wikiDir, ".wiki-search-index.sqlite");
+    const previousState = wikiSearchRuntimeStates.get(runtime().wikiDir);
+    const shouldSynchronize =
+      !previousState ||
+      !existsSync(searchIndexPath) ||
+      wikiCatalogSignal(previousState.articleSubdirectories) !== previousState.signal ||
+      Date.now() - previousState.lastSyncAt >= WIKI_SEARCH_SYNC_INTERVAL_MS;
+    let catalogDocuments: WikiCatalogDocument[] | undefined;
+    if (shouldSynchronize) {
+      catalogDocuments = discoverWikiCatalogDocuments();
+      try {
+        syncArticleIndex(catalogDocuments);
+      } catch {
+        // Read-only or temporarily locked catalogs must not make search unavailable.
+      }
+    }
+    const synchronize = (
+      index: WikiSearchIndex,
+      documents: WikiCatalogDocument[],
+    ): ReturnType<WikiSearchIndex["sync"]> =>
+      index.sync(documents, (source, text) => {
+        const titleLine = text.split("\n").find((line) => /^#+\s*/.test(line)) ?? "";
+        const title = titleLine ? titleLine.replace(/^#+\s*/, "") : basename(source.key);
+        return {
+          title,
+          text,
+          tokens: canonicalSearchTokens(`${source.key} ${title} ${text}`),
+          ...(source.kind === "summary" && /^\d{4}-\d{2}-\d{2}/.test(source.key)
+            ? { date: source.key.slice(0, 10), family: summaryTopicIdentity(source.key) }
+            : {}),
+        };
+      });
+    const openSearchIndex = (documents?: WikiCatalogDocument[]): WikiSearchIndex => {
+      const index = new WikiSearchIndex(searchIndexPath);
+      try {
+        if (documents) {
+          const syncResult = synchronize(index, documents);
+          const articleSubdirectories = [
+            ...new Set(
+              documents
+                .filter((document) => document.kind === "article")
+                .map((document) => dirname(document.path))
+                .filter((path) => path !== runtime().articlesDir),
+            ),
+          ];
+          const changed = syncResult.added + syncResult.updated + syncResult.removed > 0;
+          wikiSearchRuntimeStates.set(runtime().wikiDir, {
+            lastSyncAt: Date.now(),
+            signal: wikiCatalogSignal(articleSubdirectories),
+            articleSubdirectories,
+            catalogTargets: catalogTargets(documents),
+            ...(!changed && previousState?.metadata ? { metadata: previousState.metadata } : {}),
+            ...(!changed && previousState?.metadataTrigramPostings
+              ? { metadataTrigramPostings: previousState.metadataTrigramPostings }
+              : {}),
+          });
+        }
+        return index;
+      } catch (error) {
+        index.close();
+        throw error;
+      }
+    };
+    try {
+      searchIndex = openSearchIndex(catalogDocuments);
+    } catch (error) {
+      if (/malformed|not a database|schema/i.test(String(error))) {
+        try {
+          resetCorruptWikiSearchIndex(searchIndexPath);
+          catalogDocuments ??= discoverWikiCatalogDocuments();
+          searchIndex = openSearchIndex(catalogDocuments);
+        } catch {
+          // Fall back to source scanning when a derived index cannot be rebuilt.
+        }
+      }
+    }
+  }
   const temporalDirection = /\b(?:latest|newest|recent)\b|최근|최신/.test(normalizedQuery)
     ? "newest"
     : /\b(?:earliest|oldest)\b|가장 오래된|최초/.test(normalizedQuery)
       ? "oldest"
       : undefined;
 
+  const topicIndexPath = resolve(runtime().wikiDir, "topic-index.md");
+  const articleIndexPath = resolve(runtime().wikiDir, "article-index.md");
   const visibleIndexCandidates = [
-    ...parseWikiIndex(resolve(runtime().wikiDir, "topic-index.md")),
-    ...parseWikiIndex(resolve(runtime().wikiDir, "article-index.md")),
+    ...(kind === "all" || kind === "topic" ? searchWikiIndex(topicIndexPath, question, true) : []),
+    ...(kind === "all" || kind === "article" || kind === "summary"
+      ? searchWikiIndex(articleIndexPath, question, !searchIndex)
+      : []),
   ]
     .filter((candidate) => kind === "all" || candidate.kind === kind)
     .filter(
@@ -629,6 +1091,13 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
       keyScore: scoreIndexKey(question, candidate.key),
       score: scoreIndexCandidate(question, candidate),
     }))
+    .filter(
+      ({ candidate, keyScore }) =>
+        !hasStaleExactIndexMatch ||
+        !candidate.generated ||
+        keyScore >= 25 ||
+        canonicalSearchTokens(normalizedQuery).length >= 3,
+    )
     .filter(({ keyScore, score }) => keyScore >= 25 || score >= 40)
     .sort(
       (left, right) =>
@@ -848,13 +1317,106 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
     return score;
   }
 
-  if (kind === "all" || kind === "article") scan(runtime().articlesDir, "articles");
+  let searchedDerivedIndex = false;
+  if (searchIndex) {
+    try {
+      const indexedKinds: Array<"article" | "summary"> =
+        kind === "article"
+          ? ["article"]
+          : kind === "summary"
+            ? ["summary"]
+            : ["article", "summary"];
+      const searchState = wikiSearchRuntimeStates.get(runtime().wikiDir);
+      const allMetadata = searchState?.metadata ?? searchIndex.metadata(["article", "summary"]);
+      if (searchState && !searchState.metadata) searchState.metadata = allMetadata;
+      const metadata = allMetadata.filter((item) => indexedKinds.includes(item.kind));
+      const allowedMetadataIds = new Set(metadata.map((item) => item.id));
+      const nonContentTerms = new Set([
+        ...SEARCH_RECENCY_TERMS,
+        ...SEARCH_MONTHS.keys(),
+        "article",
+        "articles",
+        "summary",
+        "summaries",
+        "before",
+        "after",
+      ]);
+      const contentTerms = canonicalSearchTokens(normalizedQuery).filter(
+        (token) => !nonContentTerms.has(token) && !/^\d{4}$/.test(token),
+      );
+      const candidateIds = searchIndex.matchingDocumentIds(indexedKinds, contentTerms);
+
+      if (candidateIds.size === 0) {
+        const metadataTrigramPostings =
+          searchState?.metadataTrigramPostings ?? wikiMetadataTrigramPostings(allMetadata);
+        if (searchState && !searchState.metadataTrigramPostings) {
+          searchState.metadataTrigramPostings = metadataTrigramPostings;
+        }
+        for (const gram of trigrams(question)) {
+          for (const id of metadataTrigramPostings.get(gram) ?? []) {
+            if (allowedMetadataIds.has(id)) candidateIds.add(id);
+          }
+        }
+      }
+      for (const { candidate } of indexCandidates) {
+        if (candidate.kind === "article" || candidate.kind === "summary") {
+          candidateIds.add(`${candidate.kind}:${candidate.key}`);
+        }
+      }
+
+      if (kind === "summary" || kind === "all") {
+        const requestedYear = normalizedQuery.match(/\b(\d{4})\b/)?.[1];
+        const requestedMonth = meaningfulSearchTokens(normalizedQuery)
+          .map((token) => SEARCH_MONTHS.get(token))
+          .find(Boolean);
+        const temporalQuery =
+          temporalDirection !== undefined ||
+          requestedYear !== undefined ||
+          requestedMonth !== undefined ||
+          /\b(?:before|after)\b/.test(normalizedQuery);
+        if (temporalQuery) {
+          const summaries = searchIndex.summaryMetadataByDate({
+            ...(requestedYear ? { year: requestedYear } : {}),
+            ...(requestedMonth ? { month: requestedMonth } : {}),
+            direction: temporalDirection === "oldest" ? "oldest" : "latest",
+            limit: Math.max(limit * 10, 100),
+          });
+          for (const item of summaries) candidateIds.add(item.id);
+        }
+      }
+
+      const indexedDocuments = searchIndex.documents(candidateIds);
+      for (const document of indexedDocuments) {
+        scored.push({
+          kind: document.kind,
+          key: document.key,
+          keyScore: scoreIndexKey(question, document.key),
+          score: scoreMatch(document.text, document.key, document.kind),
+          path: relative(runtime().wikiDir, document.path),
+          text: document.text,
+          title: document.title,
+          ...(document.date ? { date: document.date } : {}),
+        });
+      }
+      searchedDerivedIndex = true;
+    } catch {
+      // Preserve correctness if the derived index becomes unavailable mid-query.
+    } finally {
+      searchIndex.close();
+    }
+  }
+
+  if (!searchedDerivedIndex && (kind === "all" || kind === "article")) {
+    scan(runtime().articlesDir, "articles");
+  }
   // Skills are node-local runtime knowledge, not canonical workspace memory.
   // Keep the legacy all-in-one server compatible while ensuring the explicit
   // wiki surface cannot read a node's skill library.
   if (kind === "all" && runtime().surface === "all") scan(runtime().skillsDir, "skills");
   if (kind === "all" || kind === "topic") scan(runtime().topicsDir, "topic");
-  if (kind === "all" || kind === "summary") scan(runtime().summariesDir, "summaries");
+  if (!searchedDerivedIndex && (kind === "all" || kind === "summary")) {
+    scan(runtime().summariesDir, "summaries");
+  }
 
   const merged = new Map<string, WikiSearchResult>();
   for (const { candidate, keyScore, score } of indexCandidates) {
@@ -1511,6 +2073,13 @@ function indexUpsert(args: Record<string, unknown>): CallToolResult {
     let replaced = false;
     for (let i = lines.length - 1; i >= 0; i--) {
       if (lines[i].includes(slugPattern)) {
+        if (kind === "article" && section && lines[i].includes(AUTO_INDEX_MARKER)) {
+          // Promote an automatically discovered row into the caller's curated
+          // section instead of leaving the new manual description under the
+          // generated section.
+          lines.splice(i, 1);
+          continue;
+        }
         if (!replaced) {
           lines[i] = link;
           replaced = true;
