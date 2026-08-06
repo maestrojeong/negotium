@@ -136,6 +136,10 @@ the principal remaining scale limitation. Repeated queries do not reopen source 
   Missing files receive generated rows, generated metadata is refreshed after changes, and manual
   descriptions and sections take precedence. Stale rows remain as tombstones and cannot return a
   missing document.
+- Explicit article and summary queries rank matching catalog keys and descriptions first. If the
+  synchronized catalog supplies enough candidates for the requested limit, retrieval stops there;
+  otherwise the SQLite body/date index fills the remaining result set. Summaries intentionally
+  share `article-index.md` rather than maintaining a second Markdown catalog.
 - Article and summary source files are read only during initial construction or when path, size, or
   modification time changes. A successful `wiki_query` retrieves and reranks candidates from the
   derived index; `wiki_read` opens only the selected source document.

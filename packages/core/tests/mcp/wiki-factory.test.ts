@@ -571,6 +571,53 @@ describe("createWikiMcpServer", () => {
     await client.close();
   });
 
+  test("prefers the synchronized catalog and falls back for body-only evidence", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wiki-catalog-first-"));
+    roots.push(root);
+    mkdirSync(join(root, "articles"), { recursive: true });
+    writeFileSync(
+      join(root, "article-index.md"),
+      "- [[articles/catalog-authority]] Quantum ledger catalog authority (2026-08-06)\n",
+    );
+    writeFileSync(
+      join(root, "articles", "catalog-authority.md"),
+      "# Catalog Authority\n\nCanonical catalog record.",
+    );
+    writeFileSync(
+      join(root, "articles", "body-fallback.md"),
+      [
+        "# Body Fallback",
+        "",
+        "Generic introduction that does not describe the hidden evidence.",
+        "",
+        "Quantum ledger catalog authority appears in this body decoy.",
+        "",
+        "The subterranean cobalt signal is available only in the full body.",
+      ].join("\n"),
+    );
+    const client = await connect(
+      createWikiMcpServer({ userId: "user", surface: "wiki" }, { wikiRoot: root }),
+    );
+
+    const catalogResult = text(
+      await client.callTool({
+        name: "wiki_query",
+        arguments: { question: "quantum ledger catalog authority", kind: "article", limit: 1 },
+      }),
+    );
+    expect(catalogResult).toContain("key: catalog-authority");
+    expect(catalogResult).not.toContain("key: body-fallback");
+
+    const bodyResult = text(
+      await client.callTool({
+        name: "wiki_query",
+        arguments: { question: "subterranean cobalt signal", kind: "article" },
+      }),
+    );
+    expect(bodyResult).toContain("key: body-fallback");
+    await client.close();
+  });
+
   test("stores immutable summaries without replacing the accumulated title brief", async () => {
     const root = mkdtempSync(join(tmpdir(), "wiki-title-memory-"));
     roots.push(root);
@@ -775,7 +822,7 @@ describe("createWikiMcpServer", () => {
     const generatedPath = join(root, "articles", "guides", "recovery.md");
     writeFileSync(generatedPath, "# Recovery Guide\n\nRestore the primary database safely.");
     writeFileSync(
-      join(root, "summaries", "2026-08-06-recovery.md"),
+      join(root, "summaries", "2024-01-02-recovery.md"),
       "# Recovery Session\n\nValidated restore procedures.",
     );
     const client = await connect(
@@ -791,7 +838,10 @@ describe("createWikiMcpServer", () => {
     expect(index.match(/\[\[articles\/manual\]\]/g)).toHaveLength(1);
     expect(index).toContain("[[articles/manual]] Human-maintained description");
     expect(index).toContain("[[articles/guides/recovery]] Recovery Guide: Restore the primary");
-    expect(index).toContain("[[summaries/2026-08-06-recovery]] Recovery Session");
+    expect(index).toContain("[[summaries/2024-01-02-recovery]] Recovery Session");
+    expect(
+      index.split("\n").find((line) => line.includes("[[summaries/2024-01-02-recovery]]")),
+    ).toEndWith("(2024-01-02)");
     expect(index).toContain("[[articles/deleted]] Deliberate stale tombstone");
     expect(index.match(/## Auto-synchronized Articles/g)).toHaveLength(1);
 

@@ -347,6 +347,7 @@ interface WikiSearchResult {
   path?: string;
   text?: string;
   title?: string;
+  catalog?: boolean;
 }
 
 function normalizeSearchText(value: string): string {
@@ -784,7 +785,10 @@ function autoIndexMarker(document: WikiCatalogDocument): string {
 
 function generatedIndexLine(document: WikiCatalogDocument): string {
   const namespace = document.kind === "article" ? "articles" : "summaries";
-  const date = new Date(document.mtimeMs).toISOString().slice(0, 10);
+  const date =
+    document.kind === "summary" && /^\d{4}-\d{2}-\d{2}/.test(document.key)
+      ? document.key.slice(0, 10)
+      : new Date(document.mtimeMs).toISOString().slice(0, 10);
   return `- [[${namespace}/${document.key}]] ${generatedIndexDescription(document)} ${autoIndexMarker(document)} (${date})`;
 }
 
@@ -861,8 +865,8 @@ function syncArticleIndex(
       }
       if (lines[index]!.includes(`<!-- ${AUTO_INDEX_MARKER} `)) {
         const marker = autoIndexMarker(document);
-        if (lines[index]!.includes(marker)) continue;
         const refreshed = generatedIndexLine(document);
+        if (lines[index]!.includes(marker) && lines[index] === refreshed) continue;
         if (lines[index] !== refreshed) {
           lines[index] = refreshed;
           result.refreshed += 1;
@@ -1357,7 +1361,19 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
   }
 
   let searchedDerivedIndex = false;
-  if (searchIndex) {
+  const searchState = wikiSearchRuntimeStates.get(runtime().wikiDir);
+  const useCatalogOnly =
+    (kind === "article" || kind === "summary") &&
+    indexCandidates.length >= limit &&
+    searchState?.inventoryComplete === true;
+  if (searchIndex && useCatalogOnly) {
+    // Explicit article/summary searches prefer the synchronized Markdown
+    // catalog when it already supplies a confident candidate. The derived
+    // body/date index remains the fallback for body-only and temporal queries
+    // that the catalog cannot answer.
+    searchIndex.close();
+    searchedDerivedIndex = true;
+  } else if (searchIndex) {
     try {
       const indexedKinds: Array<"article" | "summary"> =
         kind === "article"
@@ -1365,7 +1381,6 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
           : kind === "summary"
             ? ["summary"]
             : ["article", "summary"];
-      const searchState = wikiSearchRuntimeStates.get(runtime().wikiDir);
       const allMetadata = searchState?.metadata ?? searchIndex.metadata(["article", "summary"]);
       if (searchState && !searchState.metadata) searchState.metadata = allMetadata;
       const metadata = allMetadata.filter((item) => indexedKinds.includes(item.kind));
@@ -1490,6 +1505,12 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
       score,
       description: candidate.description,
       date: candidate.date,
+      ...(candidate.kind === "article"
+        ? { path: `articles/${candidate.key}.md` }
+        : candidate.kind === "summary"
+          ? { path: `summaries/${candidate.key}.md` }
+          : {}),
+      catalog: true,
     });
   }
   const documentThreshold = kind === "topic" ? 24 : 16;
@@ -1507,6 +1528,9 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
 
   let ranked = [...merged.values()].sort(
     (left, right) =>
+      (kind === "article" || kind === "summary"
+        ? Number(Boolean(right.catalog)) - Number(Boolean(left.catalog))
+        : 0) ||
       right.score - left.score ||
       (left.kind === "summary" && right.kind === "summary"
         ? temporalDirection === "oldest"
