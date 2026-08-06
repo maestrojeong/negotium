@@ -91,8 +91,25 @@ const wikiTools: Tool[] = [
     description: "Search the canonical workspace wiki.",
     inputSchema: {
       type: "object",
-      properties: { question: { type: "string" } },
+      properties: {
+        question: { type: "string" },
+        kind: { type: "string", enum: ["all", "topic", "article", "summary"] },
+        limit: { type: "number", minimum: 1, maximum: 20 },
+      },
       required: ["question"],
+    },
+  },
+  {
+    name: "wiki_read",
+    description: "Read a canonical wiki result and optionally adopt a topic memory.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: ["topic", "article", "summary"] },
+        key: { type: "string" },
+        adopt: { type: "boolean" },
+      },
+      required: ["kind", "key"],
     },
   },
   {

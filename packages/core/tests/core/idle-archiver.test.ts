@@ -212,6 +212,7 @@ describe("idle archiver defaults", () => {
     const topic = makeTopic(false, {
       isSubagent: true,
       memoryTopicId: memoryTopic.id,
+      memoryKey: "canonical-persona",
     });
     for (const [index, authorId] of ["idle-owner", "ai"].entries()) {
       appendApiMessage({
@@ -246,8 +247,8 @@ describe("idle archiver defaults", () => {
     ).toBe("archived");
     expect(launches).toHaveLength(1);
     expect(launches[0]).toMatchObject({
-      topicId: memoryTopic.id,
-      topicTitle: memoryTopic.title,
+      topicId: topic.id,
+      topicTitle: "canonical-persona",
     });
   });
 

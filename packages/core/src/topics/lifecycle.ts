@@ -250,7 +250,8 @@ async function deleteTopicCascadeImpl(
       )
     ) {
       try {
-        const memoryTopic = getTopicMemoryOrigin(topicId) ?? topic;
+        const memoryTopic = topic.memoryKey ? topic : (getTopicMemoryOrigin(topicId) ?? topic);
+        const memoryTitle = memoryTopic.memoryKey?.trim() || memoryTopic.title;
         runArchiverTurn({
           userId,
           // A memory origin that is also disappearing in this cascade must use
@@ -259,7 +260,7 @@ async function deleteTopicCascadeImpl(
           ...(memoryTopic.id !== topicId && !deletingTopicIds.has(memoryTopic.id)
             ? { topicId: memoryTopic.id }
             : {}),
-          topicTitle: memoryTopic.title,
+          topicTitle: memoryTitle,
           archivePath: archived.path,
           ...(rawArchives.length > 0 ? { rawArchivePaths: rawArchives } : {}),
           messageCount: archived.messageCount,

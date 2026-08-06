@@ -12,6 +12,8 @@ describe("loadAgentPrompt", () => {
   test("loads live agent prompts with frontmatter metadata", () => {
     const prompt = loadAgentPrompt("wiki-archiver.md");
     expect(prompt.name).toBe("wiki-archiver");
+    expect(prompt.prompt).toContain('wiki_query(question=topic, kind="topic", limit=5)');
+    expect(prompt.prompt).toContain("canonical_topic");
     expect(prompt.type).toBe("programmatic");
     expect(prompt.model).toBe("deepseek-pro");
     expect(prompt.prompt).toContain("wiki");
@@ -285,17 +287,15 @@ describe("session system prompt builders", () => {
 
   test("builds memory prompt section", () => {
     const memory = buildMemoryPromptSection({
-      briefFile: "/tmp/wiki/topic/general.md",
-      wikiDir: "/tmp/wiki",
-      hasFiles: true,
-      latestSummaryFile: "/tmp/wiki/summaries/2026-06-25-general.md",
+      topicTitle: "General",
       hasArchive: true,
       isManager: true,
     });
 
     expect(memory).toContain("## Memory");
-    expect(memory).toContain("/tmp/wiki/topic/general.md");
-    expect(memory).toContain("/tmp/wiki/summaries/2026-06-25-general.md");
+    expect(memory).toContain("wiki_query");
+    expect(memory).toContain("wiki_read");
+    expect(memory).not.toContain("/tmp/wiki");
   });
 
   test("builds prompts from host templates and ordered extension slots", () => {

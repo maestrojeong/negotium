@@ -150,6 +150,22 @@ describe("canonical MCP loopback bridge", () => {
       expect(allowed.status).toBe(200);
       expect(calls.at(-1)).toMatchObject({ surface: "wiki", tool: "save_topic_brief" });
 
+      const read = await fetch(bridge.url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          tool: "wiki_read",
+          input: { kind: "topic", key: "persona", adopt: true },
+        }),
+      });
+      expect(read.status).toBe(200);
+      expect(calls.at(-1)).toMatchObject({
+        surface: "wiki",
+        hostTopicId: "hub-topic",
+        tool: "wiki_read",
+        input: { kind: "topic", key: "persona", adopt: true },
+      });
+
       // A tool outside the wiki allowlist is still rejected.
       const denied = await fetch(bridge.url, {
         method: "POST",

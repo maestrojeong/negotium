@@ -215,6 +215,7 @@ function initializeApiTopicsSchema(): void {
       last_message_at TEXT,
       parent_topic_id TEXT,
       memory_topic_id TEXT,
+      memory_key TEXT,
       is_fork INTEGER NOT NULL DEFAULT 0 CHECK (is_fork IN (0,1)),
       is_subagent INTEGER NOT NULL DEFAULT 0 CHECK (is_subagent IN (0,1)),
       visibility TEXT NOT NULL DEFAULT 'visible' CHECK (visibility IN ('visible','hidden')),
@@ -287,8 +288,8 @@ function initializeApiTopicsSchema(): void {
           db.query(
             `INSERT INTO api_topics_next
              (id,title,kind,description,agent,base_model,base_effort,response_policy,
-              created_at,last_message_at,parent_topic_id,memory_topic_id,is_fork,is_subagent,visibility,access_mode,session_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+              created_at,last_message_at,parent_topic_id,memory_topic_id,memory_key,is_fork,is_subagent,visibility,access_mode,session_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           ).run(
             String(row.id),
             String(row.title),
@@ -302,6 +303,7 @@ function initializeApiTopicsSchema(): void {
             typeof row.last_message_at === "string" ? row.last_message_at : null,
             typeof row.parent_topic_id === "string" ? row.parent_topic_id : null,
             typeof row.memory_topic_id === "string" ? row.memory_topic_id : null,
+            typeof row.memory_key === "string" ? row.memory_key : null,
             Number(row.is_fork ?? 0) !== 0 ? 1 : 0,
             Number(row.is_subagent ?? 0) !== 0 ? 1 : 0,
             row.visibility === "hidden" ? "hidden" : "visible",
@@ -386,6 +388,9 @@ function initializeApiTopicsSchema(): void {
   if (!tableColumns("api_topics").has("memory_topic_id")) {
     db.exec("ALTER TABLE api_topics ADD COLUMN memory_topic_id TEXT");
   }
+  if (!tableColumns("api_topics").has("memory_key")) {
+    db.exec("ALTER TABLE api_topics ADD COLUMN memory_key TEXT");
+  }
   db.exec(`
   UPDATE api_topics
   SET browser_profile_owner = (
@@ -416,6 +421,7 @@ export interface TopicRow {
   last_message_at: string | null;
   parent_topic_id: string | null;
   memory_topic_id: string | null;
+  memory_key: string | null;
   is_fork: number;
   is_subagent: number;
   subagent_report_mode: string | null;
@@ -500,6 +506,7 @@ function rowToDto(
     lastMessageAt: r.last_message_at ?? new Date().toISOString(),
     parentTopicId: r.parent_topic_id ?? undefined,
     memoryTopicId: r.memory_topic_id ?? undefined,
+    memoryKey: r.memory_key ?? undefined,
     isFork: r.is_fork !== 0,
     ...(r.is_subagent !== 0 ? { isSubagent: true } : {}),
     ...(r.is_subagent !== 0
@@ -636,9 +643,9 @@ export function upsertTopic(t: TopicDto): void {
     db.query(
       `INSERT INTO api_topics
        (id,title,kind,description,agent,base_model,base_effort,response_policy,
-        created_at,last_message_at,parent_topic_id,memory_topic_id,is_fork,is_subagent,visibility,access_mode,
+        created_at,last_message_at,parent_topic_id,memory_topic_id,memory_key,is_fork,is_subagent,visibility,access_mode,
         subagent_report_mode)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(id) DO UPDATE SET
        title = excluded.title,
        kind = excluded.kind,
@@ -651,6 +658,7 @@ export function upsertTopic(t: TopicDto): void {
        last_message_at = excluded.last_message_at,
        parent_topic_id = excluded.parent_topic_id,
        memory_topic_id = excluded.memory_topic_id,
+       memory_key = excluded.memory_key,
        is_fork = excluded.is_fork,
        is_subagent = excluded.is_subagent,
        visibility = excluded.visibility,
@@ -669,6 +677,7 @@ export function upsertTopic(t: TopicDto): void {
       t.lastMessageAt ?? null,
       t.parentTopicId ?? null,
       t.memoryTopicId ?? null,
+      t.memoryKey ?? null,
       t.isFork ? 1 : 0,
       t.isSubagent ? 1 : 0,
       normalizeTopicVisibility(t.visibility),

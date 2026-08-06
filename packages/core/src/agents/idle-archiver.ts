@@ -177,11 +177,12 @@ export function archiveActiveTopicForMemory(
     );
     return "below-threshold";
   }
-  const memoryTopic = getTopicMemoryOrigin(topicId) ?? topic;
+  const memoryTopic = topic.memoryKey ? topic : (getTopicMemoryOrigin(topicId) ?? topic);
+  const memoryTitle = memoryTopic.memoryKey?.trim() || memoryTopic.title;
   const launched = (options.launchArchiver ?? runArchiverTurn)({
     userId,
     topicId: memoryTopic.id,
-    topicTitle: memoryTopic.title,
+    topicTitle: memoryTitle,
     archivePath: job.archivePath,
     ...(options.rawArchivePaths ? { rawArchivePaths: options.rawArchivePaths } : {}),
     messageCount: job.messageCount,

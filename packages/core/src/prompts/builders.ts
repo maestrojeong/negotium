@@ -587,46 +587,29 @@ export const buildChannelSystemPrompt = defaultPromptBuilders.buildChannelSystem
 export const buildManagerSystemPrompt = defaultPromptBuilders.buildManagerSystemPrompt;
 
 export function buildMemoryPromptSection(opts: {
-  briefFile: string;
-  wikiDir: string;
-  hasFiles: boolean;
-  latestSummaryFile?: string | null;
+  topicTitle: string;
+  memoryKey?: string;
   hasArchive?: boolean;
   isManager: boolean;
 }): string {
   const parts: string[] = ["\n\n## Memory"];
-  parts.push(`Memory directory: ${opts.wikiDir}/topic`);
-  parts.push(`Files: ${opts.hasFiles ? opts.briefFile : "(none)"}`);
-  if (opts.latestSummaryFile) {
-    parts.push(`Latest summary: ${opts.latestSummaryFile}`);
+  if (opts.isManager) {
+    parts.push(
+      "Use `wiki_query` for past workspace decisions or cross-topic context, then `wiki_read` only for the relevant result.",
+    );
+  } else if (opts.memoryKey) {
+    parts.push(
+      `This topic uses the canonical memory key \`${opts.memoryKey}\`. At the start of a new session, read it with \`wiki_read(kind: "topic", key: "${opts.memoryKey}")\`.`,
+    );
+  } else {
+    parts.push(
+      `At the start of a new session, search topic memories with \`wiki_query(question: "${opts.topicTitle}", kind: "topic", limit: 5)\` and read the most relevant candidate with \`wiki_read\`.`,
+      "If a candidate is clearly the same continuing topic/persona, read it with `adopt: true`; otherwise keep this topic's own name as its memory key. Do not merge weak or ambiguous matches.",
+    );
   }
   parts.push(
-    "",
-    opts.isManager
-      ? opts.hasFiles
-        ? "Above is this workspace's memory-hub brief (accumulated across all archived topics). For past context or other topics, consult it first, then use the `wiki_query` MCP tool for deeper recall."
-        : "If you need past context while handling delegated work, use the `wiki_query` MCP tool."
-      : opts.hasFiles
-        ? "The file above is this topic's wiki brief. Read it first for past context; use the `wiki_query` MCP tool for deeper recall."
-        : opts.latestSummaryFile
-          ? "There is no wiki brief file yet. For past context, read the Latest summary first; use the `wiki_query` MCP tool for deeper recall."
-          : "There is no wiki brief file yet. Use the `wiki_query` MCP tool for past context.",
-  );
-  parts.push(
-    "",
-    opts.isManager
-      ? "When answering about past workspace decisions or other topics, weave in memory naturally, but confirm with `wiki_query` when unsure."
-      : opts.hasFiles || opts.latestSummaryFile
-        ? "On your first reply in the topic, read the wiki brief" +
-          (opts.latestSummaryFile ? " and Latest summary" : "") +
-          " and mention a one-line context recap so the user can quickly confirm it is on track."
-        : "On your first reply in the topic, check prior conversation context if needed and mention it in one natural line.",
-  );
-  parts.push(
-    "",
-    opts.hasFiles
-      ? "If the user says your memory is wrong, find the file in the Memory directory with Read and fix it directly with Edit."
-      : "If the user says your memory is wrong, check the relevant wiki brief and fix it directly when possible, or use `wiki_query` to find the entry and reconcile.",
+    "Keep the lookup quiet. Mention prior context naturally in one short line only when it helps the user.",
+    'Use `wiki_query(kind: "article")` for reusable knowledge and `wiki_query(kind: "summary")` for historical session details.',
   );
   if (opts.hasArchive) {
     parts.push(
