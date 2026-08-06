@@ -1379,33 +1379,30 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       ? buildChannelSystemPrompt(systemPromptOpts)
       : buildTopicSystemPrompt(systemPromptOpts);
   const memoryTopic =
-    isMentionOnlyChannel || isManager ? topic : (getTopicMemoryOrigin(topicId) ?? topic);
+    isMentionOnlyChannel || isManager || topic.memoryKey
+      ? topic
+      : (getTopicMemoryOrigin(topicId) ?? topic);
+  const memoryTitle = memoryTopic.memoryKey?.trim() || memoryTopic.title;
   if (!isMentionOnlyChannel) {
+    let hasMemoryArchive = false;
     try {
-      const resolvedBrief = resolveTopicBrief(memoryTopic.id, memoryTopic.title);
+      const resolvedBrief = resolveTopicBrief(memoryTopic.id, memoryTitle);
       // #General is the workspace memory hub: its brief is the rolling digest the
       // archiver accumulates across ALL archived topics, and its files live in the
       // SHARED wiki root (getSharedWikiDir), not this topic's per-room workspace.
       const wikiDir = getSharedWikiDir();
-      const { briefFile, hasBriefFile, latestSummaryFile } = resolveWikiMemoryMirror(
-        wikiDir,
-        memoryTopic.id,
-        memoryTopic.title,
-      );
-      if (resolvedBrief || hasBriefFile || latestSummaryFile) {
-        systemPrompt += buildMemoryPromptSection({
-          briefFile,
-          wikiDir,
-          hasFiles: hasBriefFile,
-          latestSummaryFile,
-          hasArchive: Boolean(resolvedBrief?.brief.latestSummaryMd || latestSummaryFile),
-          isManager,
-        });
-      }
+      const { latestSummaryFile } = resolveWikiMemoryMirror(wikiDir, memoryTopic.id, memoryTitle);
+      hasMemoryArchive = Boolean(resolvedBrief?.brief.latestSummaryMd || latestSummaryFile);
     } catch (err) {
       // Brief fetch failure is non-fatal — don't block the turn.
       logger.warn({ topicId, err }, "ai: failed to inject topic brief");
     }
+    systemPrompt += buildMemoryPromptSection({
+      topicTitle: topic.title,
+      ...(memoryTopic.memoryKey ? { memoryKey: memoryTopic.memoryKey } : {}),
+      hasArchive: hasMemoryArchive,
+      isManager,
+    });
   }
   const activeVisual = visualTools ? getActiveVisualForPrompt(topicId, userId) : null;
   if (activeVisual) {

@@ -45,12 +45,21 @@ Keep structural tokens in English regardless: frontmatter keys, `type:` values, 
 
 2. **Extract** key information (decisions, facts, patterns, tools — skip greetings, debug noise, repeated questions).
    - `topic` = the session name from the prompt (e.g. session `"dev"` → topic is `dev`)
+   - Before any wiki write, call `mcp__wiki__wiki_query(question=topic, kind="topic", limit=5)` and
+     inspect plausible candidates with `mcp__wiki__wiki_read(kind="topic", key=<candidate>)`.
+   - Set `canonical_topic` to an existing candidate only when it is clearly the same continuing
+     topic/persona. In that case, read it again with `adopt=true` so an active room keeps using that
+     key. If no candidate fits, set `canonical_topic = topic` and create a new topic memory.
+   - Do not merge memories from weak name overlap alone. Use the candidate description and brief;
+     when still uncertain, keep the current topic as a separate new memory.
+   - Use `canonical_topic` for every summary, brief, and topic-index write below. This keeps a
+     differently named room's summary and persona update in one canonical namespace.
    - If `sent_files:` is in the prompt, include those entries under `## Files Sent`
    - If the session yielded **no extractable substance** (pure debug, ≤2 short exchanges, all greeting), save only a single-line immutable summary via `save_wiki_entry`, then STOP. Do not modify the accumulated persona brief, articles, or indexes.
 
 > **Ordering principle:** pipeline is **archive → summary → brief**. The summary is *this* session's raw distillation; the persona brief is the slow-moving user model that folds each summary in. Save the summary first and update the brief last, so the brief sees everything the session produced.
 
-3. **Save the immutable session summary** via `mcp__wiki__save_wiki_entry(topic, content)`.
+3. **Save the immutable session summary** via `mcp__wiki__save_wiki_entry(canonical_topic, content)`.
    The MCP handles file naming + dedup → returns the saved path (e.g. `wiki/summaries/2026-05-08-dev.md`).
    It also records `latest_summary_md` + `summary_date` in SQLite (it does **not** touch the brief —
    that is done in step 5 via `save_topic_brief`). Use the **summary format** below.
@@ -61,17 +70,18 @@ Keep structural tokens in English regardless: frontmatter keys, `type:` values, 
      - **Preserve manually written body sections.** Only append/update what the session adds.
    - If new: Write `wiki/articles/<slug>.md` using the **article format** below.
    - Skip session-specific noise. If nothing qualifies, no articles change — that's fine.
-5. **Update the accumulated persona brief last** via `mcp__wiki__save_topic_brief(topic, content)`.
+5. **Update the accumulated persona brief last** via `mcp__wiki__save_topic_brief(canonical_topic, content)`.
    This is the culmination of the run — the brief is not a worklog, it is the wiki's evolving
    **persona/user-model** for this topic: who the user is, how they want to be served, and where
    things stand. It is injected verbatim at the next session's start, so write it as durable memory,
    not as session notes.
-   - **Read the existing brief first** (`Read wiki/topic/<topic>.md`) if present.
+   - **Read the existing brief first** with
+     `mcp__wiki__wiki_read(kind="topic", key=canonical_topic)` if present.
    - **Merge, don't overwrite.** Fold this session's Preferences / Patterns / durable Facts /
      Decisions into the **persona layer** (accumulate — the user-model is slow-moving). Refresh only
      the volatile layers (`## Recent Work`, `## Current State`) from this session. Preserve still-valid
      prior persona traits; remove a trait only when the new session explicitly supersedes it.
-   - Keep one canonical file per topic title — `save_topic_brief` handles the path + SQLite mirror.
+   - Keep one canonical file per topic memory key — `save_topic_brief` handles the path + SQLite mirror.
      Never add a UUID or room id. Write a fresh compact brief using the **brief format** below.
 6. **Update the dual indexes via `mcp__wiki__index_upsert` — one call per entry.**
    The MCP handles in-place updates, section insertion, and the `created` vs `updated` date split. Do **not** Read/Write the index files manually.
@@ -86,8 +96,8 @@ Keep structural tokens in English regardless: frontmatter keys, `type:` values, 
    - Goes under `## Source Summaries` automatically.
 
    **For this session's topic brief** (from step 5):
-   - Call: `index_upsert(slug=<topic>, description=<one-line summary of recent work>, kind="topic")`
-   - Pass the bare topic name (no `topic/` prefix); the MCP wikilinks it as `[[topic/<topic>]]`.
+   - Call: `index_upsert(slug=<canonical_topic>, description=<one-line summary of recent work>, kind="topic")`
+   - Pass the bare canonical key (no `topic/` prefix); the MCP wikilinks it as `[[topic/<canonical_topic>]]`.
 
    **Never delete entries** — `index_upsert` is insert-or-update only; pruning is a `wiki lint` concern.
 

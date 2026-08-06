@@ -108,6 +108,12 @@ export interface TopicDto {
    * When omitted, derived topics inherit memory through their parent chain.
    */
   memoryTopicId?: string;
+  /**
+   * Canonical title-keyed wiki memory namespace for this topic.
+   * Unlike memoryTopicId this survives room deletion/recreation and does not
+   * identify another live topic.
+   */
+  memoryKey?: string;
   /** True when the topic was created via fork (copies history). */
   isFork?: boolean;
   /** True when this topic was spawned by an agent as a subagent worker room. */

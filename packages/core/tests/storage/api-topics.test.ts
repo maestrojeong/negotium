@@ -56,6 +56,7 @@ describe("api topic storage", () => {
     expect(topicColumns).toContain("access_mode");
     expect(topicColumns).toContain("subagent_report_mode");
     expect(topicColumns).toContain("memory_topic_id");
+    expect(topicColumns).toContain("memory_key");
     expect(topicColumns).not.toContain("runtime_agent");
     expect(topicColumns).not.toContain("participants");
     expect(topicColumns).not.toContain("ai_mention");
@@ -145,6 +146,15 @@ describe("api topic storage", () => {
 
     expect(getTopic(child.id)?.memoryTopicId).toBe(memorySource.id);
     expect(getTopicMemoryOrigin(child.id)?.id).toBe(memorySource.id);
+  });
+
+  test("persists a canonical title-keyed memory namespace", () => {
+    const topic = makeTopic("memory-key");
+    createdTopicIds.push(topic.id);
+    topic.memoryKey = "persona";
+    upsertTopic(topic);
+
+    expect(getTopic(topic.id)?.memoryKey).toBe("persona");
   });
 
   test("persists explicit topic visibility while defaulting ordinary topics to visible", () => {

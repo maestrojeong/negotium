@@ -249,6 +249,7 @@ Start with the [documentation index](./docs/README.md), then see:
 - [Architecture and invariants](./docs/ARCHITECTURE.md)
 - [Adapter lifecycle](./docs/ADAPTERS.md)
 - [Feature review guide](./docs/FEATURE-REVIEW.md)
+- [Wiki search evaluation for 0.2.18](./docs/WIKI-SEARCH-EVALUATION-0.2.18.md)
 - [Release guide](./docs/RELEASING.md)
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution checks and

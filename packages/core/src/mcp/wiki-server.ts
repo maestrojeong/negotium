@@ -14,7 +14,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { argv, exit } from "node:process";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -45,6 +45,7 @@ export interface WikiTopicBrief {
 
 export interface WikiMcpHost {
   wikiRoot: string;
+  canReadTopicMemory?(selection: string, userId: string): boolean;
   getTopicBrief?(topicId: string): WikiTopicBrief | null;
   resolveTopicBrief?(selection: string, userId: string): WikiTopicBrief | null;
   setTopicBrief?(
@@ -55,10 +56,13 @@ export interface WikiMcpHost {
       summaryDate?: string;
     },
   ): void;
+  adoptTopicMemory?(topicId: string, userId: string, memoryKey: string): boolean;
 }
 
 export interface WikiMcpContext {
   userId: string;
+  /** The room executing the tool, even when topicId points at inherited memory. */
+  currentTopicId?: string;
   topicId?: string;
   surface?: WikiSurface;
 }
@@ -91,6 +95,7 @@ export function resolveAccessibleWikiTopicBrief(
 }
 
 interface WikiRuntime extends Required<Pick<WikiMcpContext, "userId" | "surface">> {
+  currentTopicId?: string;
   topicId?: string;
   host: WikiMcpHost;
   wikiDir: string;
@@ -111,22 +116,26 @@ function runtime(): WikiRuntime {
 
 function parseArgv(): {
   userId: string;
+  currentTopicId?: string;
   topicId?: string;
   surface: WikiSurface;
 } {
   let userId = "local";
+  let currentTopicId: string | undefined;
   let topicId: string | undefined;
   let surface: WikiSurface = "all";
 
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith("--user-id=")) userId = a.slice("--user-id=".length);
-    else if (a.startsWith("--topic-id=")) topicId = a.slice("--topic-id=".length);
+    else if (a.startsWith("--current-topic-id=")) {
+      currentTopicId = a.slice("--current-topic-id=".length);
+    } else if (a.startsWith("--topic-id=")) topicId = a.slice("--topic-id=".length);
     else if (a === "--surface=wiki") surface = "wiki";
     else if (a === "--surface=skills") surface = "skills";
   }
 
-  return { userId, topicId, surface };
+  return { userId, currentTopicId, topicId, surface };
 }
 
 // --- Helpers ---------------------------------------------------------------
@@ -270,12 +279,401 @@ function slugify(topic: string): string {
 
 // --- Tool handlers (file-based) -------------------------------------------
 
+type WikiQueryKind = "all" | "topic" | "article" | "summary";
+
+interface WikiIndexCandidate {
+  kind: Exclude<WikiQueryKind, "all">;
+  key: string;
+  description: string;
+  date?: string;
+}
+
+type WikiSearchResultKind = Exclude<WikiQueryKind, "all"> | "skill";
+
+interface WikiSearchResult {
+  kind: WikiSearchResultKind;
+  key: string;
+  score: number;
+  keyScore: number;
+  description?: string;
+  date?: string;
+  path?: string;
+  text?: string;
+  title?: string;
+}
+
+function normalizeSearchText(value: string): string {
+  return value
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9가-힣]+/g, " ")
+    .trim()
+    .replaceAll(/\s+/g, " ");
+}
+
+function compactSearchText(value: string): string {
+  return normalizeSearchText(value).replaceAll(" ", "");
+}
+
+function trigrams(value: string): Set<string> {
+  const compact = compactSearchText(value);
+  if (compact.length < 3) return new Set(compact ? [compact] : []);
+  const result = new Set<string>();
+  for (let i = 0; i <= compact.length - 3; i += 1) result.add(compact.slice(i, i + 3));
+  return result;
+}
+
+function fuzzySearchScore(query: string, candidate: string, maximum: number): number {
+  const compactQuery = compactSearchText(query);
+  const compactCandidate = compactSearchText(candidate);
+  if (compactQuery.length < 3 || compactCandidate.length < 3) return 0;
+  const similarity = trigramSimilarity(compactQuery, compactCandidate);
+  const minimumSimilarity = compactQuery.length <= 4 ? 0.6 : 0.45;
+  return similarity >= minimumSimilarity ? similarity * maximum : 0;
+}
+
+const SEARCH_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "by",
+  "for",
+  "from",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "that",
+  "the",
+  "to",
+  "with",
+]);
+
+const SEARCH_MONTHS = new Map([
+  ["january", "01"],
+  ["jan", "01"],
+  ["1월", "01"],
+  ["february", "02"],
+  ["feb", "02"],
+  ["2월", "02"],
+  ["march", "03"],
+  ["mar", "03"],
+  ["3월", "03"],
+  ["april", "04"],
+  ["apr", "04"],
+  ["4월", "04"],
+  ["may", "05"],
+  ["5월", "05"],
+  ["june", "06"],
+  ["jun", "06"],
+  ["6월", "06"],
+  ["july", "07"],
+  ["jul", "07"],
+  ["7월", "07"],
+  ["august", "08"],
+  ["aug", "08"],
+  ["8월", "08"],
+  ["september", "09"],
+  ["sep", "09"],
+  ["sept", "09"],
+  ["9월", "09"],
+  ["october", "10"],
+  ["oct", "10"],
+  ["10월", "10"],
+  ["november", "11"],
+  ["nov", "11"],
+  ["11월", "11"],
+  ["december", "12"],
+  ["dec", "12"],
+  ["12월", "12"],
+]);
+
+const SEARCH_RECENCY_TERMS = new Set([
+  "latest",
+  "newest",
+  "recent",
+  "earliest",
+  "oldest",
+  "최근",
+  "최신",
+  "최초",
+  "오래된",
+]);
+
+function meaningfulSearchTokens(value: string): string[] {
+  return normalizeSearchText(value)
+    .split(" ")
+    .filter((token) => (token.length >= 2 || /^\d+$/.test(token)) && !SEARCH_STOP_WORDS.has(token));
+}
+
+function canonicalSearchToken(token: string): string {
+  return token.length > 4 && token.endsWith("s") ? token.slice(0, -1) : token;
+}
+
+function canonicalSearchTokens(value: string): string[] {
+  return meaningfulSearchTokens(value).map(canonicalSearchToken);
+}
+
+function countToken(tokens: string[], token: string): number {
+  let count = 0;
+  for (const candidate of tokens) if (candidate === token) count += 1;
+  return count;
+}
+
+function countPhrase(text: string, phrase: string): number {
+  if (!phrase) return 0;
+  let count = 0;
+  let offset = 0;
+  let match = text.indexOf(phrase, offset);
+  while (match >= 0) {
+    count += 1;
+    offset = match + phrase.length;
+    match = text.indexOf(phrase, offset);
+  }
+  return count;
+}
+
+function summaryTopicIdentity(key: string): string {
+  return normalizeSearchText(key.replace(/^\d{4}-\d{2}-\d{2}-/, ""));
+}
+
+function scoreSummaryTime(query: string, key: string, title: string): number | null {
+  const date = key.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!date) return 0;
+  const tokens = meaningfulSearchTokens(query);
+  const documentDate = `${date[1]}-${date[2]}-${date[3]}`;
+  const requestedDateMatch = query.match(/\b(\d{4}) (\d{2}) (\d{2})\b/);
+  const requestedDate = requestedDateMatch
+    ? `${requestedDateMatch[1]}-${requestedDateMatch[2]}-${requestedDateMatch[3]}`
+    : undefined;
+  const beforeDate = /\bbefore\b/.test(query);
+  const afterDate = /\bafter\b/.test(query);
+  if (requestedDate && beforeDate && documentDate >= requestedDate) return null;
+  if (requestedDate && afterDate && documentDate <= requestedDate) return null;
+  const queryYear = tokens.find((token) => /^\d{4}(?:년)?$/.test(token))?.replace(/년$/, "");
+  const queryMonth = tokens.map((token) => SEARCH_MONTHS.get(token)).find(Boolean);
+  const hasRecencyTerm = tokens.some((token) => SEARCH_RECENCY_TERMS.has(token));
+  const yearMatches = !queryYear || queryYear === date[1];
+  const monthMatches = !queryMonth || queryMonth === date[2];
+  if ((!queryYear && !queryMonth && !hasRecencyTerm) || !yearMatches || !monthMatches) return 0;
+
+  const normalizedMetadata = `${normalizeSearchText(key)} ${normalizeSearchText(title)}`;
+  const contentTokens = tokens.filter(
+    (token) =>
+      !/^\d{4}(?:년)?$/.test(token) &&
+      !SEARCH_MONTHS.has(token) &&
+      !SEARCH_RECENCY_TERMS.has(token),
+  );
+  const contentMatches = contentTokens.filter((token) => normalizedMetadata.includes(token)).length;
+  const relationScore = requestedDate && (beforeDate || afterDate) ? 60 : 0;
+  const exactDateScore = requestedDate === documentDate ? 90 : 0;
+  return 30 + relationScore + exactDateScore + contentMatches * 15;
+}
+
+function trigramSimilarity(left: string, right: string): number {
+  const a = trigrams(left);
+  const b = trigrams(right);
+  if (a.size === 0 || b.size === 0) return 0;
+  let overlap = 0;
+  for (const gram of a) if (b.has(gram)) overlap += 1;
+  return (2 * overlap) / (a.size + b.size);
+}
+
+function parseWikiIndex(path: string): WikiIndexCandidate[] {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf-8");
+  } catch {
+    return [];
+  }
+  const candidates: WikiIndexCandidate[] = [];
+  const entryPattern = /^\s*-\s*\[\[(topic|articles|summaries)\/([^\]]+)\]\]\s*(.*)$/;
+  for (const line of text.split("\n")) {
+    const match = line.match(entryPattern);
+    if (!match) continue;
+    const namespace = match[1]!;
+    const key = match[2]!.replace(/\.md$/i, "");
+    const tail = match[3]!.trim();
+    const dateMatch = tail.match(/\((\d{4}-\d{2}-\d{2})(?:[^)]*)\)\s*$/);
+    const description = dateMatch ? tail.slice(0, dateMatch.index).trim() : tail;
+    candidates.push({
+      kind: namespace === "topic" ? "topic" : namespace === "articles" ? "article" : "summary",
+      key,
+      description,
+      ...(dateMatch ? { date: dateMatch[1] } : {}),
+    });
+  }
+  return candidates;
+}
+
+function indexCandidateExists(candidate: WikiIndexCandidate): boolean {
+  // Topic indexes may point at canonical DB-backed memories rather than local files.
+  if (candidate.kind === "topic") return true;
+  const root = candidate.kind === "article" ? runtime().articlesDir : runtime().summariesDir;
+  const filePath = resolve(root, `${candidate.key}.md`);
+  const relativePath = relative(root, filePath);
+  if (relativePath.startsWith("..") || relativePath.startsWith("/")) return false;
+  try {
+    return statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function scoreIndexKey(query: string, key: string): number {
+  const normalizedQuery = normalizeSearchText(query);
+  const compactQuery = compactSearchText(normalizedQuery);
+  const normalizedKey = normalizeSearchText(key);
+  const compactKey = compactSearchText(normalizedKey);
+  const tokens = meaningfulSearchTokens(normalizedQuery);
+  let score = 0;
+  if (normalizedKey === normalizedQuery) score += 120;
+  else if (compactKey === compactQuery) score += 110;
+  else {
+    if (
+      compactQuery.length >= 2 &&
+      (compactKey.startsWith(compactQuery) || compactQuery.startsWith(compactKey))
+    ) {
+      score += 65;
+    }
+    if (tokens.length > 0 && compactQuery.length >= 3 && compactKey.includes(compactQuery)) {
+      score += 45;
+    }
+    score += fuzzySearchScore(compactQuery, compactKey, 55);
+  }
+  for (const token of tokens) {
+    if (normalizedKey.includes(token)) score += 10;
+  }
+  return score;
+}
+
+function scoreIndexCandidate(query: string, candidate: WikiIndexCandidate): number {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery) return 0;
+  const normalizedDescription = normalizeSearchText(candidate.description);
+  const tokens = canonicalSearchTokens(normalizedQuery);
+  const descriptionTokens = new Set(canonicalSearchTokens(normalizedDescription));
+  let score = scoreIndexKey(normalizedQuery, candidate.key);
+  if (tokens.length > 0 && normalizedDescription.includes(normalizedQuery)) score += 30;
+  let descriptionMatches = 0;
+  for (const token of tokens) {
+    if (descriptionTokens.has(token)) {
+      score += 5;
+      descriptionMatches += 1;
+    }
+  }
+  if (tokens.length > 1 && descriptionMatches === tokens.length) score += 25;
+  if (candidate.kind === "topic") {
+    const requestsCurrent = /\b(?:current|active|ongoing|open)\b|현재|진행 중/.test(
+      normalizedQuery,
+    );
+    const archivedCandidate = /\b(?:archive|archived|historical|closed)\b|보관|종료/.test(
+      `${normalizeSearchText(candidate.key)} ${normalizedDescription}`,
+    );
+    if (requestsCurrent && archivedCandidate) score -= 40;
+  }
+  return score;
+}
+
 function wikiQuery(args: Record<string, unknown>): CallToolResult {
-  const question = safeExt(args, ["question", "query", "q", "text"], "");
-  const query = question.toLowerCase();
+  const question = String(safeExt(args, ["question", "query", "q", "text"], "")).trim();
+  const requestedKind = String(safeExt(args, ["kind", "type"], "all"));
+  const kind: WikiQueryKind =
+    requestedKind === "topic" || requestedKind === "article" || requestedKind === "summary"
+      ? requestedKind
+      : "all";
+  const requestedLimit = Number(safeExt(args, ["limit", "maxResults"], 8));
+  const limit = Math.min(Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 8, 1), 20);
+  if (!question) {
+    return {
+      content: [{ type: "text", text: "A non-empty wiki query is required." }],
+      isError: true,
+    };
+  }
+  const normalizedQuery = normalizeSearchText(question);
+  if (!normalizedQuery) {
+    return { content: [{ type: "text", text: "No matching wiki articles found." }] };
+  }
+
+  const canReadTopicMemory = runtime().host.canReadTopicMemory;
+  const temporalDirection = /\b(?:latest|newest|recent)\b|최근|최신/.test(normalizedQuery)
+    ? "newest"
+    : /\b(?:earliest|oldest)\b|가장 오래된|최초/.test(normalizedQuery)
+      ? "oldest"
+      : undefined;
+
+  const visibleIndexCandidates = [
+    ...parseWikiIndex(resolve(runtime().wikiDir, "topic-index.md")),
+    ...parseWikiIndex(resolve(runtime().wikiDir, "article-index.md")),
+  ]
+    .filter((candidate) => kind === "all" || candidate.kind === kind)
+    .filter(
+      (candidate) =>
+        candidate.kind !== "topic" ||
+        !canReadTopicMemory ||
+        canReadTopicMemory(candidate.key, runtime().userId),
+    );
+  const hasStaleExactIndexMatch = visibleIndexCandidates.some(
+    (candidate) =>
+      !indexCandidateExists(candidate) && scoreIndexKey(question, candidate.key) >= 100,
+  );
+  const indexCandidates = visibleIndexCandidates
+    .filter(indexCandidateExists)
+    .map((candidate) => ({
+      candidate,
+      keyScore: scoreIndexKey(question, candidate.key),
+      score: scoreIndexCandidate(question, candidate),
+    }))
+    .filter(({ keyScore, score }) => keyScore >= 25 || score >= 40)
+    .sort(
+      (left, right) =>
+        right.score - left.score || left.candidate.key.localeCompare(right.candidate.key),
+    );
+
+  const strongestIndex = indexCandidates[0];
+  if (
+    kind === "topic" &&
+    strongestIndex &&
+    (strongestIndex.keyScore >= 25 || strongestIndex.score >= 40)
+  ) {
+    const runnerUp = indexCandidates[1];
+    const ambiguous =
+      strongestIndex.keyScore < 100 &&
+      runnerUp !== undefined &&
+      runnerUp.score >= strongestIndex.score * 0.9;
+    if (ambiguous) {
+      const lines = ["Found 2 ambiguous wiki candidates:", ""];
+      for (const { candidate, score } of [strongestIndex, runnerUp]) {
+        lines.push(
+          `- kind: ${candidate.kind}`,
+          `  key: ${candidate.key}`,
+          `  score: ${score.toFixed(2)}`,
+          `  description: ${candidate.description || "(none)"}`,
+          ...(candidate.date ? [`  date: ${candidate.date}`] : []),
+        );
+      }
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    }
+    const lines = ["Found 1 wiki candidate:", ""];
+    for (const { candidate, score } of [strongestIndex]) {
+      lines.push(
+        `- kind: ${candidate.kind}`,
+        `  key: ${candidate.key}`,
+        `  score: ${score.toFixed(2)}`,
+        `  description: ${candidate.description || "(none)"}`,
+        ...(candidate.date ? [`  date: ${candidate.date}`] : []),
+      );
+    }
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  }
 
   const results: string[] = [];
-  const scored: { score: number; path: string; text: string }[] = [];
+  const scored: WikiSearchResult[] = [];
 
   function scan(dir: string, label: string): void {
     ensureDir(dir);
@@ -291,10 +689,15 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
                 const fp = join(sub, f.name);
                 try {
                   const text = readFileSync(fp, "utf-8");
+                  const key = `${entry.name}/${f.name.replace(/\.md$/i, "")}`;
                   scored.push({
-                    score: scoreMatch(text),
+                    kind: label === "articles" ? "article" : "skill",
+                    key,
+                    keyScore: scoreIndexKey(question, key),
+                    score: scoreMatch(text, key, label === "articles" ? "article" : "skill"),
                     path: `${label}/${entry.name}/${f.name}`,
                     text,
+                    title: titleFromDocument(text, key),
                   });
                 } catch {
                   /* skip unreadable */
@@ -305,13 +708,36 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
             }
           }
         } else if (entry.isFile() && entry.name.endsWith(".md")) {
+          if (
+            label === "topic" &&
+            canReadTopicMemory &&
+            !canReadTopicMemory(entry.name.replace(/\.md$/i, ""), runtime().userId)
+          ) {
+            continue;
+          }
           const fp = join(dir, entry.name);
           try {
             const text = readFileSync(fp, "utf-8");
+            const key = entry.name.replace(/\.md$/i, "");
+            const resultKind =
+              label === "articles"
+                ? "article"
+                : label === "topic"
+                  ? "topic"
+                  : label === "summaries"
+                    ? "summary"
+                    : "skill";
             scored.push({
-              score: scoreMatch(text),
+              kind: resultKind,
+              key,
+              keyScore: scoreIndexKey(question, key),
+              score: scoreMatch(text, key, resultKind),
               path: `${label}/${entry.name}`,
               text,
+              title: titleFromDocument(text, key),
+              ...(label === "summaries" && /^\d{4}-\d{2}-\d{2}/.test(key)
+                ? { date: key.slice(0, 10) }
+                : {}),
             });
           } catch {
             /* skip unreadable */
@@ -323,48 +749,235 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
     }
   }
 
-  function scoreMatch(text: string): number {
-    const lower = text.toLowerCase();
+  function titleFromDocument(text: string, key: string): string {
+    const titleLine = text.split("\n").find((line) => /^#+\s*/.test(line));
+    return titleLine ? titleLine.replace(/^#+\s*/, "") : basename(key);
+  }
+
+  function scoreMatch(text: string, key: string, resultKind: WikiSearchResultKind): number {
+    const titleLine = text.split("\n").find((line) => /^#+\s*/.test(line)) ?? "";
+    const title = titleLine.replace(/^#+\s*/, "");
+    const normalizedKey = normalizeSearchText(key);
+    const normalizedTitle = normalizeSearchText(title);
+    const normalizedBody = normalizeSearchText(text.replace(titleLine, ""));
+    const compactQuery = compactSearchText(normalizedQuery);
+    const compactKey = compactSearchText(normalizedKey);
+    const compactTitle = compactSearchText(normalizedTitle);
+    const tokens = canonicalSearchTokens(normalizedQuery);
+    const keyTokens = new Set(canonicalSearchTokens(normalizedKey));
+    const titleTokens = new Set(canonicalSearchTokens(normalizedTitle));
+    const bodyTokens = canonicalSearchTokens(normalizedBody);
     let score = 0;
-    const words = query.split(/\s+/).filter(Boolean);
-    for (const w of words) {
-      if (lower.includes(w)) {
-        score += w.length >= 3 ? 3 : 1;
-        // Bonus for title match (first line starts with #)
-        const firstLine = lower.split("\n")[0];
-        if (firstLine.startsWith("#") && firstLine.includes(w)) score += 5;
+    let strongMetadataEvidence = false;
+
+    if (normalizedKey === normalizedQuery) {
+      score += 120;
+      strongMetadataEvidence = true;
+    } else if (compactKey === compactQuery) {
+      score += 110;
+      strongMetadataEvidence = true;
+    } else if (
+      compactQuery.length >= 2 &&
+      (compactKey.startsWith(compactQuery) || compactQuery.startsWith(compactKey))
+    ) {
+      score += 65;
+      strongMetadataEvidence = true;
+    }
+    if (tokens.length > 0 && compactQuery.length >= 3 && compactKey.includes(compactQuery)) {
+      score += 45;
+      strongMetadataEvidence = true;
+    }
+    const fuzzyKeyScore = fuzzySearchScore(compactQuery, compactKey, 55);
+    score += fuzzyKeyScore;
+    if (fuzzyKeyScore > 0) strongMetadataEvidence = true;
+
+    if (normalizedTitle === normalizedQuery) {
+      score += 115;
+      strongMetadataEvidence = true;
+    } else if (compactTitle === compactQuery) {
+      score += 105;
+      strongMetadataEvidence = true;
+    } else if (compactQuery.length >= 2 && compactTitle.startsWith(compactQuery)) {
+      score += 60;
+      strongMetadataEvidence = true;
+    }
+    const fuzzyTitleScore = fuzzySearchScore(compactQuery, compactTitle, 50);
+    score += fuzzyTitleScore;
+    if (fuzzyTitleScore > 0) strongMetadataEvidence = true;
+    if (resultKind === "summary") {
+      const temporalScore = scoreSummaryTime(normalizedQuery, key, title);
+      if (temporalScore === null) return 0;
+      score += temporalScore;
+      if (temporalScore > 0) strongMetadataEvidence = true;
+    }
+
+    const isMultiToken = tokens.length > 1;
+    if (tokens.length > 0 && normalizedTitle.includes(normalizedQuery)) {
+      score += 35;
+      strongMetadataEvidence = true;
+    }
+    const phraseMatches = isMultiToken ? countPhrase(normalizedBody, normalizedQuery) : 0;
+    if (phraseMatches > 0) score += phraseMatches * 12;
+    else if (tokens.length === 1 && tokens[0]!.length >= 5 && normalizedBody.includes(tokens[0]!)) {
+      score += 16;
+    }
+
+    let bodyMatches = 0;
+    let minimumBodyFrequency = Number.POSITIVE_INFINITY;
+    for (const token of tokens) {
+      if (keyTokens.has(token)) score += 10;
+      if (titleTokens.has(token)) score += 12;
+      const bodyFrequency = countToken(bodyTokens, token);
+      if (bodyFrequency > 0) {
+        score += Math.min(bodyFrequency, 3) * 4;
+        bodyMatches += 1;
+        minimumBodyFrequency = Math.min(minimumBodyFrequency, bodyFrequency);
       }
     }
+    if (isMultiToken && bodyMatches === tokens.length) {
+      score += 8 * Math.min(minimumBodyFrequency, 3);
+    }
+    const minimumBodyTokens = hasStaleExactIndexMatch ? 3 : 2;
+    const partialArticleEvidence =
+      resultKind === "article" && bodyMatches >= 3 && bodyMatches / tokens.length >= 0.6;
+    const strongBodyEvidence =
+      tokens.length >= minimumBodyTokens &&
+      ((bodyMatches === tokens.length && (phraseMatches > 0 || minimumBodyFrequency >= 1)) ||
+        partialArticleEvidence);
+    if (!strongMetadataEvidence && !strongBodyEvidence) return 0;
     return score;
   }
 
-  scan(runtime().articlesDir, "articles");
+  if (kind === "all" || kind === "article") scan(runtime().articlesDir, "articles");
   // Skills are node-local runtime knowledge, not canonical workspace memory.
   // Keep the legacy all-in-one server compatible while ensuring the explicit
   // wiki surface cannot read a node's skill library.
-  if (runtime().surface === "all") scan(runtime().skillsDir, "skills");
-  scan(runtime().topicsDir, "topic");
-  scan(runtime().summariesDir, "summaries");
+  if (kind === "all" && runtime().surface === "all") scan(runtime().skillsDir, "skills");
+  if (kind === "all" || kind === "topic") scan(runtime().topicsDir, "topic");
+  if (kind === "all" || kind === "summary") scan(runtime().summariesDir, "summaries");
 
-  scored.sort((a, b) => b.score - a.score);
-  const top = scored.slice(0, 8);
+  const merged = new Map<string, WikiSearchResult>();
+  for (const { candidate, keyScore, score } of indexCandidates) {
+    merged.set(`${candidate.kind}:${candidate.key}`, {
+      kind: candidate.kind,
+      key: candidate.key,
+      keyScore,
+      score,
+      description: candidate.description,
+      date: candidate.date,
+    });
+  }
+  const documentThreshold = kind === "topic" ? 24 : 16;
+  for (const document of scored) {
+    if (document.score < documentThreshold) continue;
+    const id = `${document.kind}:${document.key}`;
+    const indexed = merged.get(id);
+    merged.set(
+      id,
+      indexed
+        ? { ...indexed, ...document, score: Math.max(indexed.score, document.score) }
+        : document,
+    );
+  }
 
-  if (top.length === 0) {
+  let ranked = [...merged.values()].sort(
+    (left, right) =>
+      right.score - left.score ||
+      (left.kind === "summary" && right.kind === "summary"
+        ? temporalDirection === "oldest"
+          ? (left.date ?? "").localeCompare(right.date ?? "")
+          : (right.date ?? "").localeCompare(left.date ?? "")
+        : 0) ||
+      left.key.localeCompare(right.key),
+  );
+
+  if (kind === "summary") {
+    const sameTopic = ranked.filter((result) => {
+      const identity = summaryTopicIdentity(result.key);
+      return identity.length >= 3 && normalizedQuery.includes(identity);
+    });
+    if (sameTopic.length > 0) ranked = sameTopic;
+
+    const requestedDateMatch = normalizedQuery.match(/\b(\d{4}) (\d{2}) (\d{2})\b/);
+    const requestedDate = requestedDateMatch
+      ? `${requestedDateMatch[1]}-${requestedDateMatch[2]}-${requestedDateMatch[3]}`
+      : undefined;
+    const beforeDate = /\bbefore\b/.test(normalizedQuery);
+    const afterDate = /\bafter\b/.test(normalizedQuery);
+    if (requestedDate && beforeDate) {
+      ranked = ranked.filter((result) => !result.date || result.date < requestedDate);
+    } else if (requestedDate && afterDate) {
+      ranked = ranked.filter((result) => !result.date || result.date > requestedDate);
+    }
+    ranked.sort((left, right) => {
+      if (beforeDate) {
+        return (right.date ?? "").localeCompare(left.date ?? "") || right.score - left.score;
+      }
+      if (afterDate) {
+        return (left.date ?? "").localeCompare(right.date ?? "") || right.score - left.score;
+      }
+      if (requestedDate) {
+        const dateDifference =
+          Number(right.date === requestedDate) - Number(left.date === requestedDate);
+        if (dateDifference !== 0) return dateDifference;
+      }
+      if (temporalDirection) {
+        const dateDifference =
+          temporalDirection === "oldest"
+            ? (left.date ?? "").localeCompare(right.date ?? "")
+            : (right.date ?? "").localeCompare(left.date ?? "");
+        if (dateDifference !== 0) return dateDifference;
+      }
+      return (
+        right.score - left.score ||
+        (right.date ?? "").localeCompare(left.date ?? "") ||
+        left.key.localeCompare(right.key)
+      );
+    });
+  }
+
+  if (kind === "topic" && ranked[0]) {
+    const runnerUp = ranked[1];
+    const ambiguous =
+      ranked[0].keyScore < 100 && runnerUp !== undefined && runnerUp.score >= ranked[0].score * 0.9;
+    if (ambiguous) {
+      ranked = ranked.slice(0, 2);
+    } else {
+      ranked = ranked.slice(0, 1);
+    }
+  } else {
+    ranked = ranked.slice(0, limit);
+  }
+
+  if (ranked.length === 0) {
     results.push("No matching wiki articles found.");
   } else {
-    results.push(`Found ${top.length} matching result(s):\n`);
-    for (const { path, text } of top) {
-      // Extract title from first heading
-      const titleLine = text.split("\n").find((l) => l.startsWith("#"));
-      const title = titleLine ? titleLine.replace(/^#+\s*/, "") : basename(path, ".md");
-      // Truncate body to 400 chars
-      const body = text
-        .replace(/^---[\s\S]*?---\n?/, "")
-        .replace(/^#.*$/m, "")
-        .trim()
-        .slice(0, 400);
+    results.push(`Found ${ranked.length} matching result(s):\n`);
+    for (const result of ranked) {
+      if (result.kind === "skill") {
+        const body = (result.text ?? "").trim().slice(0, 400);
+        results.push(
+          `## ${result.title ?? result.key}\nPath: ${result.path}\n\n${body}${(result.text?.length ?? 0) > 400 ? "\n...(truncated)" : ""}\n`,
+        );
+        continue;
+      }
       results.push(
-        `## ${title}\nPath: ${path}\n\n${body}${text.length > 400 ? "\n...(truncated)" : ""}\n`,
+        `- kind: ${result.kind}`,
+        `  key: ${result.key}`,
+        `  score: ${result.score.toFixed(2)}`,
+        ...(result.title ? [`  title: ${result.title}`] : []),
+        `  description: ${result.description || "(none)"}`,
+        ...(result.date ? [`  date: ${result.date}`] : []),
+        ...(result.path ? [`  path: ${result.path}`, `  Path: ${result.path}`] : []),
+        ...(result.text
+          ? [
+              `  excerpt: ${result.text
+                .replace(/^---[\s\S]*?---\n?/, "")
+                .replace(/^#.*$/m, "")
+                .trim()
+                .slice(0, 400)}`,
+            ]
+          : []),
       );
     }
   }
@@ -390,38 +1003,107 @@ function wikiTopicBrief(args: Record<string, unknown>): CallToolResult {
   }
 
   const { getTopicBrief, resolveTopicBrief } = runtime().host;
-  if (runtime().topicId && (getTopicBrief || resolveTopicBrief)) {
+  const hasAuthorizedBridge = Boolean(runtime().topicId && (getTopicBrief || resolveTopicBrief));
+  if (hasAuthorizedBridge) {
     try {
       const brief = resolveTopicBrief
         ? resolveTopicBrief(rawTopic, runtime().userId)
         : getTopicBrief!(rawTopic);
-      if (!brief) {
-        return {
-          content: [{ type: "text", text: `No brief found for topic: ${rawTopic}` }],
-        };
+      if (brief) {
+        const lines = [
+          `# Topic Brief: ${topicNameFrom(rawTopic)}`,
+          "",
+          brief.briefMd || "(empty brief)",
+        ];
+        if (brief.latestSummaryMd) {
+          lines.push("", "## Latest Summary", "", brief.latestSummaryMd);
+        }
+        if (brief.summaryDate) {
+          lines.push("", `Summary date: ${brief.summaryDate}`);
+        }
+        return { content: [{ type: "text", text: lines.join("\n") }] };
       }
-      const lines = [
-        `# Topic Brief: ${topicNameFrom(rawTopic)}`,
-        "",
-        brief.briefMd || "(empty brief)",
-      ];
-      if (brief.latestSummaryMd) {
-        lines.push("", "## Latest Summary", "", brief.latestSummaryMd);
-      }
-      if (brief.summaryDate) {
-        lines.push("", `Summary date: ${brief.summaryDate}`);
-      }
-      return { content: [{ type: "text", text: lines.join("\n") }] };
     } catch {
-      return {
-        content: [{ type: "text", text: `Could not read topic brief for: ${rawTopic}` }],
-      };
+      // The SQLite mirror is optional; fall through to the canonical file.
     }
+    return {
+      content: [{ type: "text", text: `No brief found for topic: ${rawTopic}` }],
+    };
   }
 
+  const topicKey = wikiSummarySlug(rawTopic.replace(/^topic\//, "").replace(/\.md$/i, ""));
+  const filePath = resolve(runtime().topicsDir, `${topicKey}.md`);
+  try {
+    const content = readFileSync(filePath, "utf-8");
+    return {
+      content: [{ type: "text", text: `# Topic Brief: ${topicKey}\n\n${content}` }],
+    };
+  } catch {
+    // Report the same not-found result for DB- and file-backed lookups.
+  }
   return {
-    content: [{ type: "text", text: `No topic brief found for: ${rawTopic}` }],
+    content: [{ type: "text", text: `No brief found for topic: ${rawTopic}` }],
   };
+}
+
+function wikiRead(args: Record<string, unknown>): CallToolResult {
+  const rawKind = String(safeExt(args, ["kind", "type"], "article"));
+  const kind = rawKind === "topic" || rawKind === "summary" ? rawKind : "article";
+  const rawKey = String(safeExt(args, ["key", "slug", "topic"], "")).trim();
+  if (!rawKey) {
+    return { content: [{ type: "text", text: "A wiki document key is required." }], isError: true };
+  }
+
+  if (kind === "topic") {
+    const result = wikiTopicBrief({ topic: rawKey });
+    const resultText = result.content
+      .map((entry) => (entry.type === "text" ? entry.text : ""))
+      .join("\n");
+    const adopt = safeExt<boolean>(args, ["adopt", "use", "select"], false);
+    if (!adopt || resultText.startsWith("No brief found for topic")) return result;
+
+    const currentTopicId = runtime().currentTopicId;
+    const memoryKey = wikiSummarySlug(rawKey.replace(/^topic\//, "").replace(/\.md$/i, ""));
+    if (
+      !currentTopicId ||
+      !runtime().host.adoptTopicMemory?.(currentTopicId, runtime().userId, memoryKey)
+    ) {
+      return {
+        content: [
+          ...result.content,
+          { type: "text", text: "\nMemory was read but could not be adopted by this topic." },
+        ],
+      };
+    }
+    return {
+      content: [...result.content, { type: "text", text: `\nAdopted topic memory: ${memoryKey}` }],
+    };
+  }
+
+  if (
+    rawKey.includes("\\") ||
+    rawKey.split("/").some((part) => part === "..") ||
+    rawKey.startsWith("/")
+  ) {
+    return { content: [{ type: "text", text: "Invalid wiki document key." }], isError: true };
+  }
+  const root = kind === "summary" ? runtime().summariesDir : runtime().articlesDir;
+  const key = rawKey
+    .replace(new RegExp(`^(?:${kind === "summary" ? "summaries" : "articles"})/`), "")
+    .replace(/\.md$/i, "");
+  const filePath = resolve(root, `${key}.md`);
+  const relativePath = relative(root, filePath);
+  if (relativePath.startsWith("..") || relativePath.startsWith("/")) {
+    return { content: [{ type: "text", text: "Invalid wiki document key." }], isError: true };
+  }
+  try {
+    const content = readFileSync(filePath, "utf-8");
+    return {
+      content: [{ type: "text", text: `# Wiki ${kind}: ${key}\n\n${content}` }],
+    };
+  } catch {
+    return { content: [{ type: "text", text: `No ${kind} found for: ${rawKey}` }] };
+  }
 }
 
 function wikiLastConversation(args: Record<string, unknown>): CallToolResult {
@@ -880,7 +1562,7 @@ function indexUpsert(args: Record<string, unknown>): CallToolResult {
 const WIKI_TOOLS: Tool[] = [
   {
     name: "wiki_query",
-    description: "Search the wiki knowledge base and return relevant articles.",
+    description: "Search topic, article, or summary indexes and return relevant candidates.",
     inputSchema: {
       type: "object",
       properties: {
@@ -892,8 +1574,36 @@ const WIKI_TOOLS: Tool[] = [
           type: "string",
           description: "Optional topic name to narrow the search",
         },
+        kind: {
+          type: "string",
+          enum: ["all", "topic", "article", "summary"],
+          description: "Document kind to search; defaults to all",
+        },
+        limit: {
+          type: "number",
+          minimum: 1,
+          maximum: 20,
+          description: "Maximum number of candidates; defaults to 8",
+        },
       },
       required: ["question"],
+    },
+  },
+  {
+    name: "wiki_read",
+    description:
+      "Read one topic, article, or summary returned by wiki_query. For a clearly matching continuing persona, set adopt=true when reading a topic.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: ["topic", "article", "summary"] },
+        key: { type: "string", description: "Canonical key returned by wiki_query" },
+        adopt: {
+          type: "boolean",
+          description: "For kind=topic, persist this canonical memory key for the current room",
+        },
+      },
+      required: ["kind", "key"],
     },
   },
   {
@@ -1033,6 +1743,7 @@ export function createWikiMcpServer(context: WikiMcpContext, host: WikiMcpHost):
   const wikiDir = resolve(host.wikiRoot);
   const current: WikiRuntime = {
     userId: context.userId,
+    currentTopicId: context.currentTopicId ?? context.topicId,
     topicId: context.topicId,
     surface,
     host,
@@ -1074,6 +1785,7 @@ export function createWikiMcpServer(context: WikiMcpContext, host: WikiMcpHost):
       const { name, arguments: args } = request.params;
       const handlers: Record<string, (a: Record<string, unknown>) => CallToolResult> = {
         wiki_query: wikiQuery,
+        wiki_read: wikiRead,
         wiki_topic_brief: wikiTopicBrief,
         wiki_last_conversation: wikiLastConversation,
         skill_query: skillQuery,
@@ -1098,12 +1810,31 @@ async function main() {
   let bridge: Partial<WikiMcpHost> = {};
   if (context.topicId) {
     try {
-      const [briefs, topics] = await Promise.all([
+      const [briefs, topics, topicLifecycle] = await Promise.all([
         import("#storage/api-topic-brief"),
         import("#storage/api-topics"),
+        import("#topics/derive"),
       ]);
       bridge = {
         getTopicBrief: briefs.getTopicBrief,
+        canReadTopicMemory: (selection, userId) => {
+          const normalized = selection
+            .trim()
+            .toLowerCase()
+            .replace(/^topic\//, "")
+            .replace(/\.md$/i, "");
+          return topics.listTopics().some((topic) => {
+            if (topic.visibility === "hidden") return false;
+            if (!topic.participants.some((participant) => participant.userId === userId))
+              return false;
+            return (
+              topic.id === selection ||
+              topic.title.trim().toLowerCase() === normalized ||
+              wikiSummarySlug(topic.title).toLowerCase() === normalized ||
+              topic.memoryKey?.toLowerCase() === normalized
+            );
+          });
+        },
         resolveTopicBrief: (selection, userId) =>
           resolveAccessibleWikiTopicBrief(
             selection,
@@ -1112,6 +1843,17 @@ async function main() {
             briefs.resolveTopicBrief,
           ),
         setTopicBrief: briefs.setTopicBrief,
+        adoptTopicMemory: (topicId, userId, memoryKey) => {
+          const topic = topics.getTopic(topicId);
+          if (
+            !topic?.participants.some(
+              (participant) => participant.userId === userId && participant.role === "owner",
+            )
+          ) {
+            return false;
+          }
+          return topicLifecycle.updateTopic(topicId, { memoryKey });
+        },
       };
     } catch {
       // DB not available — degrade gracefully (file-only).

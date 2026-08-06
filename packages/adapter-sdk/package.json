@@ -1,6 +1,6 @@
 {
   "name": "@negotium/adapter-sdk",
-  "version": "0.2.17",
+  "version": "0.2.18",
   "type": "module",
   "description": "Shared lifecycle contract for Negotium channel adapters",
   "license": "Apache-2.0",

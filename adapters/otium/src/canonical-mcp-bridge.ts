@@ -18,6 +18,7 @@ const TOOL_ALLOWLIST: Record<CanonicalMcpSurface, ReadonlySet<string>> = {
   task: new Set(["task_create", "task_update", "task_list", "task_get", "task_delete"]),
   wiki: new Set([
     "wiki_query",
+    "wiki_read",
     "wiki_topic_brief",
     "wiki_last_conversation",
     "save_wiki_entry",
