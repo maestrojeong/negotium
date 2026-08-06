@@ -213,6 +213,10 @@ describe("createWikiMcpServer", () => {
       createWikiMcpServer({ userId: "user", surface: "wiki" }, { wikiRoot: root }),
     );
 
+    // Documents created directly on disk predate wiki_write, so the derived
+    // body index is filled by an explicit reindex. Retrieval never scans.
+    await client.callTool({ name: "wiki_reindex", arguments: {} });
+
     const result = text(
       await client.callTool({
         name: "wiki_query",
@@ -239,6 +243,10 @@ describe("createWikiMcpServer", () => {
     const client = await connect(
       createWikiMcpServer({ userId: "user", surface: "wiki" }, { wikiRoot: root }),
     );
+
+    // Documents created directly on disk predate wiki_write, so the derived
+    // body index is filled by an explicit reindex. Retrieval never scans.
+    await client.callTool({ name: "wiki_reindex", arguments: {} });
 
     const relevant = text(
       await client.callTool({
@@ -285,6 +293,10 @@ describe("createWikiMcpServer", () => {
     const client = await connect(
       createWikiMcpServer({ userId: "user", surface: "wiki" }, { wikiRoot: root }),
     );
+
+    // Documents created directly on disk predate wiki_write, so the derived
+    // body index is filled by an explicit reindex. Retrieval never scans.
+    await client.callTool({ name: "wiki_reindex", arguments: {} });
 
     const result = text(
       await client.callTool({
@@ -442,6 +454,10 @@ describe("createWikiMcpServer", () => {
     const client = await connect(
       createWikiMcpServer({ userId: "user", surface: "wiki" }, { wikiRoot: root }),
     );
+
+    // Documents created directly on disk predate wiki_write, so the derived
+    // body index is filled by an explicit reindex. Retrieval never scans.
+    await client.callTool({ name: "wiki_reindex", arguments: {} });
 
     const ambiguousTopic = text(
       await client.callTool({
@@ -902,6 +918,100 @@ describe("createWikiMcpServer", () => {
     const index = readFileSync(join(root, "article-index.md"), "utf-8");
     expect(index.match(/\[\[articles\/catalog-authority\]\]/g)).toHaveLength(1);
     expect(index).not.toContain("phantom row");
+    await client.close();
+  });
+
+  test("wiki_write makes a body phrase searchable without scanning the wiki", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wiki-incremental-search-"));
+    roots.push(root);
+    const client = await connect(
+      createWikiMcpServer(
+        { userId: "user", topicId: "room-id", surface: "wiki" },
+        { wikiRoot: root },
+      ),
+    );
+
+    await client.callTool({
+      name: "wiki_write",
+      arguments: {
+        kind: "article",
+        slug: "fence-cancellation",
+        section: "Runtime",
+        // The phrase lives only in the body, so a hit proves the derived index
+        // was filled at write time rather than the catalog being matched.
+        content: "# Fence Cancellation\n\nDrop the lease before awaiting the terminal channel.",
+        description: "Lease and fence ordering",
+        date: "2026-08-06",
+      },
+    });
+
+    const found = text(
+      await client.callTool({
+        name: "wiki_query",
+        arguments: { question: "awaiting the terminal channel", kind: "article" },
+      }),
+    );
+    expect(found).toContain("key: fence-cancellation");
+
+    // A document dropped in by hand is deliberately not discovered: retrieval
+    // never walks the tree. An explicit reindex is what picks it up.
+    writeFileSync(
+      join(root, "articles", "hand-dropped.md"),
+      "# Hand Dropped\n\nRotate the quarantined credential bundle.",
+    );
+    const missed = text(
+      await client.callTool({
+        name: "wiki_query",
+        arguments: { question: "quarantined credential bundle", kind: "article" },
+      }),
+    );
+    expect(missed).toBe("No matching wiki articles found.");
+
+    const report = text(await client.callTool({ name: "wiki_reindex", arguments: {} }));
+    expect(report).toContain("2 documents");
+    expect(report).toContain("missing rows: hand-dropped");
+
+    const recovered = text(
+      await client.callTool({
+        name: "wiki_query",
+        arguments: { question: "quarantined credential bundle", kind: "article" },
+      }),
+    );
+    expect(recovered).toContain("key: hand-dropped");
+    await client.close();
+  });
+
+  test("catalog retrieval survives a deleted body cache", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wiki-cache-loss-"));
+    roots.push(root);
+    const client = await connect(
+      createWikiMcpServer(
+        { userId: "user", topicId: "room-id", surface: "wiki" },
+        { wikiRoot: root },
+      ),
+    );
+
+    await client.callTool({
+      name: "wiki_write",
+      arguments: {
+        kind: "article",
+        slug: "cache-authority",
+        section: "Runtime",
+        content: "# Cache Authority\n\nThe derived cache is never the source of truth.",
+        description: "Why the derived cache is disposable",
+        date: "2026-08-06",
+      },
+    });
+
+    // The cache is a rebuildable artifact: deleting it must not lose an entry.
+    rmSync(join(root, ".wiki-search-index.sqlite"), { force: true });
+    const found = text(
+      await client.callTool({
+        name: "wiki_query",
+        arguments: { question: "derived cache is disposable", kind: "article" },
+      }),
+    );
+    expect(found).toContain("key: cache-authority");
     await client.close();
   });
 

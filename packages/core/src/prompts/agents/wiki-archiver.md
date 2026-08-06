@@ -22,7 +22,12 @@ wiki/
   summaries/<date>-<topic>.md   <- session summaries (write-once)   -> summary-index.md
   articles/<slug>.md            <- curated concept pages (mergeable) -> article-index.md
   topic/<topic>.md              <- accumulated persona brief         -> topic-index.md
+  .wiki-search-index.sqlite     <- derived body-search cache (never edit or archive)
 ```
+
+`wiki_write` also feeds the derived cache, so a document is searchable by its body the moment it is
+written. The cache is disposable: if a call reports that it was not updated, the catalogs still
+work and `wiki_reindex` refills it.
 
 **You have no file-writing tool.** `wiki_write` is the only way to create or update a wiki
 document; `description` is mandatory because the catalog is what makes retrieval work. Use `Read`

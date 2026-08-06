@@ -4,6 +4,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
+  type Dirent,
   existsSync,
   mkdirSync,
   openSync,
@@ -25,6 +26,13 @@ import {
   type ListToolsResult,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
+import {
+  type IndexedWikiKind,
+  type PreparedWikiSearchDocument,
+  resetCorruptWikiSearchIndex,
+  WikiSearchIndex,
+  type WikiSearchIndexSource,
+} from "#mcp/wiki-search-index";
 import { SHARED_WIKI_DIR } from "#platform/config";
 import {
   wikiBriefStorageKey,
@@ -484,6 +492,74 @@ function trigramSimilarity(left: string, right: string): number {
   return (2 * overlap) / (a.size + b.size);
 }
 
+const WIKI_SEARCH_INDEX_FILENAME = ".wiki-search-index.sqlite";
+
+/**
+ * Open the derived body-search index.
+ *
+ * The index is a rebuildable cache that is written only by the wiki write path,
+ * so a missing or unreadable file is a normal cold state rather than an error:
+ * catalog retrieval still works, and `wiki_reindex` refills the bodies.
+ */
+function openWikiSearchIndex(): WikiSearchIndex | undefined {
+  const path = resolve(runtime().wikiDir, WIKI_SEARCH_INDEX_FILENAME);
+  try {
+    return new WikiSearchIndex(path);
+  } catch (error) {
+    if (!/malformed|not a database|schema/i.test(String(error))) return undefined;
+    try {
+      resetCorruptWikiSearchIndex(path);
+      return new WikiSearchIndex(path);
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+/** Derive the indexed fields for one document body. */
+function prepareWikiSearchDocument(
+  kind: IndexedWikiKind,
+  key: string,
+  text: string,
+): PreparedWikiSearchDocument {
+  const titleLine = text.split("\n").find((line) => /^#+\s*/.test(line)) ?? "";
+  const title = titleLine ? titleLine.replace(/^#+\s*/, "") : basename(key);
+  return {
+    title,
+    text,
+    tokens: canonicalSearchTokens(`${key} ${title} ${text}`),
+    ...(kind === "summary" && /^\d{4}-\d{2}-\d{2}/.test(key)
+      ? { date: key.slice(0, 10), family: summaryTopicIdentity(key) }
+      : {}),
+  };
+}
+
+/**
+ * Mirror a freshly written document into the derived body index.
+ *
+ * Returns false when the cache could not be updated. The document and its
+ * catalog row are already durable at this point, so a cache miss degrades
+ * retrieval to catalog-only rather than failing the write.
+ */
+function indexWikiSearchDocument(kind: IndexedWikiKind, key: string, text: string): boolean {
+  const root = kind === "article" ? runtime().articlesDir : runtime().summariesDir;
+  const path = resolve(root, `${key}.md`);
+  const index = openWikiSearchIndex();
+  if (!index) return false;
+  try {
+    const stat = statSync(path);
+    index.upsert(
+      { kind, key, path, mtimeMs: stat.mtimeMs, size: stat.size },
+      prepareWikiSearchDocument(kind, key, text),
+    );
+    return true;
+  } catch {
+    return false;
+  } finally {
+    index.close();
+  }
+}
+
 type WikiIndexKind = "article" | "summary" | "topic" | "skill";
 
 const WIKI_INDEX_FILENAMES: Record<WikiIndexKind, string> = {
@@ -900,13 +976,53 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
     return score;
   }
 
-  if (kind === "all" || kind === "article") scan(runtime().articlesDir, "articles");
-  // Skills are node-local runtime knowledge, not canonical workspace memory.
-  // Keep the legacy all-in-one server compatible while ensuring the explicit
-  // wiki surface cannot read a node's skill library.
+  // Article and summary bodies come from the derived index, which the write path
+  // keeps current. Reading every file here is what made retrieval cost grow with
+  // the size of the wiki.
+  const bodyKinds: IndexedWikiKind[] = [
+    ...(kind === "all" || kind === "article" ? (["article"] as const) : []),
+    ...(kind === "all" || kind === "summary" ? (["summary"] as const) : []),
+  ];
+  if (bodyKinds.length > 0) {
+    const searchIndex = openWikiSearchIndex();
+    if (searchIndex) {
+      try {
+        const terms = canonicalSearchTokens(normalizedQuery);
+        const ids = searchIndex.matchingDocumentIds(bodyKinds, terms);
+        // "latest summary" carries no term any document contains, so a purely
+        // temporal question is answered from the indexed dates instead.
+        if (temporalDirection && bodyKinds.includes("summary")) {
+          for (const item of searchIndex.summaryMetadataByDate({
+            direction: temporalDirection === "newest" ? "latest" : "oldest",
+            limit,
+          })) {
+            ids.add(item.id);
+          }
+        }
+        for (const document of searchIndex.documents(ids)) {
+          scored.push({
+            kind: document.kind,
+            key: document.key,
+            keyScore: scoreIndexKey(question, document.key),
+            score: scoreMatch(document.text, document.key, document.kind),
+            path: `${document.kind === "article" ? "articles" : "summaries"}/${document.key}.md`,
+            text: document.text,
+            title: document.title,
+            ...(document.date ? { date: document.date } : {}),
+          });
+        }
+      } catch {
+        // A damaged cache must not make catalog retrieval unavailable.
+      } finally {
+        searchIndex.close();
+      }
+    }
+  }
+  // Topic briefs and skills are small, node-local sets that no derived index
+  // covers, so they are still read directly. Skills stay out of the explicit
+  // wiki surface: they are node runtime knowledge, not canonical memory.
   if (kind === "all" && runtime().surface === "all") scan(runtime().skillsDir, "skills");
   if (kind === "all" || kind === "topic") scan(runtime().topicsDir, "topic");
-  if (kind === "all" || kind === "summary") scan(runtime().summariesDir, "summaries");
 
   const merged = new Map<string, WikiSearchResult>();
   for (const { candidate, keyScore, score } of indexCandidates) {
@@ -1542,11 +1658,14 @@ function wikiWrite(args: Record<string, unknown>): CallToolResult {
       section: section.trim(),
     });
     if (typeof link !== "string") return link;
+    const searched = indexWikiSearchDocument("article", slugResult.slug, content);
     return {
       content: [
         {
           type: "text",
-          text: `Saved article: articles/${slugResult.slug}.md (${existed ? "updated" : "created"})\nIndexed: ${link}`,
+          text:
+            `Saved article: articles/${slugResult.slug}.md (${existed ? "updated" : "created"})\nIndexed: ${link}` +
+            (searched ? "" : `\n${SEARCH_CACHE_SKIPPED_NOTE}`),
         },
       ],
     };
@@ -1567,13 +1686,15 @@ function wikiWrite(args: Record<string, unknown>): CallToolResult {
       date: dateStr,
     });
     if (typeof link !== "string") return link;
+    const searched = indexWikiSearchDocument("summary", written.slug, content);
     return {
       content: [
         {
           type: "text",
           text:
             `Saved summary: summaries/${written.slug}.md\nIndexed: ${link}` +
-            (written.sqliteUpdated ? "\nSQLite latest-summary also updated." : ""),
+            (written.sqliteUpdated ? "\nSQLite latest-summary also updated." : "") +
+            (searched ? "" : `\n${SEARCH_CACHE_SKIPPED_NOTE}`),
         },
       ],
     };
@@ -1598,6 +1719,110 @@ function wikiWrite(args: Record<string, unknown>): CallToolResult {
     ],
   };
 }
+
+/** Collect the article and summary documents currently on disk. */
+function collectIndexableDocuments(): WikiSearchIndexSource[] {
+  const sources: WikiSearchIndexSource[] = [];
+  function add(kind: IndexedWikiKind, key: string, path: string): void {
+    try {
+      const stat = statSync(path);
+      if (!stat.isFile()) return;
+      sources.push({ kind, key, path, mtimeMs: stat.mtimeMs, size: stat.size });
+    } catch {
+      // A file that vanished mid-walk is simply absent from this pass.
+    }
+  }
+  for (const [root, kind, allowSubdirectories] of [
+    [runtime().articlesDir, "article", true],
+    [runtime().summariesDir, "summary", false],
+  ] as const) {
+    let entries: Dirent<string>[];
+    try {
+      entries = readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith(".md")) {
+        add(kind, entry.name.replace(/\.md$/i, ""), join(root, entry.name));
+        continue;
+      }
+      if (!entry.isDirectory() || !allowSubdirectories) continue;
+      let nested: Dirent<string>[];
+      try {
+        nested = readdirSync(join(root, entry.name), { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const file of nested) {
+        if (!file.isFile() || !file.name.endsWith(".md")) continue;
+        add(
+          kind,
+          `${entry.name}/${file.name.replace(/\.md$/i, "")}`,
+          join(root, entry.name, file.name),
+        );
+      }
+    }
+  }
+  return sources;
+}
+
+/**
+ * Refill the derived body index and report catalog gaps.
+ *
+ * This is the only place that walks the content directories, and it runs only
+ * when asked. Retrieval never scans, and this command deliberately does not
+ * invent catalog rows: it names the documents that need one so a description is
+ * written by whoever knows what the document is for.
+ */
+function wikiReindex(): CallToolResult {
+  const documents = collectIndexableDocuments();
+  const index = openWikiSearchIndex();
+  if (!index) {
+    return {
+      content: [{ type: "text", text: "Could not open the wiki search index." }],
+      isError: true,
+    };
+  }
+  let synced: { added: number; updated: number; removed: number };
+  try {
+    synced = index.sync(documents, (source, text) =>
+      prepareWikiSearchDocument(source.kind, source.key, text),
+    );
+  } catch (error) {
+    return {
+      content: [{ type: "text", text: `Failed to rebuild the search index: ${String(error)}` }],
+      isError: true,
+    };
+  } finally {
+    index.close();
+  }
+
+  // Compare the documents on disk against the catalogs. A document with no row
+  // is invisible to retrieval; a row with no document is a harmless tombstone.
+  const lines = [
+    `Search index: ${synced.added} added, ${synced.updated} updated, ${synced.removed} removed (${documents.length} documents).`,
+  ];
+  for (const kind of ["article", "summary"] as const) {
+    const rows = new Set(
+      parseWikiIndex(wikiIndexPath(kind))
+        .filter((candidate) => candidate.kind === kind)
+        .map((candidate) => candidate.key),
+    );
+    const keys = documents.filter((source) => source.kind === kind).map((source) => source.key);
+    const unindexed = keys.filter((key) => !rows.has(key));
+    const tombstones = [...rows].filter((key) => !keys.includes(key));
+    lines.push(
+      `${WIKI_INDEX_FILENAMES[kind]}: ${rows.size} rows for ${keys.length} documents` +
+        (unindexed.length > 0 ? `; missing rows: ${unindexed.join(", ")}` : "") +
+        (tombstones.length > 0 ? `; tombstones: ${tombstones.join(", ")}` : ""),
+    );
+  }
+  return { content: [{ type: "text", text: lines.join("\n") }] };
+}
+
+const SEARCH_CACHE_SKIPPED_NOTE =
+  "Body-search cache was not updated; catalog retrieval still works. Run wiki_reindex to refill it.";
 
 /**
  * Index a freshly written document, turning an index failure into an explicit
@@ -1898,6 +2123,12 @@ const WIKI_TOOLS: Tool[] = [
     },
   },
   {
+    name: "wiki_reindex",
+    description:
+      "Rebuild the derived body-search cache from the documents on disk and report catalog gaps. Run this once after adding documents outside wiki_write; retrieval itself never scans the wiki.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
     name: "index_upsert",
     description:
       "Correct the description or section of an entry that already exists. Cannot create an entry — use wiki_write for that.",
@@ -2021,6 +2252,7 @@ export function createWikiMcpServer(context: WikiMcpContext, host: WikiMcpHost):
         skill_query: skillQuery,
         skill_save: skillSave,
         wiki_write: wikiWrite,
+        wiki_reindex: wikiReindex,
         index_upsert: indexUpsert,
       };
       const handler = tools.some((tool) => tool.name === name) ? handlers[name] : undefined;
