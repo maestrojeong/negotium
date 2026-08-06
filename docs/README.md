@@ -13,6 +13,7 @@ instead of copying the explanation.
 | [Feature review](./FEATURE-REVIEW.md) | Review order, acceptance questions, source areas, and regression coverage |
 | [Wiki search evaluation for 0.2.18](./WIKI-SEARCH-EVALUATION-0.2.18.md) | Topic, article, and summary retrieval dataset, metrics, and limitations |
 | [Releasing](./RELEASING.md) | Package validation and npm publication |
+| [Migration 0.2.19](./MIGRATION-0.2.19.md) | The single wiki write tool, the summary catalog, and scan-free retrieval |
 | [Migration 0.2.0](./MIGRATION-0.2.0.md) | Historical single-user filesystem migration and completion marker |
 | [Migration 0.1.18](./MIGRATION-0.1.18.md) | Public helper adoption and Otium thin-adapter upgrade order |
 | [Migration 0.1.19](./MIGRATION-0.1.19.md) | Reset memory safety and the next Otium deduplication boundary |
