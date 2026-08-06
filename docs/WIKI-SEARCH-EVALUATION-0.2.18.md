@@ -86,6 +86,53 @@ queries:
 
 Adapter errors were zero on both splits.
 
+## Scale and latency experiment
+
+Search latency was measured separately from the relevance evaluation against the production Wiki
+MCP implementation at commit `701947e`. The benchmark used deterministic synthetic Markdown only;
+it did not copy filenames, text, or structure from a user Wiki.
+
+Each corpus contained 70% articles and 30% summaries. A long-lived in-memory MCP client issued ten
+queries per track, with one first-track call and nine steady-state calls. Every query retrieved its
+expected synthetic target. The reported latency is measured around the MCP tool call and excludes
+adapter process startup.
+
+### Steady-state p95 latency
+
+| Total documents | Topic | Article | Summary | Process RSS |
+| ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 0.8 ms | 108 ms | 17 ms | 171 MiB |
+| 2,000 | 1.0 ms | 219 ms | 112 ms | 174 MiB |
+| 5,000 | 7.6 ms | 525 ms | 245 ms | 198 MiB |
+| 10,000 | 3.4 ms | 1.06 s | 492 ms | 273 MiB |
+| 20,000 | 5.6 ms | 2.06 s | 923 ms | 335 MiB |
+
+Topic routing remains fast because a confident candidate can be resolved from the topic index.
+Article and summary latency grows approximately linearly because those tracks scan and score all
+Markdown files in the selected kind. The different article and summary slopes also reflect the
+70/30 corpus split.
+
+### First call per track
+
+| Total documents | Article | Summary |
+| ---: | ---: | ---: |
+| 1,000 | 263 ms | 47 ms |
+| 2,000 | 639 ms | 498 ms |
+| 5,000 | 3.90 s | 1.81 s |
+| 10,000 | 7.45 s | 5.45 s |
+| 20,000 | 18.20 s | 9.56 s |
+
+First-call measurements include initial filesystem reads, operating-system cache state, and JIT
+effects, so they are more variable than steady-state measurements. They nevertheless show that
+full document scans are not a scalable terminal architecture.
+
+The 0.2.18 candidate prioritizes correctness and safe routing. A generic follow-up should preserve
+Markdown as the source of truth while caching normalized document metadata and term frequencies per
+Wiki root, invalidating internal writes immediately, and incrementally refreshing externally
+changed files by identity, size, and modification time. Authorization must remain request-scoped
+rather than being embedded in a shared corpus cache. An inverted index is appropriate only after
+the snapshot cache is measured at larger scales.
+
 ## Algorithm changes exercised by the evaluation
 
 - Query normalization handles punctuation, spacing, Korean/English mixtures, bounded typo
