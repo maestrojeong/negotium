@@ -34,11 +34,16 @@ export interface WikiSearchIndexMetadata {
   key: string;
   title: string;
   date?: string;
+  family?: string;
 }
 
 export interface WikiSummaryTemporalQuery {
   year?: string;
   month?: string;
+  exactDate?: string;
+  before?: string;
+  after?: string;
+  family?: string;
   direction: "latest" | "oldest";
   limit: number;
 }
@@ -72,6 +77,7 @@ interface StoredMetadataRow {
   key: string;
   title: string;
   date: string | null;
+  family: string | null;
 }
 
 function documentId(source: Pick<WikiSearchIndexSource, "kind" | "key">): string {
@@ -136,6 +142,7 @@ export class WikiSearchIndex {
   sync(
     sources: WikiSearchIndexSource[],
     prepare: (source: WikiSearchIndexSource, text: string) => PreparedWikiSearchDocument,
+    options: { removeMissing?: boolean } = {},
   ): WikiSearchIndexSyncResult {
     const result: WikiSearchIndexSyncResult = { added: 0, updated: 0, removed: 0 };
     const existingRows = this.#database
@@ -171,7 +178,8 @@ export class WikiSearchIndex {
         // a concurrent writer finishes or permissions are restored.
       }
     }
-    const removed = existingRows.filter((row) => !present.has(row.id));
+    const removed =
+      options.removeMissing === false ? [] : existingRows.filter((row) => !present.has(row.id));
 
     const apply = this.#database.transaction(() => {
       const deleteTerms = this.#database.query("DELETE FROM wiki_search_fts WHERE document_id = ?");
@@ -221,7 +229,7 @@ export class WikiSearchIndex {
     const placeholders = kinds.map(() => "?").join(", ");
     const rows = this.#database
       .query<StoredMetadataRow, string[]>(
-        `SELECT id, kind, key, title, date
+        `SELECT id, kind, key, title, date, family
          FROM wiki_search_documents
          WHERE kind IN (${placeholders})`,
       )
@@ -232,13 +240,23 @@ export class WikiSearchIndex {
       key: row.key,
       title: row.title,
       ...(row.date ? { date: row.date } : {}),
+      ...(row.family ? { family: row.family } : {}),
     }));
   }
 
   summaryMetadataByDate(query: WikiSummaryTemporalQuery): WikiSearchIndexMetadata[] {
     const conditions = ["kind = 'summary'", "date IS NOT NULL"];
     const parameters: Array<string | number> = [];
-    if (query.year && query.month) {
+    if (query.exactDate) {
+      conditions.push("date = ?");
+      parameters.push(query.exactDate);
+    } else if (query.before) {
+      conditions.push("date < ?");
+      parameters.push(query.before);
+    } else if (query.after) {
+      conditions.push("date > ?");
+      parameters.push(query.after);
+    } else if (query.year && query.month) {
       const month = Number(query.month);
       const nextYear = month === 12 ? String(Number(query.year) + 1) : query.year;
       const nextMonth = String(month === 12 ? 1 : month + 1).padStart(2, "0");
@@ -251,10 +269,14 @@ export class WikiSearchIndex {
       conditions.push("substr(date, 6, 2) = ?");
       parameters.push(query.month);
     }
+    if (query.family) {
+      conditions.push("family = ?");
+      parameters.push(query.family);
+    }
     parameters.push(query.limit);
     const rows = this.#database
       .query<StoredMetadataRow, Array<string | number>>(
-        `SELECT id, kind, key, title, date
+        `SELECT id, kind, key, title, date, family
          FROM wiki_search_documents
          WHERE ${conditions.join(" AND ")}
          ORDER BY date ${query.direction === "oldest" ? "ASC" : "DESC"}, key ASC
@@ -267,6 +289,7 @@ export class WikiSearchIndex {
       key: row.key,
       title: row.title,
       ...(row.date ? { date: row.date } : {}),
+      ...(row.family ? { family: row.family } : {}),
     }));
   }
 

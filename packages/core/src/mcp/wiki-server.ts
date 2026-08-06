@@ -307,11 +307,17 @@ interface WikiCatalogDocument {
   size: number;
 }
 
+interface WikiCatalogDiscovery {
+  documents: WikiCatalogDocument[];
+  complete: boolean;
+}
+
 interface WikiSearchRuntimeState {
   lastSyncAt: number;
   signal: string;
   articleSubdirectories: string[];
   catalogTargets: Set<string>;
+  inventoryComplete: boolean;
   metadata?: ReturnType<WikiSearchIndex["metadata"]>;
   metadataTrigramPostings?: Map<string, Set<string>>;
 }
@@ -501,7 +507,13 @@ function scoreSummaryTime(query: string, key: string, title: string): number | n
   const hasRecencyTerm = tokens.some((token) => SEARCH_RECENCY_TERMS.has(token));
   const yearMatches = !queryYear || queryYear === date[1];
   const monthMatches = !queryMonth || queryMonth === date[2];
-  if ((!queryYear && !queryMonth && !hasRecencyTerm) || !yearMatches || !monthMatches) return 0;
+  const relationalDateQuery = Boolean(requestedDate && (beforeDate || afterDate));
+  if (
+    !relationalDateQuery &&
+    ((!queryYear && !queryMonth && !hasRecencyTerm) || !yearMatches || !monthMatches)
+  ) {
+    return 0;
+  }
 
   const normalizedMetadata = `${normalizeSearchText(key)} ${normalizeSearchText(title)}`;
   const contentTokens = tokens.filter(
@@ -511,7 +523,7 @@ function scoreSummaryTime(query: string, key: string, title: string): number | n
       !SEARCH_RECENCY_TERMS.has(token),
   );
   const contentMatches = contentTokens.filter((token) => normalizedMetadata.includes(token)).length;
-  const relationScore = requestedDate && (beforeDate || afterDate) ? 60 : 0;
+  const relationScore = relationalDateQuery ? 60 : 0;
   const exactDateScore = requestedDate === documentDate ? 90 : 0;
   return 30 + relationScore + exactDateScore + contentMatches * 15;
 }
@@ -630,19 +642,26 @@ function searchWikiIndex(
 
 const AUTO_INDEX_MARKER = "negotium:auto-index";
 
-function discoverWikiCatalogDocuments(): WikiCatalogDocument[] {
+function discoverWikiCatalogDocuments(): WikiCatalogDiscovery {
   const documents: WikiCatalogDocument[] = [];
+  let complete = true;
 
   function discover(
     root: string,
     kind: WikiCatalogDocument["kind"],
     allowSubdirectories: boolean,
   ): void {
-    ensureDir(root);
+    try {
+      ensureDir(root);
+    } catch {
+      complete = false;
+      return;
+    }
     let entries: Dirent<string>[];
     try {
       entries = readdirSync(root, { withFileTypes: true });
     } catch {
+      complete = false;
       return;
     }
     for (const entry of entries) {
@@ -658,6 +677,7 @@ function discoverWikiCatalogDocuments(): WikiCatalogDocument[] {
             size: stat.size,
           });
         } catch {
+          complete = false;
           // A concurrent rename or deletion will be reconciled on the next sync.
         }
         continue;
@@ -678,20 +698,25 @@ function discoverWikiCatalogDocuments(): WikiCatalogDocument[] {
               size: stat.size,
             });
           } catch {
+            complete = false;
             // A concurrent rename or deletion will be reconciled on the next sync.
           }
         }
       } catch {
-        // Ignore an unreadable or concurrently removed subdirectory.
+        // Keep the prior derived generation when a scope cannot be inventoried.
+        complete = false;
       }
     }
   }
 
   discover(runtime().articlesDir, "article", true);
   discover(runtime().summariesDir, "summary", false);
-  return documents.sort(
-    (left, right) => left.kind.localeCompare(right.kind) || left.key.localeCompare(right.key),
-  );
+  return {
+    documents: documents.sort(
+      (left, right) => left.kind.localeCompare(right.kind) || left.key.localeCompare(right.key),
+    ),
+    complete,
+  };
 }
 
 function wikiCatalogSignal(articleSubdirectories: string[]): string {
@@ -773,7 +798,7 @@ function generatedIndexLine(document: WikiCatalogDocument): string {
  * exact keys.
  */
 function syncArticleIndex(
-  documents: WikiCatalogDocument[] = discoverWikiCatalogDocuments(),
+  documents: WikiCatalogDocument[] = discoverWikiCatalogDocuments().documents,
 ): WikiIndexSyncResult {
   const result: WikiIndexSyncResult = {
     added: 0,
@@ -989,51 +1014,65 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
       !existsSync(searchIndexPath) ||
       wikiCatalogSignal(previousState.articleSubdirectories) !== previousState.signal ||
       Date.now() - previousState.lastSyncAt >= WIKI_SEARCH_SYNC_INTERVAL_MS;
-    let catalogDocuments: WikiCatalogDocument[] | undefined;
+    let catalogDiscovery: WikiCatalogDiscovery | undefined;
     if (shouldSynchronize) {
-      catalogDocuments = discoverWikiCatalogDocuments();
+      catalogDiscovery = discoverWikiCatalogDocuments();
       try {
-        syncArticleIndex(catalogDocuments);
+        syncArticleIndex(catalogDiscovery.documents);
       } catch {
         // Read-only or temporarily locked catalogs must not make search unavailable.
       }
     }
     const synchronize = (
       index: WikiSearchIndex,
-      documents: WikiCatalogDocument[],
+      discovery: WikiCatalogDiscovery,
     ): ReturnType<WikiSearchIndex["sync"]> =>
-      index.sync(documents, (source, text) => {
-        const titleLine = text.split("\n").find((line) => /^#+\s*/.test(line)) ?? "";
-        const title = titleLine ? titleLine.replace(/^#+\s*/, "") : basename(source.key);
-        return {
-          title,
-          text,
-          tokens: canonicalSearchTokens(`${source.key} ${title} ${text}`),
-          ...(source.kind === "summary" && /^\d{4}-\d{2}-\d{2}/.test(source.key)
-            ? { date: source.key.slice(0, 10), family: summaryTopicIdentity(source.key) }
-            : {}),
-        };
-      });
-    const openSearchIndex = (documents?: WikiCatalogDocument[]): WikiSearchIndex => {
+      index.sync(
+        discovery.documents,
+        (source, text) => {
+          const titleLine = text.split("\n").find((line) => /^#+\s*/.test(line)) ?? "";
+          const title = titleLine ? titleLine.replace(/^#+\s*/, "") : basename(source.key);
+          return {
+            title,
+            text,
+            tokens: canonicalSearchTokens(`${source.key} ${title} ${text}`),
+            ...(source.kind === "summary" && /^\d{4}-\d{2}-\d{2}/.test(source.key)
+              ? { date: source.key.slice(0, 10), family: summaryTopicIdentity(source.key) }
+              : {}),
+          };
+        },
+        { removeMissing: discovery.complete },
+      );
+    const openSearchIndex = (discovery?: WikiCatalogDiscovery): WikiSearchIndex => {
       const index = new WikiSearchIndex(searchIndexPath);
       try {
-        if (documents) {
-          const syncResult = synchronize(index, documents);
+        if (discovery) {
+          const syncResult = synchronize(index, discovery);
           const articleSubdirectories = [
             ...new Set(
-              documents
+              discovery.documents
                 .filter((document) => document.kind === "article")
                 .map((document) => dirname(document.path))
                 .filter((path) => path !== runtime().articlesDir),
             ),
           ];
           const changed = syncResult.added + syncResult.updated + syncResult.removed > 0;
+          const retainedMetadata = discovery.complete
+            ? undefined
+            : index.metadata(["article", "summary"]);
           wikiSearchRuntimeStates.set(runtime().wikiDir, {
             lastSyncAt: Date.now(),
             signal: wikiCatalogSignal(articleSubdirectories),
             articleSubdirectories,
-            catalogTargets: catalogTargets(documents),
-            ...(!changed && previousState?.metadata ? { metadata: previousState.metadata } : {}),
+            catalogTargets: retainedMetadata
+              ? new Set(retainedMetadata.map((item) => `${item.kind}:${item.key}`))
+              : catalogTargets(discovery.documents),
+            inventoryComplete: discovery.complete,
+            ...(retainedMetadata
+              ? { metadata: retainedMetadata }
+              : !changed && previousState?.metadata
+                ? { metadata: previousState.metadata }
+                : {}),
             ...(!changed && previousState?.metadataTrigramPostings
               ? { metadataTrigramPostings: previousState.metadataTrigramPostings }
               : {}),
@@ -1046,13 +1085,13 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
       }
     };
     try {
-      searchIndex = openSearchIndex(catalogDocuments);
+      searchIndex = openSearchIndex(catalogDiscovery);
     } catch (error) {
       if (/malformed|not a database|schema/i.test(String(error))) {
         try {
           resetCorruptWikiSearchIndex(searchIndexPath);
-          catalogDocuments ??= discoverWikiCatalogDocuments();
-          searchIndex = openSearchIndex(catalogDocuments);
+          catalogDiscovery ??= discoverWikiCatalogDocuments();
+          searchIndex = openSearchIndex(catalogDiscovery);
         } catch {
           // Fall back to source scanning when a derived index cannot be rebuilt.
         }
@@ -1331,6 +1370,22 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
       if (searchState && !searchState.metadata) searchState.metadata = allMetadata;
       const metadata = allMetadata.filter((item) => indexedKinds.includes(item.kind));
       const allowedMetadataIds = new Set(metadata.map((item) => item.id));
+      const requestedDateMatch = normalizedQuery.match(/\b(\d{4}) (\d{2}) (\d{2})\b/);
+      const requestedDate = requestedDateMatch
+        ? `${requestedDateMatch[1]}-${requestedDateMatch[2]}-${requestedDateMatch[3]}`
+        : undefined;
+      const beforeDate = /\bbefore\b/.test(normalizedQuery);
+      const afterDate = /\bafter\b/.test(normalizedQuery);
+      const requestedYear = normalizedQuery.match(/\b(\d{4})\b/)?.[1];
+      const requestedMonth = meaningfulSearchTokens(normalizedQuery)
+        .map((token) => SEARCH_MONTHS.get(token))
+        .find(Boolean);
+      const temporalQuery =
+        temporalDirection !== undefined ||
+        requestedYear !== undefined ||
+        requestedMonth !== undefined ||
+        beforeDate ||
+        afterDate;
       const nonContentTerms = new Set([
         ...SEARCH_RECENCY_TERMS,
         ...SEARCH_MONTHS.keys(),
@@ -1342,7 +1397,7 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
         "after",
       ]);
       const contentTerms = canonicalSearchTokens(normalizedQuery).filter(
-        (token) => !nonContentTerms.has(token) && !/^\d{4}$/.test(token),
+        (token) => !nonContentTerms.has(token) && !(temporalQuery && /^\d+$/.test(token)),
       );
       const candidateIds = searchIndex.matchingDocumentIds(indexedKinds, contentTerms);
 
@@ -1365,20 +1420,24 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
       }
 
       if (kind === "summary" || kind === "all") {
-        const requestedYear = normalizedQuery.match(/\b(\d{4})\b/)?.[1];
-        const requestedMonth = meaningfulSearchTokens(normalizedQuery)
-          .map((token) => SEARCH_MONTHS.get(token))
-          .find(Boolean);
-        const temporalQuery =
-          temporalDirection !== undefined ||
-          requestedYear !== undefined ||
-          requestedMonth !== undefined ||
-          /\b(?:before|after)\b/.test(normalizedQuery);
         if (temporalQuery) {
+          const requestedFamily = allMetadata
+            .filter(
+              (item) =>
+                item.kind === "summary" &&
+                item.family &&
+                item.family.length >= 3 &&
+                normalizedQuery.includes(item.family),
+            )
+            .sort((left, right) => right.family!.length - left.family!.length)[0]?.family;
           const summaries = searchIndex.summaryMetadataByDate({
             ...(requestedYear ? { year: requestedYear } : {}),
             ...(requestedMonth ? { month: requestedMonth } : {}),
-            direction: temporalDirection === "oldest" ? "oldest" : "latest",
+            ...(requestedDate && !beforeDate && !afterDate ? { exactDate: requestedDate } : {}),
+            ...(requestedDate && beforeDate ? { before: requestedDate } : {}),
+            ...(requestedDate && afterDate ? { after: requestedDate } : {}),
+            ...(requestedFamily ? { family: requestedFamily } : {}),
+            direction: afterDate || temporalDirection === "oldest" ? "oldest" : "latest",
             limit: Math.max(limit * 10, 100),
           });
           for (const item of summaries) candidateIds.add(item.id);
@@ -1398,7 +1457,11 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
           ...(document.date ? { date: document.date } : {}),
         });
       }
-      searchedDerivedIndex = true;
+      // A partial filesystem inventory retains prior derived rows, but it cannot
+      // prove that the derived generation is complete. Also scan every readable
+      // source scope so a transient traversal failure cannot become a false
+      // negative merely because the database query itself succeeded.
+      searchedDerivedIndex = searchState?.inventoryComplete ?? false;
     } catch {
       // Preserve correctness if the derived index becomes unavailable mid-query.
     } finally {
