@@ -114,11 +114,23 @@ function versionAtLeast(actualVersion: string, minimumVersion: string): boolean 
   return true;
 }
 
+/**
+ * Ceiling for the `--version` probe, not a latency expectation.
+ *
+ * The probe exists so a wedged binary cannot hang startup; a healthy one
+ * answers in milliseconds. At 2s it also failed whenever the machine was merely
+ * busy — process startup under a loaded test suite regularly exceeds that —
+ * which turned a correctness check into a load measurement and made
+ * `resolveBrowserRsBin` intermittently report a perfectly good binary as
+ * unusable. Generous enough that only a genuinely stuck process trips it.
+ */
+const BROWSER_RS_VERSION_PROBE_TIMEOUT_MS = 15_000;
+
 function browserRsMeetsMinimumVersion(candidate: string): boolean {
   try {
     const output = execFileSync(candidate, ["--version"], {
       encoding: "utf8",
-      timeout: 2_000,
+      timeout: BROWSER_RS_VERSION_PROBE_TIMEOUT_MS,
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     const match = output.match(/^browser-rs (\d+)\.(\d+)\.(\d+)$/);
