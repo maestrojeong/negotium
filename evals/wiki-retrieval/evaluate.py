@@ -31,6 +31,29 @@ def mean(values: list[float]) -> float:
     return statistics.fmean(values) if values else 0.0
 
 
+def latency_summary(rows: list[tuple[dict, dict]]) -> dict:
+    """Per-query wall time, which is the metric the write-time design targets.
+
+    Retrieval must not get slower as the corpus grows, so this is reported per
+    scenario: `fresh` answers from the catalogs alone and `indexed` also consults
+    the derived body index.
+    """
+    samples = sorted(
+        float(output["latency_ms"]) for _, output in rows if output.get("latency_ms") is not None
+    )
+    if not samples:
+        return {}
+    def percentile(fraction: float) -> float:
+        return samples[min(len(samples) - 1, int(fraction * len(samples)))]
+    return {
+        "count": len(samples),
+        "p50_ms": round(percentile(0.50), 3),
+        "p95_ms": round(percentile(0.95), 3),
+        "max_ms": round(samples[-1], 3),
+        "mean_ms": round(mean(samples), 3),
+    }
+
+
 def dcg(ids: list[str], relevance: dict[str, int], k: int) -> float:
     return sum(
         (2 ** relevance.get(doc, 0) - 1) / math.log2(rank + 2)
@@ -229,11 +252,19 @@ def report(track: str, positives: list, negatives: list, split: str, baseline: d
                 failure.update({"query": label["query"], "expected": label, "observed": out})
             failures.append(failure)
 
+    all_rows = positives + negatives
+    latency = {"overall": latency_summary(all_rows)}
+    for scenario in ("indexed", "fresh"):
+        scoped = [pair for pair in all_rows if pair[0]["scenario"] == scenario]
+        if scoped:
+            latency[scenario] = latency_summary(scoped)
+
     return {
         "schema_version": 3,
         "track": track,
         "split": split,
         "gated_categories": sorted({pair[0]["category"] for pair in supported}),
+        "latency": latency,
         "metrics": metrics,
         "restraint": restraint,
         "known_limitations": limitations,
@@ -305,7 +336,8 @@ def main() -> None:
         "tracks": {
             track: {"accepted": r["accepted"], "metrics": r["metrics"],
                     "restraint": r["restraint"], "known_limitations": r["known_limitations"],
-                    "gated_categories": r["gated_categories"], "gates": r["gates"]}
+                    "gated_categories": r["gated_categories"], "latency": r["latency"],
+                    "gates": r["gates"]}
             for track, r in reports.items()
         },
         "accepted": all(r["accepted"] for r in reports.values()),

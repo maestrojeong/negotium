@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import shutil
 from pathlib import Path
@@ -27,9 +28,13 @@ ROOT = Path(__file__).resolve().parent
 DATASET = ROOT / "dataset"
 CORPUS = DATASET / "corpus"
 SEED = 20260806
-NOISE_ARTICLES = 420
-NOISE_SUMMARIES = 420
-NOISE_TOPICS = 300
+# Noise volume is overridable so retrieval cost can be measured against corpus
+# size. The labeled fixtures are unchanged, so scores stay comparable while the
+# document count moves.
+NOISE_SCALE = int(os.environ.get("WIKI_EVAL_NOISE_SCALE", "1"))
+NOISE_ARTICLES = 420 * NOISE_SCALE
+NOISE_SUMMARIES = 420 * NOISE_SCALE
+NOISE_TOPICS = 300 * NOISE_SCALE
 
 # Handwritten hard cases: the query shares no content token with the document.
 PARAPHRASE = [

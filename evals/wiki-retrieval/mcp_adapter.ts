@@ -73,10 +73,17 @@ const tools = new Set((await client.listTools()).tools.map((tool: { name: string
 
 let reindexReport = "";
 if (scenario === "indexed") {
-  if (!tools.has("wiki_reindex"))
-    throw new Error("wiki_reindex is required for the indexed scenario");
-  const result = await client.callTool({ name: "wiki_reindex", arguments: {} });
-  reindexReport = (result.content as Array<{ text?: string }>).map((e) => e.text || "").join("\n");
+  if (tools.has("wiki_reindex")) {
+    const result = await client.callTool({ name: "wiki_reindex", arguments: {} });
+    reindexReport = (result.content as Array<{ text?: string }>)
+      .map((e) => e.text || "")
+      .join("\n");
+  } else {
+    // Implementations that predate the write-time index discover documents by
+    // scanning during the query, so there is nothing to build up front. Measuring
+    // them is how the cost of that scan is compared against this design.
+    reindexReport = "wiki_reindex is unavailable: assuming a scan-on-query implementation";
+  }
 } else {
   // A query recreates the cache file, so ensure it starts absent and stays unfilled.
   for (const suffix of ["", "-journal", "-wal", "-shm"]) {
