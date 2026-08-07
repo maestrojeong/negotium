@@ -158,30 +158,23 @@ await bundle(["apps/negotium/src/hosted-agent.ts", "apps/negotium/src/canonical-
 // configuration is never duplicated if registry operations are exposed again.
 await bundle(["apps/negotium/src/registry.ts", "apps/negotium/src/rollout.ts"]);
 
-// Entrypoints that can reach `storage-host` MUST share one graph. Its
-// `configuredHost`/`fallbackDatabase` are process-global state expressed as
-// module state, so a private copy per bundle silently splits an embedded
-// Negotium's store across two databases (scripts/package-shared-state.test.ts).
-await bundle([
-  "apps/negotium/src/storage.ts",
+// These remaining leaf entrypoints do not share mutable runtime registrations
+// with one another. Building them independently avoids Bun exposing both a source
+// module's exports and @negotium/core's re-exports in the same split chunk,
+// which produces invalid duplicate ESM export names.
+for (const entrypoint of [
+  "apps/negotium/src/mcp-servers.ts",
   "apps/negotium/src/vault.ts",
+  "apps/negotium/src/storage.ts",
+  "apps/negotium/src/prompts.ts",
   "apps/negotium/src/runtime-helpers.ts",
   "apps/negotium/src/mcp-factories.ts",
   "apps/negotium/src/agent-helpers.ts",
-  "apps/negotium/src/browser-runtime.ts",
-  "apps/negotium/src/query-runtime.ts",
-]);
-
-// These carry no mutable runtime registrations. Building them independently
-// avoids Bun exposing both a source module's exports and @negotium/core's
-// re-exports in the same split chunk, which produces invalid duplicate ESM
-// export names.
-for (const entrypoint of [
-  "apps/negotium/src/mcp-servers.ts",
-  "apps/negotium/src/prompts.ts",
   "apps/negotium/src/mcp-catalog.ts",
   "apps/negotium/src/background-bash.ts",
+  "apps/negotium/src/browser-runtime.ts",
   "apps/negotium/src/outbox.ts",
+  "apps/negotium/src/query-runtime.ts",
   "apps/negotium/src/platform-runtime.ts",
   "apps/negotium/src/sqlite.ts",
 ]) {

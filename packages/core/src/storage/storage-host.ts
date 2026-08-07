@@ -14,18 +14,13 @@ export type {
   StorageTransaction,
 } from "#storage/storage-contract";
 
-let configuredHost: Readonly<StorageHostConfig> = {};
 type InternalStorageDatabase = InstanceType<typeof Database>;
 type OwnedStorageDatabase = InternalStorageDatabase & { close(): void };
-let fallbackDatabase: OwnedStorageDatabase | null = null;
-let fallbackDatabasePath: string | null = null;
 
 interface StorageHostFrame {
   active: boolean;
   patch: Readonly<StorageHostConfig>;
 }
-
-const storageHostFrames: StorageHostFrame[] = [];
 
 type StorageSchemaInitializer = (database: InternalStorageDatabase) => void;
 interface RegisteredSchemaInitializer {
@@ -33,9 +28,59 @@ interface RegisteredSchemaInitializer {
   priority: number;
 }
 
-const schemaInitializers: RegisteredSchemaInitializer[] = [];
-const initializedSchemas = new WeakMap<InternalStorageDatabase, Set<StorageSchemaInitializer>>();
-const initializingDatabases = new WeakSet<InternalStorageDatabase>();
+interface StorageHostState {
+  configuredHost: Readonly<StorageHostConfig>;
+  fallbackDatabase: OwnedStorageDatabase | null;
+  fallbackDatabasePath: string | null;
+  frames: StorageHostFrame[];
+  schemaInitializers: RegisteredSchemaInitializer[];
+  initializedSchemas: WeakMap<InternalStorageDatabase, Set<StorageSchemaInitializer>>;
+  initializingDatabases: WeakSet<InternalStorageDatabase>;
+}
+
+/**
+ * Which database an embedded Negotium uses is a property of the *process*, so
+ * the state deciding it is keyed off a registered symbol rather than held in
+ * module scope.
+ *
+ * Module scope would be equivalent only if every caller resolved to the same
+ * module instance, and in the published package they do not:
+ * `build-negotium-package.ts` emits most public entrypoints as independent
+ * graphs, so each gets a private copy of this file. A host that configured
+ * `negotium/storage` therefore left `negotium/agent-helpers` unconfigured, and
+ * that copy opened a second database under the default state directory — with
+ * no error, since both files are valid and writable.
+ *
+ * Merging those entrypoints into one graph looks tidier and does cut ~3MB from
+ * `dist`, but Bun 1.2.15 (the pinned version) emits a shared chunk's export
+ * list twice and the result is invalid ESM — "Cannot export a duplicate name".
+ * That is bundler output with no counterpart in this source, so there is
+ * nothing to de-duplicate here; it is fixed in Bun 1.3.14. Until the floor
+ * moves, correctness cannot depend on how the package is chunked.
+ */
+const STORAGE_HOST_STATE = Symbol.for("negotium.storage-host.state.v1");
+
+function storageState(): StorageHostState {
+  const holder = globalThis as typeof globalThis & { [STORAGE_HOST_STATE]?: StorageHostState };
+  const existing = holder[STORAGE_HOST_STATE];
+  if (existing) return existing;
+  const created: StorageHostState = {
+    configuredHost: {},
+    fallbackDatabase: null,
+    fallbackDatabasePath: null,
+    frames: [],
+    schemaInitializers: [],
+    initializedSchemas: new WeakMap(),
+    initializingDatabases: new WeakSet(),
+  };
+  Object.defineProperty(holder, STORAGE_HOST_STATE, {
+    value: created,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
+  return created;
+}
 
 function envPath(name: string, fallback: string): string {
   const value = process.env[name]?.trim();
@@ -114,17 +159,18 @@ export function initializeDatabase(database: InternalStorageDatabase): void {
 
 function defaultDatabase(): InternalStorageDatabase {
   const path = defaultSessionsDatabasePath();
-  if (fallbackDatabase && fallbackDatabasePath === path) return fallbackDatabase;
-  if (fallbackDatabase) fallbackDatabase.close();
+  const state = storageState();
+  if (state.fallbackDatabase && state.fallbackDatabasePath === path) return state.fallbackDatabase;
+  if (state.fallbackDatabase) state.fallbackDatabase.close();
   mkdirSync(dirname(path), { recursive: true });
-  fallbackDatabase = new Database(path, { create: true }) as unknown as OwnedStorageDatabase;
-  fallbackDatabasePath = path;
-  initializeDatabase(fallbackDatabase);
-  return fallbackDatabase;
+  state.fallbackDatabase = new Database(path, { create: true }) as unknown as OwnedStorageDatabase;
+  state.fallbackDatabasePath = path;
+  initializeDatabase(state.fallbackDatabase);
+  return state.fallbackDatabase;
 }
 
 export function resolveStorageDatabase(): InternalStorageDatabase {
-  return (configuredHost.database ?? defaultDatabase()) as InternalStorageDatabase;
+  return (storageState().configuredHost.database ?? defaultDatabase()) as InternalStorageDatabase;
 }
 
 /**
@@ -137,31 +183,31 @@ export function resolveStorageDatabase(): InternalStorageDatabase {
  * the other half into `~/.negotium`, with nothing reporting an error.
  */
 export function configuredStorageDatabase(): InternalStorageDatabase | null {
-  return (configuredHost.database as InternalStorageDatabase | undefined) ?? null;
+  return (storageState().configuredHost.database as InternalStorageDatabase | undefined) ?? null;
 }
 
 export function resolveStorageDataDir(): string {
-  return configuredHost.dataDir ?? defaultDataDir();
+  return storageState().configuredHost.dataDir ?? defaultDataDir();
 }
 
 export function resolveStorageLogDir(): string {
-  return configuredHost.logDir ?? defaultLogDir();
+  return storageState().configuredHost.logDir ?? defaultLogDir();
 }
 
 export function resolveStorageSessionAsksDir(): string {
-  return configuredHost.sessionAsksDir ?? defaultSessionAsksDir();
+  return storageState().configuredHost.sessionAsksDir ?? defaultSessionAsksDir();
 }
 
 export function resolveStorageWorkspaceDir(): string {
-  return configuredHost.workspaceDir ?? defaultWorkspaceDir();
+  return storageState().configuredHost.workspaceDir ?? defaultWorkspaceDir();
 }
 
 export function resolveStorageSharedWikiDir(): string {
-  return configuredHost.sharedWikiDir ?? join(resolveStorageWorkspaceDir(), "wiki");
+  return storageState().configuredHost.sharedWikiDir ?? join(resolveStorageWorkspaceDir(), "wiki");
 }
 
 export function resolveStorageUsersLogDir(): string {
-  return configuredHost.usersLogDir ?? join(resolveStorageDataDir(), "users");
+  return storageState().configuredHost.usersLogDir ?? join(resolveStorageDataDir(), "users");
 }
 
 const STORAGE_PATH_KEYS = [
@@ -189,11 +235,9 @@ function normalizeStorageHostPatch(options: StorageHostConfig): Readonly<Storage
 }
 
 function refreshConfiguredHost(): void {
-  configuredHost = Object.freeze(
-    Object.assign(
-      {},
-      ...storageHostFrames.filter((frame) => frame.active).map((frame) => frame.patch),
-    ),
+  const state = storageState();
+  state.configuredHost = Object.freeze(
+    Object.assign({}, ...state.frames.filter((frame) => frame.active).map((frame) => frame.patch)),
   );
 }
 
@@ -206,52 +250,57 @@ function refreshConfiguredHost(): void {
  */
 export function configureStorageHost(options: StorageHostConfig): () => void {
   const frame: StorageHostFrame = { active: true, patch: normalizeStorageHostPatch(options) };
-  storageHostFrames.push(frame);
+  storageState().frames.push(frame);
   refreshConfiguredHost();
   return () => {
     if (!frame.active) return;
     frame.active = false;
-    const index = storageHostFrames.indexOf(frame);
-    if (index >= 0) storageHostFrames.splice(index, 1);
+    const frames = storageState().frames;
+    const index = frames.indexOf(frame);
+    if (index >= 0) frames.splice(index, 1);
     refreshConfiguredHost();
   };
 }
 
 /** Remove every configured host layer and restore standalone fallbacks. */
 export function resetStorageHost(): void {
-  for (const frame of storageHostFrames) frame.active = false;
-  storageHostFrames.length = 0;
+  const frames = storageState().frames;
+  for (const frame of frames) frame.active = false;
+  frames.length = 0;
   refreshConfiguredHost();
 }
 
 /** Close only Negotium's fallback connection. Injected connections are borrowed. */
 export function closeStorageDatabase(): void {
-  if (!fallbackDatabase) return;
-  fallbackDatabase.close();
-  fallbackDatabase = null;
-  fallbackDatabasePath = null;
+  const state = storageState();
+  if (!state.fallbackDatabase) return;
+  state.fallbackDatabase.close();
+  state.fallbackDatabase = null;
+  state.fallbackDatabasePath = null;
 }
 
 export function registerStorageSchemaInitializer(
   initialize: StorageSchemaInitializer,
   priority = 100,
 ): void {
-  schemaInitializers.push({ initialize, priority });
-  schemaInitializers.sort((a, b) => a.priority - b.priority);
+  const initializers = storageState().schemaInitializers;
+  initializers.push({ initialize, priority });
+  initializers.sort((a, b) => a.priority - b.priority);
 }
 
 export function ensureStorageSchemas(
   database: InternalStorageDatabase = resolveStorageDatabase(),
 ): void {
-  if (initializingDatabases.has(database)) return;
-  let initialized = initializedSchemas.get(database);
+  const state = storageState();
+  if (state.initializingDatabases.has(database)) return;
+  let initialized = state.initializedSchemas.get(database);
   if (!initialized) {
     initialized = new Set();
-    initializedSchemas.set(database, initialized);
+    state.initializedSchemas.set(database, initialized);
   }
-  initializingDatabases.add(database);
+  state.initializingDatabases.add(database);
   try {
-    for (const entry of schemaInitializers) {
+    for (const entry of state.schemaInitializers) {
       if (initialized.has(entry.initialize)) continue;
       // Mark first so a migration that calls through the public db proxy does
       // not recursively invoke itself. Remove on failure so the next call can retry.
@@ -264,7 +313,7 @@ export function ensureStorageSchemas(
       }
     }
   } finally {
-    initializingDatabases.delete(database);
+    state.initializingDatabases.delete(database);
   }
 }
 
