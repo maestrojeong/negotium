@@ -1,4 +1,5 @@
 import { listActiveMemoryArchiverSessions } from "#agents/archiver";
+import { summarizeDisplayText } from "#agents/tool-format";
 import { getTopic } from "#storage/api-topics";
 import { listRecentRuntimeEventsForTopic } from "#storage/runtime-events";
 import { listRuntimeTurnLeases } from "#storage/runtime-leases";
@@ -127,7 +128,7 @@ function detailedToolStep(payload: Record<string, unknown>): string {
 
   if (shortName === "ask_session" || shortName === "tell_session") {
     const target = typeof input.to === "string" && input.to.trim() ? input.to.trim() : "session";
-    const msg = typeof input.message === "string" ? text(input.message) : "";
+    const msg = typeof input.message === "string" ? summarizeDisplayText(text(input.message)) : "";
     const action = shortName === "ask_session" ? "Ask" : "Tell";
     return `${action} ${target}${msg ? ` — ${msg}` : ""}`;
   }
@@ -150,20 +151,21 @@ function detailedToolStep(payload: Record<string, unknown>): string {
     return `${action} file`;
   }
   if (shortName === "grep" || shortName === "glob") {
-    const pattern = typeof input.pattern === "string" ? input.pattern : "";
+    const pattern =
+      typeof input.pattern === "string" ? summarizeDisplayText(text(input.pattern)) : "";
     const action = shortName === "grep" ? "Grep" : "Glob";
-    if (pattern) return `${action} '${text(pattern)}'${path ? ` in ${path}` : ""}`;
+    if (pattern) return `${action} '${pattern}'${path ? ` in ${path}` : ""}`;
     if (path) return `${action} ${path}`;
   }
   if (shortName === "bash") {
-    const cmd = typeof input.command === "string" ? text(input.command) : "";
+    const cmd = typeof input.command === "string" ? summarizeDisplayText(text(input.command)) : "";
     return cmd ? `Bash: ${cmd}` : "Bash";
   }
   if (shortName === "webfetch" || shortName === "url_fetch") {
-    const url = typeof input.url === "string" ? text(input.url) : "";
+    const url = typeof input.url === "string" ? summarizeDisplayText(text(input.url)) : "";
     return url ? `Fetch ${url}` : "WebFetch";
   }
-  return label;
+  return summarizeDisplayText(label);
 }
 
 export function backgroundSessionProgress(
@@ -190,7 +192,7 @@ export function backgroundSessionProgress(
     else if (kind === "tool_output") {
       const toolName = toolNames.get(text(payload.toolUseId)) ?? "Tool";
       step = payload.isError
-        ? `${toolName} failed: ${text(payload.content) || "unknown error"}`
+        ? `${toolName} failed: ${summarizeDisplayText(text(payload.content)) || "unknown error"}`
         : `${toolName} result · ${byteSize(payload.content)}`;
     } else if (kind === "ai_done") {
       const usage =

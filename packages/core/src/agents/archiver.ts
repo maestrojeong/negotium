@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { runAgent } from "#agents/index";
+import { summarizeDisplayText } from "#agents/tool-format";
 import { WsHub } from "#bus";
 import { resolveOutputLanguage, WORKSPACE_DIR } from "#platform/config";
 import { logger } from "#platform/logger";
@@ -59,10 +60,10 @@ function formatArchiverTool(name: string, input: Record<string, unknown>): strin
   const params = Object.entries(input)
     .map(([key, value]) => {
       const rendered = typeof value === "string" ? value : JSON.stringify(value);
-      return `${key}: ${sessionText(rendered ?? "")}`;
+      return `${key}: ${summarizeDisplayText(sessionText(rendered ?? ""))}`;
     })
     .join(", ");
-  return `${name}${params ? `(${params})` : ""}`;
+  return summarizeDisplayText(`${name}${params ? `(${params})` : ""}`);
 }
 
 export interface RunArchiverTurnParams {
