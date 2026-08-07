@@ -389,7 +389,7 @@ test("control chords and escape sequences never reach the topic picker filter", 
   for (const chunk of [
     "\u000e", // Ctrl-N, new topic
     "\u0004", // Ctrl-D, delete topic
-    "\u0010", // Ctrl-P, deliberately unbound after topic cycling was removed
+    "\u0010", // Ctrl-P, toggles the picked topic between public and private
     "\u0003", // Ctrl-C
     "\r",
     "\t",

@@ -705,6 +705,32 @@ export function upsertTopic(t: TopicDto): void {
   })();
 }
 
+/**
+ * Apply one access mode to a set of topics as a single all-or-nothing write.
+ *
+ * A partial write is not a cosmetic glitch here: a public parent left with
+ * private subagent children (or the reverse) is exactly the half-exposed state
+ * the access-mode cascade exists to prevent, so every row commits or none do.
+ *
+ * Deliberately a narrow UPDATE instead of a loop over {@link upsertTopic}.
+ * That helper opens its own transaction, and the node:sqlite shim in
+ * `sqlite.ts` emulates transactions with bare BEGIN/COMMIT rather than
+ * savepoints — nesting one inside an outer transaction would fail outright.
+ * It also rewrites participants and browser-profile ownership, none of which
+ * an access-mode change should touch.
+ */
+export function setTopicAccessModes(
+  topicIds: readonly string[],
+  accessMode: TopicAccessMode,
+): void {
+  if (topicIds.length === 0) return;
+  const normalized = normalizeTopicAccessMode(accessMode);
+  db.transaction(() => {
+    const update = db.query("UPDATE api_topics SET access_mode = ? WHERE id = ?");
+    for (const topicId of topicIds) update.run(normalized, topicId);
+  })();
+}
+
 export function listTopics(): TopicDto[] {
   const rows = db
     .query("SELECT * FROM api_topics ORDER BY last_message_at DESC")

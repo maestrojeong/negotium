@@ -22,6 +22,7 @@ type Overlay =
   | "effort"
   | "vault"
   | "confirm-delete"
+  | "confirm-share"
   | null;
 
 export type SubagentGraphEdgeKind = "owns" | "owns-parent-only" | "tell" | "tell-bidirectional";
@@ -102,6 +103,8 @@ export interface AppState {
   modelPickerIndex: number;
   effortPickerIndex: number;
   pendingDeleteTopicId?: string;
+  /** Topic awaiting y/n confirmation for a private → public switch. */
+  pendingShareTopicId?: string;
   creatingTopic: boolean;
   scrollOffset: number;
   backgroundScrollOffset: number;
@@ -500,7 +503,13 @@ export function setTopics(state: AppState, topics: TopicDto[], preferredTitle?: 
     scrollOffset: nextActive === state.activeTopicId ? state.scrollOffset : 0,
     askChoiceIndex: nextActive === state.activeTopicId ? state.askChoiceIndex : 0,
     topicPickerIndex:
-      state.overlay === "topics"
+      // `confirm-share` counts as being in the picker: the prompt sits on top
+      // of it, the user's cursor is still on the row they chose, and the
+      // prompt can stay up indefinitely waiting for y/n. Re-anchoring by
+      // active topic instead would silently move the highlight under them, so
+      // cancelling would drop them on a different row than the one they
+      // pressed the key on.
+      state.overlay === "topics" || state.overlay === "confirm-share"
         ? // `-1` when the refresh dropped the highlighted topic; the clamp below
           // then moves onto the first row the filter still shows.
           pickedTopicIndex

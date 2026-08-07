@@ -164,3 +164,85 @@ describe("private/shared Otium topic access", () => {
     ).toMatchObject({ ok: false, status: 409 });
   });
 });
+
+describe("Otium access changes cascade to subagent rooms", () => {
+  function subagentOf(parent: { id: string }, userId: string, accessMode: "private" | "shared") {
+    const id = `sub-${randomUUID()}`;
+    upsertTopic({
+      id,
+      title: `worker-${id.slice(-6)}`,
+      kind: "agent",
+      agent: "maestro",
+      aiMode: "always",
+      defaultModel: "",
+      defaultEffort: "medium",
+      participants: [{ userId, role: "owner" }],
+      parentTopicId: parent.id,
+      isSubagent: true,
+      accessMode,
+      createdAt: new Date().toISOString(),
+      lastMessageAt: new Date().toISOString(),
+    });
+    return getTopic(id)!;
+  }
+
+  test("making a topic private also unpublishes the subagent rooms under it", () => {
+    // Writing only the parent row left the worker rooms at access_mode
+    // 'shared' with nothing scheduling their reconcile, so their transcripts —
+    // which carry the parent's conversation context — stayed live on the Hub
+    // while the terminal showed the parent as Private.
+    const userId = `user-${randomUUID()}`;
+    const parent = localTopic(userId);
+    const hostNodeId = `hub-${randomUUID()}`;
+    const hostTopicId = `room-${randomUUID()}`;
+    shareOtiumTopic({ hostNodeId, hostTopicId, localTopicId: parent.id, userId });
+    const child = subagentOf(parent, userId, "shared");
+    const grandchild = subagentOf(child, userId, "shared");
+
+    expect(setOtiumTopicPrivate({ localTopicId: parent.id, userId }).ok).toBe(true);
+
+    expect(getTopic(parent.id)?.accessMode).toBe("private");
+    expect(getTopic(child.id)?.accessMode).toBe("private");
+    expect(getTopic(grandchild.id)?.accessMode).toBe("private");
+  });
+
+  test("sharing a topic takes its existing subagent rooms with it", () => {
+    const userId = `user-${randomUUID()}`;
+    const parent = localTopic(userId);
+    const child = subagentOf(parent, userId, "private");
+
+    expect(
+      shareOtiumTopic({
+        hostNodeId: `hub-${randomUUID()}`,
+        hostTopicId: `room-${randomUUID()}`,
+        localTopicId: parent.id,
+        userId,
+      }).ok,
+    ).toBe(true);
+
+    expect(getTopic(parent.id)?.accessMode).toBe("shared");
+    expect(getTopic(child.id)?.accessMode).toBe("shared");
+  });
+
+  test("a subagent room cannot be published directly through the Otium share path", () => {
+    // Otherwise a Hub-driven share naming a worker-room id walks straight past
+    // the guard that keeps subagent privacy tied to the parent.
+    const userId = `user-${randomUUID()}`;
+    const parent = localTopic(userId);
+    const child = subagentOf(parent, userId, "private");
+
+    const result = shareOtiumTopic({
+      hostNodeId: `hub-${randomUUID()}`,
+      hostTopicId: `room-${randomUUID()}`,
+      localTopicId: child.id,
+      userId,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Subagent rooms inherit privacy from their parent topic",
+      status: 409,
+    });
+    expect(getTopic(child.id)?.accessMode).toBe("private");
+  });
+});

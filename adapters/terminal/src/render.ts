@@ -1416,14 +1416,22 @@ function subagentTreePrefix(topic: TopicDto, topics: TopicDto[], rootTopicId?: s
 function topicPickerHints(topicPickerRoot: boolean): string[] {
   const exit = topicPickerRoot ? "Esc/Ctrl-C exit" : "Esc close · Ctrl-C exit; work continues";
   const shortExit = topicPickerRoot ? "Esc/Ctrl-C exit" : "Esc close";
-  return [
+  // `pickFitting` takes the first candidate that fits, so a shorter entry
+  // placed ahead of a longer one makes the longer one unreachable at every
+  // width. Hand-ordering this list is fragile — `exit` and `shortExit` are the
+  // same string in root mode, so the same literals collapse to different
+  // lengths depending on the caller — so sort by rendered width instead of
+  // trusting the source order, and drop the duplicates the collapse creates.
+  const candidates = [
+    `↑↓ select · Enter open · type to filter · Ctrl-N new · Ctrl-D delete · Ctrl-P public/private · ${exit}`,
+    `↑↓ select · Enter open · type to filter · Ctrl-N new · Ctrl-D delete · Ctrl-P public/private · ${shortExit}`,
     `↑↓ select · Enter open · type to filter · Ctrl-N new · Ctrl-D delete · ${exit}`,
-    `↑↓ select · Enter open · type to filter · Ctrl-N new · Ctrl-D delete · ${shortExit}`,
-    `↑↓ select · Enter open · type to filter · Ctrl-N/D · ${shortExit}`,
-    "↑↓ · Enter · type to filter · Ctrl-N/D",
-    "type to filter · Ctrl-N/D",
-    "Ctrl-N/D",
+    `↑↓ select · Enter open · type to filter · Ctrl-N/D/P · ${shortExit}`,
+    "↑↓ · Enter · type to filter · Ctrl-N/D/P",
+    "type to filter · Ctrl-N/D/P",
+    "Ctrl-N/D/P",
   ];
+  return [...new Set(candidates)].sort((a, b) => displayWidth(b) - displayWidth(a));
 }
 
 /**
@@ -1971,6 +1979,46 @@ function conversationLines(
     ].slice(0, height);
   }
 
+  if (state.overlay === "confirm-share") {
+    const topic = state.topics.find((candidate) => candidate.id === state.pendingShareTopicId);
+    // Counted transitively, matching what `switchTopicAccessMode` actually
+    // rewrites: a subagent that spawned its own subagent is just as exposed as
+    // a direct child, so quoting only direct children would understate the
+    // blast radius of the very action being confirmed. Rooms the picker cannot
+    // see are not counted, hence the generic fallback wording at zero.
+    const subagents = (() => {
+      if (!topic) return 0;
+      const reached = new Set([topic.id]);
+      for (;;) {
+        const next = state.topics.filter(
+          (candidate) =>
+            candidate.isSubagent &&
+            !reached.has(candidate.id) &&
+            candidate.parentTopicId !== undefined &&
+            reached.has(candidate.parentTopicId),
+        );
+        if (next.length === 0) break;
+        for (const candidate of next) reached.add(candidate.id);
+      }
+      return reached.size - 1;
+    })();
+    const scope =
+      subagents > 0
+        ? `  Its ${subagents} subagent room${subagents === 1 ? "" : "s"} become public too.`
+        : "  Subagent rooms spawned from it will be public too.";
+    return [
+      line(""),
+      line(`  Make \u201c${topic?.title ?? "this topic"}\u201d public?`, {
+        fg: theme.amber,
+        bold: true,
+      }),
+      line(""),
+      line("  The transcript becomes visible to the connected Otium Hub."),
+      line(scope),
+      line("  Press y to publish or n to cancel.", { fg: theme.amber }),
+    ].slice(0, height);
+  }
+
   const all = conversationContentLines(state, width, animationFrame, nowMs, includeTasks);
   const { contentHeight, maxOffset, offset } = conversationViewport(
     all.length,
@@ -2404,6 +2452,9 @@ function footerHintText(state: AppState): string[] {
     return state.topicPickerRoot
       ? ["Esc/Ctrl-C exit  ", "Esc exit  "]
       : ["Esc close · Ctrl-C exit; work continues  ", "Esc close · Ctrl-C exit  ", "Esc  "];
+  }
+  if (state.overlay === "confirm-share") {
+    return ["Y make public · N cancel  ", "Y/N  "];
   }
   if (state.overlay === "background-session") {
     return [

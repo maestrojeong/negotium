@@ -1,4 +1,4 @@
-import { getTopic, isTopicShared, isTopicVisible, upsertTopic, WsHub } from "@negotium/core";
+import { getTopic, isTopicShared, isTopicVisible, switchTopicAccessMode } from "@negotium/core";
 import {
   bindPeerSession,
   getPeerSession,
@@ -87,8 +87,17 @@ export function shareOtiumTopic(options: {
   const owned = ownsTopic(options.localTopicId, options.userId);
   if (!owned.ok) return owned;
   if (!isTopicShared(owned.topic)) {
-    upsertTopic({ ...owned.topic, accessMode: "shared" });
-    WsHub.get().broadcastTopicUpdated(owned.topic.id);
+    // Routed through the shared switch rather than writing the row directly:
+    // publishing a topic has to take its subagent rooms with it, or the Hub
+    // ends up holding half a delegation tree. That helper also refuses to
+    // publish a subagent room on its own, which a Hub-driven share of a
+    // worker-room id would otherwise do.
+    const switched = switchTopicAccessMode({
+      topicId: options.localTopicId,
+      userId: options.userId,
+      accessMode: "shared",
+    });
+    if (!switched.ok) return { ok: false, error: switched.error, status: 409 };
   }
   return bindOtiumTopic(options);
 }
@@ -102,8 +111,15 @@ export function setOtiumTopicPrivate(options: {
   if (!owned.ok) return owned;
   const removedBindings = unbindSharedPeerSessionsForLocalTopic(options.localTopicId);
   if (isTopicShared(owned.topic)) {
-    upsertTopic({ ...owned.topic, accessMode: "private" });
-    WsHub.get().broadcastTopicUpdated(owned.topic.id);
+    // Same reason as the share path, in the direction that actually leaks:
+    // flipping only this row would leave the subagent rooms published on the
+    // Hub while the user is told the work is now local-only.
+    const switched = switchTopicAccessMode({
+      topicId: options.localTopicId,
+      userId: options.userId,
+      accessMode: "private",
+    });
+    if (!switched.ok) return { ok: false, error: switched.error, status: 409 };
   }
   return { ok: true, localTopicId: options.localTopicId, removedBindings };
 }
