@@ -1,4 +1,5 @@
 import { db } from "#storage/forum-db";
+import { registerStorageSchemaInitializer } from "#storage/storage-host";
 
 export interface RuntimeGatewaySubmission {
   clientMessageId: string;
@@ -25,19 +26,29 @@ interface RuntimeGatewaySubmissionRow {
   payload_hash: string | null;
 }
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS runtime_gateway_submissions (
-    client_message_id TEXT PRIMARY KEY,
-    request_id TEXT NOT NULL UNIQUE,
-    topic_id TEXT NOT NULL,
-    message_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    ack_cursor INTEGER NOT NULL DEFAULT 0,
-    message_cursor INTEGER NOT NULL DEFAULT 0,
-    payload_hash TEXT
-  )
-`);
+// Registered rather than executed at import time. A bare top-level `db.exec`
+// resolves the storage connection the moment this module is imported, which for
+// an embedding host is before `configureStorageHost()` has run — Negotium then
+// opens its own database in the default state directory, caches it, and every
+// later caller silently keeps using it instead of the host's.
+registerStorageSchemaInitializer((database) => {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS runtime_gateway_submissions (
+      client_message_id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL UNIQUE,
+      topic_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      ack_cursor INTEGER NOT NULL DEFAULT 0,
+      message_cursor INTEGER NOT NULL DEFAULT 0,
+      payload_hash TEXT
+    )
+  `);
+  database.exec(
+    "CREATE INDEX IF NOT EXISTS idx_runtime_gateway_submissions_topic ON runtime_gateway_submissions(topic_id)",
+  );
+});
 try {
   db.exec(
     "ALTER TABLE runtime_gateway_submissions ADD COLUMN ack_cursor INTEGER NOT NULL DEFAULT 0",
@@ -51,9 +62,6 @@ try {
     "ALTER TABLE runtime_gateway_submissions ADD COLUMN message_cursor INTEGER NOT NULL DEFAULT 0",
   );
 } catch {}
-db.exec(
-  "CREATE INDEX IF NOT EXISTS idx_runtime_gateway_submissions_topic ON runtime_gateway_submissions(topic_id)",
-);
 
 function rowToSubmission(row: RuntimeGatewaySubmissionRow): RuntimeGatewaySubmission {
   return {

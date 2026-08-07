@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "#storage/forum-db";
 import { TURN_LEASE_STALE_MS } from "#storage/runtime-leases";
 import { TOPIC_MAINTENANCE_STALE_MS } from "#storage/runtime-topic-state";
+import { registerStorageSchemaInitializer } from "#storage/storage-host";
 
 export type SelfScheduleStatus = "pending" | "running";
 
@@ -33,30 +34,37 @@ interface SelfScheduleRow {
   running_query_id: string | null;
 }
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS runtime_self_schedules (
-    id TEXT PRIMARY KEY,
-    topic_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    message TEXT NOT NULL,
-    deliver_at INTEGER NOT NULL,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running')),
-    claimed_by TEXT,
-    claimed_at INTEGER,
-    running_query_id TEXT
-  )
-`);
-db.exec(`
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_self_schedules_one_pending
-  ON runtime_self_schedules(topic_id)
-  WHERE status = 'pending'
-`);
-db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_runtime_self_schedules_due
-  ON runtime_self_schedules(status, deliver_at)
-`);
+// Registered rather than executed at import time. A bare top-level `db.exec`
+// resolves the storage connection the moment this module is imported, which for
+// an embedding host is before `configureStorageHost()` has run — Negotium then
+// opens its own database in the default state directory, caches it, and every
+// later caller silently keeps using it instead of the host's.
+registerStorageSchemaInitializer((database) => {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS runtime_self_schedules (
+      id TEXT PRIMARY KEY,
+      topic_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      message TEXT NOT NULL,
+      deliver_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running')),
+      claimed_by TEXT,
+      claimed_at INTEGER,
+      running_query_id TEXT
+    )
+  `);
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_self_schedules_one_pending
+    ON runtime_self_schedules(topic_id)
+    WHERE status = 'pending'
+  `);
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_runtime_self_schedules_due
+    ON runtime_self_schedules(status, deliver_at)
+  `);
+});
 
 function rowToSchedule(row: SelfScheduleRow): SelfSchedule {
   return {

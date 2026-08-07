@@ -319,9 +319,26 @@ export class SqliteRuntimeBus implements RuntimeBus {
   }
 }
 
-let current: RuntimeBus = new SqliteRuntimeBus();
+/**
+ * Constructed on first use, not at import.
+ *
+ * `SqliteRuntimeBus`'s constructor reads the latest event sequence, so building
+ * the process bus at module scope resolved the storage connection the moment
+ * this module was imported. For an embedding host that happens before
+ * `configureStorageHost()` has run, and Negotium would open — then cache for the
+ * whole process — its own database in the default state directory, leaving every
+ * later caller on the wrong store with nothing reporting an error.
+ *
+ * The read stays in the constructor deliberately: the cursor must be the
+ * sequence as of construction so that events broadcast before the first
+ * subscriber are still delivered to it. Deferring the read itself would drop
+ * them. Deferring the *construction* keeps that semantics and still moves the
+ * first storage touch past host bootstrap.
+ */
+let current: RuntimeBus | null = null;
 
 export function runtimeBus(): RuntimeBus {
+  if (!current) current = new SqliteRuntimeBus();
   return current;
 }
 
@@ -332,6 +349,6 @@ export function setRuntimeBus(bus: RuntimeBus): void {
 /** Drop-in compat for code ported from otium's `WsHub.get()` call sites. */
 export const WsHub = {
   get(): RuntimeBus {
-    return current;
+    return runtimeBus();
   },
 };

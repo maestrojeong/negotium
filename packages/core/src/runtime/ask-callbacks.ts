@@ -12,18 +12,26 @@
 import { deliverPeerReply, type RemoteReplyRoute } from "#mcp/session-comm/peer-forward";
 import { db } from "#storage/forum-db";
 import { PENDING_ASK_TTL_MS, type PendingAskUserId } from "#storage/session-asks";
+import { registerStorageSchemaInitializer } from "#storage/storage-host";
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS remote_ask_callbacks (
-    target_query_id TEXT PRIMARY KEY,
-    request_id TEXT NOT NULL,
-    node_name TEXT NOT NULL,
-    node_cell_id TEXT NOT NULL,
-    topic_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    created_at INTEGER NOT NULL
-  )
-`);
+// Registered rather than executed at import time. A bare top-level `db.exec`
+// resolves the storage connection the moment this module is imported, which for
+// an embedding host is before `configureStorageHost()` has run — Negotium then
+// opens its own database in the default state directory, caches it, and every
+// later caller silently keeps using it instead of the host's.
+registerStorageSchemaInitializer((database) => {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS remote_ask_callbacks (
+      target_query_id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL,
+      node_name TEXT NOT NULL,
+      node_cell_id TEXT NOT NULL,
+      topic_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `);
+});
 
 interface PendingAskIdentity {
   userId: PendingAskUserId;

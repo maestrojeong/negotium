@@ -23,6 +23,7 @@ import {
 } from "#platform/config";
 import { readJsonFile } from "#platform/jsonl";
 import { Database } from "#storage/sqlite";
+import { configuredStorageDatabase, ensureStorageSchemas } from "#storage/storage-host";
 import type { AgentKind } from "#types";
 // NOTE: import from "#types" — NOT "@/agents". The agents barrel re-exports
 // `maestroProvider`, which transitively pulls in `maestro-agent-sdk`. That SDK
@@ -69,6 +70,21 @@ export function withDb<T>(
   fn: (db: InstanceType<typeof Database>) => T,
   opts?: { write?: boolean },
 ): T {
+  // An embedding host (Otium) supplies the canonical connection through
+  // `configureStorageHost`. Opening `SESSIONS_DB` by path instead would ignore
+  // that entirely: the constant is resolved at import time from Negotium's own
+  // state directory, so session-comm silently read and wrote a *different*
+  // database than the rest of the process — no error, no visible symptom, just
+  // two stores drifting apart. Borrow the host connection when one exists.
+  const hostDb = configuredStorageDatabase();
+  if (hostDb) {
+    // Negotium's tables are registered lazily, so a host connection that has not
+    // been touched through the shared accessor yet would be missing them.
+    ensureStorageSchemas(hostDb);
+    // Deliberately no pragmas and no close(): the connection is borrowed, and
+    // its journal mode and lifetime belong to the host that opened it.
+    return fn(hostDb);
+  }
   const db = new Database(SESSIONS_DB, opts?.write ? undefined : { readonly: true });
   try {
     db.exec(opts?.write ? "PRAGMA busy_timeout = 5000" : "PRAGMA busy_timeout = 3000");

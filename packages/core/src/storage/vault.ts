@@ -1,7 +1,8 @@
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { DATA_DIR, VAULT_MASTER_KEY } from "#platform/config";
+import { VAULT_MASTER_KEY } from "#platform/config";
 import { Database } from "#storage/sqlite";
+import { resolveStorageDataDir } from "#storage/storage-host";
 import { decryptVaultValue, encryptVaultValue } from "#storage/vault-crypto";
 
 export type VaultDatabase = Pick<InstanceType<typeof Database>, "exec" | "prepare">;
@@ -72,7 +73,14 @@ function openVaultDatabase(dataDir: string): VaultDatabase {
 }
 
 function activeVaultDatabase(): VaultDatabase {
-  if (!vaultDb) vaultDb = openVaultDatabase(DATA_DIR);
+  if (!vaultDb) {
+    // `resolveStorageDataDir()`, not the import-time `DATA_DIR` constant: an
+    // embedding host configures its data directory during bootstrap, and any
+    // vault access that happens before `configureVaultStorage()` runs would
+    // otherwise pin the vault to Negotium's own state directory for the life of
+    // the process — silently, since both paths are valid and writable.
+    vaultDb = openVaultDatabase(resolveStorageDataDir());
+  }
   return vaultDb;
 }
 
@@ -83,7 +91,8 @@ export function configureVaultStorage(options: VaultStorageOptions): () => void 
   }
   const previousDb = vaultDb;
   const previousMasterKey = vaultMasterKey;
-  const configuredDb = options.database ?? openVaultDatabase(options.dataDir ?? DATA_DIR);
+  const configuredDb =
+    options.database ?? openVaultDatabase(options.dataDir ?? resolveStorageDataDir());
   if (options.database) initializeVaultDatabase(configuredDb);
   vaultDb = configuredDb;
   vaultMasterKey = options.masterKey ?? VAULT_MASTER_KEY;

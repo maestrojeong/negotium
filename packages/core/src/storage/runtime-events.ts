@@ -1,4 +1,5 @@
 import { db } from "#storage/forum-db";
+import { registerStorageSchemaInitializer } from "#storage/storage-host";
 
 export const RUNTIME_EVENT_TYPES = [
   "message",
@@ -29,26 +30,35 @@ interface RuntimeEventRow {
   created_at: string;
 }
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS runtime_events (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_id TEXT NOT NULL,
-    event_type TEXT NOT NULL CHECK (
-      event_type IN (
-        'message',
-        'message-updated',
-        'ai-status',
-        'topic-created',
-        'topic-updated',
-        'topic-deleted'
-      )
-    ),
-    topic_id TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
-  )
-`);
-db.exec("CREATE INDEX IF NOT EXISTS idx_runtime_events_topic_seq ON runtime_events(topic_id, seq)");
+// Registered rather than executed at import time. A bare top-level `db.exec`
+// resolves the storage connection the moment this module is imported, which for
+// an embedding host is before `configureStorageHost()` has run — Negotium then
+// opens its own database in the default state directory, caches it, and every
+// later caller silently keeps using it instead of the host's.
+registerStorageSchemaInitializer((database) => {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS runtime_events (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_id TEXT NOT NULL,
+      event_type TEXT NOT NULL CHECK (
+        event_type IN (
+          'message',
+          'message-updated',
+          'ai-status',
+          'topic-created',
+          'topic-updated',
+          'topic-deleted'
+        )
+      ),
+      topic_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+  database.exec(
+    "CREATE INDEX IF NOT EXISTS idx_runtime_events_topic_seq ON runtime_events(topic_id, seq)",
+  );
+});
 
 const types = new Set<string>(RUNTIME_EVENT_TYPES);
 

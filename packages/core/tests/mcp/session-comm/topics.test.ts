@@ -1,8 +1,13 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { deleteApiTopicConfig, getApiTopicConfig } from "#storage/api-topic-config";
 import { deleteTopic, upsertTopic } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
+import { Database } from "#storage/sqlite";
+import { configureStorageHost } from "#storage/storage-host";
 import type { TopicDto } from "#types/api";
 
 const userId = `session-comm-user-${randomUUID()}`;
@@ -18,6 +23,7 @@ process.argv = [
 ];
 
 const { getTopicsForUser, listSessionTargetsForUser } = await import("#mcp/session-comm/topics");
+const { withDb } = await import("#mcp/session-comm/runtime");
 
 function makeTopic(patch: Partial<TopicDto>): TopicDto {
   const now = new Date().toISOString();
@@ -49,6 +55,44 @@ afterEach(() => {
 
 afterAll(() => {
   process.argv = originalArgv;
+});
+
+describe("session-comm database resolution", () => {
+  /**
+   * Regression cover for embedded Negotium splitting its state across two
+   * databases. `withDb` used to open the import-time `SESSIONS_DB` constant,
+   * which resolves to Negotium's own state directory — so when a host such as
+   * Otium injected its connection through `configureStorageHost`, session-comm
+   * silently read and wrote a different file than the rest of the process. No
+   * error, no visible symptom; it was found in `lsof`.
+   */
+  test("borrows the host connection instead of opening SESSIONS_DB by path", () => {
+    const dir = mkdtempSync(join(tmpdir(), "session-comm-host-"));
+    const hostDb = new Database(join(dir, "host.db"), { create: true });
+    const restore = configureStorageHost({ database: hostDb, dataDir: dir });
+    try {
+      hostDb.exec("CREATE TABLE host_marker (id INTEGER PRIMARY KEY)");
+      hostDb.exec("INSERT INTO host_marker (id) VALUES (7)");
+      // Only reachable through the very connection the host injected.
+      const seen = withDb((database) => {
+        const row = database.query("SELECT id FROM host_marker").get() as
+          | { id: number }
+          | undefined;
+        return row?.id;
+      });
+      expect(seen).toBe(7);
+      // Borrowed, so `withDb` must not close it on the way out.
+      expect(() => hostDb.exec("SELECT 1 FROM host_marker")).not.toThrow();
+    } finally {
+      restore();
+      hostDb.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("falls back to its own connection when no host is configured", () => {
+    expect(withDb((database) => database.query("SELECT 1 AS ok").get())).toEqual({ ok: 1 });
+  });
 });
 
 describe("session-comm topic listing", () => {

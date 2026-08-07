@@ -9,6 +9,7 @@ import { db } from "#storage/forum-db";
 import { TURN_LEASE_STALE_MS } from "#storage/runtime-leases";
 import { getRuntimeTopicEpoch, TOPIC_MAINTENANCE_STALE_MS } from "#storage/runtime-topic-state";
 import type { StorageDatabase } from "#storage/storage-contract";
+import { registerStorageSchemaInitializer } from "#storage/storage-host";
 import type { AgentKind, EffortLevel, PeerRuntimeBridgeContext } from "#types";
 
 const REQUEST_CLAIM_STALE_MS = TURN_LEASE_STALE_MS;
@@ -149,7 +150,14 @@ export function ensureRuntimeUserTurnRequestsSchema(database: StorageDatabase): 
   );
 }
 
-ensureRuntimeUserTurnRequestsSchema(db);
+// Registered rather than run at import time. Calling this with `db` on module
+// evaluation resolves the storage connection immediately, which for an
+// embedding host happens before `configureStorageHost()` — Negotium then opens
+// and caches its own database in the default state directory, and every later
+// caller silently keeps using it instead of the host's.
+registerStorageSchemaInitializer((database) =>
+  ensureRuntimeUserTurnRequestsSchema(database as unknown as StorageDatabase),
+);
 
 function rowToRequest(row: RuntimeUserTurnRequestRow): RuntimeUserTurnRequest {
   let attachments: string[] | undefined;

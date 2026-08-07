@@ -1,4 +1,5 @@
 import { db } from "#storage/forum-db";
+import { registerStorageSchemaInitializer } from "#storage/storage-host";
 
 export const DEFAULT_BROWSER_PROFILE = "default";
 
@@ -17,14 +18,21 @@ export function normalizeBrowserProfileName(name: string): string {
   return value;
 }
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS browser_profiles (
-    owner_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (owner_id, name)
-  )
-`);
+// Registered rather than executed at import time. A bare top-level `db.exec`
+// resolves the storage connection the moment this module is imported, which for
+// an embedding host is before `configureStorageHost()` has run — Negotium then
+// opens its own database in the default state directory, caches it, and every
+// later caller silently keeps using it instead of the host's.
+registerStorageSchemaInitializer((database) => {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS browser_profiles (
+      owner_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (owner_id, name)
+    )
+  `);
+});
 
 export function getBrowserProfileOwner(topicId: string, fallbackUserId: string): string {
   return (

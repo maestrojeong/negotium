@@ -127,6 +127,19 @@ export function resolveStorageDatabase(): InternalStorageDatabase {
   return (configuredHost.database ?? defaultDatabase()) as InternalStorageDatabase;
 }
 
+/**
+ * The host-injected connection, or null when Negotium owns its own store.
+ *
+ * Unlike {@link resolveStorageDatabase} this never opens anything. Callers that
+ * manage their own short-lived connections need to know whether a host store
+ * exists *before* deciding to open one by path: opening it anyway is how an
+ * embedded Negotium ends up writing half its state into the host's database and
+ * the other half into `~/.negotium`, with nothing reporting an error.
+ */
+export function configuredStorageDatabase(): InternalStorageDatabase | null {
+  return (configuredHost.database as InternalStorageDatabase | undefined) ?? null;
+}
+
 export function resolveStorageDataDir(): string {
   return configuredHost.dataDir ?? defaultDataDir();
 }

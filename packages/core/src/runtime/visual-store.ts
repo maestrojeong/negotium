@@ -10,34 +10,42 @@
  */
 import { randomUUID } from "node:crypto";
 import { db } from "#storage/forum-db";
+import { registerStorageSchemaInitializer } from "#storage/storage-host";
 
 const MAX_HISTORY = 10;
 const MAX_VISUAL_TITLE_CHARS = 180;
 export const VISUAL_MEDIA_URL_PLACEHOLDER = "__NEGOTIUM_VISUAL_MEDIA_URL__";
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS api_topic_visuals (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    topic_id   TEXT    NOT NULL,
-    html       TEXT    NOT NULL,
-    title      TEXT,
-    created_at INTEGER NOT NULL,
-    kind       TEXT    NOT NULL DEFAULT 'html',
-    source     TEXT,
-    file_id    TEXT,
-    mime_type  TEXT,
-    media_token TEXT
-  );
-  CREATE INDEX IF NOT EXISTS idx_api_topic_visuals_topic
-    ON api_topic_visuals(topic_id, created_at DESC);
-
-  CREATE TABLE IF NOT EXISTS api_topic_visual_views (
-    topic_id  TEXT NOT NULL,
-    user_id   TEXT NOT NULL,
-    visual_id INTEGER NOT NULL,
-    PRIMARY KEY (topic_id, user_id)
-  );
-`);
+// Registered rather than executed at import time. A bare top-level `db.exec`
+// resolves the storage connection the moment this module is imported, which for
+// an embedding host is before `configureStorageHost()` has run — Negotium then
+// opens its own database in the default state directory, caches it, and every
+// later caller silently keeps using it instead of the host's.
+registerStorageSchemaInitializer((database) => {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS api_topic_visuals (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      topic_id   TEXT    NOT NULL,
+      html       TEXT    NOT NULL,
+      title      TEXT,
+      created_at INTEGER NOT NULL,
+      kind       TEXT    NOT NULL DEFAULT 'html',
+      source     TEXT,
+      file_id    TEXT,
+      mime_type  TEXT,
+      media_token TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_topic_visuals_topic
+      ON api_topic_visuals(topic_id, created_at DESC);
+  
+    CREATE TABLE IF NOT EXISTS api_topic_visual_views (
+      topic_id  TEXT NOT NULL,
+      user_id   TEXT NOT NULL,
+      visual_id INTEGER NOT NULL,
+      PRIMARY KEY (topic_id, user_id)
+    );
+  `);
+});
 
 for (const statement of [
   "ALTER TABLE api_topic_visuals ADD COLUMN kind TEXT NOT NULL DEFAULT 'html'",
