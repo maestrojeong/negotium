@@ -12,6 +12,7 @@
 import { defineNegotiumAdapter, type NegotiumAdapterHandle } from "@negotium/adapter-sdk";
 import {
   failInterruptedRemoteAskCallbacks,
+  getTopic,
   logger,
   NEGOTIUM_VERSION,
   registerPeerRuntimeBridge,
@@ -27,7 +28,11 @@ import { otiumPeerRuntimeBridge } from "@/runtime-bridge";
 import { otiumPeerSessionBridge, startPeerReplyOutboxWorker } from "@/session-bridge";
 import { startPeerSessionBridgeIpc } from "@/session-bridge-ipc";
 import { startSharedTopicSync } from "@/shared-topic-sync";
-import { cleanupPeerStateForLocalTopic, failInterruptedPeerTurnRequestsOnStartup } from "@/store";
+import {
+  cleanupPeerStateForLocalTopic,
+  failInterruptedPeerTurnRequestsOnStartup,
+  sweepStalePeerBindings,
+} from "@/store";
 import { TunnelClient, type TunnelClientOptions } from "@/tunnel-client";
 
 export {
@@ -104,7 +109,11 @@ export {
   forwardSharedTopicMessage,
   startSharedTopicSync,
 } from "@/shared-topic-sync";
-export { cleanupPeerStateForLocalTopic, failInterruptedPeerTurnRequestsOnStartup } from "@/store";
+export {
+  cleanupPeerStateForLocalTopic,
+  failInterruptedPeerTurnRequestsOnStartup,
+  sweepStalePeerBindings,
+} from "@/store";
 export {
   TunnelClient,
   type TunnelClientOptions,
@@ -139,6 +148,15 @@ export function startOtiumNodeRuntime(options: OtiumAdapterOptions): OtiumNodeRu
   const failed = failInterruptedPeerTurnRequestsOnStartup();
   if (failed > 0) {
     logger.warn({ failed }, "otium: failed interrupted peer turns from previous process");
+  }
+  // Deletions that happened while this node was down never arrived as events,
+  // so reconcile once here — see sweepStalePeerBindings.
+  const staleBindings = sweepStalePeerBindings((localTopicId) => getTopic(localTopicId) !== null);
+  if (staleBindings.topicIds.length > 0) {
+    logger.info(
+      { topicIds: staleBindings.topicIds, ...staleBindings.removed },
+      "otium: removed peer state for local topics deleted while this node was offline",
+    );
   }
   const stopBackflow = startEventBackflow();
   const stopSharedTopicSync = startSharedTopicSync(join);

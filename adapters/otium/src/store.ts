@@ -405,6 +405,60 @@ export function cleanupPeerStateForLocalTopic(localTopicId: string): PeerTopicCl
   })();
 }
 
+export interface StalePeerBindingSweep {
+  /** Local topic ids whose adapter state was removed. */
+  topicIds: string[];
+  removed: PeerTopicCleanupResult;
+}
+
+/**
+ * Drop adapter state for bindings whose local topic no longer exists.
+ *
+ * Deletion normally arrives as a `topic-deleted` bus event, which is enough
+ * while the node is running. A node that is *offline* when the topic goes away
+ * never sees that event, and nothing else reconciles — so the binding row
+ * outlives its topic for good. The headless worker makes this the common case
+ * rather than the rare one: it is deliberately kept shut down between jobs to
+ * save cost, so almost every deletion happens while it cannot observe one.
+ *
+ * For a mirror binding the effect is cosmetic, since `provisionMirrorTopic`
+ * recreates the topic under the recorded id on the next turn. For a `shared`
+ * binding it is not: the turn bridge answers "bound local topic no longer
+ * exists" and every turn for that host room fails with 404, permanently,
+ * because the row that causes it is never cleaned up.
+ *
+ * Called once at startup, which is precisely when a missed event can be
+ * detected: anything still bound to a topic that is not there was deleted while
+ * this node was not listening.
+ */
+export function sweepStalePeerBindings(
+  topicExists: (localTopicId: string) => boolean,
+): StalePeerBindingSweep {
+  const stale = [
+    ...new Set(
+      listPeerSessions()
+        .map((row) => row.local_topic_id)
+        .filter((localTopicId) => localTopicId && !topicExists(localTopicId)),
+    ),
+  ];
+  const removed: PeerTopicCleanupResult = {
+    sessions: 0,
+    turns: 0,
+    terminalOutbox: 0,
+    inboxRequests: 0,
+    remoteAsks: 0,
+  };
+  for (const localTopicId of stale) {
+    const result = cleanupPeerStateForLocalTopic(localTopicId);
+    removed.sessions += result.sessions;
+    removed.turns += result.turns;
+    removed.terminalOutbox += result.terminalOutbox;
+    removed.inboxRequests += result.inboxRequests;
+    removed.remoteAsks += result.remoteAsks;
+  }
+  return { topicIds: stale, removed };
+}
+
 // ── peer turn requests: durable exactly-once claim per (hostCellId, requestId) ──
 
 type PeerTurnRequestStatus = "claimed" | "running" | "finished" | "failed";
