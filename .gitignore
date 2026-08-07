@@ -18,6 +18,10 @@ tsconfig.tsbuildinfo
 .env.*
 !.env.example
 
+# local experiments (datasets and reports are generated, and biome would
+# otherwise format the JSON they emit)
+evals/
+
 # misc
 .DS_Store
 *.pem
