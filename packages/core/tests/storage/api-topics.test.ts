@@ -215,6 +215,26 @@ describe("api topic storage", () => {
     }
   });
 
+  test("manager rooms with the same title are not a conflict — one per user", () => {
+    // Every member of a multi-user host gets a personal "General" manager room.
+    // Treating those as duplicates renamed real rooms out from under them.
+    const title = `General-${randomUUID().slice(0, 8)}`;
+    const mine = { ...makeTopic(), title, kind: "manager" as const };
+    const theirs = {
+      ...makeTopic(),
+      title,
+      kind: "manager" as const,
+      participants: [{ userId: `other-${randomUUID()}`, role: "owner" as const }],
+    };
+    createdTopicIds.push(mine.id, theirs.id);
+    upsertTopic(mine);
+    upsertTopic(theirs);
+
+    expect(findTopicTitleConflict(title, "manager")).toBeNull();
+    // An agent room by that name is still checked against other agent rooms.
+    expect(findTopicTitleConflict(title, "agent")).toBeNull();
+  });
+
   test("the same title may exist once per surface", () => {
     const title = `surface-dup-${randomUUID().slice(0, 8)}`;
     const local = { ...makeTopic(), title };

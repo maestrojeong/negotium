@@ -474,11 +474,17 @@ function backfillTopicSurfaces(): void {
   logger.info({ surface }, "api_topics: surface backfilled");
 }
 
-/** Suffix duplicate `(surface, kind, title)` rows so the new uniqueness rule holds. */
+/**
+ * Suffix duplicate `(surface, kind, title)` rows so the new uniqueness rule holds.
+ *
+ * Manager rooms are excluded: they are one per user, so on a multi-user host
+ * every member has a personal room with the same title and none of them is a
+ * duplicate. Renaming those relabels real rooms belonging to other people.
+ */
 function renameSurfaceTitleCollisions(): void {
   const rows = db
     .query<{ id: string; title: string; kind: string; surface: string }, []>(
-      "SELECT id, title, kind, surface FROM api_topics ORDER BY created_at ASC, rowid ASC",
+      "SELECT id, title, kind, surface FROM api_topics WHERE kind != 'manager' ORDER BY created_at ASC, rowid ASC",
     )
     .all();
   const taken = new Set<string>();
@@ -913,12 +919,15 @@ export function findTopicTitleConflict(
     if (general) return rowToDto(general);
   }
 
-  const params: string[] = [wanted, surface];
-  let sql = "SELECT * FROM api_topics WHERE LOWER(TRIM(title)) = ? AND surface = ?";
-  if (kind !== "manager") {
-    sql += " AND (kind = ? OR id = ?)";
-    params.push(kind, GENERAL_TOPIC_ID);
-  }
+  // Manager rooms are one-per-user and system-created, so several of them
+  // legitimately share a title (every member's personal "General"). Comparing
+  // them against each other is not a conflict, it is the design — on a
+  // multi-user host it renamed real rooms out from under their owners.
+  if (kind === "manager") return null;
+
+  const params: string[] = [wanted, surface, kind, GENERAL_TOPIC_ID];
+  let sql =
+    "SELECT * FROM api_topics WHERE LOWER(TRIM(title)) = ? AND surface = ? AND (kind = ? OR id = ?)";
   if (opts.excludeTopicId) {
     sql += " AND id != ?";
     params.push(opts.excludeTopicId);
