@@ -11,6 +11,7 @@ import {
 import { dirname, resolve } from "node:path";
 import {
   type AgentKind,
+  appendApiMessage,
   type compactTopicSession,
   deleteVaultEntry,
   ensurePersonalGeneral,
@@ -30,6 +31,7 @@ import {
   logger,
   NEGOTIUM_VERSION,
   NODE_CONTROL_TOKEN,
+  NODE_ID,
   RUN_DIR,
   type RuntimeBusEvent,
   RuntimeGatewayIdempotencyConflictError,
@@ -48,6 +50,7 @@ import {
   TopicServiceError,
   TopicTitleConflictError,
   topicService,
+  upsertTopic,
 } from "@negotium/core/node-host";
 import { nodeFileStore } from "./files";
 import { createPollingSseStream } from "./polling-sse";
@@ -243,6 +246,9 @@ export function createNodeControlHandler(
             ok: true,
             v: NODE_RUNTIME_CONTRACT_VERSION,
             nodeVersion: NODE_VERSION,
+            // Which node this is, so a host can tell a re-pointed base URL from
+            // a topic whose owner withdrew it.
+            nodeId: NODE_ID,
             capabilities: [
               "turn-submit-idempotent",
               "turn-events-sse-resume",
@@ -250,6 +256,7 @@ export function createNodeControlHandler(
               "canonical-message-read",
               "canonical-topic-list",
               "canonical-topic-create",
+              "canonical-history-import",
             ],
             cursor: latestRuntimeEventSeq(),
           });
@@ -385,6 +392,85 @@ export function createNodeControlHandler(
             { ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, topic },
             { status: 201 },
           );
+        }
+
+        /**
+         * One-time history import, for adopting a room that predates the node.
+         *
+         * A host that mapped an existing room would otherwise hide its own
+         * transcript: the room reads from the node, and the node has nothing.
+         * This writes the messages verbatim — author, id and timestamp — and
+         * deliberately does NOT start a turn, unlike the message-post route.
+         *
+         * Two guards, because this is the strongest write in the contract:
+         *  - it refuses a topic that already holds messages, so it can only
+         *    seed, never rewrite or interleave history;
+         *  - it is not exposed through the remote forward, so a host may only
+         *    import into a node on its own machine.
+         */
+        const importMatch = runtimePath.match(/^\/topics\/([^/]+)\/import$/);
+        if (importMatch && req.method === "POST") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const topicId = decodeURIComponent(importMatch[1]);
+          const topic = getTopic(topicId);
+          if (!topic) return jsonError(404, "Topic not found");
+          if (!Array.isArray(body.messages)) {
+            return jsonError(400, "messages must be an array");
+          }
+          if (listApiMessages(topicId, { limit: 1 }).page.length > 0) {
+            return jsonError(409, "topic already has messages");
+          }
+          const messages = body.messages as Record<string, unknown>[];
+          for (const [index, message] of messages.entries()) {
+            if (
+              typeof message?.id !== "string" ||
+              typeof message?.authorId !== "string" ||
+              typeof message?.text !== "string" ||
+              typeof message?.createdAt !== "string"
+            ) {
+              return jsonError(400, `messages[${index}] needs id, authorId, text and createdAt`);
+            }
+          }
+          let imported = 0;
+          for (const message of messages) {
+            appendApiMessage(
+              {
+                id: message.id as string,
+                topicId,
+                authorId: message.authorId as string,
+                text: message.text as string,
+                createdAt: message.createdAt as string,
+                deleted: false,
+                ...(typeof message.agentType === "string"
+                  ? { agentType: message.agentType as AgentKind }
+                  : {}),
+                ...(typeof message.model === "string" ? { model: message.model as string } : {}),
+              },
+              // Imported history is not news: notifying would replay months of
+              // messages to every open client. The topic's timestamps are set
+              // once below, because `appendApiMessage` only ever moves
+              // `lastMessageAt` *forward* — the topic was created seconds ago, so
+              // per-message updates would all be ignored and the room would sort
+              // as if it had just been written to.
+              { notify: false, updateTopicLastMessageAt: false },
+            );
+            imported += 1;
+          }
+          if (imported > 0) {
+            const stamps = messages.map((message) => message.createdAt as string).sort();
+            upsertTopic({
+              ...topic,
+              // A room cannot honestly be newer than the history it now holds.
+              createdAt: stamps[0] < topic.createdAt ? stamps[0] : topic.createdAt,
+              lastMessageAt: stamps[stamps.length - 1],
+            });
+          }
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            imported,
+          });
         }
 
         const runtimeTopicMatch = runtimePath.match(/^\/topics\/([^/]+)$/);

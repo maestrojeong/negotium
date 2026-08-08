@@ -360,6 +360,18 @@ export const NODE_CONTROL_TOKEN = loadOrCreateLocalSecret(
   "NEGOTIUM_CONTROL_TOKEN",
   "node-control-token",
 );
+/**
+ * Stable identity of this node's store, minted once and kept across restarts.
+ *
+ * Deliberately not a secret: it is published in the gateway health response so a
+ * host can tell "the node I recorded a mapping against" apart from "whatever is
+ * answering on that port today". Without it, pointing a host at a different node
+ * makes every existing mapping look like a topic whose owner withdrew it, and the
+ * same topics come back as duplicate rooms. It shares the secrets directory only
+ * because that is already where per-install state that must survive restarts
+ * lives; the stricter file mode costs nothing.
+ */
+export const NODE_ID = loadOrCreateLocalSecret("NEGOTIUM_NODE_ID", "node-id");
 export const VAULT_MASTER_KEY = loadOrCreateLocalSecret(
   "NEGOTIUM_VAULT_MASTER_KEY",
   "vault-master-key",

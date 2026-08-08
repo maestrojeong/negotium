@@ -29,6 +29,7 @@ export {
   DATA_DIR,
   NEGOTIUM_PORT,
   NODE_CONTROL_TOKEN,
+  NODE_ID,
   RUN_DIR,
   STATE_DIR,
   WORKSPACE_DIR,
@@ -65,8 +66,8 @@ export type { FileHooks, UploadAccess } from "#runtime/file-hooks";
 export { setFileHooks } from "#runtime/file-hooks";
 export { startSessionInboxWorker } from "#runtime/inbox";
 export { startAiTurn, startDurableTurnRequestWorker } from "#runtime/turn-runner";
-export { listApiMessages } from "#storage/api-messages";
-export { getTopic, isTopicShared } from "#storage/api-topics";
+export { appendApiMessage, listApiMessages } from "#storage/api-messages";
+export { getTopic, isTopicShared, upsertTopic } from "#storage/api-topics";
 export type { StoredRuntimeEvent } from "#storage/runtime-events";
 export {
   latestRuntimeEventSeq,

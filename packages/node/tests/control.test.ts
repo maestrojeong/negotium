@@ -9,6 +9,8 @@ import {
   getTopic,
   getTopicSessionId,
   latestRuntimeEventSeq,
+  listApiMessages,
+  listRunningTopicQueries,
   NEGOTIUM_VERSION,
   NODE_CONTROL_TOKEN,
   registerTopic,
@@ -127,6 +129,133 @@ test("runtime gateway topic create makes a shared canonical topic", async () => 
     }),
   );
   expect(turn?.status).toBe(202);
+});
+
+test("runtime gateway history import seeds a topic verbatim without running a turn", async () => {
+  const importUser = `import-${randomUUID()}`;
+  const created = await handler(
+    runtimeRequest("/topics", {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        userId: importUser,
+        title: `Import ${randomUUID()}`,
+      }),
+    }),
+  );
+  const topicId = ((await created?.json()) as { topic: TopicDto }).topic.id;
+
+  const older = "2026-01-01T00:00:00.000Z";
+  const newer = "2026-01-02T00:00:00.000Z";
+  const firstId = randomUUID();
+  const response = await handler(
+    runtimeRequest(`/topics/${encodeURIComponent(topicId)}/import`, {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        messages: [
+          { id: firstId, authorId: importUser, text: "first", createdAt: older },
+          { id: randomUUID(), authorId: "ai", text: "second", createdAt: newer },
+        ],
+      }),
+    }),
+  );
+
+  expect(response?.status).toBe(200);
+  expect(await response?.json()).toMatchObject({ ok: true, imported: 2 });
+  const page = listApiMessages(topicId, { limit: 10 }).page;
+  expect(page).toHaveLength(2);
+  // Verbatim: the point of importing is that the room keeps its own history, so
+  // ids, authors and timestamps must survive rather than being re-minted.
+  expect(page[0]?.id).toBe(firstId);
+  expect(page[0]?.authorId).toBe(importUser);
+  expect(page[0]?.createdAt).toBe(older);
+  expect(page[1]?.authorId).toBe("ai");
+  // No turn was started: a running query here would mean importing a year of
+  // history re-ran the agent once per message.
+  expect(listRunningTopicQueries().get(topicId)).toBeUndefined();
+  expect(getTopic(topicId)?.lastMessageAt).toBe(newer);
+});
+
+test("runtime gateway history import refuses a topic that already has messages", async () => {
+  const importUser = `import-guard-${randomUUID()}`;
+  const created = await handler(
+    runtimeRequest("/topics", {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        userId: importUser,
+        title: `Guard ${randomUUID()}`,
+      }),
+    }),
+  );
+  const topicId = ((await created?.json()) as { topic: TopicDto }).topic.id;
+  const seed = () =>
+    handler(
+      runtimeRequest(`/topics/${encodeURIComponent(topicId)}/import`, {
+        method: "POST",
+        body: JSON.stringify({
+          v: NODE_RUNTIME_CONTRACT_VERSION,
+          messages: [
+            {
+              id: randomUUID(),
+              authorId: importUser,
+              text: "seed",
+              createdAt: "2026-01-01T00:00:00.000Z",
+            },
+          ],
+        }),
+      }),
+    );
+
+  expect((await seed())?.status).toBe(200);
+  // Second call must not append, interleave or rewrite: import can only seed an
+  // empty topic, so it cannot be used to forge history into a live room.
+  const again = await seed();
+  expect(again?.status).toBe(409);
+  expect(listApiMessages(topicId, { limit: 10 }).page).toHaveLength(1);
+});
+
+test("runtime gateway history import validates version, shape and topic", async () => {
+  const importUser = `import-bad-${randomUUID()}`;
+  const created = await handler(
+    runtimeRequest("/topics", {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        userId: importUser,
+        title: `Bad ${randomUUID()}`,
+      }),
+    }),
+  );
+  const topicId = ((await created?.json()) as { topic: TopicDto }).topic.id;
+  const post = (path: string, payload: Record<string, unknown>) =>
+    handler(runtimeRequest(path, { method: "POST", body: JSON.stringify(payload) }));
+  const importPath = `/topics/${encodeURIComponent(topicId)}/import`;
+
+  expect((await post(importPath, { v: 99, messages: [] }))?.status).toBe(400);
+  expect(
+    (await post(importPath, { v: NODE_RUNTIME_CONTRACT_VERSION, messages: "nope" }))?.status,
+  ).toBe(400);
+  expect(
+    (
+      await post(importPath, {
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        // Missing createdAt: a message without one would sort unpredictably and
+        // silently claim "now" as its time.
+        messages: [{ id: randomUUID(), authorId: importUser, text: "x" }],
+      })
+    )?.status,
+  ).toBe(400);
+  expect(
+    (
+      await post("/topics/does-not-exist/import", {
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        messages: [],
+      })
+    )?.status,
+  ).toBe(404);
+  expect(listApiMessages(topicId, { limit: 10 }).page).toHaveLength(0);
 });
 
 test("runtime gateway topic create rejects a bad version, agent, or missing title", async () => {
