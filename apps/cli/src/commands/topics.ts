@@ -3,7 +3,11 @@
 import { getVisibleTopics } from "@negotium/core";
 
 export function topicsCommand(): void {
-  const topics = getVisibleTopics();
+  // The CLI is part of the Terminal product, so it lists the terminal surface
+  // and nothing else — exactly what the Terminal picker shows. On a host that
+  // only serves Otium rooms this is legitimately empty, and printing that
+  // host's Otium rooms here would put them on the wrong surface's list.
+  const topics = getVisibleTopics({ surface: "terminal" });
   if (topics.length === 0) {
     console.log("no topics yet - start `negotium` to create one in Terminal");
     return;

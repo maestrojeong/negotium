@@ -85,9 +85,46 @@ topic branch rejects threads outright (`messages.ts:363`, "Attachments, threads,
 supported by the Negotium canary"). Required end state: a mention inside a thread starts a turn whose
 reply carries the same `threadRootId`, for both Otium-native and node-mapped rooms.
 
+**S-12 — the `otium` surface will need an instance scope before a node can join
+more than one Otium. Designed now, not built.**
+
+`surface` stays a closed set of three. What it does *not* encode is *which*
+Otium a room belongs to. Today that is safe because a node holds exactly one
+join — `loadJoin()` reads a single `otium-join.json` or a single
+`OTIUM_CENTRAL_URL`/`OTIUM_CELL_ID`/`OTIUM_CELL_SECRET` triple
+(`adapters/otium/src/join.ts:344-378`). The fan-out is the other way round: one
+hub reaches many nodes (`gatewayTargets()`, `apps/runtime-api/src/negotium/nodes.ts:76-95`).
+A single *machine* can already be in several Otiums by running several nodes
+with different `NEGOTIUM_STATE_DIR`s, but each of those has its own store, so
+nothing mixes.
+
+The intended shape when multi-join arrives:
+
+```
+surface: terminal | telegram | otium          (closed set, unchanged)
+  └─ otium only: scope = which Otium + which role
+       · the local Otium app                  (self / hub runtime)
+       · another workspace, as hub runtime
+       · another workspace, as worker runtime
+```
+
+Concretely: an `api_topics.surface_scope` column (`cell_…`, or `local` for the
+app on this machine), NULL for terminal/telegram, added to the uniqueness key
+and to `session-comm` target resolution. The identifiers already exist —
+`OtiumJoin.cellId` + `central` for the instance, `PeerNode.isPrimary`/`self`
+for the role.
+
+**Order matters**: the scope column is worthless until `loadJoin` returns a
+*set* of joins and the gateway/peer paths branch per cell. Adding it first
+yields a column with one distinct value and a more complex uniqueness key for
+no isolation. Adding it *after* rooms from two workspaces have already mixed in
+one store means splitting them apart by hand. So: build multi-join and the
+scope together, or neither.
+
 ## Non-goals
 
 - Making a topic visible on two surfaces at once.
+- Joining one node to several Otium workspaces (see S-12 — designed, not built).
 - Moving a topic between surfaces after creation (may be added later; not part of this change).
 - Splitting the canonical store or the node process per surface.
 - Changing how memory/wiki/skills are stored.
