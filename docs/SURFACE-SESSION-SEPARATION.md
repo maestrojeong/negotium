@@ -85,8 +85,10 @@ topic branch rejects threads outright (`messages.ts:363`, "Attachments, threads,
 supported by the Negotium canary"). Required end state: a mention inside a thread starts a turn whose
 reply carries the same `threadRootId`, for both Otium-native and node-mapped rooms.
 
-**S-12 — the `otium` surface will need an instance scope before a node can join
-more than one Otium. Designed now, not built.**
+**S-12 — the `otium` surface needs an instance scope before a node can join more
+than one Otium. Superseded by [MULTI-WORKSPACE-JOIN.md](./MULTI-WORKSPACE-JOIN.md)
+(M-1 … M-9), which is the accepted design; the sketch below is kept for the
+reasoning that led there.**
 
 `surface` stays a closed set of three. What it does *not* encode is *which*
 Otium a room belongs to. Today that is safe because a node holds exactly one
@@ -120,6 +122,11 @@ yields a column with one distinct value and a more complex uniqueness key for
 no isolation. Adding it *after* rooms from two workspaces have already mixed in
 one store means splitting them apart by hand. So: build multi-join and the
 scope together, or neither.
+
+Two things in this sketch were revised once the join path was read properly:
+the scope is keyed on `workspaceId`, not `cellId` (a re-invite changes the cell
+and would orphan every room), and leaving keeps its rooms executable rather than
+downgrading them. See M-2 and M-4.
 
 **S-13 — a threaded mention in a *node-mapped* room gets its answer in that
 thread. Implemented; merge rule (b) chosen.**
