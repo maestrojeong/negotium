@@ -21,7 +21,7 @@ import {
   stampUnscopedOtiumTopics,
 } from "@negotium/core";
 import { startCanonicalMcpBridge } from "@/canonical-mcp-bridge";
-import { configureOtiumCentral, selfPeerNode } from "@/central";
+import { attachOtiumCentralCell, detachOtiumCentralCell, selfPeerNodeForCell } from "@/central";
 import { loadJoin, type OtiumJoin } from "@/join";
 import { installPeerFileHooks } from "@/peer-files";
 import { otiumPeerRuntimeBridge } from "@/runtime-bridge";
@@ -107,38 +107,85 @@ export interface OtiumNodeRuntimeHandle extends NegotiumAdapterHandle<"otium"> {
   join: OtiumJoin;
 }
 
-/** Start the runtime half of Otium inside the canonical Node process. */
+/**
+ * Bridges that are global by nature — one per process regardless of how many
+ * workspaces are attached (M-6).
+ *
+ * The runtime bridge, session bridge, canonical MCP bridge, file hooks, the
+ * topic-deleted subscription and the reply outbox all address rooms and turns,
+ * not workspaces; a second copy of any of them would deliver every event twice.
+ * They are therefore refcounted: started with the first attachment and stopped
+ * with the last, so a node that leaves one workspace keeps serving the rest.
+ */
+let globalServices: { stop: () => void; refs: number } | null = null;
+
+function acquireGlobalOtiumServices(): () => void {
+  if (globalServices) {
+    globalServices.refs += 1;
+  } else {
+    const unregisterRuntimeBridge = registerPeerRuntimeBridge(otiumPeerRuntimeBridge);
+    const unregisterSessionBridge = registerPeerSessionBridge(otiumPeerSessionBridge);
+    const sessionBridgeIpc = startPeerSessionBridgeIpc(otiumPeerSessionBridge);
+    const canonicalMcpBridge = startCanonicalMcpBridge();
+    const stopPeerReplyOutbox = startPeerReplyOutboxWorker();
+    const uninstallFileHooks = installPeerFileHooks();
+    const unsubscribeTopicCleanup = runtimeBus().subscribe((event) => {
+      if (event.type !== "topic-deleted") return;
+      const removed = cleanupPeerStateForLocalTopic(event.topicId);
+      if (removed.inboxRequests + removed.remoteAsks > 0) {
+        logger.info(
+          { topicId: event.topicId, ...removed },
+          "otium: removed peer state for deleted local topic",
+        );
+      }
+    });
+    void failInterruptedRemoteAskCallbacks().then((failedAsks) => {
+      if (failedAsks > 0) {
+        logger.warn({ failedAsks }, "otium: failed remote asks interrupted by previous process");
+      }
+    });
+    globalServices = {
+      refs: 1,
+      stop: () => {
+        unsubscribeTopicCleanup();
+        unregisterRuntimeBridge();
+        unregisterSessionBridge();
+        sessionBridgeIpc.stop();
+        canonicalMcpBridge.stop();
+        stopPeerReplyOutbox();
+        uninstallFileHooks();
+      },
+    };
+  }
+  let released = false;
+  return () => {
+    if (released || !globalServices) return;
+    released = true;
+    globalServices.refs -= 1;
+    if (globalServices.refs > 0) return;
+    globalServices.stop();
+    globalServices = null;
+  };
+}
+
+/**
+ * Attach one workspace inside the canonical Node process.
+ *
+ * One instance per joined workspace (M-6). Only the credentials, the workspace
+ * scope and the self-check are per workspace; everything else is shared and
+ * refcounted above.
+ */
 export function startOtiumNodeRuntime(options: OtiumAdapterOptions): OtiumNodeRuntimeHandle {
   const { join } = options;
-  configureOtiumCentral(join);
-  const unregisterRuntimeBridge = registerPeerRuntimeBridge(otiumPeerRuntimeBridge);
-  const unregisterSessionBridge = registerPeerSessionBridge(otiumPeerSessionBridge);
-  const sessionBridgeIpc = startPeerSessionBridgeIpc(otiumPeerSessionBridge);
-  const canonicalMcpBridge = startCanonicalMcpBridge();
-  const stopPeerReplyOutbox = startPeerReplyOutboxWorker();
-  void failInterruptedRemoteAskCallbacks().then((failedAsks) => {
-    if (failedAsks > 0) {
-      logger.warn({ failedAsks }, "otium: failed remote asks interrupted by previous process");
-    }
-  });
-  const uninstallFileHooks = installPeerFileHooks();
-  const unsubscribeTopicCleanup = runtimeBus().subscribe((event) => {
-    if (event.type !== "topic-deleted") return;
-    const removed = cleanupPeerStateForLocalTopic(event.topicId);
-    if (removed.inboxRequests + removed.remoteAsks > 0) {
-      logger.info(
-        { topicId: event.topicId, ...removed },
-        "otium: removed peer state for deleted local topic",
-      );
-    }
-  });
+  attachOtiumCentralCell(join);
+  const releaseGlobals = acquireGlobalOtiumServices();
   let stopped = false;
   logger.info({ central: join.central, cellId: join.cellId }, "otium: worker mode enabled");
   // Install the last known scope synchronously so rooms created between mount
   // and the first Central answer are still filed under the right workspace; the
   // async resolution below only matters on the very first attachment (M-3).
   const previousScope = setDefaultSurfaceScope(cachedSurfaceScope(join));
-  void selfPeerNode()
+  void selfPeerNodeForCell(join.cellId)
     .then((self) => {
       if (self) {
         logger.info(
@@ -169,15 +216,11 @@ export function startOtiumNodeRuntime(options: OtiumAdapterOptions): OtiumNodeRu
     stop: () => {
       if (stopped) return;
       stopped = true;
-      unsubscribeTopicCleanup();
-      unregisterRuntimeBridge();
-      unregisterSessionBridge();
-      sessionBridgeIpc.stop();
-      canonicalMcpBridge.stop();
-      stopPeerReplyOutbox();
-      uninstallFileHooks();
+      // Leaving removes credentials and nothing else (M-4): the rooms of this
+      // workspace stay, keep their scope and keep executing locally.
       setDefaultSurfaceScope(previousScope);
-      configureOtiumCentral(null);
+      detachOtiumCentralCell(join.cellId);
+      releaseGlobals();
     },
   };
 }

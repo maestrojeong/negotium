@@ -218,98 +218,85 @@ export function joinCredentialDigest(join: OtiumJoin): string {
     .digest("base64url");
 }
 
-function readPersistedJoin(path = joinFilePath()): OtiumJoin | null {
-  if (!existsSync(path)) return null;
+/** On-disk format version for the multi-workspace join file. */
+const JOIN_FILE_VERSION = 2;
+
+/**
+ * Read every persisted join.
+ *
+ * Two shapes are accepted. A bare object is the original single-join file and
+ * is read as a one-element list, so an existing node upgrades without a
+ * migration step and without a moment where it is detached; the multi-join
+ * shape is only written once there is something to write. Anything else throws,
+ * because silently treating an unreadable credential file as "not joined" would
+ * take a node off its workspace on a typo.
+ */
+function readPersistedJoins(path = joinFilePath()): OtiumJoin[] {
+  if (!existsSync(path)) return [];
   const parsed = JSON.parse(readFileSync(path, "utf-8"));
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("persisted join credentials are not a JSON object");
   }
-  return normalizeJoin(parsed as Record<string, unknown>);
+  const record = parsed as Record<string, unknown>;
+  if (!Array.isArray(record.joins)) return [normalizeJoin(record)];
+  return record.joins.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error("persisted join credentials contain a non-object entry");
+    }
+    return normalizeJoin(entry as Record<string, unknown>);
+  });
 }
 
 /** True only when the join file on disk contains these exact credentials. */
 export function isJoinPersisted(join: OtiumJoin): boolean {
   try {
-    const persisted = readPersistedJoin();
-    return persisted !== null && joinsEqual(persisted, normalizedJoin(join));
+    const normalized = normalizedJoin(join);
+    return readPersistedJoins().some((persisted) => joinsEqual(persisted, normalized));
   } catch {
     return false;
   }
 }
 
+function fsyncPath(target: string): void {
+  const fd = openSync(target, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /**
- * Persist join credentials atomically (0600 — the cell secret is a bearer
- * credential). Re-saving the same join is idempotent. Replacing a different
- * join must be explicit so an enrollment retry cannot silently detach a node.
+ * Replace the whole join file atomically (0600 — cell secrets are bearer
+ * credentials).
+ *
+ * `allowOverwrite` distinguishes the two cases the original single-join write
+ * distinguished: creating the file must lose a race rather than clobber a
+ * winner (hence link(), which fails when the target exists), while an
+ * intentional edit of an existing file renames over it.
  */
-/** @internal Caller must hold withJoinCredentialLock. */
-export function saveJoinWhileLocked(join: OtiumJoin, options: SaveJoinOptions = {}): string {
+function writeJoins(joins: OtiumJoin[], allowOverwrite: boolean): string {
   const path = joinFilePath();
   const directory = dirname(path);
-  const normalized = normalizedJoin(join);
-  mkdirSync(directory, { recursive: true });
-
-  if (existsSync(path)) {
-    if (lstatSync(path).isSymbolicLink()) {
-      throw new Error(`refusing to replace symlinked Otium join file at ${path}`);
-    }
-    let existing: OtiumJoin | null = null;
-    try {
-      existing = readPersistedJoin(path)!;
-    } catch (error) {
-      if (!options.replaceExisting) {
-        throw new Error(
-          `existing Otium join file at ${path} is invalid; pass --replace to replace it`,
-          { cause: error },
-        );
-      }
-    }
-    if (existing && joinsEqual(existing, normalized)) {
-      chmodSync(path, 0o600);
-      const fileFd = openSync(path, "r");
-      try {
-        fsyncSync(fileFd);
-      } finally {
-        closeSync(fileFd);
-      }
-      const directoryFd = openSync(directory, "r");
-      try {
-        fsyncSync(directoryFd);
-      } finally {
-        closeSync(directoryFd);
-      }
-      return path;
-    }
-    if (!options.replaceExisting) {
-      throw new Error(
-        `this node is already joined${existing ? ` as ${existing.cellId}` : " with an invalid join file"}; pass --replace to replace its credentials`,
-      );
-    }
-  }
-
   const temporaryPath = resolve(directory, `.otium-join.json.${process.pid}.${randomUUID()}.tmp`);
+  const payload = { v: JOIN_FILE_VERSION, joins };
   let fd: number | undefined;
   try {
     fd = openSync(temporaryPath, "wx", 0o600);
-    writeFileSync(fd, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+    writeFileSync(fd, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
-    if (options.replaceExisting) {
+    if (allowOverwrite) {
       renameSync(temporaryPath, path);
     } else {
       // Unlike rename(), link fails when another process won the initial join
-      // race, so a non-explicit save can never overwrite its credentials.
+      // race, so a first save can never overwrite its credentials.
       linkSync(temporaryPath, path);
       unlinkSync(temporaryPath);
     }
     chmodSync(path, 0o600);
-    const directoryFd = openSync(directory, "r");
-    try {
-      fsyncSync(directoryFd);
-    } finally {
-      closeSync(directoryFd);
-    }
+    fsyncPath(directory);
   } catch (error) {
     if (fd !== undefined) closeSync(fd);
     if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
@@ -318,46 +305,118 @@ export function saveJoinWhileLocked(join: OtiumJoin, options: SaveJoinOptions = 
   return path;
 }
 
+/**
+ * Persist one workspace's credentials. Re-saving the same join is idempotent.
+ *
+ * Attaching an *additional* workspace is now an ordinary operation and needs no
+ * flag: the whole point of multi-join is that a second workspace does not
+ * displace the first. What still requires `--replace` is re-issuing credentials
+ * for a cell this node already holds, because that does displace something and
+ * an enrollment retry must not silently detach a node.
+ */
+/** @internal Caller must hold withJoinCredentialLock. */
+export function saveJoinWhileLocked(join: OtiumJoin, options: SaveJoinOptions = {}): string {
+  const path = joinFilePath();
+  const directory = dirname(path);
+  const normalized = normalizedJoin(join);
+  mkdirSync(directory, { recursive: true });
+
+  if (!existsSync(path)) return writeJoins([normalized], false);
+
+  if (lstatSync(path).isSymbolicLink()) {
+    throw new Error(`refusing to replace symlinked Otium join file at ${path}`);
+  }
+  let existing: OtiumJoin[] | null = null;
+  try {
+    existing = readPersistedJoins(path);
+  } catch (error) {
+    if (!options.replaceExisting) {
+      throw new Error(
+        `existing Otium join file at ${path} is invalid; pass --replace to replace it`,
+        { cause: error },
+      );
+    }
+  }
+  if (existing?.some((persisted) => joinsEqual(persisted, normalized))) {
+    chmodSync(path, 0o600);
+    fsyncPath(path);
+    fsyncPath(directory);
+    return path;
+  }
+  if (!existing) return writeJoins([normalized], true);
+
+  const conflict = existing.find((persisted) => persisted.cellId === normalized.cellId);
+  if (conflict && !options.replaceExisting) {
+    throw new Error(
+      `this node is already joined as ${conflict.cellId}; pass --replace to replace its credentials`,
+    );
+  }
+  const next = conflict
+    ? existing.map((persisted) => (persisted.cellId === normalized.cellId ? normalized : persisted))
+    : [...existing, normalized];
+  return writeJoins(next, true);
+}
+
 export function saveJoin(join: OtiumJoin, options: SaveJoinOptions = {}): string {
   return withJoinCredentialLock(() => saveJoinWhileLocked(join, options));
 }
 
-/** Remove persisted join credentials after the runtime privacy downgrade. */
-export function removeJoin(): boolean {
+/**
+ * Drop persisted credentials — one workspace, or every one of them.
+ *
+ * Leaving removes credentials and nothing else (M-4): the rooms of that
+ * workspace stay, keep their scope, and keep running locally. Re-joining the
+ * same workspace reattaches them with no repair step, because a room is filed
+ * under the workspace and not under the seat that reached it.
+ */
+export function removeJoin(cellId?: string): boolean {
   return withJoinCredentialLock(() => {
     const path = joinFilePath();
     if (!existsSync(path)) return false;
     if (lstatSync(path).isSymbolicLink()) {
       throw new Error(`refusing to remove symlinked Otium join file at ${path}`);
     }
-    unlinkSync(path);
-    const directoryFd = openSync(dirname(path), "r");
-    try {
-      fsyncSync(directoryFd);
-    } finally {
-      closeSync(directoryFd);
+    if (cellId) {
+      let remaining: OtiumJoin[];
+      try {
+        remaining = readPersistedJoins(path).filter((join) => join.cellId !== cellId);
+      } catch {
+        // An unreadable file names no cell, so there is nothing to remove
+        // selectively; leaving it alone keeps the damage inspectable.
+        return false;
+      }
+      if (remaining.length === readPersistedJoins(path).length) return false;
+      if (remaining.length > 0) {
+        writeJoins(remaining, true);
+        return true;
+      }
     }
+    unlinkSync(path);
+    fsyncPath(dirname(path));
     return true;
   });
 }
 
 /**
- * Load join credentials. Env triple (OTIUM_CENTRAL_URL / OTIUM_CELL_ID /
+ * Load every joined workspace. Env triple (OTIUM_CENTRAL_URL / OTIUM_CELL_ID /
  * OTIUM_CELL_SECRET) wins when all three are set — same values `negotium
  * join` persists, useful for tests and multi-node-on-one-box. Fail-closed:
- * a partial env triple or a corrupt file yields null (worker stays off).
+ * a partial env triple or a corrupt file yields nothing (worker stays off).
  */
-export function loadJoin(): OtiumJoin | null {
+export function loadJoins(): OtiumJoin[] {
   const central = process.env.OTIUM_CENTRAL_URL?.trim();
   const cellId = process.env.OTIUM_CELL_ID?.trim();
   const secret = process.env.OTIUM_CELL_SECRET?.trim();
   const relay = process.env.OTIUM_RELAY_URL?.trim();
   if (central && cellId && secret) {
+    // The env triple describes exactly one cell and stays single-workspace:
+    // it exists so a test or a second node on one box can be configured
+    // without touching disk, not as a second source of the join set.
     try {
-      return normalizeJoin({ central, relay, cellId, secret });
+      return [normalizeJoin({ central, relay, cellId, secret })];
     } catch (err) {
       logger.warn({ err }, "otium: invalid OTIUM_CENTRAL_URL/OTIUM_CELL_ID/OTIUM_CELL_SECRET env");
-      return null;
+      return [];
     }
   }
   if (central || cellId || secret) {
@@ -366,13 +425,16 @@ export function loadJoin(): OtiumJoin | null {
     );
   }
   const path = joinFilePath();
-  if (!existsSync(path)) return null;
+  if (!existsSync(path)) return [];
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf-8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return normalizeJoin(parsed as Record<string, unknown>);
+    return readPersistedJoins(path);
   } catch (err) {
     logger.warn({ err, path }, "otium: failed to read join file");
-    return null;
+    return [];
   }
+}
+
+/** The first attached workspace. Kept for callers that still assume one. */
+export function loadJoin(): OtiumJoin | null {
+  return loadJoins()[0] ?? null;
 }

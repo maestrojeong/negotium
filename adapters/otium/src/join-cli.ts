@@ -117,5 +117,16 @@ export async function joinCommand(args: string[]): Promise<void> {
   } finally {
     configureOtiumCentral(null);
   }
+
+  // A running node keeps serving whatever it mounted at startup, so ask it to
+  // reconcile against the file it has just gained a workspace in (M-7). The
+  // very first join is the exception: a node with no Otium runtime has no
+  // control route to poke, and has to be restarted once.
+  const { reconcileRunningNodeWorkspaces } = await import("@/workspace-control");
+  const applied = await reconcileRunningNodeWorkspaces();
+  if (applied.ok && applied.attached.length > 0) {
+    console.log("the running node attached this workspace; the others kept running");
+    return;
+  }
   console.log("\nnext: `negotium-otium serve` (mounts the otium peer routes automatically)");
 }

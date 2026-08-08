@@ -126,7 +126,10 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
       break;
     }
     case "leave": {
-      if (commandArgs.length > 0) throw new Error(`usage: negotium otium ${command}`);
+      const targetCellId = commandArgs[0]?.trim();
+      if (commandArgs.length > 1 || targetCellId?.startsWith("-")) {
+        throw new Error(`usage: negotium otium ${command} [<cell-id>]`);
+      }
       if (
         process.env.OTIUM_CENTRAL_URL ||
         process.env.OTIUM_CELL_ID ||
@@ -136,18 +139,41 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
           "Otium join is configured by environment; remove OTIUM_CENTRAL_URL, OTIUM_CELL_ID, and OTIUM_CELL_SECRET to disconnect",
         );
       }
-      const { loadJoin, removeJoin } = await import("@/join");
-      if (!loadJoin()) throw new Error("not joined to an Otium workspace");
-      // Removing the join file already cuts the hub off: the hub discovers
+      const { loadJoins, removeJoin } = await import("@/join");
+      const joins = loadJoins();
+      if (joins.length === 0) throw new Error("not joined to an Otium workspace");
+      if (!targetCellId && joins.length > 1) {
+        throw new Error(
+          `this node is joined to ${joins.length} workspaces; name one to leave: ${joins
+            .map((join) => join.cellId)
+            .join(", ")}`,
+        );
+      }
+      if (targetCellId && !joins.some((join) => join.cellId === targetCellId)) {
+        throw new Error(`not joined as ${targetCellId}`);
+      }
+      // Removing the credentials already cuts that hub off: the hub discovers
       // rooms only by calling this node through the Runtime Gateway, which
-      // needs these credentials.
+      // needs them.
       //
-      // Nothing is downgraded any more. A room is reachable from Otium because
-      // it lives on the `otium` surface, and a surface is a permanent property
-      // of the room — not consent to one specific workspace that has to be
-      // revoked on disconnect (S-1, S-4).
-      removeJoin();
-      console.log("disconnected from Otium; workspace credentials removed");
+      // Nothing is downgraded. A room is reachable from Otium because it lives
+      // on the `otium` surface, and a surface is a permanent property of the
+      // room — not consent to one workspace that has to be revoked on
+      // disconnect (S-1, S-4). Its rooms stay, keep their workspace and keep
+      // executing locally, and re-joining reattaches them (M-4).
+      removeJoin(targetCellId);
+      console.log(
+        targetCellId
+          ? `left Otium workspace ${targetCellId}; its credentials were removed`
+          : "disconnected from Otium; workspace credentials removed",
+      );
+      const { reconcileRunningNodeWorkspaces } = await import("@/workspace-control");
+      const applied = await reconcileRunningNodeWorkspaces();
+      console.log(
+        applied.ok
+          ? "the running node has detached it; other workspaces are unaffected"
+          : "restart the node to apply this",
+      );
       break;
     }
     case "serve": {

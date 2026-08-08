@@ -1,14 +1,23 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, rmSync } from "node:fs";
 import { NODE_CONTROL_TOKEN } from "@negotium/core";
 import { configureOtiumCentral } from "@/central";
+import { OTIUM_WORKSPACES_CONTROL_PATH } from "@/control-protocol";
+import { joinFilePath, type OtiumJoin, removeJoin, saveJoin } from "@/join";
 import {
   handleOtiumAdapterControlRequest,
+  mountedOtiumWorkspaces,
   OTIUM_ADAPTER_CONTROL_HEADER,
   OTIUM_ADAPTER_CONTROL_PREFIX,
+  reconcileOtiumWorkspaces,
 } from "@/node-runtime";
 import { proxyOtiumPeerRequest } from "@/sidecar";
 
-afterEach(() => configureOtiumCentral(null));
+afterEach(() => {
+  reconcileOtiumWorkspaces([]);
+  configureOtiumCentral(null);
+  if (existsSync(joinFilePath())) rmSync(joinFilePath());
+});
 
 describe("Otium node adapter control bridge", () => {
   test("is hidden behind the adapter token and rewrites the public peer path", async () => {
@@ -123,5 +132,67 @@ describe("Otium sidecar proxy", () => {
     });
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ error: expect.stringContaining("unavailable") });
+  });
+});
+
+describe("workspace attachments", () => {
+  const alpha: OtiumJoin = {
+    central: "https://alpha.example",
+    cellId: "cell_alpha",
+    secret: "rcs_alpha",
+  };
+  const beta: OtiumJoin = {
+    central: "https://beta.example",
+    cellId: "cell_beta",
+    secret: "rcs_beta",
+  };
+
+  test("reconciles against the credential file without a restart", () => {
+    saveJoin(alpha);
+    expect(reconcileOtiumWorkspaces()).toEqual({ attached: ["cell_alpha"], detached: [] });
+
+    // Joining a second workspace must not disturb the first.
+    saveJoin(beta);
+    expect(reconcileOtiumWorkspaces()).toEqual({ attached: ["cell_beta"], detached: [] });
+    expect(
+      mountedOtiumWorkspaces()
+        .map((join) => join.cellId)
+        .sort(),
+    ).toEqual(["cell_alpha", "cell_beta"]);
+
+    // ...and leaving one leaves the other running.
+    removeJoin("cell_alpha");
+    expect(reconcileOtiumWorkspaces()).toEqual({ attached: [], detached: ["cell_alpha"] });
+    expect(mountedOtiumWorkspaces().map((join) => join.cellId)).toEqual(["cell_beta"]);
+
+    // Reconciling twice changes nothing; it is a converge, not a toggle.
+    expect(reconcileOtiumWorkspaces()).toEqual({ attached: [], detached: [] });
+  });
+
+  test("the control route reconciles and is hidden behind the adapter token", async () => {
+    saveJoin(alpha);
+    const url = `http://127.0.0.1${OTIUM_ADAPTER_CONTROL_PREFIX}${OTIUM_WORKSPACES_CONTROL_PATH}`;
+
+    const unauthorized = await handleOtiumAdapterControlRequest(
+      new Request(url, { method: "POST" }),
+    );
+    expect(unauthorized?.status).toBe(401);
+    expect(mountedOtiumWorkspaces()).toEqual([]);
+
+    const applied = await handleOtiumAdapterControlRequest(
+      new Request(url, {
+        method: "POST",
+        headers: { [OTIUM_ADAPTER_CONTROL_HEADER]: NODE_CONTROL_TOKEN },
+      }),
+    );
+    expect(await applied?.json()).toEqual({ ok: true, attached: ["cell_alpha"], detached: [] });
+
+    const listed = await handleOtiumAdapterControlRequest(
+      new Request(url, { headers: { [OTIUM_ADAPTER_CONTROL_HEADER]: NODE_CONTROL_TOKEN } }),
+    );
+    expect(await listed?.json()).toEqual({
+      ok: true,
+      workspaces: [{ cellId: "cell_alpha", central: "https://alpha.example" }],
+    });
   });
 });

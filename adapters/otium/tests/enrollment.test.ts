@@ -201,7 +201,9 @@ describe("production enrollment client", () => {
       };
       const first = await claimEnrollment(invite, "worker-original");
       expect(isEnrollmentPending(invite)).toBe(true);
-      saveJoin({ central: "https://other.example", cellId: "cell_other", secret: "rcs_other" });
+      // Same seat, different credentials: an addition would be fine, but this
+      // would displace what the node already holds, so the commit must fail.
+      saveJoin({ central: "https://other.example", cellId: "cell_resume", secret: "rcs_other" });
       expect(() => commitEnrollment(first)).toThrow("already joined");
       expect(existsSync(pendingEnrollmentPath())).toBe(true);
 

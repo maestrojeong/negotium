@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, statSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { DATA_DIR } from "@negotium/core";
-import { joinFilePath, loadJoin, parseInviteCode, removeJoin, saveJoin } from "@/join";
+import { joinFilePath, loadJoin, loadJoins, parseInviteCode, removeJoin, saveJoin } from "@/join";
 
 function encode(value: unknown): string {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -106,24 +106,50 @@ describe("saveJoin / loadJoin", () => {
     expect(removeJoin()).toBe(false);
   });
 
-  test("requires explicit replacement of different credentials", () => {
-    saveJoin({ central: "https://one.example", cellId: "cell_one", secret: "rcs_one" });
-    const replacement = {
-      central: "https://two.example",
-      cellId: "cell_two",
-      secret: "rcs_two",
-    };
-    expect(() => saveJoin(replacement)).toThrow("--replace");
-    expect(loadJoin()?.cellId).toBe("cell_one");
-    saveJoin(replacement, { replaceExisting: true });
-    expect(loadJoin()).toEqual(replacement);
+  test("requires explicit replacement of a cell this node already holds", () => {
+    const initial = { central: "https://one.example", cellId: "cell_one", secret: "rcs_one" };
+    saveJoin(initial);
+    // Same seat, new secret: this displaces something, so an enrollment retry
+    // must not do it silently.
+    const reissued = { central: "https://one.example", cellId: "cell_one", secret: "rcs_new" };
+    expect(() => saveJoin(reissued)).toThrow("--replace");
+    expect(loadJoins()).toEqual([initial]);
+    saveJoin(reissued, { replaceExisting: true });
+    expect(loadJoins()).toEqual([reissued]);
+  });
+
+  test("a second workspace is added, not substituted", () => {
+    const first = { central: "https://one.example", cellId: "cell_one", secret: "rcs_one" };
+    const second = { central: "https://two.example", cellId: "cell_two", secret: "rcs_two" };
+    saveJoin(first);
+    // The whole point of multi-join: joining another workspace must not detach
+    // the first, and needs no flag to say so.
+    saveJoin(second);
+    expect(loadJoins()).toEqual([first, second]);
+    expect(loadJoin()).toEqual(first);
+
+    expect(removeJoin("cell_one")).toBe(true);
+    expect(loadJoins()).toEqual([second]);
+    expect(removeJoin("cell_one")).toBe(false);
+    expect(removeJoin("cell_two")).toBe(true);
+    expect(loadJoins()).toEqual([]);
+  });
+
+  test("reads a legacy single-join file without a migration step", async () => {
+    const legacy = { v: 1, central: "https://legacy.example", cellId: "cell_x", secret: "rcs_x" };
+    await Bun.write(joinFilePath(), `${JSON.stringify(legacy)}\n`);
+    expect(loadJoins()).toEqual([legacy]);
+    // The multi-join shape is only written once there is something to write.
+    const added = { central: "https://new.example", cellId: "cell_y", secret: "rcs_y" };
+    saveJoin(added);
+    expect(loadJoins()).toEqual([legacy, added]);
   });
 
   test("serializes a concurrent explicit replacement behind the join lock", async () => {
     const initial = { central: "https://one.example", cellId: "cell_one", secret: "rcs_one" };
     const replacement = {
       central: "https://two.example",
-      cellId: "cell_two",
+      cellId: "cell_one",
       secret: "rcs_two",
     };
     saveJoin(initial);
