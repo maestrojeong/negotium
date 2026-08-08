@@ -1,6 +1,6 @@
 # Joining Several Otium Workspaces (M-1 … M-9)
 
-Status: accepted, not yet implemented
+Status: implemented (M-1 … M-9)
 Date: 2026-08-09
 Extends: [SURFACE-SESSION-SEPARATION.md](./SURFACE-SESSION-SEPARATION.md) S-12
 Related: [OTIUM-NODE-ARCHITECTURE.md](./OTIUM-NODE-ARCHITECTURE.md) D-1 … D-8
