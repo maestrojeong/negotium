@@ -102,12 +102,12 @@ async function runCanonicalNodeChild(): Promise<void> {
   let maxRequestBodySize: number | undefined;
   if (hasConfiguredOtiumJoin()) {
     const { onShutdown } = await import("@negotium/core/node-host");
-    const { MAX_PEER_INPUT_REQUEST_BYTES, mountConfiguredOtiumNodeRuntime } = await import(
+    const { MAX_PEER_REQUEST_BODY_BYTES, mountConfiguredOtiumNodeRuntime } = await import(
       "@/node-runtime"
     );
     const runtime = mountConfiguredOtiumNodeRuntime();
     if (runtime) onShutdown("otium-node-runtime", 125, () => runtime.stop());
-    maxRequestBodySize = MAX_PEER_INPUT_REQUEST_BYTES;
+    maxRequestBodySize = MAX_PEER_REQUEST_BODY_BYTES;
   }
   await runNodeDaemon({ port: 0, ...(maxRequestBodySize ? { maxRequestBodySize } : {}) });
 }

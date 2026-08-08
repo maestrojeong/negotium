@@ -12,7 +12,6 @@
 import { defineNegotiumAdapter, type NegotiumAdapterHandle } from "@negotium/adapter-sdk";
 import {
   failInterruptedRemoteAskCallbacks,
-  getTopic,
   logger,
   NEGOTIUM_VERSION,
   registerPeerRuntimeBridge,
@@ -21,17 +20,12 @@ import {
 } from "@negotium/core";
 import { startCanonicalMcpBridge } from "@/canonical-mcp-bridge";
 import { configureOtiumCentral, selfPeerNode } from "@/central";
-import { startEventBackflow } from "@/event-backflow";
 import { loadJoin, type OtiumJoin } from "@/join";
 import { installPeerFileHooks } from "@/peer-files";
 import { otiumPeerRuntimeBridge } from "@/runtime-bridge";
 import { otiumPeerSessionBridge, startPeerReplyOutboxWorker } from "@/session-bridge";
 import { startPeerSessionBridgeIpc } from "@/session-bridge-ipc";
-import {
-  cleanupPeerStateForLocalTopic,
-  failInterruptedPeerTurnRequestsOnStartup,
-  sweepStalePeerBindings,
-} from "@/store";
+import { cleanupPeerStateForLocalTopic } from "@/store";
 import { TunnelClient, type TunnelClientOptions } from "@/tunnel-client";
 
 export {
@@ -57,17 +51,6 @@ export {
   previewEnrollment,
 } from "@/enrollment";
 export {
-  createTurnForwarder,
-  getActiveForwarder,
-  hubEventSender,
-  registerTurnForwarder,
-  type SendPeerEvent,
-  startEventBackflow,
-  stopEventBackflow,
-  type TurnForwarder,
-  translateBusEvent,
-} from "@/event-backflow";
-export {
   isJoinPersisted,
   joinFilePath,
   loadJoin,
@@ -78,35 +61,19 @@ export {
   saveJoin,
 } from "@/join";
 export { handleOtiumPeerRequest } from "@/peer-server";
-export {
-  PEER_PROTOCOL_VERSION,
-  type PeerEventRequest,
-  type PeerProvisionRequest,
-  type PeerTurnRequest,
-  type PlacedTopicExecutionSpec,
-} from "@/protocol";
+export { PEER_PROTOCOL_VERSION, type PeerSessionEntry } from "@/protocol";
 export {
   type HeaderPairs as RelayHeaderPairs,
   PROTOCOL_VERSION as RELAY_PROTOCOL_VERSION,
 } from "@/relay-protocol";
 export { otiumPeerRuntimeBridge } from "@/runtime-bridge";
-export {
-  cleanupPeerStateForLocalTopic,
-  failInterruptedPeerTurnRequestsOnStartup,
-  sweepStalePeerBindings,
-} from "@/store";
+export { cleanupPeerStateForLocalTopic } from "@/store";
 export {
   TunnelClient,
   type TunnelClientOptions,
   type TunnelLogger,
   type TunnelStatus,
 } from "@/tunnel-client";
-export {
-  abortHostedPeerTurn,
-  provisionMirrorTopic,
-  type RunPeerTurnResult,
-  runPeerTurn,
-} from "@/turn-bridge";
 
 export interface OtiumAdapterOptions {
   join: OtiumJoin;
@@ -126,20 +93,6 @@ export interface OtiumNodeRuntimeHandle extends NegotiumAdapterHandle<"otium"> {
 export function startOtiumNodeRuntime(options: OtiumAdapterOptions): OtiumNodeRuntimeHandle {
   const { join } = options;
   configureOtiumCentral(join);
-  const failed = failInterruptedPeerTurnRequestsOnStartup();
-  if (failed > 0) {
-    logger.warn({ failed }, "otium: failed interrupted peer turns from previous process");
-  }
-  // Deletions that happened while this node was down never arrived as events,
-  // so reconcile once here — see sweepStalePeerBindings.
-  const staleBindings = sweepStalePeerBindings((localTopicId) => getTopic(localTopicId) !== null);
-  if (staleBindings.topicIds.length > 0) {
-    logger.info(
-      { topicIds: staleBindings.topicIds, ...staleBindings.removed },
-      "otium: removed peer state for local topics deleted while this node was offline",
-    );
-  }
-  const stopBackflow = startEventBackflow();
   const unregisterRuntimeBridge = registerPeerRuntimeBridge(otiumPeerRuntimeBridge);
   const unregisterSessionBridge = registerPeerSessionBridge(otiumPeerSessionBridge);
   const sessionBridgeIpc = startPeerSessionBridgeIpc(otiumPeerSessionBridge);
@@ -154,7 +107,7 @@ export function startOtiumNodeRuntime(options: OtiumAdapterOptions): OtiumNodeRu
   const unsubscribeTopicCleanup = runtimeBus().subscribe((event) => {
     if (event.type !== "topic-deleted") return;
     const removed = cleanupPeerStateForLocalTopic(event.topicId);
-    if (removed.sessions + removed.turns + removed.inboxRequests + removed.remoteAsks > 0) {
+    if (removed.inboxRequests + removed.remoteAsks > 0) {
       logger.info(
         { topicId: event.topicId, ...removed },
         "otium: removed peer state for deleted local topic",
@@ -188,7 +141,6 @@ export function startOtiumNodeRuntime(options: OtiumAdapterOptions): OtiumNodeRu
       canonicalMcpBridge.stop();
       stopPeerReplyOutbox();
       uninstallFileHooks();
-      stopBackflow();
       configureOtiumCentral(null);
     },
   };
@@ -238,7 +190,9 @@ export const otiumAdapter = defineNegotiumAdapter({
   capabilities: {
     localUserInput: false,
     topicManagement: false,
-    externalPlacedTurn: true,
+    // The hub no longer places rooms on this node; it drives a canonical local
+    // topic over the Runtime Gateway instead, so turns are not "external".
+    externalPlacedTurn: false,
   },
   projection: {
     transcript: "full",
@@ -251,10 +205,10 @@ export const otiumAdapter = defineNegotiumAdapter({
 
 /**
  * Wire this node up as an otium worker: load the join file (or env triple),
- * point the central client at it, fail interrupted turns from a previous
- * process, and start the bus → hub event backflow. Returns null (and mounts
- * nothing) when the node has not joined a workspace. Otium-aware hosts call
- * this before starting the shared node.
+ * point the central client at it, and register the cross-node session and
+ * runtime bridges. Returns null (and mounts nothing) when the node has not
+ * joined a workspace. Otium-aware hosts call this before starting the shared
+ * node.
  */
 export function startOtiumWorker(): OtiumWorkerHandle | null {
   const join = loadJoin();

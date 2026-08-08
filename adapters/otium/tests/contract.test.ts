@@ -7,10 +7,8 @@ import { db, runtimeBus, upsertTopic } from "@negotium/core";
 import { otiumAdapter, startOtiumAdapter } from "@/index";
 import {
   claimPeerInboxRequest,
-  claimPeerTurnRequest,
-  createPeerSession,
-  getPeerSession,
-  getPeerTurnRequest,
+  createRemoteAsk,
+  getRemoteAsk,
   peerInboxPayloadHash,
 } from "@/store";
 import { startFakeCentral } from "./helpers";
@@ -36,7 +34,7 @@ test("otium implements the shared adapter lifecycle", async () => {
       capabilities: {
         localUserInput: false,
         topicManagement: false,
-        externalPlacedTurn: true,
+        externalPlacedTurn: false,
       },
       createHandle: () => startOtiumAdapter({ join: central.join }),
     });
@@ -45,14 +43,13 @@ test("otium implements the shared adapter lifecycle", async () => {
   }
 });
 
-test("topic-deleted cascades adapter-owned peer sessions, turns, and inbox claims", () => {
+test("topic-deleted cascades adapter-owned inbox claims and pending remote asks", () => {
   const central = startFakeCentral();
   const handle = startOtiumAdapter({ join: central.join });
   const localTopicId = `local-${randomUUID()}`;
   const hostNodeId = `host-${randomUUID()}`;
-  const hostTopicId = `room-${randomUUID()}`;
-  const turnRequestId = `turn-${randomUUID()}`;
   const inboxRequestId = `inbox-${randomUUID()}`;
+  const askRequestId = `ask-${randomUUID()}`;
   const payloadHash = peerInboxPayloadHash({ message: "hello" });
   try {
     const now = new Date().toISOString();
@@ -68,8 +65,6 @@ test("topic-deleted cascades adapter-owned peer sessions, turns, and inbox claim
       createdAt: now,
       lastMessageAt: now,
     });
-    createPeerSession(hostNodeId, hostTopicId, localTopicId);
-    claimPeerTurnRequest(hostNodeId, turnRequestId, hostTopicId);
     expect(
       claimPeerInboxRequest({
         fromCellId: hostNodeId,
@@ -79,11 +74,22 @@ test("topic-deleted cascades adapter-owned peer sessions, turns, and inbox claim
         payloadHash,
       }).outcome,
     ).toBe("claimed");
+    expect(
+      createRemoteAsk({
+        requestId: askRequestId,
+        expectedCellId: hostNodeId,
+        userId: "owner",
+        callerTopicId: localTopicId,
+        from: "owner/local",
+        to: "hub/remote",
+      }),
+    ).toBe(true);
 
     runtimeBus().broadcastTopicDeleted(localTopicId);
 
-    expect(getPeerSession(hostNodeId, hostTopicId)).toBeNull();
-    expect(getPeerTurnRequest(hostNodeId, turnRequestId)).toBeNull();
+    // The ask route is the one that never self-heals: nothing else ever revisits
+    // the row, so a caller room's deletion has to take it with them.
+    expect(getRemoteAsk(askRequestId)).toBeNull();
     expect(
       claimPeerInboxRequest({
         fromCellId: hostNodeId,

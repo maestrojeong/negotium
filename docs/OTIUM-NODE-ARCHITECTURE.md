@@ -124,6 +124,14 @@ A Channel's room, transcript, and execution belong to a node; its invitations an
 belong to Otium. Nothing about multi-participant rooms requires the node to be multi-user —
 `participants[]` plus `actorUserId` already carry what is needed.
 
+Concretely this is now the Gateway and nothing else: a room created in Otium gets a *canonical*
+node topic via `POST runtime/v1/topics` (`canonical-topic-create`), and turns and events flow
+over `runtime/v1` (D-1/D-2). Earlier there was a second mechanism — the hub placed a room on a
+worker and drove a private *mirror* topic there over `/api/v1/peer/turn`. Mirrors made a node
+topic that its owner had never published reachable from the workspace, which is exactly the
+consent split D-6 draws, and they were a second execution path with its own event transport. The
+mirror receiver has been removed; there is one data plane.
+
 ## Current state
 
 Implemented:
@@ -152,6 +160,16 @@ Implemented:
   restricted to the hub (`fromIsPrimary`). The worker swaps that token for its own
   `node-control-token` in-process, so the host capability never crosses the network. Only the
   read/turn subset is forwarded — mutating control routes stay loopback-only.
+- **Placed-turn receiver retired** (D-1/D-8). The worker-side mirror path is deleted:
+  `turn-bridge.ts` (`provisionMirrorTopic` / `runPeerTurn` / `abortHostedPeerTurn`),
+  `event-backflow.ts` (the worker→hub turn event stream and its terminal outbox), the
+  `/api/v1/peer/provision`, `/api/v1/peer/turn` and `/api/v1/peer/input-file` routes, and the
+  `otium_peer_sessions` / `otium_peer_turn_requests` / `otium_peer_terminal_outbox` tables.
+  Existing databases keep those tables; nothing recreates or drops them. Two consequences worth
+  naming: `peerAddressable` is `isTopicShared` again, because a mirror was the only other way onto
+  the cross-node surface, and `/api/v1/peer/abort` is purely topic-scoped — a `requestId` named
+  one placed turn and now selects nothing. The adapter reports
+  `capabilities.externalPlacedTurn: false` and `features.inputFiles: false`.
 - **`shared-topic-sync` retired** (D-1). `shared-topic-sync.ts` and `bindings.ts` are deleted
   along with their peer routes (`bind`, `unbind`, `shared-topic/messages`,
   `shared-topics/private`), their CLI subcommands (`bindings`, `share`, `private`) and the
@@ -163,12 +181,19 @@ Not implemented:
 
 - Nothing outstanding from D-1.
 
-Deliberately kept from the peer stack: relay tunnel, enrollment, Central node registry and token
-brokering — the remote *transport* D-2 needs — plus the hub-driven **placed-turn** path
-(`/api/v1/peer/turn` → `turn-bridge.ts` → `event-backflow.ts`), which mirrors an Otium-owned room
-into a local execution topic. That path streams events rather than copying a transcript the node
-already owns, so D-1 never applied to it. `provisionMirrorTopic` also still recognises legacy
-`binding_mode = 'shared'` rows, so a pre-D-1 row cannot be mistaken for a mirror and overwritten.
+Deliberately kept from the peer stack, and only this:
+
+- the remote *transport* D-2 needs — relay tunnel, enrollment, Central node registry and peer
+  token mint/verify (`relay.ts`, `tunnel-client.ts`, `enrollment.ts`, `central.ts`, `sidecar.ts`),
+  and the Gateway forward itself (`gateway-forward.ts`, `/api/v1/peer/runtime/*`);
+- session-comm (D-7): `/api/v1/peer/tell`, `/ask`, `/sessions`, `/reply` and the title-addressed
+  `/abort`, with their idempotency and durable reply/remote-ask state. This is horizontal
+  node↔node traffic, not an Otium↔node data plane, so D-1 does not apply to it;
+- the peer *bridge* (`runtime-bridge.ts`, `canonical-mcp-bridge.ts`), which routes canonical-room
+  mutations such as `spawn_subagent`, `ask_user` and visuals back to a hub. Its per-turn
+  `peerBridge` context was only ever produced by the placed-turn path, so on a worker it is
+  currently dormant: the code is retained because the hub-side surface it calls still exists and
+  the Gateway is the natural place to re-establish that context.
 
 ## Open questions
 

@@ -9,7 +9,7 @@ import {
 import { inspectNodeDaemon } from "@negotium/node";
 import { OTIUM_ADAPTER_CONTROL_HEADER, OTIUM_ADAPTER_CONTROL_PREFIX } from "@/control-protocol";
 import { loadJoin } from "@/join";
-import { MAX_PEER_INPUT_REQUEST_BYTES } from "@/protocol";
+import { MAX_PEER_REQUEST_BODY_BYTES } from "@/protocol";
 import { TunnelClient } from "@/tunnel-client";
 
 export interface OtiumSidecarOptions {
@@ -94,7 +94,7 @@ export async function runOtiumSidecar(options: OtiumSidecarOptions): Promise<voi
       port: options.port,
       hostname: "127.0.0.1",
       idleTimeout: 240,
-      maxRequestBodySize: MAX_PEER_INPUT_REQUEST_BYTES,
+      maxRequestBodySize: MAX_PEER_REQUEST_BODY_BYTES,
       fetch: (req) => proxyOtiumPeerRequest(req),
     });
   } catch (error) {

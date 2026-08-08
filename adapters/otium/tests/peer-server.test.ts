@@ -1,23 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import {
-  getTopic,
-  NEGOTIUM_VERSION,
-  registerTopic,
-  resolveAttachmentByFileId,
-  resolveUploadedFilePathByFileId,
-} from "@negotium/core";
+import { NEGOTIUM_VERSION, registerTopic } from "@negotium/core";
 import { configureOtiumCentral, resetPeerCentralCaches } from "@/central";
-import { installPeerFileHooks } from "@/peer-files";
 import { handleOtiumPeerRequest } from "@/peer-server";
 import { PEER_PROTOCOL_VERSION } from "@/protocol";
-import { provisionMirrorTopic } from "@/turn-bridge";
-import {
-  type FakeCentral,
-  HUB_CELL_ID,
-  HUB_TOKEN,
-  startFakeCentral,
-  WORKER_PEER_TOKEN,
-} from "./helpers";
+import { type FakeCentral, HUB_TOKEN, startFakeCentral, WORKER_PEER_TOKEN } from "./helpers";
 
 const BASE = "http://worker.local";
 const USER = "central-user-1";
@@ -54,18 +40,6 @@ async function call(
   opts: { method?: string; token?: string; body?: unknown } = {},
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const response = await handleOtiumPeerRequest(request(path, opts));
-  if (!response) throw new Error(`expected a peer response for ${path}`);
-  return { status: response.status, body: (await response.json()) as Record<string, unknown> };
-}
-
-async function callForm(path: string, form: FormData) {
-  const response = await handleOtiumPeerRequest(
-    new Request(`${BASE}${path}`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${HUB_TOKEN}` },
-      body: form,
-    }),
-  );
   if (!response) throw new Error(`expected a peer response for ${path}`);
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 }
@@ -123,15 +97,6 @@ describe("peer auth", () => {
     expect(verifies.length).toBe(1);
   });
 
-  test("non-primary caller on a hub-only endpoint → 403", async () => {
-    const { status, body } = await call("/api/v1/peer/provision", {
-      token: WORKER_PEER_TOKEN,
-      body: { v: PEER_PROTOCOL_VERSION },
-    });
-    expect(status).toBe(403);
-    expect(body.error).toBe("only the workspace hub may call this endpoint");
-  });
-
   test("non-primary peers cannot invoke worker user/session endpoints", async () => {
     const cases: Array<[string, Record<string, unknown>]> = [
       ["/api/v1/peer/tell", { v: PEER_PROTOCOL_VERSION }],
@@ -158,6 +123,24 @@ describe("peer auth", () => {
   });
 });
 
+describe("retired placed-turn routes", () => {
+  // The hub used to create a mirror room here and drive it turn by turn. An old
+  // hub still on that path must get a clean 404 rather than a partial success.
+  test("provision / turn / input-file are 404 for the workspace hub", async () => {
+    for (const path of ["/api/v1/peer/provision", "/api/v1/peer/turn", "/api/v1/peer/input-file"]) {
+      const { status, body } = await call(path, {
+        token: HUB_TOKEN,
+        body: { v: PEER_PROTOCOL_VERSION, userId: USER },
+      });
+      expect({ path, status, error: body.error }).toEqual({
+        path,
+        status: 404,
+        error: "not found",
+      });
+    }
+  });
+});
+
 describe("capabilities / health", () => {
   test("capabilities reports agents, efforts and the negotium MCP catalog", async () => {
     const { status, body } = await call("/api/v1/peer/capabilities", {
@@ -170,7 +153,7 @@ describe("capabilities / health", () => {
     expect(body.runtimeVersion).toBe(NEGOTIUM_VERSION);
     expect(body.features).toEqual({
       remoteAsk: true,
-      inputFiles: true,
+      inputFiles: false,
       outputFiles: true,
       visualBridge: true,
       askUserBridge: true,
@@ -294,41 +277,6 @@ describe("tell", () => {
     expect(conflict.status).toBe(409);
   });
 
-  test("reaches a private hub execution mirror, which is not published", async () => {
-    // The mirror is deliberately `private` so it stays out of the Gateway's
-    // shared-topic discovery. It must still be addressable by name (D-7), or
-    // making it private would silently break cross-node tell for placed rooms.
-    const provisioned = provisionMirrorTopic(HUB_CELL_ID, {
-      userId: USER,
-      hostTopicId: `host-tell-mirror-${crypto.randomUUID()}`,
-      topicTitle: "mirror-tell-target",
-      execution: {
-        agent: "claude",
-        model: "sonnet",
-        effort: "high",
-        mcp: [],
-        canSpawnSubagents: false,
-      },
-    });
-    if (!provisioned.ok) throw new Error(provisioned.error);
-    expect(getTopic(provisioned.localTopicId)?.accessMode).toBe("private");
-
-    const response = await call("/api/v1/peer/tell", {
-      token: HUB_TOKEN,
-      body: {
-        v: PEER_PROTOCOL_VERSION,
-        requestId: `tell-mirror-${crypto.randomUUID()}`,
-        userId: USER,
-        toTopic: "mirror-tell-target",
-        fromLabel: "hub-mac/회의록",
-        message: "hello mirror",
-        depth: 1,
-      },
-    });
-
-    expect(response.status).toBe(200);
-  });
-
   test("unknown topic → 404, over-depth → 400, oversized message → 400", async () => {
     const base = {
       v: PEER_PROTOCOL_VERSION,
@@ -441,8 +389,11 @@ describe("sessions / abort / stubs", () => {
     expect(status).toBe(200);
   });
 
-  test("exact-requestId abort for an unknown turn → 404", async () => {
-    const { status, body } = await call("/api/v1/peer/abort", {
+  test("a leftover requestId no longer selects a turn; abort stays topic-scoped", async () => {
+    // `requestId` addressed one placed turn. An old hub may still send it; the
+    // route must fall through to the shared topic rather than 404 on a turn
+    // lookup that no longer exists.
+    const known = await call("/api/v1/peer/abort", {
       token: HUB_TOKEN,
       body: {
         v: PEER_PROTOCOL_VERSION,
@@ -451,11 +402,21 @@ describe("sessions / abort / stubs", () => {
         requestId: "pt-nope",
       },
     });
-    expect(status).toBe(404);
-    expect(body.error).toBe("turn not found or already completed");
+    expect(known.status).toBe(200);
+
+    const unknown = await call("/api/v1/peer/abort", {
+      token: HUB_TOKEN,
+      body: {
+        v: PEER_PROTOCOL_VERSION,
+        userId: USER,
+        toTopic: "no-such-room",
+        requestId: "pt-nope",
+      },
+    });
+    expect(unknown.status).toBe(404);
   });
 
-  test("ask, reply, and input-file validate their contracts", async () => {
+  test("ask and reply validate their contracts", async () => {
     const ask = await call("/api/v1/peer/ask", {
       token: HUB_TOKEN,
       body: { v: PEER_PROTOCOL_VERSION },
@@ -484,47 +445,5 @@ describe("sessions / abort / stubs", () => {
       body: { v: PEER_PROTOCOL_VERSION, requestId: "r1" },
     });
     expect(reply.status).toBe(400);
-
-    const inputFile = await call("/api/v1/peer/input-file", { token: HUB_TOKEN, body: {} });
-    expect(inputFile.status).toBe(400);
-  });
-
-  test("input-file stores multipart bytes for a provisioned mirror", async () => {
-    const hostTopicId = `host-file-${Date.now()}`;
-    const provisioned = await call("/api/v1/peer/provision", {
-      token: HUB_TOKEN,
-      body: {
-        v: PEER_PROTOCOL_VERSION,
-        userId: USER,
-        hostTopicId,
-        topicTitle: "peer-file-target",
-        execution: {
-          agent: "codex",
-          model: "gpt-5.6-luna",
-          effort: "medium",
-          mcp: [],
-          canSpawnSubagents: true,
-        },
-      },
-    });
-    expect(provisioned.status).toBe(200);
-    const uninstall = installPeerFileHooks();
-    try {
-      const form = new FormData();
-      form.set("hostTopicId", hostTopicId);
-      form.set("userId", USER);
-      form.set("file", new File(["peer bytes"], "notes.txt", { type: "text/plain" }));
-      const uploaded = await callForm("/api/v1/peer/input-file", form);
-      expect(uploaded.status).toBe(200);
-      const fileId = uploaded.body.fileId as string;
-      expect(resolveAttachmentByFileId(fileId)).toEqual(
-        expect.objectContaining({ id: fileId, filename: "notes.txt", sizeBytes: 10 }),
-      );
-      expect(await Bun.file(resolveUploadedFilePathByFileId(fileId) as string).text()).toBe(
-        "peer bytes",
-      );
-    } finally {
-      uninstall();
-    }
   });
 });

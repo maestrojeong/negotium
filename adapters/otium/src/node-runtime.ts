@@ -9,7 +9,7 @@ import { loadJoin } from "@/join";
 import { handleOtiumPeerRequest } from "@/peer-server";
 
 export { OTIUM_ADAPTER_CONTROL_HEADER, OTIUM_ADAPTER_CONTROL_PREFIX } from "@/control-protocol";
-export { MAX_PEER_INPUT_REQUEST_BYTES } from "@/protocol";
+export { MAX_PEER_REQUEST_BODY_BYTES } from "@/protocol";
 
 /** Authenticated loopback bridge from the Otium sidecar into its Node-owned runtime. */
 export async function handleOtiumAdapterControlRequest(req: Request): Promise<Response | null> {

@@ -3,7 +3,6 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "@negotium/core";
 import { configureOtiumCentral } from "@/central";
-import { createTurnForwarder, registerTurnForwarder } from "@/event-backflow";
 import { otiumPeerRuntimeBridge } from "@/runtime-bridge";
 import { HUB_CELL_ID, MINTED_TOKEN, startFakeCentral } from "./helpers";
 
@@ -15,28 +14,6 @@ afterEach(() => {
 });
 
 describe("otium runtime peer bridge", () => {
-  test("flushEvents waits for the ordered peer event chain", async () => {
-    const delivered: number[] = [];
-    const forwarder = createTurnForwarder({
-      hostNodeId: HUB_CELL_ID,
-      requestId: `barrier-${crypto.randomUUID()}`,
-      localTopicId: "local-barrier-topic",
-      sendEvent: async ({ seq }) => {
-        await Bun.sleep(10);
-        delivered.push(seq);
-        return { ok: true };
-      },
-    });
-    forwarder.queryId = "query-barrier";
-    registerTurnForwarder("local-barrier-topic", forwarder);
-    forwarder.tap({ type: "tool_call", queryId: "query-barrier" });
-
-    expect(await otiumPeerRuntimeBridge.flushEvents("local-barrier-topic")).toBe(true);
-    expect(delivered).toEqual([1]);
-    forwarder.finish({ type: "ai_aborted", queryId: "query-barrier" });
-    await forwarder.chain;
-  });
-
   test("spawn_subagent posts the canonical turn and input to the hub", async () => {
     let received: { auth: string | null; body: Record<string, unknown> } | undefined;
     const hub = Bun.serve({

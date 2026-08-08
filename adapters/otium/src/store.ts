@@ -1,94 +1,22 @@
 /**
- * Adapter-owned durable peer state —
- * equivalents of otium's `peer_sessions`, `peer_turn_requests` and
- * `peer_inbox_requests` tables, kept in negotium's shared SQLite (one machine
- * = one runtime process = one WAL database). Table names are prefixed so the
- * adapter never collides with core schema.
+ * Adapter-owned durable peer state — the negotium equivalent of otium's
+ * `peer_inbox_requests` and remote-ask tables, kept in negotium's shared SQLite
+ * (one machine = one runtime process = one WAL database). Table names are
+ * prefixed so the adapter never collides with core schema.
  *
  * Invariant these tables carry: at-least-once inbound requests, exactly-once
- * execution. requestId claims must survive worker restarts; interrupted
- * claimed/running turns are failed wholesale on startup.
+ * delivery — a requestId claim must survive worker restarts.
+ *
+ * The placed-turn tables (`otium_peer_sessions`, `otium_peer_turn_requests`,
+ * `otium_peer_terminal_outbox`) are gone with the placement receiver, as
+ * `otium_shared_topic_state`, `otium_shared_message_outbox` and
+ * `otium_peer_lifecycle` went with the earlier message-copying path (D-1).
+ * Nothing recreates them, and nothing drops them either: an existing database
+ * keeps the unused tables so a downgrade cannot lose rows.
  */
 
 import { createHash } from "node:crypto";
 import { db } from "@negotium/core";
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS otium_peer_sessions (
-    host_node_id    TEXT NOT NULL,
-    host_topic_id   TEXT NOT NULL,
-    local_topic_id  TEXT NOT NULL,
-    binding_mode    TEXT NOT NULL DEFAULT 'mirror',
-    created_at      TEXT NOT NULL,
-    PRIMARY KEY (host_node_id, host_topic_id)
-  )
-`);
-
-const peerSessionColumns = new Set(
-  db
-    .query<{ name: string }, []>("PRAGMA table_info(otium_peer_sessions)")
-    .all()
-    .map((row) => row.name),
-);
-if (!peerSessionColumns.has("binding_mode")) {
-  db.exec("ALTER TABLE otium_peer_sessions ADD COLUMN binding_mode TEXT NOT NULL DEFAULT 'mirror'");
-}
-
-/**
- * Hub execution mirrors are ordinary visible top-level rooms in Terminal, but
- * they are NOT published: `access_mode = 'shared'` means the owner consented to
- * surfacing a topic in Otium (D-6), and a mirror is the opposite — it exists
- * *because* a hub room is already surfaced somewhere else.
- *
- * They used to be forced to `shared` because the peer routes that drive them
- * (`tell`, `abort`) gated on it. That overloaded one flag with two meanings, and
- * once `shared` became what the hub discovers over the Runtime Gateway it made
- * every mirror look like a publishable topic — so the hub mirrored a mirror and
- * grew a duplicate room per placed room. The routes now ask
- * `isPeerMirrorTopic` instead, so this statement downgrades the rows it used to
- * publish.
- */
-db.run(
-  `UPDATE api_topics
-   SET visibility = 'visible', access_mode = 'private', is_subagent = 0
-   WHERE id IN (
-     SELECT local_topic_id FROM otium_peer_sessions WHERE binding_mode = 'mirror'
-   )`,
-);
-// The companion statement that forced `access_mode = 'shared'` on *every* bound
-// local topic is gone. It was harmless while a peer binding was itself the
-// publication mechanism; now that `accessMode: 'shared'` is what the hub
-// discovers over the Runtime Gateway, re-asserting it on each start would
-// republish a legacy `shared`-bound topic whose owner has since gone private.
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS otium_peer_turn_requests (
-    host_node_id   TEXT NOT NULL,
-    request_id     TEXT NOT NULL,
-    host_topic_id  TEXT NOT NULL,
-    status         TEXT NOT NULL CHECK (status IN
-                   ('claimed', 'running', 'finished', 'failed')),
-    error          TEXT,
-    created_at     TEXT NOT NULL,
-    updated_at     TEXT NOT NULL,
-    PRIMARY KEY (host_node_id, request_id)
-  )
-`);
-
-// A terminal is not completion until the canonical hub acknowledges it. Keep
-// the exact envelope so a worker restart can replay it; the hub's event
-// journal makes that replay idempotent when the original ACK was lost.
-db.exec(`
-  CREATE TABLE IF NOT EXISTS otium_peer_terminal_outbox (
-    host_node_id  TEXT NOT NULL,
-    request_id    TEXT NOT NULL,
-    seq           INTEGER NOT NULL,
-    event_json    TEXT NOT NULL,
-    created_at    INTEGER NOT NULL,
-    updated_at    INTEGER NOT NULL,
-    PRIMARY KEY (host_node_id, request_id)
-  )
-`);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS otium_peer_inbox_requests (
@@ -135,322 +63,28 @@ db.exec(`
   )
 `);
 
-// `otium_shared_topic_state`, `otium_shared_message_outbox` and
-// `otium_peer_lifecycle` are gone with the message-copying path (D-1). Existing
-// databases keep the (now unused) tables; nothing recreates them.
-
-// ── peer sessions: Otium room → hub execution mirror ──
-
-/**
- * `shared` is legacy: it was written only by the retired `bind`/`share` path,
- * where a hub room pointed at one of the owner's own topics. No code creates
- * such a row any more, but rows written before D-1 must still be recognised so
- * the turn bridge does not mistake one for a mirror it may overwrite.
- */
-export type PeerTopicBindingMode = "mirror" | "shared";
-
-export interface PeerSessionRow {
-  host_node_id: string;
-  host_topic_id: string;
-  local_topic_id: string;
-  binding_mode: PeerTopicBindingMode;
-  created_at: string;
-}
-
-export function getPeerSession(hostNodeId: string, hostTopicId: string): PeerSessionRow | null {
-  return (
-    db
-      .query<PeerSessionRow, [string, string]>(
-        "SELECT * FROM otium_peer_sessions WHERE host_node_id = ? AND host_topic_id = ?",
-      )
-      .get(hostNodeId, hostTopicId) ?? null
-  );
-}
-
-export function createPeerSession(
-  hostNodeId: string,
-  hostTopicId: string,
-  localTopicId: string,
-): PeerSessionRow {
-  const row: PeerSessionRow = {
-    host_node_id: hostNodeId,
-    host_topic_id: hostTopicId,
-    local_topic_id: localTopicId,
-    binding_mode: "mirror",
-    created_at: new Date().toISOString(),
-  };
-  db.run(
-    "INSERT INTO otium_peer_sessions (host_node_id, host_topic_id, local_topic_id, binding_mode, created_at) VALUES (?, ?, ?, ?, ?)",
-    [row.host_node_id, row.host_topic_id, row.local_topic_id, row.binding_mode, row.created_at],
-  );
-  return row;
-}
-
-export function listPeerSessions(): PeerSessionRow[] {
-  return db.query<PeerSessionRow, []>("SELECT * FROM otium_peer_sessions").all();
-}
-
-/**
- * Is this local topic a hub execution mirror?
- *
- * This is what the peer routes need, and it is not the same question as
- * "is it shared". `shared` is the owner publishing a topic to Otium; a mirror is
- * a room the hub placed here. Asking the right question is what lets a mirror
- * stay private and therefore stay out of the Gateway's shared-topic discovery.
- */
-export function isPeerMirrorTopic(localTopicId: string): boolean {
-  return Boolean(
-    db
-      .query<{ found: number }, string>(
-        `SELECT 1 AS found FROM otium_peer_sessions
-         WHERE local_topic_id = ? AND binding_mode = 'mirror' LIMIT 1`,
-      )
-      .get(localTopicId),
-  );
-}
-
 export interface PeerTopicCleanupResult {
-  sessions: number;
-  turns: number;
-  terminalOutbox: number;
   inboxRequests: number;
   remoteAsks: number;
 }
 
 /**
- * Remove adapter-owned state whose local execution topic was hard-deleted.
- * Turn rows are linked indirectly through the host room binding, so they must
- * be removed before the session rows that provide that relationship.
+ * Remove adapter-owned state whose local topic was hard-deleted.
+ *
+ * Only cross-node session state is left to reconcile: an inbound tell/ask
+ * requestId claim scoped to that topic, and any outbound remote ask whose caller
+ * room was that topic. Both would otherwise outlive the room they belong to —
+ * the remote ask permanently, since nothing else ever revisits its row.
  */
 export function cleanupPeerStateForLocalTopic(localTopicId: string): PeerTopicCleanupResult {
   return db.transaction(() => {
-    const terminalOutbox = db.run(
-      `DELETE FROM otium_peer_terminal_outbox
-       WHERE EXISTS (
-         SELECT 1 FROM otium_peer_turn_requests turn_request
-         JOIN otium_peer_sessions session
-           ON session.host_node_id = turn_request.host_node_id
-          AND session.host_topic_id = turn_request.host_topic_id
-         WHERE session.local_topic_id = ?
-           AND turn_request.host_node_id = otium_peer_terminal_outbox.host_node_id
-           AND turn_request.request_id = otium_peer_terminal_outbox.request_id
-       )`,
-      [localTopicId],
-    ).changes;
-    const turns = db.run(
-      `DELETE FROM otium_peer_turn_requests
-       WHERE EXISTS (
-         SELECT 1 FROM otium_peer_sessions session
-         WHERE session.local_topic_id = ?
-           AND session.host_node_id = otium_peer_turn_requests.host_node_id
-           AND session.host_topic_id = otium_peer_turn_requests.host_topic_id
-       )`,
-      [localTopicId],
-    ).changes;
     const inboxRequests = db.run("DELETE FROM otium_peer_inbox_requests WHERE topic_id = ?", [
       localTopicId,
     ]).changes;
     const remoteAsks = db.run("DELETE FROM otium_remote_asks WHERE caller_topic_id = ?", [
       localTopicId,
     ]).changes;
-    const sessions = db.run("DELETE FROM otium_peer_sessions WHERE local_topic_id = ?", [
-      localTopicId,
-    ]).changes;
-    return { sessions, turns, terminalOutbox, inboxRequests, remoteAsks };
-  })();
-}
-
-export interface StalePeerBindingSweep {
-  /** Local topic ids whose adapter state was removed. */
-  topicIds: string[];
-  removed: PeerTopicCleanupResult;
-}
-
-/**
- * Drop adapter state for bindings whose local topic no longer exists.
- *
- * Deletion normally arrives as a `topic-deleted` bus event, which is enough
- * while the node is running. A node that is *offline* when the topic goes away
- * never sees that event, and nothing else reconciles — so the binding row
- * outlives its topic for good. The headless worker makes this the common case
- * rather than the rare one: it is deliberately kept shut down between jobs to
- * save cost, so almost every deletion happens while it cannot observe one.
- *
- * For a mirror binding the effect is cosmetic, since `provisionMirrorTopic`
- * recreates the topic under the recorded id on the next turn. For a `shared`
- * binding it is not: the turn bridge answers "bound local topic no longer
- * exists" and every turn for that host room fails with 404, permanently,
- * because the row that causes it is never cleaned up.
- *
- * Called once at startup, which is precisely when a missed event can be
- * detected: anything still bound to a topic that is not there was deleted while
- * this node was not listening.
- */
-export function sweepStalePeerBindings(
-  topicExists: (localTopicId: string) => boolean,
-): StalePeerBindingSweep {
-  const stale = [
-    ...new Set(
-      listPeerSessions()
-        .map((row) => row.local_topic_id)
-        .filter((localTopicId) => localTopicId && !topicExists(localTopicId)),
-    ),
-  ];
-  const removed: PeerTopicCleanupResult = {
-    sessions: 0,
-    turns: 0,
-    terminalOutbox: 0,
-    inboxRequests: 0,
-    remoteAsks: 0,
-  };
-  for (const localTopicId of stale) {
-    const result = cleanupPeerStateForLocalTopic(localTopicId);
-    removed.sessions += result.sessions;
-    removed.turns += result.turns;
-    removed.terminalOutbox += result.terminalOutbox;
-    removed.inboxRequests += result.inboxRequests;
-    removed.remoteAsks += result.remoteAsks;
-  }
-  return { topicIds: stale, removed };
-}
-
-// ── peer turn requests: durable exactly-once claim per (hostCellId, requestId) ──
-
-type PeerTurnRequestStatus = "claimed" | "running" | "finished" | "failed";
-
-export interface PeerTurnRequestRow {
-  host_node_id: string;
-  request_id: string;
-  host_topic_id: string;
-  status: PeerTurnRequestStatus;
-  error: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-/** Recover requests whose in-memory forwarder disappeared with the process. */
-export function failInterruptedPeerTurnRequestsOnStartup(): number {
-  return db.run(
-    `UPDATE otium_peer_turn_requests
-     SET status = 'failed', error = 'worker restarted during turn', updated_at = ?
-     WHERE status IN ('claimed', 'running')
-       AND NOT EXISTS (
-         SELECT 1 FROM otium_peer_terminal_outbox terminal
-         WHERE terminal.host_node_id = otium_peer_turn_requests.host_node_id
-           AND terminal.request_id = otium_peer_turn_requests.request_id
-       )`,
-    [new Date().toISOString()],
-  ).changes;
-}
-
-export type ClaimPeerTurnRequestResult =
-  | { claimed: true; row: PeerTurnRequestRow }
-  | { claimed: false; row: PeerTurnRequestRow };
-
-export function claimPeerTurnRequest(
-  hostNodeId: string,
-  requestId: string,
-  hostTopicId: string,
-): ClaimPeerTurnRequestResult {
-  const now = new Date().toISOString();
-  const inserted = db.run(
-    `INSERT OR IGNORE INTO otium_peer_turn_requests
-       (host_node_id, request_id, host_topic_id, status, created_at, updated_at)
-     VALUES (?, ?, ?, 'claimed', ?, ?)`,
-    [hostNodeId, requestId, hostTopicId, now, now],
-  );
-  const row = getPeerTurnRequest(hostNodeId, requestId);
-  if (!row) throw new Error("otium peer turn request claim disappeared");
-  return { claimed: inserted.changes === 1, row };
-}
-
-export function getPeerTurnRequest(
-  hostNodeId: string,
-  requestId: string,
-): PeerTurnRequestRow | null {
-  return (
-    db
-      .query<PeerTurnRequestRow, [string, string]>(
-        "SELECT * FROM otium_peer_turn_requests WHERE host_node_id = ? AND request_id = ?",
-      )
-      .get(hostNodeId, requestId) ?? null
-  );
-}
-
-function setPeerTurnRequestStatus(
-  hostNodeId: string,
-  requestId: string,
-  status: PeerTurnRequestStatus,
-  error: string | null = null,
-): void {
-  db.run(
-    `UPDATE otium_peer_turn_requests
-     SET status = ?, error = ?, updated_at = ?
-     WHERE host_node_id = ? AND request_id = ?`,
-    [status, error, new Date().toISOString(), hostNodeId, requestId],
-  );
-}
-
-export function markPeerTurnRequestRunning(hostNodeId: string, requestId: string): void {
-  setPeerTurnRequestStatus(hostNodeId, requestId, "running");
-}
-
-function markPeerTurnRequestFinished(hostNodeId: string, requestId: string): void {
-  setPeerTurnRequestStatus(hostNodeId, requestId, "finished");
-}
-
-export function markPeerTurnRequestFailed(
-  hostNodeId: string,
-  requestId: string,
-  error: string,
-): void {
-  setPeerTurnRequestStatus(hostNodeId, requestId, "failed", error);
-}
-
-export interface PeerTerminalOutboxRow {
-  host_node_id: string;
-  request_id: string;
-  seq: number;
-  event_json: string;
-  created_at: number;
-  updated_at: number;
-}
-
-export function upsertPeerTerminalOutbox(args: {
-  hostNodeId: string;
-  requestId: string;
-  seq: number;
-  event: Record<string, unknown>;
-}): void {
-  const now = Date.now();
-  db.run(
-    `INSERT INTO otium_peer_terminal_outbox
-       (host_node_id, request_id, seq, event_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(host_node_id, request_id) DO UPDATE SET
-       seq = excluded.seq, event_json = excluded.event_json, updated_at = excluded.updated_at`,
-    [args.hostNodeId, args.requestId, args.seq, JSON.stringify(args.event), now, now],
-  );
-}
-
-export function listPeerTerminalOutbox(limit = 100): PeerTerminalOutboxRow[] {
-  return db
-    .query<PeerTerminalOutboxRow, [number]>(
-      "SELECT * FROM otium_peer_terminal_outbox ORDER BY created_at LIMIT ?",
-    )
-    .all(limit);
-}
-
-/** Atomically acknowledge the terminal locally only after the hub ACK. */
-export function acknowledgePeerTerminal(hostNodeId: string, requestId: string): boolean {
-  return db.transaction(() => {
-    const removed = db.run(
-      "DELETE FROM otium_peer_terminal_outbox WHERE host_node_id = ? AND request_id = ?",
-      [hostNodeId, requestId],
-    ).changes;
-    if (removed !== 1) return false;
-    markPeerTurnRequestFinished(hostNodeId, requestId);
-    return true;
+    return { inboxRequests, remoteAsks };
   })();
 }
 

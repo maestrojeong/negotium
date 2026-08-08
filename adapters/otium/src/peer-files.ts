@@ -1,3 +1,13 @@
+/**
+ * Adapter-owned file store, layered under core's file hooks.
+ *
+ * Its inbound half (`/api/v1/peer/input-file` → `storePeerInputFile`, plus the
+ * per-topic access check the placed turn used to validate hub attachments
+ * against) went with the placement receiver. What remains is the local side:
+ * files a worker turn produces are adopted as uploads, resolved back by file id,
+ * and deleted with their topic.
+ */
+
 import { randomUUID } from "node:crypto";
 import { copyFileSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { basename, extname, join } from "node:path";
@@ -51,14 +61,6 @@ function rowFor(fileId: string): PeerFileRow | null {
     db.query<PeerFileRow, [string]>("SELECT * FROM otium_peer_files WHERE id = ?").get(fileId) ??
     null
   );
-}
-
-export function peerFileAllowsAccess(
-  fileId: string,
-  access: { topicId: string; ownerUserId: string },
-): boolean {
-  const row = rowFor(fileId);
-  return row?.topic_id === access.topicId && row.owner_user_id === access.ownerUserId;
 }
 
 function safeFilename(filename: string): string {
@@ -141,25 +143,6 @@ function deletePeerFilesForTopic(topicId: string): void {
     .all(topicId);
   db.run("DELETE FROM otium_peer_files WHERE topic_id = ?", [topicId]);
   for (const row of rows) rmSync(row.path, { force: true });
-}
-
-export async function storePeerInputFile(
-  file: File,
-  access: { topicId: string; ownerUserId: string },
-): Promise<AttachmentDto> {
-  const id = randomUUID();
-  mkdirSync(PEER_FILES_DIR, { recursive: true });
-  const filename = file.name || "upload";
-  const path = join(PEER_FILES_DIR, `${id}-${safeFilename(filename)}`);
-  const sizeBytes = await Bun.write(path, file);
-  return recordFile({
-    id,
-    path,
-    sizeBytes,
-    filename,
-    mimeType: file.type || "application/octet-stream",
-    ...access,
-  });
 }
 
 export function installPeerFileHooks(): () => void {

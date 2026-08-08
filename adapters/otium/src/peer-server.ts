@@ -13,8 +13,11 @@
  *   ④ body `v` check → 400 on newer protocol
  * Hub-only writes additionally require `verified.fromIsPrimary`.
  *
- * Implements the worker peer protocol, including cross-node session messages,
- * file transfer, and runtime visual bridging.
+ * Implements the worker peer protocol: cross-node session messages (tell / ask /
+ * sessions / reply / abort, D-7), the device-vault bridge, capability and health
+ * snapshots, and the remote Runtime Gateway forward (D-2). The placed-turn
+ * receiver — `provision`, `turn`, `input-file` and the exact-requestId abort —
+ * has been removed; the Gateway replaced it.
  */
 
 import { statfsSync } from "node:fs";
@@ -25,7 +28,6 @@ import {
   DATA_DIR,
   flushSessionInbox,
   getRegistry,
-  getTopic,
   getTopicByNameForUser,
   getTopicSessionId,
   isTopicShared,
@@ -46,36 +48,16 @@ import {
   vaultList,
   vaultSet,
 } from "@negotium/core";
-import {
-  otiumCentralConfig,
-  resolvePeerNodeByCellId,
-  type VerifiedPeer,
-  verifyPeerToken,
-} from "@/central";
-import {
-  forwardGatewayRequest,
-  OTIUM_GATEWAY_FORWARD_PREFIX,
-} from "@/gateway-forward";
-import { storePeerInputFile } from "@/peer-files";
-import {
-  MAX_PEER_INPUT_FILE_BYTES,
-  MAX_PEER_INPUT_REQUEST_BYTES,
-  MAX_PEER_MESSAGE_LENGTH,
-  PEER_PROTOCOL_VERSION,
-  type PeerSessionEntry,
-  type PeerTurnRequest,
-  parseExecutionSpec,
-} from "@/protocol";
+import { otiumCentralConfig, type VerifiedPeer, verifyPeerToken } from "@/central";
+import { forwardGatewayRequest, OTIUM_GATEWAY_FORWARD_PREFIX } from "@/gateway-forward";
+import { MAX_PEER_MESSAGE_LENGTH, PEER_PROTOCOL_VERSION, type PeerSessionEntry } from "@/protocol";
 import { acceptRemoteAskReplyResult } from "@/session-bridge";
 import {
   claimPeerInboxRequest,
-  getPeerSession,
-  isPeerMirrorTopic,
   type PeerInboxKind,
   peerInboxPayloadHash,
   releasePeerInboxRequest,
 } from "@/store";
-import { abortHostedPeerTurn, provisionMirrorTopic, runPeerTurn } from "@/turn-bridge";
 
 const RUNTIME_VERSION = NEGOTIUM_VERSION;
 
@@ -129,14 +111,14 @@ function requirePrimaryOrigin(peer: Extract<PeerAuth, { ok: true }>): Response |
 /**
  * May another node address this topic by name (D-7)?
  *
- * Two different things qualify, and conflating them is what caused duplicate
- * rooms: a topic the owner published (`shared`), or a room the hub placed here
- * (a mirror). Mirrors used to be marked `shared` purely to pass this check,
- * which then made them look publishable to the Gateway's shared-topic
- * discovery. Asking both questions separately keeps a mirror private.
+ * Exactly one thing qualifies: the owner published the topic (`shared`, D-6).
+ * This check also used to admit hub execution mirrors, which were a second and
+ * non-consensual way onto the cross-node surface. No mirror can exist now that
+ * the placement receiver is gone, so the question collapses back to
+ * `isTopicShared` and publication consent is again the only gate.
  */
-function peerAddressable(topic: Pick<TopicDto, "id" | "accessMode">): boolean {
-  return isTopicShared(topic) || isPeerMirrorTopic(topic.id);
+function peerAddressable(topic: Pick<TopicDto, "accessMode">): boolean {
+  return isTopicShared(topic);
 }
 
 // ── Capability / health snapshots ────────────────────────────────────
@@ -158,15 +140,16 @@ function localCapabilities() {
     runtimeVersion: RUNTIME_VERSION,
     features: {
       remoteAsk: true,
-      inputFiles: true,
+      // `/api/v1/peer/input-file` existed to stage attachments for a placed turn.
+      inputFiles: false,
       outputFiles: true,
       visualBridge: true,
       askUserBridge: true,
       selfConfigBridge: true,
     },
     agents,
-    // These are negotium MCP catalog names — a hub room whose MCP
-    // override uses otium-only names will fail placement with 409.
+    // These are negotium MCP catalog names, advertised so the hub can validate a
+    // room's MCP override against what this worker can actually run.
     optionalMcp: OPTIONAL_FORUM_MCP_SERVERS,
   };
 }
@@ -198,95 +181,6 @@ function localHealth() {
 
 // ── Handlers ─────────────────────────────────────────────────────────
 
-async function handleProvision(req: Request): Promise<Response> {
-  const peer = await requirePeer(req);
-  if (!peer.ok) return peer.response;
-  const originError = requirePrimaryOrigin(peer);
-  if (originError) return originError;
-  const body = await readBody(req);
-  if (!body) return jsonError("invalid JSON body", 400);
-  const protocolError = checkProtocol(body);
-  if (protocolError) return protocolError;
-  const userId = str(body, "userId");
-  const hostTopicId = str(body, "hostTopicId");
-  const topicTitle = str(body, "topicTitle");
-  const execution = parseExecutionSpec(body.execution);
-  if (!userId || !hostTopicId || !topicTitle || !execution) {
-    return jsonError("invalid peer provision request", 400);
-  }
-  const result = provisionMirrorTopic(peer.verified.fromCellId, {
-    userId,
-    hostTopicId,
-    topicTitle,
-    execution,
-  });
-  if (!result.ok) return jsonError(result.error, result.status);
-  logger.info(
-    { hostTopicId, localTopicId: result.localTopicId, fromNode: peer.verified.fromNodeName },
-    "otium: mirror room provisioned",
-  );
-  return Response.json({ ok: true });
-}
-
-async function handleTurn(req: Request): Promise<Response> {
-  const peer = await requirePeer(req);
-  if (!peer.ok) return peer.response;
-  const originError = requirePrimaryOrigin(peer);
-  if (originError) return originError;
-  const body = await readBody(req);
-  if (!body) return jsonError("invalid JSON body", 400);
-  const protocolError = checkProtocol(body);
-  if (protocolError) return protocolError;
-
-  const requestId = str(body, "requestId");
-  const userId = str(body, "userId");
-  const hostTopicId = str(body, "hostTopicId");
-  const topicTitle = str(body, "topicTitle");
-  const execution = parseExecutionSpec(body.execution);
-  if (body.execution !== undefined && !execution) {
-    return jsonError("invalid placed-topic execution spec", 400);
-  }
-  const agent = execution?.agent ?? str(body, "agent");
-  const message = str(body, "message");
-  if (!requestId || !userId || !hostTopicId || !topicTitle || !agent || !message) {
-    return jsonError(
-      "requestId, userId, hostTopicId, topicTitle, agent, message are required",
-      400,
-    );
-  }
-  if (message.length > MAX_PEER_MESSAGE_LENGTH) return jsonError("message too long", 400);
-
-  const hubNode = await resolvePeerNodeByCellId(peer.verified.fromCellId).catch(() => null);
-  if (!hubNode) return jsonError("calling node is not in this workspace", 403);
-
-  const payload: PeerTurnRequest = {
-    v: PEER_PROTOCOL_VERSION,
-    requestId,
-    userId,
-    hostTopicId,
-    topicTitle,
-    ...(execution ? { execution } : {}),
-    ...(agent ? { agent } : {}),
-    ...(str(body, "model") ? { model: str(body, "model") as string } : {}),
-    ...(str(body, "effort") ? { effort: str(body, "effort") as string } : {}),
-    ...(Array.isArray(body.attachments) &&
-    body.attachments.every((entry) => typeof entry === "string")
-      ? { attachments: body.attachments as string[] }
-      : {}),
-    ...(str(body, "sourceMessageId")
-      ? { sourceMessageId: str(body, "sourceMessageId") as string }
-      : {}),
-    message,
-  };
-  const result = runPeerTurn(hubNode, peer.verified.fromCellId, payload);
-  if (!result.ok) return jsonError(result.error, result.status);
-  logger.info(
-    { requestId, hostTopicId, fromNode: peer.verified.fromNodeName },
-    "otium: peer turn accepted",
-  );
-  return Response.json({ ok: true });
-}
-
 async function handleAbort(req: Request): Promise<Response> {
   const peer = await requirePeer(req);
   if (!peer.ok) return peer.response;
@@ -300,16 +194,9 @@ async function handleAbort(req: Request): Promise<Response> {
   const userId = str(body, "userId");
   const toTopic = str(body, "toTopic");
   if (!userId || !toTopic) return jsonError("userId and toTopic are required", 400);
-  const requestId = str(body, "requestId");
-  if (requestId) {
-    const aborted = abortHostedPeerTurn(peer.verified.fromCellId, requestId, userId, toTopic);
-    if (!aborted) return jsonError("turn not found or already completed", 404);
-    logger.info(
-      { fromNode: peer.verified.fromNodeName, toTopic, requestId },
-      "otium: exact peer turn abort accepted",
-    );
-    return Response.json({ ok: true });
-  }
+  // A `requestId`, if an older caller still sends one, selects nothing any more:
+  // it named one placed turn. Aborting is purely topic-scoped now, which is what
+  // session-comm has always used.
   const topic = getTopicByNameForUser(toTopic, userId);
   if (!topic || !peerAddressable(topic)) {
     return jsonError(`shared topic "${toTopic}" not found on this node`, 404);
@@ -542,36 +429,6 @@ async function handleReply(req: Request): Promise<Response> {
   return jsonError("no pending ask for this requestId", 404);
 }
 
-async function handleInputFile(req: Request): Promise<Response> {
-  const peer = await requirePeer(req);
-  if (!peer.ok) return peer.response;
-  const originError = requirePrimaryOrigin(peer);
-  if (originError) return originError;
-  const contentLength = Number(req.headers.get("content-length"));
-  if (Number.isFinite(contentLength) && contentLength > MAX_PEER_INPUT_REQUEST_BYTES) {
-    return jsonError("file too large", 413);
-  }
-  const form = await req.formData().catch(() => null);
-  if (!form) return jsonError("expected multipart/form-data", 400);
-  const hostTopicId = form.get("hostTopicId");
-  const userId = form.get("userId");
-  const file = form.get("file");
-  if (typeof hostTopicId !== "string" || typeof userId !== "string" || !(file instanceof File)) {
-    return jsonError("hostTopicId, userId, and file are required", 400);
-  }
-  if (file.size > MAX_PEER_INPUT_FILE_BYTES) return jsonError("file too large", 413);
-  const session = getPeerSession(peer.verified.fromCellId, hostTopicId);
-  const topic = session ? getTopic(session.local_topic_id) : null;
-  if (!session || !topic?.participants.some((participant) => participant.userId === userId)) {
-    return jsonError("provisioned peer room not found", 404);
-  }
-  const stored = await storePeerInputFile(file, {
-    topicId: session.local_topic_id,
-    ownerUserId: userId,
-  });
-  return Response.json({ ok: true, fileId: stored.id });
-}
-
 /** Hub-mediated management of this device's encrypted, node-local vault.
  * Secret values are accepted only for `set` and are never returned or logged. */
 async function handleDeviceVault(req: Request): Promise<Response> {
@@ -675,14 +532,12 @@ export async function handleOtiumPeerRequest(req: Request): Promise<Response | n
 
   if (req.method !== "POST") return jsonError("not found", 404);
   switch (path) {
-    case "/api/v1/peer/provision":
-      return handleProvision(req);
-    // `bind` / `unbind` / `shared-topic/messages` / `shared-topics/private` were
-    // the message-copying data plane, retired with `shared-topic-sync` (D-1).
-    // A hub still on the old path gets 404 here; the Runtime Gateway at
-    // `/api/v1/peer/runtime/*` is the only transcript transport now.
-    case "/api/v1/peer/turn":
-      return handleTurn(req);
+    // `provision` / `turn` / `input-file` were the placed-turn receiver: the hub
+    // created a mirror room here and drove it one turn at a time. `bind` /
+    // `unbind` / `shared-topic/messages` / `shared-topics/private` were the older
+    // message-copying data plane (D-1). All of them 404 now, and the Runtime
+    // Gateway at `/api/v1/peer/runtime/*` is the only hub→worker execution
+    // transport.
     case "/api/v1/peer/abort":
       return handleAbort(req);
     case "/api/v1/peer/tell":
@@ -693,8 +548,6 @@ export async function handleOtiumPeerRequest(req: Request): Promise<Response | n
       return handleSessions(req);
     case "/api/v1/peer/reply":
       return handleReply(req);
-    case "/api/v1/peer/input-file":
-      return handleInputFile(req);
     case "/api/v1/peer/device-vault":
       return handleDeviceVault(req);
     default:

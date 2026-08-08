@@ -11,7 +11,6 @@ import {
   resolveUploadedFilePathByFileId,
 } from "@negotium/core";
 import { mintPeerToken, resolvePeerNodeByCellId } from "@/central";
-import { getActiveForwarder } from "@/event-backflow";
 
 const PEER_BRIDGE_TIMEOUT_MS = 15_000;
 
@@ -31,13 +30,13 @@ function isMcpToolResult(value: unknown): value is McpToolResult {
   );
 }
 
+/**
+ * `flushEvents` is deliberately absent: it drained the placed-turn event
+ * backflow so an out-of-band bridge mutation could not overtake the transcript
+ * it referred to. With no worker→hub event stream there is nothing to order
+ * against, and core treats the optional hook as "already flushed".
+ */
 export const otiumPeerRuntimeBridge = {
-  async flushEvents(localTopicId) {
-    const forwarder = getActiveForwarder(localTopicId);
-    if (!forwarder) return false;
-    await forwarder.chain;
-    return !forwarder.deliveryBlocked;
-  },
   async spawnSubagent(request) {
     const hubNode = await resolvePeerNodeByCellId(request.bridge.hubCellId).catch(() => null);
     if (!hubNode) return errorResult("Error: Hub node is no longer attached.");
