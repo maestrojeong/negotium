@@ -52,6 +52,10 @@ import {
   type VerifiedPeer,
   verifyPeerToken,
 } from "@/central";
+import {
+  forwardGatewayRequest,
+  OTIUM_GATEWAY_FORWARD_PREFIX,
+} from "@/gateway-forward";
 import { storePeerInputFile } from "@/peer-files";
 import {
   MAX_PEER_INPUT_FILE_BYTES,
@@ -700,6 +704,29 @@ export async function handleOtiumPeerRequest(req: Request): Promise<Response | n
   }
 
   if (!path.startsWith("/api/v1/peer/")) return null;
+
+  /**
+   * Remote Runtime Gateway (D-2). Handled before the method switch because it
+   * carries both GET (including the SSE event stream) and POST, and because the
+   * hub-only check must run before the node control handler ever sees it.
+   */
+  if (path.startsWith(OTIUM_GATEWAY_FORWARD_PREFIX)) {
+    const peer = await requirePeer(req);
+    if (!peer.ok) return peer.response;
+    const notPrimary = requirePrimaryOrigin(peer);
+    if (notPrimary) return notPrimary;
+    // Lazily imported: this module is loaded inside the node process, and a
+    // static edge back into @negotium/node would import the node graph during
+    // the node's own module evaluation.
+    const { inspectNodeDaemon } = await import("@negotium/node");
+    const node = await inspectNodeDaemon();
+    if (!node.running || !node.info) {
+      return jsonError("canonical Negotium node is unavailable", 503);
+    }
+    return forwardGatewayRequest(req, {
+      nodeOrigin: `http://127.0.0.1:${node.info.port}`,
+    });
+  }
 
   if (req.method === "GET") {
     if (path === "/api/v1/peer/capabilities") {

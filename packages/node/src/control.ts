@@ -19,6 +19,7 @@ import {
   getTopicStats,
   getVisibleTopics,
   isParticipant,
+  isTopicShared,
   latestRuntimeEventSeq,
   listApiMessages,
   listBackgroundSessionsForUser,
@@ -247,6 +248,7 @@ export function createNodeControlHandler(
               "turn-events-sse-resume",
               "canonical-topic-read",
               "canonical-message-read",
+              "canonical-topic-list",
             ],
             cursor: latestRuntimeEventSeq(),
           });
@@ -324,6 +326,32 @@ export function createNodeControlHandler(
             limit: Number.isFinite(parsedLimit) ? parsedLimit : 50,
           });
           return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, ...result });
+        }
+
+        /**
+         * Topic discovery for the gateway. `accessMode=shared` is the only
+         * filter an embedding host should use: `shared` is how the owner
+         * consents to a topic being surfaced in Otium (D-6), so listing
+         * everything would let a host mirror rooms the owner never published.
+         */
+        if (req.method === "GET" && runtimePath === "/topics") {
+          const accessMode = url.searchParams.get("accessMode")?.trim();
+          if (accessMode && accessMode !== "shared" && accessMode !== "private") {
+            return jsonError(400, "accessMode must be 'shared' or 'private'");
+          }
+          const topics = getVisibleTopics().filter((topic) =>
+            accessMode === "shared"
+              ? isTopicShared(topic)
+              : accessMode === "private"
+                ? !isTopicShared(topic)
+                : true,
+          );
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            topics,
+            cursor: latestRuntimeEventSeq(),
+          });
         }
 
         const runtimeTopicMatch = runtimePath.match(/^\/topics\/([^/]+)$/);

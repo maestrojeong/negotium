@@ -66,7 +66,7 @@ export { setFileHooks } from "#runtime/file-hooks";
 export { startSessionInboxWorker } from "#runtime/inbox";
 export { startAiTurn, startDurableTurnRequestWorker } from "#runtime/turn-runner";
 export { listApiMessages } from "#storage/api-messages";
-export { getTopic } from "#storage/api-topics";
+export { getTopic, isTopicShared } from "#storage/api-topics";
 export type { StoredRuntimeEvent } from "#storage/runtime-events";
 export {
   latestRuntimeEventSeq,

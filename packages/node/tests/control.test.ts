@@ -81,8 +81,55 @@ test("runtime gateway health negotiates the v1 capability set", async () => {
       "turn-events-sse-resume",
       "canonical-topic-read",
       "canonical-message-read",
+      "canonical-topic-list",
     ]),
   });
+});
+
+test("runtime gateway topic list filters by access mode", async () => {
+  const listUser = `topic-list-${randomUUID()}`;
+  const sharedTopic = registerTopic({
+    title: `Shared ${randomUUID()}`,
+    userId: listUser,
+    agent: "codex",
+  });
+  const privateTopic = registerTopic({
+    title: `Private ${randomUUID()}`,
+    userId: listUser,
+    agent: "codex",
+  });
+  await handler(
+    request(`/topics/${encodeURIComponent(sharedTopic.id)}/access-mode`, {
+      method: "POST",
+      body: JSON.stringify({ userId: listUser, accessMode: "shared" }),
+    }),
+  );
+
+  const sharedResponse = await handler(runtimeRequest("/topics?accessMode=shared"));
+  const sharedBody = (await sharedResponse?.json()) as {
+    v?: number;
+    topics?: { id: string; accessMode?: string }[];
+  };
+  expect(sharedResponse?.status).toBe(200);
+  expect(sharedBody.v).toBe(NODE_RUNTIME_CONTRACT_VERSION);
+  const sharedIds = (sharedBody.topics ?? []).map((topic) => topic.id);
+  expect(sharedIds).toContain(sharedTopic.id);
+  expect(sharedIds).not.toContain(privateTopic.id);
+  // A shared filter that leaked a private room would publish rooms the owner
+  // never consented to surface, so assert the whole page, not just our two.
+  expect((sharedBody.topics ?? []).every((topic) => topic.accessMode === "shared")).toBe(true);
+
+  const privateResponse = await handler(runtimeRequest("/topics?accessMode=private"));
+  const privateIds = (
+    ((await privateResponse?.json()) as { topics?: { id: string }[] }).topics ?? []
+  ).map((topic) => topic.id);
+  expect(privateIds).toContain(privateTopic.id);
+  expect(privateIds).not.toContain(sharedTopic.id);
+});
+
+test("runtime gateway topic list rejects an unknown access mode", async () => {
+  const response = await handler(runtimeRequest("/topics?accessMode=everyone"));
+  expect(response?.status).toBe(400);
 });
 
 test("runtime gateway accepts durably, deduplicates client messages, and streams ordered events", async () => {

@@ -136,15 +136,27 @@ Implemented:
 - session-comm `"<node>/<topic>"` addressing and the `peer-forward` hook, with graceful failure
   on a standalone node.
 - Access-mode cascade over subagent rooms, and the subagent self-change guard.
+- **Dynamic topic mapping** (D-1/D-6). Three parts, all present:
+  - node topic discovery — `GET runtime/v1/topics?accessMode=shared`, negotiated as the
+    `canonical-topic-list` capability. `shared` is the only filter a host should use, so it
+    cannot mirror rooms the owner never published.
+  - a persisted mapping table in Otium (`negotium_topic_map`), keyed `(node, topic)` with the
+    room 1:1 in the other direction. `OTIUM_NEGOTIUM_GATEWAY_TOPIC_MAP` is now only a seed for
+    an existing deployment, not the authority.
+  - a sync loop that creates one room per unmapped shared topic and withdraws its own mappings
+    when a topic goes private. Operator-written pairs are never withdrawn automatically.
+  The room is a shell: the transcript is still projected, never copied.
+- **Remote transport for the Gateway** (D-2). A worker exposes the contract at
+  `/api/v1/peer/runtime/*`, reached over the relay with a Central-minted peer token and
+  restricted to the hub (`fromIsPrimary`). The worker swaps that token for its own
+  `node-control-token` in-process, so the host capability never crosses the network. Only the
+  read/turn subset is forwarded — mutating control routes stay loopback-only.
 
 Not implemented:
 
-- **Dynamic topic mapping.** `OTIUM_NEGOTIUM_GATEWAY_TOPIC_MAP` is a static env-configured map
-  of existing-topic pairs, so both rooms must already exist and adding one needs a restart.
-  Reaching D-1/D-6 needs: a node-side topic list endpoint, a persisted mapping table, and a
-  sync loop that creates an Otium room for a `shared` node topic.
-- **Remote transport for the Gateway** (D-2). Loopback only today.
-- **Retiring `shared-topic-sync`** (D-1). Still present and still copies messages.
+- **Retiring `shared-topic-sync`** (D-1). Still present and still copies messages. It is now
+  redundant for the single-machine and worker cases alike; removing it means unpicking
+  `startOtiumNodeRuntime`, `peer-server`, `index` and `cli`, which all reach into it.
 
 Deliberately kept from the peer stack: relay tunnel, enrollment, Central node registry and token
 brokering — these are the remote *transport*, which D-2 needs. Only the message-copying half is
@@ -152,12 +164,9 @@ being retired.
 
 ## Open questions
 
-1. **Why the Gateway is currently disabled.** The code and tests exist but no deployment sets
-   the environment variables. Whether it was parked before verification or reverted after a
-   problem is not recorded, and the answer changes how much of D-1 is already proven.
-2. **Per-topic execution consent.** `EXECUTION_ENABLED` is process-wide. Given D-4's blast
+1. **Per-topic execution consent.** `EXECUTION_ENABLED` is process-wide. Given D-4's blast
    radius, a per-topic opt-in is probably required before execution is enabled broadly.
-3. **Attribution in other views.** Terminal and Telegram do not render `actorLabel`; with
+2. **Attribution in other views.** Terminal and Telegram do not render `actorLabel`; with
    multiple humans in one room they will need to.
 
 ## Invariants worth testing
