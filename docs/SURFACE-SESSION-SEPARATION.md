@@ -1,6 +1,6 @@
 # Surface-Scoped Sessions (S-1 … S-11)
 
-Status: implemented in both repos; host rollout pending an npm publish
+Status: shipped — negotium 0.2.26, otium `0fe85c1`, all hosts migrated
 Date: 2026-08-08
 Supersedes: the `accessMode` (`private`/`shared`) half of
 [OTIUM-NODE-ARCHITECTURE.md](./OTIUM-NODE-ARCHITECTURE.md) D-6 and
@@ -108,22 +108,36 @@ reply carries the same `threadRootId`, for both Otium-native and node-mapped roo
 | 10 | Otium: thread `@`-mention starts a turn and replies into the thread (S-11) | otium | — |
 | 11 | Rollout: `NEGOTIUM_DEFAULT_SURFACE=otium` on `otium` + `otium-worker`, verify counts before/after | ops | 1-9 |
 
-## Measured rollout state (2026-08-08)
+## Rollout (completed 2026-08-09)
 
-| Host | negotium | topics | duplicate titles | after migration |
-|---|---|---|---|---|
-| local Mac | repo build | 13 | 0 | 12 `terminal` + 1 `telegram` (7 mapping rows, 6 point at deleted rooms) |
-| `otium` | 0.2.24 (`~/otium/node_modules`) | 44 | 0 | 44 `otium` |
-| `otium-worker` | 0.2.23 (global) | 3 | 0 | 3 `otium` |
+negotium **0.2.26** + otium **`0fe85c1`**. Every store on the fleet now carries `surface` and has
+dropped `access_mode`.
 
-`NEGOTIUM_DEFAULT_SURFACE=otium` is already appended to the env file on both hosts (worker processes
-run with `cwd=$HOME`, so bun picks up `~/.env` at next start). It is inert until the new code boots.
-Zero collisions anywhere, so the auto-rename path will not fire on this fleet.
+| Store | topics | surface | notes |
+|---|---|---|---|
+| local node | 14 | `terminal` | telegram backfill idle — the adapter is not running locally |
+| local Otium (`:4200`) | 2043 | `otium` | |
+| `otium` node | 44 | `otium` | gateway list verified: 44 rooms, surface all `otium` |
+| `otium` Otium (`:3000`) | 52 | `otium` | |
+| `otium-worker` node | 3 | `otium` | no Otium checkout; pure node |
 
-**The local canonical store is already migrated** — a full `bun test` run initializes the real state
-dir, so the schema init applied the backfill and dropped `access_mode` there. The local daemon still
-holds the pre-migration code in memory and its topic INSERT still names `access_mode`; it must be
-restarted before anything creates a topic locally.
+Zero title collisions fleet-wide, so the auto-rename path never fired.
+`NEGOTIUM_DEFAULT_SURFACE=otium` is set in the env file on both remote hosts; Otium's own store
+declares it in `forum-db.ts` instead, so a developer machine needs no configuration.
+
+### Two traps this rollout hit
+
+**A stale nested `node_modules` silently pinned the hub four versions back.**
+`~/otium/apps/runtime-api/node_modules/negotium` held 0.2.21 and shadowed the workspace root's
+0.2.25, so `otium-api` kept booting old code and its store never gained the column — through a
+`git pull`, a `bun install` and a restart. `bun install` does not remove such a copy; only
+`require.resolve("negotium/package.json")` exposes it. The same copy existed on the local Mac.
+
+**Otium's store needs a convergent invariant, not a one-shot migration.** Negotium's backfill records
+itself, so a store first opened by an older build keeps its rooms on `terminal` while new rooms
+arrive as `otium`. Because `findTopicTitleConflict` is surface-scoped, that split silently starts
+accepting duplicate titles — two rename tests caught it. Otium therefore re-asserts the invariant on
+every boot rather than migrating once.
 
 ## Verification
 
