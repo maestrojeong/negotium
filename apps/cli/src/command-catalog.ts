@@ -66,8 +66,8 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   },
   {
     name: "otium",
-    usage: "otium join|bindings|share|private|leave",
-    description: "manage the Otium workspace connection and topic bindings",
+    usage: "otium join|leave|serve",
+    description: "manage the Otium workspace connection",
     group: "Channels",
   },
 ];

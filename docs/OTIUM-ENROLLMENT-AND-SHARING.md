@@ -181,9 +181,11 @@ also check `accessMode` at request time instead of trusting binding rows alone.
 Current inspection is fragmented:
 
 - `negotium topics` prints `[private]` or `[shared]`.
-- `negotium otium bindings` prints actual mirror/shared binding rows.
 - Terminal and Telegram list visible topics but do not label access or binding state.
-- `negotium otium share` currently changes access and creates a binding in one operation.
+- Nothing inspects the resulting Otium rooms from the node side. The `negotium otium
+  bindings|share|private` subcommands were removed with the message-copying path (D-1 in
+  `OTIUM-NODE-ARCHITECTURE.md`); access mode is now set in the topic with `/public` and `/private`,
+  and the hub maps rooms itself over the Runtime Gateway.
 
 ## Target design: machine enrollment
 

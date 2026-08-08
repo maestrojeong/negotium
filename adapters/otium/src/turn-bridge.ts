@@ -86,6 +86,9 @@ export function provisionMirrorTopic(
     return { ok: false, error: `unknown agent "${execution.agent}"`, status: 400 };
   }
   const existing = getPeerSession(hostCellId, payload.hostTopicId);
+  // Legacy rows only — the `bind`/`share` path that wrote them is retired
+  // (D-1). Kept because the alternative is worse than dead code: falling
+  // through would `upsertTopic` over one of the owner's real topics.
   if (existing?.binding_mode === "shared") {
     const shared = getTopic(existing.local_topic_id);
     if (!shared) {

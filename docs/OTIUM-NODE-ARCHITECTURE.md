@@ -28,9 +28,10 @@ This is the concrete form of a rule that already exists in
 Otium reaches a node through `/api/v1/control/runtime/v1` (`turns`, `events`, `topics`,
 `messages`). It does not read the node's database, and the node does not write into Otium's.
 
-Rejected alternative: the `shared-topic-sync` path, which *copies* a topic and its recent
-messages into the hub's store (`publishTopic` sends up to 200 messages). Copying creates a
-second canonical store, which is the failure this architecture exists to avoid.
+Rejected alternative: the `shared-topic-sync` path, which *copied* a topic and its recent
+messages into the hub's store (`publishTopic` sent up to 200 messages). Copying created a
+second canonical store, which is the failure this architecture exists to avoid. That path was
+removed once the Gateway carried both the local and the remote case.
 
 ### D-2. Two transports, one contract
 
@@ -151,16 +152,23 @@ Implemented:
   restricted to the hub (`fromIsPrimary`). The worker swaps that token for its own
   `node-control-token` in-process, so the host capability never crosses the network. Only the
   read/turn subset is forwarded — mutating control routes stay loopback-only.
+- **`shared-topic-sync` retired** (D-1). `shared-topic-sync.ts` and `bindings.ts` are deleted
+  along with their peer routes (`bind`, `unbind`, `shared-topic/messages`,
+  `shared-topics/private`), their CLI subcommands (`bindings`, `share`, `private`) and the
+  `otium_shared_*` / `otium_peer_lifecycle` tables. No message is copied into the hub's store any
+  more. `negotium otium leave` now only removes the stored credentials — with the copies gone
+  there is nothing to delete, and the hub cannot reach a topic it can no longer authenticate to.
 
 Not implemented:
 
-- **Retiring `shared-topic-sync`** (D-1). Still present and still copies messages. It is now
-  redundant for the single-machine and worker cases alike; removing it means unpicking
-  `startOtiumNodeRuntime`, `peer-server`, `index` and `cli`, which all reach into it.
+- Nothing outstanding from D-1.
 
 Deliberately kept from the peer stack: relay tunnel, enrollment, Central node registry and token
-brokering — these are the remote *transport*, which D-2 needs. Only the message-copying half is
-being retired.
+brokering — the remote *transport* D-2 needs — plus the hub-driven **placed-turn** path
+(`/api/v1/peer/turn` → `turn-bridge.ts` → `event-backflow.ts`), which mirrors an Otium-owned room
+into a local execution topic. That path streams events rather than copying a transcript the node
+already owns, so D-1 never applied to it. `provisionMirrorTopic` also still recognises legacy
+`binding_mode = 'shared'` rows, so a pre-D-1 row cannot be mistaken for a mirror and overwritten.
 
 ## Open questions
 

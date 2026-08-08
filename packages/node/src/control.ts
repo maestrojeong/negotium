@@ -249,6 +249,7 @@ export function createNodeControlHandler(
               "canonical-topic-read",
               "canonical-message-read",
               "canonical-topic-list",
+              "canonical-topic-create",
             ],
             cursor: latestRuntimeEventSeq(),
           });
@@ -352,6 +353,38 @@ export function createNodeControlHandler(
             topics,
             cursor: latestRuntimeEventSeq(),
           });
+        }
+
+        /**
+         * Let a host create a canonical topic for a room it is about to show.
+         *
+         * Without this, a room created in Otium existed only in Otium's store,
+         * so Terminal and Telegram could not see it and its turns ran on the
+         * host instead of the node — two canonical stores, which is the failure
+         * D-1 exists to prevent. The topic is born `shared`, because a host only
+         * asks for one when it is already surfacing the room; the owner's
+         * consent is the act of creating it there (D-6).
+         */
+        if (req.method === "POST" && runtimePath === "/topics") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const userId = requiredText(body.userId, "userId");
+          const title = requiredText(body.title, "title");
+          const agent = body.agent;
+          if (agent !== undefined && !["claude", "codex", "maestro"].includes(String(agent))) {
+            return jsonError(400, "Invalid agent");
+          }
+          const topic = topicService.create({
+            title,
+            userId,
+            kind: "agent",
+            accessMode: "shared",
+            ...(agent ? { agent: agent as AgentKind } : {}),
+          });
+          return Response.json(
+            { ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, topic },
+            { status: 201 },
+          );
         }
 
         const runtimeTopicMatch = runtimePath.match(/^\/topics\/([^/]+)$/);

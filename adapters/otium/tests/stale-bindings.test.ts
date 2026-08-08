@@ -1,13 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { getTopic, upsertTopic } from "@negotium/core";
-import {
-  bindPeerSession,
-  getPeerSession,
-  listPeerSessions,
-  sweepStalePeerBindings,
-  unbindPeerSession,
-} from "@/store";
+import { db, getTopic, upsertTopic } from "@negotium/core";
+import { getPeerSession, listPeerSessions, sweepStalePeerBindings } from "@/store";
 
 /**
  * Regression cover for peer bindings outliving their local topic.
@@ -41,15 +35,30 @@ function localTopic(): string {
   return id;
 }
 
+/**
+ * Seeded with raw SQL on purpose: `shared`-mode rows are legacy leftovers of the
+ * retired copy path, so no production helper writes one any more — but the sweep
+ * still has to clean them up, which is what this file covers.
+ */
 function bind(localTopicId: string, mode: "shared" | "mirror"): [string, string] {
   const key: [string, string] = [`cell-${randomUUID()}`, `room-${randomUUID()}`];
-  bindPeerSession(key[0], key[1], localTopicId, mode);
+  db.run(
+    `INSERT INTO otium_peer_sessions
+       (host_node_id, host_topic_id, local_topic_id, binding_mode, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    [key[0], key[1], localTopicId, mode, new Date().toISOString()],
+  );
   boundKeys.push(key);
   return key;
 }
 
 afterEach(() => {
-  for (const [node, room] of boundKeys.splice(0)) unbindPeerSession(node, room);
+  for (const [node, room] of boundKeys.splice(0)) {
+    db.run("DELETE FROM otium_peer_sessions WHERE host_node_id = ? AND host_topic_id = ?", [
+      node,
+      room,
+    ]);
+  }
   createdTopicIds.splice(0);
 });
 

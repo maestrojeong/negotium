@@ -71,25 +71,6 @@ export interface PeerEventRequest {
   event: Record<string, unknown>;
 }
 
-export interface SharedTopicMetadata {
-  localTopicId: string;
-  title: string;
-  description?: string;
-  agent: string;
-  model: string;
-  effort: string;
-}
-
-export interface SharedTopicMessage {
-  sourceMessageId: string;
-  author: "user" | "ai" | "system";
-  text: string;
-  createdAt: string;
-  agent?: string;
-  model?: string;
-  kind?: string;
-}
-
 function str(body: Record<string, unknown>, field: string): string | null {
   const value = body[field];
   return typeof value === "string" && value.trim() ? value : null;

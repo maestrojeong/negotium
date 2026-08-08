@@ -14,9 +14,7 @@ the peer/relay boundary while `@negotium/core` owns local agent execution.
 npm install --global @negotium/cli
 negotium otium join <invite-code>   # store credentials (…/otium-join.json, 0600)
 negotium serve otium --port 7777    # canonical node + sidecar; add --relay <url> for NAT workers
-negotium otium bindings             # inspect internal/shared transports
-negotium otium share <host-topic-id> <local-topic-id> --user <user-id>
-negotium otium private <local-topic-id> --user <user-id>
+negotium otium leave                # remove the stored credentials
 ```
 
 Implements otium's peer protocol v1: `ptk_` token verification against
@@ -25,16 +23,13 @@ durable exactly-once request claims, and event backflow with contiguous
 `seq` ordering (≤5 retries then hard-block — never skips). Proven E2E
 against an unmodified otium hub with a real claude turn.
 
-The hub may also bind an Otium room to an existing Negotium topic through
-`/api/v1/peer/bind`. That shared binding preserves the local topic's agent,
-history, tasks, and identity instead of creating a mirror. Unbinding removes
-only the peer mapping and never deletes the local topic.
-
 User topics have an independent `accessMode`: `private` is available through
-Terminal and Telegram only, while `shared` may also be addressed and bound by
-Otium. Local creation defaults to private. `share` explicitly publishes an
-owner's visible topic and binds an Otium room; `private` removes all Otium
-bindings for that topic without deleting its local history.
+Terminal and Telegram only, while `shared` may also be surfaced in Otium. Local
+creation defaults to private, and the owner switches it from inside the topic
+(`/public` / `/private`). The hub discovers shared topics over the Runtime
+Gateway and projects them; it never receives a copy of the transcript. The
+adapter's own `bind` / `share` / `private` surface, which did copy messages into
+the hub's store, was removed — see D-1 in `docs/OTIUM-NODE-ARCHITECTURE.md`.
 
 Mirror topics have explicit `visibility: hidden`, independent of access mode
 and the `isSubagent` execution flag. They are internal worker replicas for an

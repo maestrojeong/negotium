@@ -27,24 +27,12 @@ import { installPeerFileHooks } from "@/peer-files";
 import { otiumPeerRuntimeBridge } from "@/runtime-bridge";
 import { otiumPeerSessionBridge, startPeerReplyOutboxWorker } from "@/session-bridge";
 import { startPeerSessionBridgeIpc } from "@/session-bridge-ipc";
-import { startSharedTopicSync } from "@/shared-topic-sync";
 import {
   cleanupPeerStateForLocalTopic,
   failInterruptedPeerTurnRequestsOnStartup,
   sweepStalePeerBindings,
 } from "@/store";
 import { TunnelClient, type TunnelClientOptions } from "@/tunnel-client";
-
-export {
-  bindOtiumTopic,
-  listOtiumTopicBindings,
-  type OtiumTopicBinding,
-  type OtiumTopicBindingResult,
-  type OtiumTopicPrivateResult,
-  setOtiumTopicPrivate,
-  shareOtiumTopic,
-  unbindOtiumTopic,
-} from "@/bindings";
 
 export {
   configureOtiumCentral,
@@ -103,13 +91,6 @@ export {
 } from "@/relay-protocol";
 export { otiumPeerRuntimeBridge } from "@/runtime-bridge";
 export {
-  acceptSharedTopicMessages,
-  checkPeerAttachment,
-  disconnectSharedTopics,
-  forwardSharedTopicMessage,
-  startSharedTopicSync,
-} from "@/shared-topic-sync";
-export {
   cleanupPeerStateForLocalTopic,
   failInterruptedPeerTurnRequestsOnStartup,
   sweepStalePeerBindings,
@@ -159,7 +140,6 @@ export function startOtiumNodeRuntime(options: OtiumAdapterOptions): OtiumNodeRu
     );
   }
   const stopBackflow = startEventBackflow();
-  const stopSharedTopicSync = startSharedTopicSync(join);
   const unregisterRuntimeBridge = registerPeerRuntimeBridge(otiumPeerRuntimeBridge);
   const unregisterSessionBridge = registerPeerSessionBridge(otiumPeerSessionBridge);
   const sessionBridgeIpc = startPeerSessionBridgeIpc(otiumPeerSessionBridge);
@@ -209,7 +189,6 @@ export function startOtiumNodeRuntime(options: OtiumAdapterOptions): OtiumNodeRu
       stopPeerReplyOutbox();
       uninstallFileHooks();
       stopBackflow();
-      stopSharedTopicSync();
       configureOtiumCentral(null);
     },
   };

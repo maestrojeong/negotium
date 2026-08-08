@@ -45,7 +45,6 @@ import {
   vaultList,
   vaultSet,
 } from "@negotium/core";
-import { bindOtiumTopic, unbindOtiumTopic } from "@/bindings";
 import {
   otiumCentralConfig,
   resolvePeerNodeByCellId,
@@ -65,10 +64,8 @@ import {
   type PeerSessionEntry,
   type PeerTurnRequest,
   parseExecutionSpec,
-  type SharedTopicMessage,
 } from "@/protocol";
 import { acceptRemoteAskReplyResult } from "@/session-bridge";
-import { acceptSharedTopicMessages, downgradeSharedTopicsForHub } from "@/shared-topic-sync";
 import {
   claimPeerInboxRequest,
   getPeerSession,
@@ -214,87 +211,6 @@ async function handleProvision(req: Request): Promise<Response> {
     "otium: mirror room provisioned",
   );
   return Response.json({ ok: true });
-}
-
-async function handleBind(req: Request): Promise<Response> {
-  const peer = await requirePeer(req);
-  if (!peer.ok) return peer.response;
-  const originError = requirePrimaryOrigin(peer);
-  if (originError) return originError;
-  const body = await readBody(req);
-  if (!body) return jsonError("invalid JSON body", 400);
-  const protocolError = checkProtocol(body);
-  if (protocolError) return protocolError;
-  const userId = str(body, "userId");
-  const hostTopicId = str(body, "hostTopicId");
-  const localTopicId = str(body, "localTopicId");
-  if (!userId || !hostTopicId || !localTopicId) {
-    return jsonError("invalid peer bind request", 400);
-  }
-  const result = bindOtiumTopic({
-    hostNodeId: peer.verified.fromCellId,
-    hostTopicId,
-    localTopicId,
-    userId,
-  });
-  if (!result.ok) return jsonError(result.error, result.status);
-  return Response.json({ ok: true, localTopicId: result.localTopicId, replaced: result.replaced });
-}
-
-async function handleSharedTopicMessages(req: Request): Promise<Response> {
-  const peer = await requirePeer(req);
-  if (!peer.ok) return peer.response;
-  const originError = requirePrimaryOrigin(peer);
-  if (originError) return originError;
-  const body = await readBody(req);
-  if (!body) return jsonError("invalid JSON body", 400);
-  const protocolError = checkProtocol(body);
-  if (protocolError) return protocolError;
-  const localTopicId = str(body, "localTopicId");
-  const hostTopicId = str(body, "hostTopicId");
-  const messages = body.messages;
-  if (!localTopicId || !hostTopicId || !Array.isArray(messages)) {
-    return jsonError("localTopicId, hostTopicId and messages are required", 400);
-  }
-  const session = getPeerSession(peer.verified.fromCellId, hostTopicId);
-  if (!session || session.local_topic_id !== localTopicId) {
-    return jsonError("shared topic binding not found", 404);
-  }
-  const accepted = acceptSharedTopicMessages(
-    messages as SharedTopicMessage[],
-    localTopicId,
-    peer.verified.fromCellId,
-  );
-  return Response.json({ ok: true, accepted });
-}
-
-async function handleSharedTopicsPrivate(req: Request): Promise<Response> {
-  const peer = await requirePeer(req);
-  if (!peer.ok) return peer.response;
-  const originError = requirePrimaryOrigin(peer);
-  if (originError) return originError;
-  const body = await readBody(req);
-  if (!body) return jsonError("invalid JSON body", 400);
-  const protocolError = checkProtocol(body);
-  if (protocolError) return protocolError;
-  if (body.reason !== "hub-removal") return jsonError("reason must be hub-removal", 400);
-  const updated = downgradeSharedTopicsForHub(peer.verified.fromCellId);
-  return Response.json({ ok: true, updated });
-}
-
-async function handleUnbind(req: Request): Promise<Response> {
-  const peer = await requirePeer(req);
-  if (!peer.ok) return peer.response;
-  const originError = requirePrimaryOrigin(peer);
-  if (originError) return originError;
-  const body = await readBody(req);
-  if (!body) return jsonError("invalid JSON body", 400);
-  const protocolError = checkProtocol(body);
-  if (protocolError) return protocolError;
-  const hostTopicId = str(body, "hostTopicId");
-  if (!hostTopicId) return jsonError("hostTopicId is required", 400);
-  const removed = unbindOtiumTopic(peer.verified.fromCellId, hostTopicId);
-  return Response.json({ ok: true, removed });
 }
 
 async function handleTurn(req: Request): Promise<Response> {
@@ -746,14 +662,10 @@ export async function handleOtiumPeerRequest(req: Request): Promise<Response | n
   switch (path) {
     case "/api/v1/peer/provision":
       return handleProvision(req);
-    case "/api/v1/peer/bind":
-      return handleBind(req);
-    case "/api/v1/peer/shared-topic/messages":
-      return handleSharedTopicMessages(req);
-    case "/api/v1/peer/shared-topics/private":
-      return handleSharedTopicsPrivate(req);
-    case "/api/v1/peer/unbind":
-      return handleUnbind(req);
+    // `bind` / `unbind` / `shared-topic/messages` / `shared-topics/private` were
+    // the message-copying data plane, retired with `shared-topic-sync` (D-1).
+    // A hub still on the old path gets 404 here; the Runtime Gateway at
+    // `/api/v1/peer/runtime/*` is the only transcript transport now.
     case "/api/v1/peer/turn":
       return handleTurn(req);
     case "/api/v1/peer/abort":

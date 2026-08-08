@@ -3,10 +3,12 @@
  * negotium-otium — run a negotium node as an otium workspace worker.
  *
  *   negotium-otium join <invite-code>   store credentials from an invite code
+ *   negotium-otium leave                remove credentials
  *   negotium-otium serve                canonical node + Otium sidecar
- *   negotium-otium bindings             inspect internal/shared Otium transports
- *   negotium-otium share ...            bind an Otium room to a visible local topic
- *   negotium-otium private ...          keep a topic on Terminal/Telegram only
+ *
+ * Per-topic sharing is expressed on the topic itself (`/public` / `/private`,
+ * i.e. `accessMode`) and discovered by the hub through the Runtime Gateway, so
+ * this command no longer carries `bindings` / `share` / `private` subcommands.
  *
  * The runtime half mounts in the canonical node. This command only keeps the
  * public peer proxy and relay tunnel in the adapter sidecar process.
@@ -67,26 +69,6 @@ export function parseOtiumServeRelayUrl(args: string[]): string | undefined {
     throw new Error("relay URL must use http(s) or ws(s)");
   }
   return raw.replace(/\/+$/, "");
-}
-
-async function resolveHostNodeId(explicit?: string): Promise<string> {
-  if (explicit?.trim()) return explicit.trim();
-  const [{ configureOtiumCentral, listPeerNodes }, { loadJoin }] = await Promise.all([
-    import("@/central"),
-    import("@/join"),
-  ]);
-  const join = loadJoin();
-  if (!join) throw new Error("not joined to an Otium workspace; pass --host-node or join first");
-  configureOtiumCentral(join);
-  try {
-    const nodes = await listPeerNodes({ fresh: true });
-    const primary =
-      nodes.find((node) => node.isPrimary && !node.self) ?? nodes.find((node) => node.isPrimary);
-    if (!primary) throw new Error("workspace has no primary Otium node");
-    return primary.cellId;
-  } finally {
-    configureOtiumCentral(null);
-  }
 }
 
 async function spawnCanonicalNode(): Promise<void> {
@@ -153,19 +135,39 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
           "Otium join is configured by environment; remove OTIUM_CENTRAL_URL, OTIUM_CELL_ID, and OTIUM_CELL_SECRET to disconnect",
         );
       }
-      const { configureOtiumCentral } = await import("@/central");
       const { loadJoin, removeJoin } = await import("@/join");
-      const { disconnectSharedTopics } = await import("@/shared-topic-sync");
-      const join = loadJoin();
-      if (!join) throw new Error("not joined to an Otium workspace");
-      configureOtiumCentral(join);
-      try {
-        await disconnectSharedTopics(join);
-        removeJoin();
-      } finally {
-        configureOtiumCentral(null);
+      if (!loadJoin()) throw new Error("not joined to an Otium workspace");
+      // Removing the join file already cuts the hub off: it discovers
+      // `accessMode: "shared"` topics only by calling this node through the
+      // Runtime Gateway, which needs these credentials.
+      //
+      // Topics are still downgraded, because `shared` records consent to a
+      // *specific* workspace. Leaving them published would silently re-expose
+      // them the moment this node joins a different workspace, without the owner
+      // ever running `/public` again.
+      const { getVisibleTopics, isTopicShared, switchTopicAccessMode } = await import(
+        "@negotium/core"
+      );
+      let downgraded = 0;
+      for (const topic of getVisibleTopics()) {
+        if (!isTopicShared(topic)) continue;
+        const owner = topic.participants.find((participant) => participant.role === "owner");
+        if (!owner) continue;
+        // Subagent rooms follow their root ancestor and refuse a direct change,
+        // so skipping them here is what lets the cascade own them.
+        if (topic.isSubagent) continue;
+        const switched = switchTopicAccessMode({
+          topicId: topic.id,
+          userId: owner.userId,
+          accessMode: "private",
+        });
+        if (switched.ok) downgraded += switched.topicIds.length;
       }
-      console.log("disconnected from Otium; local shared topics are now private");
+      removeJoin();
+      console.log(
+        `disconnected from Otium; workspace credentials removed` +
+          (downgraded > 0 ? `; ${downgraded} topic(s) are now private` : ""),
+      );
       break;
     }
     case "serve": {
@@ -177,73 +179,20 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
       await runOtiumSidecar({ port, relayUrl });
       break;
     }
-    case "bindings": {
-      const { listOtiumTopicBindings } = await import("@/bindings");
-      const bindings = listOtiumTopicBindings();
-      if (bindings.length === 0) {
-        console.log("no Otium topic bindings");
-        break;
-      }
-      for (const binding of bindings) {
-        const local = binding.localTopicTitle
-          ? `${binding.localTopicTitle} (${binding.localTopicId})`
-          : `${binding.localTopicId} [missing]`;
-        console.log(
-          `${binding.transport.padEnd(16)} ${binding.hostNodeId}/${binding.hostTopicId} -> ${local}`,
-        );
-      }
-      break;
-    }
-    case "share": {
-      const parsed = parseArgs(commandArgs);
-      const [hostTopicId, localTopicId] = parsed.positional;
-      const userId = parsed.options.get("user")?.trim();
-      if (!hostTopicId || !localTopicId || !userId) {
-        throw new Error(
-          "usage: negotium otium share <host-topic-id> <local-topic-id> --user <user-id> [--host-node <cell-id>]",
-        );
-      }
-      const hostNodeId = await resolveHostNodeId(parsed.options.get("host-node"));
-      const { shareOtiumTopic } = await import("@/bindings");
-      const result = shareOtiumTopic({ hostNodeId, hostTopicId, localTopicId, userId });
-      if (!result.ok) throw new Error(result.error);
-      console.log(
-        `shared ${hostNodeId}/${hostTopicId} with local topic ${result.localTopicId}` +
-          (result.replaced ? " (replaced previous binding)" : ""),
-      );
-      break;
-    }
-    case "private": {
-      const parsed = parseArgs(commandArgs);
-      const [localTopicId] = parsed.positional;
-      const userId = parsed.options.get("user")?.trim();
-      if (!localTopicId || !userId) {
-        throw new Error("usage: negotium otium private <local-topic-id> --user <user-id>");
-      }
-      const { setOtiumTopicPrivate } = await import("@/bindings");
-      const result = setOtiumTopicPrivate({ localTopicId, userId });
-      if (!result.ok) throw new Error(result.error);
-      console.log(
-        `private mode selected for ${result.localTopicId}; removed ${result.removedBindings} Otium binding(s)`,
-      );
-      break;
-    }
     default: {
       console.log(
         [
           "negotium otium — attach a Negotium node to an Otium workspace",
           "",
-          "usage: negotium otium <join|leave|serve|bindings|share|private> [args]",
+          "usage: negotium otium <join|leave|serve> [args]",
           "",
           "  join <code>   store credentials from an Otium invite code",
-          "  leave         delete Hub copies, make local topics private, and remove credentials",
+          "  leave         remove the stored workspace credentials",
           "  serve [--port <port>] [--relay <url>]",
           "                 run peer routes and an outbound relay tunnel",
-          "  bindings      list internal mirrors and shared topic bindings",
-          "  share <host-topic> <local-topic> --user <id> [--host-node <cell>]",
-          "                 publish one private local topic to Otium as shared",
-          "  private <local-topic> --user <id>",
-          "                 remove all Otium bindings; keep Terminal/Telegram access",
+          "",
+          "Publish a topic to the workspace with /public in that topic; the hub",
+          "discovers it over the Runtime Gateway. /private withdraws it.",
         ].join("\n"),
       );
       if (command && command !== "help" && command !== "--help") process.exitCode = 1;

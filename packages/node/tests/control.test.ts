@@ -19,6 +19,7 @@ import {
   vaultDel,
   vaultListWithValues,
 } from "@negotium/core";
+import type { TopicDto } from "@negotium/core/node-host";
 import { recordUsage } from "@negotium/core/storage";
 import {
   createNodeControlHandler,
@@ -82,8 +83,69 @@ test("runtime gateway health negotiates the v1 capability set", async () => {
       "canonical-topic-read",
       "canonical-message-read",
       "canonical-topic-list",
+      "canonical-topic-create",
     ]),
   });
+});
+
+test("runtime gateway topic create makes a shared canonical topic", async () => {
+  const createUser = `topic-create-${randomUUID()}`;
+  const title = `Created ${randomUUID()}`;
+  const response = await handler(
+    runtimeRequest("/topics", {
+      method: "POST",
+      body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, userId: createUser, title }),
+    }),
+  );
+  const body = (await response?.json()) as { v?: number; topic?: TopicDto };
+
+  expect(response?.status).toBe(201);
+  expect(body.v).toBe(NODE_RUNTIME_CONTRACT_VERSION);
+  expect(body.topic?.title).toBe(title);
+  // Born shared: a host only asks for a topic when it is already surfacing the
+  // room, so it must show up in the shared list without a second call.
+  expect(body.topic?.accessMode).toBe("shared");
+  expect(body.topic?.participants).toEqual([{ userId: createUser, role: "owner" }]);
+
+  const listed = await handler(runtimeRequest("/topics?accessMode=shared"));
+  const ids = (((await listed?.json()) as { topics?: TopicDto[] }).topics ?? []).map((t) => t.id);
+  expect(ids).toContain(body.topic!.id);
+
+  // The turn path must accept it immediately; a topic the host cannot run is
+  // worse than no topic at all.
+  const turn = await handler(
+    runtimeRequest("/turns", {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        topicId: body.topic!.id,
+        userId: createUser,
+        text: "hello",
+        clientMessageId: `create-${randomUUID()}`,
+        allowAutoContinue: false,
+      }),
+    }),
+  );
+  expect(turn?.status).toBe(202);
+});
+
+test("runtime gateway topic create rejects a bad version, agent, or missing title", async () => {
+  const createUser = `topic-create-bad-${randomUUID()}`;
+  const cases: [string, Record<string, unknown>][] = [
+    ["unsupported v", { v: 99, userId: createUser, title: "x" }],
+    ["missing title", { v: NODE_RUNTIME_CONTRACT_VERSION, userId: createUser }],
+    ["missing userId", { v: NODE_RUNTIME_CONTRACT_VERSION, title: "x" }],
+    [
+      "unknown agent",
+      { v: NODE_RUNTIME_CONTRACT_VERSION, userId: createUser, title: "x", agent: "gemini" },
+    ],
+  ];
+  for (const [label, payload] of cases) {
+    const response = await handler(
+      runtimeRequest("/topics", { method: "POST", body: JSON.stringify(payload) }),
+    );
+    expect(response?.status, label).toBe(400);
+  }
 });
 
 test("runtime gateway topic list filters by access mode", async () => {

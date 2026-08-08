@@ -9,7 +9,6 @@ import { configureOtiumCentral, resetPeerCentralCaches } from "@/central";
 import { installPeerFileHooks } from "@/peer-files";
 import { handleOtiumPeerRequest } from "@/peer-server";
 import { PEER_PROTOCOL_VERSION } from "@/protocol";
-import { getPeerSession } from "@/store";
 import { type FakeCentral, HUB_TOKEN, startFakeCentral, WORKER_PEER_TOKEN } from "./helpers";
 
 const BASE = "http://worker.local";
@@ -484,60 +483,5 @@ describe("sessions / abort / stubs", () => {
     } finally {
       uninstall();
     }
-  });
-});
-
-describe("shared topic binding routes", () => {
-  test("hub cannot bind a private local topic", async () => {
-    const topic = registerTopic({
-      title: `peer-private-bind-${Date.now()}`,
-      userId: USER,
-      kind: "agent",
-      agent: "maestro",
-    });
-    const response = await call("/api/v1/peer/bind", {
-      token: HUB_TOKEN,
-      body: {
-        v: PEER_PROTOCOL_VERSION,
-        userId: USER,
-        hostTopicId: `host-${topic.id}`,
-        localTopicId: topic.id,
-      },
-    });
-    expect(response.status).toBe(409);
-    expect(getPeerSession("cell_hub", `host-${topic.id}`)).toBeNull();
-  });
-
-  test("hub binds and unbinds an existing local topic without deleting it", async () => {
-    const topic = registerTopic({
-      title: `peer-bind-${Date.now()}`,
-      userId: USER,
-      kind: "agent",
-      agent: "maestro",
-      accessMode: "shared",
-    });
-    const hostTopicId = `host-${topic.id}`;
-    const bound = await call("/api/v1/peer/bind", {
-      token: HUB_TOKEN,
-      body: {
-        v: PEER_PROTOCOL_VERSION,
-        userId: USER,
-        hostTopicId,
-        localTopicId: topic.id,
-      },
-    });
-    expect(bound.status).toBe(200);
-    expect(getPeerSession("cell_hub", hostTopicId)).toMatchObject({
-      local_topic_id: topic.id,
-      binding_mode: "shared",
-    });
-
-    const unbound = await call("/api/v1/peer/unbind", {
-      token: HUB_TOKEN,
-      body: { v: PEER_PROTOCOL_VERSION, hostTopicId },
-    });
-    expect(unbound.status).toBe(200);
-    expect(unbound.body.removed).toBe(true);
-    expect(getPeerSession("cell_hub", hostTopicId)).toBeNull();
   });
 });
