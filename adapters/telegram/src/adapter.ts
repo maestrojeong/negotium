@@ -286,7 +286,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       "telegram adapter: forumChatId set but client lacks createForumTopic — forum mode disabled",
     );
   }
-  const personalGeneral = ensurePersonalGeneral(userId);
+  const personalGeneral = ensurePersonalGeneral(userId, "telegram");
 
   // ── mapping state ───────────────────────────────────────────────────
   // Two indexes over the same ChatMapping objects. byKey is 1:1 (a chat or
@@ -570,7 +570,17 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   // store's surface backfill cannot see it and parks everything on the host
   // default; only this pass can tell a telegram room from a terminal one (S-9).
   if (!store.isFlagSet(SURFACE_BACKFILL_FLAG)) {
-    const mappedIds = [...new Set(store.load().map((mapping) => mapping.topicId))];
+    // Manager rooms are one per user *per surface*: the terminal's personal
+    // General may be mapped here from before the split, and moving it would
+    // delete it from the terminal picker. Telegram makes its own instead.
+    const mappedIds = [
+      ...new Set(
+        store
+          .load()
+          .map((mapping) => mapping.topicId)
+          .filter((topicId) => getTopic(topicId)?.kind !== "manager"),
+      ),
+    ];
     const moved = setTopicSurfaces(mappedIds, "telegram");
     store.setFlag(SURFACE_BACKFILL_FLAG);
     if (moved > 0) {

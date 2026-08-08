@@ -118,7 +118,7 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
     this.#unsubscribe = runtimeBus().subscribe(onEvent);
     try {
       if (this.#startNode) this.#node = await startDefaultNode({ port: this.#port });
-      ensurePersonalGeneral(this.#userId);
+      ensurePersonalGeneral(this.#userId, "terminal");
     } catch (error) {
       this.#unsubscribe?.();
       this.#unsubscribe = null;
@@ -614,7 +614,7 @@ export class RemoteNegotiumClient implements NegotiumClient {
 
   async #openEventStream(after: number, signal: AbortSignal): Promise<Response> {
     const response = await fetch(
-      `${this.#baseUrl}${NODE_CONTROL_BASE_PATH}/events?user=${encodeURIComponent(this.#userId)}&after=${after}`,
+      `${this.#baseUrl}${NODE_CONTROL_BASE_PATH}/events?user=${encodeURIComponent(this.#userId)}&after=${after}&surface=terminal`,
       {
         signal,
         headers: {

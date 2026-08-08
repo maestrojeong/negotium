@@ -42,7 +42,7 @@ export { storeLocalFileAsUpload } from "#runtime/file-hooks";
 export { isSensitivePath } from "#security/sensitive-path";
 export { appendApiMessage } from "#storage/api-messages";
 export { getApiTopicConfig } from "#storage/api-topic-config";
-export { getTopic, getTopicByNameForUser } from "#storage/api-topics";
+export { defaultTopicSurface, getTopic, getTopicByNameForUser } from "#storage/api-topics";
 export { registerTopic, TopicValidationError } from "#topics/create";
 export {
   getTopics,
@@ -56,4 +56,4 @@ export {
 export { restartTopicSession } from "#topics/session";
 export type { EffortLevel } from "#types";
 export { EFFORT_VALUES } from "#types";
-export type { MessageDto, TopicDto } from "#types/api";
+export type { MessageDto, TopicDto, TopicSurface } from "#types/api";

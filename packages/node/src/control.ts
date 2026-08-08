@@ -206,8 +206,13 @@ function createRuntimeContractEventStream(req: Request, after: number, topicId?:
   });
 }
 
-function createEventStream(req: Request, userId: string, after: number): Response {
-  const allowedTopics = new Set(topicsForUser(userId).map((topic) => topic.id));
+function createEventStream(
+  req: Request,
+  userId: string,
+  after: number,
+  surface?: TopicSurface,
+): Response {
+  const allowedTopics = new Set(topicsForUser(userId, surface).map((topic) => topic.id));
   let cursor = Math.max(0, after);
   return createPollingSseStream(req, {
     ready: { protocolVersion: NODE_CONTROL_PROTOCOL_VERSION, cursor },
@@ -219,7 +224,12 @@ function createEventStream(req: Request, userId: string, after: number): Respons
           cursor = event.seq;
           if (event.type === "topic-created" || event.type === "topic-updated") {
             const topic = getTopic(event.topicId);
-            if (topic && isParticipant(topic, userId)) allowedTopics.add(event.topicId);
+            // Re-check the surface, not just membership: a room created on
+            // another surface while this stream is open must never be admitted,
+            // or the initial filtered list is undone by the first event.
+            const admissible =
+              topic && isParticipant(topic, userId) && (!surface || topic.surface === surface);
+            if (admissible) allowedTopics.add(event.topicId);
             else allowedTopics.delete(event.topicId);
           }
           const visible = allowedTopics.has(event.topicId);
@@ -502,7 +512,7 @@ export function createNodeControlHandler(
 
       if (req.method === "GET" && path === "/session") {
         const userId = requiredText(url.searchParams.get("user"), "user");
-        ensurePersonalGeneral(userId);
+        ensurePersonalGeneral(userId, requestedSurface(url));
         return Response.json({
           ok: true,
           protocolVersion: NODE_CONTROL_PROTOCOL_VERSION,
@@ -580,7 +590,12 @@ export function createNodeControlHandler(
       if (req.method === "GET" && path === "/events") {
         const userId = requiredText(url.searchParams.get("user"), "user");
         const parsed = Number.parseInt(url.searchParams.get("after") ?? "0", 10);
-        return createEventStream(req, userId, Number.isFinite(parsed) ? parsed : 0);
+        return createEventStream(
+          req,
+          userId,
+          Number.isFinite(parsed) ? parsed : 0,
+          requestedSurface(url),
+        );
       }
 
       const messagesMatch = path.match(/^\/topics\/([^/]+)\/messages$/);

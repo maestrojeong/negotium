@@ -3,8 +3,14 @@ import { getRegistry } from "#agents/registry";
 import { resolveDefaultModel } from "#platform/config";
 import { GENERAL_TOPIC_ID } from "#platform/constants";
 import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
-import { getManagerTopicForUser, getTopic, upsertTopic } from "#storage/api-topics";
-import type { TopicDto } from "#types/api";
+import {
+  defaultTopicSurface,
+  getManagerTopicForUser,
+  getTopic,
+  normalizeTopicSurface,
+  upsertTopic,
+} from "#storage/api-topics";
+import type { TopicDto, TopicSurface } from "#types/api";
 
 const LEGACY_PERSONAL_GENERAL_DESCRIPTION =
   "나만의 개인 공간이에요. 대화와 AI 작업은 다른 사용자에게 공개되지 않습니다.";
@@ -17,8 +23,9 @@ export const PERSONAL_GENERAL_DESCRIPTION =
  * The legacy `general` row is deliberately excluded: it was shared by every
  * user and remains untouched for an explicit, operator-controlled migration.
  */
-export function ensurePersonalGeneral(userId: string): TopicDto {
-  const existing = getManagerTopicForUser(userId);
+export function ensurePersonalGeneral(userId: string, surface?: TopicSurface): TopicDto {
+  const scope = normalizeTopicSurface(surface ?? defaultTopicSurface());
+  const existing = getManagerTopicForUser(userId, scope);
   if (existing) {
     if (existing.description === LEGACY_PERSONAL_GENERAL_DESCRIPTION) {
       existing.description = PERSONAL_GENERAL_DESCRIPTION;
@@ -43,6 +50,7 @@ export function ensurePersonalGeneral(userId: string): TopicDto {
     aiMode: "always",
     aiMention: false,
     participants: [{ userId, role: "owner" }],
+    surface: scope,
     createdAt: now,
     lastMessageAt: now,
   };

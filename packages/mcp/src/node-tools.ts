@@ -12,6 +12,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   abortRoom,
   appendJsonlEntry,
+  defaultTopicSurface,
   deleteTopicCascade,
   EFFORT_VALUES,
   type EffortLevel,
@@ -30,6 +31,7 @@ import {
   TopicArchiveRequiredError,
   TopicCleanupRequiredError,
   type TopicDto,
+  type TopicSurface,
   TopicValidationError,
   textResult,
 } from "@negotium/core/mcp-runtime-host";
@@ -40,6 +42,16 @@ import { z } from "zod";
  * user participates in. Non-member topics resolve as "not found" so the
  * error never leaks another user's topic existence.
  */
+/**
+ * The surface the calling turn is running on. Every discovery and creation
+ * tool below is scoped to it, so an agent in a Telegram room cannot enumerate
+ * or create terminal rooms, and equal titles on other surfaces do not make a
+ * title lookup ambiguous.
+ */
+function callerSurface(ctx: RuntimeMcpContext): TopicSurface {
+  return getTopic(ctx.topicId)?.surface ?? defaultTopicSurface();
+}
+
 function resolveTopicForUser(
   ctx: RuntimeMcpContext,
   ref: string,
@@ -52,7 +64,7 @@ function resolveTopicForUser(
     if (!isParticipant(byId, ctx.userId)) return { error: notFound };
     return { topic: byId };
   }
-  const byTitle = getTopicByNameForUser(trimmed, ctx.userId);
+  const byTitle = getTopicByNameForUser(trimmed, ctx.userId, { surface: callerSurface(ctx) });
   if (byTitle) return { topic: byTitle };
   return { error: notFound };
 }
@@ -84,6 +96,7 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
         const topic = registerTopic({
           title,
           userId: ctx.userId,
+          surface: callerSurface(ctx),
           agent,
           model,
           effort: effort as EffortLevel | undefined,
@@ -111,7 +124,9 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
     "List the calling user's topics on this negotium node: title, id, kind, agent, and whether a turn is currently running.",
     {},
     async () => {
-      const topics = getTopics().filter((topic) => isParticipant(topic, ctx.userId));
+      const topics = getTopics({ surface: callerSurface(ctx) }).filter((topic) =>
+        isParticipant(topic, ctx.userId),
+      );
       if (topics.length === 0) {
         return textResult("No topics found. Use register_topic to create one.");
       }

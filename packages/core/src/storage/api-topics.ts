@@ -487,21 +487,28 @@ function renameSurfaceTitleCollisions(): void {
       "SELECT id, title, kind, surface FROM api_topics WHERE kind != 'manager' ORDER BY created_at ASC, rowid ASC",
     )
     .all();
-  const taken = new Set<string>();
+  const keyOf = (surface: string, kind: string, title: string) =>
+    [surface, kind, normalizedTitle(title)].join("\u0000");
+  // Every original title is reserved up front. Allocating only against the
+  // titles seen so far would let an earlier duplicate claim "Foo (2)" while a
+  // real room already named "Foo (2)" sits later in the scan — that room would
+  // then be pushed to "Foo (2) (2)" for no reason.
+  const reserved = new Set(rows.map((row) => keyOf(row.surface, row.kind, row.title)));
+  const used = new Set<string>();
   const update = db.query("UPDATE api_topics SET title = ? WHERE id = ?");
   for (const row of rows) {
-    const key = (title: string) => [row.surface, row.kind, normalizedTitle(title)].join("\u0000");
-    if (!taken.has(key(row.title))) {
-      taken.add(key(row.title));
+    const key = (title: string) => keyOf(row.surface, row.kind, title);
+    if (!used.has(key(row.title))) {
+      used.add(key(row.title));
       continue;
     }
     let suffix = 2;
     let candidate = `${row.title} (${suffix})`;
-    while (taken.has(key(candidate))) {
+    while (reserved.has(key(candidate)) || used.has(key(candidate))) {
       suffix += 1;
       candidate = `${row.title} (${suffix})`;
     }
-    taken.add(key(candidate));
+    used.add(key(candidate));
     update.run(candidate, row.id);
     logger.warn(
       { topicId: row.id, surface: row.surface, from: row.title, to: candidate },
@@ -834,19 +841,27 @@ export function getTopic(id: string): TopicDto | null {
 }
 
 /** Return the private manager room owned by a user, excluding the retired shared General row. */
-export function getManagerTopicForUser(userId: string): TopicDto | null {
-  const row = db
-    .query<TopicRow, [string, string]>(
-      `SELECT t.* FROM api_topics t
+/**
+ * The user's own manager room, optionally on one surface.
+ *
+ * A manager room is one per user **per surface**: Terminal and Telegram each
+ * give the same person their own personal room, and returning one surface's
+ * room to the other adapter lets that adapter bind to — and reclassify — a room
+ * belonging to a different surface. Callers that represent an adapter pass
+ * theirs; unscoped lookups stay for maintenance paths that work by user alone.
+ */
+export function getManagerTopicForUser(userId: string, surface?: TopicSurface): TopicDto | null {
+  const sql = `SELECT t.* FROM api_topics t
        JOIN topic_members m ON m.topic_id = t.id
        WHERE t.kind = 'manager'
          AND t.id != ?
          AND m.user_id = ?
          AND m.role = 'owner'
+         ${surface ? "AND t.surface = ?" : ""}
        ORDER BY t.created_at ASC
-       LIMIT 1`,
-    )
-    .get(GENERAL_TOPIC_ID, userId);
+       LIMIT 1`;
+  const params = surface ? [GENERAL_TOPIC_ID, userId, surface] : [GENERAL_TOPIC_ID, userId];
+  const row = db.query<TopicRow, string[]>(sql).get(...params);
   return row ? rowToDto(row) : null;
 }
 
