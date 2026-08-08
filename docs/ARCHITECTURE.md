@@ -150,7 +150,7 @@ runtimeBus().subscribe(render);
 
 Adapters translate external identities and media into this contract and render bus events back to
 their channel. They persist their own mapping state and declare transcript capabilities. See
-[Adapters](./ADAPTERS.md) for private/shared topic access and projection rules.
+[Adapters](./ADAPTERS.md) for per-surface topic scoping and projection rules.
 
 Modules are started explicitly by the node. Startup failures clean up already-started modules in
 reverse order. Duplicate capability IDs or request-handler names are rejected. `stop()` must be safe

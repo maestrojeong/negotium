@@ -23,17 +23,18 @@ durable exactly-once request claims, and event backflow with contiguous
 `seq` ordering (≤5 retries then hard-block — never skips). Proven E2E
 against an unmodified otium hub with a real claude turn.
 
-User topics have an independent `accessMode`: `private` is available through
-Terminal and Telegram only, while `shared` may also be surfaced in Otium. Local
-creation defaults to private, and the owner switches it from inside the topic
-(`/public` / `/private`). The hub discovers shared topics over the Runtime
-Gateway and projects them; it never receives a copy of the transcript. The
-adapter's own `bind` / `share` / `private` surface, which did copy messages into
-the hub's store, was removed — see D-1 in `docs/OTIUM-NODE-ARCHITECTURE.md`.
+Every user topic belongs to exactly one surface — `terminal`, `telegram` or
+`otium` — for its whole life, and only the `otium` ones are visible here. There
+is no publish/withdraw switch and no `accessMode` field: the hub discovers the
+`otium` surface over the Runtime Gateway and projects it, never receiving a copy
+of the transcript. The adapter's own `bind` / `share` / `private` surface, which
+did copy messages into the hub's store, was removed — see D-1 in
+`docs/OTIUM-NODE-ARCHITECTURE.md` and S-1/S-4 in
+`docs/SURFACE-SESSION-SEPARATION.md`.
 
-Mirror topics have explicit `visibility: hidden`, independent of access mode
-and the `isSubagent` execution flag. They are internal worker replicas for an
-Otium-owned room, not a user-facing access mode.
+Mirror topics have explicit `visibility: hidden`, independent of surface and of
+the `isSubagent` execution flag. They are internal worker replicas for an
+Otium-owned room.
 
 Shared execution context is implemented, but generic local-message projection
 and history backfill into the Otium hub are not: the current hub event endpoint

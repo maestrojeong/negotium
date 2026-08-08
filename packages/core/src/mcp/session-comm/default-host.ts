@@ -58,8 +58,9 @@ function targetCatalog(context: SessionCommContext) {
     currentTopicName: context.currentTopic,
     currentSurface: surface,
     isAgent: isAgentKind,
+    // Scoped in the store query, not after the fact.
     listRows: () =>
-      listTopics()
+      listTopics({ surface })
         .filter((topic) => topic.participants.some((p) => p.userId === context.userId))
         .map((topic) => ({
           id: topic.id,

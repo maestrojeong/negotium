@@ -71,6 +71,34 @@ export function validateTarget(to: string): ValidateTargetResult {
   return sessionTargetCatalog.validateTarget(to);
 }
 
+/**
+ * Surface of the room this server serves, read with its own narrow query so the
+ * target list below can be filtered *in SQL* rather than loaded whole and
+ * filtered in memory (S-6: the store decides what a surface can see).
+ */
+function readCurrentSurface(): string | undefined {
+  if (!existsSync(SESSIONS_DB)) return undefined;
+  try {
+    return withDb((db) => {
+      const row = currentTopicId
+        ? (db
+            .query<{ surface: string | null }, string>(
+              "SELECT surface FROM api_topics WHERE id = ?",
+            )
+            .get(currentTopicId) ?? undefined)
+        : (db
+            .query<{ surface: string | null }, string>(
+              "SELECT surface FROM api_topics WHERE title = ? LIMIT 1",
+            )
+            .get(currentTopic) ?? undefined);
+      return row?.surface ?? undefined;
+    });
+  } catch (e) {
+    process.stderr.write(`warn: session-comm: failed to read the current surface: ${e}\n`);
+    return undefined;
+  }
+}
+
 function sessionTargetRows(): Array<{
   id: string;
   title: string;
@@ -82,6 +110,7 @@ function sessionTargetRows(): Array<{
 }> {
   if (!existsSync(SESSIONS_DB)) return [];
   try {
+    const surface = currentSessionSurface();
     return withDb((db) => {
       return db
         .query<
@@ -94,14 +123,15 @@ function sessionTargetRows(): Array<{
             description: string | null;
             surface: string | null;
           },
-          string
+          (string | null)[]
         >(
           `SELECT t.id, t.title, t.kind, t.agent, t.session_id, t.description, t.surface
            FROM api_topics t
            INNER JOIN topic_members m ON m.topic_id = t.id
-           WHERE m.user_id = ?`,
+           WHERE m.user_id = ?
+             AND (? IS NULL OR t.surface IS NULL OR t.surface = ?)`,
         )
-        .all(userId);
+        .all(userId, surface ?? null, surface ?? null);
     });
   } catch (e) {
     process.stderr.write(`warn: session-comm: failed to load topics from DB: ${e}\n`);
@@ -127,11 +157,7 @@ let cachedSessionSurface: { value: string | undefined } | null = null;
 
 function currentSessionSurface(): string | undefined {
   if (cachedSessionSurface) return cachedSessionSurface.value;
-  const rows = sessionTargetRows();
-  const mine = currentTopicId
-    ? rows.find((row) => row.id === currentTopicId)
-    : rows.find((row) => row.title === currentTopic);
-  cachedSessionSurface = { value: mine?.surface ?? undefined };
+  cachedSessionSurface = { value: readCurrentSurface() };
   return cachedSessionSurface.value;
 }
 

@@ -6,9 +6,10 @@
  *   negotium-otium leave                remove credentials
  *   negotium-otium serve                canonical node + Otium sidecar
  *
- * Per-topic sharing is expressed on the topic itself (`/public` / `/private`,
- * i.e. the `otium` surface) and discovered by the hub through the Runtime Gateway, so
- * this command no longer carries `bindings` / `share` / `private` subcommands.
+ * There is no per-topic sharing switch. A room reaches Otium because it lives
+ * on the `otium` surface — a permanent property set when it is created — and
+ * the hub discovers those rooms through the Runtime Gateway, so this command
+ * carries no `bindings` / `share` / `private` subcommands.
  *
  * The runtime half mounts in the canonical node. This command only keeps the
  * public peer proxy and relay tunnel in the adapter sidecar process.
@@ -170,8 +171,9 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
           "  serve [--port <port>] [--relay <url>]",
           "                 run peer routes and an outbound relay tunnel",
           "",
-          "Publish a topic to the workspace with /public in that topic; the hub",
-          "discovers it over the Runtime Gateway. /private withdraws it.",
+          "Rooms on the otium surface are discovered by the hub over the Runtime",
+          "Gateway. There is nothing to publish or withdraw: a room's surface is",
+          "fixed when it is created.",
         ].join("\n"),
       );
       if (command && command !== "help" && command !== "--help") process.exitCode = 1;
