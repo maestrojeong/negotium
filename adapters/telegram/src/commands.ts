@@ -98,7 +98,7 @@ export function createTelegramCommandRouter(
         return;
       }
       case "/topics": {
-        const topics = listTopics().filter(
+        const topics = listTopics({ surface: "telegram" }).filter(
           (topic) =>
             isTopicVisible(topic) && topic.participants.some((person) => person.userId === userId),
         );
@@ -138,6 +138,9 @@ export function createTelegramCommandRouter(
             title: argument,
             userId,
             kind: "agent",
+            // Both branches below create a telegram room; only the mapping
+            // differs (forum General lets the materializer bind the thread).
+            surface: "telegram",
             ...(context.defaultAgent ? { agent: context.defaultAgent } : {}),
           };
           const fromForumGeneral =

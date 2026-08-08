@@ -1,9 +1,6 @@
 import { expect, test } from "bun:test";
 import { NODE_CONTROL_TOKEN } from "@negotium/core";
-import {
-  forwardGatewayRequest,
-  OTIUM_GATEWAY_FORWARD_PREFIX,
-} from "../src/gateway-forward";
+import { forwardGatewayRequest, OTIUM_GATEWAY_FORWARD_PREFIX } from "../src/gateway-forward";
 
 const NODE_ORIGIN = "http://127.0.0.1:41999";
 

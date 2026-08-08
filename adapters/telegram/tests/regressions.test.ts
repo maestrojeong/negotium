@@ -49,8 +49,12 @@ describe("forum mode: unmapped live topics (finding 2)", () => {
     const FORUM = freshChat();
     const title = room("lazy");
     // Created BEFORE the adapter exists — its topic-created broadcast is missed.
-    const topic = registerTopic({ title, userId: USER });
-    const foreign = registerTopic({ title: room("lazy-foreign"), userId: "someone-else" });
+    const topic = registerTopic({ title, userId: USER, surface: "telegram" });
+    const foreign = registerTopic({
+      title: room("lazy-foreign"),
+      userId: "someone-else",
+      surface: "telegram",
+    });
 
     const fake = new FakeTelegramClient();
     const adapter = startTelegramAdapter({
@@ -95,7 +99,7 @@ describe("forum mode: unmapped live topics (finding 2)", () => {
       forumChatId: FORUM,
       mappingDbPath: dbPath,
     });
-    const topic = registerTopic({ title, userId: USER });
+    const topic = registerTopic({ title, userId: USER, surface: "telegram" });
     runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "m1"));
     await waitFor(() => fakeA.calls.some((c) => c.text === `[${title}] m1`));
     adapterA.stop();
@@ -220,7 +224,7 @@ describe("in-flight createForumTopic races (findings 4 & 5)", () => {
       forumChatId: FORUM,
       mappingDbPath: dbPath,
     });
-    const topic = registerTopic({ title: room("stop-race"), userId: USER });
+    const topic = registerTopic({ title: room("stop-race"), userId: USER, surface: "telegram" });
     await waitFor(() => fake.forumCalls.length === 1);
     runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "buffered then stopped"));
 
@@ -248,7 +252,7 @@ describe("in-flight createForumTopic races (findings 4 & 5)", () => {
       forumChatId: freshChat(),
       mappingDbPath: dbPath,
     });
-    registerTopic({ title: room("stop-fail"), userId: USER });
+    registerTopic({ title: room("stop-fail"), userId: USER, surface: "telegram" });
     await waitFor(() => fake.forumCalls.length === 1);
     adapter.stop(); // store now closed; a tombstone write would throw
     fake.rejectPendingCreates(new Error("400 Bad Request: not enough rights"));
@@ -273,7 +277,7 @@ describe("in-flight createForumTopic races (findings 4 & 5)", () => {
     });
     try {
       const expectedThreadId = fake.nextThreadId;
-      const topic = registerTopic({ title: room("del-race"), userId: USER });
+      const topic = registerTopic({ title: room("del-race"), userId: USER, surface: "telegram" });
       await waitFor(() => fake.forumCalls.length === 1);
       runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "into the void"));
 
@@ -307,7 +311,7 @@ describe("in-flight createForumTopic races (findings 4 & 5)", () => {
       mappingDbPath: dbPath,
     });
     const expectedThreadId = fake.nextThreadId;
-    const topic = registerTopic({ title: room("orphan-retry"), userId: USER });
+    const topic = registerTopic({ title: room("orphan-retry"), userId: USER, surface: "telegram" });
     await waitFor(() => fake.forumCalls.length === 1);
     await topicService.delete({ topicId: topic.id, userId: USER, skipArchive: true });
     fake.resolvePendingCreates();
@@ -447,7 +451,7 @@ describe("forum topic title cap (finding 8)", () => {
     });
     try {
       const title = `${room("long")}-${"x".repeat(200)}`;
-      registerTopic({ title, userId: USER });
+      registerTopic({ title, userId: USER, surface: "telegram" });
       await waitFor(() => fake.forumCalls.length === 1);
       expect(fake.forumCalls[0]?.name).toBe(title.slice(0, 128));
       expect(fake.forumCalls[0]?.name.length).toBe(128);
@@ -472,9 +476,13 @@ describe("DM fallback parent walk (finding 9)", () => {
       fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: `/new ${room("walk-root")}` });
       await waitFor(() => fake.callsFor(chatId).length > 0);
       const parent = getTopicByNameForUser(room("walk-root"), USER)!;
-      const child = registerTopic({ title: room("walk-child"), userId: USER });
+      const child = registerTopic({ title: room("walk-child"), userId: USER, surface: "telegram" });
       updateTopic(child.id, { parentTopicId: parent.id });
-      const grandchild = registerTopic({ title: room("walk-grandchild"), userId: USER });
+      const grandchild = registerTopic({
+        title: room("walk-grandchild"),
+        userId: USER,
+        surface: "telegram",
+      });
       updateTopic(grandchild.id, { parentTopicId: child.id });
 
       runtimeBus().broadcastMessage(grandchild.id, aiMessage(grandchild.id, "deep output"));
@@ -483,8 +491,16 @@ describe("DM fallback parent walk (finding 9)", () => {
       );
 
       // Cycle guard: a parent loop never delivers and never hangs.
-      const loopA = registerTopic({ title: room("walk-loop-a"), userId: USER });
-      const loopB = registerTopic({ title: room("walk-loop-b"), userId: USER });
+      const loopA = registerTopic({
+        title: room("walk-loop-a"),
+        userId: USER,
+        surface: "telegram",
+      });
+      const loopB = registerTopic({
+        title: room("walk-loop-b"),
+        userId: USER,
+        surface: "telegram",
+      });
       updateTopic(loopA.id, { parentTopicId: loopB.id });
       updateTopic(loopB.id, { parentTopicId: loopA.id });
       runtimeBus().broadcastMessage(loopA.id, aiMessage(loopA.id, "looped"));

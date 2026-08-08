@@ -164,7 +164,6 @@ describe("terminal adapter state", () => {
     const general = {
       ...topic("general", "General"),
       kind: "manager" as const,
-      accessMode: "private" as const,
     };
     let state = setTopics(createInitialState("local"), [work, general]);
     state = openTopicPicker(state, undefined, true);
@@ -178,18 +177,18 @@ describe("terminal adapter state", () => {
     expect(state.topics[state.topicPickerIndex]?.id).toBe("work");
   });
 
-  test("navigates private topics before public topics like the picker renders them", () => {
-    const firstPrivate = topic("private-1", "Private 1");
-    const publicTopic = { ...topic("public", "Public"), accessMode: "shared" as const };
-    const secondPrivate = topic("private-2", "Private 2");
-    let state = setTopics(createInitialState("local"), [firstPrivate, publicTopic, secondPrivate]);
+  test("navigates non-manager topics in list order", () => {
+    const first = topic("first", "First");
+    const second = topic("second", "Second");
+    const third = topic("third", "Third");
+    let state = setTopics(createInitialState("local"), [first, second, third]);
     state = openTopicPicker(state, undefined, true);
 
-    expect(state.topics[state.topicPickerIndex]?.id).toBe("private-1");
+    expect(state.topics[state.topicPickerIndex]?.id).toBe("first");
     state = moveTopicPickerSelection(state, 1);
-    expect(state.topics[state.topicPickerIndex]?.id).toBe("private-2");
+    expect(state.topics[state.topicPickerIndex]?.id).toBe("second");
     state = moveTopicPickerSelection(state, 1);
-    expect(state.topics[state.topicPickerIndex]?.id).toBe("public");
+    expect(state.topics[state.topicPickerIndex]?.id).toBe("third");
   });
 
   test("navigates grouped background sessions after topics and drops finished selections", () => {

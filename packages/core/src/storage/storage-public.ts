@@ -93,7 +93,6 @@ export type {
   MessageDto,
   ParticipantDto,
   ResponsePolicy,
-  TopicAccessMode,
   TopicDto,
   TopicKind,
   TopicVisibility,

@@ -11,7 +11,6 @@ export {
   submitRuntimeGatewayTurn,
 } from "#application/submit-runtime-gateway-turn";
 export { submitUserMessage } from "#application/submit-user-message";
-export { switchTopicAccessMode } from "#application/switch-topic-access-mode";
 export { switchTopicEffort } from "#application/switch-topic-effort";
 export { switchTopicModel } from "#application/switch-topic-model";
 export { TopicServiceError, topicService } from "#application/topic-service";
@@ -67,7 +66,7 @@ export { setFileHooks } from "#runtime/file-hooks";
 export { startSessionInboxWorker } from "#runtime/inbox";
 export { startAiTurn, startDurableTurnRequestWorker } from "#runtime/turn-runner";
 export { appendApiMessage, listApiMessages } from "#storage/api-messages";
-export { getTopic, isTopicShared, upsertTopic } from "#storage/api-topics";
+export { getTopic, upsertTopic } from "#storage/api-topics";
 export type { StoredRuntimeEvent } from "#storage/runtime-events";
 export {
   latestRuntimeEventSeq,
@@ -86,5 +85,5 @@ export {
 export { ensurePersonalGeneral } from "#topics/personal-general";
 export { compactTopicSession } from "#topics/session";
 export type { AgentKind } from "#types";
-export type { AttachmentDto, TopicDto } from "#types/api";
+export type { AttachmentDto, TopicDto, TopicSurface } from "#types/api";
 export { NEGOTIUM_VERSION } from "#version";

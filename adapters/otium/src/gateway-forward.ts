@@ -65,7 +65,9 @@ export async function forwardGatewayRequest(
     return Response.json({ ok: false, error: "gateway route not forwarded" }, { status: 404 });
   }
 
-  const target = new URL(`${options.nodeOrigin.replace(/\/+$/, "")}${RUNTIME_CONTRACT_PATH}${runtimePath}`);
+  const target = new URL(
+    `${options.nodeOrigin.replace(/\/+$/, "")}${RUNTIME_CONTRACT_PATH}${runtimePath}`,
+  );
   target.search = url.search;
   const headers = new Headers(req.headers);
   // Replace the peer token with the host capability. This is the only place the
@@ -76,8 +78,7 @@ export async function forwardGatewayRequest(
   headers.delete("transfer-encoding");
   headers.delete("content-length");
   headers.delete("host");
-  const body =
-    req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer();
+  const body = req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer();
   if (body) headers.set("content-length", String(body.byteLength));
 
   const fetchRequest = options.fetch ?? fetch;

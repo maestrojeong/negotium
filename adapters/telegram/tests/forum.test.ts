@@ -57,7 +57,7 @@ describe("forum mode", () => {
   test("startup reconciles topics created while the adapter was offline", async () => {
     const user = `tg-startup-reconcile-${RUN}`;
     const title = room("offline-created");
-    const topic = registerTopic({ title, userId: user });
+    const topic = registerTopic({ title, userId: user, surface: "telegram" });
     const client = new FakeTelegramClient();
     const handle = startTelegramAdapter({
       startTurn: () => null,
@@ -116,7 +116,7 @@ describe("forum mode", () => {
       forumChatId: chatId,
       mappingDbPath: dbPath,
     });
-    const topic = registerTopic({ title: room("delete-retry"), userId: user });
+    const topic = registerTopic({ title: room("delete-retry"), userId: user, surface: "telegram" });
     await waitFor(() => first.forumCalls.some((call) => call.name === topic.title));
     const mapped = openMappingStore(dbPath);
     const threadId = mapped.load().find((mapping) => mapping.topicId === topic.id)?.threadId;
@@ -164,7 +164,7 @@ describe("forum mode", () => {
 
   test("runtime topic-created materializes a forum thread, persists the mapping, and routes messages into it", async () => {
     const title = room("spawned");
-    const topic = registerTopic({ title, userId: USER, agent: "codex" });
+    const topic = registerTopic({ title, userId: USER, agent: "codex", surface: "telegram" });
     await waitFor(() => fake.forumCalls.some((c) => c.name === title));
     expect(fake.forumCalls.find((c) => c.name === title)?.chatId).toBe(FORUM_CHAT);
 
@@ -212,7 +212,7 @@ describe("forum mode", () => {
     fake.createMode = "manual";
     try {
       const title = room("buffered");
-      const topic = registerTopic({ title, userId: USER });
+      const topic = registerTopic({ title, userId: USER, surface: "telegram" });
       await waitFor(() => fake.forumCalls.some((c) => c.name === title));
       runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "first"));
       runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "second"));
@@ -235,7 +235,7 @@ describe("forum mode", () => {
     fake.createMode = "reject";
     try {
       const title = room("no-rights");
-      const topic = registerTopic({ title, userId: USER });
+      const topic = registerTopic({ title, userId: USER, surface: "telegram" });
       await waitFor(() => fake.forumCalls.some((c) => c.name === title));
       runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "m1"));
       await waitFor(() => fake.calls.some((c) => c.text === `[${title}] m1`));
@@ -263,7 +263,7 @@ describe("forum mode", () => {
 
   test("topic-deleted deletes the forum thread and drops the mapping", async () => {
     const title = room("doomed");
-    const topic = registerTopic({ title, userId: USER });
+    const topic = registerTopic({ title, userId: USER, surface: "telegram" });
     await waitFor(() => {
       const check = openMappingStore(DB_PATH);
       const found = check.load().some((m) => m.topicId === topic.id);
@@ -285,7 +285,7 @@ describe("forum mode", () => {
 
   test("topics of other negotium users are not materialized", async () => {
     const title = room("foreign");
-    registerTopic({ title, userId: "someone-else" });
+    registerTopic({ title, userId: "someone-else", surface: "telegram" });
     await Bun.sleep(20);
     expect(fake.forumCalls.some((c) => c.name === title)).toBe(false);
   });
@@ -302,7 +302,7 @@ describe("forum mode", () => {
       mappingDbPath: dbPath,
     });
     const title = room("survives");
-    const topic = registerTopic({ title, userId: RESTART_USER });
+    const topic = registerTopic({ title, userId: RESTART_USER, surface: "telegram" });
     runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "before restart"));
     await waitFor(() => fakeA.calls.some((c) => c.text === "before restart"));
     const threadId = fakeA.calls.find((c) => c.text === "before restart")?.opts
@@ -347,7 +347,11 @@ describe("DM fallback (no forumChatId)", () => {
       const parent = getTopicByNameForUser(room("dm-parent"), DM_USER)!;
 
       // Simulate a spawn_subagent child: a topic parented to the mapped one.
-      const child = registerTopic({ title: room("dm-child"), userId: DM_USER });
+      const child = registerTopic({
+        title: room("dm-child"),
+        userId: DM_USER,
+        surface: "telegram",
+      });
       updateTopic(child.id, { parentTopicId: parent.id });
 
       runtimeBus().broadcastMessage(child.id, aiMessage(child.id, "child output"));

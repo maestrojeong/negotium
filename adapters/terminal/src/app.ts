@@ -5,7 +5,6 @@ import {
   normalizeVaultKey,
   type RuntimeBusEvent,
   SELECTABLE_MODELS,
-  type TopicAccessMode,
   type TopicDto,
   VAULT_DESCRIPTION_MAX_LENGTH,
   VAULT_VALUE_MAX_BYTES,
@@ -234,18 +233,6 @@ export const ABORT_ENTER_ALT_SCREEN = altScreenSequences().abortEnter;
  */
 const NEW_TOPIC_KEY = "\u000e"; // Ctrl-N
 const DELETE_TOPIC_KEY = "\u0004"; // Ctrl-D
-/**
- * Ctrl-P toggles the highlighted topic between private and public.
- *
- * A bare letter is not available for the same reason `Ctrl-N`/`Ctrl-D` are
- * chorded (see above): every printable key, Hangul jamo included, belongs to
- * the filter. Of the remaining chords `Ctrl-S`/`Ctrl-Q` are terminal flow
- * control and `Ctrl-Z` suspends, while `Ctrl-T` is already the task sidebar;
- * `Ctrl-P` is unbound, mnemonic for public/private, and safe to take here
- * because the picker navigates with arrow keys rather than readline motions.
- * Scoped to the picker overlay like Ctrl-D.
- */
-const TOGGLE_ACCESS_MODE_KEY = "\u0010"; // Ctrl-P
 /** Backspace, in both the DEL and BS encodings terminals send. */
 const FILTER_BACKSPACE_KEYS = new Set(["\u007f", "\b"]);
 const CONFIRM_KEYS = new Set(["y", "ㅛ"]);
@@ -1258,18 +1245,6 @@ export class TerminalApp {
       }
       return;
     }
-    if (this.#state.overlay === "confirm-share") {
-      const key = chunk.toLowerCase();
-      if (CONFIRM_KEYS.has(key)) void this.#confirmTopicShare();
-      else if (CANCEL_KEYS.has(key) || chunk === "\u001b") {
-        // Back to the picker rather than the conversation: the user was
-        // browsing the list when they hit Ctrl-P, and declining a prompt
-        // should not also close the surface they were working in.
-        this.#state = { ...this.#state, overlay: "topics", pendingShareTopicId: undefined };
-        this.#queueRender();
-      }
-      return;
-    }
     if (this.#state.overlay === "background-session") {
       if (chunk === "\u001b") {
         this.#state = { ...this.#state, overlay: "topics" };
@@ -1599,21 +1574,6 @@ export class TerminalApp {
       // No selection at all (the filter matched nothing) is not the same as a
       // background session being highlighted: there is nothing to explain, so
       // say nothing.
-      if (!this.#state.topicPickerBackgroundId) return;
-      this.#state = {
-        ...this.#state,
-        notice: "Background sessions are read-only",
-        noticeLevel: "warn",
-      };
-      this.#queueRender();
-      return;
-    }
-    if (chunk === TOGGLE_ACCESS_MODE_KEY) {
-      const topic = pickedTopic(this.#state);
-      if (topic) {
-        void this.#requestAccessModeToggle(topic);
-        return;
-      }
       if (!this.#state.topicPickerBackgroundId) return;
       this.#state = {
         ...this.#state,
@@ -2098,104 +2058,6 @@ export class TerminalApp {
     this.#queueRender();
   }
 
-  /**
-   * Ctrl-P from the picker: flip the highlighted topic's access mode.
-   *
-   * Asymmetric on purpose. Going public exposes the transcript — and every
-   * subagent room hanging off it — to the connected Hub, and nothing the user
-   * does afterwards un-sends that, so it asks first. Going private only
-   * narrows reach, so it applies straight away; a prompt there would just be
-   * friction on the safe direction.
-   */
-  async #requestAccessModeToggle(topic: AppState["topics"][number]): Promise<void> {
-    // Only `kind: "agent"` rooms can ever reach the Hub — `publishTopic`
-    // refuses everything else — so offering the toggle here would set a flag
-    // that changes nothing, report success, and leave the row sitting in the
-    // Manager group with no way for the user to tell it was a lie. The manager
-    // room is also the picker's default highlight, so this is the easiest key
-    // to press by accident.
-    if (topic.kind !== "agent") {
-      this.#state = {
-        ...this.#state,
-        notice: `${topic.kind === "manager" ? "Manager" : "Channel"} topics cannot be published`,
-        noticeLevel: "warn",
-      };
-      this.#queueRender();
-      return;
-    }
-    // The core rejects this too, but only after the prompt has been answered.
-    // Saying so up front avoids walking the user through a publish
-    // confirmation that was never going to be honoured.
-    if (topic.isSubagent) {
-      this.#state = {
-        ...this.#state,
-        notice: "Subagent rooms inherit privacy from their parent topic",
-        noticeLevel: "warn",
-      };
-      this.#queueRender();
-      return;
-    }
-    if (topic.accessMode === "shared") {
-      await this.#applyAccessMode(topic, "private");
-      return;
-    }
-    this.#state = {
-      ...this.#state,
-      overlay: "confirm-share",
-      pendingShareTopicId: topic.id,
-    };
-    this.#queueRender();
-  }
-
-  async #confirmTopicShare(): Promise<void> {
-    const topic = this.#state.topics.find(
-      (candidate) => candidate.id === this.#state.pendingShareTopicId,
-    );
-    this.#state = { ...this.#state, overlay: "topics", pendingShareTopicId: undefined };
-    if (!topic) {
-      // The topic was deleted while the prompt was up. Every other outcome of
-      // this flow leaves a notice, so dismissing silently would read as "done"
-      // — the one reading that must never happen for a publish.
-      this.#state = {
-        ...this.#state,
-        notice: "That topic no longer exists",
-        noticeLevel: "warn",
-      };
-      this.#queueRender();
-      return;
-    }
-    await this.#applyAccessMode(topic, "shared");
-  }
-
-  /**
-   * Write the new mode and refresh the list in place.
-   *
-   * `#refreshTopics` is used rather than `openTopicPicker` because the toggle
-   * moves the topic between the picker's Private and Public groups: the
-   * refresh path re-anchors the highlight by topic id, while reopening the
-   * picker would snap it back to the active topic and leave the user's cursor
-   * somewhere they did not put it. The overlay is forced back to "topics"
-   * before awaiting so that id-anchoring branch is the one that runs.
-   */
-  async #applyAccessMode(
-    topic: AppState["topics"][number],
-    accessMode: TopicAccessMode,
-  ): Promise<void> {
-    this.#state = { ...this.#state, overlay: "topics" };
-    try {
-      const notice = await this.#client.setAccessMode(topic, accessMode);
-      await this.#refreshTopics();
-      this.#state = { ...this.#state, notice, noticeLevel: "success" };
-    } catch (error) {
-      this.#state = {
-        ...this.#state,
-        notice: error instanceof Error ? error.message : String(error),
-        noticeLevel: "error",
-      };
-    }
-    this.#queueRender();
-  }
-
   #requestTopicDelete(topic: AppState["topics"][number] | undefined): void {
     if (!topic) return;
     if (topic.kind === "manager") {
@@ -2511,7 +2373,6 @@ export class TerminalApp {
         ...this.#state,
         overlay: null,
         pendingDeleteTopicId: undefined,
-        pendingShareTopicId: undefined,
         creatingTopic: false,
         notice: "Input cleared",
         noticeLevel: "info",

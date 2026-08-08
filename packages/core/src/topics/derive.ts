@@ -24,6 +24,7 @@ import {
 } from "#storage/api-messages";
 import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
 import {
+  defaultTopicSurface,
   findTopicTitleConflict,
   getTopic,
   getTopicSessionId,
@@ -53,15 +54,20 @@ import {
   shouldCompactForkEntries,
 } from "#topics/session";
 import type { AgentKind } from "#types";
-import type { TopicDto } from "#types/api";
+import type { TopicDto, TopicSurface } from "#types/api";
 
-export function getTopics(): TopicDto[] {
-  return listTopics().filter((topic) => !isLegacySharedGeneral(topic.id));
+export function getTopics(opts: { surface?: TopicSurface } = {}): TopicDto[] {
+  return listTopics(opts).filter((topic) => !isLegacySharedGeneral(topic.id));
 }
 
-/** Topics adapters may show in lists and selection UIs. */
-export function getVisibleTopics(): TopicDto[] {
-  return getTopics()
+/**
+ * Topics adapters may show in lists and selection UIs.
+ *
+ * Callers that represent one product surface pass it, so a telegram room never
+ * appears in the terminal picker and vice versa (S-6).
+ */
+export function getVisibleTopics(opts: { surface?: TopicSurface } = {}): TopicDto[] {
+  return getTopics(opts)
     .filter(isTopicVisible)
     .map((topic) => {
       if (!topic.agent) return topic;
@@ -100,9 +106,10 @@ function nextDerivedTopicTitle(
   sourceTitle: string,
   kind: TopicDto["kind"],
   suffix: "fork" | "spawn" | "agent",
+  surface?: TopicSurface,
 ): string {
   const visibleTitles = new Set(
-    listTopics()
+    listTopics(surface ? { surface } : {})
       .filter((topic) => topic.kind === kind)
       .map((topic) => topic.title.toLowerCase()),
   );
@@ -264,8 +271,9 @@ async function createDerivedTopicImpl(
         ]
       : [{ userId, role: "owner" as const }];
   const kind = topic.kind ?? inferTopicKind(topic);
-  const title = opts?.name?.trim() || nextDerivedTopicTitle(topic.title, kind, suffix);
-  const conflict = findTopicTitleConflict(title, kind);
+  const surface = topic.surface ?? defaultTopicSurface();
+  const title = opts?.name?.trim() || nextDerivedTopicTitle(topic.title, kind, suffix, surface);
+  const conflict = findTopicTitleConflict(title, kind, { surface });
   if (conflict) {
     logger.info(
       { sourceTopicId, title, kind, conflictTopicId: conflict.id },
@@ -291,7 +299,8 @@ async function createDerivedTopicImpl(
     isFork: copyHistory,
     ...(subagent ? { isSubagent: true } : {}),
     visibility: topic.visibility,
-    accessMode: topic.accessMode,
+    // A derived room lives on the same surface as the room it came from.
+    surface,
   };
 
   let sessionId: string | undefined;
@@ -443,7 +452,7 @@ async function createDerivedTopicImpl(
         ) {
           throw new TopicDeriveBusyError("Source topic changed while deriving; try again");
         }
-        const transactionalConflict = findTopicTitleConflict(title, kind);
+        const transactionalConflict = findTopicTitleConflict(title, kind, { surface });
         if (transactionalConflict) throw new TopicTitleConflictError(title);
         upsertTopic(derived);
         if (subagent) {

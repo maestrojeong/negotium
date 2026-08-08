@@ -78,6 +78,7 @@ function sessionTargetRows(): Array<{
   agent: string | null;
   session_id: string | null;
   description: string | null;
+  surface: string | null;
 }> {
   if (!existsSync(SESSIONS_DB)) return [];
   try {
@@ -91,10 +92,11 @@ function sessionTargetRows(): Array<{
             agent: string | null;
             session_id: string | null;
             description: string | null;
+            surface: string | null;
           },
           string
         >(
-          `SELECT t.id, t.title, t.kind, t.agent, t.session_id, t.description
+          `SELECT t.id, t.title, t.kind, t.agent, t.session_id, t.description, t.surface
            FROM api_topics t
            INNER JOIN topic_members m ON m.topic_id = t.id
            WHERE m.user_id = ?`,
@@ -117,9 +119,28 @@ export function getTopicsForUser(): { [name: string]: TopicEntry } {
   return sessionTargetCatalog.getTopics();
 }
 
+/**
+ * Surface of the room this MCP server is serving. Read once from the canonical
+ * store: session-comm only ever addresses sessions on the same surface.
+ */
+let cachedSessionSurface: { value: string | undefined } | null = null;
+
+function currentSessionSurface(): string | undefined {
+  if (cachedSessionSurface) return cachedSessionSurface.value;
+  const rows = sessionTargetRows();
+  const mine = currentTopicId
+    ? rows.find((row) => row.id === currentTopicId)
+    : rows.find((row) => row.title === currentTopic);
+  cachedSessionSurface = { value: mine?.surface ?? undefined };
+  return cachedSessionSurface.value;
+}
+
 const sessionTargetCatalog = createSessionTargetCatalog<AgentKind>({
   currentTopicId,
   currentTopicName: currentTopic,
+  get currentSurface() {
+    return currentSessionSurface();
+  },
   isAgent: isAgentKind,
   listRows: () =>
     sessionTargetRows().map((row) => ({
@@ -129,6 +150,7 @@ const sessionTargetCatalog = createSessionTargetCatalog<AgentKind>({
       agent: row.agent,
       sessionId: row.session_id,
       description: row.description,
+      surface: row.surface,
     })),
 });
 

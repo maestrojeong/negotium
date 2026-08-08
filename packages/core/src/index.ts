@@ -67,11 +67,6 @@ export type {
 } from "#application/submit-user-message";
 export { submitUserMessage } from "#application/submit-user-message";
 export type {
-  SwitchTopicAccessModeParams,
-  SwitchTopicAccessModeResult,
-} from "#application/switch-topic-access-mode";
-export { switchTopicAccessMode } from "#application/switch-topic-access-mode";
-export type {
   SwitchTopicEffortParams,
   SwitchTopicEffortResult,
 } from "#application/switch-topic-effort";
@@ -299,17 +294,19 @@ export {
 export { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
 export {
   clearTopicSessionId,
+  defaultTopicSurface,
   findTopicTitleConflict,
   getTopic,
   getTopicByNameForUser,
   getTopicSessionId,
   grantSubagentTellTarget,
-  isTopicShared,
   isTopicVisible,
   listSubagentTellTargetIds,
   listTopics,
+  normalizeTopicSurface,
   revokeSubagentTellTarget,
   setTopicSessionId,
+  setTopicSurfaces,
   upsertTopic,
 } from "#storage/api-topics";
 export { getGlobalAiName } from "#storage/app-settings";
@@ -394,7 +391,6 @@ export type {
   SubagentCardDto,
   SubagentCardStatus,
   SubagentReportMode,
-  TopicAccessMode,
   TopicDto,
   TopicKind,
   TopicVisibility,

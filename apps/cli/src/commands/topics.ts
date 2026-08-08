@@ -10,11 +10,7 @@ export function topicsCommand(): void {
   }
   for (const t of topics) {
     const model = t.effectiveModel ?? t.defaultModel;
-    const flags = [
-      t.accessMode ?? "private",
-      t.isSubagent ? "subagent" : null,
-      t.isFork ? "fork" : null,
-    ]
+    const flags = [t.isSubagent ? "subagent" : null, t.isFork ? "fork" : null]
       .filter(Boolean)
       .join(",");
     console.log(

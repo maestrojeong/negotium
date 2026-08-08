@@ -251,7 +251,7 @@ describe("tell", () => {
       userId: USER,
       kind: "channel",
       agent: "none",
-      accessMode: "shared",
+      surface: "otium",
     });
     expect(topic.agent).toBeUndefined();
 
@@ -331,14 +331,14 @@ describe("sessions / abort / stubs", () => {
       userId: USER,
       kind: "agent",
       agent: "maestro",
-      accessMode: "shared",
+      surface: "otium",
     });
     registerTopic({
       title,
       userId: USER,
       kind: "channel",
       agent: "none",
-      accessMode: "shared",
+      surface: "otium",
     });
 
     const { status, body } = await call("/api/v1/peer/sessions", {

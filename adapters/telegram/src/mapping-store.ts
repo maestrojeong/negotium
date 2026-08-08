@@ -70,6 +70,9 @@ export interface TelegramMappingStore {
   loadForumChatId(): number | undefined;
   saveForumChatId(chatId: number): void;
   clearForumChatId(): void;
+  /** One-shot migration flags (e.g. the surface backfill). */
+  isFlagSet(key: string): boolean;
+  setFlag(key: string): void;
   // ── outbound retry queue ──────────────────────────────────────────
   outboxEnqueue(entry: {
     chatId: number;
@@ -279,6 +282,15 @@ export function openMappingStore(path?: string): TelegramMappingStore {
     },
     clearForumChatId(): void {
       db.run("DELETE FROM settings WHERE key = 'forum_chat_id'");
+    },
+    isFlagSet(key: string): boolean {
+      return db.query("SELECT 1 FROM settings WHERE key = ?").get(key) !== null;
+    },
+    setFlag(key: string): void {
+      db.run("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [
+        key,
+        new Date().toISOString(),
+      ]);
     },
     outboxEnqueue(entry): void {
       db.run(

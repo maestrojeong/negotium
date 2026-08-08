@@ -341,9 +341,6 @@ test("stops a started client when terminal initialization fails", async () => {
     setEffort() {
       throw new Error("not reached");
     },
-    setAccessMode() {
-      throw new Error("not reached");
-    },
     async deleteTopic() {
       throw new Error("not reached");
     },
@@ -435,9 +432,6 @@ test("a paste made while the topic picker is open lands in the filter, not the h
     setEffort() {
       throw new Error("not reached");
     },
-    setAccessMode() {
-      throw new Error("not reached");
-    },
     async deleteTopic() {
       throw new Error("not reached");
     },
@@ -524,9 +518,6 @@ test("rejects a second terminal adapter without disturbing the running one", asy
       throw new Error("not reached");
     },
     setEffort() {
-      throw new Error("not reached");
-    },
-    setAccessMode() {
       throw new Error("not reached");
     },
     async deleteTopic() {
@@ -617,9 +608,6 @@ test("a spoofed paste-end cannot turn the rest of the burst into actions", async
       throw new Error("not reached");
     },
     setEffort() {
-      throw new Error("not reached");
-    },
-    setAccessMode() {
       throw new Error("not reached");
     },
     async deleteTopic() {

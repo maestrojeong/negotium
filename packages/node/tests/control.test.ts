@@ -104,12 +104,12 @@ test("runtime gateway topic create makes a shared canonical topic", async () => 
   expect(response?.status).toBe(201);
   expect(body.v).toBe(NODE_RUNTIME_CONTRACT_VERSION);
   expect(body.topic?.title).toBe(title);
-  // Born shared: a host only asks for a topic when it is already surfacing the
-  // room, so it must show up in the shared list without a second call.
-  expect(body.topic?.accessMode).toBe("shared");
+  // Born on the otium surface: a host only asks for a topic when it is already
+  // surfacing the room, so it must show up in the list without a second call.
+  expect(body.topic?.surface).toBe("otium");
   expect(body.topic?.participants).toEqual([{ userId: createUser, role: "owner" }]);
 
-  const listed = await handler(runtimeRequest("/topics?accessMode=shared"));
+  const listed = await handler(runtimeRequest("/topics"));
   const ids = (((await listed?.json()) as { topics?: TopicDto[] }).topics ?? []).map((t) => t.id);
   expect(ids).toContain(body.topic!.id);
 
@@ -277,50 +277,34 @@ test("runtime gateway topic create rejects a bad version, agent, or missing titl
   }
 });
 
-test("runtime gateway topic list filters by access mode", async () => {
+test("runtime gateway topic list exposes only the otium surface", async () => {
   const listUser = `topic-list-${randomUUID()}`;
-  const sharedTopic = registerTopic({
-    title: `Shared ${randomUUID()}`,
+  const hubTopic = registerTopic({
+    title: `Hub ${randomUUID()}`,
     userId: listUser,
     agent: "codex",
+    surface: "otium",
   });
-  const privateTopic = registerTopic({
-    title: `Private ${randomUUID()}`,
+  const terminalTopic = registerTopic({
+    title: `Local ${randomUUID()}`,
     userId: listUser,
     agent: "codex",
+    surface: "terminal",
   });
-  await handler(
-    request(`/topics/${encodeURIComponent(sharedTopic.id)}/access-mode`, {
-      method: "POST",
-      body: JSON.stringify({ userId: listUser, accessMode: "shared" }),
-    }),
-  );
 
-  const sharedResponse = await handler(runtimeRequest("/topics?accessMode=shared"));
-  const sharedBody = (await sharedResponse?.json()) as {
+  const response = await handler(runtimeRequest("/topics"));
+  const body = (await response?.json()) as {
     v?: number;
-    topics?: { id: string; accessMode?: string }[];
+    topics?: { id: string; surface?: string }[];
   };
-  expect(sharedResponse?.status).toBe(200);
-  expect(sharedBody.v).toBe(NODE_RUNTIME_CONTRACT_VERSION);
-  const sharedIds = (sharedBody.topics ?? []).map((topic) => topic.id);
-  expect(sharedIds).toContain(sharedTopic.id);
-  expect(sharedIds).not.toContain(privateTopic.id);
-  // A shared filter that leaked a private room would publish rooms the owner
-  // never consented to surface, so assert the whole page, not just our two.
-  expect((sharedBody.topics ?? []).every((topic) => topic.accessMode === "shared")).toBe(true);
-
-  const privateResponse = await handler(runtimeRequest("/topics?accessMode=private"));
-  const privateIds = (
-    ((await privateResponse?.json()) as { topics?: { id: string }[] }).topics ?? []
-  ).map((topic) => topic.id);
-  expect(privateIds).toContain(privateTopic.id);
-  expect(privateIds).not.toContain(sharedTopic.id);
-});
-
-test("runtime gateway topic list rejects an unknown access mode", async () => {
-  const response = await handler(runtimeRequest("/topics?accessMode=everyone"));
-  expect(response?.status).toBe(400);
+  expect(response?.status).toBe(200);
+  expect(body.v).toBe(NODE_RUNTIME_CONTRACT_VERSION);
+  const ids = (body.topics ?? []).map((topic) => topic.id);
+  expect(ids).toContain(hubTopic.id);
+  expect(ids).not.toContain(terminalTopic.id);
+  // A leak here would hand the hub rooms that live on another surface, so
+  // assert the whole page rather than just the two rooms this test made.
+  expect((body.topics ?? []).every((topic) => topic.surface === "otium")).toBe(true);
 });
 
 test("runtime gateway accepts durably, deduplicates client messages, and streams ordered events", async () => {
@@ -730,26 +714,6 @@ test("POST effort applies and locks a picker selection", async () => {
     effort: "xhigh",
     effortLocked: true,
   });
-});
-
-test("POST access-mode changes topic privacy for its owner", async () => {
-  const topic = registerTopic({
-    title: `Privacy ${randomUUID()}`,
-    userId,
-    agent: "codex",
-  });
-
-  const response = await handler(
-    request(`/topics/${encodeURIComponent(topic.id)}/access-mode`, {
-      method: "POST",
-      body: JSON.stringify({ userId, accessMode: "shared" }),
-    }),
-  );
-  const body = (await response?.json()) as { accessMode?: string };
-
-  expect(response?.status).toBe(200);
-  expect(body.accessMode).toBe("shared");
-  expect(getTopic(topic.id)?.accessMode).toBe("shared");
 });
 
 test("message history pages backward from the latest messages", async () => {

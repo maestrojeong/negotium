@@ -5,6 +5,8 @@ export interface SessionTopicRow {
   agent: string | null;
   sessionId: string | null;
   description: string | null;
+  /** Product surface the topic lives on; rows from other surfaces are not addressable. */
+  surface?: string | null;
 }
 
 export interface SessionTopicEntry<TAgent extends string = string> {
@@ -36,6 +38,11 @@ export interface SessionTargetCatalogHost<TAgent extends string = string> {
   readonly listRows: () => SessionTopicRow[];
   readonly currentTopicId?: string;
   readonly currentTopicName?: string;
+  /**
+   * Surface of the calling topic. Sessions only converse within their own
+   * surface: terminal with terminal, telegram with telegram, otium with otium.
+   */
+  readonly currentSurface?: string;
   readonly isAgent: (value: string | null) => value is TAgent;
 }
 
@@ -51,7 +58,16 @@ export function createSessionTargetCatalog<TAgent extends string = string>(
   const { currentTopicId, currentTopicName, isAgent, listRows } = host;
 
   function listTargets(): SessionTarget<TAgent>[] {
-    const eligibleRows = listRows().filter((row) => row.kind !== "manager");
+    // Read through `host` rather than a destructured copy so a host can expose
+    // it as a lazy getter and keep DB access out of module import time.
+    const currentSurface = host.currentSurface;
+    const eligibleRows = listRows().filter(
+      (row) =>
+        row.kind !== "manager" &&
+        // Rows predating the surface column report null and stay addressable
+        // from the local surface rather than vanishing mid-migration.
+        (!currentSurface || (row.surface ?? currentSurface) === currentSurface),
+    );
     const titleCounts = new Map<string, number>();
     const qualifiedCounts = new Map<string, number>();
     for (const row of eligibleRows) {

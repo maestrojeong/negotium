@@ -13,8 +13,12 @@
 /** Agent identifier — one of the supported AI provider backends. */
 export type AgentKind = "maestro" | "claude" | "codex";
 export type TopicKind = "channel" | "agent" | "manager";
-/** Adapter access boundary for a user-facing topic. */
-export type TopicAccessMode = "private" | "shared";
+/**
+ * The one product surface a topic lives on. A topic belongs to exactly one
+ * surface for its whole life; names are unique per surface, not per node.
+ */
+export type TopicSurface = "terminal" | "telegram" | "otium";
+export const TOPIC_SURFACES: readonly TopicSurface[] = ["terminal", "telegram", "otium"];
 /** Whether adapters may expose a topic in user-facing discovery surfaces. */
 export type TopicVisibility = "visible" | "hidden";
 export type ResponsePolicy = "off" | "mention" | "always";
@@ -124,8 +128,8 @@ export interface TopicDto {
   subagentReportMode?: SubagentReportMode;
   /** Hidden topics remain executable/addressable by id but stay out of adapter pickers. */
   visibility?: TopicVisibility;
-  /** Private stays on local adapters; shared may be exposed through Otium too. */
-  accessMode?: TopicAccessMode;
+  /** The product surface that owns this topic (terminal / telegram / otium). */
+  surface?: TopicSurface;
   /** Stable execution placement. Absent means the hub runs this topic locally. */
   executionNode?: {
     nodeId: string;

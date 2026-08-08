@@ -582,7 +582,11 @@ describe("outbound files", () => {
     const USER = freshUser();
     const { adapter } = startAdapter({ userId: USER });
     try {
-      const topic = registerTopic({ title: room("files-unmapped"), userId: USER });
+      const topic = registerTopic({
+        title: room("files-unmapped"),
+        userId: USER,
+        surface: "telegram",
+      });
       const message = aiMessage(topic.id, "📎 nowhere.txt", { deliveryAckRequested: true });
       const ack = prepareDeliveryAck(message.id, 50, 1_000);
       runtimeBus().broadcastMessage(topic.id, message);

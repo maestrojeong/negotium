@@ -14,13 +14,15 @@ import { FALLBACK_AGENT, resolveTopicWorkspaceDir } from "#platform/config";
 import { RESERVED_TOPIC_NAMES } from "#platform/constants";
 import { logger } from "#platform/logger";
 import {
+  defaultTopicSurface,
   findTopicTitleConflict,
   normalizeTopicKind,
   normalizeTopicState,
+  normalizeTopicSurface,
   upsertTopic,
 } from "#storage/api-topics";
 import { type AgentKind, type EffortLevel, isAgentKind } from "#types";
-import type { TopicAccessMode, TopicDto } from "#types/api";
+import type { TopicDto, TopicSurface } from "#types/api";
 
 // Agent rooms default to the node-level FALLBACK_AGENT (env), not a hardcoded
 // backend — a node without DeepSeek auth can still default to claude/codex.
@@ -43,8 +45,11 @@ export interface RegisterTopicOptions {
   model?: string;
   effort?: EffortLevel;
   description?: string;
-  /** Local topics default to private; Otium publication must be explicit. */
-  accessMode?: TopicAccessMode;
+  /**
+   * Which product surface owns the room. Callers that represent a user-facing
+   * adapter must pass their own surface; unset falls back to the host default.
+   */
+  surface?: TopicSurface;
 }
 
 /**
@@ -62,9 +67,10 @@ export function registerTopic(opts: RegisterTopicOptions): TopicDto {
   if (requestedKind === "manager") {
     throw new TopicValidationError("Manager rooms are system-managed");
   }
-  const conflict = findTopicTitleConflict(title, requestedKind);
+  const surface = normalizeTopicSurface(opts.surface ?? defaultTopicSurface());
+  const conflict = findTopicTitleConflict(title, requestedKind, { surface });
   if (conflict) {
-    throw new TopicValidationError(`A topic named "${title}" already exists`);
+    throw new TopicValidationError(`A topic named "${title}" already exists on ${surface}`);
   }
 
   const rawAgent = opts.agent;
@@ -106,7 +112,7 @@ export function registerTopic(opts: RegisterTopicOptions): TopicDto {
     defaultEffort: defaultEffort ?? "medium",
     aiMode,
     participants: [{ userId: opts.userId, role: "owner" }],
-    accessMode: opts.accessMode ?? "private",
+    surface,
     createdAt: now,
     lastMessageAt: now,
   };

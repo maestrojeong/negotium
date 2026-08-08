@@ -20,7 +20,6 @@ import {
   getTopicStats,
   getVisibleTopics,
   isParticipant,
-  isTopicShared,
   latestRuntimeEventSeq,
   listApiMessages,
   listBackgroundSessionsForUser,
@@ -41,13 +40,13 @@ import {
   type startAiTurn,
   submitRuntimeGatewayTurn,
   submitUserMessage,
-  switchTopicAccessMode,
   switchTopicEffort,
   switchTopicModel,
   TopicDeriveBusyError,
   type TopicDto,
   TopicForkCompactionError,
   TopicServiceError,
+  type TopicSurface,
   TopicTitleConflictError,
   topicService,
   upsertTopic,
@@ -149,14 +148,24 @@ function requiredText(value: unknown, name: string): string {
   return value.trim();
 }
 
-function topicsForUser(userId: string): TopicDto[] {
+function topicsForUser(userId: string, surface?: TopicSurface): TopicDto[] {
   const runningTopics = listRunningTopicQueries();
-  return getVisibleTopics()
+  return getVisibleTopics(surface ? { surface } : {})
     .filter((topic) => isParticipant(topic, userId))
     .map((topic) => {
       const runningQueryId = runningTopics.get(topic.id);
       return { ...topic, running: Boolean(runningQueryId), runningQueryId };
     });
+}
+
+/**
+ * Surface a control-protocol client is speaking for. Absent means "no filter",
+ * which keeps older adapters working while they are still being updated.
+ */
+function requestedSurface(url: URL): TopicSurface | undefined {
+  const raw = url.searchParams.get("surface")?.trim();
+  if (!raw) return undefined;
+  return raw === "terminal" || raw === "telegram" || raw === "otium" ? raw : undefined;
 }
 
 function topicForUser(topicId: string, userId: string): TopicDto | null {
@@ -337,23 +346,15 @@ export function createNodeControlHandler(
         }
 
         /**
-         * Topic discovery for the gateway. `accessMode=shared` is the only
-         * filter an embedding host should use: `shared` is how the owner
-         * consents to a topic being surfaced in Otium (D-6), so listing
-         * everything would let a host mirror rooms the owner never published.
+         * Topic discovery for the gateway.
+         *
+         * The gateway only ever sees the `otium` surface (S-6). Membership of
+         * a surface *is* the consent that `accessMode=shared` used to encode,
+         * so there is no per-topic flag left to filter on and no way for a host
+         * to enumerate the owner's terminal or telegram rooms.
          */
         if (req.method === "GET" && runtimePath === "/topics") {
-          const accessMode = url.searchParams.get("accessMode")?.trim();
-          if (accessMode && accessMode !== "shared" && accessMode !== "private") {
-            return jsonError(400, "accessMode must be 'shared' or 'private'");
-          }
-          const topics = getVisibleTopics().filter((topic) =>
-            accessMode === "shared"
-              ? isTopicShared(topic)
-              : accessMode === "private"
-                ? !isTopicShared(topic)
-                : true,
-          );
+          const topics = getVisibleTopics({ surface: "otium" });
           return Response.json({
             ok: true,
             v: NODE_RUNTIME_CONTRACT_VERSION,
@@ -368,9 +369,8 @@ export function createNodeControlHandler(
          * Without this, a room created in Otium existed only in Otium's store,
          * so Terminal and Telegram could not see it and its turns ran on the
          * host instead of the node — two canonical stores, which is the failure
-         * D-1 exists to prevent. The topic is born `shared`, because a host only
-         * asks for one when it is already surfacing the room; the owner's
-         * consent is the act of creating it there (D-6).
+         * D-1 exists to prevent. The room is born on the `otium` surface: a
+         * host only asks for one when it is already surfacing it.
          */
         if (req.method === "POST" && runtimePath === "/topics") {
           const body = await bodyRecord(req);
@@ -385,7 +385,7 @@ export function createNodeControlHandler(
             title,
             userId,
             kind: "agent",
-            accessMode: "shared",
+            surface: "otium",
             ...(agent ? { agent: agent as AgentKind } : {}),
           });
           return Response.json(
@@ -507,14 +507,14 @@ export function createNodeControlHandler(
           ok: true,
           protocolVersion: NODE_CONTROL_PROTOCOL_VERSION,
           nodeVersion: NODE_VERSION,
-          topics: topicsForUser(userId),
+          topics: topicsForUser(userId, requestedSurface(url)),
           cursor: latestRuntimeEventSeq(),
         });
       }
 
       if (req.method === "GET" && path === "/topics") {
         const userId = requiredText(url.searchParams.get("user"), "user");
-        return Response.json({ ok: true, topics: topicsForUser(userId) });
+        return Response.json({ ok: true, topics: topicsForUser(userId, requestedSurface(url)) });
       }
 
       if (req.method === "GET" && path === "/background-sessions") {
@@ -651,24 +651,6 @@ export function createNodeControlHandler(
         const result = switchTopicModel({ topicId, userId, model });
         if (!result.ok) return jsonError(400, result.error);
         return Response.json({ ok: true, model: result.model, result: result.text });
-      }
-
-      const accessModeMatch = path.match(/^\/topics\/([^/]+)\/access-mode$/);
-      if (accessModeMatch && req.method === "POST") {
-        const topicId = decodeURIComponent(accessModeMatch[1]);
-        const body = await bodyRecord(req);
-        const userId = requiredText(body.userId, "userId");
-        const accessMode = requiredText(body.accessMode, "accessMode");
-        if (accessMode !== "private" && accessMode !== "shared") {
-          return jsonError(400, `Unknown access mode: ${accessMode}`);
-        }
-        const result = switchTopicAccessMode({ topicId, userId, accessMode });
-        if (!result.ok) return jsonError(400, result.error);
-        return Response.json({
-          ok: true,
-          accessMode: result.accessMode,
-          result: result.text,
-        });
       }
 
       const effortMatch = path.match(/^\/topics\/([^/]+)\/effort$/);

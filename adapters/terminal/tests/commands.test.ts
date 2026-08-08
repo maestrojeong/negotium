@@ -34,11 +34,11 @@ describe("terminal slash command completion", () => {
     expect(completeCommand("/va", 0)).toBe("/vault ");
   });
 
-  test("suggests topic privacy commands", () => {
-    expect(commandSuggestions("/pub").map((command) => command.name)).toEqual(["public"]);
-    expect(commandSuggestions("/pri").map((command) => command.name)).toEqual(["private"]);
-    expect(completeCommand("/pub", 0)).toBe("/public");
-    expect(completeCommand("/pri", 0)).toBe("/private");
+  test("no longer offers the retired privacy commands", () => {
+    // Access mode is gone: a room reaches Otium by living on that surface, so
+    // there is nothing for /public or /private to toggle (S-4).
+    expect(commandSuggestions("/pub")).toEqual([]);
+    expect(commandSuggestions("/pri")).toEqual([]);
   });
 
   test("uses only the short delete command", () => {

@@ -1246,7 +1246,7 @@ function helpLines(): UiLine[] {
     line(""),
     line("  Commands", { fg: theme.cyan, bold: true }),
     line("  /new  /model  /effort  /status  /context"),
-    line("  /topics  /public  /private  /fork  /spawn"),
+    line("  /topics  /fork  /spawn"),
     line("  /del  /copy  /abort  /help  /quit", { fg: theme.muted }),
   ];
 }
@@ -1423,8 +1423,8 @@ function topicPickerHints(topicPickerRoot: boolean): string[] {
   // lengths depending on the caller — so sort by rendered width instead of
   // trusting the source order, and drop the duplicates the collapse creates.
   const candidates = [
-    `↑↓ select · Enter open · type to filter · Ctrl-N new · Ctrl-D delete · Ctrl-P public/private · ${exit}`,
-    `↑↓ select · Enter open · type to filter · Ctrl-N new · Ctrl-D delete · Ctrl-P public/private · ${shortExit}`,
+    `↑↓ select · Enter open · type to filter · Ctrl-N new · Ctrl-D delete · ${exit}`,
+    `↑↓ select · Enter open · type to filter · Ctrl-N new · Ctrl-D delete · ${shortExit}`,
     `↑↓ select · Enter open · type to filter · Ctrl-N new · Ctrl-D delete · ${exit}`,
     `↑↓ select · Enter open · type to filter · Ctrl-N/D/P · ${shortExit}`,
     "↑↓ · Enter · type to filter · Ctrl-N/D/P",
@@ -1485,17 +1485,11 @@ function topicOverlayLines(
     .map((topic, topicIndex) => ({ topic, topicIndex }))
     .filter(({ topic }) => visibleIds.has(topic.id));
   const managerTopics = indexedTopics.filter(({ topic }) => topic.kind === "manager");
-  const privateTopics = indexedTopics.filter(
-    ({ topic }) => topic.kind !== "manager" && topic.accessMode !== "shared",
-  );
-  const publicTopics = indexedTopics.filter(
-    ({ topic }) => topic.kind !== "manager" && topic.accessMode === "shared",
-  );
+  const regularTopics = indexedTopics.filter(({ topic }) => topic.kind !== "manager");
   const entries: TopicOverlayEntry[] = [];
   for (const [label, topics] of [
     ["Manager", managerTopics],
-    ["Private", privateTopics],
-    ["Public", publicTopics],
+    ["Topics", regularTopics],
   ] as const) {
     if (topics.length === 0) continue;
     if (entries.length > 0) entries.push({ kind: "separator" });
@@ -1979,46 +1973,6 @@ function conversationLines(
     ].slice(0, height);
   }
 
-  if (state.overlay === "confirm-share") {
-    const topic = state.topics.find((candidate) => candidate.id === state.pendingShareTopicId);
-    // Counted transitively, matching what `switchTopicAccessMode` actually
-    // rewrites: a subagent that spawned its own subagent is just as exposed as
-    // a direct child, so quoting only direct children would understate the
-    // blast radius of the very action being confirmed. Rooms the picker cannot
-    // see are not counted, hence the generic fallback wording at zero.
-    const subagents = (() => {
-      if (!topic) return 0;
-      const reached = new Set([topic.id]);
-      for (;;) {
-        const next = state.topics.filter(
-          (candidate) =>
-            candidate.isSubagent &&
-            !reached.has(candidate.id) &&
-            candidate.parentTopicId !== undefined &&
-            reached.has(candidate.parentTopicId),
-        );
-        if (next.length === 0) break;
-        for (const candidate of next) reached.add(candidate.id);
-      }
-      return reached.size - 1;
-    })();
-    const scope =
-      subagents > 0
-        ? `  Its ${subagents} subagent room${subagents === 1 ? "" : "s"} become public too.`
-        : "  Subagent rooms spawned from it will be public too.";
-    return [
-      line(""),
-      line(`  Make \u201c${topic?.title ?? "this topic"}\u201d public?`, {
-        fg: theme.amber,
-        bold: true,
-      }),
-      line(""),
-      line("  The transcript becomes visible to the connected Otium Hub."),
-      line(scope),
-      line("  Press y to publish or n to cancel.", { fg: theme.amber }),
-    ].slice(0, height);
-  }
-
   const all = conversationContentLines(state, width, animationFrame, nowMs, includeTasks);
   const { contentHeight, maxOffset, offset } = conversationViewport(
     all.length,
@@ -2452,9 +2406,6 @@ function footerHintText(state: AppState): string[] {
     return state.topicPickerRoot
       ? ["Esc/Ctrl-C exit  ", "Esc exit  "]
       : ["Esc close · Ctrl-C exit; work continues  ", "Esc close · Ctrl-C exit  ", "Esc  "];
-  }
-  if (state.overlay === "confirm-share") {
-    return ["Y make public · N cancel  ", "Y/N  "];
   }
   if (state.overlay === "background-session") {
     return [

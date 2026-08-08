@@ -59,6 +59,7 @@ import {
   resolveDeliveryAck,
   resolveUploadedFilePathByFileId,
   runtimeBus,
+  setTopicSurfaces,
   startAiTurn,
   stripFileTags,
   submitUserMessage,
@@ -67,6 +68,14 @@ import {
   transcribeAudio,
 } from "@negotium/core";
 import { createTelegramCommandRouter } from "@/commands";
+
+/**
+ * Settings key marking that mapped rooms were moved onto the telegram surface.
+ * Stored in this adapter's own database because the mapping it is derived from
+ * lives there too.
+ */
+const SURFACE_BACKFILL_FLAG = "surface_backfill_20260808";
+
 import { type OutboxEntry, openMappingStore, type PersistedMapping } from "@/mapping-store";
 import { createTelegramMediaIntake } from "@/media-intake";
 import { renderOutbound } from "@/render";
@@ -556,6 +565,22 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     return true;
   }
 
+  // One-time reclassification of rooms this adapter already owns. The chat↔
+  // topic mapping lives in this adapter's own database, so the canonical
+  // store's surface backfill cannot see it and parks everything on the host
+  // default; only this pass can tell a telegram room from a terminal one (S-9).
+  if (!store.isFlagSet(SURFACE_BACKFILL_FLAG)) {
+    const mappedIds = [...new Set(store.load().map((mapping) => mapping.topicId))];
+    const moved = setTopicSurfaces(mappedIds, "telegram");
+    store.setFlag(SURFACE_BACKFILL_FLAG);
+    if (moved > 0) {
+      logger.info(
+        { moved, mapped: mappedIds.length },
+        "telegram adapter: moved mapped topics onto the telegram surface",
+      );
+    }
+  }
+
   // Restore persisted routing so a restart keeps delivering into existing
   // chats/threads instead of materializing duplicates. Prune mappings whose
   // runtime topic disappeared while this adapter was offline; otherwise a
@@ -591,7 +616,10 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   function registerTopicLocal(options: RegisterTopicOptions): TopicDto {
     suppressMaterialize++;
     try {
-      return topicService.create(options);
+      // Rooms this adapter creates belong to the telegram surface, whatever the
+      // host default is — that is what keeps them out of the terminal picker
+      // and lets the same title exist on another surface (S-1, S-6).
+      return topicService.create({ ...options, surface: "telegram" });
     } finally {
       suppressMaterialize--;
     }
@@ -600,7 +628,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   /** Reuse a topic by name if this node already has it, else create one. */
   function getOrCreateTopic(title: string, agent?: AgentKind): TopicDto {
     return (
-      getTopicByNameForUser(title, userId) ??
+      getTopicByNameForUser(title, userId, { surface: "telegram" }) ??
       registerTopicLocal({ title, userId, kind: "agent", ...(agent ? { agent } : {}) })
     );
   }
@@ -1436,7 +1464,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
 
   function materializeVisibleTopics(): void {
     if (!forumMode || !forumManageTopicsAvailable) return;
-    for (const topic of listTopics()) {
+    for (const topic of listTopics({ surface: "telegram" })) {
       if (
         isTopicVisible(topic) &&
         topic.participants.some((participant) => participant.userId === userId)

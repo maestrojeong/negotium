@@ -395,7 +395,7 @@ describe("negotium MCP endpoint", () => {
       title: `shared-delete-parent-${suffix}`,
       userId: ownerId,
       agent: "codex",
-      accessMode: "shared",
+      surface: "otium",
     });
     parent.participants.push({ userId: memberId, role: "member" });
     upsertTopic(parent);

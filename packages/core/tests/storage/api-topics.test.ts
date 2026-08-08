@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { GENERAL_TOPIC_ID } from "#platform/constants";
 import {
   deleteTopic,
+  findTopicTitleConflict,
   getTopic,
   getTopicMemoryOrigin,
   getTopicSessionId,
@@ -53,7 +54,9 @@ describe("api topic storage", () => {
     expect(topicColumns).toContain("response_policy");
     expect(topicColumns).toContain("base_model");
     expect(topicColumns).toContain("visibility");
-    expect(topicColumns).toContain("access_mode");
+    expect(topicColumns).toContain("surface");
+    // Retired by the surface migration: a room reaches Otium by living there.
+    expect(topicColumns).not.toContain("access_mode");
     expect(topicColumns).toContain("subagent_report_mode");
     expect(topicColumns).toContain("memory_topic_id");
     expect(topicColumns).toContain("memory_key");
@@ -170,15 +173,43 @@ describe("api topic storage", () => {
     expect(getVisibleTopics().some((topic) => topic.id === hidden.id)).toBe(false);
   });
 
-  test("defaults local topics to private and persists explicit shared access", () => {
-    const privateTopic = makeTopic();
-    const sharedTopic = { ...makeTopic(), accessMode: "shared" as const };
-    createdTopicIds.push(privateTopic.id, sharedTopic.id);
-    upsertTopic(privateTopic);
-    upsertTopic(sharedTopic);
+  test("defaults topics to the terminal surface and persists an explicit one", () => {
+    const local = makeTopic();
+    const hub = { ...makeTopic(), surface: "otium" as const };
+    createdTopicIds.push(local.id, hub.id);
+    upsertTopic(local);
+    upsertTopic(hub);
 
-    expect(getTopic(privateTopic.id)?.accessMode).toBe("private");
-    expect(getTopic(sharedTopic.id)?.accessMode).toBe("shared");
+    expect(getTopic(local.id)?.surface).toBe("terminal");
+    expect(getTopic(hub.id)?.surface).toBe("otium");
+  });
+
+  test("lists only the requested surface", () => {
+    const local = makeTopic();
+    const hub = { ...makeTopic(), surface: "otium" as const };
+    createdTopicIds.push(local.id, hub.id);
+    upsertTopic(local);
+    upsertTopic(hub);
+
+    const terminalIds = listTopics({ surface: "terminal" }).map((topic) => topic.id);
+    const otiumIds = listTopics({ surface: "otium" }).map((topic) => topic.id);
+    expect(terminalIds).toContain(local.id);
+    expect(terminalIds).not.toContain(hub.id);
+    expect(otiumIds).toContain(hub.id);
+    expect(otiumIds).not.toContain(local.id);
+  });
+
+  test("the same title may exist once per surface", () => {
+    const title = `surface-dup-${randomUUID().slice(0, 8)}`;
+    const local = { ...makeTopic(), title };
+    const hub = { ...makeTopic(), title, surface: "otium" as const };
+    createdTopicIds.push(local.id, hub.id);
+    upsertTopic(local);
+    upsertTopic(hub);
+
+    expect(findTopicTitleConflict(title, "agent", { surface: "terminal" })?.id).toBe(local.id);
+    expect(findTopicTitleConflict(title, "agent", { surface: "otium" })?.id).toBe(hub.id);
+    expect(findTopicTitleConflict(title, "agent", { surface: "telegram" })).toBeNull();
   });
 
   test("manager rooms stay manager/always while preserving their chosen agent", () => {

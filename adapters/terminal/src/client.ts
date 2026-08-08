@@ -19,10 +19,8 @@ import {
   type SaveVaultEntryResult,
   saveVaultEntry,
   submitUserMessage,
-  switchTopicAccessMode,
   switchTopicEffort,
   switchTopicModel,
-  type TopicAccessMode,
   type TopicDto,
   topicService,
   type VaultEntry,
@@ -68,7 +66,6 @@ export interface NegotiumClient {
   compactTopic(topic: TopicDto): Promise<string>;
   setModel(topic: TopicDto, model: string): ClientResult<string>;
   setEffort(topic: TopicDto, effort: EffortLevel): ClientResult<string>;
-  setAccessMode(topic: TopicDto, accessMode: TopicAccessMode): ClientResult<string>;
   deleteTopic(topic: TopicDto): Promise<void>;
   sendMessage(topic: TopicDto, text: string): ClientResult<MessageDto>;
   answerQuestion(
@@ -141,7 +138,7 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
 
   listTopics(): TopicDto[] {
     const runningTopics = listRunningTopicQueries();
-    return getVisibleTopics()
+    return getVisibleTopics({ surface: "terminal" })
       .filter((topic) =>
         topic.participants.some((participant) => participant.userId === this.#userId),
       )
@@ -233,16 +230,6 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
 
   setEffort(topic: TopicDto, effort: EffortLevel): string {
     const result = switchTopicEffort({ topicId: topic.id, userId: this.#userId, effort });
-    if (!result.ok) throw new Error(result.error);
-    return result.text;
-  }
-
-  setAccessMode(topic: TopicDto, accessMode: TopicAccessMode): string {
-    const result = switchTopicAccessMode({
-      topicId: topic.id,
-      userId: this.#userId,
-      accessMode,
-    });
     if (!result.ok) throw new Error(result.error);
     return result.text;
   }
@@ -361,7 +348,9 @@ export class RemoteNegotiumClient implements NegotiumClient {
 
   async start(onEvent: (event: RuntimeBusEvent) => void): Promise<void> {
     if (this.#started) return;
-    const session = await this.#request(`/session?user=${encodeURIComponent(this.#userId)}`);
+    const session = await this.#request(
+      `/session?user=${encodeURIComponent(this.#userId)}&surface=terminal`,
+    );
     if (session.protocolVersion !== NODE_CONTROL_PROTOCOL_VERSION) {
       throw new Error(
         `Node protocol ${String(session.protocolVersion)} is incompatible with terminal protocol ${NODE_CONTROL_PROTOCOL_VERSION}`,
@@ -391,7 +380,9 @@ export class RemoteNegotiumClient implements NegotiumClient {
   }
 
   async listTopics(): Promise<TopicDto[]> {
-    const result = await this.#request(`/topics?user=${encodeURIComponent(this.#userId)}`);
+    const result = await this.#request(
+      `/topics?user=${encodeURIComponent(this.#userId)}&surface=terminal`,
+    );
     return (result.topics ?? []) as TopicDto[];
   }
 
@@ -490,14 +481,6 @@ export class RemoteNegotiumClient implements NegotiumClient {
       body: JSON.stringify({ userId: this.#userId, effort }),
     });
     return String(result.result ?? `Effort set to '${effort}'.`);
-  }
-
-  async setAccessMode(topic: TopicDto, accessMode: TopicAccessMode): Promise<string> {
-    const result = await this.#request(`/topics/${encodeURIComponent(topic.id)}/access-mode`, {
-      method: "POST",
-      body: JSON.stringify({ userId: this.#userId, accessMode }),
-    });
-    return String(result.result ?? `Access mode set to '${accessMode}'.`);
   }
 
   async deleteTopic(topic: TopicDto): Promise<void> {

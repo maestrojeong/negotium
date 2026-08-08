@@ -101,35 +101,6 @@ export async function runTerminalCommand(
     context.queueRender();
     return;
   }
-  if (command === "public" || command === "private") {
-    if (args.length > 0) {
-      context.state = { ...context.state, notice: `Usage: /${command}`, noticeLevel: "warn" };
-      context.queueRender();
-      return;
-    }
-    const topic = activeTopic(context.state);
-    if (!topic) {
-      context.state = { ...context.state, notice: "No topic selected", noticeLevel: "warn" };
-      context.queueRender();
-      return;
-    }
-    try {
-      const notice = await context.client.setAccessMode(
-        topic,
-        command === "public" ? "shared" : "private",
-      );
-      await context.refreshTopics(topic.title);
-      context.state = { ...context.state, notice, noticeLevel: "success" };
-    } catch (error) {
-      context.state = {
-        ...context.state,
-        notice: error instanceof Error ? error.message : String(error),
-        noticeLevel: "error",
-      };
-    }
-    context.queueRender();
-    return;
-  }
   if (command === "compact") {
     const topic = activeTopic(context.state);
     if (!topic) {

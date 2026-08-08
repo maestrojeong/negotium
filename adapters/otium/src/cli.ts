@@ -7,7 +7,7 @@
  *   negotium-otium serve                canonical node + Otium sidecar
  *
  * Per-topic sharing is expressed on the topic itself (`/public` / `/private`,
- * i.e. `accessMode`) and discovered by the hub through the Runtime Gateway, so
+ * i.e. the `otium` surface) and discovered by the hub through the Runtime Gateway, so
  * this command no longer carries `bindings` / `share` / `private` subcommands.
  *
  * The runtime half mounts in the canonical node. This command only keeps the
@@ -137,37 +137,16 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
       }
       const { loadJoin, removeJoin } = await import("@/join");
       if (!loadJoin()) throw new Error("not joined to an Otium workspace");
-      // Removing the join file already cuts the hub off: it discovers
-      // `accessMode: "shared"` topics only by calling this node through the
-      // Runtime Gateway, which needs these credentials.
+      // Removing the join file already cuts the hub off: the hub discovers
+      // rooms only by calling this node through the Runtime Gateway, which
+      // needs these credentials.
       //
-      // Topics are still downgraded, because `shared` records consent to a
-      // *specific* workspace. Leaving them published would silently re-expose
-      // them the moment this node joins a different workspace, without the owner
-      // ever running `/public` again.
-      const { getVisibleTopics, isTopicShared, switchTopicAccessMode } = await import(
-        "@negotium/core"
-      );
-      let downgraded = 0;
-      for (const topic of getVisibleTopics()) {
-        if (!isTopicShared(topic)) continue;
-        const owner = topic.participants.find((participant) => participant.role === "owner");
-        if (!owner) continue;
-        // Subagent rooms follow their root ancestor and refuse a direct change,
-        // so skipping them here is what lets the cascade own them.
-        if (topic.isSubagent) continue;
-        const switched = switchTopicAccessMode({
-          topicId: topic.id,
-          userId: owner.userId,
-          accessMode: "private",
-        });
-        if (switched.ok) downgraded += switched.topicIds.length;
-      }
+      // Nothing is downgraded any more. A room is reachable from Otium because
+      // it lives on the `otium` surface, and a surface is a permanent property
+      // of the room — not consent to one specific workspace that has to be
+      // revoked on disconnect (S-1, S-4).
       removeJoin();
-      console.log(
-        `disconnected from Otium; workspace credentials removed` +
-          (downgraded > 0 ? `; ${downgraded} topic(s) are now private` : ""),
-      );
+      console.log("disconnected from Otium; workspace credentials removed");
       break;
     }
     case "serve": {

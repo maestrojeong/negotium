@@ -22,7 +22,6 @@ type Overlay =
   | "effort"
   | "vault"
   | "confirm-delete"
-  | "confirm-share"
   | null;
 
 export type SubagentGraphEdgeKind = "owns" | "owns-parent-only" | "tell" | "tell-bidirectional";
@@ -104,7 +103,6 @@ export interface AppState {
   effortPickerIndex: number;
   pendingDeleteTopicId?: string;
   /** Topic awaiting y/n confirmation for a private → public switch. */
-  pendingShareTopicId?: string;
   creatingTopic: boolean;
   scrollOffset: number;
   backgroundScrollOffset: number;
@@ -370,10 +368,7 @@ function topicPickerItems(state: AppState): TopicPickerItem[] {
       .filter(({ topic }) => topic.kind === "manager")
       .map(({ topic, index }) => ({ kind: "topic" as const, id: topic.id, index })),
     ...indexedTopics
-      .filter(({ topic }) => topic.kind !== "manager" && topic.accessMode !== "shared")
-      .map(({ topic, index }) => ({ kind: "topic" as const, id: topic.id, index })),
-    ...indexedTopics
-      .filter(({ topic }) => topic.kind !== "manager" && topic.accessMode === "shared")
+      .filter(({ topic }) => topic.kind !== "manager")
       .map(({ topic, index }) => ({ kind: "topic" as const, id: topic.id, index })),
     ...visibleBackgroundSessions(state).map((session) => ({
       kind: "background" as const,
@@ -503,13 +498,10 @@ export function setTopics(state: AppState, topics: TopicDto[], preferredTitle?: 
     scrollOffset: nextActive === state.activeTopicId ? state.scrollOffset : 0,
     askChoiceIndex: nextActive === state.activeTopicId ? state.askChoiceIndex : 0,
     topicPickerIndex:
-      // `confirm-share` counts as being in the picker: the prompt sits on top
-      // of it, the user's cursor is still on the row they chose, and the
-      // prompt can stay up indefinitely waiting for y/n. Re-anchoring by
-      // active topic instead would silently move the highlight under them, so
-      // cancelling would drop them on a different row than the one they
-      // pressed the key on.
-      state.overlay === "topics" || state.overlay === "confirm-share"
+      // While the picker is open the user's cursor is on the row they chose.
+      // Re-anchoring by active topic instead would silently move the highlight
+      // under them mid-refresh.
+      state.overlay === "topics"
         ? // `-1` when the refresh dropped the highlighted topic; the clamp below
           // then moves onto the first row the filter still shows.
           pickedTopicIndex

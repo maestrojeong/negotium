@@ -188,7 +188,7 @@ describe("createDerivedTopic", () => {
       aiMode: "always",
       participants: [{ userId, role: "owner" }],
       visibility: "hidden",
-      accessMode: "shared",
+      surface: "otium",
       createdAt: now,
       lastMessageAt: now,
     });
@@ -198,7 +198,7 @@ describe("createDerivedTopic", () => {
       expect(child).not.toBeNull();
       childId = child?.id;
       expect(child?.visibility).toBe("hidden");
-      expect(child?.accessMode).toBe("shared");
+      expect(child?.surface).toBe("otium");
     } finally {
       if (childId) {
         deleteTopic(childId);

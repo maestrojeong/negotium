@@ -9,13 +9,30 @@ import type {
   AiMode,
   ParticipantDto,
   SubagentReportMode,
-  TopicAccessMode,
   TopicDto,
   TopicKind,
+  TopicSurface,
   TopicVisibility,
 } from "#types/api";
 
 const DEFAULT_AGENT_ROOM_AGENT: AgentKind = "maestro";
+
+/**
+ * Surface used when a caller does not name one — and the value every existing
+ * row is backfilled with on first boot after the surface migration.
+ *
+ * Hosts that only ever serve one surface declare it once in their environment
+ * (`NEGOTIUM_DEFAULT_SURFACE=otium` on the Otium hub and worker); a developer
+ * Mac leaves it unset and gets `terminal`, with the telegram adapter
+ * reclassifying its own mapped rooms afterwards.
+ */
+export function defaultTopicSurface(): TopicSurface {
+  return normalizeTopicSurface(process.env.NEGOTIUM_DEFAULT_SURFACE);
+}
+
+export function normalizeTopicSurface(value: unknown): TopicSurface {
+  return value === "telegram" || value === "otium" || value === "terminal" ? value : "terminal";
+}
 
 function tableColumns(table: string): Set<string> {
   const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -219,7 +236,7 @@ function initializeApiTopicsSchema(): void {
       is_fork INTEGER NOT NULL DEFAULT 0 CHECK (is_fork IN (0,1)),
       is_subagent INTEGER NOT NULL DEFAULT 0 CHECK (is_subagent IN (0,1)),
       visibility TEXT NOT NULL DEFAULT 'visible' CHECK (visibility IN ('visible','hidden')),
-      access_mode TEXT NOT NULL DEFAULT 'private' CHECK (access_mode IN ('private','shared')),
+      surface TEXT NOT NULL DEFAULT 'terminal' CHECK (surface IN ('terminal','telegram','otium')),
       browser_profile TEXT NOT NULL DEFAULT 'default',
       browser_profile_owner TEXT,
       session_id TEXT,
@@ -288,7 +305,7 @@ function initializeApiTopicsSchema(): void {
           db.query(
             `INSERT INTO api_topics_next
              (id,title,kind,description,agent,base_model,base_effort,response_policy,
-              created_at,last_message_at,parent_topic_id,memory_topic_id,memory_key,is_fork,is_subagent,visibility,access_mode,session_id)
+              created_at,last_message_at,parent_topic_id,memory_topic_id,memory_key,is_fork,is_subagent,visibility,surface,session_id)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           ).run(
             String(row.id),
@@ -307,7 +324,7 @@ function initializeApiTopicsSchema(): void {
             Number(row.is_fork ?? 0) !== 0 ? 1 : 0,
             Number(row.is_subagent ?? 0) !== 0 ? 1 : 0,
             row.visibility === "hidden" ? "hidden" : "visible",
-            row.access_mode === "shared" ? "shared" : "private",
+            row.surface === undefined ? defaultTopicSurface() : normalizeTopicSurface(row.surface),
             typeof row.session_id === "string" ? row.session_id : null,
           );
         }
@@ -373,8 +390,18 @@ function initializeApiTopicsSchema(): void {
   if (!tableColumns("api_topics").has("visibility")) {
     db.exec("ALTER TABLE api_topics ADD COLUMN visibility TEXT NOT NULL DEFAULT 'visible'");
   }
-  if (!tableColumns("api_topics").has("access_mode")) {
-    db.exec("ALTER TABLE api_topics ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'private'");
+  if (!tableColumns("api_topics").has("surface")) {
+    db.exec("ALTER TABLE api_topics ADD COLUMN surface TEXT NOT NULL DEFAULT 'terminal'");
+  }
+  // `access_mode` was replaced by `surface`: a topic is reachable from Otium
+  // because it lives there, not because a flag was flipped (S-4). Dropping the
+  // column removes the second, now-contradictory source of truth.
+  if (tableColumns("api_topics").has("access_mode")) {
+    try {
+      db.exec("ALTER TABLE api_topics DROP COLUMN access_mode");
+    } catch (err) {
+      logger.warn({ err }, "api_topics: could not drop the retired access_mode column");
+    }
   }
   if (!tableColumns("api_topics").has("browser_profile")) {
     db.exec("ALTER TABLE api_topics ADD COLUMN browser_profile TEXT NOT NULL DEFAULT 'default'");
@@ -401,9 +428,80 @@ function initializeApiTopicsSchema(): void {
   )
   WHERE browser_profile_owner IS NULL
 `);
+  backfillTopicSurfaces();
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_api_topics_last_message ON api_topics(last_message_at DESC)",
   );
+  db.exec("CREATE INDEX IF NOT EXISTS idx_api_topics_surface ON api_topics(surface)");
+}
+
+const SURFACE_BACKFILL_MIGRATION = "api_topics_surface_backfill_20260808";
+
+/**
+ * One-time classification of pre-surface topics.
+ *
+ * Every row predates the column, so there is no per-row evidence in this store
+ * to distinguish surfaces — the host declares it (`NEGOTIUM_DEFAULT_SURFACE`).
+ * The telegram adapter owns the second pass: its chat↔topic mapping lives in a
+ * different database file, so only it can reclassify the rooms it created.
+ *
+ * Names are unique per surface from now on, so collapsing three namespaces into
+ * one can produce duplicates. Rather than failing the boot, the oldest room
+ * keeps the name and the rest are suffixed — a rename is recoverable, a node
+ * that refuses to start is not.
+ */
+function backfillTopicSurfaces(): void {
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS api_schema_migrations (
+    key TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL
+  )
+`);
+  const applied = db
+    .query("SELECT key FROM api_schema_migrations WHERE key = ?")
+    .get(SURFACE_BACKFILL_MIGRATION);
+  if (applied) return;
+
+  const surface = defaultTopicSurface();
+  db.transaction(() => {
+    db.query("UPDATE api_topics SET surface = ?").run(surface);
+    renameSurfaceTitleCollisions();
+    db.query("INSERT INTO api_schema_migrations (key, applied_at) VALUES (?, ?)").run(
+      SURFACE_BACKFILL_MIGRATION,
+      new Date().toISOString(),
+    );
+  })();
+  logger.info({ surface }, "api_topics: surface backfilled");
+}
+
+/** Suffix duplicate `(surface, kind, title)` rows so the new uniqueness rule holds. */
+function renameSurfaceTitleCollisions(): void {
+  const rows = db
+    .query<{ id: string; title: string; kind: string; surface: string }, []>(
+      "SELECT id, title, kind, surface FROM api_topics ORDER BY created_at ASC, rowid ASC",
+    )
+    .all();
+  const taken = new Set<string>();
+  const update = db.query("UPDATE api_topics SET title = ? WHERE id = ?");
+  for (const row of rows) {
+    const key = (title: string) => `${row.surface} ${row.kind} ${normalizedTitle(title)}`;
+    if (!taken.has(key(row.title))) {
+      taken.add(key(row.title));
+      continue;
+    }
+    let suffix = 2;
+    let candidate = `${row.title} (${suffix})`;
+    while (taken.has(key(candidate))) {
+      suffix += 1;
+      candidate = `${row.title} (${suffix})`;
+    }
+    taken.add(key(candidate));
+    update.run(candidate, row.id);
+    logger.warn(
+      { topicId: row.id, surface: row.surface, from: row.title, to: candidate },
+      "api_topics: renamed a duplicate title for surface-scoped uniqueness",
+    );
+  }
 }
 
 registerStorageSchemaInitializer(initializeApiTopicsSchema, 20);
@@ -426,7 +524,7 @@ export interface TopicRow {
   is_subagent: number;
   subagent_report_mode: string | null;
   visibility: string | null;
-  access_mode: string | null;
+  surface: string | null;
   browser_profile_owner: string | null;
   session_id: string | null;
 }
@@ -525,17 +623,8 @@ function rowToDto(
         }
       : {}),
     visibility: normalizeTopicVisibility(r.visibility),
-    accessMode: normalizeTopicAccessMode(r.access_mode),
+    surface: normalizeTopicSurface(r.surface),
   };
-}
-
-export function normalizeTopicAccessMode(value: unknown): TopicAccessMode {
-  return value === "shared" ? "shared" : "private";
-}
-
-/** Otium and other non-local adapters may only address shared topics. */
-export function isTopicShared(topic: Pick<TopicDto, "accessMode">): boolean {
-  return topic.accessMode === "shared";
 }
 
 export function normalizeTopicVisibility(value: unknown): TopicVisibility {
@@ -643,7 +732,7 @@ export function upsertTopic(t: TopicDto): void {
     db.query(
       `INSERT INTO api_topics
        (id,title,kind,description,agent,base_model,base_effort,response_policy,
-        created_at,last_message_at,parent_topic_id,memory_topic_id,memory_key,is_fork,is_subagent,visibility,access_mode,
+        created_at,last_message_at,parent_topic_id,memory_topic_id,memory_key,is_fork,is_subagent,visibility,surface,
         subagent_report_mode)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(id) DO UPDATE SET
@@ -662,7 +751,7 @@ export function upsertTopic(t: TopicDto): void {
        is_fork = excluded.is_fork,
        is_subagent = excluded.is_subagent,
        visibility = excluded.visibility,
-       access_mode = excluded.access_mode,
+       surface = excluded.surface,
        subagent_report_mode = excluded.subagent_report_mode`,
     ).run(
       t.id,
@@ -681,7 +770,7 @@ export function upsertTopic(t: TopicDto): void {
       t.isFork ? 1 : 0,
       t.isSubagent ? 1 : 0,
       normalizeTopicVisibility(t.visibility),
-      normalizeTopicAccessMode(t.accessMode),
+      normalizeTopicSurface(t.surface),
       t.subagentReportMode ?? "auto",
     );
     db.query("DELETE FROM topic_members WHERE topic_id = ?").run(t.id);
@@ -706,35 +795,20 @@ export function upsertTopic(t: TopicDto): void {
 }
 
 /**
- * Apply one access mode to a set of topics as a single all-or-nothing write.
+ * List topics, optionally restricted to one surface.
  *
- * A partial write is not a cosmetic glitch here: a public parent left with
- * private subagent children (or the reverse) is exactly the half-exposed state
- * the access-mode cascade exists to prevent, so every row commits or none do.
- *
- * Deliberately a narrow UPDATE instead of a loop over {@link upsertTopic}.
- * That helper opens its own transaction, and the node:sqlite shim in
- * `sqlite.ts` emulates transactions with bare BEGIN/COMMIT rather than
- * savepoints — nesting one inside an outer transaction would fail outright.
- * It also rewrites participants and browser-profile ownership, none of which
- * an access-mode change should touch.
+ * The filter lives here rather than in each adapter so a forgotten call site
+ * cannot leak a telegram room into the terminal picker; adapters pass their own
+ * surface and get a closed world back.
  */
-export function setTopicAccessModes(
-  topicIds: readonly string[],
-  accessMode: TopicAccessMode,
-): void {
-  if (topicIds.length === 0) return;
-  const normalized = normalizeTopicAccessMode(accessMode);
-  db.transaction(() => {
-    const update = db.query("UPDATE api_topics SET access_mode = ? WHERE id = ?");
-    for (const topicId of topicIds) update.run(normalized, topicId);
-  })();
-}
-
-export function listTopics(): TopicDto[] {
-  const rows = db
-    .query("SELECT * FROM api_topics ORDER BY last_message_at DESC")
-    .all() as TopicRow[];
+export function listTopics(opts: { surface?: TopicSurface } = {}): TopicDto[] {
+  const rows = (
+    opts.surface
+      ? db
+          .query("SELECT * FROM api_topics WHERE surface = ? ORDER BY last_message_at DESC")
+          .all(normalizeTopicSurface(opts.surface))
+      : db.query("SELECT * FROM api_topics ORDER BY last_message_at DESC").all()
+  ) as TopicRow[];
   const participants = getAllTopicParticipants();
   // Batch-load tell grants once: per-row queries would make every listTopics()
   // call O(N) extra statements as subagent counts grow.
@@ -816,12 +890,17 @@ export function getTopicByNameAndKind(title: string, kind: TopicKind): TopicDto 
   return r ? rowToDto(r) : null;
 }
 
+/**
+ * Titles are unique **per surface**, not per node: `otium` may exist once on
+ * the terminal, once on telegram and once on the Otium hub.
+ */
 export function findTopicTitleConflict(
   title: string,
   kind: TopicKind,
-  opts: { excludeTopicId?: string } = {},
+  opts: { excludeTopicId?: string; surface?: TopicSurface } = {},
 ): TopicDto | null {
   const wanted = normalizedTitle(title);
+  const surface = normalizeTopicSurface(opts.surface ?? defaultTopicSurface());
   const generalTitleRequested = wanted === normalizedTitle(GENERAL_TOPIC_ID);
   if (generalTitleRequested && opts.excludeTopicId !== GENERAL_TOPIC_ID) {
     const general = db.query("SELECT * FROM api_topics WHERE id = ?").get(GENERAL_TOPIC_ID) as
@@ -830,8 +909,8 @@ export function findTopicTitleConflict(
     if (general) return rowToDto(general);
   }
 
-  const params: string[] = [wanted];
-  let sql = "SELECT * FROM api_topics WHERE LOWER(TRIM(title)) = ?";
+  const params: string[] = [wanted, surface];
+  let sql = "SELECT * FROM api_topics WHERE LOWER(TRIM(title)) = ? AND surface = ?";
   if (kind !== "manager") {
     sql += " AND (kind = ? OR id = ?)";
     params.push(kind, GENERAL_TOPIC_ID);
@@ -845,8 +924,30 @@ export function findTopicTitleConflict(
   return row ? rowToDto(row) : null;
 }
 
+/**
+ * Move topics onto a surface. Used by adapters that own a classification the
+ * canonical store cannot derive on its own (the telegram chat↔topic mapping
+ * lives in that adapter's database, not this one).
+ */
+export function setTopicSurfaces(topicIds: readonly string[], surface: TopicSurface): number {
+  if (topicIds.length === 0) return 0;
+  const normalized = normalizeTopicSurface(surface);
+  let changed = 0;
+  db.transaction(() => {
+    const update = db.query("UPDATE api_topics SET surface = ? WHERE id = ? AND surface != ?");
+    for (const topicId of topicIds) {
+      changed += Number(update.run(normalized, topicId, normalized).changes ?? 0);
+    }
+  })();
+  return changed;
+}
+
 /** Look up a topic by title, restricted to topics where `userId` participates. */
-export function getTopicByNameForUser(title: string, userId: string): TopicDto | null {
+export function getTopicByNameForUser(
+  title: string,
+  userId: string,
+  opts: { surface?: TopicSurface } = {},
+): TopicDto | null {
   const trimmed = title.trim();
   const qualified = /^(agent|channel|manager):(.+)$/i.exec(trimmed);
   const requestedKind = qualified ? normalizeTopicKind(qualified[1]?.toLowerCase()) : null;
@@ -857,11 +958,18 @@ export function getTopicByNameForUser(title: string, userId: string): TopicDto |
        WHERE LOWER(t.title) = LOWER(?)
          AND t.id != ?
          AND t.visibility != 'hidden'
+         AND (? IS NULL OR t.surface = ?)
          AND EXISTS (
            SELECT 1 FROM topic_members m WHERE m.topic_id = t.id AND m.user_id = ?
          )`,
     )
-    .all(requestedTitle, GENERAL_TOPIC_ID, userId) as TopicRow[];
+    .all(
+      requestedTitle,
+      GENERAL_TOPIC_ID,
+      opts.surface ?? null,
+      opts.surface ?? null,
+      userId,
+    ) as TopicRow[];
   const matches = requestedKind ? rows.filter((row) => row.kind === requestedKind) : rows;
   return matches.length === 1 ? rowToDto(matches[0]!) : null;
 }

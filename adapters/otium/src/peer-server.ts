@@ -30,7 +30,6 @@ import {
   getRegistry,
   getTopicByNameForUser,
   getTopicSessionId,
-  isTopicShared,
   listTopics,
   logger,
   MAX_TELL_DEPTH,
@@ -111,14 +110,12 @@ function requirePrimaryOrigin(peer: Extract<PeerAuth, { ok: true }>): Response |
 /**
  * May another node address this topic by name (D-7)?
  *
- * Exactly one thing qualifies: the owner published the topic (`shared`, D-6).
- * This check also used to admit hub execution mirrors, which were a second and
- * non-consensual way onto the cross-node surface. No mirror can exist now that
- * the placement receiver is gone, so the question collapses back to
- * `isTopicShared` and publication consent is again the only gate.
+ * Exactly one thing qualifies: the room lives on the `otium` surface. Peers are
+ * an Otium-side concept, so cross-node addressing stays inside that surface and
+ * can never reach a terminal or telegram room (S-7).
  */
-function peerAddressable(topic: Pick<TopicDto, "accessMode">): boolean {
-  return isTopicShared(topic);
+function peerAddressable(topic: Pick<TopicDto, "surface">): boolean {
+  return topic.surface === "otium";
 }
 
 // ── Capability / health snapshots ────────────────────────────────────
@@ -301,7 +298,7 @@ async function handleSessions(req: Request): Promise<Response> {
   const userId = str(body, "userId");
   if (!userId) return jsonError("userId is required", 400);
 
-  const topics = listTopics().filter(
+  const topics = listTopics({ surface: "otium" }).filter(
     (topic) =>
       topic.kind !== "manager" &&
       !topic.isSubagent &&

@@ -236,7 +236,7 @@ describe("Clawgram-style onboarding", () => {
 
       fake.createMode = "reject";
       const title = `permission-retry-${randomUUID()}`;
-      const topic = registerTopic({ title, userId });
+      const topic = registerTopic({ title, userId, surface: "telegram" });
       await waitFor(() => fake.forumCalls.filter((call) => call.name === title).length === 1);
 
       fake.createMode = "auto";
@@ -269,7 +269,7 @@ describe("Clawgram-style onboarding", () => {
     const userId = `telegram-reconnect-${randomUUID()}`;
     const dbPath = freshDb();
     const title = `preserved-${randomUUID()}`;
-    const topic = registerTopic({ title, userId });
+    const topic = registerTopic({ title, userId, surface: "telegram" });
     const nextForum = FORUM - 1;
     const adapter = startTelegramAdapter({
       client: fake,

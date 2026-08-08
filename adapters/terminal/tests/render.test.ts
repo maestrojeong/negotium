@@ -208,7 +208,7 @@ describe("terminal renderer", () => {
       ),
     );
 
-    expect(output).toContain("› /private");
+    expect(output).toContain("› /spawn");
     expect(output).not.toContain("/new  reset the current session");
   });
 
@@ -456,31 +456,32 @@ describe("terminal renderer", () => {
     expect(output).toContain("Ctrl-C exit; work continues");
   });
 
-  test("groups manager, private, and public topics separately", () => {
+  test("groups manager rooms above the rest under one Topics heading", () => {
     const general = {
       ...topic(),
       id: "general",
       title: "General",
       kind: "manager" as const,
-      accessMode: "private" as const,
     };
-    const work = { ...topic(), id: "work", title: "Work", accessMode: "private" as const };
-    const shared = { ...topic(), id: "shared", title: "Shared", accessMode: "shared" as const };
+    const work = { ...topic(), id: "work", title: "Work" };
+    const other = { ...topic(), id: "other", title: "Other" };
     const state = {
-      ...setTopics(createInitialState("local"), [work, shared, general]),
+      ...setTopics(createInitialState("local"), [work, other, general]),
       overlay: "topics" as const,
     };
 
     const output = stripAnsi(renderApp(state, 120, 30));
     expect(output).toContain("  Manager");
-    expect(output).toContain("  Private");
-    expect(output).toContain("  Public");
-    expect(output.indexOf("Manager")).toBeLessThan(output.indexOf("○ General"));
-    expect(output.indexOf("○ General")).toBeLessThan(output.indexOf("────"));
-    expect(output.indexOf("────")).toBeLessThan(output.indexOf("Private"));
-    expect(output.indexOf("Private")).toBeLessThan(output.indexOf("○ Work"));
-    expect(output.indexOf("○ Work")).toBeLessThan(output.indexOf("Public"));
-    expect(output.indexOf("Public")).toBeLessThan(output.indexOf("○ Shared"));
+    expect(output).toContain("  Topics");
+    // Public/Private is gone with access mode: a terminal client only ever
+    // lists its own surface, so there is nothing left to split the list by.
+    expect(output).not.toContain("  Private");
+    expect(output).not.toContain("  Public");
+    // `lastIndexOf`: the overlay's own title line is also "Topics", so the
+    // group heading is the second occurrence.
+    expect(output.indexOf("  Manager")).toBeLessThan(output.indexOf("○ General"));
+    expect(output.indexOf("○ General")).toBeLessThan(output.lastIndexOf("  Topics"));
+    expect(output.lastIndexOf("  Topics")).toBeLessThan(output.indexOf("○ Work"));
   });
 
   test("shows active Cron, Memory, and Compact sessions in read-only groups", () => {
