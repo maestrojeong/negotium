@@ -121,6 +121,52 @@ no isolation. Adding it *after* rooms from two workspaces have already mixed in
 one store means splitting them apart by hand. So: build multi-join and the
 scope together, or neither.
 
+**S-13 — a threaded mention in a *node-mapped* room still gets no answer.
+Scoped, awaiting a decision on one merge rule.**
+
+S-11 fixed threads for Otium-native rooms. A room backed by the node is still
+broken, and worse than before the thread pane existed: the reply is stored and
+the answer never comes. Two refusals sit in the way —
+`apps/runtime-api/src/api/routes/messages.ts:363` rejects threads/mentions on a
+mapped room, and `apps/runtime-api/src/api/routes/ai.ts:2094` rejects the whole
+mapped room from the local AI route — so the client posts the reply, then gets a
+409 for the turn.
+
+**The contract extension is smaller than it first looks.** An earlier claim in
+this document's history — that Negotium has no thread concept — was wrong.
+The canonical store already models threads end to end: `api_messages.thread_root_id`
+(`packages/core/src/storage/api-messages.ts:38`), the DTO field
+(`packages/core/src/types/api.ts:246`), read/write mapping (`:180`, `:238`),
+thread summaries (`:486`) and exclusion of replies from the main list (`:434`).
+Nothing needs a migration.
+
+What is missing is carrying one thread id from the gateway request to the
+assistant messages of that turn:
+
+1. `UserTurnEnvelope` (`packages/core/src/runtime/user-turn-envelope.ts:2`) gains
+   `threadRootId?`. It is persisted as JSON, so this is additive — no schema change.
+2. `submitRuntimeGatewayTurn` (`packages/core/src/application/submit-runtime-gateway-turn.ts:17`)
+   accepts it, stamps the user message, and puts it in the envelope.
+3. `POST /api/v1/control/runtime/v1/turns` (`packages/node/src/control.ts`) accepts
+   and forwards it.
+4. The turn's assistant text has exactly one chokepoint —
+   `emitPendingAssistantMessage` (`packages/core/src/runtime/turn-event-stream.ts:218`) —
+   which already receives a per-turn `execution` object carrying `sourceNode`
+   (`:131`). `threadRootId` rides there, plumbed from the pending request through
+   `startAiTurn` → `streamAgentEvents` (`turn-runner.ts:267,1648`).
+5. Otium routes a mapped room's threaded mention through `submitTurn` with the
+   thread id instead of the local AI route, and drops the blanket refusal.
+
+**The open question — merge semantics.** Negotium deliberately merges pending
+user messages for a busy room into one batch
+(`mergeRuntimeUserTurnRequest`). If one queued message was asked in a thread and
+another in the channel, the merged turn has two possible homes and no correct
+answer. Options: (a) answer in the channel whenever a batch is mixed, (b) never
+merge across thread boundaries — keep a separate pending request per thread, (c)
+answer each contributing message in its own thread by splitting the reply. (b)
+is the only one that is always right and the only one that changes queue
+behaviour. This needs a decision before implementation.
+
 ## Non-goals
 
 - Making a topic visible on two surfaces at once.
