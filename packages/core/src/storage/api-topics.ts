@@ -484,7 +484,7 @@ function renameSurfaceTitleCollisions(): void {
   const taken = new Set<string>();
   const update = db.query("UPDATE api_topics SET title = ? WHERE id = ?");
   for (const row of rows) {
-    const key = (title: string) => `${row.surface} ${row.kind} ${normalizedTitle(title)}`;
+    const key = (title: string) => [row.surface, row.kind, normalizedTitle(title)].join("\u0000");
     if (!taken.has(key(row.title))) {
       taken.add(key(row.title));
       continue;
@@ -770,7 +770,11 @@ export function upsertTopic(t: TopicDto): void {
       t.isFork ? 1 : 0,
       t.isSubagent ? 1 : 0,
       normalizeTopicVisibility(t.visibility),
-      normalizeTopicSurface(t.surface),
+      // A DTO without a surface means "wherever this host puts rooms", not
+      // "terminal": embedding hosts (Otium) build topic literals by hand and
+      // never name one, so defaulting to the literal would file every hub room
+      // on the wrong surface.
+      normalizeTopicSurface(t.surface ?? defaultTopicSurface()),
       t.subagentReportMode ?? "auto",
     );
     db.query("DELETE FROM topic_members WHERE topic_id = ?").run(t.id);

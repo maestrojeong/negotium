@@ -199,6 +199,22 @@ describe("api topic storage", () => {
     expect(otiumIds).not.toContain(local.id);
   });
 
+  test("an upsert without a surface lands on the host default, not on terminal", () => {
+    // Embedding hosts (Otium) build topic literals by hand and never name a
+    // surface; the host declares one in its environment instead.
+    const previous = process.env.NEGOTIUM_DEFAULT_SURFACE;
+    process.env.NEGOTIUM_DEFAULT_SURFACE = "otium";
+    const hosted = makeTopic();
+    createdTopicIds.push(hosted.id);
+    try {
+      upsertTopic(hosted);
+      expect(getTopic(hosted.id)?.surface).toBe("otium");
+    } finally {
+      if (previous === undefined) delete process.env.NEGOTIUM_DEFAULT_SURFACE;
+      else process.env.NEGOTIUM_DEFAULT_SURFACE = previous;
+    }
+  });
+
   test("the same title may exist once per surface", () => {
     const title = `surface-dup-${randomUUID().slice(0, 8)}`;
     const local = { ...makeTopic(), title };
