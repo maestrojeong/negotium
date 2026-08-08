@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DATA_DIR, logger } from "@negotium/core";
-import { peerWorkspaceId } from "@/central";
+import { attachedOtiumCells, peerWorkspaceIdForCell } from "@/central";
 import type { OtiumJoin } from "@/join";
 
 export interface WorkspaceScopeRecord {
@@ -86,11 +86,24 @@ export async function resolveSurfaceScope(join: OtiumJoin): Promise<string | nul
   const cached = cachedSurfaceScope(join);
   if (cached) return cached;
   try {
-    const workspaceId = await peerWorkspaceId();
+    const workspaceId = await peerWorkspaceIdForCell(join.cellId);
     if (!workspaceId) return null;
     return cacheSurfaceScope(join, workspaceId);
   } catch (err) {
     logger.warn({ err }, "otium: workspace scope unresolved (will retry on the next contact)");
     return null;
   }
+}
+
+/**
+ * Which workspace an attached cell speaks for, without touching the network.
+ *
+ * Inbound requests are authenticated per cell (M-8) and must be answered
+ * synchronously, so this reads only what an earlier resolution already wrote.
+ * Null means "not attached, or not yet resolved" — both of which callers must
+ * treat as "this cell claims no workspace", never as a wildcard.
+ */
+export function surfaceScopeForCell(cellId: string): string | null {
+  const join = attachedOtiumCells().find((candidate) => candidate.cellId === cellId);
+  return join ? cachedSurfaceScope(join) : null;
 }

@@ -32,15 +32,22 @@ import { TunnelClient, type TunnelClientOptions } from "@/tunnel-client";
 import { cachedSurfaceScope, resolveSurfaceScope } from "@/workspace-scope";
 
 export {
+  attachedOtiumCells,
+  attachOtiumCentralCell,
   configureOtiumCentral,
+  detachOtiumCentralCell,
+  isOtiumCentralConfigured,
   listPeerNodes,
+  listPeerNodesForCell,
   mintPeerToken,
   otiumCentralConfig,
   type PeerNode,
   peerWorkspaceId,
+  peerWorkspaceIdForCell,
   resetPeerCentralCaches,
   resolvePeerNodeByCellId,
   selfPeerNode,
+  selfPeerNodeForCell,
   type VerifiedPeer,
   verifyPeerToken,
 } from "@/central";
@@ -82,6 +89,7 @@ export {
   cachedSurfaceScope,
   resolveSurfaceScope,
   surfaceScopeFor,
+  surfaceScopeForCell,
   type WorkspaceScopeRecord,
 } from "@/workspace-scope";
 

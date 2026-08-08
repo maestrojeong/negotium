@@ -12,7 +12,7 @@ import {
   mintPeerToken,
   type PeerNode,
   resolvePeerNodeByCellId,
-  selfPeerNode,
+  selfPeerNodeForCell,
 } from "@/central";
 import { PEER_PROTOCOL_VERSION, type PeerSessionEntry } from "@/protocol";
 import {
@@ -40,7 +40,7 @@ async function postPeer<T = Record<string, never>>(
   ({ ok: true } & T) | { ok: false; error: string; ambiguous?: boolean; status?: number }
 > {
   try {
-    const token = await mintPeerToken(node.cellId);
+    const token = await mintPeerToken(node);
     const response = await fetch(`${node.baseUrl.replace(/\/+$/, "")}${path}`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -84,7 +84,7 @@ async function postPeerIdempotent<T = Record<string, never>>(
 
 async function peerSupportsRemoteAsk(node: PeerNode): Promise<boolean> {
   try {
-    const token = await mintPeerToken(node.cellId);
+    const token = await mintPeerToken(node);
     const response = await fetch(`${node.baseUrl.replace(/\/+$/, "")}/api/v1/peer/capabilities`, {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
@@ -104,8 +104,15 @@ async function findNode(nodeName: string): Promise<PeerNode | null> {
   return find(await listPeerNodes()) ?? find(await listPeerNodes({ fresh: true }));
 }
 
-async function originLabel(args: PeerForwardArgs): Promise<string> {
-  const self = await selfPeerNode();
+/**
+ * How the caller identifies itself to `peer`.
+ *
+ * Node identity is per workspace, so the label must be the name this node has
+ * in the *peer's* workspace (M-5) — the same node can be "hub" in one and
+ * "laptop" in another, and sending the wrong one addresses a stranger.
+ */
+async function originLabel(args: PeerForwardArgs, peer: PeerNode): Promise<string> {
+  const self = await selfPeerNodeForCell(peer.viaCellId).catch(() => null);
   const local = args.fromTitle?.trim() || args.fromKey?.trim() || "peer";
   return self?.nodeName ? `${self.nodeName}/${local}` : local;
 }
@@ -113,12 +120,12 @@ async function originLabel(args: PeerForwardArgs): Promise<string> {
 async function forward(args: PeerForwardArgs): Promise<PeerForwardResult> {
   const node = await findNode(args.toNode).catch(() => null);
   if (!node || node.self) return { ok: false, error: `unknown remote node "${args.toNode}"` };
-  const self = await selfPeerNode().catch(() => null);
+  const self = await selfPeerNodeForCell(node.viaCellId).catch(() => null);
   if (!self) return { ok: false, error: "local peer node is not attached" };
   if (!self.isPrimary && !node.isPrimary) {
     return { ok: false, error: "worker peer calls must target the primary hub" };
   }
-  const fromLabel = await originLabel(args);
+  const fromLabel = await originLabel(args, node);
   const requestId = args.requestId;
 
   if (args.action === "ask") {
@@ -205,13 +212,18 @@ async function forward(args: PeerForwardArgs): Promise<PeerForwardResult> {
 
 async function sessions(userId: string, sourceQueryId?: string) {
   const nodes = await listPeerNodes().catch(() => []);
-  const self = nodes.find((node) => node.self);
-  if (!self) return { ok: false, nodes: [] };
+  const selves = new Map(nodes.filter((node) => node.self).map((node) => [node.viaCellId, node]));
+  if (selves.size === 0) return { ok: false, nodes: [] };
   return {
     ok: true,
     nodes: await Promise.all(
       nodes
-        .filter((node) => !node.self && node.nodeName && (self.isPrimary || node.isPrimary))
+        .filter((node) => {
+          // Reachability is decided inside the node's own workspace: being the
+          // primary of workspace A says nothing about a worker in workspace B.
+          const self = selves.get(node.viaCellId);
+          return !node.self && node.nodeName && self && (self.isPrimary || node.isPrimary);
+        })
         .map(async (node) => {
           const result = await postPeer<{ sessions: PeerSessionEntry[] }>(
             node,
@@ -258,13 +270,16 @@ export function flushPeerReplyOutbox(): Promise<void> {
     for (const pending of listPeerReplyOutbox()) {
       const node = await resolvePeerNodeByCellId(pending.node_cell_id).catch(() => null);
       if (!node) continue;
-      const fromLabel = await originLabel({
-        action: "ask",
-        toNode: pending.node_name,
-        toTopic: "",
-        userId: pending.user_id,
-        fromTitle: pending.source_title,
-      });
+      const fromLabel = await originLabel(
+        {
+          action: "ask",
+          toNode: pending.node_name,
+          toTopic: "",
+          userId: pending.user_id,
+          fromTitle: pending.source_title,
+        },
+        node,
+      );
       const result = await postPeer(node, "/api/v1/peer/reply", {
         v: PEER_PROTOCOL_VERSION,
         requestId: pending.request_id,

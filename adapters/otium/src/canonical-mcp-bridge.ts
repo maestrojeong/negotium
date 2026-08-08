@@ -99,7 +99,7 @@ async function forwardCanonicalTool(
   const hub = await resolvePeerNodeByCellId(capability.hubCellId).catch(() => null);
   if (!hub?.isPrimary || hub.self) return { error: "canonical hub is unavailable", status: 503 };
   try {
-    const peerToken = await mintPeerToken(hub.cellId);
+    const peerToken = await mintPeerToken(hub);
     const response = await fetch(
       `${hub.baseUrl.replace(/\/+$/, "")}/api/v1/peer/bridge/canonical-mcp`,
       {

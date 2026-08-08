@@ -43,7 +43,7 @@ export const otiumPeerRuntimeBridge = {
 
     let token: string;
     try {
-      token = await mintPeerToken(hubNode.cellId);
+      token = await mintPeerToken(hubNode);
     } catch (err) {
       return errorResult(`Error: Failed to spawn on hub: ${(err as Error).message}`);
     }
@@ -92,7 +92,7 @@ export const otiumPeerRuntimeBridge = {
     if (!hubNode) return errorResult("Error: Hub node is no longer attached.");
     let token: string;
     try {
-      token = await mintPeerToken(hubNode.cellId);
+      token = await mintPeerToken(hubNode);
     } catch (error) {
       return errorResult(`Error: Failed to open hub question: ${(error as Error).message}`);
     }
@@ -155,7 +155,7 @@ export const otiumPeerRuntimeBridge = {
     const hubNode = await resolvePeerNodeByCellId(request.bridge.hubCellId).catch(() => null);
     if (!hubNode) return errorResult("Error: Hub node is no longer attached.");
     try {
-      const token = await mintPeerToken(hubNode.cellId);
+      const token = await mintPeerToken(hubNode);
       const response = await fetch(
         `${hubNode.baseUrl.replace(/\/+$/, "")}/api/v1/peer/bridge/self-config`,
         {
@@ -196,7 +196,7 @@ export const otiumPeerRuntimeBridge = {
     if (!hubNode) return { ok: false, error: "hub node is no longer attached" };
     let token: string;
     try {
-      token = await mintPeerToken(hubNode.cellId);
+      token = await mintPeerToken(hubNode);
     } catch (error) {
       return { ok: false, error: `peer token mint failed: ${(error as Error).message}` };
     }
@@ -282,7 +282,7 @@ export const otiumPeerRuntimeBridge = {
     const hubNode = await resolvePeerNodeByCellId(request.bridge.hubCellId).catch(() => null);
     if (!hubNode) return { ok: false, error: "hub node is no longer attached" };
     try {
-      const token = await mintPeerToken(hubNode.cellId);
+      const token = await mintPeerToken(hubNode);
       const form = new FormData();
       form.set("hostQueryId", request.bridge.hostQueryId);
       form.set("userId", request.userId);

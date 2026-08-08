@@ -6,9 +6,7 @@
 
 import type { OtiumJoin } from "@/join";
 
-const WORKSPACE_ID = "ws_test";
 export const HUB_CELL_ID = "cell_hub";
-const WORKER_CELL_ID = "cell_worker";
 
 /** Tokens the fake central recognizes. */
 export const HUB_TOKEN = "ptk_from_hub";
@@ -33,7 +31,20 @@ export interface FakeCentral {
   stop: () => void;
 }
 
-export function startFakeCentral(): FakeCentral {
+/** Overrides for a second, independent workspace in multi-join tests. */
+export interface FakeCentralOptions {
+  workspaceId?: string;
+  workerCellId?: string;
+  hubCellId?: string;
+  /** Tokens this central accepts as its hub; anything else is rejected. */
+  hubToken?: string;
+}
+
+export function startFakeCentral(options: FakeCentralOptions = {}): FakeCentral {
+  const WORKSPACE_ID = options.workspaceId ?? "ws_test";
+  const HUB_CELL_ID = options.hubCellId ?? "cell_hub";
+  const WORKER_CELL_ID = options.workerCellId ?? "cell_worker";
+  const HUB_TOKEN = options.hubToken ?? "ptk_from_hub";
   const verifyRequests: string[] = [];
   const state = {
     hubBaseUrl: "http://127.0.0.1:1",

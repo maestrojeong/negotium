@@ -47,7 +47,7 @@ import {
   vaultList,
   vaultSet,
 } from "@negotium/core";
-import { otiumCentralConfig, type VerifiedPeer, verifyPeerToken } from "@/central";
+import { isOtiumCentralConfigured, type VerifiedPeer, verifyPeerToken } from "@/central";
 import { forwardGatewayRequest, OTIUM_GATEWAY_FORWARD_PREFIX } from "@/gateway-forward";
 import { MAX_PEER_MESSAGE_LENGTH, PEER_PROTOCOL_VERSION, type PeerSessionEntry } from "@/protocol";
 import { acceptRemoteAskReplyResult } from "@/session-bridge";
@@ -57,6 +57,7 @@ import {
   peerInboxPayloadHash,
   releasePeerInboxRequest,
 } from "@/store";
+import { surfaceScopeForCell } from "@/workspace-scope";
 
 const RUNTIME_VERSION = NEGOTIUM_VERSION;
 
@@ -91,7 +92,7 @@ function checkProtocol(body: Record<string, unknown>): Response | null {
 type PeerAuth = { ok: false; response: Response } | { ok: true; verified: VerifiedPeer };
 
 async function requirePeer(req: Request): Promise<PeerAuth> {
-  if (!otiumCentralConfig()) {
+  if (!isOtiumCentralConfigured()) {
     return { ok: false, response: jsonError("multi-node is disabled", 403) };
   }
   const token = bearer(req);
@@ -114,8 +115,28 @@ function requirePrimaryOrigin(peer: Extract<PeerAuth, { ok: true }>): Response |
  * an Otium-side concept, so cross-node addressing stays inside that surface and
  * can never reach a terminal or telegram room (S-7).
  */
-function peerAddressable(topic: Pick<TopicDto, "surface">): boolean {
-  return topic.surface === "otium";
+/**
+ * ...and does it belong to the workspace this caller was verified against?
+ *
+ * With several workspaces attached, the surface alone is no longer a boundary:
+ * every one of them uses `otium`. A token verified for workspace A must not
+ * reach a room filed under workspace B (M-8) — that is the whole security
+ * argument for multi-join, so it is checked at every addressing site rather
+ * than trusted to the caller.
+ *
+ * A room with no workspace is filed under none, so it is reachable from any
+ * cell. Those are rooms that predate the scope or were created while it was
+ * still unresolved; refusing them would strand real rooms to close a hole that
+ * is not open, since "unscoped" is never "workspace B".
+ */
+function peerAddressable(
+  topic: Pick<TopicDto, "surface" | "surfaceScope">,
+  peer: Extract<PeerAuth, { ok: true }>,
+): boolean {
+  if (topic.surface !== "otium") return false;
+  const roomScope = topic.surfaceScope ?? null;
+  if (!roomScope) return true;
+  return roomScope === surfaceScopeForCell(peer.verified.viaCellId);
 }
 
 // ── Capability / health snapshots ────────────────────────────────────
@@ -195,7 +216,7 @@ async function handleAbort(req: Request): Promise<Response> {
   // it named one placed turn. Aborting is purely topic-scoped now, which is what
   // session-comm has always used.
   const topic = getTopicByNameForUser(toTopic, userId);
-  if (!topic || !peerAddressable(topic)) {
+  if (!topic || !peerAddressable(topic, peer)) {
     return jsonError(`shared topic "${toTopic}" not found on this node`, 404);
   }
   appendJsonlEntry(sessionInboxPath(userId, topic.id), {
@@ -235,7 +256,7 @@ async function handleTell(req: Request): Promise<Response> {
   }
 
   const topic = getTopicByNameForUser(toTopic, userId);
-  if (!topic || !peerAddressable(topic)) {
+  if (!topic || !peerAddressable(topic, peer)) {
     return jsonError(`shared topic "${toTopic}" not found on this node`, 404);
   }
 
@@ -302,7 +323,7 @@ async function handleSessions(req: Request): Promise<Response> {
     (topic) =>
       topic.kind !== "manager" &&
       !topic.isSubagent &&
-      peerAddressable(topic) &&
+      peerAddressable(topic, peer) &&
       topic.participants.some((p) => p.userId === userId),
   );
   const titleCounts = new Map<string, number>();
@@ -357,7 +378,7 @@ async function handleAsk(req: Request): Promise<Response> {
     return jsonError("fromDepth must be a non-negative integer", 400);
   }
   const topic = getTopicByNameForUser(toTopic, userId);
-  if (!topic || !peerAddressable(topic)) {
+  if (!topic || !peerAddressable(topic, peer)) {
     return jsonError(`shared topic "${toTopic}" not found on this node`, 404);
   }
   if (!topic.agent) return jsonError(`topic "${toTopic}" has no AI invited`, 409);
@@ -484,7 +505,7 @@ export async function handleOtiumPeerRequest(req: Request): Promise<Response | n
   if (path === "/ready" && req.method === "GET") {
     // Unauthenticated hub probe (3s timeout hub-side). Only claim readiness
     // when the worker is actually joined; otherwise let the host decide.
-    if (!otiumCentralConfig()) return null;
+    if (!isOtiumCentralConfigured()) return null;
     return Response.json({ ok: true });
   }
 

@@ -14,8 +14,10 @@ import { FALLBACK_AGENT, resolveTopicWorkspaceDir } from "#platform/config";
 import { RESERVED_TOPIC_NAMES } from "#platform/constants";
 import { logger } from "#platform/logger";
 import {
+  defaultSurfaceScope,
   defaultTopicSurface,
   findTopicTitleConflict,
+  normalizeSurfaceScope,
   normalizeTopicKind,
   normalizeTopicState,
   normalizeTopicSurface,
@@ -50,6 +52,11 @@ export interface RegisterTopicOptions {
    * adapter must pass their own surface; unset falls back to the host default.
    */
   surface?: TopicSurface;
+  /**
+   * Which instance of that surface owns the room. Only meaningful for `otium`;
+   * unset means "the workspace this process is attached to".
+   */
+  surfaceScope?: string | null;
 }
 
 /**
@@ -68,7 +75,16 @@ export function registerTopic(opts: RegisterTopicOptions): TopicDto {
     throw new TopicValidationError("Manager rooms are system-managed");
   }
   const surface = normalizeTopicSurface(opts.surface ?? defaultTopicSurface());
-  const conflict = findTopicTitleConflict(title, requestedKind, { surface });
+  // Which instance of that surface — for Otium, which workspace (M-1). Names
+  // collide only inside one workspace, so the conflict check must be scoped the
+  // same way the row will be written.
+  const surfaceScope =
+    opts.surfaceScope !== undefined
+      ? normalizeSurfaceScope(opts.surfaceScope)
+      : surface === "otium"
+        ? defaultSurfaceScope()
+        : null;
+  const conflict = findTopicTitleConflict(title, requestedKind, { surface, surfaceScope });
   if (conflict) {
     throw new TopicValidationError(`A topic named "${title}" already exists on ${surface}`);
   }
@@ -113,6 +129,7 @@ export function registerTopic(opts: RegisterTopicOptions): TopicDto {
     aiMode,
     participants: [{ userId: opts.userId, role: "owner" }],
     surface,
+    surfaceScope,
     createdAt: now,
     lastMessageAt: now,
   };

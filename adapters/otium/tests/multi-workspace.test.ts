@@ -1,0 +1,166 @@
+/**
+ * M-5 / M-8 — two workspaces attached at once.
+ *
+ * The whole point of multi-join is that the workspaces cannot see each other,
+ * so these tests are the security argument for the feature, not a convenience
+ * check: they assert that a peer authenticated by one workspace's Central is
+ * refused by every room belonging to the other.
+ */
+
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { registerTopic, setDefaultSurfaceScope } from "@negotium/core";
+import {
+  attachedOtiumCells,
+  attachOtiumCentralCell,
+  configureOtiumCentral,
+  detachOtiumCentralCell,
+  resetPeerCentralCaches,
+} from "@/central";
+import { handleOtiumPeerRequest } from "@/peer-server";
+import { PEER_PROTOCOL_VERSION } from "@/protocol";
+import { resolveSurfaceScope, surfaceScopeForCell } from "@/workspace-scope";
+import { type FakeCentral, startFakeCentral } from "./helpers";
+
+const BASE = "http://worker.local";
+const USER = `multi-ws-user-${randomUUID().slice(0, 8)}`;
+const ALPHA_HUB_TOKEN = "ptk_alpha_hub";
+const BETA_HUB_TOKEN = "ptk_beta_hub";
+
+let alpha: FakeCentral;
+let beta: FakeCentral;
+let alphaScope: string | null = null;
+let betaScope: string | null = null;
+const createdTopicIds: string[] = [];
+
+beforeAll(async () => {
+  alpha = startFakeCentral({
+    workspaceId: "ws_alpha",
+    workerCellId: "cell_worker_alpha",
+    hubCellId: "cell_hub_alpha",
+    hubToken: ALPHA_HUB_TOKEN,
+  });
+  beta = startFakeCentral({
+    workspaceId: "ws_beta",
+    workerCellId: "cell_worker_beta",
+    hubCellId: "cell_hub_beta",
+    hubToken: BETA_HUB_TOKEN,
+  });
+  configureOtiumCentral(null);
+  attachOtiumCentralCell(alpha.join);
+  attachOtiumCentralCell(beta.join);
+  alphaScope = await resolveSurfaceScope(alpha.join);
+  betaScope = await resolveSurfaceScope(beta.join);
+});
+
+afterAll(() => {
+  // The suite runs against a throwaway store (tests/setup.ts), so the rooms go
+  // with it; cascading deletes here would only race the runtime's topic locks.
+  createdTopicIds.length = 0;
+  setDefaultSurfaceScope(null);
+  configureOtiumCentral(null);
+  alpha.stop();
+  beta.stop();
+});
+
+function makeRoom(scope: string | null): { id: string; title: string } {
+  const previous = setDefaultSurfaceScope(scope);
+  try {
+    const topic = registerTopic({
+      title: `multi-ws-${randomUUID().slice(0, 8)}`,
+      userId: USER,
+      kind: "agent",
+      agent: "claude",
+      surface: "otium",
+    });
+    createdTopicIds.push(topic.id);
+    return { id: topic.id, title: topic.title };
+  } finally {
+    setDefaultSurfaceScope(previous);
+  }
+}
+
+async function tell(token: string, toTopic: string) {
+  const response = await handleOtiumPeerRequest(
+    new Request(`${BASE}/api/v1/peer/tell`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        v: PEER_PROTOCOL_VERSION,
+        requestId: randomUUID(),
+        userId: USER,
+        toTopic,
+        fromLabel: "hub/peer",
+        message: "cross-workspace probe",
+        depth: 0,
+      }),
+    }),
+  );
+  if (!response) throw new Error("expected a peer response");
+  return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+}
+
+describe("two attached workspaces", () => {
+  test("each cell keeps its own credentials and resolves its own workspace", () => {
+    expect(
+      attachedOtiumCells()
+        .map((join) => join.cellId)
+        .sort(),
+    ).toEqual(["cell_worker_alpha", "cell_worker_beta"]);
+    expect(alphaScope).not.toBeNull();
+    expect(betaScope).not.toBeNull();
+    // Two workspaces are two namespaces; sharing a scope would merge them.
+    expect(alphaScope).not.toBe(betaScope);
+    expect(surfaceScopeForCell("cell_worker_alpha")).toBe(alphaScope);
+    expect(surfaceScopeForCell("cell_worker_beta")).toBe(betaScope);
+  });
+
+  test("the same room name may exist in both workspaces", () => {
+    const first = makeRoom(alphaScope);
+    const previous = setDefaultSurfaceScope(betaScope);
+    try {
+      const second = registerTopic({
+        title: first.title,
+        userId: USER,
+        kind: "agent",
+        agent: "claude",
+        surface: "otium",
+      });
+      createdTopicIds.push(second.id);
+      expect(second.id).not.toBe(first.id);
+      expect(second.surfaceScope).toBe(betaScope);
+    } finally {
+      setDefaultSurfaceScope(previous);
+    }
+  });
+
+  test("a peer verified for one workspace cannot address the other's room", async () => {
+    const room = makeRoom(alphaScope);
+    resetPeerCentralCaches();
+
+    const refused = await tell(BETA_HUB_TOKEN, room.title);
+    expect(refused.status).toBe(404);
+
+    const accepted = await tell(ALPHA_HUB_TOKEN, room.title);
+    expect(accepted.status).toBe(200);
+  });
+
+  test("an unscoped room stays reachable from any workspace", async () => {
+    // Rooms that predate the scope column are filed under no workspace, so
+    // refusing them would strand real rooms without closing any hole.
+    const room = makeRoom(null);
+    expect((await tell(BETA_HUB_TOKEN, room.title)).status).toBe(200);
+    expect((await tell(ALPHA_HUB_TOKEN, room.title)).status).toBe(200);
+  });
+
+  test("detaching one workspace leaves the other authenticated", async () => {
+    const room = makeRoom(alphaScope);
+    expect(detachOtiumCentralCell("cell_worker_beta")).toBe(true);
+    try {
+      expect((await tell(BETA_HUB_TOKEN, room.title)).status).toBe(401);
+      expect((await tell(ALPHA_HUB_TOKEN, room.title)).status).toBe(200);
+    } finally {
+      attachOtiumCentralCell(beta.join);
+    }
+  });
+});
