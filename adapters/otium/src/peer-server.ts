@@ -37,6 +37,7 @@ import {
   OPTIONAL_FORUM_MCP_SERVERS,
   SUPPORTED_AGENTS,
   sessionInboxPath,
+  type TopicDto,
   VAULT_DESCRIPTION_MAX_LENGTH,
   VAULT_VALUE_MAX_BYTES,
   VAULT_VALUE_MIN_BYTES,
@@ -69,6 +70,7 @@ import { acceptRemoteAskReplyResult } from "@/session-bridge";
 import {
   claimPeerInboxRequest,
   getPeerSession,
+  isPeerMirrorTopic,
   type PeerInboxKind,
   peerInboxPayloadHash,
   releasePeerInboxRequest,
@@ -122,6 +124,19 @@ function requirePrimaryOrigin(peer: Extract<PeerAuth, { ok: true }>): Response |
   return peer.verified.fromIsPrimary
     ? null
     : jsonError("only the workspace hub may call this endpoint", 403);
+}
+
+/**
+ * May another node address this topic by name (D-7)?
+ *
+ * Two different things qualify, and conflating them is what caused duplicate
+ * rooms: a topic the owner published (`shared`), or a room the hub placed here
+ * (a mirror). Mirrors used to be marked `shared` purely to pass this check,
+ * which then made them look publishable to the Gateway's shared-topic
+ * discovery. Asking both questions separately keeps a mirror private.
+ */
+function peerAddressable(topic: Pick<TopicDto, "id" | "accessMode">): boolean {
+  return isTopicShared(topic) || isPeerMirrorTopic(topic.id);
 }
 
 // ── Capability / health snapshots ────────────────────────────────────
@@ -296,7 +311,7 @@ async function handleAbort(req: Request): Promise<Response> {
     return Response.json({ ok: true });
   }
   const topic = getTopicByNameForUser(toTopic, userId);
-  if (!topic || !isTopicShared(topic)) {
+  if (!topic || !peerAddressable(topic)) {
     return jsonError(`shared topic "${toTopic}" not found on this node`, 404);
   }
   appendJsonlEntry(sessionInboxPath(userId, topic.id), {
@@ -336,7 +351,7 @@ async function handleTell(req: Request): Promise<Response> {
   }
 
   const topic = getTopicByNameForUser(toTopic, userId);
-  if (!topic || !isTopicShared(topic)) {
+  if (!topic || !peerAddressable(topic)) {
     return jsonError(`shared topic "${toTopic}" not found on this node`, 404);
   }
 
@@ -403,7 +418,7 @@ async function handleSessions(req: Request): Promise<Response> {
     (topic) =>
       topic.kind !== "manager" &&
       !topic.isSubagent &&
-      isTopicShared(topic) &&
+      peerAddressable(topic) &&
       topic.participants.some((p) => p.userId === userId),
   );
   const titleCounts = new Map<string, number>();
@@ -458,7 +473,7 @@ async function handleAsk(req: Request): Promise<Response> {
     return jsonError("fromDepth must be a non-negative integer", 400);
   }
   const topic = getTopicByNameForUser(toTopic, userId);
-  if (!topic || !isTopicShared(topic)) {
+  if (!topic || !peerAddressable(topic)) {
     return jsonError(`shared topic "${toTopic}" not found on this node`, 404);
   }
   if (!topic.agent) return jsonError(`topic "${toTopic}" has no AI invited`, 409);

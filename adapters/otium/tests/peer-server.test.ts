@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
+  getTopic,
   NEGOTIUM_VERSION,
   registerTopic,
   resolveAttachmentByFileId,
@@ -9,7 +10,14 @@ import { configureOtiumCentral, resetPeerCentralCaches } from "@/central";
 import { installPeerFileHooks } from "@/peer-files";
 import { handleOtiumPeerRequest } from "@/peer-server";
 import { PEER_PROTOCOL_VERSION } from "@/protocol";
-import { type FakeCentral, HUB_TOKEN, startFakeCentral, WORKER_PEER_TOKEN } from "./helpers";
+import { provisionMirrorTopic } from "@/turn-bridge";
+import {
+  type FakeCentral,
+  HUB_CELL_ID,
+  HUB_TOKEN,
+  startFakeCentral,
+  WORKER_PEER_TOKEN,
+} from "./helpers";
 
 const BASE = "http://worker.local";
 const USER = "central-user-1";
@@ -284,6 +292,41 @@ describe("tell", () => {
 
     const conflict = await call("/api/v1/peer/tell", { token: HUB_TOKEN, body: tell("DIFFERENT") });
     expect(conflict.status).toBe(409);
+  });
+
+  test("reaches a private hub execution mirror, which is not published", async () => {
+    // The mirror is deliberately `private` so it stays out of the Gateway's
+    // shared-topic discovery. It must still be addressable by name (D-7), or
+    // making it private would silently break cross-node tell for placed rooms.
+    const provisioned = provisionMirrorTopic(HUB_CELL_ID, {
+      userId: USER,
+      hostTopicId: `host-tell-mirror-${crypto.randomUUID()}`,
+      topicTitle: "mirror-tell-target",
+      execution: {
+        agent: "claude",
+        model: "sonnet",
+        effort: "high",
+        mcp: [],
+        canSpawnSubagents: false,
+      },
+    });
+    if (!provisioned.ok) throw new Error(provisioned.error);
+    expect(getTopic(provisioned.localTopicId)?.accessMode).toBe("private");
+
+    const response = await call("/api/v1/peer/tell", {
+      token: HUB_TOKEN,
+      body: {
+        v: PEER_PROTOCOL_VERSION,
+        requestId: `tell-mirror-${crypto.randomUUID()}`,
+        userId: USER,
+        toTopic: "mirror-tell-target",
+        fromLabel: "hub-mac/회의록",
+        message: "hello mirror",
+        depth: 1,
+      },
+    });
+
+    expect(response.status).toBe(200);
   });
 
   test("unknown topic → 404, over-depth → 400, oversized message → 400", async () => {

@@ -34,12 +34,23 @@ if (!peerSessionColumns.has("binding_mode")) {
   db.exec("ALTER TABLE otium_peer_sessions ADD COLUMN binding_mode TEXT NOT NULL DEFAULT 'mirror'");
 }
 
-// Hub execution mirrors are ordinary visible top-level rooms in Terminal. They
-// are `shared` because the peer routes that drive them (`tell`, `abort`) require
-// it, not because a user published them.
+/**
+ * Hub execution mirrors are ordinary visible top-level rooms in Terminal, but
+ * they are NOT published: `access_mode = 'shared'` means the owner consented to
+ * surfacing a topic in Otium (D-6), and a mirror is the opposite — it exists
+ * *because* a hub room is already surfaced somewhere else.
+ *
+ * They used to be forced to `shared` because the peer routes that drive them
+ * (`tell`, `abort`) gated on it. That overloaded one flag with two meanings, and
+ * once `shared` became what the hub discovers over the Runtime Gateway it made
+ * every mirror look like a publishable topic — so the hub mirrored a mirror and
+ * grew a duplicate room per placed room. The routes now ask
+ * `isPeerMirrorTopic` instead, so this statement downgrades the rows it used to
+ * publish.
+ */
 db.run(
   `UPDATE api_topics
-   SET visibility = 'visible', access_mode = 'shared', is_subagent = 0
+   SET visibility = 'visible', access_mode = 'private', is_subagent = 0
    WHERE id IN (
      SELECT local_topic_id FROM otium_peer_sessions WHERE binding_mode = 'mirror'
    )`,
@@ -177,6 +188,25 @@ export function createPeerSession(
 
 export function listPeerSessions(): PeerSessionRow[] {
   return db.query<PeerSessionRow, []>("SELECT * FROM otium_peer_sessions").all();
+}
+
+/**
+ * Is this local topic a hub execution mirror?
+ *
+ * This is what the peer routes need, and it is not the same question as
+ * "is it shared". `shared` is the owner publishing a topic to Otium; a mirror is
+ * a room the hub placed here. Asking the right question is what lets a mirror
+ * stay private and therefore stay out of the Gateway's shared-topic discovery.
+ */
+export function isPeerMirrorTopic(localTopicId: string): boolean {
+  return Boolean(
+    db
+      .query<{ found: number }, string>(
+        `SELECT 1 AS found FROM otium_peer_sessions
+         WHERE local_topic_id = ? AND binding_mode = 'mirror' LIMIT 1`,
+      )
+      .get(localTopicId),
+  );
 }
 
 export interface PeerTopicCleanupResult {

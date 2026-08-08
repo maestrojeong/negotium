@@ -4,7 +4,7 @@ import { configureOtiumCentral, type PeerNode } from "@/central";
 import { getActiveForwarder, type SendPeerEvent } from "@/event-backflow";
 import { storePeerInputFile } from "@/peer-files";
 import { PEER_PROTOCOL_VERSION, type PlacedTopicExecutionSpec } from "@/protocol";
-import { getPeerSession, getPeerTurnRequest } from "@/store";
+import { getPeerSession, getPeerTurnRequest, isPeerMirrorTopic } from "@/store";
 import { __setTurnTriggerForTests, provisionMirrorTopic, runPeerTurn } from "@/turn-bridge";
 import { type FakeCentral, HUB_CELL_ID, startFakeCentral, waitFor } from "./helpers";
 
@@ -78,8 +78,15 @@ describe("provisionMirrorTopic", () => {
     expect(topic?.agent).toBe("claude");
     expect(topic?.isSubagent).toBeUndefined();
     expect(topic?.visibility).toBe("visible");
-    expect(topic?.accessMode).toBe("shared");
+    // Private, and this matters: `shared` is the owner publishing a topic to
+    // Otium, so a `shared` mirror shows up in the Gateway's shared-topic
+    // discovery and the hub creates a second room mirroring the mirror of its
+    // own room. Visible in Terminal, invisible to discovery.
+    expect(topic?.accessMode).toBe("private");
     expect(topic?.participants).toEqual([{ userId: USER, role: "owner" }]);
+    // Still reachable by name from another node (D-7) — the peer routes ask
+    // `isPeerMirrorTopic`, not `isTopicShared`.
+    expect(isPeerMirrorTopic(result.localTopicId)).toBe(true);
 
     const config = getApiTopicConfig(result.localTopicId);
     expect(config?.model).toBe("sonnet");

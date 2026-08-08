@@ -126,7 +126,10 @@ export function provisionMirrorTopic(
     participants: [{ userId: payload.userId, role: "owner" }],
     isSubagent: undefined,
     visibility: "visible",
-    accessMode: "shared",
+    // Private on purpose: a mirror is not owner-published. Marking it `shared`
+    // would put it in the Gateway's shared-topic discovery, and the hub would
+    // create a second room mirroring the mirror of its own room.
+    accessMode: "private",
     ...(execution.description ? { description: execution.description } : {}),
     createdAt: current?.createdAt ?? now,
     lastMessageAt: now,
