@@ -84,7 +84,7 @@ describe("default session-comm MCP host", () => {
     inboxPaths.push(sessionInboxPath(userId, sibling.id), sessionInboxPath(userId, stranger.id));
 
     const host = createDefaultSessionCommMcpHost();
-    const listed = await host.listSessions(context(source), {});
+    const listed = await host.listSessions(context(source));
     const rendered = JSON.stringify(listed);
     expect(rendered).toContain(sibling.title);
     // Same surface, different workspace: the boundary the whole feature exists
