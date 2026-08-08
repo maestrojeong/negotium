@@ -189,6 +189,7 @@ describe("createDerivedTopic", () => {
       participants: [{ userId, role: "owner" }],
       visibility: "hidden",
       surface: "otium",
+      surfaceScope: "ws_derive_parent",
       createdAt: now,
       lastMessageAt: now,
     });
@@ -199,6 +200,9 @@ describe("createDerivedTopic", () => {
       childId = child?.id;
       expect(child?.visibility).toBe("hidden");
       expect(child?.surface).toBe("otium");
+      // A subagent joins its parent's workspace, not whatever this process is
+      // currently attached to (M-1).
+      expect(child?.surfaceScope).toBe("ws_derive_parent");
     } finally {
       if (childId) {
         deleteTopic(childId);

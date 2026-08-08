@@ -15,7 +15,13 @@ import { deleteManagedBrowserProfile } from "#platform/playwright/profile-manage
 import { sessionInboxPath } from "#query/session-inbox-path";
 import { sanitizeId } from "#security/sanitize";
 import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
-import { defaultTopicSurface, getTopic, listTopics, upsertTopic } from "#storage/api-topics";
+import {
+  defaultSurfaceScope,
+  defaultTopicSurface,
+  getTopic,
+  listTopics,
+  upsertTopic,
+} from "#storage/api-topics";
 import {
   assignTopicBrowserProfile,
   getBrowserProfileOwner,
@@ -50,9 +56,17 @@ function currentTopic(context: SessionCommContext) {
 }
 
 function targetCatalog(context: SessionCommContext) {
-  const surface =
-    (context.currentTopicId ? getTopic(context.currentTopicId)?.surface : undefined) ??
-    defaultTopicSurface();
+  const current = context.currentTopicId ? getTopic(context.currentTopicId) : null;
+  const surface = current?.surface ?? defaultTopicSurface();
+  // A room may only address rooms in its own workspace (M-8): with several
+  // Otium workspaces attached, "same surface" is no longer a boundary — two
+  // workspaces share the `otium` surface and must still be invisible to each
+  // other. A room with no scope addresses the other unscoped rooms.
+  const surfaceScope = current
+    ? (current.surfaceScope ?? null)
+    : surface === "otium"
+      ? defaultSurfaceScope()
+      : null;
   return createSessionTargetCatalog({
     currentTopicId: context.currentTopicId,
     currentTopicName: context.currentTopic,
@@ -60,7 +74,7 @@ function targetCatalog(context: SessionCommContext) {
     isAgent: isAgentKind,
     // Scoped in the store query, not after the fact.
     listRows: () =>
-      listTopics({ surface })
+      listTopics({ surface, surfaceScope })
         .filter((topic) => topic.participants.some((p) => p.userId === context.userId))
         .map((topic) => ({
           id: topic.id,

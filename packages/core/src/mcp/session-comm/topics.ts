@@ -76,26 +76,32 @@ export function validateTarget(to: string): ValidateTargetResult {
  * target list below can be filtered *in SQL* rather than loaded whole and
  * filtered in memory (S-6: the store decides what a surface can see).
  */
-function readCurrentSurface(): string | undefined {
-  if (!existsSync(SESSIONS_DB)) return undefined;
+interface CurrentPlacement {
+  surface: string | undefined;
+  /** Which Otium workspace owns this room; null on the single-instance surfaces. */
+  surfaceScope: string | null;
+}
+
+function readCurrentPlacement(): CurrentPlacement {
+  if (!existsSync(SESSIONS_DB)) return { surface: undefined, surfaceScope: null };
   try {
     return withDb((db) => {
       const row = currentTopicId
         ? (db
-            .query<{ surface: string | null }, string>(
-              "SELECT surface FROM api_topics WHERE id = ?",
+            .query<{ surface: string | null; surface_scope: string | null }, string>(
+              "SELECT surface, surface_scope FROM api_topics WHERE id = ?",
             )
             .get(currentTopicId) ?? undefined)
         : (db
-            .query<{ surface: string | null }, string>(
-              "SELECT surface FROM api_topics WHERE title = ? LIMIT 1",
+            .query<{ surface: string | null; surface_scope: string | null }, string>(
+              "SELECT surface, surface_scope FROM api_topics WHERE title = ? LIMIT 1",
             )
             .get(currentTopic) ?? undefined);
-      return row?.surface ?? undefined;
+      return { surface: row?.surface ?? undefined, surfaceScope: row?.surface_scope ?? null };
     });
   } catch (e) {
     process.stderr.write(`warn: session-comm: failed to read the current surface: ${e}\n`);
-    return undefined;
+    return { surface: undefined, surfaceScope: null };
   }
 }
 
@@ -110,7 +116,7 @@ function sessionTargetRows(): Array<{
 }> {
   if (!existsSync(SESSIONS_DB)) return [];
   try {
-    const surface = currentSessionSurface();
+    const { surface, surfaceScope } = currentSessionPlacement();
     return withDb((db) => {
       return db
         .query<
@@ -129,9 +135,13 @@ function sessionTargetRows(): Array<{
            FROM api_topics t
            INNER JOIN topic_members m ON m.topic_id = t.id
            WHERE m.user_id = ?
-             AND (? IS NULL OR t.surface IS NULL OR t.surface = ?)`,
+             AND (? IS NULL OR t.surface IS NULL OR t.surface = ?)
+             -- Two Otium workspaces share the otium surface and must still be
+             -- invisible to each other (M-8), so the workspace is part of the
+             -- boundary, not a refinement of it.
+             AND t.surface_scope IS ?`,
         )
-        .all(userId, surface ?? null, surface ?? null);
+        .all(userId, surface ?? null, surface ?? null, surfaceScope);
     });
   } catch (e) {
     process.stderr.write(`warn: session-comm: failed to load topics from DB: ${e}\n`);
@@ -150,22 +160,22 @@ export function getTopicsForUser(): { [name: string]: TopicEntry } {
 }
 
 /**
- * Surface of the room this MCP server is serving. Read once from the canonical
- * store: session-comm only ever addresses sessions on the same surface.
+ * Where the room this MCP server is serving lives. Read once from the canonical
+ * store: session-comm only ever addresses sessions on the same surface, and
+ * within it, in the same workspace.
  */
-let cachedSessionSurface: { value: string | undefined } | null = null;
+let cachedSessionPlacement: CurrentPlacement | null = null;
 
-function currentSessionSurface(): string | undefined {
-  if (cachedSessionSurface) return cachedSessionSurface.value;
-  cachedSessionSurface = { value: readCurrentSurface() };
-  return cachedSessionSurface.value;
+function currentSessionPlacement(): CurrentPlacement {
+  cachedSessionPlacement ??= readCurrentPlacement();
+  return cachedSessionPlacement;
 }
 
 const sessionTargetCatalog = createSessionTargetCatalog<AgentKind>({
   currentTopicId,
   currentTopicName: currentTopic,
   get currentSurface() {
-    return currentSessionSurface();
+    return currentSessionPlacement().surface;
   },
   isAgent: isAgentKind,
   listRows: () =>

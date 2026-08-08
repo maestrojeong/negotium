@@ -130,6 +130,13 @@ export interface TopicDto {
   visibility?: TopicVisibility;
   /** The product surface that owns this topic (terminal / telegram / otium). */
   surface?: TopicSurface;
+  /**
+   * Which instance of the surface owns this topic — for `otium`, the workspace
+   * (M-1/M-2). Fixed at creation, exactly like `surface`. Null/absent on
+   * `terminal` and `telegram`, which have exactly one instance each, and on
+   * Otium rooms created before the scope was known.
+   */
+  surfaceScope?: string | null;
   /** Stable execution placement. Absent means the hub runs this topic locally. */
   executionNode?: {
     nodeId: string;

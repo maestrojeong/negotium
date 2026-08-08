@@ -294,6 +294,7 @@ export {
 export { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
 export {
   clearTopicSessionId,
+  defaultSurfaceScope,
   defaultTopicSurface,
   findTopicTitleConflict,
   getTopic,
@@ -303,10 +304,13 @@ export {
   isTopicVisible,
   listSubagentTellTargetIds,
   listTopics,
+  normalizeSurfaceScope,
   normalizeTopicSurface,
   revokeSubagentTellTarget,
+  setDefaultSurfaceScope,
   setTopicSessionId,
   setTopicSurfaces,
+  stampUnscopedOtiumTopics,
   upsertTopic,
 } from "#storage/api-topics";
 export { getGlobalAiName } from "#storage/app-settings";

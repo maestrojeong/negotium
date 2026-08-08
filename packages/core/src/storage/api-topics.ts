@@ -34,6 +34,37 @@ export function normalizeTopicSurface(value: unknown): TopicSurface {
   return value === "telegram" || value === "otium" || value === "terminal" ? value : "terminal";
 }
 
+/**
+ * The surface instance new rooms are filed under when the caller names none.
+ *
+ * `surface` alone is not enough once a node may be attached to several Otium
+ * workspaces (M-2): two workspaces are two independent namespaces on the same
+ * surface. The adapter that owns the attachment installs the active scope at
+ * mount time; `terminal` and `telegram` are singletons and stay null.
+ *
+ * Kept as process state rather than an argument threaded through every creation
+ * path because the value is a property of *this process's attachment*, not of
+ * any individual call — the same reason `defaultTopicSurface()` exists.
+ */
+let activeSurfaceScope: string | null = null;
+
+export function normalizeSurfaceScope(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+export function defaultSurfaceScope(): string | null {
+  return activeSurfaceScope ?? normalizeSurfaceScope(process.env.NEGOTIUM_SURFACE_SCOPE);
+}
+
+/** Install (or clear) the scope new rooms inherit. Returns the previous value. */
+export function setDefaultSurfaceScope(scope: string | null): string | null {
+  const previous = activeSurfaceScope;
+  activeSurfaceScope = normalizeSurfaceScope(scope);
+  return previous;
+}
+
 function tableColumns(table: string): Set<string> {
   const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   return new Set(rows.map((row) => row.name));
@@ -237,6 +268,7 @@ function initializeApiTopicsSchema(): void {
       is_subagent INTEGER NOT NULL DEFAULT 0 CHECK (is_subagent IN (0,1)),
       visibility TEXT NOT NULL DEFAULT 'visible' CHECK (visibility IN ('visible','hidden')),
       surface TEXT NOT NULL DEFAULT 'terminal' CHECK (surface IN ('terminal','telegram','otium')),
+      surface_scope TEXT,
       browser_profile TEXT NOT NULL DEFAULT 'default',
       browser_profile_owner TEXT,
       session_id TEXT,
@@ -305,8 +337,8 @@ function initializeApiTopicsSchema(): void {
           db.query(
             `INSERT INTO api_topics_next
              (id,title,kind,description,agent,base_model,base_effort,response_policy,
-              created_at,last_message_at,parent_topic_id,memory_topic_id,memory_key,is_fork,is_subagent,visibility,surface,session_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+              created_at,last_message_at,parent_topic_id,memory_topic_id,memory_key,is_fork,is_subagent,visibility,surface,surface_scope,session_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           ).run(
             String(row.id),
             String(row.title),
@@ -325,6 +357,7 @@ function initializeApiTopicsSchema(): void {
             Number(row.is_subagent ?? 0) !== 0 ? 1 : 0,
             row.visibility === "hidden" ? "hidden" : "visible",
             row.surface === undefined ? defaultTopicSurface() : normalizeTopicSurface(row.surface),
+            normalizeSurfaceScope(row.surface_scope),
             typeof row.session_id === "string" ? row.session_id : null,
           );
         }
@@ -393,6 +426,9 @@ function initializeApiTopicsSchema(): void {
   if (!tableColumns("api_topics").has("surface")) {
     db.exec("ALTER TABLE api_topics ADD COLUMN surface TEXT NOT NULL DEFAULT 'terminal'");
   }
+  if (!tableColumns("api_topics").has("surface_scope")) {
+    db.exec("ALTER TABLE api_topics ADD COLUMN surface_scope TEXT");
+  }
   // `access_mode` was replaced by `surface`: a topic is reachable from Otium
   // because it lives there, not because a flag was flipped (S-4). Dropping the
   // column removes the second, now-contradictory source of truth.
@@ -433,6 +469,60 @@ function initializeApiTopicsSchema(): void {
     "CREATE INDEX IF NOT EXISTS idx_api_topics_last_message ON api_topics(last_message_at DESC)",
   );
   db.exec("CREATE INDEX IF NOT EXISTS idx_api_topics_surface ON api_topics(surface)");
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_api_topics_surface_scope ON api_topics(surface, surface_scope)",
+  );
+}
+
+const SURFACE_SCOPE_STAMP_MIGRATION = "api_topics_surface_scope_stamp_20260809";
+
+/**
+ * M-9 — file every pre-existing Otium room under the workspace attached now.
+ *
+ * Deliberately *not* a schema-init step. The scope is only knowable after the
+ * first successful Central contact (M-3), which happens long after the store
+ * opens; a boot-time migration would see no scope, record itself as applied and
+ * leave every room unstamped forever. The Otium runtime calls this instead, once,
+ * as soon as it has resolved its workspace.
+ *
+ * Runs at most once per store: rooms created after this point are stamped at
+ * creation, and a second workspace joined later must not swallow the first
+ * one's rooms. Unlike the surface migration this can never rename anything —
+ * the scope enters the uniqueness key in the same release, so nothing can start
+ * colliding because of it.
+ */
+export function stampUnscopedOtiumTopics(scope: string): number {
+  const normalized = normalizeSurfaceScope(scope);
+  if (!normalized) return 0;
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS api_schema_migrations (
+    key TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL
+  )
+`);
+  const applied = db
+    .query("SELECT key FROM api_schema_migrations WHERE key = ?")
+    .get(SURFACE_SCOPE_STAMP_MIGRATION);
+  if (applied) return 0;
+
+  let stamped = 0;
+  db.transaction(() => {
+    stamped = Number(
+      db
+        .query(
+          "UPDATE api_topics SET surface_scope = ? WHERE surface = 'otium' AND surface_scope IS NULL",
+        )
+        .run(normalized).changes ?? 0,
+    );
+    db.query("INSERT INTO api_schema_migrations (key, applied_at) VALUES (?, ?)").run(
+      SURFACE_SCOPE_STAMP_MIGRATION,
+      new Date().toISOString(),
+    );
+  })();
+  if (stamped > 0) {
+    logger.info({ scope: normalized, stamped }, "api_topics: surface scope stamped");
+  }
+  return stamped;
 }
 
 const SURFACE_BACKFILL_MIGRATION = "api_topics_surface_backfill_20260808";
@@ -538,6 +628,7 @@ export interface TopicRow {
   subagent_report_mode: string | null;
   visibility: string | null;
   surface: string | null;
+  surface_scope: string | null;
   browser_profile_owner: string | null;
   session_id: string | null;
 }
@@ -637,6 +728,7 @@ function rowToDto(
       : {}),
     visibility: normalizeTopicVisibility(r.visibility),
     surface: normalizeTopicSurface(r.surface),
+    surfaceScope: normalizeSurfaceScope(r.surface_scope),
   };
 }
 
@@ -733,6 +825,22 @@ function normalizedTitle(title: string): string {
   return title.trim().toLowerCase();
 }
 
+/**
+ * The workspace a written row belongs to.
+ *
+ * Only the `otium` surface has more than one instance, so terminal and telegram
+ * are always null — writing this process's Otium scope onto a terminal room
+ * would partition the terminal namespace for no reason. An explicit
+ * `surfaceScope` in the DTO wins so a hub can file a room it already knows the
+ * workspace of; otherwise the room joins whatever workspace this process is
+ * attached to, which is null until the scope resolves (M-3).
+ */
+function surfaceScopeForWrite(t: TopicDto): string | null {
+  if (normalizeTopicSurface(t.surface ?? defaultTopicSurface()) !== "otium") return null;
+  if (t.surfaceScope !== undefined) return normalizeSurfaceScope(t.surfaceScope);
+  return defaultSurfaceScope();
+}
+
 export function upsertTopic(t: TopicDto): void {
   const normalized = normalizeTopicState({
     id: t.id,
@@ -746,8 +854,8 @@ export function upsertTopic(t: TopicDto): void {
       `INSERT INTO api_topics
        (id,title,kind,description,agent,base_model,base_effort,response_policy,
         created_at,last_message_at,parent_topic_id,memory_topic_id,memory_key,is_fork,is_subagent,visibility,surface,
-        subagent_report_mode)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        surface_scope,subagent_report_mode)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(id) DO UPDATE SET
        title = excluded.title,
        kind = excluded.kind,
@@ -765,6 +873,10 @@ export function upsertTopic(t: TopicDto): void {
        is_subagent = excluded.is_subagent,
        visibility = excluded.visibility,
        surface = excluded.surface,
+       -- A room's workspace is fixed at creation (M-1). COALESCE, not
+       -- assignment: an update may fill in a scope that was unknown when the
+       -- room was created, but may never move a room to another workspace.
+       surface_scope = COALESCE(api_topics.surface_scope, excluded.surface_scope),
        subagent_report_mode = excluded.subagent_report_mode`,
     ).run(
       t.id,
@@ -788,6 +900,7 @@ export function upsertTopic(t: TopicDto): void {
       // never name one, so defaulting to the literal would file every hub room
       // on the wrong surface.
       normalizeTopicSurface(t.surface ?? defaultTopicSurface()),
+      surfaceScopeForWrite(t),
       t.subagentReportMode ?? "auto",
     );
     db.query("DELETE FROM topic_members WHERE topic_id = ?").run(t.id);
@@ -818,12 +931,23 @@ export function upsertTopic(t: TopicDto): void {
  * cannot leak a telegram room into the terminal picker; adapters pass their own
  * surface and get a closed world back.
  */
-export function listTopics(opts: { surface?: TopicSurface } = {}): TopicDto[] {
+export function listTopics(
+  opts: { surface?: TopicSurface; surfaceScope?: string | null } = {},
+): TopicDto[] {
+  // `surfaceScope: null` is a real filter ("the unscoped rooms"), so presence —
+  // not truthiness — decides whether the scope narrows the query at all.
+  const scoped = Object.hasOwn(opts, "surfaceScope");
   const rows = (
     opts.surface
       ? db
-          .query("SELECT * FROM api_topics WHERE surface = ? ORDER BY last_message_at DESC")
-          .all(normalizeTopicSurface(opts.surface))
+          .query(
+            `SELECT * FROM api_topics WHERE surface = ?${scoped ? " AND surface_scope IS ?" : ""} ORDER BY last_message_at DESC`,
+          )
+          .all(
+            ...(scoped
+              ? [normalizeTopicSurface(opts.surface), normalizeSurfaceScope(opts.surfaceScope)]
+              : [normalizeTopicSurface(opts.surface)]),
+          )
       : db.query("SELECT * FROM api_topics ORDER BY last_message_at DESC").all()
   ) as TopicRow[];
   const participants = getAllTopicParticipants();
@@ -850,7 +974,12 @@ export function getTopic(id: string): TopicDto | null {
  * belonging to a different surface. Callers that represent an adapter pass
  * theirs; unscoped lookups stay for maintenance paths that work by user alone.
  */
-export function getManagerTopicForUser(userId: string, surface?: TopicSurface): TopicDto | null {
+export function getManagerTopicForUser(
+  userId: string,
+  surface?: TopicSurface,
+  opts: { surfaceScope?: string | null } = {},
+): TopicDto | null {
+  const scoped = Object.hasOwn(opts, "surfaceScope");
   const sql = `SELECT t.* FROM api_topics t
        JOIN topic_members m ON m.topic_id = t.id
        WHERE t.kind = 'manager'
@@ -858,10 +987,13 @@ export function getManagerTopicForUser(userId: string, surface?: TopicSurface): 
          AND m.user_id = ?
          AND m.role = 'owner'
          ${surface ? "AND t.surface = ?" : ""}
+         ${scoped ? "AND t.surface_scope IS ?" : ""}
        ORDER BY t.created_at ASC
        LIMIT 1`;
-  const params = surface ? [GENERAL_TOPIC_ID, userId, surface] : [GENERAL_TOPIC_ID, userId];
-  const row = db.query<TopicRow, string[]>(sql).get(...params);
+  const params: Array<string | null> = [GENERAL_TOPIC_ID, userId];
+  if (surface) params.push(surface);
+  if (scoped) params.push(normalizeSurfaceScope(opts.surfaceScope));
+  const row = db.query<TopicRow, Array<string | null>>(sql).get(...params);
   return row ? rowToDto(row) : null;
 }
 
@@ -916,16 +1048,23 @@ export function getTopicByNameAndKind(title: string, kind: TopicKind): TopicDto 
 }
 
 /**
- * Titles are unique **per surface**, not per node: `otium` may exist once on
- * the terminal, once on telegram and once on the Otium hub.
+ * Titles are unique **per surface instance**, not per node: `otium` may exist
+ * once on the terminal, once on telegram, and once in *each* attached Otium
+ * workspace (M-1). Two workspaces are two namespaces that never see each other,
+ * so a name taken in one says nothing about the other.
  */
 export function findTopicTitleConflict(
   title: string,
   kind: TopicKind,
-  opts: { excludeTopicId?: string; surface?: TopicSurface } = {},
+  opts: { excludeTopicId?: string; surface?: TopicSurface; surfaceScope?: string | null } = {},
 ): TopicDto | null {
   const wanted = normalizedTitle(title);
   const surface = normalizeTopicSurface(opts.surface ?? defaultTopicSurface());
+  const surfaceScope = Object.hasOwn(opts, "surfaceScope")
+    ? normalizeSurfaceScope(opts.surfaceScope)
+    : surface === "otium"
+      ? defaultSurfaceScope()
+      : null;
   const generalTitleRequested = wanted === normalizedTitle(GENERAL_TOPIC_ID);
   if (generalTitleRequested && opts.excludeTopicId !== GENERAL_TOPIC_ID) {
     const general = db.query("SELECT * FROM api_topics WHERE id = ?").get(GENERAL_TOPIC_ID) as
@@ -940,9 +1079,9 @@ export function findTopicTitleConflict(
   // multi-user host it renamed real rooms out from under their owners.
   if (kind === "manager") return null;
 
-  const params: string[] = [wanted, surface, kind, GENERAL_TOPIC_ID];
+  const params: Array<string | null> = [wanted, surface, surfaceScope, kind, GENERAL_TOPIC_ID];
   let sql =
-    "SELECT * FROM api_topics WHERE LOWER(TRIM(title)) = ? AND surface = ? AND (kind = ? OR id = ?)";
+    "SELECT * FROM api_topics WHERE LOWER(TRIM(title)) = ? AND surface = ? AND surface_scope IS ? AND (kind = ? OR id = ?)";
   if (opts.excludeTopicId) {
     sql += " AND id != ?";
     params.push(opts.excludeTopicId);
@@ -974,12 +1113,13 @@ export function setTopicSurfaces(topicIds: readonly string[], surface: TopicSurf
 export function getTopicByNameForUser(
   title: string,
   userId: string,
-  opts: { surface?: TopicSurface } = {},
+  opts: { surface?: TopicSurface; surfaceScope?: string | null } = {},
 ): TopicDto | null {
   const trimmed = title.trim();
   const qualified = /^(agent|channel|manager):(.+)$/i.exec(trimmed);
   const requestedKind = qualified ? normalizeTopicKind(qualified[1]?.toLowerCase()) : null;
   const requestedTitle = qualified ? qualified[2]!.trim() : trimmed;
+  const scoped = Object.hasOwn(opts, "surfaceScope");
   const rows = db
     .query(
       `SELECT t.* FROM api_topics t
@@ -987,6 +1127,7 @@ export function getTopicByNameForUser(
          AND t.id != ?
          AND t.visibility != 'hidden'
          AND (? IS NULL OR t.surface = ?)
+         ${scoped ? "AND t.surface_scope IS ?" : ""}
          AND EXISTS (
            SELECT 1 FROM topic_members m WHERE m.topic_id = t.id AND m.user_id = ?
          )`,
@@ -996,6 +1137,7 @@ export function getTopicByNameForUser(
       GENERAL_TOPIC_ID,
       opts.surface ?? null,
       opts.surface ?? null,
+      ...(scoped ? [normalizeSurfaceScope(opts.surfaceScope)] : []),
       userId,
     ) as TopicRow[];
   const matches = requestedKind ? rows.filter((row) => row.kind === requestedKind) : rows;

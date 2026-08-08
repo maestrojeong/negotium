@@ -17,6 +17,8 @@ import {
   registerPeerRuntimeBridge,
   registerPeerSessionBridge,
   runtimeBus,
+  setDefaultSurfaceScope,
+  stampUnscopedOtiumTopics,
 } from "@negotium/core";
 import { startCanonicalMcpBridge } from "@/canonical-mcp-bridge";
 import { configureOtiumCentral, selfPeerNode } from "@/central";
@@ -27,6 +29,7 @@ import { otiumPeerSessionBridge, startPeerReplyOutboxWorker } from "@/session-br
 import { startPeerSessionBridgeIpc } from "@/session-bridge-ipc";
 import { cleanupPeerStateForLocalTopic } from "@/store";
 import { TunnelClient, type TunnelClientOptions } from "@/tunnel-client";
+import { cachedSurfaceScope, resolveSurfaceScope } from "@/workspace-scope";
 
 export {
   configureOtiumCentral,
@@ -34,6 +37,7 @@ export {
   mintPeerToken,
   otiumCentralConfig,
   type PeerNode,
+  peerWorkspaceId,
   resetPeerCentralCaches,
   resolvePeerNodeByCellId,
   selfPeerNode,
@@ -74,6 +78,12 @@ export {
   type TunnelLogger,
   type TunnelStatus,
 } from "@/tunnel-client";
+export {
+  cachedSurfaceScope,
+  resolveSurfaceScope,
+  surfaceScopeFor,
+  type WorkspaceScopeRecord,
+} from "@/workspace-scope";
 
 export interface OtiumAdapterOptions {
   join: OtiumJoin;
@@ -116,6 +126,10 @@ export function startOtiumNodeRuntime(options: OtiumAdapterOptions): OtiumNodeRu
   });
   let stopped = false;
   logger.info({ central: join.central, cellId: join.cellId }, "otium: worker mode enabled");
+  // Install the last known scope synchronously so rooms created between mount
+  // and the first Central answer are still filed under the right workspace; the
+  // async resolution below only matters on the very first attachment (M-3).
+  const previousScope = setDefaultSurfaceScope(cachedSurfaceScope(join));
   void selfPeerNode()
     .then((self) => {
       if (self) {
@@ -127,6 +141,19 @@ export function startOtiumNodeRuntime(options: OtiumAdapterOptions): OtiumNodeRu
     })
     .catch((err) => {
       logger.warn({ err }, "otium: self check against central failed (will retry per request)");
+    });
+  void resolveSurfaceScope(join)
+    .then((scope) => {
+      if (!scope || stopped) return;
+      setDefaultSurfaceScope(scope);
+      // M-9 — rooms that predate the scope column belong to whatever workspace
+      // this node was attached to when it upgraded, which is this one. Runs at
+      // most once per store, so a second workspace joined later cannot claim
+      // the first one's rooms.
+      stampUnscopedOtiumTopics(scope);
+    })
+    .catch((err) => {
+      logger.warn({ err }, "otium: workspace scope resolution failed");
     });
   return {
     name: "otium",
@@ -141,6 +168,7 @@ export function startOtiumNodeRuntime(options: OtiumAdapterOptions): OtiumNodeRu
       canonicalMcpBridge.stop();
       stopPeerReplyOutbox();
       uninstallFileHooks();
+      setDefaultSurfaceScope(previousScope);
       configureOtiumCentral(null);
     },
   };

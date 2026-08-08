@@ -248,6 +248,64 @@ describe("api topic storage", () => {
     expect(findTopicTitleConflict(title, "agent", { surface: "telegram" })).toBeNull();
   });
 
+  test("the same title may exist once per Otium workspace", () => {
+    const title = `scope-dup-${randomUUID().slice(0, 8)}`;
+    const alpha = { ...makeTopic(), title, surface: "otium" as const, surfaceScope: "ws_alpha" };
+    const beta = { ...makeTopic(), title, surface: "otium" as const, surfaceScope: "ws_beta" };
+    createdTopicIds.push(alpha.id, beta.id);
+    upsertTopic(alpha);
+    upsertTopic(beta);
+
+    const find = (scope: string | null) =>
+      findTopicTitleConflict(title, "agent", { surface: "otium", surfaceScope: scope });
+    expect(find("ws_alpha")?.id).toBe(alpha.id);
+    expect(find("ws_beta")?.id).toBe(beta.id);
+    // An unattached node's namespace is its own, not the union of the others'.
+    expect(find(null)).toBeNull();
+  });
+
+  test("listTopics narrows to one workspace, and null means the unscoped rooms", () => {
+    const alpha = { ...makeTopic(), surface: "otium" as const, surfaceScope: "ws_alpha" };
+    const beta = { ...makeTopic(), surface: "otium" as const, surfaceScope: "ws_beta" };
+    const unscoped = { ...makeTopic(), surface: "otium" as const };
+    createdTopicIds.push(alpha.id, beta.id, unscoped.id);
+    for (const topic of [alpha, beta, unscoped]) upsertTopic(topic);
+
+    const ids = (scope?: string | null) =>
+      listTopics(
+        scope === undefined ? { surface: "otium" } : { surface: "otium", surfaceScope: scope },
+      ).map((topic) => topic.id);
+
+    expect(ids("ws_alpha")).toContain(alpha.id);
+    expect(ids("ws_alpha")).not.toContain(beta.id);
+    expect(ids("ws_alpha")).not.toContain(unscoped.id);
+    expect(ids(null)).toContain(unscoped.id);
+    expect(ids(null)).not.toContain(alpha.id);
+    // No scope filter at all still spans the whole surface.
+    expect(ids()).toEqual(expect.arrayContaining([alpha.id, beta.id, unscoped.id]));
+  });
+
+  test("a room never changes workspace, but an unknown one can be filled in later", () => {
+    const topic = { ...makeTopic(), surface: "otium" as const };
+    createdTopicIds.push(topic.id);
+    upsertTopic(topic);
+    expect(getTopic(topic.id)?.surfaceScope).toBeNull();
+
+    upsertTopic({ ...topic, surfaceScope: "ws_alpha" });
+    expect(getTopic(topic.id)?.surfaceScope).toBe("ws_alpha");
+
+    // A later write claiming a different workspace must not move the room.
+    upsertTopic({ ...topic, surfaceScope: "ws_beta" });
+    expect(getTopic(topic.id)?.surfaceScope).toBe("ws_alpha");
+  });
+
+  test("only the otium surface carries a workspace", () => {
+    const local = { ...makeTopic(), surface: "terminal" as const, surfaceScope: "ws_alpha" };
+    createdTopicIds.push(local.id);
+    upsertTopic(local);
+    expect(getTopic(local.id)?.surfaceScope).toBeNull();
+  });
+
   test("manager rooms stay manager/always while preserving their chosen agent", () => {
     expect(normalizeTopicState({ kind: "manager", agent: "codex", aiMode: "off" })).toEqual({
       kind: "manager",

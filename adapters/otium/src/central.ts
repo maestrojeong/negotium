@@ -83,6 +83,19 @@ export async function selfPeerNode(): Promise<PeerNode | null> {
   return nodes.find((node) => node.self) ?? null;
 }
 
+/**
+ * The workspace this cell belongs to, as Central reports it.
+ *
+ * The invite code carries a seat (`cellId`), never the workspace, so this is
+ * the only way a node can learn which workspace it is attached to (M-3). It
+ * rides on the discovery call the node already makes rather than adding a
+ * round-trip of its own.
+ */
+export async function peerWorkspaceId(): Promise<string | null> {
+  if (!nodesCache) await listPeerNodes();
+  return nodesCache?.workspaceId || null;
+}
+
 export async function resolvePeerNodeByCellId(cellId: string): Promise<PeerNode | null> {
   const find = (nodes: PeerNode[]) => nodes.find((node) => node.cellId === cellId) ?? null;
   const cached = find(await listPeerNodes());

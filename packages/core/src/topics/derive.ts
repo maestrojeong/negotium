@@ -107,9 +107,10 @@ function nextDerivedTopicTitle(
   kind: TopicDto["kind"],
   suffix: "fork" | "spawn" | "agent",
   surface?: TopicSurface,
+  surfaceScope?: string | null,
 ): string {
   const visibleTitles = new Set(
-    listTopics(surface ? { surface } : {})
+    listTopics(surface ? { surface, surfaceScope: surfaceScope ?? null } : {})
       .filter((topic) => topic.kind === kind)
       .map((topic) => topic.title.toLowerCase()),
   );
@@ -272,8 +273,13 @@ async function createDerivedTopicImpl(
       : [{ userId, role: "owner" as const }];
   const kind = topic.kind ?? inferTopicKind(topic);
   const surface = topic.surface ?? defaultTopicSurface();
-  const title = opts?.name?.trim() || nextDerivedTopicTitle(topic.title, kind, suffix, surface);
-  const conflict = findTopicTitleConflict(title, kind, { surface });
+  // A derived room joins its parent's workspace, not this process's current
+  // one: a subagent spawned from a workspace-A room belongs to workspace A even
+  // if the node has since attached to another (M-1).
+  const surfaceScope = topic.surfaceScope ?? null;
+  const title =
+    opts?.name?.trim() || nextDerivedTopicTitle(topic.title, kind, suffix, surface, surfaceScope);
+  const conflict = findTopicTitleConflict(title, kind, { surface, surfaceScope });
   if (conflict) {
     logger.info(
       { sourceTopicId, title, kind, conflictTopicId: conflict.id },
@@ -301,6 +307,7 @@ async function createDerivedTopicImpl(
     visibility: topic.visibility,
     // A derived room lives on the same surface as the room it came from.
     surface,
+    surfaceScope,
   };
 
   let sessionId: string | undefined;
@@ -452,7 +459,10 @@ async function createDerivedTopicImpl(
         ) {
           throw new TopicDeriveBusyError("Source topic changed while deriving; try again");
         }
-        const transactionalConflict = findTopicTitleConflict(title, kind, { surface });
+        const transactionalConflict = findTopicTitleConflict(title, kind, {
+          surface,
+          surfaceScope,
+        });
         if (transactionalConflict) throw new TopicTitleConflictError(title);
         upsertTopic(derived);
         if (subagent) {

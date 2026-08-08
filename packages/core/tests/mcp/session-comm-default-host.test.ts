@@ -77,6 +77,28 @@ describe("default session-comm MCP host", () => {
     });
   });
 
+  test("a room in one Otium workspace cannot address a room in another", async () => {
+    const source = makeTopic({ surface: "otium", surfaceScope: "ws_alpha" });
+    const sibling = makeTopic({ surface: "otium", surfaceScope: "ws_alpha" });
+    const stranger = makeTopic({ surface: "otium", surfaceScope: "ws_beta" });
+    inboxPaths.push(sessionInboxPath(userId, sibling.id), sessionInboxPath(userId, stranger.id));
+
+    const host = createDefaultSessionCommMcpHost();
+    const listed = await host.listSessions(context(source), {});
+    const rendered = JSON.stringify(listed);
+    expect(rendered).toContain(sibling.title);
+    // Same surface, different workspace: the boundary the whole feature exists
+    // for. A leak here would let one customer's node reach another's rooms.
+    expect(rendered).not.toContain(stranger.title);
+
+    const refused = await host.tellSession(context(source), {
+      to: stranger.title,
+      message: "should not arrive",
+    });
+    expect("isError" in refused ? refused.isError : false).toBe(true);
+    expect(existsSync(sessionInboxPath(userId, stranger.id))).toBe(false);
+  });
+
   test("clears pending asks when the target has no agent", async () => {
     const source = makeTopic();
     const target = makeTopic({ kind: "channel", agent: undefined, aiMode: "off" });
