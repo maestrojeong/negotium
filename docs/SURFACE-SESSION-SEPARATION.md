@@ -121,8 +121,8 @@ no isolation. Adding it *after* rooms from two workspaces have already mixed in
 one store means splitting them apart by hand. So: build multi-join and the
 scope together, or neither.
 
-**S-13 — a threaded mention in a *node-mapped* room still gets no answer.
-Scoped, awaiting a decision on one merge rule.**
+**S-13 — a threaded mention in a *node-mapped* room gets its answer in that
+thread. Implemented; merge rule (b) chosen.**
 
 S-11 fixed threads for Otium-native rooms. A room backed by the node is still
 broken, and worse than before the thread pane existed: the reply is stored and
@@ -165,7 +165,14 @@ answer. Options: (a) answer in the channel whenever a batch is mixed, (b) never
 merge across thread boundaries — keep a separate pending request per thread, (c)
 answer each contributing message in its own thread by splitting the reply. (b)
 is the only one that is always right and the only one that changes queue
-behaviour. This needs a decision before implementation.
+behaviour, and it is what shipped: `mergeRuntimeUserTurnRequest` folds only
+requests sharing a thread root, and deletes only the rows it actually absorbed
+instead of clearing the topic — otherwise another thread's pending question was
+dropped and nothing would ever answer it.
+
+The thread also joins the gateway turn's identity hash, so the same
+`clientMessageId` asked in the channel and in a thread are two turns rather than
+one replayed into the wrong place.
 
 ## Non-goals
 

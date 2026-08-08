@@ -276,7 +276,12 @@ export async function streamAgentEvents(
   userId: string,
   retryableSessionExpired = true,
   onSessionId?: (sessionId: string) => void,
-  execution?: { silent?: boolean; peerBridge?: PeerRuntimeBridgeContext; sourceNode?: string },
+  execution?: {
+    silent?: boolean;
+    peerBridge?: PeerRuntimeBridgeContext;
+    sourceNode?: string;
+    threadRootId?: string;
+  },
 ): Promise<StreamAgentOutcome> {
   return runTurnEventStream(
     topicId,
@@ -608,6 +613,8 @@ export interface AiTurnExecutionOptions {
   origin?: string;
   /** Origin node for transcript echo suppression. */
   sourceNode?: string;
+  /** Answer inside this thread instead of the room's main flow (S-13). */
+  threadRootId?: string;
   /** Fired when the turn is actually dispatched, including after a defer. */
   onDispatched?: (queryId: string) => void;
   /** Inter-session requestId for queue dedup (session-inject only). */
@@ -841,6 +848,7 @@ async function drainOneDurableUserTurn(): Promise<void> {
       bridgeSessionFromHistory: execution?.bridgeSessionFromHistory,
       peerBridge: execution?.peerBridge,
       from: execution?.from,
+      threadRootId: execution?.threadRootId,
       _queryId: request.requestId,
       _runtimeEpoch: execution?.runtimeEpoch ?? request.topicEpoch,
       onSettled: () => {
@@ -934,6 +942,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   const deferredSessionId =
     params.sessionId === undefined && !sessionResolution.isolated ? undefined : sessionId;
   const sourceNode = params.sourceNode;
+  const threadRootId = params.threadRootId;
   const topicId = topic.id;
   const requestId = params.requestId;
   const depth = params.depth;
@@ -1657,7 +1666,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     userId,
     !sessionRetried,
     onSessionId,
-    { silent, peerBridge, sourceNode },
+    { silent, peerBridge, sourceNode, ...(threadRootId ? { threadRootId } : {}) },
   )
     .then(async (streamOutcome) => {
       let outcome = streamOutcome;

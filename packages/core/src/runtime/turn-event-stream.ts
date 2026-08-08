@@ -132,6 +132,8 @@ export async function runTurnEventStream(
     silent?: boolean;
     peerBridge?: PeerRuntimeBridgeContext;
     sourceNode?: string;
+    /** Answer inside this thread instead of the room's main flow (S-13). */
+    threadRootId?: string;
   },
 ): Promise<StreamAgentOutcome> {
   const { appendSystemMessage, deliverAskCallbackToCaller, deliverAskError, redispatchInject } =
@@ -229,10 +231,16 @@ export async function runTurnEventStream(
       agentType,
       model,
       sourceNode: execution?.sourceNode,
+      ...(execution?.threadRootId ? { threadRootId: execution.threadRootId } : {}),
       usage,
       createdAt: new Date().toISOString(),
     };
-    appendApiMessage(message);
+    // A threaded turn answers in its thread and leaves the room's ordering and
+    // unread state alone, exactly like a human thread reply.
+    appendApiMessage(
+      message,
+      execution?.threadRootId ? { updateTopicLastMessageAt: false } : undefined,
+    );
     hub.broadcastMessage(topicId, message);
     lastVisibleMessageId = message.id;
     visibleMessageIds.push(message.id);

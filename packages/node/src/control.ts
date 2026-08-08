@@ -16,6 +16,7 @@ import {
   deleteVaultEntry,
   ensurePersonalGeneral,
   executeVaultCommand,
+  getApiMessage,
   getTopic,
   getTopicStats,
   getVisibleTopics,
@@ -300,10 +301,23 @@ export function createNodeControlHandler(
           const clientMessageId = requiredText(body.clientMessageId, "clientMessageId");
           const requestId =
             body.requestId === undefined ? undefined : requiredText(body.requestId, "requestId");
+          const threadRootId =
+            body.threadRootId === undefined
+              ? undefined
+              : requiredText(body.threadRootId, "threadRootId");
           const topic = getTopic(topicId);
           if (!topic) return jsonError(404, "Topic not found");
           if (!topic.participants.some((participant) => participant.userId === userId)) {
             return jsonError(404, "Topic not found");
+          }
+          if (threadRootId) {
+            // The root must be a real, undeleted message of this room that is
+            // not itself a reply — threads are flat, and answering into a
+            // thread nobody can open is worse than refusing.
+            const root = getApiMessage(topicId, threadRootId);
+            if (!root || root.deleted || root.threadRootId) {
+              return jsonError(400, "threadRootId does not identify a thread root in this topic");
+            }
           }
           const submission = submitRuntimeGatewayTurn({
             topic,
@@ -315,6 +329,7 @@ export function createNodeControlHandler(
             clientMessageId,
             requestId,
             allowAutoContinue: body.allowAutoContinue !== false,
+            ...(threadRootId ? { threadRootId } : {}),
           });
           return Response.json(
             {

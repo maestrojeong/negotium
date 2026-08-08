@@ -65,7 +65,7 @@ export type { FileHooks, UploadAccess } from "#runtime/file-hooks";
 export { setFileHooks } from "#runtime/file-hooks";
 export { startSessionInboxWorker } from "#runtime/inbox";
 export { startAiTurn, startDurableTurnRequestWorker } from "#runtime/turn-runner";
-export { appendApiMessage, listApiMessages } from "#storage/api-messages";
+export { appendApiMessage, getApiMessage, listApiMessages } from "#storage/api-messages";
 export { getTopic, upsertTopic } from "#storage/api-topics";
 export type { StoredRuntimeEvent } from "#storage/runtime-events";
 export {

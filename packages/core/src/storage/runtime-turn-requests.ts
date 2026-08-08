@@ -42,6 +42,12 @@ export interface RuntimeUserTurnExecution {
   providerSessionId?: string;
   /** Request ids whose ordered messages were folded into this replacement. */
   supersededRequestIds?: string[];
+  /**
+   * Slack-style thread this turn belongs to, when it was asked in one. Carried
+   * on the request rather than the message because it decides both where the
+   * answer goes and which pending requests may merge with it (S-13).
+   */
+  threadRootId?: string;
 }
 
 export interface RuntimeUserTurnRequest {
@@ -312,7 +318,16 @@ export function mergeRuntimeUserTurnRequest(input: {
           "SELECT * FROM runtime_user_turn_requests WHERE topic_id = ? ORDER BY created_at ASC, rowid ASC",
         )
         .all(input.topicId);
-      const previous = rows.map(rowToRequest);
+      // Merging exists to fold consecutive utterances of one conversation into
+      // a single turn. A different thread is by definition a different
+      // conversation, and a merged batch spanning two of them has no correct
+      // place to answer — so requests are only ever folded within one thread,
+      // and a pending request from another thread is left standing to run on
+      // its own (S-13).
+      const thread = input.execution.threadRootId;
+      const previous = rows
+        .map(rowToRequest)
+        .filter((request) => request.execution?.threadRootId === thread);
       const omittedRequestIds = new Set([
         ...(input.omitRequestIds ?? []),
         ...previous
@@ -371,7 +386,16 @@ export function mergeRuntimeUserTurnRequest(input: {
       }
       const attachments = flattenUserTurnAttachments(userMessages);
 
-      db.query("DELETE FROM runtime_user_turn_requests WHERE topic_id = ?").run(input.topicId);
+      // Delete only what this replacement actually absorbed. Clearing the whole
+      // topic would drop another thread's pending question on the floor — it
+      // was never folded in, so nothing would ever answer it (S-13).
+      const absorbed = previous.map((request) => request.requestId);
+      if (absorbed.length > 0) {
+        db.query(
+          `DELETE FROM runtime_user_turn_requests
+           WHERE topic_id = ? AND request_id IN (${absorbed.map(() => "?").join(",")})`,
+        ).run(input.topicId, ...absorbed);
+      }
       db.query(
         `INSERT INTO runtime_user_turn_requests
          (request_id, topic_id, user_id, prompt, user_messages_json, attachments_json,

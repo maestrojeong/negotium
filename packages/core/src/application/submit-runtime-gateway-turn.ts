@@ -27,6 +27,8 @@ export interface SubmitRuntimeGatewayTurnParams {
   clientMessageId: string;
   requestId?: string;
   allowAutoContinue?: boolean;
+  /** Answer inside this thread instead of the room's main flow (S-13). */
+  threadRootId?: string;
 }
 
 export interface SubmitRuntimeGatewayTurnResult extends RuntimeGatewaySubmission {
@@ -95,6 +97,10 @@ function gatewayPayloadHash(
         params.clientMessageId,
         requestId,
         params.allowAutoContinue ?? true,
+        // Part of the identity of the turn: the same key asked in the channel
+        // and in a thread are different turns, and replaying one as the other
+        // would answer in the wrong place.
+        params.threadRootId ?? null,
       ]),
     )
     .digest("hex");
@@ -139,6 +145,7 @@ export function submitRuntimeGatewayTurn(
     sourceAdapter: "runtime-gateway",
     sourceMessageId: params.clientMessageId,
     text: params.text,
+    ...(params.threadRootId ? { threadRootId: params.threadRootId } : {}),
     createdAt,
   };
   const submission: RuntimeGatewaySubmission = {
@@ -175,6 +182,7 @@ export function submitRuntimeGatewayTurn(
           conversationPrompts: [params.text],
           loggedUserMessageCount: 0,
           vaultUserId: params.vaultUserId,
+          ...(params.threadRootId ? { threadRootId: params.threadRootId } : {}),
         },
       });
       const acceptedEvent = appendRuntimeEvent("runtime-gateway-ingress", {
