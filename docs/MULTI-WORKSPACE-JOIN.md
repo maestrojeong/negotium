@@ -73,9 +73,14 @@ returned by `/peer/nodes` (`central.ts:71,77`) and by peer token verification
 Making `join` an online operation would be simpler and is rejected: it would
 break offline enrollment, which works today. Instead the join record is written
 with `scopeId: null` and resolved on the first successful Central contact.
-**Until it resolves, that workspace may not create rooms** — a room with no
-scope cannot be filed and would have to be repaired later. Execution and reads
-are unaffected.
+
+*Refined during implementation.* The original wording — "until it resolves, that
+workspace may not create rooms" — is too strong for the single-workspace case,
+where an unscoped room is exactly what every pre-migration room already is and
+stays perfectly usable. The rule that is actually enforced: **an Otium room must
+name a workspace only while several are attached**, because there an unscoped
+room is reachable from none of them (M-10), and a room nobody can see is worse
+than a refusal that says so. Execution and reads are unaffected either way.
 
 **M-4 — leaving keeps its rooms, and keeps them executable.**
 `leave` removes credentials only. The rooms stay, keep their `surface_scope`,
@@ -138,6 +143,12 @@ for, so it is reachable from none until it is filed.
 This is the honest consequence of resolving M-3's "which workspace is the
 default" as *none* when several are attached. The alternative — pick one — is
 how rooms end up in the wrong customer's workspace.
+
+**M-10a — a workspace only learns about its own nodes.**
+`peer sessions` used to answer with the union of every attached workspace's node
+list, which tells a room in workspace A which nodes workspace B runs. The bridge
+now carries the asking room so the answer stays inside its workspace — the same
+boundary `findNode` enforces when addressing those nodes.
 
 **M-11 — the sidecar's forwardable path set is a security boundary.**
 The public sidecar authenticates *itself* to the node with `NODE_CONTROL_TOKEN`,

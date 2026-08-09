@@ -170,7 +170,7 @@ server.tool(
     const remoteSections: string[] = [];
     const peers = currentSubagentRestricted
       ? { ok: true as const, nodes: [] }
-      : await peerSessionsForUser(userId, peerHostQueryId || undefined);
+      : await peerSessionsForUser(userId, peerHostQueryId || undefined, currentTopicId);
     if (peers.ok && peers.nodes) {
       for (const node of peers.nodes) {
         if (!node.node) continue;

@@ -9,7 +9,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { registerTopic, setDefaultSurfaceScope } from "@negotium/core";
+import { registerTopic, setDefaultSurfaceScope, setSurfaceScopeRequired } from "@negotium/core";
 import {
   attachedOtiumCells,
   attachOtiumCentralCell,
@@ -19,6 +19,7 @@ import {
 } from "@/central";
 import { handleOtiumPeerRequest } from "@/peer-server";
 import { PEER_PROTOCOL_VERSION } from "@/protocol";
+import { otiumPeerSessionBridge } from "@/session-bridge";
 import { resolveSurfaceScope, surfaceScopeForCell } from "@/workspace-scope";
 import { type FakeCentral, startFakeCentral } from "./helpers";
 
@@ -58,6 +59,7 @@ afterAll(() => {
   // with it; cascading deletes here would only race the runtime's topic locks.
   createdTopicIds.length = 0;
   setDefaultSurfaceScope(null);
+  setSurfaceScopeRequired(false);
   configureOtiumCentral(null);
   alpha.stop();
   beta.stop();
@@ -191,6 +193,64 @@ describe("two attached workspaces", () => {
     // so the name was unaddressable from *both* sides.
     expect((await tell(ALPHA_HUB_TOKEN, title)).status).toBe(200);
     expect((await tell(BETA_HUB_TOKEN, title)).status).toBe(200);
+  });
+
+  test("peer session listing answers inside the asking room's workspace", async () => {
+    alpha.addPeerNode({
+      cellId: "cell_peer_alpha",
+      nodeName: "hub",
+      isPrimary: true,
+      baseUrl: "http://127.0.0.1:1",
+      self: false,
+    });
+    beta.addPeerNode({
+      cellId: "cell_peer_beta",
+      nodeName: "hub",
+      isPrimary: true,
+      baseUrl: "http://127.0.0.1:1",
+      self: false,
+    });
+    resetPeerCentralCaches();
+
+    // Both workspaces run a node called "hub", so an unscoped answer is the
+    // union and tells a workspace A room which nodes workspace B runs.
+    const unscopedAnswer = await otiumPeerSessionBridge.sessions(USER);
+    expect((unscopedAnswer.nodes ?? []).length).toBe(2);
+
+    const inAlpha = makeNamedRoom(`sessions-${randomUUID().slice(0, 8)}`, alphaScope);
+    const answered = await otiumPeerSessionBridge.sessions(USER, undefined, inAlpha.id);
+    expect((answered.nodes ?? []).length).toBe(1);
+  });
+
+  test("a room must name a workspace while several are attached", () => {
+    setSurfaceScopeRequired(true);
+    try {
+      // Creating it unscoped would file it where no workspace can see it
+      // (M-10), so refuse where the caller can still be told.
+      expect(() =>
+        registerTopic({
+          title: `needs-scope-${randomUUID().slice(0, 8)}`,
+          userId: USER,
+          kind: "agent",
+          agent: "claude",
+          surface: "otium",
+        }),
+      ).toThrow("several Otium workspaces");
+
+      // Naming one is fine, and so is a terminal room, which has no workspaces.
+      const scoped = makeNamedRoom(`scoped-${randomUUID().slice(0, 8)}`, alphaScope);
+      expect(scoped.surfaceScope).toBe(alphaScope);
+      const local = registerTopic({
+        title: `local-${randomUUID().slice(0, 8)}`,
+        userId: USER,
+        kind: "agent",
+        agent: "claude",
+        surface: "terminal",
+      });
+      createdTopicIds.push(local.id);
+    } finally {
+      setSurfaceScopeRequired(false);
+    }
   });
 
   test("detaching one workspace leaves the other authenticated", async () => {

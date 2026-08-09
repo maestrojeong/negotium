@@ -65,6 +65,25 @@ export function setDefaultSurfaceScope(scope: string | null): string | null {
   return previous;
 }
 
+/**
+ * Whether an Otium room must name a workspace to be created at all (M-3).
+ *
+ * Off by default, and off for every single-workspace host: an unscoped room is
+ * then legacy, reachable, and perfectly usable. The adapter turns it on only
+ * while several workspaces are attached, because there an unscoped room is
+ * reachable from none of them (M-10) — a room nobody can see is worse than a
+ * refusal that says so.
+ */
+let surfaceScopeRequired = false;
+
+export function setSurfaceScopeRequired(required: boolean): void {
+  surfaceScopeRequired = required;
+}
+
+export function isSurfaceScopeRequired(): boolean {
+  return surfaceScopeRequired;
+}
+
 function tableColumns(table: string): Set<string> {
   const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   return new Set(rows.map((row) => row.name));

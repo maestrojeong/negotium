@@ -147,7 +147,11 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
             `- ${key}: ${topic.sessionId ? "active" : "fresh-start ready"}${topic.description ? `\n    description: ${topic.description.slice(0, 80)}` : ""}`,
         );
       if (!identity.restricted) {
-        const peers = await peerSessionsForUser(context.userId, context.peerHostQueryId);
+        const peers = await peerSessionsForUser(
+          context.userId,
+          context.peerHostQueryId,
+          context.currentTopicId,
+        );
         for (const node of peers.nodes ?? []) {
           for (const session of node.sessions ?? []) {
             if (session.agent)

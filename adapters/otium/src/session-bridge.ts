@@ -252,10 +252,14 @@ async function forward(args: PeerForwardArgs): Promise<PeerForwardResult> {
   });
 }
 
-async function sessions(userId: string, sourceQueryId?: string) {
+async function sessions(userId: string, sourceQueryId?: string, fromTopicId?: string) {
   const nodes = await listPeerNodes().catch(() => []);
   const selves = new Map(nodes.filter((node) => node.self).map((node) => [node.viaCellId, node]));
   if (selves.size === 0) return { ok: false, nodes: [] };
+  // Answer inside the asking room's workspace. Listing the union would tell a
+  // room in workspace A which nodes workspace B runs — names it has no business
+  // knowing, and the same boundary `findNode` enforces when addressing them.
+  const callerScope = fromTopicId ? (getTopic(fromTopicId)?.surfaceScope ?? null) : null;
   return {
     ok: true,
     nodes: await Promise.all(
@@ -264,6 +268,7 @@ async function sessions(userId: string, sourceQueryId?: string) {
           // Reachability is decided inside the node's own workspace: being the
           // primary of workspace A says nothing about a worker in workspace B.
           const self = selves.get(node.viaCellId);
+          if (callerScope && surfaceScopeForCell(node.viaCellId) !== callerScope) return false;
           return !node.self && node.nodeName && self && (self.isPrimary || node.isPrimary);
         })
         .map(async (node) => {

@@ -8,7 +8,7 @@ const BODY_TIMEOUT_MS = 10_000;
 
 type BridgeRequest =
   | { action: "forward"; args: PeerForwardArgs }
-  | { action: "sessions"; userId: string; sourceQueryId?: string }
+  | { action: "sessions"; userId: string; sourceQueryId?: string; fromTopicId?: string }
   | {
       action: "reply";
       route: RemoteReplyRoute;
@@ -117,7 +117,9 @@ export function startPeerSessionBridgeIpc(bridge: PeerSessionBridge): PeerSessio
           return Response.json(await bridge.forward(payload.args));
         }
         if (payload.action === "sessions") {
-          return Response.json(await bridge.sessions(payload.userId, payload.sourceQueryId));
+          return Response.json(
+            await bridge.sessions(payload.userId, payload.sourceQueryId, payload.fromTopicId),
+          );
         }
         if (payload.action === "reply") {
           return Response.json(

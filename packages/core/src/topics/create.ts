@@ -17,6 +17,7 @@ import {
   defaultSurfaceScope,
   defaultTopicSurface,
   findTopicTitleConflict,
+  isSurfaceScopeRequired,
   normalizeSurfaceScope,
   normalizeTopicKind,
   normalizeTopicState,
@@ -84,6 +85,14 @@ export function registerTopic(opts: RegisterTopicOptions): TopicDto {
       : surface === "otium"
         ? defaultSurfaceScope()
         : null;
+  // M-3: a room that names no workspace while several are attached would be
+  // filed under none and therefore visible to none. Refuse it here, where the
+  // caller can still be told, rather than creating a room nobody can reach.
+  if (surface === "otium" && !surfaceScope && isSurfaceScopeRequired()) {
+    throw new TopicValidationError(
+      "this node serves several Otium workspaces; a room must name one to be created",
+    );
+  }
   const conflict = findTopicTitleConflict(title, requestedKind, { surface, surfaceScope });
   if (conflict) {
     throw new TopicValidationError(`A topic named "${title}" already exists on ${surface}`);

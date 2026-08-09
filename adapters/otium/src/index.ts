@@ -18,6 +18,7 @@ import {
   registerPeerSessionBridge,
   runtimeBus,
   setDefaultSurfaceScope,
+  setSurfaceScopeRequired,
   stampUnscopedOtiumTopics,
 } from "@negotium/core";
 import { startCanonicalMcpBridge } from "@/canonical-mcp-bridge";
@@ -184,6 +185,9 @@ const mountedScopes = new Map<string, string | null>();
 function refreshDefaultSurfaceScope(): void {
   const scopes = [...mountedScopes.values()];
   setDefaultSurfaceScope(scopes.length === 1 ? (scopes[0] ?? null) : null);
+  // With several attached there is no default to fall back on, so a room that
+  // names no workspace is refused rather than filed where nobody can see it.
+  setSurfaceScopeRequired(scopes.length > 1);
 }
 
 /**

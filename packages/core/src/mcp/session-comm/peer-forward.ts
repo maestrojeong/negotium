@@ -35,7 +35,16 @@ export interface RemoteReplyRoute {
 
 export interface PeerSessionBridge {
   forward(args: PeerForwardArgs): Promise<PeerForwardResult>;
-  sessions(userId: string, sourceQueryId?: string): Promise<PeerSessionsResult>;
+  /**
+   * `fromTopicId` names the asking room so the bridge can answer within that
+   * room's workspace. Without it the answer is the union of every attached
+   * workspace's nodes, which leaks one workspace's topology into another.
+   */
+  sessions(
+    userId: string,
+    sourceQueryId?: string,
+    fromTopicId?: string,
+  ): Promise<PeerSessionsResult>;
   reply(
     route: RemoteReplyRoute,
     sourceTitle: string,
@@ -52,7 +61,7 @@ const PEER_BRIDGE_TIMEOUT_MS = 5_000;
 
 type IpcRequest =
   | { action: "forward"; args: PeerForwardArgs }
-  | { action: "sessions"; userId: string; sourceQueryId?: string }
+  | { action: "sessions"; userId: string; sourceQueryId?: string; fromTopicId?: string }
   | {
       action: "reply";
       route: RemoteReplyRoute;
@@ -132,12 +141,14 @@ export interface PeerSessionsResult {
 export async function peerSessionsForUser(
   userId: string,
   sourceQueryId?: string,
+  fromTopicId?: string,
 ): Promise<PeerSessionsResult> {
-  if (activeBridge) return activeBridge.sessions(userId, sourceQueryId);
+  if (activeBridge) return activeBridge.sessions(userId, sourceQueryId, fromTopicId);
   const sessions = await callLoopbackBridge<PeerSessionsResult>({
     action: "sessions",
     userId,
     sourceQueryId,
+    fromTopicId,
   });
   if (sessions.result) return sessions.result;
   if (sessions.configured) return { ok: false, nodes: [] };
