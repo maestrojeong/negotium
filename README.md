@@ -15,21 +15,36 @@
 > *Negotium* is Latin for “work” — literally *nec otium*, the absence of
 > leisure. Your machines do the negotium so you can keep the otium.
 
-Negotium turns one computer into one durable backend runtime, not a runtime
-that belongs to a single surface. Terminal, Telegram, and any number of Otium
-workspaces (local or remote) can all reach it. What's actually shared across
-all of them is the runtime layer: memory, wiki, skills, the vault, tool
-availability, and Cron. What's *not* shared is scoped on purpose: a topic
-belongs permanently to one surface (`terminal` | `telegram` | `otium`) chosen
-when it's created, and an Otium-surface topic further belongs to the one
-workspace it was created in — so two different Otium workspaces joined to the
-same node see different rooms, never each other's. Connecting another Otium
-workspace doesn't fork the node or copy its state; it just adds one more
-workspace-scoped view over the same underlying vault, memory, and tools.
+## The Negotium Node
 
-Otium is a workspace that can be pointed at this runtime; Negotium is the
-runtime itself. Negotium stays useful with Terminal or Telegram alone, with no
-Otium workspace at all — and just as useful joined to several at once.
+A Negotium **node** is the durable runtime running on one machine — it owns
+topics, provider sessions, queues, tools, workspaces, and local state. It is
+not a runtime that belongs to a single surface. Terminal, Telegram, and any
+number of Otium workspaces (local or remote) can all reach the same node.
+
+What's shared across every surface connected to a node is the runtime layer:
+- **memory and wiki** — knowledge persists across topics and surfaces
+- **skills** — reusable instructions available to every topic
+- **the vault** — one encrypted secret store per node, referenced as `{{KEY}}`
+- **tools and MCP servers** — browser, shell, file, and custom tools
+- **Cron schedules** — durable, restarts survive, missed runs coalesced
+
+What's *not* shared is scoped on purpose: a **topic** belongs permanently to
+one surface (`terminal` | `telegram` | `otium`) chosen when it's created, and
+an Otium-surface topic further belongs to the one workspace it was created in
+— so two different Otium workspaces joined to the same node see different
+rooms, never each other's. Connecting another Otium workspace doesn't fork the
+node or copy its state; it just adds one more workspace-scoped view over the
+same underlying vault, memory, and tools.
+
+The node binds to `127.0.0.1:7777` by default. State lives under `~/.negotium`
+and stays on the machine that runs the node. Hosts only send input and render
+events; the core owns execution, durable state, provider sessions, and
+queueing. Otium is a workspace that can be pointed at this runtime; Negotium is
+the runtime itself. Negotium stays useful with Terminal or Telegram alone, with
+no Otium workspace at all — and just as useful joined to several at once.
+
+For the full runtime model and invariants, see [Architecture](./docs/ARCHITECTURE.md).
 
 The project is early-stage. Public APIs may change during the `0.x` series.
 
@@ -124,39 +139,10 @@ Press `Ctrl-O` to open the topic picker, then `Ctrl-N` to create a topic,
 choose an available agent backend, and start. Closing the terminal does not
 erase the topic or its history.
 
-## Everyday controls
+## Terminal usage
 
-The most useful Terminal shortcuts are:
-
-| Action | Keys |
-|---|---|
-| Open the topic picker | `Ctrl-O` |
-| Create a topic from the picker | `Ctrl-N` |
-| Delete the picked topic | `Ctrl-D` |
-| Scroll loaded history | Mouse wheel or `PgUp` / `PgDn` |
-| Load older history | `Ctrl-E` |
-| Toggle shared tasks | `Ctrl-T` |
-| Open the live subagent graph | `Ctrl-G` |
-| Abort the current turn | `Ctrl-C` |
-
-Useful chat commands:
-
-```text
-/new          reset the topic's AI context
-/compact      summarize and shrink provider context
-/status       show model and token usage
-/model        choose the model for this topic
-/effort       choose reasoning effort
-/fork [name]  copy config and history into a new topic
-/spawn [name] copy config into a fresh topic
-/vault        open the encrypted-secret manager
-/help         show all shortcuts
-/quit         close the Terminal client
-```
-
-The `Ctrl-G` graph shows which agent owns each topic and how subagents or
-cross-topic requests connect them. Pan with arrow keys or `h`/`j`/`k`/`l`,
-change spacing with `[`/`]`, and close with `Esc` or `Ctrl-G`.
+For keyboard shortcuts, chat commands, and the live subagent graph, see
+[Terminal usage](./docs/TERMINAL-USAGE.md).
 
 ## Agent collaboration
 
