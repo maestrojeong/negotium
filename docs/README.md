@@ -40,6 +40,15 @@ instead of copying the explanation.
 | [Migration 0.1.42](./MIGRATION-0.1.42.md) | Browser gateway port ownership, spawn nonce readiness, and startup diagnostics |
 | [Migration 0.1.43](./MIGRATION-0.1.43.md) | Ordered user-message preservation, subagent topology guidance, and canonical Wiki briefs |
 | [Migration 0.1.44](./MIGRATION-0.1.44.md) | Title-scoped accumulated Wiki memory, immutable summaries, and concurrent archive safety |
+| [Migration 0.1.45](./MIGRATION-0.1.45.md) | Explicit Wiki memory pipeline with scan-free retrieval |
+| [Migration 0.1.46](./MIGRATION-0.1.46.md) | Terminal-adapter release: long-standing rendering fixes |
+| [Migration 0.1.47](./MIGRATION-0.1.47.md) | Correctness release: one security fix and three operational fixes |
+| [Migration 0.1.48](./MIGRATION-0.1.48.md) | Removes the mcp-patchright gateway; hosts browser MCP lifecycle directly |
+| [Migration 0.1.49](./MIGRATION-0.1.49.md) | Fixes the public negotium/registry package contract |
+| [Surface-scoped sessions](./SURFACE-SESSION-SEPARATION.md) | Per-surface session scoping and topic separation (S-1 through S-11) |
+| [Otium node architecture](./OTIUM-NODE-ARCHITECTURE.md) | Otium workspace to Negotium node architecture and decisions |
+| [Multi-workspace join](./MULTI-WORKSPACE-JOIN.md) | Joining several Otium workspaces without a restart (M-1 through M-9) |
+| [Terminal deferred issues](./TERMINAL-DEFERRED.md) | Known terminal adapter issues deliberately left unfixed |
 | [Browser runtime](./BROWSER-RUNTIME.md) | Host-injected Playwright MCP lifecycle for downstream runtimes |
 | [Otium runtime deduplication](./OTIUM-RUNTIME-DEDUP.md) | Public migration contracts and planned host-factory boundaries |
 
