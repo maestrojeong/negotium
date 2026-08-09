@@ -107,3 +107,22 @@ export function surfaceScopeForCell(cellId: string): string | null {
   const join = attachedOtiumCells().find((candidate) => candidate.cellId === cellId);
   return join ? cachedSurfaceScope(join) : null;
 }
+
+/**
+ * May a workspace reach a room that belongs to no workspace?
+ *
+ * With one attachment, yes, and it has to be: rooms that predate the scope
+ * column, and rooms on a loopback hub that never joined anything, are all
+ * unscoped, and refusing them would strand real rooms to close a hole that
+ * cannot be open — there is no second workspace to confuse them with.
+ *
+ * With two or more, no. An unscoped room is then genuinely ambiguous, and
+ * handing it to every attached hub would quietly undo the isolation the whole
+ * feature exists for. Locally created rooms are the ones that land here (the
+ * gateway and derived rooms both carry a workspace), so the cost is that a
+ * terminal-created room is not reachable from Otium until it is filed — which
+ * is the safe direction to fail.
+ */
+export function unscopedRoomsAddressable(): boolean {
+  return attachedOtiumCells().length < 2;
+}

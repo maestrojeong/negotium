@@ -162,12 +162,21 @@ describe("two attached workspaces", () => {
     expect(accepted.status).toBe(200);
   });
 
-  test("an unscoped room stays reachable from any workspace", async () => {
-    // Rooms that predate the scope column are filed under no workspace, so
-    // refusing them would strand real rooms without closing any hole.
+  test("an unscoped room is nobody's while two workspaces are attached", async () => {
+    // With one attachment an unscoped room is legacy and must stay reachable.
+    // With two it is genuinely ambiguous, and handing it to both hubs would
+    // quietly undo the isolation the feature exists for, so it is reachable
+    // from neither until it is filed.
     const room = makeRoom(null);
-    expect((await tell(BETA_HUB_TOKEN, room.title)).status).toBe(200);
-    expect((await tell(ALPHA_HUB_TOKEN, room.title)).status).toBe(200);
+    expect((await tell(BETA_HUB_TOKEN, room.title)).status).toBe(404);
+    expect((await tell(ALPHA_HUB_TOKEN, room.title)).status).toBe(404);
+
+    detachOtiumCentralCell("cell_worker_beta");
+    try {
+      expect((await tell(ALPHA_HUB_TOKEN, room.title)).status).toBe(200);
+    } finally {
+      attachOtiumCentralCell(beta.join);
+    }
   });
 
   test("a title used in both workspaces resolves to the caller's own", async () => {

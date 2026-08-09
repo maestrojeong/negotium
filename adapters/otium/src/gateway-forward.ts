@@ -26,6 +26,8 @@ const RUNTIME_CONTRACT_PATH = "/api/v1/control/runtime/v1";
 
 /** Mirrors `NODE_RUNTIME_SURFACE_SCOPE_HEADER`, for the same reason. */
 const SURFACE_SCOPE_HEADER = "x-negotium-surface-scope";
+/** Mirrors `NODE_RUNTIME_SURFACE_SCOPE_STRICT_HEADER`. */
+const SURFACE_SCOPE_STRICT_HEADER = "x-negotium-surface-scope-strict";
 
 /** Public prefix the hub addresses; rewritten to the contract path locally. */
 export const OTIUM_GATEWAY_FORWARD_PREFIX = "/api/v1/peer/runtime";
@@ -54,6 +56,11 @@ export interface GatewayForwardOptions {
    * would hand a remote hub every workspace's rooms (M-8).
    */
   surfaceScope: string | null;
+  /**
+   * True when this node serves more than one workspace, which makes a room
+   * filed under none ambiguous rather than legacy.
+   */
+  strictScope: boolean;
   fetch?: typeof fetch;
 }
 
@@ -86,6 +93,7 @@ export async function forwardGatewayRequest(
   // Set after the caller was verified, and set unconditionally so a forged
   // inbound header can never survive into the loopback call.
   headers.set(SURFACE_SCOPE_HEADER, options.surfaceScope ?? "");
+  headers.set(SURFACE_SCOPE_STRICT_HEADER, options.strictScope ? "1" : "0");
   // The relay hop streams bodies, so Bun would otherwise send both chunked
   // framing and a length once we buffer — same fix as the sidecar proxy.
   headers.delete("transfer-encoding");

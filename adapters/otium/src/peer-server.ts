@@ -57,7 +57,7 @@ import {
   peerInboxPayloadHash,
   releasePeerInboxRequest,
 } from "@/store";
-import { surfaceScopeForCell } from "@/workspace-scope";
+import { surfaceScopeForCell, unscopedRoomsAddressable } from "@/workspace-scope";
 
 const RUNTIME_VERSION = NEGOTIUM_VERSION;
 
@@ -120,8 +120,9 @@ function peerTopicByName(toTopic: string, userId: string, peer: Extract<PeerAuth
   const surfaceScope = surfaceScopeForCell(peer.verified.viaCellId);
   const scoped = getTopicByNameForUser(toTopic, userId, { surface: "otium", surfaceScope });
   if (scoped) return scoped;
-  // Rooms filed under no workspace belong to none and stay reachable, so fall
-  // back to them rather than stranding rooms that predate the column.
+  if (!unscopedRoomsAddressable()) return null;
+  // With a single attachment, rooms filed under no workspace belong to none and
+  // stay reachable, rather than stranding rooms that predate the column.
   return getTopicByNameForUser(toTopic, userId, { surface: "otium", surfaceScope: null });
 }
 
@@ -147,7 +148,7 @@ function peerAddressable(
 ): boolean {
   if (topic.surface !== "otium") return false;
   const roomScope = topic.surfaceScope ?? null;
-  if (!roomScope) return true;
+  if (!roomScope) return unscopedRoomsAddressable();
   return roomScope === surfaceScopeForCell(peer.verified.viaCellId);
 }
 
@@ -544,6 +545,7 @@ export async function handleOtiumPeerRequest(req: Request): Promise<Response | n
     return forwardGatewayRequest(req, {
       nodeOrigin: `http://127.0.0.1:${node.info.port}`,
       surfaceScope: surfaceScopeForCell(peer.verified.viaCellId),
+      strictScope: !unscopedRoomsAddressable(),
     });
   }
 

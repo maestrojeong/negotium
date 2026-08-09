@@ -74,6 +74,16 @@ export const NODE_RUNTIME_CONTRACT_VERSION = 1;
  * loopback sends no header at all and keeps the whole surface, as before.
  */
 export const NODE_RUNTIME_SURFACE_SCOPE_HEADER = "x-negotium-surface-scope";
+
+/**
+ * Set when the node serves more than one workspace, so a room filed under none
+ * is ambiguous rather than legacy.
+ *
+ * With a single attachment an unscoped room must stay reachable — that is every
+ * room that predates the column. With several, granting it to every attached
+ * hub would undo the isolation, so the adapter says which situation this is.
+ */
+export const NODE_RUNTIME_SURFACE_SCOPE_STRICT_HEADER = "x-negotium-surface-scope-strict";
 export const NODE_RUNTIME_CONTRACT_BASE_PATH = `${NODE_CONTROL_BASE_PATH}/runtime/v1`;
 export const NODE_DAEMON_ROLE = "node-daemon";
 export const NODE_DAEMON_INFO_PATH = resolve(RUN_DIR, "node-daemon.json");
@@ -140,7 +150,26 @@ function topicInRequestScope(req: Request, topic: Pick<TopicDto, "surfaceScope">
   const scope = requestSurfaceScope(req);
   if (!("surfaceScope" in scope)) return true;
   const roomScope = topic.surfaceScope ?? null;
-  return roomScope === null || roomScope === (scope.surfaceScope ?? null);
+  if (roomScope === null) return req.headers.get(NODE_RUNTIME_SURFACE_SCOPE_STRICT_HEADER) !== "1";
+  return roomScope === (scope.surfaceScope ?? null);
+}
+
+/**
+ * The rooms a gateway caller may enumerate.
+ *
+ * Mirrors {@link topicInRequestScope} exactly, so discovery and direct access
+ * can never disagree: no header is a loopback hub and sees the whole surface;
+ * a named workspace sees its own rooms, plus the unscoped ones only while this
+ * node serves a single workspace and they are therefore legacy rather than
+ * ambiguous.
+ */
+function gatewayVisibleTopics(req: Request): TopicDto[] {
+  const scope = requestSurfaceScope(req);
+  if (!("surfaceScope" in scope)) return getVisibleTopics({ surface: "otium" });
+  const own = getVisibleTopics({ surface: "otium", surfaceScope: scope.surfaceScope ?? null });
+  const strict = req.headers.get(NODE_RUNTIME_SURFACE_SCOPE_STRICT_HEADER) === "1";
+  if (strict || scope.surfaceScope === null) return own;
+  return own.concat(getVisibleTopics({ surface: "otium", surfaceScope: null }));
 }
 
 function topicServiceError(error: TopicServiceError): Response {
@@ -454,7 +483,7 @@ export function createNodeControlHandler(
          * to enumerate the owner's terminal or telegram rooms.
          */
         if (req.method === "GET" && runtimePath === "/topics") {
-          const topics = getVisibleTopics({ surface: "otium", ...requestSurfaceScope(req) });
+          const topics = gatewayVisibleTopics(req);
           return Response.json({
             ok: true,
             v: NODE_RUNTIME_CONTRACT_VERSION,

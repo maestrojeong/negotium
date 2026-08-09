@@ -54,6 +54,14 @@ interface CellState {
 /** Attached cells in join order; the first is the one single-join callers mean. */
 const cells = new Map<string, CellState>();
 
+/**
+ * Negative verify cache, deliberately far shorter than the positive one: a
+ * token that was rejected because it had not propagated yet must become usable
+ * quickly, while a forged one must not cost N round trips per attempt.
+ */
+const REJECT_CACHE_MS = 2_000;
+const rejectCache = new Map<string, number>();
+
 function cellState(cellId: string): CellState | null {
   return cells.get(cellId) ?? null;
 }
@@ -193,7 +201,9 @@ export async function selfPeerNode(): Promise<PeerNode | null> {
 export async function peerWorkspaceIdForCell(cellId: string): Promise<string | null> {
   const cell = cellState(cellId);
   if (!cell) return null;
-  if (!cell.nodesCache) await discover(cell, false);
+  // An answer without a workspaceId would otherwise stick for the whole cache
+  // window and leave the cell permanently unscoped; re-ask instead.
+  if (!cell.nodesCache?.workspaceId) await discover(cell, true);
   return cell.nodesCache?.workspaceId || null;
 }
 
@@ -283,15 +293,28 @@ async function verifyAgainstCell(cell: CellState, token: string): Promise<Verifi
  * its workspace.
  */
 export async function verifyPeerToken(token: string): Promise<VerifiedPeer | null> {
+  // Rejections are cached too, briefly. Without this a sprayed invalid token
+  // costs one Central round trip per attached workspace, so the load an
+  // attacker imposes grows with the number of joins.
+  const rejectedAt = rejectCache.get(token);
+  if (rejectedAt !== undefined && Date.now() - rejectedAt < REJECT_CACHE_MS) return null;
   for (const cell of cells.values()) {
     const verified = await verifyAgainstCell(cell, token);
-    if (verified) return verified;
+    if (verified) {
+      rejectCache.delete(token);
+      return verified;
+    }
+  }
+  rejectCache.set(token, Date.now());
+  for (const [key, at] of rejectCache) {
+    if (Date.now() - at > REJECT_CACHE_MS) rejectCache.delete(key);
   }
   return null;
 }
 
 /** Test hook — cell state is a module singleton. */
 export function resetPeerCentralCaches(): void {
+  rejectCache.clear();
   for (const cell of cells.values()) {
     cell.nodesCache = null;
     cell.verifyCache.clear();

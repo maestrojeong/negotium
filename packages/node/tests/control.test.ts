@@ -30,6 +30,7 @@ import {
   NODE_RUNTIME_CONTRACT_BASE_PATH,
   NODE_RUNTIME_CONTRACT_VERSION,
   NODE_RUNTIME_SURFACE_SCOPE_HEADER,
+  NODE_RUNTIME_SURFACE_SCOPE_STRICT_HEADER,
 } from "../src/control";
 
 const userId = `node-control-${randomUUID()}`;
@@ -337,7 +338,9 @@ test("runtime gateway topic list is scoped to the caller's workspace", async () 
   // A leak here would hand one workspace's hub the rooms of another, which is
   // the entire security argument for multi-workspace join.
   expect(forAlpha).not.toContain(beta.id);
-  expect(forAlpha).not.toContain(unscoped.id);
+  // Without the strict flag this node serves a single workspace, so an unscoped
+  // room is legacy rather than ambiguous and stays visible.
+  expect(forAlpha).toContain(unscoped.id);
 
   // An unresolved workspace sees the unscoped rooms, not everything.
   const forUnresolved = await list("");
@@ -347,6 +350,47 @@ test("runtime gateway topic list is scoped to the caller's workspace", async () 
   // No header at all is a loopback hub, which keeps the whole surface.
   const forLoopback = await list();
   expect(forLoopback).toEqual(expect.arrayContaining([alpha.id, beta.id, unscoped.id]));
+});
+
+test("an unscoped room is legacy for one workspace and ambiguous for several", async () => {
+  const user = `topic-scope-strict-${randomUUID()}`;
+  const legacy = registerTopic({
+    title: `Legacy ${randomUUID()}`,
+    userId: user,
+    agent: "codex",
+    surface: "otium",
+    surfaceScope: null,
+  });
+  const ask = async (strict: boolean) => {
+    const listed = await handler(
+      runtimeRequest("/topics", {
+        headers: {
+          [NODE_RUNTIME_SURFACE_SCOPE_HEADER]: "ws_alpha",
+          [NODE_RUNTIME_SURFACE_SCOPE_STRICT_HEADER]: strict ? "1" : "0",
+        },
+      }),
+    );
+    const body = (await listed?.json()) as { topics?: { id: string }[] };
+    const direct = await handler(
+      runtimeRequest(`/topics/${legacy.id}`, {
+        headers: {
+          [NODE_RUNTIME_SURFACE_SCOPE_HEADER]: "ws_alpha",
+          [NODE_RUNTIME_SURFACE_SCOPE_STRICT_HEADER]: strict ? "1" : "0",
+        },
+      }),
+    );
+    return { listed: (body.topics ?? []).map((t) => t.id), status: direct?.status };
+  };
+
+  // One workspace attached: the room predates the column and must stay usable.
+  const lenient = await ask(false);
+  expect(lenient.listed).toContain(legacy.id);
+  expect(lenient.status).toBe(200);
+
+  // Several attached: it belongs to none of them, so it belongs to none.
+  const strict = await ask(true);
+  expect(strict.listed).not.toContain(legacy.id);
+  expect(strict.status).toBe(404);
 });
 
 test("knowing a room id does not get a foreign workspace past the boundary", async () => {
