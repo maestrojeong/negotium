@@ -48,6 +48,7 @@ import {
 } from "#storage/self-schedules";
 import { clearPendingAsk } from "#storage/session-asks";
 import type { AgentKind } from "#types";
+import type { TopicSurface } from "#types/api";
 
 // ── Entry types (match MCP server.ts write format) ──────────────────
 
@@ -190,6 +191,37 @@ function entryFromLabel(entry: { from: string; fromTitle?: string }): string {
   return entry.fromTitle?.trim() || entry.from;
 }
 
+/**
+ * Where an inbox entry's by-name fallback is allowed to look.
+ *
+ * `"unscoped"` reproduces pre-S-7 behaviour and is only returned for entries
+ * with no `fromTopicId` at all — legacy writers, and every `abort` entry,
+ * whose format carries no sender identity. Refusing those would drop traffic
+ * that has always worked.
+ *
+ * A `fromTopicId` that resolves to nothing is different: the sender existed
+ * and is gone (deleted mid-exchange), so falling back to an unscoped name
+ * lookup is exactly how a reply lands in a same-named room on another
+ * surface. That case returns `"deny"` and the caller drops the entry.
+ */
+type CallerScope = { kind: "unscoped" } | { kind: "deny" } | { kind: "surface"; on: TopicSurface };
+
+function callerScope(
+  entry: SessionInboxEntry,
+  getTopic: (id: string) => { surface?: string | null } | null,
+): CallerScope {
+  const fromTopicId = "fromTopicId" in entry ? entry.fromTopicId : undefined;
+  if (!fromTopicId) return { kind: "unscoped" };
+  const surface = getTopic(fromTopicId)?.surface;
+  return surface ? { kind: "surface", on: surface as TopicSurface } : { kind: "deny" };
+}
+
+/** `getTopicByNameForUser` options for a scope, or null when it must not run. */
+function scopeToLookupOpts(scope: CallerScope): { surface?: TopicSurface } | null {
+  if (scope.kind === "deny") return null;
+  return scope.kind === "surface" ? { surface: scope.on } : {};
+}
+
 async function resolveEntryCallerTopic(
   scope: PendingAskScope,
   entry: Extract<SessionInboxEntry, { type: "ask" }>,
@@ -199,7 +231,14 @@ async function resolveEntryCallerTopic(
     const byId = getTopic(entry.fromTopicId);
     if (byId?.participants.some((p) => p.userId === scope.userId)) return byId;
   }
-  return getTopicByNameForUser(entry.from, String(scope.userId));
+  // Same reasoning as the target lookup: resolve the caller inside its own
+  // surface so a same-named topic elsewhere cannot receive the reply. A sender
+  // id that no longer resolves denies the fallback outright — that is the
+  // deleted-caller case, where an unscoped name match is most likely to be the
+  // wrong room rather than the right one.
+  const opts = scopeToLookupOpts(callerScope(entry, getTopic));
+  if (!opts) return null;
+  return getTopicByNameForUser(entry.from, String(scope.userId), opts);
 }
 
 function notifyCallerTopic(callerTopicId: string, targetLabel: string, message: string): void {
@@ -619,12 +658,23 @@ async function processTopicInbox(args: {
       }
 
       // Look up the target topic.
+      //
+      // The by-NAME fallback must stay inside the caller's surface (S-7).
+      // Names are only unique per surface since S-3, so an unscoped lookup can
+      // resolve `General` on `terminal` for a message sent from `telegram`.
+      // The session-target catalog already refuses to *offer* a cross-surface
+      // target, so this is the second line of defence for entries that name a
+      // topic directly — including ones written before the catalog was scoped.
+      // With no `fromTopicId` (legacy entries) the caller's surface is unknown
+      // and the lookup stays as it was rather than dropping the message; a
+      // `fromTopicId` that no longer resolves denies the fallback instead.
       const byId = topicId ? getTopic(topicId) : null;
+      const nameLookupOpts = scopeToLookupOpts(callerScope(entry, getTopic));
       const topic = topicId
         ? byId?.participants.some((participant) => participant.userId === userId)
           ? byId
           : null
-        : getTopicByNameForUser(topicName, userId);
+        : nameLookupOpts && getTopicByNameForUser(topicName, userId, nameLookupOpts);
       if (!topic) {
         logger.warn({ topicName, from: entry.from }, "session-inbox: topic not found, dropping");
         if (entry.type === "ask") {
@@ -671,6 +721,18 @@ async function handleAbortEntry(
 ) {
   const { getTopic, getTopicByNameForUser } = await import("#storage/api-topics");
   const byId = topicId ? getTopic(topicId) : null;
+  // KNOWN GAP: this by-name fallback cannot be surface-scoped the way the
+  // tell/ask one is. An `abort` entry is `{ type, timestamp }` — the format
+  // carries no sender identity at all, and every current writer omits one
+  // (mcp/session-comm/server.ts, default-host.ts). So there is nothing to
+  // derive a caller surface from, and scoping would have to invent one.
+  //
+  // The exposure is narrow but real: reaching this line at all needs an entry
+  // with no `topicId`, which only legacy title-keyed inboxes produce, and the
+  // worst outcome is aborting a same-named topic's turn on another surface.
+  // Closing it properly means adding sender identity to the abort entry format
+  // and is a wire-format change, not a call-site fix — deliberately left out
+  // of this change rather than papered over with a scope that is always empty.
   const topic = topicId
     ? byId?.participants.some((participant) => participant.userId === userId)
       ? byId

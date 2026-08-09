@@ -59,12 +59,19 @@ function resolveTopicForUser(
   const trimmed = ref.trim();
   if (!trimmed) return { error: "Error: topic is required." };
   const notFound = `Error: topic '${trimmed}' not found (or not uniquely named). Use list_topics to see available topics.`;
+  const surface = callerSurface(ctx);
   const byId = getTopic(trimmed);
   if (byId) {
-    if (!isParticipant(byId, ctx.userId)) return { error: notFound };
+    // Membership is not enough. The by-title branch below is surface-scoped,
+    // so leaving the id branch on participation alone made the id the way
+    // around it: one account is normally a participant of its own rooms on
+    // every surface, so an agent on `telegram` that knows a `terminal` room's
+    // id could abort, restart or delete it through these tools. Same check on
+    // both branches, or the cheaper one is simply the exploit.
+    if (!isParticipant(byId, ctx.userId) || byId.surface !== surface) return { error: notFound };
     return { topic: byId };
   }
-  const byTitle = getTopicByNameForUser(trimmed, ctx.userId, { surface: callerSurface(ctx) });
+  const byTitle = getTopicByNameForUser(trimmed, ctx.userId, { surface });
   if (byTitle) return { topic: byTitle };
   return { error: notFound };
 }

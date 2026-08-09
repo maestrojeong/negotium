@@ -413,6 +413,12 @@ describe("negotium MCP endpoint", () => {
       title: `shared-delete-caller-${suffix}`,
       userId: memberId,
       agent: "codex",
+      // Same surface as `parent` on purpose: this test is about OWNERSHIP, and
+      // `resolveTopicForUser` now rejects a cross-surface id before ownership
+      // is ever consulted. Leaving the caller on the default surface would
+      // make it pass for the wrong reason — "not found" instead of "only the
+      // topic owner". Cross-surface rejection has its own test below.
+      surface: "otium",
     });
     const memberCtx: RuntimeMcpContext = {
       ...ctx,
@@ -438,6 +444,58 @@ describe("negotium MCP endpoint", () => {
       expect(getTopic(child.id)).toBeDefined();
     } finally {
       await memberClient.close();
+    }
+  });
+
+  /**
+   * The destructive runtime tools take "topic title or id". The title branch
+   * has always been surface-scoped; the id branch checked participation only.
+   * Since a user is normally a participant of their own rooms on every
+   * surface, the id was simply the way around the scope: an agent on one
+   * surface could abort, restart or delete a room on another by pasting its
+   * id. `delete_topic` is the destructive end of that, so it is what gets
+   * pinned here.
+   */
+  test("delete_topic refuses a topic id from another surface", async () => {
+    const suffix = randomUUID();
+    const ownerId = `xsurface-owner-${suffix}`;
+    const victim = registerTopic({
+      title: `xsurface-victim-${suffix}`,
+      userId: ownerId,
+      agent: "codex",
+      surface: "otium",
+    });
+
+    // Same user, so participation cannot be what rejects this — only surface.
+    const caller = registerTopic({
+      title: `xsurface-caller-${suffix}`,
+      userId: ownerId,
+      agent: "codex",
+      surface: "telegram",
+    });
+    const callerCtx: RuntimeMcpContext = {
+      ...ctx,
+      userId: ownerId,
+      topicId: caller.id,
+      topicTitle: caller.title,
+    };
+    const crossClient = new Client({ name: "negotium-xsurface-test", version: "1.0.0" });
+    const token = issueRuntimeMcpToken(callerCtx);
+    const url = new URL(
+      `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+    );
+
+    try {
+      await crossClient.connect(new StreamableHTTPClientTransport(url));
+      const result = await crossClient.callTool({
+        name: "delete_topic",
+        arguments: { topic: victim.id, force: true },
+      });
+      expect(result.isError).toBe(true);
+      expect(resultText(result)).toContain("not found");
+      expect(getTopic(victim.id)).toBeDefined();
+    } finally {
+      await crossClient.close();
     }
   });
 

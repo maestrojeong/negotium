@@ -43,6 +43,29 @@ export type TelegramCommandRouter = (
   telegramUserId?: number,
 ) => Promise<void>;
 
+/**
+ * Resolve a user-supplied topic argument (title or id) **within the telegram
+ * surface**.
+ *
+ * `getTopicByNameForUser` only filters by surface when it is told to: its SQL
+ * is `(? IS NULL OR t.surface = ?)`, so omitting the option matches every
+ * surface. `/load` and `/del` both omitted it, which let a Telegram chat reach
+ * a `terminal` topic by name — visible for `/load`, destructive for `/del`.
+ * S-6 says surface filtering belongs in the store query precisely so a missed
+ * call site cannot leak, but the permissive default means each caller still
+ * has to opt in; routing both commands through one helper is what keeps that
+ * from drifting again here.
+ *
+ * The id path needs its own check: `getTopic` takes a raw id and knows nothing
+ * about surfaces, so a pasted id would bypass the name lookup entirely.
+ */
+function resolveTelegramTopicArg(argument: string, userId: string): TopicDto | null {
+  const byName = getTopicByNameForUser(argument, userId, { surface: "telegram" });
+  if (byName) return byName;
+  const byId = getTopic(argument);
+  return byId?.surface === "telegram" ? byId : null;
+}
+
 export function createTelegramCommandRouter(
   context: TelegramCommandContext,
 ): TelegramCommandRouter {
@@ -170,7 +193,7 @@ export function createTelegramCommandRouter(
           reply(chatId, threadId, "usage: /load <topic>");
           return;
         }
-        const candidate = getTopicByNameForUser(argument, userId) ?? getTopic(argument);
+        const candidate = resolveTelegramTopicArg(argument, userId);
         const topic = candidate && isTopicVisible(candidate) ? candidate : null;
         if (!topic || !loadTopic(chatId, topic.id, threadId)) {
           reply(chatId, threadId, `no visible topic matching "${argument}"`);
@@ -227,7 +250,7 @@ export function createTelegramCommandRouter(
         const force = command === "/del!";
         const topicId = currentTopicId(chatId, threadId);
         const topic = argument
-          ? getTopicByNameForUser(argument, userId)
+          ? resolveTelegramTopicArg(argument, userId)
           : topicId
             ? getTopic(topicId)
             : null;

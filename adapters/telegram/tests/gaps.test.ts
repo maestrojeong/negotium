@@ -165,6 +165,90 @@ describe("cross-adapter topic loading", () => {
   });
 });
 
+describe("surface isolation: /load and /del cannot reach another surface", () => {
+  /**
+   * `/load` and `/del` resolved their argument with `getTopicByNameForUser`
+   * and no surface, and that helper filters only when told to
+   * (`(? IS NULL OR t.surface = ?)`). A Telegram chat could therefore attach
+   * to a `terminal` room by name — and `/del` could delete one, which is the
+   * part that made this more than a display bug.
+   *
+   * Both paths matter: the name lookup and the raw-id fallback, since a pasted
+   * id skips the name lookup entirely and `getTopic` knows nothing about
+   * surfaces.
+   */
+  test("/load refuses a terminal topic by name and by id", async () => {
+    const USER = freshUser();
+    const { fake, adapter } = startAdapter({ userId: USER });
+    const chatId = freshChat();
+    const title = room("terminal-only");
+    const terminalTopic = registerTopic({ title, userId: USER, surface: "terminal" });
+    try {
+      fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: `/load ${title}` });
+      await waitFor(() =>
+        fake.callsFor(chatId).some((call) => call.text === `no visible topic matching "${title}"`),
+      );
+
+      fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: `/load ${terminalTopic.id}` });
+      await waitFor(() =>
+        fake
+          .callsFor(chatId)
+          .some((call) => call.text === `no visible topic matching "${terminalTopic.id}"`),
+      );
+    } finally {
+      adapter.stop();
+    }
+  });
+
+  test("/del refuses a terminal topic by name and by id, and leaves it alive", async () => {
+    const USER = freshUser();
+    const { fake, adapter } = startAdapter({ userId: USER });
+    const chatId = freshChat();
+    const title = room("terminal-keep");
+    const terminalTopic = registerTopic({ title, userId: USER, surface: "terminal" });
+    try {
+      fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: `/del ${title}` });
+      await waitFor(() =>
+        fake.callsFor(chatId).some((call) => call.text === `no topic named "${title}"`),
+      );
+
+      // The id is the path that skips the name lookup entirely, so it needs
+      // its own coverage — and on `/del` it is the destructive one.
+      fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: `/del ${terminalTopic.id}` });
+      await waitFor(() =>
+        fake.callsFor(chatId).some((call) => call.text === `no topic named "${terminalTopic.id}"`),
+      );
+
+      await Bun.sleep(20);
+      expect(getTopic(terminalTopic.id)).not.toBeNull();
+    } finally {
+      adapter.stop();
+    }
+  });
+
+  test("a telegram topic sharing a terminal topic's name is still reachable", async () => {
+    // The scoped lookup is not merely a block: unscoped, two same-named rows
+    // made the helper return null on ambiguity, so Telegram could not reach
+    // even its own room once a terminal room reused the title.
+    const USER = freshUser();
+    const { fake, adapter } = startAdapter({ userId: USER });
+    const chatId = freshChat();
+    const title = room("same-name");
+    registerTopic({ title, userId: USER, surface: "terminal" });
+    const mine = registerTopic({ title, userId: USER, surface: "telegram" });
+    try {
+      fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: `/load ${title}` });
+      await waitFor(() =>
+        fake.callsFor(chatId).some((call) => call.text === `loaded topic "${title}"`),
+      );
+      runtimeBus().broadcastMessage(mine.id, aiMessage(mine.id, "mine only"));
+      await waitFor(() => fake.callsFor(chatId).some((call) => call.text === "mine only"));
+    } finally {
+      adapter.stop();
+    }
+  });
+});
+
 describe("commands: /del and /del!", () => {
   test("/del deletes the current chat's topic and drops its mapping", async () => {
     const USER = freshUser();

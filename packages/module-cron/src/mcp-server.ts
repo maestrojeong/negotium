@@ -9,6 +9,7 @@ import {
   getTopicByNameForUser,
   isAgentKind,
 } from "@negotium/core";
+import type { TopicSurface } from "@negotium/core/mcp-runtime-host";
 import { z } from "zod";
 import {
   CRON_CONTEXT_RETAIN_TURNS,
@@ -62,11 +63,46 @@ function fail(error: unknown) {
   };
 }
 
+/** Surface of the room this cron server was started for, if it has one. */
+function callerSurface(): TopicSurface | undefined {
+  return currentTopicId ? (getTopic(currentTopicId)?.surface ?? undefined) : undefined;
+}
+
+/**
+ * Resolve the topic a cron tool call targets.
+ *
+ * Precedence is explicit-id, then explicit-title, then the current room. The
+ * old order was `input.topic_id || currentTopicId` first, which had two
+ * consequences: the host always passes `--topic-id` when the room has one
+ * (module.ts), so an explicitly supplied `topic` was silently ignored, and the
+ * id branch returned `getTopic()` raw — no surface check — while callers
+ * gated only on `ownsTopic` (membership). A Telegram agent could therefore
+ * pin a durable, repeating cron job onto a `terminal` room by pasting its id.
+ * Cron is the worst place for that: the job outlives the conversation and
+ * keeps firing turns.
+ *
+ * Anything resolved by id or title must live on the caller's surface. When
+ * this server has no current room the surface is unknown; that only happens
+ * outside the normal MCP path, and the lookup stays unscoped there rather than
+ * refusing every call.
+ */
 function resolveTopic(input?: { topic_id?: string; topic?: string }) {
-  const topicId = input?.topic_id?.trim() || currentTopicId;
-  if (topicId) return getTopic(topicId);
-  const title = input?.topic?.trim() || currentTopic;
-  return title ? getTopicByNameForUser(title, userId) : null;
+  const surface = callerSurface();
+  const onCallerSurface = <T extends { surface?: string | null } | null>(topic: T): T | null =>
+    topic && (!surface || topic.surface === surface) ? topic : null;
+
+  const explicitId = input?.topic_id?.trim();
+  if (explicitId) return onCallerSurface(getTopic(explicitId));
+
+  const explicitTitle = input?.topic?.trim();
+  if (explicitTitle) {
+    return getTopicByNameForUser(explicitTitle, userId, surface ? { surface } : {});
+  }
+
+  if (currentTopicId) return getTopic(currentTopicId);
+  return currentTopic
+    ? getTopicByNameForUser(currentTopic, userId, surface ? { surface } : {})
+    : null;
 }
 
 function ownsTopic(topic: NonNullable<ReturnType<typeof getTopic>>): boolean {

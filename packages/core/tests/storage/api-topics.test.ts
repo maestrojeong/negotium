@@ -5,6 +5,7 @@ import {
   deleteTopic,
   findTopicTitleConflict,
   getTopic,
+  getTopicByNameForUser,
   getTopicMemoryOrigin,
   getTopicSessionId,
   grantSubagentTellTarget,
@@ -197,6 +198,50 @@ describe("api topic storage", () => {
     expect(terminalIds).not.toContain(hub.id);
     expect(otiumIds).toContain(hub.id);
     expect(otiumIds).not.toContain(local.id);
+  });
+
+  /**
+   * `getTopicByNameForUser` filters on surface only when asked: its SQL reads
+   * `(? IS NULL OR t.surface = ?)`. S-6 claims a missed call site "cannot leak
+   * a topic across surfaces", but that only holds if every caller opts in —
+   * and several did not, which is how a Telegram `/load` and, worse, `/del`
+   * reached a `terminal` topic by name.
+   *
+   * What is pinned here is the SAFE half: supplying a surface confines the
+   * lookup. The unsafe half — that omitting it matches every surface — is
+   * deliberately NOT asserted. It is a hazard this code still carries, not a
+   * contract; asserting it would make the fail-closed fix that should
+   * eventually land (require an explicit surface, or an explicit
+   * cross-surface mode, and keep an operator-only helper for the CLI) look
+   * like a regression. Documented instead of tested, on purpose.
+   */
+  test("supplying a surface confines a name lookup to it", () => {
+    const title = `Only-Terminal ${randomUUID().slice(0, 8)}`;
+    const terminal = { ...makeTopic(), title };
+    createdTopicIds.push(terminal.id);
+    upsertTopic(terminal);
+
+    expect(getTopicByNameForUser(title, "owner", { surface: "terminal" })?.id).toBe(terminal.id);
+    // The scoped call is what stops a telegram caller reaching a terminal room.
+    expect(getTopicByNameForUser(title, "owner", { surface: "telegram" })).toBeNull();
+    expect(getTopicByNameForUser(title, "owner", { surface: "otium" })).toBeNull();
+  });
+
+  test("a name used on two surfaces resolves per surface", () => {
+    // Names are unique per surface (S-3), so the same title on two surfaces is
+    // legal. Scoping is not only a block: the helper answers on a single match
+    // only, so without a surface two rows resolve to nothing and a caller
+    // cannot reach even its OWN room once another surface reuses the name.
+    const title = `Shared ${randomUUID().slice(0, 8)}`;
+    const terminal = { ...makeTopic(), title };
+    const telegram = { ...makeTopic(), title, surface: "telegram" as const };
+    createdTopicIds.push(terminal.id, telegram.id);
+    upsertTopic(terminal);
+    upsertTopic(telegram);
+
+    expect(getTopicByNameForUser(title, "owner", { surface: "terminal" })?.id).toBe(terminal.id);
+    expect(getTopicByNameForUser(title, "owner", { surface: "telegram" })?.id).toBe(telegram.id);
+    expect(getTopicByNameForUser(title, "owner", { surface: "otium" })).toBeNull();
   });
 
   test("an upsert without a surface lands on the host default, not on terminal", () => {
