@@ -1,1 +1,1 @@
-export const NEGOTIUM_VERSION = "0.2.33";
+export const NEGOTIUM_VERSION = "0.3.0";
