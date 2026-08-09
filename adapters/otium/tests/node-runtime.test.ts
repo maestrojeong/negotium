@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, rmSync } from "node:fs";
-import { NODE_CONTROL_TOKEN } from "@negotium/core";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { DATA_DIR, defaultSurfaceScope, NODE_CONTROL_TOKEN } from "@negotium/core";
 import { configureOtiumCentral } from "@/central";
 import { OTIUM_WORKSPACES_CONTROL_PATH } from "@/control-protocol";
 import { joinFilePath, type OtiumJoin, removeJoin, saveJoin } from "@/join";
 import {
+  attachOtiumWorkspace,
+  detachOtiumWorkspace,
   handleOtiumAdapterControlRequest,
   mountedOtiumWorkspaces,
   OTIUM_ADAPTER_CONTROL_HEADER,
@@ -12,11 +15,14 @@ import {
   reconcileOtiumWorkspaces,
 } from "@/node-runtime";
 import { proxyOtiumPeerRequest } from "@/sidecar";
+import { surfaceScopeFor } from "@/workspace-scope";
 
 afterEach(() => {
   reconcileOtiumWorkspaces([]);
   configureOtiumCentral(null);
   if (existsSync(joinFilePath())) rmSync(joinFilePath());
+  const scopeCache = resolve(DATA_DIR, "otium-workspace.json");
+  if (existsSync(scopeCache)) rmSync(scopeCache);
 });
 
 describe("Otium node adapter control bridge", () => {
@@ -167,6 +173,39 @@ describe("workspace attachments", () => {
 
     // Reconciling twice changes nothing; it is a converge, not a toggle.
     expect(reconcileOtiumWorkspaces()).toEqual({ attached: [], detached: [] });
+  });
+
+  test("no workspace is guessed as the default while several are attached", () => {
+    // Seed both scopes the way an earlier successful Central contact would, so
+    // the assertion is about the mount rule and not about network timing.
+    writeFileSync(
+      resolve(DATA_DIR, "otium-workspace.json"),
+      JSON.stringify({
+        cell_alpha: {
+          central: alpha.central,
+          workspaceId: "ws_alpha",
+          scope: surfaceScopeFor(alpha.central, "ws_alpha"),
+        },
+        cell_beta: {
+          central: beta.central,
+          workspaceId: "ws_beta",
+          scope: surfaceScopeFor(beta.central, "ws_beta"),
+        },
+      }),
+    );
+
+    attachOtiumWorkspace(alpha);
+    // One attached workspace is the only honest default, and every pre-
+    // multi-join caller means exactly that one.
+    expect(defaultSurfaceScope()).toBe(surfaceScopeFor(alpha.central, "ws_alpha"));
+
+    attachOtiumWorkspace(beta);
+    // Two attached: an unattributed room belongs to neither, so it must not be
+    // handed to whichever workspace mounted last.
+    expect(defaultSurfaceScope()).toBeNull();
+
+    detachOtiumWorkspace("cell_beta");
+    expect(defaultSurfaceScope()).toBe(surfaceScopeFor(alpha.central, "ws_alpha"));
   });
 
   test("the control route reconciles and is hidden behind the adapter token", async () => {

@@ -59,6 +59,21 @@ export const NODE_CONTROL_PROTOCOL_VERSION = 1;
 export const NODE_CONTROL_BASE_PATH = "/api/v1/control";
 /** Stable gateway contract, intentionally separate from the UI control routes. */
 export const NODE_RUNTIME_CONTRACT_VERSION = 1;
+
+/**
+ * Which Otium workspace a relayed gateway call speaks for (M-8).
+ *
+ * The gateway itself is loopback-only and authenticated with the host
+ * capability, so it cannot tell one caller from another. The Otium adapter
+ * verifies the peer token, resolves the workspace that token was minted in, and
+ * states it here before swapping in the host capability.
+ *
+ * Presence, not truthiness, is the switch: an empty value means "the caller's
+ * workspace is not resolved yet", which scopes the request to the unscoped
+ * rooms rather than opening it to all of them. A co-located hub calling over
+ * loopback sends no header at all and keeps the whole surface, as before.
+ */
+export const NODE_RUNTIME_SURFACE_SCOPE_HEADER = "x-negotium-surface-scope";
 export const NODE_RUNTIME_CONTRACT_BASE_PATH = `${NODE_CONTROL_BASE_PATH}/runtime/v1`;
 export const NODE_DAEMON_ROLE = "node-daemon";
 export const NODE_DAEMON_INFO_PATH = resolve(RUN_DIR, "node-daemon.json");
@@ -96,6 +111,20 @@ interface ControlHandlerOptions {
 
 function jsonError(status: number, error: string): Response {
   return Response.json({ ok: false, error }, { status });
+}
+
+/**
+ * The workspace a gateway request belongs to, if the caller named one.
+ *
+ * Returns an empty object — not `{ surfaceScope: null }` — when the header is
+ * absent, so a loopback hub keeps seeing the whole `otium` surface exactly as
+ * it did before multi-join existed.
+ */
+function requestSurfaceScope(req: Request): { surfaceScope?: string | null } {
+  const header = req.headers.get(NODE_RUNTIME_SURFACE_SCOPE_HEADER);
+  if (header === null) return {};
+  const scope = header.trim();
+  return { surfaceScope: scope ? scope : null };
 }
 
 function topicServiceError(error: TopicServiceError): Response {
@@ -379,7 +408,7 @@ export function createNodeControlHandler(
          * to enumerate the owner's terminal or telegram rooms.
          */
         if (req.method === "GET" && runtimePath === "/topics") {
-          const topics = getVisibleTopics({ surface: "otium" });
+          const topics = getVisibleTopics({ surface: "otium", ...requestSurfaceScope(req) });
           return Response.json({
             ok: true,
             v: NODE_RUNTIME_CONTRACT_VERSION,
@@ -411,6 +440,9 @@ export function createNodeControlHandler(
             userId,
             kind: "agent",
             surface: "otium",
+            // Born in the workspace that asked for it, not in whichever one
+            // this process happens to have resolved last (M-1).
+            ...requestSurfaceScope(req),
             ...(agent ? { agent: agent as AgentKind } : {}),
           });
           return Response.json(

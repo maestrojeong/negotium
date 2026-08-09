@@ -24,6 +24,9 @@ import { NODE_CONTROL_TOKEN } from "@negotium/core";
 /** Mirrors `NODE_RUNTIME_CONTRACT_BASE_PATH` without importing @negotium/node. */
 const RUNTIME_CONTRACT_PATH = "/api/v1/control/runtime/v1";
 
+/** Mirrors `NODE_RUNTIME_SURFACE_SCOPE_HEADER`, for the same reason. */
+const SURFACE_SCOPE_HEADER = "x-negotium-surface-scope";
+
 /** Public prefix the hub addresses; rewritten to the contract path locally. */
 export const OTIUM_GATEWAY_FORWARD_PREFIX = "/api/v1/peer/runtime";
 
@@ -44,6 +47,13 @@ function allowedRuntimePath(path: string, method: string): boolean {
 export interface GatewayForwardOptions {
   /** Loopback origin of the canonical node, e.g. `http://127.0.0.1:57621`. */
   nodeOrigin: string;
+  /**
+   * The workspace the verified caller speaks for, or null when this node has
+   * not resolved it yet. Always stated, never omitted: the node reads the
+   * header's presence as "this is a workspace-scoped caller", so leaving it out
+   * would hand a remote hub every workspace's rooms (M-8).
+   */
+  surfaceScope: string | null;
   fetch?: typeof fetch;
 }
 
@@ -73,6 +83,9 @@ export async function forwardGatewayRequest(
   // Replace the peer token with the host capability. This is the only place the
   // swap happens, and it happens after the caller was verified as the hub.
   headers.set("authorization", `Bearer ${NODE_CONTROL_TOKEN}`);
+  // Set after the caller was verified, and set unconditionally so a forged
+  // inbound header can never survive into the loopback call.
+  headers.set(SURFACE_SCOPE_HEADER, options.surfaceScope ?? "");
   // The relay hop streams bodies, so Bun would otherwise send both chunked
   // framing and a length once we buffer — same fix as the sidecar proxy.
   headers.delete("transfer-encoding");

@@ -29,6 +29,7 @@ import {
   NODE_CONTROL_PROTOCOL_VERSION,
   NODE_RUNTIME_CONTRACT_BASE_PATH,
   NODE_RUNTIME_CONTRACT_VERSION,
+  NODE_RUNTIME_SURFACE_SCOPE_HEADER,
 } from "../src/control";
 
 const userId = `node-control-${randomUUID()}`;
@@ -305,6 +306,72 @@ test("runtime gateway topic list exposes only the otium surface", async () => {
   // A leak here would hand the hub rooms that live on another surface, so
   // assert the whole page rather than just the two rooms this test made.
   expect((body.topics ?? []).every((topic) => topic.surface === "otium")).toBe(true);
+});
+
+test("runtime gateway topic list is scoped to the caller's workspace", async () => {
+  const listUser = `topic-scope-${randomUUID()}`;
+  const make = (surfaceScope: string | null) =>
+    registerTopic({
+      title: `Scoped ${randomUUID()}`,
+      userId: listUser,
+      agent: "codex",
+      surface: "otium",
+      surfaceScope,
+    });
+  const alpha = make("ws_alpha");
+  const beta = make("ws_beta");
+  const unscoped = make(null);
+
+  const list = async (scope?: string) => {
+    const response = await handler(
+      runtimeRequest("/topics", {
+        ...(scope === undefined ? {} : { headers: { [NODE_RUNTIME_SURFACE_SCOPE_HEADER]: scope } }),
+      }),
+    );
+    const body = (await response?.json()) as { topics?: { id: string }[] };
+    return (body.topics ?? []).map((topic) => topic.id);
+  };
+
+  const forAlpha = await list("ws_alpha");
+  expect(forAlpha).toContain(alpha.id);
+  // A leak here would hand one workspace's hub the rooms of another, which is
+  // the entire security argument for multi-workspace join.
+  expect(forAlpha).not.toContain(beta.id);
+  expect(forAlpha).not.toContain(unscoped.id);
+
+  // An unresolved workspace sees the unscoped rooms, not everything.
+  const forUnresolved = await list("");
+  expect(forUnresolved).toContain(unscoped.id);
+  expect(forUnresolved).not.toContain(alpha.id);
+
+  // No header at all is a loopback hub, which keeps the whole surface.
+  const forLoopback = await list();
+  expect(forLoopback).toEqual(expect.arrayContaining([alpha.id, beta.id, unscoped.id]));
+});
+
+test("a gateway-created room is born in the caller's workspace", async () => {
+  const createUser = `topic-scope-create-${randomUUID()}`;
+  const title = `Created ${randomUUID()}`;
+  const response = await handler(
+    runtimeRequest("/topics", {
+      method: "POST",
+      headers: { [NODE_RUNTIME_SURFACE_SCOPE_HEADER]: "ws_alpha" },
+      body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, userId: createUser, title }),
+    }),
+  );
+  expect(response?.status).toBe(201);
+  const body = (await response?.json()) as { topic?: { id: string; surfaceScope?: string | null } };
+  expect(body.topic?.surfaceScope).toBe("ws_alpha");
+
+  // The same title is free in another workspace.
+  const second = await handler(
+    runtimeRequest("/topics", {
+      method: "POST",
+      headers: { [NODE_RUNTIME_SURFACE_SCOPE_HEADER]: "ws_beta" },
+      body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, userId: createUser, title }),
+    }),
+  );
+  expect(second?.status).toBe(201);
 });
 
 test("runtime gateway accepts durably, deduplicates client messages, and streams ordered events", async () => {

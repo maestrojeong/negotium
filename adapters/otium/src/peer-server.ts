@@ -531,6 +531,7 @@ export async function handleOtiumPeerRequest(req: Request): Promise<Response | n
     }
     return forwardGatewayRequest(req, {
       nodeOrigin: `http://127.0.0.1:${node.info.port}`,
+      surfaceScope: surfaceScopeForCell(peer.verified.viaCellId),
     });
   }
 

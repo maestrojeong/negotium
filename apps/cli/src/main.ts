@@ -6,6 +6,25 @@ import { normalizeCliCommand, renderCliHelp } from "@/command-catalog";
 const [, , rawCommand, ...args] = process.argv;
 const command = normalizeCliCommand(rawCommand);
 
+/**
+ * Run an Otium subcommand, reporting a rejection as a message.
+ *
+ * These commands validate their arguments by throwing, and an uncaught throw
+ * here reaches Bun's default handler, which prints a source excerpt and a stack
+ * trace for what is usually a typo ("not joined as cell_x").
+ */
+async function runOtium(args: string[]): Promise<void> {
+  const { runOtiumCli } = await loadOtiumCli();
+  try {
+    await runOtiumCli(args);
+  } catch (error) {
+    process.stderr.write(
+      `negotium otium: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    process.exitCode = 1;
+  }
+}
+
 function numericOption(values: string[], name: string, fallback: number): number {
   const prefix = `--${name}=`;
   const parsed = Number.parseInt(
@@ -68,8 +87,7 @@ switch (command) {
   }
   case "serve": {
     if (args[0] === "otium") {
-      const { runOtiumCli } = await loadOtiumCli();
-      await runOtiumCli(["serve", ...args.slice(1)]);
+      await runOtium(["serve", ...args.slice(1)]);
       break;
     }
     await runCanonicalNode(numericOption(args, "port", 7777));
@@ -159,13 +177,12 @@ switch (command) {
     break;
   }
   case "otium": {
-    const { runOtiumCli } = await loadOtiumCli();
     if (args[0] === "serve") {
       process.stderr.write(
         "warning: `negotium otium serve` is deprecated; use `negotium serve otium`\n",
       );
     }
-    await runOtiumCli(args);
+    await runOtium(args);
     break;
   }
   default: {

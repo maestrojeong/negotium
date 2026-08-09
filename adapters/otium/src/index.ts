@@ -169,6 +169,24 @@ function acquireGlobalOtiumServices(): () => void {
 }
 
 /**
+ * The workspace new rooms fall back to when nobody names one.
+ *
+ * With a single workspace attached this is that workspace, which is what every
+ * pre-multi-join caller means. With several attached there is no honest answer:
+ * an unattributed Otium room belongs to no particular workspace, and silently
+ * picking one would hand it to whichever Central answered first. It is filed
+ * unscoped instead — reachable from any of them, like the rooms that predate
+ * the column — and callers that *do* know the workspace (the gateway, peer
+ * routes, derived rooms) state it explicitly.
+ */
+const mountedScopes = new Map<string, string | null>();
+
+function refreshDefaultSurfaceScope(): void {
+  const scopes = [...mountedScopes.values()];
+  setDefaultSurfaceScope(scopes.length === 1 ? (scopes[0] ?? null) : null);
+}
+
+/**
  * Attach one workspace inside the canonical Node process.
  *
  * One instance per joined workspace (M-6). Only the credentials, the workspace
@@ -181,10 +199,11 @@ export function startOtiumNodeRuntime(options: OtiumAdapterOptions): OtiumNodeRu
   const releaseGlobals = acquireGlobalOtiumServices();
   let stopped = false;
   logger.info({ central: join.central, cellId: join.cellId }, "otium: worker mode enabled");
-  // Install the last known scope synchronously so rooms created between mount
-  // and the first Central answer are still filed under the right workspace; the
-  // async resolution below only matters on the very first attachment (M-3).
-  const previousScope = setDefaultSurfaceScope(cachedSurfaceScope(join));
+  // Seed from the last known scope so rooms created between mount and the first
+  // Central answer are still filed correctly; the async resolution below only
+  // matters on the very first attachment to a workspace (M-3).
+  mountedScopes.set(join.cellId, cachedSurfaceScope(join));
+  refreshDefaultSurfaceScope();
   void selfPeerNodeForCell(join.cellId)
     .then((self) => {
       if (self) {
@@ -200,12 +219,13 @@ export function startOtiumNodeRuntime(options: OtiumAdapterOptions): OtiumNodeRu
   void resolveSurfaceScope(join)
     .then((scope) => {
       if (!scope || stopped) return;
-      setDefaultSurfaceScope(scope);
+      mountedScopes.set(join.cellId, scope);
+      refreshDefaultSurfaceScope();
       // M-9 — rooms that predate the scope column belong to whatever workspace
-      // this node was attached to when it upgraded, which is this one. Runs at
-      // most once per store, so a second workspace joined later cannot claim
-      // the first one's rooms.
-      stampUnscopedOtiumTopics(scope);
+      // this node was attached to when it upgraded. That is only answerable
+      // while exactly one workspace is attached; with several, the first
+      // Central to answer would otherwise claim rooms that may not be its own.
+      if (mountedScopes.size === 1) stampUnscopedOtiumTopics(scope);
     })
     .catch((err) => {
       logger.warn({ err }, "otium: workspace scope resolution failed");
@@ -218,7 +238,8 @@ export function startOtiumNodeRuntime(options: OtiumAdapterOptions): OtiumNodeRu
       stopped = true;
       // Leaving removes credentials and nothing else (M-4): the rooms of this
       // workspace stay, keep their scope and keep executing locally.
-      setDefaultSurfaceScope(previousScope);
+      mountedScopes.delete(join.cellId);
+      refreshDefaultSurfaceScope();
       detachOtiumCentralCell(join.cellId);
       releaseGlobals();
     },
