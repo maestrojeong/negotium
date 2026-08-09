@@ -82,12 +82,12 @@ describe("commands: /fork and /spawn", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("fork-src"));
-      const src = getTopicByNameForUser(room("fork-src"), USER)!;
+      const src = getTopicByNameForUser(room("fork-src"), USER, { scope: "all" })!;
       fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: `/fork ${room("fork-child")}` });
       await waitFor(() =>
         fake.callsFor(chatId).some((c) => c.text === `forked into "${room("fork-child")}"`),
       );
-      const child = getTopicByNameForUser(room("fork-child"), USER)!;
+      const child = getTopicByNameForUser(room("fork-child"), USER, { scope: "all" })!;
       expect(child.parentTopicId).toBe(src.id);
       expect(child.isFork).toBe(true);
     } finally {
@@ -101,12 +101,12 @@ describe("commands: /fork and /spawn", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("spawn-src"));
-      const src = getTopicByNameForUser(room("spawn-src"), USER)!;
+      const src = getTopicByNameForUser(room("spawn-src"), USER, { scope: "all" })!;
       fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: `/spawn ${room("spawn-child")}` });
       await waitFor(() =>
         fake.callsFor(chatId).some((c) => c.text === `spawned "${room("spawn-child")}"`),
       );
-      const child = getTopicByNameForUser(room("spawn-child"), USER)!;
+      const child = getTopicByNameForUser(room("spawn-child"), USER, { scope: "all" })!;
       expect(child.parentTopicId).toBe(src.id);
       expect(child.isFork).toBeFalsy();
     } finally {
@@ -139,7 +139,7 @@ describe("cross-adapter topic loading", () => {
     const title = room("shared-load");
     try {
       await mapChat(fake, creatorChat, title);
-      const topic = getTopicByNameForUser(title, USER)!;
+      const topic = getTopicByNameForUser(title, USER, { scope: "all" })!;
 
       fake.emit({ chat: { id: targetChat }, from: { id: 1 }, text: `/load ${topic.id}` });
       await waitFor(() =>
@@ -257,7 +257,7 @@ describe("commands: /del and /del!", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("del-me"));
-      const topic = getTopicByNameForUser(room("del-me"), USER)!;
+      const topic = getTopicByNameForUser(room("del-me"), USER, { scope: "all" })!;
       fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: "/del" });
       await waitFor(() => getTopic(topic.id) === null);
       await waitFor(() =>
@@ -278,7 +278,7 @@ describe("commands: /del and /del!", () => {
     const otherChat = freshChat();
     try {
       await mapChat(fake, otherChat, room("del-named"));
-      const target = getTopicByNameForUser(room("del-named"), USER)!;
+      const target = getTopicByNameForUser(room("del-named"), USER, { scope: "all" })!;
       fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: `/del ${room("del-named")}` });
       await waitFor(() => getTopic(target.id) === null);
 
@@ -306,10 +306,10 @@ describe("commands: /del and /del!", () => {
       // The topic needs at least one message — archives of empty topics no-op.
       fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: "remember this line" });
       await waitFor(() => {
-        const candidate = getTopicByNameForUser(`tg-${chatId}`, USER);
+        const candidate = getTopicByNameForUser(`tg-${chatId}`, USER, { scope: "all" });
         return Boolean(candidate && getAllMessagesForTopic(candidate.id).length > 0);
       });
-      const topic = getTopicByNameForUser(`tg-${chatId}`, USER)!;
+      const topic = getTopicByNameForUser(`tg-${chatId}`, USER, { scope: "all" })!;
       expect(getAllMessagesForTopic(topic.id).length).toBeGreaterThan(0);
 
       fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: "/del" });
@@ -355,7 +355,7 @@ describe("inbound attachments", () => {
 
     try {
       await mapChat(fake, chatId, initialTitle);
-      const initialTopic = getTopicByNameForUser(initialTitle, USER)!;
+      const initialTopic = getTopicByNameForUser(initialTitle, USER, { scope: "all" })!;
       served.set("slow-photo", "SLOW-PHOTO");
       fake.fileLinks.set("slow-photo", servedUrl("slow-photo"));
       const resolveFileLink = fake.getFileLink.bind(fake);
@@ -379,10 +379,10 @@ describe("inbound attachments", () => {
 
       fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: `/new ${nextTitle}` });
       await Bun.sleep(20);
-      expect(getTopicByNameForUser(nextTitle, USER)).toBeNull();
+      expect(getTopicByNameForUser(nextTitle, USER, { scope: "all" })).toBeNull();
 
       releaseDownload();
-      await waitFor(() => getTopicByNameForUser(nextTitle, USER) !== null);
+      await waitFor(() => getTopicByNameForUser(nextTitle, USER, { scope: "all" }) !== null);
       await waitFor(() => startedTopics.length === 1);
       expect(startedTopics).toEqual([initialTopic.id]);
       expect(
@@ -414,7 +414,7 @@ describe("inbound attachments", () => {
 
       const topicTitle = `tg-${chatId}`;
       await waitFor(() => {
-        const topic = getTopicByNameForUser(topicTitle, USER);
+        const topic = getTopicByNameForUser(topicTitle, USER, { scope: "all" });
         return Boolean(
           topic &&
             getAllMessagesForTopic(topic.id).some(
@@ -422,7 +422,7 @@ describe("inbound attachments", () => {
             ),
         );
       });
-      const topic = getTopicByNameForUser(topicTitle, USER)!;
+      const topic = getTopicByNameForUser(topicTitle, USER, { scope: "all" })!;
       const row = getAllMessagesForTopic(topic.id).find((r) => r.author_id === USER)!;
       expect(row.text.startsWith("what is in this picture?")).toBe(true);
       const path = /\[Attached file: photo\.jpg at path: ([^\]]+)\]/.exec(row.text)?.[1];
@@ -447,7 +447,7 @@ describe("inbound attachments", () => {
         document: { file_id: "doc-1", file_name: "data.csv" },
       });
       await waitFor(() => {
-        const topic = getTopicByNameForUser(`tg-${chatId}`, USER);
+        const topic = getTopicByNameForUser(`tg-${chatId}`, USER, { scope: "all" });
         return Boolean(
           topic &&
             getAllMessagesForTopic(topic.id).some((r) =>
@@ -455,7 +455,7 @@ describe("inbound attachments", () => {
             ),
         );
       });
-      const topic = getTopicByNameForUser(`tg-${chatId}`, USER)!;
+      const topic = getTopicByNameForUser(`tg-${chatId}`, USER, { scope: "all" })!;
       const row = getAllMessagesForTopic(topic.id).find((r) => r.author_id === USER)!;
       const path = /\[Attached file: data\.csv at path: ([^\]]+)\]/.exec(row.text)?.[1];
       expect(readFileSync(path!, "utf-8")).toBe("csv,content\n1,2");
@@ -479,7 +479,7 @@ describe("inbound attachments", () => {
       await waitFor(() =>
         fake.callsFor(chatId).some((c) => c.text.includes("voice transcription is not configured")),
       );
-      const topic = getTopicByNameForUser(`tg-${chatId}`, USER)!;
+      const topic = getTopicByNameForUser(`tg-${chatId}`, USER, { scope: "all" })!;
       expect(getAllMessagesForTopic(topic.id).some((r) => r.author_id === USER)).toBe(false);
     } finally {
       adapter.stop();
@@ -506,10 +506,10 @@ describe("inbound attachments", () => {
         voice: { file_id: "voice-1", duration: 3 },
       });
       await waitFor(() => {
-        const topic = getTopicByNameForUser(`tg-${chatId}`, USER);
+        const topic = getTopicByNameForUser(`tg-${chatId}`, USER, { scope: "all" });
         return Boolean(topic && getAllMessagesForTopic(topic.id).some((r) => r.author_id === USER));
       });
-      const topic = getTopicByNameForUser(`tg-${chatId}`, USER)!;
+      const topic = getTopicByNameForUser(`tg-${chatId}`, USER, { scope: "all" })!;
       const row = getAllMessagesForTopic(topic.id).find((r) => r.author_id === USER)!;
       expect(row.text).toBe("[Voice transcript]\nhello from my voice");
       expect(transcribed).toHaveLength(1);
@@ -527,7 +527,7 @@ describe("outbound files", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("files-out"));
-      const topic = getTopicByNameForUser(room("files-out"), USER)!;
+      const topic = getTopicByNameForUser(room("files-out"), USER, { scope: "all" })!;
       const pdf = join(TMP, "report.pdf");
       const png = join(TMP, "chart.png");
       writeFileSync(pdf, "pdf-bytes");
@@ -558,7 +558,7 @@ describe("outbound files", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("files-supersede"));
-      const topic = getTopicByNameForUser(room("files-supersede"), USER)!;
+      const topic = getTopicByNameForUser(room("files-supersede"), USER, { scope: "all" })!;
       const pdf = join(TMP, "obsolete-report.pdf");
       writeFileSync(pdf, "obsolete-pdf");
       const message = aiMessage(topic.id, `obsolete [FILE:${pdf}]`, {
@@ -590,7 +590,7 @@ describe("outbound files", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("files-guard"));
-      const topic = getTopicByNameForUser(room("files-guard"), USER)!;
+      const topic = getTopicByNameForUser(room("files-guard"), USER, { scope: "all" })!;
 
       runtimeBus().broadcastMessage(
         topic.id,
@@ -616,7 +616,7 @@ describe("outbound files", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("files-attachments"));
-      const topic = getTopicByNameForUser(room("files-attachments"), USER)!;
+      const topic = getTopicByNameForUser(room("files-attachments"), USER, { scope: "all" })!;
       const storedPath = join(TMP, "6e29099e-9dc8-4ca4-b76b-702f868e3a9f.pdf");
       writeFileSync(storedPath, "pdf-bytes");
 
@@ -690,7 +690,7 @@ describe("outbound files", () => {
     writeFileSync(filePath, "fanout");
     try {
       await mapChat(fake, chatA, title);
-      const topic = getTopicByNameForUser(title, USER)!;
+      const topic = getTopicByNameForUser(title, USER, { scope: "all" })!;
       fake.emit({ chat: { id: chatB }, from: { id: 1 }, text: `/load ${topic.id}` });
       await waitFor(() => fake.callsFor(chatB).some((call) => call.text.includes("loaded topic")));
 
@@ -736,7 +736,7 @@ describe("typing indicator", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("typing-room"));
-      const topic = getTopicByNameForUser(room("typing-room"), USER)!;
+      const topic = getTopicByNameForUser(room("typing-room"), USER, { scope: "all" })!;
       runtimeBus().broadcastAiActive(topic.id, "query-1");
       await waitFor(
         () =>
@@ -757,7 +757,7 @@ describe("typing indicator", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("typing-retry-room"));
-      const topic = getTopicByNameForUser(room("typing-retry-room"), USER)!;
+      const topic = getTopicByNameForUser(room("typing-retry-room"), USER, { scope: "all" })!;
       runtimeBus().broadcastAiActive(topic.id, "expired-query");
       await waitFor(() => fake.chatActions.filter((a) => a.chatId === chatId).length >= 2);
       runtimeBus().broadcastAborted(topic.id, "expired-query", "stopped");
@@ -791,7 +791,7 @@ describe("durable retry outbox", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("retry-room"));
-      const topic = getTopicByNameForUser(room("retry-room"), USER)!;
+      const topic = getTopicByNameForUser(room("retry-room"), USER, { scope: "all" })!;
       fake.failNextSends = { count: 1, error: serverError() };
       runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "retry me please"));
       await waitFor(() => fake.callsFor(chatId).some((c) => c.text === "retry me please"));
@@ -816,7 +816,7 @@ describe("durable retry outbox", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("retry-cancel-room"));
-      const topic = getTopicByNameForUser(room("retry-cancel-room"), USER)!;
+      const topic = getTopicByNameForUser(room("retry-cancel-room"), USER, { scope: "all" })!;
       const message = aiMessage(topic.id, "obsolete retry", { queryId: "retry-cancel-query" });
       fake.failNextSends = { count: 1, error: serverError() };
 
@@ -855,7 +855,7 @@ describe("durable retry outbox", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("dead-room"));
-      const topic = getTopicByNameForUser(room("dead-room"), USER)!;
+      const topic = getTopicByNameForUser(room("dead-room"), USER, { scope: "all" })!;
       fake.failWith = serverError();
       runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "doomed message"));
       await waitFor(() => {
@@ -910,7 +910,7 @@ describe("media groups (albums)", () => {
   }
 
   const userRows = (user: string, chatId: number) => {
-    const topic = getTopicByNameForUser(`tg-${chatId}`, user);
+    const topic = getTopicByNameForUser(`tg-${chatId}`, user, { scope: "all" });
     return topic ? getAllMessagesForTopic(topic.id).filter((r) => r.author_id === user) : [];
   };
 
@@ -1040,7 +1040,9 @@ describe("turn footer", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("intermediate-footer-room"));
-      const topic = getTopicByNameForUser(room("intermediate-footer-room"), USER)!;
+      const topic = getTopicByNameForUser(room("intermediate-footer-room"), USER, {
+        scope: "all",
+      })!;
       const message = aiMessage(topic.id, "checking the repository", {
         queryId: "intermediate-footer-query",
         agentType: "codex",
@@ -1064,7 +1066,7 @@ describe("turn footer", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("footer-room"));
-      const topic = getTopicByNameForUser(room("footer-room"), USER)!;
+      const topic = getTopicByNameForUser(room("footer-room"), USER, { scope: "all" })!;
       runtimeBus().broadcastMessage(
         topic.id,
         aiMessage(topic.id, "the answer", {
@@ -1087,7 +1089,7 @@ describe("turn footer", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("nofooter-room"));
-      const topic = getTopicByNameForUser(room("nofooter-room"), USER)!;
+      const topic = getTopicByNameForUser(room("nofooter-room"), USER, { scope: "all" })!;
       runtimeBus().broadcastMessage(
         topic.id,
         aiMessage(topic.id, "plain answer", { agentType: "claude", model: "sonnet" }),
@@ -1104,7 +1106,7 @@ describe("turn footer", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("late-footer-room"));
-      const topic = getTopicByNameForUser(room("late-footer-room"), USER)!;
+      const topic = getTopicByNameForUser(room("late-footer-room"), USER, { scope: "all" })!;
       const message = aiMessage(topic.id, "status before final tool", {
         queryId: "late-footer-query",
         agentType: "codex",
@@ -1137,7 +1139,7 @@ describe("turn footer", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("footer-edit-retry-room"));
-      const topic = getTopicByNameForUser(room("footer-edit-retry-room"), USER)!;
+      const topic = getTopicByNameForUser(room("footer-edit-retry-room"), USER, { scope: "all" })!;
       const message = aiMessage(topic.id, "answer before usage", {
         queryId: "footer-edit-retry-query",
         agentType: "codex",
@@ -1169,7 +1171,9 @@ describe("turn footer", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("footer-deleted-topic-room"));
-      const topic = getTopicByNameForUser(room("footer-deleted-topic-room"), USER)!;
+      const topic = getTopicByNameForUser(room("footer-deleted-topic-room"), USER, {
+        scope: "all",
+      })!;
       const message = aiMessage(topic.id, "answer before deletion", {
         queryId: "footer-deleted-topic-query",
         agentType: "codex",
@@ -1197,7 +1201,7 @@ describe("turn footer", () => {
     const chatId = freshChat();
     try {
       await mapChat(fake, chatId, room("supersede-delete-room"));
-      const topic = getTopicByNameForUser(room("supersede-delete-room"), USER)!;
+      const topic = getTopicByNameForUser(room("supersede-delete-room"), USER, { scope: "all" })!;
       const message = aiMessage(topic.id, "obsolete status", {
         queryId: "superseded-query",
       });

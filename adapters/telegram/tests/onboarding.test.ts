@@ -47,10 +47,10 @@ describe("Clawgram-style onboarding", () => {
         fake.callsFor(DM).some((call) => call.text.includes("Welcome to Negotium")),
       );
 
-      const general = getTopicByNameForUser("General", userId);
+      const general = getTopicByNameForUser("General", userId, { scope: "all" });
       expect(general?.kind).toBe("manager");
       expect(dispatchedTopicId).toBe(general?.id);
-      expect(getTopicByNameForUser(`tg-${DM}`, userId)).toBeNull();
+      expect(getTopicByNameForUser(`tg-${DM}`, userId, { scope: "all" })).toBeNull();
       expect(
         getAllMessagesForTopic(general!.id).some(
           (message) => message.text === "Please create a research topic",
@@ -94,7 +94,7 @@ describe("Clawgram-style onboarding", () => {
 
       fake.calls = [];
       fake.emit({ chat: { id: DM, type: "private" }, from: { id: OWNER }, text: "DM turn" });
-      const general = getTopicByNameForUser("General", userId)!;
+      const general = getTopicByNameForUser("General", userId, { scope: "all" })!;
       const dmReply: MessageDto = {
         id: randomUUID(),
         topicId: general.id,
@@ -171,10 +171,10 @@ describe("Clawgram-style onboarding", () => {
         message_thread_id: 777,
       });
 
-      const general = getTopicByNameForUser("General", userId)!;
+      const general = getTopicByNameForUser("General", userId, { scope: "all" })!;
       await waitFor(() => dispatchedTopicId !== undefined);
       expect(dispatchedTopicId).toBe(general.id);
-      expect(getTopicByNameForUser(`tg-${FORUM}-777`, userId)).toBeNull();
+      expect(getTopicByNameForUser(`tg-${FORUM}-777`, userId, { scope: "all" })).toBeNull();
     } finally {
       adapter.stop();
     }
@@ -203,7 +203,7 @@ describe("Clawgram-style onboarding", () => {
         text: "Connect and handle this",
       });
       await waitFor(() => fake.callsFor(FORUM).some((call) => call.text.includes("connected")));
-      const general = getTopicByNameForUser("General", userId)!;
+      const general = getTopicByNameForUser("General", userId, { scope: "all" })!;
       await waitFor(() =>
         getAllMessagesForTopic(general.id).some(
           (message) => message.text === "Connect and handle this",
@@ -302,7 +302,7 @@ describe("Clawgram-style onboarding", () => {
         stored.close();
         return disconnected;
       });
-      expect(getTopicByNameForUser(title, userId)?.id).toBe(topic.id);
+      expect(getTopicByNameForUser(title, userId, { scope: "all" })?.id).toBe(topic.id);
       expect(fake.callsFor(DM).some((call) => call.text.includes("was disconnected"))).toBe(true);
 
       fake.createMode = "auto";

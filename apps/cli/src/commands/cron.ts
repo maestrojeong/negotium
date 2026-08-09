@@ -101,7 +101,10 @@ export async function cronCommand(args: string[]): Promise<void> {
         }
         if (script && !cronScriptExists(script))
           throw new Error(`cron script not found: ${script}`);
-        const topic = getTopicByNameForUser(topicName, USER_ID);
+        // Operator tool: the CLI schedules jobs against any surface's rooms on
+        // purpose, so the cross-surface scope is a decision here rather than an
+        // omission. The in-agent cron tool (module-cron) scopes to its caller.
+        const topic = getTopicByNameForUser(topicName, USER_ID, { scope: "all" });
         if (!topic?.agent) throw new Error(`topic not found or has no agent: ${topicName}`);
         const agentRaw = flag(rest, "agent");
         if (agentRaw && !isAgentKind(agentRaw)) throw new Error(`invalid agent: ${agentRaw}`);
@@ -143,7 +146,10 @@ export async function cronCommand(args: string[]): Promise<void> {
         const job = resolveJob(ref);
         if (!job || job.ownerUserId !== USER_ID) throw new Error(`cron job not found: ${ref}`);
         const topicName = flag(rest, "topic");
-        const topic = topicName ? getTopicByNameForUser(topicName, USER_ID) : null;
+        // Cross-surface for the same reason as `cron add` above.
+        const topic = topicName
+          ? getTopicByNameForUser(topicName, USER_ID, { scope: "all" })
+          : null;
         if (topicName && !topic?.agent)
           throw new Error(`topic not found or has no agent: ${topicName}`);
         const scriptTouched = hasFlag(rest, "script");

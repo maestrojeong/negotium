@@ -373,7 +373,7 @@ describe("DM fallback (no forumChatId)", () => {
       const dmChat = FORUM_CHAT + 50;
       dmFake.emit({ chat: { id: dmChat }, from: { id: 1 }, text: `/new ${room("dm-parent")}` });
       await waitFor(() => dmFake.callsFor(dmChat).length > 0);
-      const parent = getTopicByNameForUser(room("dm-parent"), DM_USER)!;
+      const parent = getTopicByNameForUser(room("dm-parent"), DM_USER, { scope: "all" })!;
 
       // Simulate a spawn_subagent child: a topic parented to the mapped one.
       const child = registerTopic({

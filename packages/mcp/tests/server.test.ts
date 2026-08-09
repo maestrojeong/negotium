@@ -500,7 +500,7 @@ describe("negotium MCP endpoint", () => {
   });
 
   test("restart_topic clears AI context but preserves the topic", async () => {
-    const worker = getTopicByNameForUser("worker-room", USER_ID)!;
+    const worker = getTopicByNameForUser("worker-room", USER_ID, { scope: "all" })!;
     setTopicSessionId(worker.id, "01940000-0000-7000-8000-000000000000", {
       reason: "test",
       agent: "codex",
@@ -514,7 +514,7 @@ describe("negotium MCP endpoint", () => {
     expect(result.isError).toBeFalsy();
     expect(resultText(result)).toContain('Session reset for "worker-room"');
     expect(getTopicSessionId(worker.id)).toBeNull();
-    expect(getTopicByNameForUser("worker-room", USER_ID)?.id).toBe(worker.id);
+    expect(getTopicByNameForUser("worker-room", USER_ID, { scope: "all" })?.id).toBe(worker.id);
   });
 
   test("restart_topic refuses the current topic", async () => {

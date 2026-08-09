@@ -143,7 +143,7 @@ describe("mapping fan-out and re-binding (finding 3)", () => {
     try {
       fake.emit({ chat: { id: chatA }, from: { id: 1 }, text: "hello from A" });
       fake.emit({ chat: { id: chatB }, from: { id: 1 }, text: "hello from B" });
-      const topic = getTopicByNameForUser(shared, USER)!;
+      const topic = getTopicByNameForUser(shared, USER, { scope: "all" })!;
       expect(topic).not.toBeNull();
 
       // Both bindings persisted — binding B must not steal the topic from A.
@@ -361,7 +361,7 @@ describe("send queue watchdog (finding 6)", () => {
     try {
       fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: `/new ${room("hang")}` });
       await waitFor(() => fake.callsFor(chatId).length > 0);
-      const topic = getTopicByNameForUser(room("hang"), USER)!;
+      const topic = getTopicByNameForUser(room("hang"), USER, { scope: "all" })!;
 
       fake.sendMode = "hang";
       runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "never lands"));
@@ -390,7 +390,7 @@ describe("deliver() error classification (finding 7)", () => {
     try {
       fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: `/new ${room("blocked")}` });
       await waitFor(() => fake.callsFor(chatId).length > 0);
-      const topic = getTopicByNameForUser(room("blocked"), USER)!;
+      const topic = getTopicByNameForUser(room("blocked"), USER, { scope: "all" })!;
 
       const blocked = new Error(
         "ETELEGRAM: 403 Forbidden: bot was blocked by the user",
@@ -424,7 +424,7 @@ describe("deliver() error classification (finding 7)", () => {
     try {
       fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: `/new ${room("limited")}` });
       await waitFor(() => fake.callsFor(chatId).length > 0);
-      const topic = getTopicByNameForUser(room("limited"), USER)!;
+      const topic = getTopicByNameForUser(room("limited"), USER, { scope: "all" })!;
 
       fake.rateLimit429Next = 1;
       runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "**rate** limited"));
@@ -475,7 +475,7 @@ describe("DM fallback parent walk (finding 9)", () => {
     try {
       fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: `/new ${room("walk-root")}` });
       await waitFor(() => fake.callsFor(chatId).length > 0);
-      const parent = getTopicByNameForUser(room("walk-root"), USER)!;
+      const parent = getTopicByNameForUser(room("walk-root"), USER, { scope: "all" })!;
       const child = registerTopic({ title: room("walk-child"), userId: USER, surface: "telegram" });
       updateTopic(child.id, { parentTopicId: parent.id });
       const grandchild = registerTopic({

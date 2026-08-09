@@ -66,7 +66,7 @@ async function mapChatToFreshTopic(
 ): Promise<TopicDto> {
   inbound(chatId, `/new ${title}`, threadId);
   await waitFor(() => fake.callsFor(chatId).some((c) => c.text.includes(title)));
-  const topic = getTopicByNameForUser(title, USER);
+  const topic = getTopicByNameForUser(title, USER, { scope: "all" });
   if (!topic) throw new Error(`topic ${title} was not created`);
   return topic;
 }
@@ -135,7 +135,7 @@ describe("inbound", () => {
 
     try {
       inbound(chatId, "visible in the terminal");
-      const topic = getTopicByNameForUser(`tg-${chatId}`, USER);
+      const topic = getTopicByNameForUser(`tg-${chatId}`, USER, { scope: "all" });
       expect(topic).not.toBeNull();
       expect(seen.map((message) => [message.topicId, message.text])).toContainEqual([
         topic!.id,
@@ -148,7 +148,7 @@ describe("inbound", () => {
 
   test("creates a topic per chat and persists the user message", () => {
     inbound(chat(1), "hello negotium");
-    const topic = getTopicByNameForUser(`tg-${chat(1)}`, USER);
+    const topic = getTopicByNameForUser(`tg-${chat(1)}`, USER, { scope: "all" });
     expect(topic).not.toBeNull();
     // defaultAgent unset → registerTopic's agent-room default (maestro).
     expect(topic?.agent).toBe("maestro");
@@ -159,7 +159,7 @@ describe("inbound", () => {
 
   test("reuses the mapping on subsequent messages (no duplicate topic)", () => {
     inbound(chat(1), "second message");
-    const topic = getTopicByNameForUser(`tg-${chat(1)}`, USER);
+    const topic = getTopicByNameForUser(`tg-${chat(1)}`, USER, { scope: "all" });
     const texts = getAllMessagesForTopic(topic!.id)
       .filter((r) => r.author_id === USER)
       .map((r) => r.text);
@@ -168,15 +168,15 @@ describe("inbound", () => {
 
   test("whitelist rejection is silent and creates no topic", () => {
     inbound(chat(2), "let me in", undefined, 999);
-    expect(getTopicByNameForUser(`tg-${chat(2)}`, USER)).toBeNull();
+    expect(getTopicByNameForUser(`tg-${chat(2)}`, USER, { scope: "all" })).toBeNull();
     expect(fake.callsFor(chat(2))).toHaveLength(0);
   });
 
   test("forum thread gets its own topic, separate from the chat's", () => {
     inbound(chat(6), "root chat message");
     inbound(chat(6), "thread message", 55);
-    const chatTopic = getTopicByNameForUser(`tg-${chat(6)}`, USER);
-    const threadTopic = getTopicByNameForUser(`tg-${chat(6)}-55`, USER);
+    const chatTopic = getTopicByNameForUser(`tg-${chat(6)}`, USER, { scope: "all" });
+    const threadTopic = getTopicByNameForUser(`tg-${chat(6)}-55`, USER, { scope: "all" });
     expect(chatTopic).not.toBeNull();
     expect(threadTopic).not.toBeNull();
     expect(chatTopic!.id).not.toBe(threadTopic!.id);
@@ -197,7 +197,7 @@ describe("commands", () => {
 
       expect(vaultListWithValues(USER).some((entry) => entry.key === key)).toBe(false);
       expect(fake.callsFor(chatId).some((call) => call.text === `Stored ${key}.`)).toBe(false);
-      expect(getTopicByNameForUser(`tg-${chatId}`, USER)).toBeNull();
+      expect(getTopicByNameForUser(`tg-${chatId}`, USER, { scope: "all" })).toBeNull();
     } finally {
       vaultDel(USER, key);
     }
@@ -224,7 +224,7 @@ describe("commands", () => {
       );
       expect(fake.callsFor(chatId).every((call) => !call.text.includes(secret))).toBe(true);
 
-      const topic = getTopicByNameForUser(`tg-${chatId}`, USER);
+      const topic = getTopicByNameForUser(`tg-${chatId}`, USER, { scope: "all" });
       expect(topic).toBeNull();
     } finally {
       vaultDel(USER, key);
@@ -361,7 +361,7 @@ describe("commands", () => {
   });
 
   test("/new without a name resets the mapped topic session in place", async () => {
-    const topic = getTopicByNameForUser(room("my-room"), USER);
+    const topic = getTopicByNameForUser(room("my-room"), USER, { scope: "all" });
     expect(topic).not.toBeNull();
     setTopicSessionId(topic!.id, "telegram-reset-session", {
       reason: "test",
@@ -415,7 +415,7 @@ describe("commands", () => {
     expect(fake.callsFor(chat(4)).at(-1)?.text).toBe(
       `agent set to claude — topic "tg-${chat(4)}-claude"`,
     );
-    const topic = getTopicByNameForUser(`tg-${chat(4)}-claude`, USER);
+    const topic = getTopicByNameForUser(`tg-${chat(4)}-claude`, USER, { scope: "all" });
     expect(topic?.agent).toBe("claude");
   });
 
@@ -444,7 +444,7 @@ describe("outbound", () => {
   });
 
   test("splits >4096-char messages into ordered chunks", async () => {
-    const topic = getTopicByNameForUser(room("outbound-room"), USER)!;
+    const topic = getTopicByNameForUser(room("outbound-room"), USER, { scope: "all" })!;
     const before = fake.callsFor(chat(7)).length;
     runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "x".repeat(9000)));
     await waitFor(() => fake.callsFor(chat(7)).length === before + 3);
@@ -454,7 +454,7 @@ describe("outbound", () => {
   });
 
   test("skips tool-kind messages and echoes originating from Telegram", async () => {
-    const topic = getTopicByNameForUser(room("outbound-room"), USER)!;
+    const topic = getTopicByNameForUser(room("outbound-room"), USER, { scope: "all" })!;
     const before = fake.callsFor(chat(7)).length;
     runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "tool noise", { kind: "tool" }));
     runtimeBus().broadcastMessage(
@@ -466,7 +466,7 @@ describe("outbound", () => {
   });
 
   test("shows tool calls in one temporary message and deletes it when the turn ends", async () => {
-    const topic = getTopicByNameForUser(room("outbound-room"), USER)!;
+    const topic = getTopicByNameForUser(room("outbound-room"), USER, { scope: "all" })!;
     const queryId = room("tool-status");
     const before = fake.callsFor(chat(7)).length;
     const progressMessageId = fake.nextMessageId;
@@ -519,7 +519,7 @@ describe("outbound", () => {
   });
 
   test("relays the same user's Terminal message into a mapped Telegram chat", async () => {
-    const topic = getTopicByNameForUser(room("outbound-room"), USER)!;
+    const topic = getTopicByNameForUser(room("outbound-room"), USER, { scope: "all" })!;
     const before = fake.callsFor(chat(7)).length;
     submitUserMessage({
       topic,
@@ -533,7 +533,7 @@ describe("outbound", () => {
   });
 
   test("relays tell_session messages received from another topic", async () => {
-    const topic = getTopicByNameForUser(room("outbound-room"), USER)!;
+    const topic = getTopicByNameForUser(room("outbound-room"), USER, { scope: "all" })!;
     const before = fake.callsFor(chat(7)).length;
 
     runtimeBus().broadcastMessage(topic.id, {
@@ -551,7 +551,7 @@ describe("outbound", () => {
   });
 
   test("falls back to plain text when Telegram rejects the HTML", async () => {
-    const topic = getTopicByNameForUser(room("outbound-room"), USER)!;
+    const topic = getTopicByNameForUser(room("outbound-room"), USER, { scope: "all" })!;
     const before = fake.callsFor(chat(7)).length;
     fake.rejectHtml = true;
     try {
@@ -586,7 +586,7 @@ describe("stop", () => {
     });
     fake2.emit({ chat: { id: chat(9) }, from: { id: 1 }, text: `/new ${room("stop-room")}` });
     await waitFor(() => fake2.callsFor(chat(9)).length > 0);
-    const topic = getTopicByNameForUser(room("stop-room"), USER)!;
+    const topic = getTopicByNameForUser(room("stop-room"), USER, { scope: "all" })!;
 
     adapter2.stop();
     const before = fake2.calls.length;
@@ -594,6 +594,6 @@ describe("stop", () => {
     fake2.emit({ chat: { id: chat(10) }, from: { id: 1 }, text: "hello?" });
     await Bun.sleep(30);
     expect(fake2.calls).toHaveLength(before);
-    expect(getTopicByNameForUser(`tg-${chat(10)}`, USER)).toBeNull();
+    expect(getTopicByNameForUser(`tg-${chat(10)}`, USER, { scope: "all" })).toBeNull();
   });
 });

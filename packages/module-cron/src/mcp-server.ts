@@ -96,12 +96,12 @@ function resolveTopic(input?: { topic_id?: string; topic?: string }) {
 
   const explicitTitle = input?.topic?.trim();
   if (explicitTitle) {
-    return getTopicByNameForUser(explicitTitle, userId, surface ? { surface } : {});
+    return getTopicByNameForUser(explicitTitle, userId, surface ? { surface } : { scope: "all" });
   }
 
   if (currentTopicId) return getTopic(currentTopicId);
   return currentTopic
-    ? getTopicByNameForUser(currentTopic, userId, surface ? { surface } : {})
+    ? getTopicByNameForUser(currentTopic, userId, surface ? { surface } : { scope: "all" })
     : null;
 }
 

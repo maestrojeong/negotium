@@ -1128,12 +1128,40 @@ export function setTopicSurfaces(topicIds: readonly string[], surface: TopicSurf
   return changed;
 }
 
-/** Look up a topic by title, restricted to topics where `userId` participates. */
+/**
+ * How wide a title lookup is allowed to reach.
+ *
+ * `surface` is required rather than optional. It used to default to "search
+ * every surface", which contradicted S-6's promise that a missed call site
+ * "cannot leak a topic across surfaces" — the guarantee only held where a
+ * caller remembered to opt in, and four did not: Telegram's `/load` and `/del`
+ * (the latter could delete a terminal room), the runtime MCP id path, the cron
+ * id path, and the session inbox. Every one of those was a silent leak with a
+ * correct-looking call. Making the parameter explicit turns each future
+ * omission into a compile error instead.
+ *
+ * `{ scope: "all" }` is the deliberate way to search every surface. It exists
+ * for operator tooling — the CLI manages jobs across surfaces on purpose — and
+ * reads as a decision at the call site rather than as an oversight.
+ */
+export type TopicNameLookupScope =
+  | { surface: TopicSurface; surfaceScope?: string | null }
+  | { scope: "all" };
+
+/**
+ * Look up a topic by title, restricted to topics where `userId` participates.
+ *
+ * Answers only on a single match: a title is unique per surface (S-3), so an
+ * `{ scope: "all" }` lookup of a name used on two surfaces resolves to null
+ * rather than picking one.
+ */
 export function getTopicByNameForUser(
   title: string,
   userId: string,
-  opts: { surface?: TopicSurface; surfaceScope?: string | null } = {},
+  lookupScope: TopicNameLookupScope,
 ): TopicDto | null {
+  const opts: { surface?: TopicSurface; surfaceScope?: string | null } =
+    "scope" in lookupScope ? {} : lookupScope;
   const trimmed = title.trim();
   const qualified = /^(agent|channel|manager):(.+)$/i.exec(trimmed);
   const requestedKind = qualified ? normalizeTopicKind(qualified[1]?.toLowerCase()) : null;

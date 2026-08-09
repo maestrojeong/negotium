@@ -32,6 +32,7 @@ import {
 } from "#query/session-inbox-path";
 import { AbortReason } from "#query/types";
 import { appendApiMessage, getApiMessage } from "#storage/api-messages";
+import type { TopicNameLookupScope } from "#storage/api-topics";
 import type { ConversationEntry } from "#storage/conversations";
 import { RUNTIME_INSTANCE_ID } from "#storage/runtime-leases";
 import {
@@ -216,10 +217,10 @@ function callerScope(
   return surface ? { kind: "surface", on: surface as TopicSurface } : { kind: "deny" };
 }
 
-/** `getTopicByNameForUser` options for a scope, or null when it must not run. */
-function scopeToLookupOpts(scope: CallerScope): { surface?: TopicSurface } | null {
+/** `getTopicByNameForUser` scope for a caller scope, or null when it must not run. */
+function scopeToLookupOpts(scope: CallerScope): TopicNameLookupScope | null {
   if (scope.kind === "deny") return null;
-  return scope.kind === "surface" ? { surface: scope.on } : {};
+  return scope.kind === "surface" ? { surface: scope.on } : { scope: "all" };
 }
 
 async function resolveEntryCallerTopic(
@@ -733,11 +734,12 @@ async function handleAbortEntry(
   // Closing it properly means adding sender identity to the abort entry format
   // and is a wire-format change, not a call-site fix — deliberately left out
   // of this change rather than papered over with a scope that is always empty.
+  // `scope: "all"` states that here instead of leaving it to a default.
   const topic = topicId
     ? byId?.participants.some((participant) => participant.userId === userId)
       ? byId
       : null
-    : getTopicByNameForUser(topicName, userId);
+    : getTopicByNameForUser(topicName, userId, { scope: "all" });
   if (!topic) {
     logger.warn({ topicName }, "session-inbox: abort for unknown topic, skipping");
     return;

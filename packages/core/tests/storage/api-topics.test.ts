@@ -242,6 +242,27 @@ describe("api topic storage", () => {
     expect(getTopicByNameForUser(title, "owner", { surface: "terminal" })?.id).toBe(terminal.id);
     expect(getTopicByNameForUser(title, "owner", { surface: "telegram" })?.id).toBe(telegram.id);
     expect(getTopicByNameForUser(title, "owner", { surface: "otium" })).toBeNull();
+    // Two rows match, and the helper answers only on one, so the deliberate
+    // cross-surface scope resolves to nothing rather than picking a side.
+    expect(getTopicByNameForUser(title, "owner", { scope: "all" })).toBeNull();
+  });
+
+  /**
+   * `{ scope: "all" }` is the explicit replacement for what used to happen when
+   * a caller simply forgot the surface. It stays available because operator
+   * tooling — the CLI managing cron jobs across surfaces — genuinely wants it;
+   * the difference is that it now reads as a decision at the call site.
+   */
+  test("scope 'all' reaches a topic on any surface", () => {
+    const title = `Anywhere ${randomUUID().slice(0, 8)}`;
+    const telegram = { ...makeTopic(), title, surface: "telegram" as const };
+    createdTopicIds.push(telegram.id);
+    upsertTopic(telegram);
+
+    expect(getTopicByNameForUser(title, "owner", { scope: "all" })?.id).toBe(telegram.id);
+    expect(getTopicByNameForUser(title, "owner", { surface: "terminal" })).toBeNull();
+    // Participation still gates it — a wider surface scope is not wider access.
+    expect(getTopicByNameForUser(title, "someone-else", { scope: "all" })).toBeNull();
   });
 
   test("an upsert without a surface lands on the host default, not on terminal", () => {

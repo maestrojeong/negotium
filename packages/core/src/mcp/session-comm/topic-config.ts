@@ -40,7 +40,13 @@ export function currentApiTopicId(): string | null {
   }
   if (!currentTopic) return null;
   try {
-    return getTopicByNameForUser(currentTopic, userId)?.id ?? null;
+    // Resolving THIS session's own room from its title, reached only when the
+    // host started us without a topic id. The surface we would scope to is the
+    // very thing being determined, so there is nothing to narrow by; the
+    // participation filter inside the lookup is what keeps it honest, and a
+    // title shared across surfaces resolves to null rather than to a guess.
+    // Hosts that pass `--topic-id` — every current one — never come here.
+    return getTopicByNameForUser(currentTopic, userId, { scope: "all" })?.id ?? null;
   } catch (e) {
     process.stderr.write(`warn: session-comm: api topic lookup failed: ${e}\n`);
     return null;

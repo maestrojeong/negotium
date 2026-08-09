@@ -49,6 +49,26 @@ currently groups `Manager / Private / Public`. The `Private` heading becomes **`
 lists `telegram`, the Otium gateway lists `otium`. Filtering happens in the store query, not in the
 adapter, so a missed call site cannot leak a topic across surfaces.
 
+> **Amended 2026-08-09 (0.3.0).** That last clause was untrue as written.
+> `getTopicByNameForUser` took an *optional* surface and, given none, searched
+> every surface — so the guarantee held only where a caller remembered to ask
+> for it. Four did not, and each one was a silent leak with a correct-looking
+> call: Telegram's `/load` and `/del` (the second could delete a `terminal`
+> room), the runtime MCP id path behind `abort_topic`/`restart_topic`/
+> `delete_topic`, the cron id path, and the session inbox's by-name fallback.
+>
+> The scope argument is now **required**: `{ surface }`, or `{ scope: "all" }`
+> to search everywhere on purpose. Omitting it is a compile error, which is
+> what makes the sentence above true — the guarantee is enforced by the type,
+> not by everyone remembering. `{ scope: "all" }` remains for operator tooling
+> (the CLI schedules cron jobs across surfaces deliberately) and for the two
+> places where the caller's own surface is what is being determined.
+>
+> An id is not a scope. `getTopic(id)` knows nothing about surfaces, so any
+> path that accepts a user-supplied id must compare `topic.surface` itself;
+> checking membership alone is what let the id become the way around the
+> filter.
+
 **S-7 — `session-comm` is surface-scoped.** `list_sessions` / `peek_session` / `tell_session` /
 `ask_session` / `abort_session` only resolve targets whose surface equals the caller's surface.
 Cross-surface addressing is not a supported feature and is not exposed with an override flag.

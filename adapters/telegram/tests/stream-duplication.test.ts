@@ -25,7 +25,7 @@ test("delivers streamed Maestro text once when completed text follows its tool c
   try {
     fake.emit({ chat: { id: chatId }, from: { id: 1 }, text: `/new ${title}` });
     await waitFor(() => fake.callsFor(chatId).some((call) => call.text.includes(title)));
-    const topic = getTopicByNameForUser(title, userId);
+    const topic = getTopicByNameForUser(title, userId, { scope: "all" });
     expect(topic).not.toBeNull();
     const sendsBeforeTurn = fake.callsFor(chatId).length;
     const queryId = randomUUID();
@@ -77,7 +77,7 @@ test("delivers streamed Maestro text once when completed text follows its tool c
     ).toEqual(["first status", "second status", "final answer"]);
   } finally {
     adapter.stop();
-    const topic = getTopicByNameForUser(title, userId);
+    const topic = getTopicByNameForUser(title, userId, { scope: "all" });
     if (topic) deleteTopic(topic.id);
   }
 });
