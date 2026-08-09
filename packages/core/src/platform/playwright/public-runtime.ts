@@ -5,6 +5,7 @@ export {
 export {
   closeBrowserOwnerTabs,
   configurePlaywrightManagerHost,
+  drainPlaywrightManager,
   ensureBrowserProfile,
   ensurePlaywright,
   getPlaywrightCapability,

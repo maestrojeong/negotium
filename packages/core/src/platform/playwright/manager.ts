@@ -1312,6 +1312,48 @@ export async function killAllPlaywright(): Promise<void> {
   );
 }
 
+/**
+ * Return the manager to a configurable state: no instances, no pins, no
+ * in-flight spawns.
+ *
+ * `configurePlaywrightManagerHost` refuses while any of `instances`,
+ * `spawning`, or `pinnedInstances` is non-empty, and `killAllPlaywright`
+ * clears only the first of the three. That gap is a real problem for embedders'
+ * test suites: driving a route that starts a turn leaves a pin behind, because
+ * pins are released in the turn promise's `.finally` and a test that asserts on
+ * dispatch never lets the turn finish. The manager is a module global, so the
+ * next file that calls `configurePlaywrightManagerHost` — or
+ * `resetPlaywrightManagerHost`, which is the same call — throws, and the
+ * failure surfaces in a full run but never in isolation. Draining from outside
+ * was not possible: `pinnedInstances` and `spawning` are module-private, and
+ * unpinning by key requires knowing every key some route happened to pin.
+ *
+ * Order matters. Pins are dropped first so nothing can block teardown, then
+ * in-flight spawns are awaited rather than abandoned — a spawn that settles
+ * after we return would re-register an instance and put the manager right back
+ * into the state we are clearing. Only then are the instances killed, and
+ * `spawning` is drained once more to catch anything the kill path started.
+ *
+ * Intended for test teardown and host shutdown. Safe to call when already
+ * clean, and it never throws: teardown must not turn a failing assertion into
+ * a confusing unhandled rejection.
+ */
+export async function drainPlaywrightManager(): Promise<void> {
+  pinnedInstances.clear();
+  // Settle, don't discard: `spawning` entries delete themselves in a `.finally`.
+  await Promise.allSettled([...spawning.values()]);
+  try {
+    await killAllPlaywright();
+  } catch (err) {
+    logger.warn({ err }, "drainPlaywrightManager: killAllPlaywright failed; continuing");
+  }
+  await Promise.allSettled([...spawning.values()]);
+  // A spawn whose promise never settles (a wedged child) would otherwise pin
+  // the manager shut forever; the wait above gave it its chance.
+  spawning.clear();
+  pinnedInstances.clear();
+}
+
 // Proactively evict all idle instances every 30 minutes
 // Every 30 minutes: evict idle instances, then reap any orphaned browser the
 // tracked-instance map has lost sight of. The orphan reap is only a backstop —

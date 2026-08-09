@@ -9,6 +9,7 @@ import { isPortInUse, reserveAvailableLoopbackPort } from "#platform/playwright/
 import {
   browserProcessMatchesExpectedProfile,
   configurePlaywrightManagerHost,
+  drainPlaywrightManager,
   extractUserDataDirArg,
   getPlaywrightManagerHost,
   isBrowserJanitorOwner,
@@ -557,5 +558,49 @@ describe("watchChildStartup", () => {
     Object.assign(processHandle, { exitCode: 1 });
     expect(isLiveOwnedChildProcess(current, processHandle)).toBe(false);
     expect(isLiveOwnedChildProcess(undefined, processHandle)).toBe(false);
+  });
+});
+
+describe("drainPlaywrightManager", () => {
+  /**
+   * `configurePlaywrightManagerHost` refuses while `instances`, `spawning`, or
+   * `pinnedInstances` is non-empty, but `killAllPlaywright` only clears the
+   * first. A leftover pin therefore wedges the manager shut for the rest of
+   * the process — which is what embedders hit: a route that starts a turn pins
+   * the instance and releases it in the turn promise's `.finally`, so a test
+   * asserting on dispatch alone leaves the pin behind and the NEXT test file's
+   * `configurePlaywrightManagerHost` throws.
+   *
+   * A pin is the honest reproduction: it is the state no public API could
+   * clear from outside, since `pinnedInstances` is module-private and
+   * unpinning by key means knowing every key a route happened to pin.
+   */
+  it("clears a leftover pin so the host can be reconfigured", async () => {
+    pinPlaywrightInstance(makeInstanceKey("drain-owner", "drain-profile"));
+
+    expect(() => resetPlaywrightManagerHost()).toThrow(
+      "cannot configure Playwright manager while browser instances are active",
+    );
+
+    await drainPlaywrightManager();
+
+    expect(() => resetPlaywrightManagerHost()).not.toThrow();
+  });
+
+  it("is safe to call on an already-clean manager, and repeatedly", async () => {
+    await drainPlaywrightManager();
+    await drainPlaywrightManager();
+
+    expect(() => resetPlaywrightManagerHost()).not.toThrow();
+  });
+
+  it("releases a pin held more than once — pins are counted, not boolean", async () => {
+    const key = makeInstanceKey("drain-owner", "nested-pin");
+    pinPlaywrightInstance(key);
+    pinPlaywrightInstance(key);
+
+    await drainPlaywrightManager();
+
+    expect(() => resetPlaywrightManagerHost()).not.toThrow();
   });
 });
