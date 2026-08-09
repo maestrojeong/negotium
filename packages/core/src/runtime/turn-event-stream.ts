@@ -220,7 +220,6 @@ export async function runTurnEventStream(
   const emitPendingAssistantMessage = (usage?: MessageDto["usage"]): MessageDto | null => {
     const text = pendingText.trimEnd();
     pendingText = "";
-    pendingSawDelta = false;
     if (silent || !text.trim()) return null;
     const message: MessageDto = {
       id: randomUUID(),
@@ -344,7 +343,14 @@ export async function runTurnEventStream(
           break;
         }
         case "text":
-          if (!pendingSawDelta) {
+          if (pendingSawDelta) {
+            // Some providers emit tool_use before the completed copy of the
+            // streamed text block. A tool flush must not make that copy look
+            // like a new segment; consume it here as the delta terminator.
+            pendingSawDelta = false;
+            break;
+          }
+          {
             const incoming = event.content;
             accumulatedText += incoming;
             pendingText += incoming;
