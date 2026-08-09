@@ -1,6 +1,7 @@
 type TerminalCli = typeof import("@negotium/adapter-terminal/cli");
 type TelegramCli = typeof import("@negotium/adapter-telegram/cli");
 type OtiumCli = typeof import("@negotium/adapter-otium/cli");
+type SermoCli = typeof import("@negotium/adapter-sermo/cli");
 
 const runningFromSource = import.meta.dir.endsWith("/src");
 
@@ -28,4 +29,10 @@ export function loadOtiumCli(): Promise<OtiumCli> {
   return runningFromSource
     ? loadFromSource("../../../adapters/otium/src/cli.ts")
     : import("@negotium/adapter-otium/cli");
+}
+
+export function loadSermoCli(): Promise<SermoCli> {
+  return runningFromSource
+    ? loadFromSource("../../../adapters/sermo/src/cli.ts")
+    : import("@negotium/adapter-sermo/cli");
 }

@@ -1,0 +1,58 @@
+{
+  "name": "@negotium/adapter-sermo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Voice AI channel adapter for Negotium — VAD → STT (mlx-whisper) → Brain → TTS (kokoro-onnx)",
+  "license": "Apache-2.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "default": "./dist/cli.js"
+    }
+  },
+  "bin": {
+    "negotium-sermo": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "bun": ">=1.2.15",
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maestrojeong/negotium.git",
+    "directory": "adapters/sermo"
+  },
+  "homepage": "https://github.com/maestrojeong/negotium#readme",
+  "bugs": {
+    "url": "https://github.com/maestrojeong/negotium/issues"
+  },
+  "scripts": {
+    "start": "bun src/cli.ts",
+    "build": "bun ../../scripts/build-package.ts src/index.ts src/cli.ts",
+    "check": "bunx tsc --noEmit",
+    "lint": "biome check",
+    "prepack": "bun run build"
+  },
+  "dependencies": {
+    "@negotium/adapter-sdk": "workspace:*",
+    "@negotium/core": "workspace:*",
+    "@negotium/node": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "bun-types": "^1.3.11",
+    "typescript": "^5"
+  }
+}

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { loadOtiumCli, loadTelegramCli, loadTerminalCli } from "@/adapter-loader";
+import { loadOtiumCli, loadSermoCli, loadTelegramCli, loadTerminalCli } from "@/adapter-loader";
 import { normalizeCliCommand, renderCliHelp } from "@/command-catalog";
 
 const [, , rawCommand, ...args] = process.argv;
@@ -59,7 +59,7 @@ async function runCanonicalNode(port: number): Promise<void> {
   process.exit(0);
 }
 
-async function stopAdapter(name: "otium" | "telegram"): Promise<boolean> {
+async function stopAdapter(name: "otium" | "telegram" | "sermo"): Promise<boolean> {
   const { getRuntimeProcessLease } = await import("@negotium/core");
   const lease = getRuntimeProcessLease(`adapter:${name}`);
   if (!lease) return false;
@@ -127,7 +127,7 @@ switch (command) {
   case "stop": {
     const { stopNodeDaemon } = await import("@negotium/node");
     const target = args[0];
-    if (target === "otium" || target === "telegram") {
+    if (target === "otium" || target === "telegram" || target === "sermo") {
       const stopped = await stopAdapter(target);
       console.log(
         stopped ? `${target} adapter shutdown requested` : `${target} adapter is not running`,
@@ -135,10 +135,10 @@ switch (command) {
       break;
     }
     if (target && target !== "--all") {
-      throw new Error("usage: negotium stop [otium|telegram|--all]");
+      throw new Error("usage: negotium stop [otium|telegram|sermo|--all]");
     }
     if (target === "--all") {
-      for (const name of ["otium", "telegram"] as const) {
+      for (const name of ["otium", "telegram", "sermo"] as const) {
         if (await stopAdapter(name)) console.log(`${name} adapter shutdown requested`);
       }
     }
@@ -188,6 +188,11 @@ switch (command) {
       );
     }
     await runOtium(args);
+    break;
+  }
+  case "sermo": {
+    const { runSermoCli } = await loadSermoCli();
+    runSermoCli(args);
     break;
   }
   default: {
