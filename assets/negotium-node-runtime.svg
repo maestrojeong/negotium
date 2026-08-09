@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="800" viewBox="0 0 1320 800" role="img" aria-labelledby="title desc">
+  <title id="title">One Negotium node, one machine, reachable from many fronts</title>
+  <desc id="desc">A single Negotium node is the durable backend runtime on one machine. Terminal, Telegram, and any number of local or remote Otium workspaces can all reach it and share its memory, tools, and vault; each keeps its own scoped topics.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8f7ff"/>
+      <stop offset="1" stop-color="#f4f7fb"/>
+    </linearGradient>
+    <linearGradient id="node" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8f78e0"/>
+      <stop offset="1" stop-color="#5f48a0"/>
+    </linearGradient>
+    <filter id="nodeShadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#4a3aa7" flood-opacity=".38"/>
+    </filter>
+    <filter id="leafShadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#201c34" flood-opacity=".14"/>
+    </filter>
+    <marker id="joint" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7">
+      <circle cx="5" cy="5" r="4" fill="#8b7de0"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1320" height="800" fill="url(#bg)"/>
+
+  <!-- headline -->
+  <text x="660" y="54" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" letter-spacing="2.2" fill="#5b5678">ONE MACHINE · ONE RUNTIME</text>
+  <text x="660" y="88" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="27" font-weight="700" fill="#201c34">One node, one runtime, <tspan fill="#5b5678" font-weight="500">many fronts</tspan></text>
+
+  <!-- node -->
+  <g filter="url(#nodeShadow)">
+    <rect x="460" y="150" width="400" height="210" rx="22" fill="url(#node)"/>
+  </g>
+  <text x="660" y="228" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="1.6" fill="#ffffff">NEGOTIUM NODE</text>
+  <text x="660" y="266" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="30" font-weight="800" fill="#ffffff">Backend Runtime</text>
+
+  <!-- wires -->
+  <g stroke="#a89bea" stroke-width="2.5" fill="none">
+    <!-- bracket to the agent-backend stack, beside (left of) the node -->
+    <path d="M 460 255 L 440 255" stroke-width="2.5"/>
+    <path d="M 440 177 L 440 333" stroke-width="2"/>
+    <path d="M 440 177 L 424 177" stroke-width="2" marker-end="url(#joint)"/>
+    <path d="M 440 255 L 424 255" stroke-width="2" marker-end="url(#joint)"/>
+    <path d="M 440 333 L 424 333" stroke-width="2" marker-end="url(#joint)"/>
+    <!-- bracket to the built-in pillar stack, beside (right of) the node -->
+    <path d="M 860 255 L 880 255" stroke-width="2.5"/>
+    <path d="M 880 167 L 880 343" stroke-width="2"/>
+    <path d="M 880 167 L 896 167" stroke-width="2" marker-end="url(#joint)"/>
+    <path d="M 880 211 L 896 211" stroke-width="2" marker-end="url(#joint)"/>
+    <path d="M 880 255 L 896 255" stroke-width="2" marker-end="url(#joint)"/>
+    <path d="M 880 299 L 896 299" stroke-width="2" marker-end="url(#joint)"/>
+    <path d="M 880 343 L 896 343" stroke-width="2" marker-end="url(#joint)"/>
+    <!-- trunk down to the surface tree -->
+    <path d="M 660 360 L 660 400" stroke-width="3"/>
+    <path d="M 660 400 L 192 400"/>
+    <path d="M 660 400 L 1128 400"/>
+    <path d="M 192 400 L 192 536" marker-end="url(#joint)"/>
+    <path d="M 426 400 L 426 536" marker-end="url(#joint)"/>
+    <path d="M 660 400 L 660 536" marker-end="url(#joint)"/>
+    <path d="M 894 400 L 894 536" marker-end="url(#joint)"/>
+    <path d="M 1128 400 L 1128 536" marker-end="url(#joint)"/>
+  </g>
+
+  <!-- agent backends: a vertical stack beside (left of) the node, same height as the node -->
+  <text x="420" y="146" text-anchor="end" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="800" letter-spacing="1" fill="#5b5678">RUNS ON</text>
+  <g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <rect x="200" y="150" width="220" height="54" rx="10" fill="#f1eefc" stroke="#ddd3f7"/>
+    <text x="214" y="182" font-size="14" font-weight="800" fill="#3d2f86">Claude</text>
+    <text x="406" y="181" text-anchor="end" font-size="10.5" font-weight="700" fill="#6a5db8">login or API key</text>
+
+    <rect x="200" y="228" width="220" height="54" rx="10" fill="#f1eefc" stroke="#ddd3f7"/>
+    <text x="214" y="260" font-size="14" font-weight="800" fill="#3d2f86">Codex</text>
+    <text x="406" y="259" text-anchor="end" font-size="10.5" font-weight="700" fill="#6a5db8">login</text>
+
+    <!-- Maestro: API key only, no login path -->
+    <rect x="200" y="306" width="220" height="54" rx="10" fill="#fdf6e8" stroke="#f3dfa8"/>
+    <text x="214" y="338" font-size="14" font-weight="800" fill="#8a6200">Maestro</text>
+    <rect x="324" y="324" width="82" height="18" rx="9" fill="#c98500"/>
+    <text x="365" y="337" text-anchor="middle" font-size="9.5" font-weight="800" fill="#ffffff">API key only</text>
+  </g>
+
+  <!-- built-in pillars: a vertical stack beside (right of) the node, same height as the node -->
+  <text x="900" y="146" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="800" letter-spacing="1" fill="#5b5678">BUILT IN</text>
+  <g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <rect x="900" y="150" width="220" height="34" rx="9" fill="#f1eefc" stroke="#ddd3f7"/>
+    <text x="913" y="171" font-size="12.5" font-weight="800" fill="#3d2f86">Memory</text>
+    <text x="1107" y="171" text-anchor="end" font-size="9.5" font-weight="700" fill="#6a5db8">shared across agents</text>
+
+    <rect x="900" y="194" width="220" height="34" rx="9" fill="#f1eefc" stroke="#ddd3f7"/>
+    <text x="913" y="215" font-size="12.5" font-weight="800" fill="#3d2f86">Subagents</text>
+    <text x="1107" y="215" text-anchor="end" font-size="9.5" font-weight="700" fill="#6a5db8">live graph</text>
+
+    <rect x="900" y="238" width="220" height="34" rx="9" fill="#f1eefc" stroke="#ddd3f7"/>
+    <text x="913" y="259" font-size="12.5" font-weight="800" fill="#3d2f86">Vault</text>
+    <text x="1107" y="259" text-anchor="end" font-size="9.5" font-weight="700" fill="#6a5db8">encrypted secrets</text>
+
+    <rect x="900" y="282" width="220" height="34" rx="9" fill="#f1eefc" stroke="#ddd3f7"/>
+    <text x="913" y="303" font-size="12.5" font-weight="800" fill="#3d2f86">Schedules</text>
+    <text x="1107" y="303" text-anchor="end" font-size="9.5" font-weight="700" fill="#6a5db8">cron jobs</text>
+
+    <rect x="900" y="326" width="220" height="34" rx="9" fill="#f1eefc" stroke="#ddd3f7"/>
+    <text x="913" y="347" font-size="12.5" font-weight="800" fill="#3d2f86">Browser</text>
+    <text x="1107" y="347" text-anchor="end" font-size="9.5" font-weight="700" fill="#6a5db8">lightweight, stealth</text>
+  </g>
+
+  <!-- leaf: Terminal (icon: Phosphor "terminal", MIT) -->
+  <g filter="url(#leafShadow)">
+    <rect x="92" y="540" width="200" height="160" rx="18" fill="#eceef2" stroke="#d6d9e2"/>
+  </g>
+  <rect x="169" y="560" width="46" height="46" rx="13" fill="#24242b"/>
+  <g transform="translate(180 571) scale(0.09375)" fill="#ffffff">
+    <path d="m117.31 134l-72 64a8 8 0 1 1-10.63-12L100 128L34.69 70a8 8 0 1 1 10.63-12l72 64a8 8 0 0 1 0 12ZM216 184h-96a8 8 0 0 0 0 16h96a8 8 0 0 0 0-16"/>
+  </g>
+  <text x="192" y="636" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16.5" font-weight="800" fill="#24242b">Terminal</text>
+  <text x="192" y="658" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="500" fill="#5b5678">This machine,</text>
+  <text x="192" y="674" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="500" fill="#5b5678">direct control</text>
+
+  <!-- leaf: Telegram (icon: official Telegram mark, Simple Icons, CC0) -->
+  <g filter="url(#leafShadow)">
+    <rect x="326" y="540" width="200" height="160" rx="18" fill="#e8f4fc" stroke="#bfe3f7"/>
+  </g>
+  <g transform="translate(403 560) scale(1.91667)" fill="#26a5e4">
+    <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12a12 12 0 0 0 12-12A12 12 0 0 0 12 0zm4.962 7.224c.1-.002.321.023.465.14a.5.5 0 0 1 .171.325c.016.093.036.306.02.472c-.18 1.898-.962 6.502-1.36 8.627c-.168.9-.499 1.201-.82 1.23c-.696.065-1.225-.46-1.9-.902c-1.056-.693-1.653-1.124-2.678-1.8c-1.185-.78-.417-1.21.258-1.91c.177-.184 3.247-2.977 3.307-3.23c.007-.032.014-.15-.056-.212s-.174-.041-.249-.024q-.159.037-5.061 3.345q-.72.495-1.302.48c-.428-.008-1.252-.241-1.865-.44c-.752-.245-1.349-.374-1.297-.789q.04-.324.893-.663q5.247-2.286 6.998-3.014c3.332-1.386 4.025-1.627 4.476-1.635"/>
+  </g>
+  <text x="426" y="636" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16.5" font-weight="800" fill="#0b6690">Telegram</text>
+  <text x="426" y="658" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="500" fill="#5b5678">Chat from</text>
+  <text x="426" y="674" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="500" fill="#5b5678">anywhere</text>
+
+  <!-- leaf: Otium A (icon: ~/otium/apps/app-renderer/assets/brand/otium-mark-ivory.svg on Otium's own Ink; card uses Otium's Warm Ivory / Soft Border tokens) -->
+  <g filter="url(#leafShadow)">
+    <rect x="560" y="540" width="200" height="160" rx="18" fill="#f6f2ea" stroke="#ddd7cd"/>
+  </g>
+  <rect x="637" y="560" width="46" height="46" rx="13" fill="#161614"/>
+  <g transform="translate(648 571) scale(0.24)" fill="#f6f2ea">
+    <path d="M45.8 22.5C31 24.6 20.4 36.3 20.4 50c0 13.7 10.6 25.4 25.4 27.5v-9.1C36.9 66.6 30.7 59 30.7 50s6.2-16.6 15.1-18.4v-9.1ZM54.2 22.5C69 24.6 79.6 36.3 79.6 50c0 13.7-10.6 25.4-25.4 27.5v-9.1C63.1 66.6 69.3 59 69.3 50s-6.2-16.6-15.1-18.4v-9.1Z"/>
+  </g>
+  <text x="660" y="636" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16.5" font-weight="800" fill="#161614">Otium A</text>
+  <text x="660" y="658" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="500" fill="#6b6960">Local workspace</text>
+  <text x="660" y="674" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="500" fill="#6b6960">on this machine</text>
+
+  <!-- leaf: Otium B (icon: same source as Otium A) -->
+  <g filter="url(#leafShadow)">
+    <rect x="794" y="540" width="200" height="160" rx="18" fill="#f6f2ea" stroke="#ddd7cd"/>
+  </g>
+  <rect x="871" y="560" width="46" height="46" rx="13" fill="#161614"/>
+  <g transform="translate(882 571) scale(0.24)" fill="#f6f2ea">
+    <path d="M45.8 22.5C31 24.6 20.4 36.3 20.4 50c0 13.7 10.6 25.4 25.4 27.5v-9.1C36.9 66.6 30.7 59 30.7 50s6.2-16.6 15.1-18.4v-9.1ZM54.2 22.5C69 24.6 79.6 36.3 79.6 50c0 13.7-10.6 25.4-25.4 27.5v-9.1C63.1 66.6 69.3 59 69.3 50s-6.2-16.6-15.1-18.4v-9.1Z"/>
+  </g>
+  <text x="894" y="636" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16.5" font-weight="800" fill="#161614">Otium B</text>
+  <text x="894" y="658" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="500" fill="#6b6960">Another local</text>
+  <text x="894" y="674" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="500" fill="#6b6960">workspace</text>
+
+  <!-- leaf: more (unlimited), Otium's Soft Border / Graphite tokens -->
+  <rect x="1028" y="540" width="200" height="160" rx="18" fill="none" stroke="#cfc8ba" stroke-width="2" stroke-dasharray="7 6"/>
+  <text x="1128" y="608" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="800" fill="#2c2d2a">+ as many</text>
+  <text x="1128" y="628" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="800" fill="#2c2d2a">Otium as</text>
+  <text x="1128" y="648" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="800" fill="#2c2d2a">you connect</text>
+
+  <!-- footline -->
+  <text x="660" y="757" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="600" fill="#5b5678">A single <tspan font-weight="800" fill="#201c34">Negotium</tspan> node stays running on your machine — every front shares its <tspan font-weight="800" fill="#201c34">memory, tools, and vault</tspan>, with its own scoped topics.</text>
+</svg>

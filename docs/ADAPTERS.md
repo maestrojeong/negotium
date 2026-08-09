@@ -66,42 +66,49 @@ For commands and recovery options, see the root [README](../README.md) and the r
 
 Adapters never create provider-specific copies of canonical tasks or topic history.
 
-## Topic visibility and access
+## Topic visibility and surface
 
-Visibility and access are independent fields:
+Visibility and surface are independent fields:
 
 - `visibility: visible | hidden` controls whether a topic appears in pickers.
-- `accessMode: private | shared` controls which adapters may access the topic.
+- `surface: terminal | telegram | otium` is a permanent property of a topic, set once at creation.
+  There is no "share this topic with Otium" operation and no `accessMode` field; each adapter only
+  ever lists topics whose `surface` matches its own, filtered in the store rather than in the
+  adapter. See [Surface-scoped sessions](./SURFACE-SESSION-SEPARATION.md) for the full design and
+  the migration this replaced (the former `accessMode: private | shared` field, `/public`,
+  `/private`, and `Ctrl-P`, all deleted end to end).
 
-Locally created topics default to `private`. Terminal and Telegram may access them; Otium peer routes
-must treat them as absent. An owner may explicitly share a topic with Otium. Returning it to private
-removes Otium bindings but preserves the local topic, history, workspace, and provider session. It
-does not retroactively erase messages already stored by an external service.
-
-Otium execution mirrors are `hidden` and `shared`: they are internal worker state for hub-owned rooms,
-not user-selectable local topics. A local shared topic is different: the visible Negotium topic remains
-authoritative and an Otium room is a projection of it.
+Otium execution mirrors are `hidden`; they are internal worker state for hub-owned rooms, not
+user-selectable local topics. A local `surface='otium'` topic is different: the visible Negotium
+topic remains authoritative and the Otium room is a projection of it.
 
 ## Transcript projection
 
 A full projection shares the same topic lock, append-only raw conversation history, compactable
 active provider context, workspace, and provider session regardless of which adapter starts the
-turn.
+turn — but only within the topic's own surface. A Terminal topic is never visible to Otium or
+Telegram, and vice versa; there is no cross-surface view of one topic.
 
 ```text
-                    one Negotium topic
-            messages · session · workspace · lock
-                    ▲                       ▲
-                    │                       │
-                Terminal                 Otium
-                full view                full view
-                    │
-                    └── Telegram input and live notifications
+        terminal-surface topic         otium-surface topic
+    messages · session · workspace   messages · session · workspace
+                  ▲                              ▲
+                  │                              │
+              Terminal                        Otium
+              full view                      full view
+
+        telegram-surface topic
+    messages · session · workspace
+                  ▲
+                  │
+              Telegram
+        input and live notifications
 ```
 
-Telegram is not a full transcript surface. The Bot API cannot recreate arbitrary authors, original
-timestamps, historical message IDs, or rich task/visual/card state. Mapping a topic later therefore
-does not backfill it as though the conversation originally occurred in Telegram.
+Telegram is not a full transcript surface even for its own topics. The Bot API cannot recreate
+arbitrary authors, original timestamps, historical message IDs, or rich task/visual/card state.
+Mapping a topic later therefore does not backfill it as though the conversation originally
+occurred in Telegram.
 
 Otium declares `full/no-backfill` until a durable projection journal can synchronize local-origin
 history, reconnect from a binding sequence, and deduplicate messages by stable source ID. The exact
@@ -135,8 +142,8 @@ paths and symlinks must be validated before upload.
 ## Otium
 
 Otium owns remote room IDs, node credentials, placement, binding state, and peer request journals. It
-may bind a hub room to a hidden worker mirror or project a local shared topic. Unbinding never deletes
-the local topic.
+may bind a hub room to a hidden worker mirror or project a local `surface='otium'` topic. Unbinding
+never deletes the local topic.
 
 The adapter must preserve protocol versioning, primary-node authorization, request idempotency,
 contiguous event sequence numbers, and exact abort semantics. See [Otium coupling](./OTIUM-COUPLING.md)

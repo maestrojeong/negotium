@@ -1,6 +1,6 @@
 <div align="center">
   <h1>Negotium</h1>
-  <p><strong>A self-hosted AI worker for your Otium workspace.</strong></p>
+  <p><strong>One machine, one Negotium runtime — reachable from Terminal, Telegram, and multiple Otium workspaces at once.</strong></p>
   <p>Run Claude, Codex, or Maestro with local tools, memory, and schedules.</p>
   <p>
     <a href="./LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-4c1.svg"></a>
@@ -10,25 +10,33 @@
   </p>
 </div>
 
-![How Negotium joins an Otium workspace](./assets/negotium-worker.svg)
+![One Negotium node, one machine, reachable from Terminal, Telegram, and multiple Otium workspaces](./assets/negotium-node-runtime.svg)
 
 > *Negotium* is Latin for “work” — literally *nec otium*, the absence of
 > leisure. Your machines do the negotium so you can keep the otium.
 
-Negotium turns one computer into a durable AI worker. Invite that worker into
-an Otium workspace as a member, then give it work backed by Claude Code, Codex,
-or Maestro. Its topics, conversations, tools, memory, files, schedules, and
-secrets remain on the machine where it runs.
+Negotium turns one computer into one durable backend runtime, not a runtime
+that belongs to a single surface. Terminal, Telegram, and any number of Otium
+workspaces (local or remote) can all reach it. What's actually shared across
+all of them is the runtime layer: memory, wiki, skills, the vault, tool
+availability, and Cron. What's *not* shared is scoped on purpose: a topic
+belongs permanently to one surface (`terminal` | `telegram` | `otium`) chosen
+when it's created, and an Otium-surface topic further belongs to the one
+workspace it was created in — so two different Otium workspaces joined to the
+same node see different rooms, never each other's. Connecting another Otium
+workspace doesn't fork the node or copy its state; it just adds one more
+workspace-scoped view over the same underlying vault, memory, and tools.
 
-Otium is the workspace; Negotium is a worker that joins it. Negotium can also
-be operated directly through Terminal or Telegram when an Otium workspace is
-not needed.
+Otium is a workspace that can be pointed at this runtime; Negotium is the
+runtime itself. Negotium stays useful with Terminal or Telegram alone, with no
+Otium workspace at all — and just as useful joined to several at once.
 
 The project is early-stage. Public APIs may change during the `0.x` series.
 
 ## What can I do with it?
 
-- Invite a self-hosted worker into an Otium workspace
+- Run one self-hosted worker and reach it from Terminal, Telegram, and any
+  number of Otium workspaces at once
 - Keep separate, long-lived topics for research, operations, writing, or code
 - Use Claude Code, Codex, or Maestro per topic without losing its history
 - Ask several agents to investigate in parallel and report back
@@ -36,17 +44,42 @@ The project is early-stage. Public APIs may change during the `0.x` series.
 - Run daily or weekly agent jobs with durable schedules
 - Give agents browser, file, shell, wiki, and MCP tools
 - Store API keys in an encrypted vault and reference them as `{{KEY}}`
-- Reach the same worker from Terminal, Telegram, Otium, or a custom adapter
 
 The core runtime concepts are:
 
 | Concept | Role |
 |---|---|
-| **Node** | The Negotium worker runtime and state on one machine |
+| **Node** | The one durable backend runtime and state on one machine |
 | **Topic** | A durable context for one area of work |
 | **Agent backend** | Claude Code, Codex, or Maestro |
-| **Otium binding** | Membership in an Otium workspace |
+| **Surface** | Which front end a topic belongs to — `terminal`, `telegram`, or `otium` — set once at creation |
+| **Otium workspace scope** | For a `surface: otium` topic, which joined workspace it belongs to — also fixed at creation, so two joined workspaces never see each other's rooms |
 | **Tools and tasks** | The worker's capabilities and durable work state |
+
+## Built-in highlights
+
+Four pieces ship with Negotium rather than being bolted on:
+
+- **One encrypted vault per node.** Secrets are stored at rest, referenced as
+  `{{KEY}}` in prompts and tool calls, and kept out of normal tool output.
+  Manage it with `/vault` in Terminal or `negotium vault`.
+- **Shared skills and memory, independent of any one topic.** A skill or a
+  memory key is available to every topic on the node regardless of which
+  surface or agent wrote it — knowledge is shared even when sessions aren't.
+- **A live subagent graph in Terminal, not a log.** `Ctrl-G` renders who owns
+  whom, who delegated to whom, and who's still running — laid out and
+  animated by [Orchgraph](https://github.com/maestrojeong/orchgraph), a
+  renderer toolkit the Terminal adapter depends on: lay the graph out once
+  with ELK, then draw the same geometry in Terminal, SVG, or HTML.
+
+  ![Live subagent graph, animated: ownership lights up, then a tell message, then a status-only fan-out](https://raw.githubusercontent.com/maestrojeong/orchgraph/main/docs/images/live-demo.gif)
+
+- **A shared, stealth-oriented browser.** The built-in browser tools run on
+  [browser-rs](https://github.com/maestrojeong/browser-rs-mcp) — a small,
+  single-binary Rust MCP server with no Node.js runtime of its own. Topics
+  that share a named browser profile share one logged-in Chrome, with tabs
+  isolated by owner; the binary and tool count are pinned per Negotium
+  release, so see its own README for current numbers.
 
 ## Quick start
 
@@ -85,8 +118,9 @@ the directory where you run Negotium. Bun loads that file automatically.
 negotium
 ```
 
-Press `N` to create a topic, choose an available agent backend, and start.
-Closing the terminal does not erase the topic or its history.
+Press `Ctrl-O` to open the topic picker, then `Ctrl-N` to create a topic,
+choose an available agent backend, and start. Closing the terminal does not
+erase the topic or its history.
 
 ## Everyday controls
 
@@ -94,9 +128,9 @@ The most useful Terminal shortcuts are:
 
 | Action | Keys |
 |---|---|
-| Create a topic from the picker | `N` |
 | Open the topic picker | `Ctrl-O` |
-| Previous / next topic | `Ctrl-P` / `Ctrl-N` |
+| Create a topic from the picker | `Ctrl-N` |
+| Delete the picked topic | `Ctrl-D` |
 | Scroll loaded history | Mouse wheel or `PgUp` / `PgDn` |
 | Load older history | `Ctrl-E` |
 | Toggle shared tasks | `Ctrl-T` |
@@ -212,20 +246,23 @@ directory.
 ## How it works
 
 ```text
-Otium workspace ── invites ──▶ Negotium worker
-                                  │
-Terminal / Telegram ──────────────┤
-                                  ▼
-                    topics · queues · tasks · memory
-                       │          │          │
-                    Claude      Codex      Maestro
-                                  │
-                       MCP and built-in tools
+                        one machine · one Negotium node
+                queues · memory · wiki · skills · vault · schedules
+                       Claude · Codex · Maestro · MCP tools
+                                     │
+        ┌───────────┬───────────────┼───────────────┬───────────┐
+        │           │               │               │           │
+    Terminal    Telegram        Otium (local)   Otium (remote)  ...as many
+                                                                  Otium as
+                                                                  you connect
 ```
 
 Hosts only send input and render events. The core owns execution, durable state,
-provider sessions, and queueing. Optional features such as Cron are explicit
-modules and stay unloaded when disabled.
+provider sessions, and queueing. Runtime services (memory, wiki, skills, vault,
+Cron) are shared node-wide; topics themselves are not — each belongs to exactly
+one surface, and an Otium-surface topic to exactly one joined workspace.
+Optional features such as Cron are explicit modules and stay unloaded when
+disabled.
 
 For implementation details, see [Architecture](./docs/ARCHITECTURE.md).
 Adapter authors should use the lockstep-versioned

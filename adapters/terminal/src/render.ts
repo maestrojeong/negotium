@@ -1426,10 +1426,10 @@ function topicPickerHints(topicPickerRoot: boolean): string[] {
     `↑↓ select · Enter open · type to filter · Ctrl-N new · Ctrl-D delete · ${exit}`,
     `↑↓ select · Enter open · type to filter · Ctrl-N new · Ctrl-D delete · ${shortExit}`,
     `↑↓ select · Enter open · type to filter · Ctrl-N new · Ctrl-D delete · ${exit}`,
-    `↑↓ select · Enter open · type to filter · Ctrl-N/D/P · ${shortExit}`,
-    "↑↓ · Enter · type to filter · Ctrl-N/D/P",
-    "type to filter · Ctrl-N/D/P",
-    "Ctrl-N/D/P",
+    `↑↓ select · Enter open · type to filter · Ctrl-N/D · ${shortExit}`,
+    "↑↓ · Enter · type to filter · Ctrl-N/D",
+    "type to filter · Ctrl-N/D",
+    "Ctrl-N/D",
   ];
   return [...new Set(candidates)].sort((a, b) => displayWidth(b) - displayWidth(a));
 }

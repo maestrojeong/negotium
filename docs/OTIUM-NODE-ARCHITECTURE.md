@@ -90,7 +90,15 @@ Already enforced: `gateway.ts` refuses a mapped topic whose owner count is not 1
 changes are guarded at every mutation site (account deletion, admin routes, topic routes). Keep
 this. Execution is gated on it.
 
-### D-6. `/public` grants eligibility, not access
+### D-6. Surface grants eligibility, not access (supersedes `accessMode`)
+
+> **Superseded 2026-08-08.** `accessMode` (`private`/`shared`), `/public`, `/private`, and the
+> subagent access-mode cascade described below were deleted end to end by
+> [Surface-scoped sessions](./SURFACE-SESSION-SEPARATION.md). Otium eligibility is now
+> `surface = 'otium'`, a permanent property set once at topic creation — not a flag an owner
+> toggles later, and not something a subagent cascade needs to propagate, since a derived topic
+> simply inherits its parent's `surface`. The paragraphs below describe the retired design for
+> historical context only.
 
 In the node, `accessMode: "shared"` means *"the owner consents to this topic being surfaced in
 Otium"*. It does not decide who reaches it — Otium room membership does.
@@ -134,6 +142,11 @@ mirror receiver has been removed; there is one data plane.
 
 ## Current state
 
+> **Update 2026-08-08:** two bullets below (the access-mode cascade and the `accessMode=shared`
+> discovery filter) describe the pre-surface model and are superseded by
+> [Surface-scoped sessions](./SURFACE-SESSION-SEPARATION.md); see the inline notes on each. The
+> rest of this list is unaffected.
+
 Implemented:
 
 - Runtime Gateway contract, both sides — node endpoints in `packages/node/src/control.ts`,
@@ -144,11 +157,13 @@ Implemented:
   authority.
 - session-comm `"<node>/<topic>"` addressing and the `peer-forward` hook, with graceful failure
   on a standalone node.
-- Access-mode cascade over subagent rooms, and the subagent self-change guard.
+- Access-mode cascade over subagent rooms, and the subagent self-change guard. *(Superseded: a
+  derived topic now simply inherits its parent's `surface`; there is no cascade to run because
+  there is nothing left to change after creation.)*
 - **Dynamic topic mapping** (D-1/D-6). Three parts, all present:
-  - node topic discovery — `GET runtime/v1/topics?accessMode=shared`, negotiated as the
-    `canonical-topic-list` capability. `shared` is the only filter a host should use, so it
-    cannot mirror rooms the owner never published.
+  - node topic discovery — *(superseded)* was `GET runtime/v1/topics?accessMode=shared`,
+    negotiated as the `canonical-topic-list` capability; gateway discovery now always returns the
+    `otium` surface and takes no filter at all, so it cannot mirror rooms outside that surface.
   - a persisted mapping table in Otium (`negotium_topic_map`), keyed `(node, topic)` with the
     room 1:1 in the other direction. `OTIUM_NEGOTIUM_GATEWAY_TOPIC_MAP` is now only a seed for
     an existing deployment, not the authority.
@@ -166,8 +181,9 @@ Implemented:
   `/api/v1/peer/provision`, `/api/v1/peer/turn` and `/api/v1/peer/input-file` routes, and the
   `otium_peer_sessions` / `otium_peer_turn_requests` / `otium_peer_terminal_outbox` tables.
   Existing databases keep those tables; nothing recreates or drops them. Two consequences worth
-  naming: `peerAddressable` is `isTopicShared` again, because a mirror was the only other way onto
-  the cross-node surface, and `/api/v1/peer/abort` is purely topic-scoped — a `requestId` named
+  naming: `peerAddressable` collapsed back to a single check (originally `isTopicShared`, now
+  `surface === 'otium'`), because a mirror was the only other way onto the cross-node surface, and
+  `/api/v1/peer/abort` is purely topic-scoped — a `requestId` named
   one placed turn and now selects nothing. The adapter reports
   `capabilities.externalPlacedTurn: false` and `features.inputFiles: false`.
 - **`shared-topic-sync` retired** (D-1). `shared-topic-sync.ts` and `bindings.ts` are deleted

@@ -155,6 +155,13 @@ eventually be available only behind an explicit development command or flag.
 
 ### Topic access and bindings
 
+> **Superseded 2026-08-08.** `accessMode` (and everything below describing it) was deleted end to
+> end by [Surface-scoped sessions](./SURFACE-SESSION-SEPARATION.md). A topic's `surface`
+> (`terminal` | `telegram` | `otium`) is now set once at creation and never changes; Otium
+> eligibility is `surface = 'otium'`, not a `private`/`shared` flag an owner toggles. There is no
+> `/public`, `/private`, or `Ctrl-P` any more, and a topic cannot be "shared" onto Otium after the
+> fact. The table below describes the retired model for historical context only.
+
 Canonical topics have two independent fields:
 
 | Field | Values | Meaning |
@@ -326,6 +333,12 @@ Exact payloads and version negotiation belong in Otium's Central API contract. N
 runtime endpoints remain in [Otium coupling](./OTIUM-COUPLING.md).
 
 ## Target design: topic sharing
+
+> **Superseded 2026-08-08.** This whole section described a target design for toggling
+> `accessMode` after topic creation. [Surface-scoped sessions](./SURFACE-SESSION-SEPARATION.md)
+> rejected that direction: making a topic visible on two surfaces, or moving it between surfaces
+> after creation, are explicit non-goals. Otium eligibility is decided once, at creation, by
+> `surface = 'otium'`. Kept below for historical context only; do not implement it.
 
 ### Authorization invariant
 
