@@ -1156,6 +1156,13 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     if (!isTopicVisible(topic)) return false;
     // Only rooms the adapter's (single) negotium user can see.
     if (!topic.participants?.some((p) => p.userId === userId)) return false;
+    // Only rooms that live on THIS surface (S-6). The bootstrap caller already
+    // filters with `listTopics({ surface: "telegram" })`, but the `topic-created`
+    // bus subscription hands over whatever was just created — so making a topic
+    // in the Terminal spawned a Telegram forum room for it. The check belongs
+    // here rather than at the four call sites: guarding the callers is exactly
+    // the pattern that let this one through while the others looked correct.
+    if (topic.surface !== "telegram") return false;
     const materializationChat = forumChat;
     const pending: PendingMaterialization = { buffer: [], cancelled: false };
     pendingByTopic.set(topic.id, pending);

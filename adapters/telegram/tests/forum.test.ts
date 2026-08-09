@@ -188,6 +188,35 @@ describe("forum mode", () => {
     expect(call.opts?.parse_mode).toBe("HTML");
   });
 
+  /**
+   * The bootstrap sweep filters with `listTopics({ surface: "telegram" })`, but
+   * the `topic-created` bus subscription passed the new topic straight to
+   * `materializeTopic`, which checked visibility and participation and not
+   * surface. Creating a room in the Terminal therefore spawned a Telegram
+   * forum thread for it. Restarting the adapter hid it — the bootstrap path is
+   * the filtered one — and the next topic brought it back.
+   */
+  test("a topic created on another surface does not materialize a forum thread", async () => {
+    const before = fake.forumCalls.length;
+    const terminalTitle = room("terminal-side");
+    registerTopic({ title: terminalTitle, userId: USER, agent: "codex", surface: "terminal" });
+
+    // Give the bus the same window the passing case needs, then assert nothing
+    // was created — a bare assertion would pass before the work even started.
+    const telegramTitle = room("telegram-side");
+    const telegramTopic = registerTopic({
+      title: telegramTitle,
+      userId: USER,
+      agent: "codex",
+      surface: "telegram",
+    });
+    await waitFor(() => fake.forumCalls.some((c) => c.name === telegramTitle));
+
+    expect(fake.forumCalls.some((c) => c.name === terminalTitle)).toBe(false);
+    expect(fake.forumCalls.length).toBe(before + 1);
+    expect(telegramTopic.surface).toBe("telegram");
+  });
+
   test("/new from forum General creates one forum thread and keeps General as the control surface", async () => {
     const before = fake.forumCalls.length;
     const title = room("via-cmd");
