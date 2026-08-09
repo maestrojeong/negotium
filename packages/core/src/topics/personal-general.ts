@@ -4,9 +4,11 @@ import { resolveDefaultModel } from "#platform/config";
 import { GENERAL_TOPIC_ID } from "#platform/constants";
 import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
 import {
+  defaultSurfaceScope,
   defaultTopicSurface,
   getManagerTopicForUser,
   getTopic,
+  normalizeSurfaceScope,
   normalizeTopicSurface,
   upsertTopic,
 } from "#storage/api-topics";
@@ -23,9 +25,22 @@ export const PERSONAL_GENERAL_DESCRIPTION =
  * The legacy `general` row is deliberately excluded: it was shared by every
  * user and remains untouched for an explicit, operator-controlled migration.
  */
-export function ensurePersonalGeneral(userId: string, surface?: TopicSurface): TopicDto {
+export function ensurePersonalGeneral(
+  userId: string,
+  surface?: TopicSurface,
+  opts: { surfaceScope?: string | null } = {},
+): TopicDto {
   const scope = normalizeTopicSurface(surface ?? defaultTopicSurface());
-  const existing = getManagerTopicForUser(userId, scope);
+  // One General per user *per workspace*. A manager room is exempt from title
+  // conflicts precisely because several may share the name, and two workspaces
+  // sharing one private room would merge two customers' transcripts.
+  const surfaceScope =
+    opts.surfaceScope !== undefined
+      ? normalizeSurfaceScope(opts.surfaceScope)
+      : scope === "otium"
+        ? defaultSurfaceScope()
+        : null;
+  const existing = getManagerTopicForUser(userId, scope, { surfaceScope });
   if (existing) {
     if (existing.description === LEGACY_PERSONAL_GENERAL_DESCRIPTION) {
       existing.description = PERSONAL_GENERAL_DESCRIPTION;
@@ -51,6 +66,7 @@ export function ensurePersonalGeneral(userId: string, surface?: TopicSurface): T
     aiMention: false,
     participants: [{ userId, role: "owner" }],
     surface: scope,
+    surfaceScope,
     createdAt: now,
     lastMessageAt: now,
   };

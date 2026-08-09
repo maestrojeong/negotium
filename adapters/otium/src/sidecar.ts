@@ -7,7 +7,11 @@ import {
   waitForRequiredRuntimeProcessLease,
 } from "@negotium/core";
 import { inspectNodeDaemon } from "@negotium/node";
-import { OTIUM_ADAPTER_CONTROL_HEADER, OTIUM_ADAPTER_CONTROL_PREFIX } from "@/control-protocol";
+import {
+  OTIUM_ADAPTER_CONTROL_HEADER,
+  OTIUM_ADAPTER_CONTROL_PREFIX,
+  OTIUM_RELAYED_HEADER,
+} from "@/control-protocol";
 import { loadJoin } from "@/join";
 import { MAX_PEER_REQUEST_BODY_BYTES } from "@/protocol";
 import { TunnelClient } from "@/tunnel-client";
@@ -22,6 +26,19 @@ export interface OtiumSidecarDependencies {
   fetch?: typeof fetch;
 }
 
+/**
+ * Paths the public relay is allowed to reach.
+ *
+ * The proxy authenticates *itself* to the node with `NODE_CONTROL_TOKEN`, a
+ * full host capability, so whatever it forwards arrives already trusted. That
+ * makes the set of forwardable paths a security boundary rather than routing
+ * convenience: anything reachable here is reachable by anyone who can reach the
+ * relay. Local administration (`_workspaces`) is deliberately outside it.
+ */
+function isPublicPeerPath(pathname: string): boolean {
+  return pathname === "/ready" || pathname.startsWith("/api/v1/peer/");
+}
+
 /** Forward one public peer request to the currently advertised canonical Node. */
 export async function proxyOtiumPeerRequest(
   req: Request,
@@ -29,6 +46,9 @@ export async function proxyOtiumPeerRequest(
 ): Promise<Response> {
   const inspectNode = dependencies.inspectNode ?? inspectNodeDaemon;
   const fetchRequest = dependencies.fetch ?? fetch;
+  if (!isPublicPeerPath(new URL(req.url).pathname)) {
+    return Response.json({ ok: false, error: "not found" }, { status: 404 });
+  }
   const status = await inspectNode();
   if (!status.running || !status.info) {
     return Response.json(
@@ -42,6 +62,11 @@ export async function proxyOtiumPeerRequest(
   target.search = source.search;
   const headers = new Headers(req.headers);
   headers.set(OTIUM_ADAPTER_CONTROL_HEADER, NODE_CONTROL_TOKEN);
+  // Defence in depth behind the path whitelist: the node refuses local
+  // administration outright when a request carries this marker, so a future
+  // widening of the whitelist cannot quietly expose an admin route. Set (never
+  // merged) after the inbound headers are copied, so a caller cannot clear it.
+  headers.set(OTIUM_RELAYED_HEADER, "1");
   try {
     const body =
       req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer();

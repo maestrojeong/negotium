@@ -7,6 +7,7 @@ import {
 import {
   OTIUM_ADAPTER_CONTROL_HEADER,
   OTIUM_ADAPTER_CONTROL_PREFIX,
+  OTIUM_RELAYED_HEADER,
   OTIUM_WORKSPACES_CONTROL_PATH,
 } from "@/control-protocol";
 import { type OtiumNodeRuntimeHandle, startOtiumNodeRuntime } from "@/index";
@@ -23,9 +24,26 @@ export { MAX_PEER_REQUEST_BODY_BYTES } from "@/protocol";
  */
 const mounted = new Map<string, OtiumNodeRuntimeHandle>();
 
-/** Attach a workspace to the running node. Idempotent per cell. */
+function sameCredentials(left: OtiumJoin, right: OtiumJoin): boolean {
+  return (
+    left.central === right.central && left.relay === right.relay && left.secret === right.secret
+  );
+}
+
+/**
+ * Attach a workspace to the running node.
+ *
+ * Idempotent for an unchanged join, but a *re-issued* credential for a cell
+ * this node already holds is a change, not a no-op: `--replace` writes a new
+ * secret precisely because the old one was revoked, and keeping the old
+ * instance would sign every Central call with a dead secret until restart.
+ */
 export function attachOtiumWorkspace(join: OtiumJoin): boolean {
-  if (mounted.has(join.cellId)) return false;
+  const current = mounted.get(join.cellId);
+  if (current) {
+    if (sameCredentials(current.join, join)) return false;
+    detachOtiumWorkspace(join.cellId);
+  }
   mounted.set(join.cellId, startOtiumNodeRuntime({ join }));
   return true;
 }
@@ -90,6 +108,12 @@ export async function handleOtiumAdapterControlRequest(req: Request): Promise<Re
   // Local administration, not a peer call: reload the credential file so a
   // `join` or `leave` in another process takes effect here immediately.
   if (peerPath === OTIUM_WORKSPACES_CONTROL_PATH) {
+    // Which workspaces this node serves is local administration. The sidecar
+    // stamps every relayed request, so this refuses the public path even though
+    // the control token it carries is genuine.
+    if (req.headers.get(OTIUM_RELAYED_HEADER)) {
+      return Response.json({ ok: false, error: "not found" }, { status: 404 });
+    }
     if (req.method === "GET") {
       return Response.json({
         ok: true,

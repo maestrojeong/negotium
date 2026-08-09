@@ -349,6 +349,49 @@ test("runtime gateway topic list is scoped to the caller's workspace", async () 
   expect(forLoopback).toEqual(expect.arrayContaining([alpha.id, beta.id, unscoped.id]));
 });
 
+test("knowing a room id does not get a foreign workspace past the boundary", async () => {
+  const user = `topic-scope-id-${randomUUID()}`;
+  const room = registerTopic({
+    title: `Foreign ${randomUUID()}`,
+    userId: user,
+    agent: "codex",
+    surface: "otium",
+    surfaceScope: "ws_alpha",
+  });
+  const asBeta = (path: string, init: RequestInit = {}) =>
+    handler(
+      runtimeRequest(path, {
+        ...init,
+        headers: { [NODE_RUNTIME_SURFACE_SCOPE_HEADER]: "ws_beta", ...(init.headers ?? {}) },
+      }),
+    );
+
+  // Discovery already hides the room, so the only way in is a known id — which
+  // is exactly what an ex-member or a mis-mapped hub has.
+  expect((await asBeta(`/topics/${room.id}`))?.status).toBe(404);
+  expect((await asBeta(`/topics/${room.id}/messages`))?.status).toBe(404);
+  const ranTurn = await asBeta("/turns", {
+    method: "POST",
+    body: JSON.stringify({
+      v: NODE_RUNTIME_CONTRACT_VERSION,
+      topicId: room.id,
+      userId: user,
+      text: "should not run",
+      clientMessageId: randomUUID(),
+      requestId: randomUUID(),
+    }),
+  });
+  expect(ranTurn?.status).toBe(404);
+
+  // Its own workspace still reaches it.
+  const asAlpha = await handler(
+    runtimeRequest(`/topics/${room.id}`, {
+      headers: { [NODE_RUNTIME_SURFACE_SCOPE_HEADER]: "ws_alpha" },
+    }),
+  );
+  expect(asAlpha?.status).toBe(200);
+});
+
 test("a gateway-created room is born in the caller's workspace", async () => {
   const createUser = `topic-scope-create-${randomUUID()}`;
   const title = `Created ${randomUUID()}`;

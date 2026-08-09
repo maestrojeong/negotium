@@ -56,7 +56,9 @@ import {
 import type { AgentKind } from "#types";
 import type { TopicDto, TopicSurface } from "#types/api";
 
-export function getTopics(opts: { surface?: TopicSurface } = {}): TopicDto[] {
+export function getTopics(
+  opts: { surface?: TopicSurface; surfaceScope?: string | null } = {},
+): TopicDto[] {
   return listTopics(opts).filter((topic) => !isLegacySharedGeneral(topic.id));
 }
 
@@ -66,7 +68,9 @@ export function getTopics(opts: { surface?: TopicSurface } = {}): TopicDto[] {
  * Callers that represent one product surface pass it, so a telegram room never
  * appears in the terminal picker and vice versa (S-6).
  */
-export function getVisibleTopics(opts: { surface?: TopicSurface } = {}): TopicDto[] {
+export function getVisibleTopics(
+  opts: { surface?: TopicSurface; surfaceScope?: string | null } = {},
+): TopicDto[] {
   return getTopics(opts)
     .filter(isTopicVisible)
     .map((topic) => {

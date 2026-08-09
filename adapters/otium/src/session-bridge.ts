@@ -1,6 +1,7 @@
 import {
   clearPendingAsk,
   deliverAskCallbackToCaller,
+  getTopic,
   logger,
   type PeerForwardArgs,
   type PeerForwardResult,
@@ -24,6 +25,7 @@ import {
   pruneRemoteAsks,
   upsertPeerReplyOutbox,
 } from "@/store";
+import { surfaceScopeForCell } from "@/workspace-scope";
 
 const PEER_TIMEOUT_MS = 15_000;
 const PENDING_ASK_TTL_MS = 15 * 60 * 1000;
@@ -99,9 +101,45 @@ async function peerSupportsRemoteAsk(node: PeerNode): Promise<boolean> {
   }
 }
 
-async function findNode(nodeName: string): Promise<PeerNode | null> {
-  const find = (nodes: PeerNode[]) => nodes.find((node) => node.nodeName === nodeName) ?? null;
-  return find(await listPeerNodes()) ?? find(await listPeerNodes({ fresh: true }));
+type NodeLookup = { ok: true; node: PeerNode } | { ok: false; error: string };
+
+/**
+ * Resolve a peer by name, inside the calling room's workspace.
+ *
+ * Node names are unique per workspace, not globally, and "hub" is a name two
+ * workspaces will both use. Picking the first match across the union of
+ * attached workspaces would deliver one workspace's message into another —
+ * silently, with a validly minted token — so the caller's own workspace decides
+ * which candidates are eligible, and a genuine tie is refused rather than
+ * guessed.
+ *
+ * A caller in an unscoped room belongs to no workspace and may still reach any
+ * of them, matching how unscoped rooms are treated everywhere else.
+ */
+async function findNode(nodeName: string, fromTopicId?: string): Promise<NodeLookup> {
+  const callerScope = fromTopicId ? (getTopic(fromTopicId)?.surfaceScope ?? null) : null;
+  const select = (nodes: PeerNode[]): NodeLookup | null => {
+    let candidates = nodes.filter((node) => node.nodeName === nodeName);
+    if (callerScope) {
+      candidates = candidates.filter((node) => surfaceScopeForCell(node.viaCellId) === callerScope);
+    }
+    if (candidates.length === 0) return null;
+    if (candidates.length > 1) {
+      return {
+        ok: false,
+        error: `node "${nodeName}" is ambiguous across attached workspaces`,
+      };
+    }
+    return { ok: true, node: candidates[0]! };
+  };
+  const cached = select(await listPeerNodes());
+  if (cached) return cached;
+  return (
+    select(await listPeerNodes({ fresh: true })) ?? {
+      ok: false,
+      error: `unknown remote node "${nodeName}"`,
+    }
+  );
 }
 
 /**
@@ -118,8 +156,12 @@ async function originLabel(args: PeerForwardArgs, peer: PeerNode): Promise<strin
 }
 
 async function forward(args: PeerForwardArgs): Promise<PeerForwardResult> {
-  const node = await findNode(args.toNode).catch(() => null);
-  if (!node || node.self) return { ok: false, error: `unknown remote node "${args.toNode}"` };
+  const lookup = await findNode(args.toNode, args.fromTopicId).catch(
+    (): NodeLookup => ({ ok: false, error: `unknown remote node "${args.toNode}"` }),
+  );
+  if (!lookup.ok) return lookup;
+  const node = lookup.node;
+  if (node.self) return { ok: false, error: `unknown remote node "${args.toNode}"` };
   const self = await selfPeerNodeForCell(node.viaCellId).catch(() => null);
   if (!self) return { ok: false, error: "local peer node is not attached" };
   if (!self.isPrimary && !node.isPrimary) {

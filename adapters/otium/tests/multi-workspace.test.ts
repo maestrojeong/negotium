@@ -80,6 +80,23 @@ function makeRoom(scope: string | null): { id: string; title: string } {
   }
 }
 
+function makeNamedRoom(title: string, scope: string | null) {
+  const previous = setDefaultSurfaceScope(scope);
+  try {
+    const topic = registerTopic({
+      title,
+      userId: USER,
+      kind: "agent",
+      agent: "claude",
+      surface: "otium",
+    });
+    createdTopicIds.push(topic.id);
+    return topic;
+  } finally {
+    setDefaultSurfaceScope(previous);
+  }
+}
+
 async function tell(token: string, toTopic: string) {
   const response = await handleOtiumPeerRequest(
     new Request(`${BASE}/api/v1/peer/tell`, {
@@ -151,6 +168,20 @@ describe("two attached workspaces", () => {
     const room = makeRoom(null);
     expect((await tell(BETA_HUB_TOKEN, room.title)).status).toBe(200);
     expect((await tell(ALPHA_HUB_TOKEN, room.title)).status).toBe(200);
+  });
+
+  test("a title used in both workspaces resolves to the caller's own", async () => {
+    const title = `dup-${randomUUID().slice(0, 8)}`;
+    const inAlpha = makeNamedRoom(title, alphaScope);
+    const inBeta = makeNamedRoom(title, betaScope);
+    expect(inAlpha.id).not.toBe(inBeta.id);
+    resetPeerCentralCaches();
+
+    // The doc's headline promise: `paper` may exist in each workspace. An
+    // unscoped lookup matched twice and the ambiguity guard returned nothing,
+    // so the name was unaddressable from *both* sides.
+    expect((await tell(ALPHA_HUB_TOKEN, title)).status).toBe(200);
+    expect((await tell(BETA_HUB_TOKEN, title)).status).toBe(200);
   });
 
   test("detaching one workspace leaves the other authenticated", async () => {

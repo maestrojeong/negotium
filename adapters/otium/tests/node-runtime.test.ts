@@ -3,7 +3,7 @@ import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { DATA_DIR, defaultSurfaceScope, NODE_CONTROL_TOKEN } from "@negotium/core";
 import { configureOtiumCentral } from "@/central";
-import { OTIUM_WORKSPACES_CONTROL_PATH } from "@/control-protocol";
+import { OTIUM_RELAYED_HEADER, OTIUM_WORKSPACES_CONTROL_PATH } from "@/control-protocol";
 import { joinFilePath, type OtiumJoin, removeJoin, saveJoin } from "@/join";
 import {
   attachOtiumWorkspace,
@@ -208,6 +208,35 @@ describe("workspace attachments", () => {
     expect(defaultSurfaceScope()).toBe(surfaceScopeFor(alpha.central, "ws_alpha"));
   });
 
+  test("re-issued credentials for a held cell remount it", () => {
+    saveJoin(alpha);
+    reconcileOtiumWorkspaces();
+    // Same join twice is a no-op...
+    expect(attachOtiumWorkspace(alpha)).toBe(false);
+    // ...but `--replace` writes a new secret because the old one was revoked;
+    // keeping the old instance would sign Central calls with a dead secret.
+    expect(attachOtiumWorkspace({ ...alpha, secret: "rcs_reissued" })).toBe(true);
+    expect(mountedOtiumWorkspaces().map((join) => join.secret)).toEqual(["rcs_reissued"]);
+  });
+
+  test("local administration is refused when it arrives from the public relay", async () => {
+    saveJoin(alpha);
+    const url = `http://127.0.0.1${OTIUM_ADAPTER_CONTROL_PREFIX}${OTIUM_WORKSPACES_CONTROL_PATH}`;
+    // The sidecar authenticates to the node with the host capability, so the
+    // control token below is genuine; only the relay marker distinguishes it.
+    const relayed = await handleOtiumAdapterControlRequest(
+      new Request(url, {
+        method: "POST",
+        headers: {
+          [OTIUM_ADAPTER_CONTROL_HEADER]: NODE_CONTROL_TOKEN,
+          [OTIUM_RELAYED_HEADER]: "1",
+        },
+      }),
+    );
+    expect(relayed?.status).toBe(404);
+    expect(mountedOtiumWorkspaces()).toEqual([]);
+  });
+
   test("the control route reconciles and is hidden behind the adapter token", async () => {
     saveJoin(alpha);
     const url = `http://127.0.0.1${OTIUM_ADAPTER_CONTROL_PREFIX}${OTIUM_WORKSPACES_CONTROL_PATH}`;
@@ -233,5 +262,46 @@ describe("workspace attachments", () => {
       ok: true,
       workspaces: [{ cellId: "cell_alpha", central: "https://alpha.example" }],
     });
+  });
+});
+
+describe("public relay reach", () => {
+  test("the sidecar forwards only the public peer surface", async () => {
+    const node = {
+      running: true as const,
+      info: {
+        schemaVersion: 1 as const,
+        protocolVersion: 1,
+        nodeVersion: "test",
+        pid: 4100,
+        port: 4100,
+        stateDir: "/tmp/test",
+        startedAt: new Date().toISOString(),
+      },
+    };
+    const forwarded: string[] = [];
+    const deps = {
+      inspectNode: async () => node,
+      fetch: (async (request: Request) => {
+        forwarded.push(new URL(request.url).pathname);
+        return Response.json({ ok: true });
+      }) as typeof fetch,
+    };
+
+    // Local administration must not be reachable by prefixing a public path,
+    // because the proxy stamps the host capability onto whatever it forwards.
+    const admin = await proxyOtiumPeerRequest(
+      new Request(`http://public.example${OTIUM_WORKSPACES_CONTROL_PATH}`, { method: "POST" }),
+      deps,
+    );
+    expect(admin.status).toBe(404);
+    expect(forwarded).toEqual([]);
+
+    const peer = await proxyOtiumPeerRequest(
+      new Request("http://public.example/api/v1/peer/health"),
+      deps,
+    );
+    expect(peer.status).toBe(200);
+    expect(forwarded).toEqual([`${OTIUM_ADAPTER_CONTROL_PREFIX}/api/v1/peer/health`]);
   });
 });

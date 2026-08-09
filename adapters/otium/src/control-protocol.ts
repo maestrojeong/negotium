@@ -8,3 +8,12 @@ export const OTIUM_ADAPTER_CONTROL_HEADER = "x-negotium-adapter-token";
  * which workspaces this node serves.
  */
 export const OTIUM_WORKSPACES_CONTROL_PATH = "/_workspaces";
+
+/**
+ * Marks a request that arrived from the public relay through the sidecar.
+ *
+ * The sidecar authenticates to the node with the host capability, so the node
+ * cannot otherwise tell a relayed caller from a local one. Routes that
+ * administer this node refuse anything carrying it.
+ */
+export const OTIUM_RELAYED_HEADER = "x-negotium-otium-relayed";

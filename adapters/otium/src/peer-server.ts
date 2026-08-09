@@ -109,20 +109,32 @@ function requirePrimaryOrigin(peer: Extract<PeerAuth, { ok: true }>): Response |
 }
 
 /**
- * May another node address this topic by name (D-7)?
+ * Resolve a room the way the calling workspace sees it.
  *
- * Exactly one thing qualifies: the room lives on the `otium` surface. Peers are
- * an Otium-side concept, so cross-node addressing stays inside that surface and
- * can never reach a terminal or telegram room (S-7).
+ * Unscoped lookup made a duplicate title unaddressable from *both* sides: with
+ * `paper` in two workspaces the name matched twice and the ambiguity guard
+ * returned nothing, which is the one thing the design promises works. Scoping
+ * the lookup to the caller's workspace makes each side see exactly one.
  */
+function peerTopicByName(toTopic: string, userId: string, peer: Extract<PeerAuth, { ok: true }>) {
+  const surfaceScope = surfaceScopeForCell(peer.verified.viaCellId);
+  const scoped = getTopicByNameForUser(toTopic, userId, { surface: "otium", surfaceScope });
+  if (scoped) return scoped;
+  // Rooms filed under no workspace belong to none and stay reachable, so fall
+  // back to them rather than stranding rooms that predate the column.
+  return getTopicByNameForUser(toTopic, userId, { surface: "otium", surfaceScope: null });
+}
+
 /**
- * ...and does it belong to the workspace this caller was verified against?
+ * May another node address this topic (D-7), and does it belong to the
+ * workspace this caller was verified against?
  *
- * With several workspaces attached, the surface alone is no longer a boundary:
- * every one of them uses `otium`. A token verified for workspace A must not
- * reach a room filed under workspace B (M-8) — that is the whole security
- * argument for multi-join, so it is checked at every addressing site rather
- * than trusted to the caller.
+ * Two things qualify a room: it lives on the `otium` surface — peers are an
+ * Otium-side concept, so cross-node addressing can never reach a terminal or
+ * telegram room (S-7) — and it belongs to the caller's workspace. With several
+ * workspaces attached the surface alone is no longer a boundary, since every
+ * one of them uses `otium`, so a token verified for workspace A must not reach
+ * a room filed under workspace B (M-8).
  *
  * A room with no workspace is filed under none, so it is reachable from any
  * cell. Those are rooms that predate the scope or were created while it was
@@ -215,7 +227,7 @@ async function handleAbort(req: Request): Promise<Response> {
   // A `requestId`, if an older caller still sends one, selects nothing any more:
   // it named one placed turn. Aborting is purely topic-scoped now, which is what
   // session-comm has always used.
-  const topic = getTopicByNameForUser(toTopic, userId);
+  const topic = peerTopicByName(toTopic, userId, peer);
   if (!topic || !peerAddressable(topic, peer)) {
     return jsonError(`shared topic "${toTopic}" not found on this node`, 404);
   }
@@ -255,7 +267,7 @@ async function handleTell(req: Request): Promise<Response> {
     return jsonError(`tell depth limit exceeded (max ${MAX_TELL_DEPTH})`, 400);
   }
 
-  const topic = getTopicByNameForUser(toTopic, userId);
+  const topic = peerTopicByName(toTopic, userId, peer);
   if (!topic || !peerAddressable(topic, peer)) {
     return jsonError(`shared topic "${toTopic}" not found on this node`, 404);
   }
@@ -377,7 +389,7 @@ async function handleAsk(req: Request): Promise<Response> {
   if (!Number.isInteger(fromDepth) || fromDepth < 0) {
     return jsonError("fromDepth must be a non-negative integer", 400);
   }
-  const topic = getTopicByNameForUser(toTopic, userId);
+  const topic = peerTopicByName(toTopic, userId, peer);
   if (!topic || !peerAddressable(topic, peer)) {
     return jsonError(`shared topic "${toTopic}" not found on this node`, 404);
   }

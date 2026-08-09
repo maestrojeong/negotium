@@ -127,6 +127,22 @@ function requestSurfaceScope(req: Request): { surfaceScope?: string | null } {
   return { surfaceScope: scope ? scope : null };
 }
 
+/**
+ * May a gateway request reach this room?
+ *
+ * The workspace check has to live on every topic-scoped route, not just on
+ * discovery: a caller that already knows a room id would otherwise read its
+ * transcript and run turns in it (M-8). A room with no workspace is filed under
+ * none and stays reachable, exactly as `peerAddressable` treats it, so rooms
+ * that predate the column are not stranded.
+ */
+function topicInRequestScope(req: Request, topic: Pick<TopicDto, "surfaceScope">): boolean {
+  const scope = requestSurfaceScope(req);
+  if (!("surfaceScope" in scope)) return true;
+  const roomScope = topic.surfaceScope ?? null;
+  return roomScope === null || roomScope === (scope.surfaceScope ?? null);
+}
+
 function topicServiceError(error: TopicServiceError): Response {
   const status =
     error.code === "TOPIC_NOT_FOUND" ? 404 : error.code === "TOPIC_FORBIDDEN" ? 403 : 400;
@@ -213,7 +229,27 @@ function runtimeEvent(event: StoredRuntimeEvent): RuntimeBusEvent {
   };
 }
 
-function createRuntimeContractEventStream(req: Request, after: number, topicId?: string): Response {
+function createRuntimeContractEventStream(
+  req: Request,
+  after: number,
+  topicId?: string,
+  scope: { surfaceScope?: string | null } = {},
+): Response {
+  // A workspace-scoped subscriber without a topic filter would otherwise be fed
+  // every other workspace's events. Resolving each event's room is a cache hit
+  // in the common case and the stream is already per-event work.
+  const scoped = "surfaceScope" in scope;
+  const wanted = scope.surfaceScope ?? null;
+  const visible = new Map<string, boolean>();
+  const eventInScope = (eventTopicId: string): boolean => {
+    if (!scoped) return true;
+    const cached = visible.get(eventTopicId);
+    if (cached !== undefined) return cached;
+    const roomScope = getTopic(eventTopicId)?.surfaceScope ?? null;
+    const allowed = roomScope === null || roomScope === wanted;
+    visible.set(eventTopicId, allowed);
+    return allowed;
+  };
   let cursor = Math.max(0, after);
   return createPollingSseStream(req, {
     ready: { v: NODE_RUNTIME_CONTRACT_VERSION, cursor },
@@ -223,7 +259,7 @@ function createRuntimeContractEventStream(req: Request, after: number, topicId?:
         if (events.length === 0) break;
         for (const event of events) {
           cursor = event.seq;
-          if (!topicId || event.topicId === topicId) {
+          if ((!topicId || event.topicId === topicId) && eventInScope(event.topicId)) {
             send("runtime", runtimeEvent(event), event.seq);
           }
         }
@@ -315,6 +351,12 @@ export function createNodeControlHandler(
           const body = await bodyRecord(req);
           if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
           const topicId = requiredText(body.topicId, "topicId");
+          // Running a turn is the strongest thing a hub can do to a room, so it
+          // gets the same workspace check as reading one (M-8).
+          const turnTopic = getTopic(topicId);
+          if (turnTopic && !topicInRequestScope(req, turnTopic)) {
+            return jsonError(404, "Topic not found");
+          }
           const userId = requiredText(body.userId, "userId");
           const actorUserId =
             body.actorUserId === undefined
@@ -383,13 +425,17 @@ export function createNodeControlHandler(
             req,
             Number.isFinite(parsed) ? parsed : 0,
             topicId,
+            requestSurfaceScope(req),
           );
         }
 
         const runtimeMessagesMatch = runtimePath.match(/^\/topics\/([^/]+)\/messages$/);
         if (runtimeMessagesMatch && req.method === "GET") {
           const topicId = decodeURIComponent(runtimeMessagesMatch[1]);
-          if (!getTopic(topicId)) return jsonError(404, "Topic not found");
+          const messagesTopic = getTopic(topicId);
+          if (!messagesTopic || !topicInRequestScope(req, messagesTopic)) {
+            return jsonError(404, "Topic not found");
+          }
           const cursor = url.searchParams.get("cursor");
           const parsedLimit = Number.parseInt(url.searchParams.get("limit") ?? "50", 10);
           const result = listApiMessages(topicId, {
@@ -471,7 +517,7 @@ export function createNodeControlHandler(
           if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
           const topicId = decodeURIComponent(importMatch[1]);
           const topic = getTopic(topicId);
-          if (!topic) return jsonError(404, "Topic not found");
+          if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
           if (!Array.isArray(body.messages)) {
             return jsonError(400, "messages must be an array");
           }
@@ -533,6 +579,7 @@ export function createNodeControlHandler(
         const runtimeTopicMatch = runtimePath.match(/^\/topics\/([^/]+)$/);
         if (runtimeTopicMatch && req.method === "GET") {
           const topic = getTopic(decodeURIComponent(runtimeTopicMatch[1]));
+          if (topic && !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
           if (!topic) return jsonError(404, "Topic not found");
           return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, topic });
         }
