@@ -47,6 +47,7 @@ import {
 } from "#storage/runtime-turn-requests";
 import { deleteSelfSchedulesForTopic } from "#storage/self-schedules";
 import { deletePendingAsksForTopic } from "#storage/session-asks";
+import { deleteTopicStats } from "#storage/token-stats";
 import { archiveConversationEvents, archiveTopicMessages } from "#storage/topic-archive";
 import { deleteTopicArchiveState } from "#storage/topic-archive-state";
 import type { TopicDto } from "#types/api";
@@ -111,6 +112,7 @@ async function cleanupParticipantResources(
     cleanupSessionInboxFiles(participantUserId, topic.id, topic.title);
     clearQueryState(participantUserId, topic.id, topic.title);
     clearQueryUsageAlert(participantUserId, topic.id);
+    deleteTopicStats(participantUserId, topic.id);
     deletePendingAsksForTopic({ userId: participantUserId, topicName: topic.title });
   }
   return true;

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { MessageDto, TopicDto } from "@negotium/core";
 import { terminalNowMs } from "@/clock";
+import { activeContextBreakdown } from "@/context-usage";
 import {
   clearMessageLayoutCache,
   displayWidth,
@@ -318,6 +319,34 @@ describe("terminal renderer", () => {
     for (const row of renderApp(state, 44, 20).split("\n")) {
       expect(displayWidth(row)).toBeLessThanOrEqual(44);
     }
+  });
+
+  test("does not reuse message context after loaded stats report no active session", () => {
+    const message: MessageDto = {
+      id: "stale-session-usage",
+      topicId: "topic",
+      authorId: "ai",
+      text: "pre-compact answer",
+      usage: { input: 190_000, output: 2_000, context: 192_000, contextWindow: 200_000 },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const withMessages = setMessages(setTopics(createInitialState("local"), [topic()]), "topic", [
+      message,
+    ]);
+
+    expect(activeContextBreakdown(withMessages)?.context).toBe(192_000);
+
+    const loaded = setTopicUsage(withMessages, {
+      topicId: "topic",
+      inputTokens: 190_000,
+      outputTokens: 2_000,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      queries: 1,
+      estimatedCostUsd: 1,
+    });
+    expect(activeContextBreakdown(loaded)).toBeUndefined();
+    expect(stripAnsi(renderApp(loaded, 140, 30))).not.toContain("192k/200k 96%");
   });
 
   test("uses neutral, warning, and critical colours for context usage", () => {
@@ -1263,6 +1292,15 @@ describe("terminal renderer", () => {
           cacheReadInputTokens: 1_230_336,
           queries: 9,
           estimatedCostUsd: 2.5,
+          currentSession: {
+            timestamp: message.createdAt,
+            topicId: "topic",
+            topicTitle: "Terminal",
+            agent: "codex",
+            model: "gpt",
+            contextTokens: 104_464,
+            contextWindow: 258_400,
+          },
         },
       ),
       overlay: "status" as const,

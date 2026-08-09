@@ -24,7 +24,13 @@ import {
   type StorageDatabase,
 } from "#storage/storage-host";
 import { getTaskFilePath, writeTasks } from "#storage/tasks";
-import { getStats, getTopicStats, recordUsage, tokenStatsFileId } from "#storage/token-stats";
+import {
+  deleteTopicStats,
+  getStats,
+  getTopicStats,
+  recordUsage,
+  tokenStatsFileId,
+} from "#storage/token-stats";
 import { getSharedWikiDir } from "#storage/wiki";
 
 const tempDirs: string[] = [];
@@ -222,15 +228,27 @@ describe("storage host", () => {
       { inputTokens: 999, outputTokens: 999, costUsd: 9 },
       { topicId: "topic-b", agent: "claude", model: "sonnet" },
     );
+    recordUsage(
+      "topic-user",
+      "Same title",
+      {
+        inputTokens: 10,
+        outputTokens: 2,
+        contextTokens: 190,
+        contextWindow: 200,
+        costUsd: 0.1,
+      },
+      { topicId: "topic-a", providerSessionId: "stale-provider", agent: "codex", model: "gpt" },
+    );
 
-    expect(getTopicStats("topic-user", "topic-a")).toEqual({
+    expect(getTopicStats("topic-user", "topic-a", "provider-a")).toEqual({
       topicId: "topic-a",
-      inputTokens: 40,
-      outputTokens: 20,
+      inputTokens: 50,
+      outputTokens: 22,
       cacheCreationInputTokens: 10,
       cacheReadInputTokens: 60,
-      queries: 1,
-      estimatedCostUsd: 0.25,
+      queries: 2,
+      estimatedCostUsd: 0.35,
       currentSession: {
         timestamp: expect.any(String),
         topicId: "topic-a",
@@ -242,6 +260,54 @@ describe("storage host", () => {
         contextWindow: 200,
       },
     });
+    expect(getTopicStats("topic-user", "topic-a", "replacement-without-usage")).toEqual({
+      topicId: "topic-a",
+      inputTokens: 50,
+      outputTokens: 22,
+      cacheCreationInputTokens: 10,
+      cacheReadInputTokens: 60,
+      queries: 2,
+      estimatedCostUsd: 0.35,
+    });
+
+    recordUsage(
+      "topic-user",
+      "Legacy session",
+      { inputTokens: 1, outputTokens: 1, contextTokens: 100, contextWindow: 200 },
+      { topicId: "topic-without-session", agent: "codex", model: "gpt" },
+    );
+    expect(getTopicStats("topic-user", "topic-without-session").currentSession).toBeUndefined();
+  });
+
+  test("deletes usage records for one topic", () => {
+    const root = tempRoot();
+    disposers.push(configureStorageHost({ logDir: join(root, "logs") }));
+
+    recordUsage(
+      "topic-user",
+      "Deleted topic",
+      { inputTokens: 10, outputTokens: 2 },
+      { topicId: "deleted-topic", agent: "codex", model: "gpt" },
+    );
+    recordUsage(
+      "topic-user",
+      "Kept topic",
+      { inputTokens: 20, outputTokens: 4 },
+      { topicId: "kept-topic", agent: "codex", model: "gpt" },
+    );
+
+    deleteTopicStats("topic-user", "deleted-topic");
+
+    expect(getTopicStats("topic-user", "deleted-topic", "provider-session")).toEqual({
+      topicId: "deleted-topic",
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      queries: 0,
+      estimatedCostUsd: 0,
+    });
+    expect(getTopicStats("topic-user", "kept-topic", "provider-session").queries).toBe(1);
   });
 
   test("initializes every schema per injected database and never closes borrowed connections", () => {

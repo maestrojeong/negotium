@@ -38,8 +38,16 @@ export function activeContextBreakdown(state: AppState): ContextBreakdown | unde
   if (!topic) return undefined;
 
   const messages = activeMessages(state);
-  const latest = latestUsageMessage(messages);
-  const stored = state.topicUsage[topic.id]?.currentSession;
+  const topicUsage = state.topicUsage[topic.id];
+  const stored = topicUsage?.currentSession;
+  // Compaction rotates the provider session, and the store reports usage only
+  // for the session that is live now. So "usage loaded, but no current session"
+  // means the context was just reset — and the transcript still holds the
+  // pre-compaction usage message, which scanning would resurrect as a full
+  // context bar. Only fall back to the transcript while the store has not
+  // answered yet.
+  const contextWasReset = Boolean(topicUsage) && !stored;
+  const latest = contextWasReset ? undefined : latestUsageMessage(messages);
   const confirmed = latest?.usage.context ?? stored?.contextTokens;
   const contextWindow = latest?.usage.contextWindow ?? stored?.contextWindow;
   if (confirmed === undefined || !contextWindow) return undefined;

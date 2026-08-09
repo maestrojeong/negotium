@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { appendJsonlEntry, readJsonlLines } from "#platform/jsonl";
 import { logger } from "#platform/logger";
+import { getTopicSessionId } from "#storage/api-topics";
 import { resolveStorageLogDir } from "#storage/storage-host";
 import type { AgentKind, TokenUsage } from "#types";
 
@@ -207,6 +208,24 @@ export function recordUsage(
   }
 }
 
+export function deleteTopicStats(userId: number | string, topicId: string): void {
+  const path = queriesPath(userId);
+  try {
+    const kept = readJsonlLines(path).filter((line) => {
+      try {
+        const record = JSON.parse(line) as { topicId?: unknown };
+        return record.topicId !== topicId;
+      } catch {
+        return true;
+      }
+    });
+    writeFileSync(path, kept.length > 0 ? `${kept.join("\n")}\n` : "", "utf-8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+    logger.warn({ err: e, userId, topicId }, "token-stats: Failed to delete topic stats");
+  }
+}
+
 export function getStats(
   userId: number | string,
   from?: string,
@@ -292,7 +311,11 @@ export function getStats(
 }
 
 /** Exact all-time usage for one topic, independent of transcript pagination. */
-export function getTopicStats(userId: number | string, topicId: string): TopicUsageSummary {
+export function getTopicStats(
+  userId: number | string,
+  topicId: string,
+  activeProviderSessionId = getTopicSessionId(topicId) ?? undefined,
+): TopicUsageSummary {
   const total = emptyBucket();
   let currentSession: CurrentSessionUsage | undefined;
 
@@ -310,6 +333,8 @@ export function getTopicStats(userId: number | string, topicId: string): TopicUs
       raw.contextTokens !== undefined &&
       raw.contextWindow !== undefined &&
       raw.contextWindow > 0 &&
+      activeProviderSessionId !== undefined &&
+      raw.providerSessionId === activeProviderSessionId &&
       (!currentSession || raw.timestamp > currentSession.timestamp)
     ) {
       currentSession = {
