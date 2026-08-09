@@ -125,6 +125,34 @@ loopback hub with no join). No rename can occur, because the scope enters the
 uniqueness key at the same time — unlike the surface migration, which had to
 rename collisions (S-10).
 
+## Decisions taken during implementation
+
+**M-10 — an unscoped room belongs to nobody once two workspaces are attached.**
+A room with no `surface_scope` is either older than the column or was created by
+a caller that named no workspace. With a single attachment it stays reachable,
+and it has to: every pre-migration room is unscoped, and there is no second
+workspace to confuse it with. With two or more it is genuinely ambiguous, and
+granting it to every attached hub would undo the isolation this design exists
+for, so it is reachable from none until it is filed.
+
+This is the honest consequence of resolving M-3's "which workspace is the
+default" as *none* when several are attached. The alternative — pick one — is
+how rooms end up in the wrong customer's workspace.
+
+**M-11 — the sidecar's forwardable path set is a security boundary.**
+The public sidecar authenticates *itself* to the node with `NODE_CONTROL_TOKEN`,
+a full host capability, so anything it forwards arrives already trusted.
+Whatever is reachable through it is reachable by anyone who can reach the relay.
+It therefore forwards only `/ready` and `/api/v1/peer/`, and marks what it
+relays so local administration can refuse the public path outright even if that
+list is later widened.
+
+**M-12 — the workspace check lives on every topic-scoped route, not on discovery.**
+Hiding a room from `GET /topics` is not a boundary: a caller that already knows
+an id would still read its transcript and run turns in it. Read, messages,
+import, turns and the event stream all carry the check, and discovery shares one
+rule with direct access so the two cannot disagree.
+
 ## Order of work
 
 1. `surface_scope` column + uniqueness key + `session-comm` scoping, behind the
