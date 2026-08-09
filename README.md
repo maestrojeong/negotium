@@ -72,7 +72,7 @@ Four pieces ship with Negotium rather than being bolted on:
   renderer toolkit the Terminal adapter depends on: lay the graph out once
   with ELK, then draw the same geometry in Terminal, SVG, or HTML.
 
-  ![Live subagent graph, animated: ownership lights up, then a tell message, then a status-only fan-out](https://raw.githubusercontent.com/maestrojeong/orchgraph/main/docs/images/live-demo.gif)
+  ![Live subagent tree, laid out by Orchgraph](https://raw.githubusercontent.com/maestrojeong/orchgraph/main/docs/images/negotium-subagents.svg)
 
 - **A shared, stealth-oriented browser.** The built-in browser tools run on
   [browser-rs](https://github.com/maestrojeong/browser-rs-mcp) — a small,
@@ -80,6 +80,8 @@ Four pieces ship with Negotium rather than being bolted on:
   that share a named browser profile share one logged-in Chrome, with tabs
   isolated by owner; the binary and tool count are pinned per Negotium
   release, so see its own README for current numbers.
+
+  ![browser-rs: small footprint, stealth-oriented, fastest in class](./assets/browser-rs-highlights.svg)
 
 ## Quick start
 

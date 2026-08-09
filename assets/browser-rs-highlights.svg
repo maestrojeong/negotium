@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="460" viewBox="0 0 1200 460" role="img" aria-labelledby="title desc">
+  <title id="title">browser-rs: small, stealth, fast</title>
+  <desc id="desc">browser-rs is a single-binary Rust MCP server with no Node.js runtime, tuned for a small footprint, stealth-oriented automation, and top-tier CDP performance.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8f7ff"/>
+      <stop offset="1" stop-color="#f4f7fb"/>
+    </linearGradient>
+    <linearGradient id="badge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8f78e0"/>
+      <stop offset="1" stop-color="#5f48a0"/>
+    </linearGradient>
+    <filter id="cardShadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#201c34" flood-opacity=".12"/>
+    </filter>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="460" rx="26" fill="url(#bg)"/>
+  <rect x="1" y="1" width="1198" height="458" rx="25" fill="none" stroke="#dddbea" stroke-width="2"/>
+
+  <!-- headline -->
+  <text x="600" y="60" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" letter-spacing="2.2" fill="#5b5678">SINGLE-BINARY RUST MCP SERVER</text>
+  <text x="600" y="98" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="30" font-weight="800" fill="#201c34">Small. Stealth. Fast.</text>
+  <text x="600" y="126" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="500" fill="#6c6879">No Node.js runtime — the built-in browser tools run on <tspan font-weight="700" fill="#3d2f86">browser-rs</tspan>.</text>
+
+  <!-- card 1: small footprint -->
+  <g filter="url(#cardShadow)">
+    <rect x="72" y="168" width="320" height="234" rx="20" fill="#ffffff" stroke="#e3e1f0"/>
+  </g>
+  <circle cx="232" cy="230" r="30" fill="url(#badge)"/>
+  <g transform="translate(214 212) scale(0.09375)" fill="#ffffff">
+    <path d="M224 48H32a8 8 0 0 0-8 8v144a8 8 0 0 0 8 8h192a8 8 0 0 0 8-8V56a8 8 0 0 0-8-8m-8 144H40V64h176ZM88 96a8 8 0 0 1 8-8h64a8 8 0 0 1 0 16H96a8 8 0 0 1-8-8m0 32a8 8 0 0 1 8-8h64a8 8 0 0 1 0 16H96a8 8 0 0 1-8-8"/>
+  </g>
+  <text x="232" y="288" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="19" font-weight="800" fill="#201c34">Small footprint</text>
+  <text x="232" y="316" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="500" fill="#6c6879">
+    <tspan x="232">One compact Rust binary,</tspan>
+    <tspan x="232" dy="20">no Node.js runtime, no</tspan>
+    <tspan x="232" dy="20">bundled browser-agent stack</tspan>
+    <tspan x="232" dy="20">to install or update</tspan>
+  </text>
+
+  <!-- card 2: stealth -->
+  <g filter="url(#cardShadow)">
+    <rect x="440" y="168" width="320" height="234" rx="20" fill="#ffffff" stroke="#e3e1f0"/>
+  </g>
+  <circle cx="600" cy="230" r="30" fill="url(#badge)"/>
+  <g transform="translate(582 212) scale(0.09375)" fill="#ffffff">
+    <path d="M247.13 100.64a4 4 0 0 0-3.5-.61l-40.24 12.08a95 95 0 0 0-14.4-25.94l25.55-30.66a4 4 0 0 0-.17-5.31a123.6 123.6 0 0 0-174.74 0a4 4 0 0 0-.17 5.31l25.55 30.66a95 95 0 0 0-14.4 25.94L10.37 100a4 4 0 0 0-5.13 3.84v40a4 4 0 0 0 5.13 3.84l40.24-12.08a95 95 0 0 0 14.4 25.94l-25.55 30.66a4 4 0 0 0 .17 5.31a123.6 123.6 0 0 0 174.74 0a4 4 0 0 0 .17-5.31l-25.55-30.66a95 95 0 0 0 14.4-25.94l40.24 12.08a4 4 0 0 0 5.13-3.84v-40a4 4 0 0 0-1.63-3.2M128 176a48 48 0 1 1 48-48a48.05 48.05 0 0 1-48 48"/>
+  </g>
+  <text x="600" y="288" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="19" font-weight="800" fill="#201c34">Stealth-oriented</text>
+  <text x="600" y="316" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="500" fill="#6c6879">
+    <tspan x="600">Drives a real, logged-in</tspan>
+    <tspan x="600" dy="20">Chrome profile over CDP —</tspan>
+    <tspan x="600" dy="20">avoids the automation</tspan>
+    <tspan x="600" dy="20">fingerprints sites detect</tspan>
+  </text>
+
+  <!-- card 3: performance -->
+  <g filter="url(#cardShadow)">
+    <rect x="808" y="168" width="320" height="234" rx="20" fill="#ffffff" stroke="#e3e1f0"/>
+  </g>
+  <circle cx="968" cy="230" r="30" fill="url(#badge)"/>
+  <g transform="translate(950 212) scale(0.09375)" fill="#ffffff">
+    <path d="M213.85 125.46L154.72 234a8 8 0 0 1-14.9-3.83l4.15-86.35H88a8 8 0 0 1-6.86-12.12l59.13-108.55a8 8 0 0 1 14.9 3.83l-4.15 86.35H208a8 8 0 0 1 6.86 12.13Z"/>
+  </g>
+  <text x="968" y="288" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="19" font-weight="800" fill="#201c34">Fastest in class</text>
+  <text x="968" y="316" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="500" fill="#6c6879">
+    <tspan x="968">A native CDP client with no</tspan>
+    <tspan x="968" dy="20">automation-framework layer</tspan>
+    <tspan x="968" dy="20">in between — lower latency</tspan>
+    <tspan x="968" dy="20">per tool call, tab to tab</tspan>
+  </text>
+
+  <!-- footline -->
+  <text x="600" y="436" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#5b5678">Topics sharing a named browser profile share one logged-in Chrome, with tabs isolated by owner.</text>
+</svg>
