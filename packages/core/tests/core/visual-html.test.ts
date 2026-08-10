@@ -36,6 +36,27 @@ describe("buildMermaidHtml", () => {
     expect(html).toContain("Technical detail");
   });
 
+  // A panel that mounts this document before showing it has no render tree,
+  // and Mermaid measures against one. Rendering immediately loses ER diagrams
+  // outright, so the viewer waits for a frame it can actually measure.
+  test("waits for a render tree before asking Mermaid to measure", () => {
+    const html = buildMermaidHtml("erDiagram\n  A ||--o{ B : has", "neutral");
+
+    expect(html).toContain("getBBox");
+    expect(html).toContain("requestAnimationFrame");
+    expect(html).toContain("waitUntilMeasurable");
+  });
+
+  test("retries a render that failed only because nothing was laid out", () => {
+    const html = buildMermaidHtml("erDiagram\n  A ||--o{ B : has", "neutral");
+
+    // Both voices of an unrendered document, and the marker that would
+    // otherwise make Mermaid skip the second attempt as already done.
+    expect(html).toContain("not in render tree");
+    expect(html).toContain("path is empty");
+    expect(html).toContain("data-processed");
+  });
+
   test("still surfaces the raw failure for anything unrecognized", () => {
     const html = buildMermaidHtml("graph TD\n  a --> b", "neutral");
 

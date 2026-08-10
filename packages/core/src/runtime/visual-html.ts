@@ -73,11 +73,58 @@ export function buildMermaidHtml(
   <script data-otium-mermaid-runtime src="${safeScriptUrl}"></script>
   <script>
     (async () => {
+      // An unrendered document reports itself in more than one voice: Mermaid's
+      // own 0x0 guard, and the browser refusing geometry on a path that was
+      // never laid out. Both mean the same thing, so both are worth one retry
+      // and, if it still fails, the same explanation.
+      const unrendered = (error) => {
+        const message = String(error && error.message ? error.message : error);
+        return message.indexOf("not in render tree") !== -1 || message.indexOf("path is empty") !== -1;
+      };
       try {
       const runtime = globalThis.mermaid;
       if (!runtime) throw new Error("Mermaid renderer failed to load.");
       runtime.initialize({ startOnLoad: false, securityLevel: "strict", theme: ${safeTheme} });
-      await runtime.run({ querySelector: ".mermaid" });
+      const host = document.querySelector(".mermaid");
+      // Mermaid sizes every label by appending a probe <svg> to the body and
+      // reading getBBox(), and it throws "svg element not in render tree" the
+      // moment that comes back 0x0. That is what a hidden panel looks like from
+      // in here: the document exists but nothing is in the render tree, so the
+      // measurement has no geometry to report. Ask the same question Mermaid
+      // will ask, and only start once it has an answer.
+      const measurable = () => {
+        const probe = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        text.textContent = "M";
+        probe.appendChild(text);
+        document.body.appendChild(probe);
+        let box = { width: 0, height: 0 };
+        try { box = text.getBBox(); } catch (ignored) {}
+        probe.remove();
+        return box.width > 0 || box.height > 0;
+      };
+      // requestAnimationFrame is the right clock here: a hidden document stops
+      // being animated, so this waits without spinning and resumes on the frame
+      // the panel is shown. The cap counts rendered frames, not wall time.
+      const waitUntilMeasurable = async (maxFrames) => {
+        for (let frame = 0; frame < maxFrames; frame += 1) {
+          if (measurable()) return true;
+          await new Promise((next) => requestAnimationFrame(next));
+        }
+        return measurable();
+      };
+      await waitUntilMeasurable(600);
+      try {
+        await runtime.run({ querySelector: ".mermaid" });
+      } catch (firstAttempt) {
+        if (!unrendered(firstAttempt)) throw firstAttempt;
+        // The panel can be hidden again between the probe and the real measure.
+        // Clear the marker Mermaid leaves behind so the retry is not skipped as
+        // already done, then wait for the render tree once more.
+        host.removeAttribute("data-processed");
+        await waitUntilMeasurable(600);
+        await runtime.run({ querySelector: ".mermaid" });
+      }
       const viewport = document.querySelector(".viewport");
       const svg = document.querySelector(".mermaid svg");
       const value = document.querySelector(".zoom-value");
@@ -113,6 +160,8 @@ export function buildMermaidHtml(
         // for a syntax error that does not exist. Say what actually moves it.
         const note = raw.indexOf("Could not find a suitable point") !== -1
           ? "Two nodes ended up too close together for Mermaid to fit a label on the edge between them. Renaming a node, adding another, or setting an explicit direction usually spreads the layout enough to render."
+          : unrendered(error)
+          ? "The panel stayed hidden long enough that there was never a laid-out page to measure the diagram against. Reopening the panel renders it."
           : "This diagram could not be rendered.";
         document.querySelector(".viewport").innerHTML =
           '<div class="failure"><p>' + escape(note) +
