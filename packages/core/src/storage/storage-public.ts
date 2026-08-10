@@ -20,6 +20,8 @@ export * as askUserGates from "#storage/ask-user-gates";
 export * from "#storage/ask-user-gates";
 export * as conversations from "#storage/conversations";
 export * from "#storage/conversations";
+export * as decisions from "#storage/decisions";
+export * from "#storage/decisions";
 export type {
   ForumTopicInfo,
   TopicRow,

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { readFileSync, unlinkSync } from "node:fs";
 import {
   appendApiMessage,
   claimRuntimeTurnLease,
@@ -22,7 +23,12 @@ import {
   vaultListWithValues,
 } from "@negotium/core";
 import type { TopicDto } from "@negotium/core/node-host";
-import { recordUsage } from "@negotium/core/storage";
+import {
+  getDecisionFilePath,
+  getDecisionGraphSvgPath,
+  recordUsage,
+  writeDecisions,
+} from "@negotium/core/storage";
 import {
   createNodeControlHandler,
   NODE_CONTROL_BASE_PATH,
@@ -775,6 +781,70 @@ test("topic usage route returns exact totals only to a participant", async () =>
     request(`/topics/${encodeURIComponent(topic.id)}/usage?user=not-a-participant`),
   );
   expect(forbidden?.status).toBe(404);
+});
+
+test("topic decisions route returns the topic-scoped graph only to a participant", async () => {
+  const topic = registerTopic({ title: `Decisions ${randomUUID()}`, userId, agent: "codex" });
+  try {
+    writeDecisions(userId, topic.id, [
+      {
+        id: "1",
+        action: "Use Orchgraph",
+        reasoning: "The decisions form a directed graph",
+        agent: "codex",
+        status: "accepted",
+        timestamp: 1,
+      },
+    ]);
+
+    const response = await handler(
+      request(
+        `/topics/${encodeURIComponent(topic.id)}/decisions?user=${encodeURIComponent(userId)}`,
+      ),
+    );
+    expect(response?.status).toBe(200);
+    expect(await response?.json()).toMatchObject({
+      ok: true,
+      decisions: [{ id: "1", action: "Use Orchgraph" }],
+    });
+
+    const forbidden = await handler(
+      request(`/topics/${encodeURIComponent(topic.id)}/decisions?user=not-a-participant`),
+    );
+    expect(forbidden?.status).toBe(404);
+  } finally {
+    try {
+      unlinkSync(getDecisionFilePath(userId, topic.id));
+    } catch {}
+  }
+});
+
+test("topic decision graph route atomically stores the latest SVG for a participant", async () => {
+  const topic = registerTopic({ title: `Decision SVG ${randomUUID()}`, userId, agent: "codex" });
+  const path = getDecisionGraphSvgPath(userId, topic.id);
+  try {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><title>Decision graph</title></svg>';
+    const response = await handler(
+      request(`/topics/${encodeURIComponent(topic.id)}/decision-graph`, {
+        method: "POST",
+        body: JSON.stringify({ userId, svg }),
+      }),
+    );
+    expect(response?.status).toBe(200);
+    expect(readFileSync(path, "utf-8")).toBe(svg);
+
+    const forbidden = await handler(
+      request(`/topics/${encodeURIComponent(topic.id)}/decision-graph`, {
+        method: "POST",
+        body: JSON.stringify({ userId: "not-a-participant", svg }),
+      }),
+    );
+    expect(forbidden?.status).toBe(404);
+  } finally {
+    try {
+      unlinkSync(path);
+    } catch {}
+  }
 });
 
 test("POST message broadcasts the persisted user message to peer Terminal clients", async () => {

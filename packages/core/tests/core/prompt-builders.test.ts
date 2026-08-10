@@ -47,6 +47,10 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain("mcp__runtime__cancel_self_schedule");
     expect(prompt).toContain('Do not use provider built-in "AskUserQuestion"');
     expect(prompt).toContain("mcp__task__task_create");
+    expect(prompt).toContain("## Shared Decisions");
+    expect(prompt).toContain("establishes or changes a durable direction or constraint");
+    expect(prompt).toContain("Do not record routine task progress");
+    expect(prompt).not.toContain("decision_create");
     expect(prompt).toContain("TodoWrite");
     expect(prompt).toContain('"Task", "Agent"');
     expect(prompt).toContain("`tell_session`");

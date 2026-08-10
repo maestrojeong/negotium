@@ -44,6 +44,11 @@ import { type ColorDepth, detectColorDepth, rgbToAnsi16, rgbToAnsi256 } from "@/
 import { runTerminalCommand } from "@/command-router";
 import { commandSuggestions, completeCommand } from "@/commands";
 import {
+  adjustDecisionGraphSpacing,
+  buildDecisionGraph,
+  renderDecisionGraph,
+} from "@/decision-graph";
+import {
   completePathToken,
   isRecursivePathQuery,
   type PathSuggestion,
@@ -326,6 +331,10 @@ export class TerminalApp {
   // running-state changes re-render via nodeStates overlay without rerunning ELK.
   #subagentGraphCache: { signature: string; canvas: SubagentGraphCanvas } | null = null;
   #pendingSubagentGraphSpacing: number | null = null;
+  #decisionGraphGeneration = 0;
+  #decisionGraphAbortController: AbortController | null = null;
+  #decisionGraphSpacingTimer: ReturnType<typeof setTimeout> | null = null;
+  #pendingDecisionGraphSpacing: number | null = null;
   #running = false;
   #stopRequested = false;
   #finishRun: (() => void) | null = null;
@@ -766,6 +775,9 @@ export class TerminalApp {
   async #toggleSubagentGraph(): Promise<void> {
     const topicId = this.#state.activeTopicId;
     if (!topicId) return;
+    this.#decisionGraphGeneration += 1;
+    this.#decisionGraphAbortController?.abort();
+    this.#decisionGraphAbortController = null;
     if (this.#state.overlay === "subagents") {
       this.#subagentGraphGeneration += 1;
       this.#subagentGraphAbortController?.abort();
@@ -775,7 +787,6 @@ export class TerminalApp {
       this.#queueRender();
       return;
     }
-
     const runningTopicIds = new Set(
       Object.entries(this.#state.activity)
         .filter(([, activity]) => activity.running)
@@ -827,6 +838,148 @@ export class TerminalApp {
         overlay: null,
         subagentGraphLoading: false,
         notice: `Graph layout failed: ${error instanceof Error ? error.message : String(error)}`,
+        noticeLevel: "error",
+      };
+    }
+    this.#queueRender();
+  }
+
+  async #toggleDecisionGraph(): Promise<void> {
+    const topic = activeTopic(this.#state);
+    if (!topic || !this.#client.listDecisions) return;
+    if (this.#state.overlay === "decisions") {
+      this.#decisionGraphGeneration += 1;
+      this.#decisionGraphAbortController?.abort();
+      this.#decisionGraphAbortController = null;
+      this.#subagentGraphDragPoint = null;
+      this.#state = { ...this.#state, overlay: null, decisionGraphLoading: false };
+      this.#queueRender();
+      return;
+    }
+
+    this.#subagentGraphGeneration += 1;
+    this.#subagentGraphAbortController?.abort();
+    this.#subagentGraphAbortController = null;
+    const generation = ++this.#decisionGraphGeneration;
+    this.#decisionGraphAbortController?.abort();
+    const controller = new AbortController();
+    this.#decisionGraphAbortController = controller;
+    this.#subagentGraphDragPoint = null;
+    this.#state = {
+      ...this.#state,
+      overlay: "decisions",
+      decisionGraph: undefined,
+      decisionGraphLoading: true,
+      decisionGraphOffset: { x: 0, y: 0 },
+      notice: undefined,
+      noticeLevel: undefined,
+    };
+    this.#queueRender();
+    try {
+      const decisions = await this.#client.listDecisions(topic.id);
+      if (generation !== this.#decisionGraphGeneration || this.#state.overlay !== "decisions") {
+        return;
+      }
+      if (decisions.length === 0) {
+        this.#decisionGraphAbortController = null;
+        this.#state = {
+          ...this.#state,
+          overlay: null,
+          decisionGraphLoading: false,
+          notice: "No decisions recorded in this topic",
+          noticeLevel: "info",
+        };
+        this.#queueRender();
+        return;
+      }
+      const rendered = await renderDecisionGraph(
+        buildDecisionGraph(decisions, topic.title),
+        this.#state.decisionGraphSpacing,
+        controller.signal,
+      );
+      if (generation !== this.#decisionGraphGeneration || this.#state.overlay !== "decisions") {
+        return;
+      }
+      let saveWarning: string | undefined;
+      try {
+        await this.#client.saveDecisionGraph?.(topic.id, rendered.svg);
+      } catch (error) {
+        saveWarning = `Decision graph shown but SVG save failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      this.#decisionGraphAbortController = null;
+      this.#state = {
+        ...this.#state,
+        decisionGraph: rendered.canvas,
+        decisionGraphLoading: false,
+        ...(saveWarning ? { notice: saveWarning, noticeLevel: "warn" } : {}),
+      };
+    } catch (error) {
+      if (generation !== this.#decisionGraphGeneration) return;
+      this.#decisionGraphAbortController = null;
+      this.#state = {
+        ...this.#state,
+        overlay: null,
+        decisionGraphLoading: false,
+        notice: `Decision graph failed: ${error instanceof Error ? error.message : String(error)}`,
+        noticeLevel: "error",
+      };
+    }
+    this.#queueRender();
+  }
+
+  #changeDecisionGraphSpacing(delta: number): void {
+    const previous = this.#pendingDecisionGraphSpacing ?? this.#state.decisionGraphSpacing;
+    const spacing = adjustDecisionGraphSpacing(previous, delta);
+    if (spacing === previous) return;
+    this.#pendingDecisionGraphSpacing = spacing;
+    if (this.#decisionGraphSpacingTimer) clearTimeout(this.#decisionGraphSpacingTimer);
+    this.#decisionGraphSpacingTimer = setTimeout(() => {
+      this.#decisionGraphSpacingTimer = null;
+      const target = this.#pendingDecisionGraphSpacing;
+      this.#pendingDecisionGraphSpacing = null;
+      if (target !== null) void this.#applyDecisionGraphSpacing(target);
+    }, 120);
+  }
+
+  async #applyDecisionGraphSpacing(spacing: number): Promise<void> {
+    const topic = activeTopic(this.#state);
+    if (!topic || this.#state.overlay !== "decisions" || !this.#client.listDecisions) return;
+    const generation = ++this.#decisionGraphGeneration;
+    this.#decisionGraphAbortController?.abort();
+    const controller = new AbortController();
+    this.#decisionGraphAbortController = controller;
+    this.#state = { ...this.#state, decisionGraphSpacing: spacing, decisionGraphLoading: true };
+    this.#queueRender();
+    try {
+      const decisions = await this.#client.listDecisions(topic.id);
+      const rendered = await renderDecisionGraph(
+        buildDecisionGraph(decisions, topic.title),
+        spacing,
+        controller.signal,
+      );
+      if (generation !== this.#decisionGraphGeneration || this.#state.overlay !== "decisions") {
+        return;
+      }
+      let saveWarning: string | undefined;
+      try {
+        await this.#client.saveDecisionGraph?.(topic.id, rendered.svg);
+      } catch (error) {
+        saveWarning = `Decision graph shown but SVG save failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      this.#decisionGraphAbortController = null;
+      this.#state = {
+        ...this.#state,
+        decisionGraph: rendered.canvas,
+        decisionGraphLoading: false,
+        ...(saveWarning ? { notice: saveWarning, noticeLevel: "warn" } : {}),
+      };
+    } catch (error) {
+      if (generation !== this.#decisionGraphGeneration) return;
+      this.#decisionGraphAbortController = null;
+      this.#state = {
+        ...this.#state,
+        decisionGraphLoading: false,
+        notice: `Decision graph failed: ${error instanceof Error ? error.message : String(error)}`,
         noticeLevel: "error",
       };
     }
@@ -1076,17 +1229,21 @@ export class TerminalApp {
 
   #handleKeySegment(segment: string): void {
     const mouse = consumeMouseInput(segment);
-    if (mouse.horizontalScrollDelta !== 0 && this.#state.overlay === "subagents") {
+    if (
+      mouse.horizontalScrollDelta !== 0 &&
+      (this.#state.overlay === "subagents" || this.#state.overlay === "decisions")
+    ) {
       this.#selection = null;
-      this.#panSubagentGraph(-mouse.horizontalScrollDelta, 0);
+      this.#panActiveGraph(-mouse.horizontalScrollDelta, 0);
     }
     if (mouse.scrollDelta !== 0) {
       this.#selection = null;
       this.#scroll(mouse.scrollDelta);
     }
     for (const event of mouse.events) {
-      if (this.#state.overlay === "subagents") this.#handleSubagentGraphMouse(event);
-      else this.#handleMouseSelection(event);
+      if (this.#state.overlay === "subagents" || this.#state.overlay === "decisions") {
+        this.#handleGraphMouse(event);
+      } else this.#handleMouseSelection(event);
     }
     const chunk = normalizeKeySequences(mouse.input);
     if (!chunk) return;
@@ -1116,6 +1273,11 @@ export class TerminalApp {
     if (chunk === "\u0007") {
       if (editingVaultSecret) return;
       void this.#toggleSubagentGraph();
+      return;
+    }
+    if (chunk === "\u0004" && this.#state.overlay !== "topics") {
+      if (editingVaultSecret) return;
+      void this.#toggleDecisionGraph(); // Ctrl-D
       return;
     }
     if (chunk === "\u0014") {
@@ -1164,6 +1326,38 @@ export class TerminalApp {
         return;
       } else if (chunk === "[" || chunk === "]") {
         this.#changeSubagentGraphSpacing(chunk === "[" ? -1 : 1);
+        return;
+      }
+      this.#queueRender();
+      return;
+    }
+    if (this.#state.overlay === "decisions") {
+      if (chunk === "\u001b") {
+        this.#decisionGraphGeneration += 1;
+        this.#decisionGraphAbortController?.abort();
+        this.#decisionGraphAbortController = null;
+        this.#subagentGraphDragPoint = null;
+        this.#state = { ...this.#state, overlay: null, decisionGraphLoading: false };
+      } else if (chunk === "\u001b[A" || chunk === "k") {
+        this.#panDecisionGraph(0, -2);
+        return;
+      } else if (chunk === "\u001b[B" || chunk === "j") {
+        this.#panDecisionGraph(0, 2);
+        return;
+      } else if (chunk === "\u001b[D" || chunk === "h") {
+        this.#panDecisionGraph(-4, 0);
+        return;
+      } else if (chunk === "\u001b[C" || chunk === "l") {
+        this.#panDecisionGraph(4, 0);
+        return;
+      } else if (chunk === "\u001b[5~") {
+        this.#panDecisionGraph(0, -8);
+        return;
+      } else if (chunk === "\u001b[6~") {
+        this.#panDecisionGraph(0, 8);
+        return;
+      } else if (chunk === "[" || chunk === "]") {
+        this.#changeDecisionGraphSpacing(chunk === "[" ? -1 : 1);
         return;
       }
       this.#queueRender();
@@ -2184,7 +2378,7 @@ export class TerminalApp {
     this.#queueRender();
   }
 
-  #handleSubagentGraphMouse(event: TerminalMouseEvent): void {
+  #handleGraphMouse(event: TerminalMouseEvent): void {
     if ((event.button & 3) !== 0 && event.kind !== "release") return;
     const point: ScreenPoint = { x: event.x, y: event.y };
     if (event.kind === "press") {
@@ -2199,7 +2393,7 @@ export class TerminalApp {
     const previous = this.#subagentGraphDragPoint;
     this.#subagentGraphDragPoint = point;
     if (!previous) return;
-    this.#panSubagentGraph(previous.x - point.x, previous.y - point.y);
+    this.#panActiveGraph(previous.x - point.x, previous.y - point.y);
   }
 
   async #copySelection(text: string): Promise<void> {
@@ -2267,8 +2461,8 @@ export class TerminalApp {
   }
 
   #scroll(delta: number): void {
-    if (this.#state.overlay === "subagents") {
-      this.#panSubagentGraph(0, -delta);
+    if (this.#state.overlay === "subagents" || this.#state.overlay === "decisions") {
+      this.#panActiveGraph(0, -delta);
       return;
     }
     if (this.#state.overlay === "background-session") {
@@ -2319,6 +2513,32 @@ export class TerminalApp {
       },
     };
     this.#queueRender();
+  }
+
+  #panDecisionGraph(deltaX: number, deltaY: number): void {
+    const canvas = this.#state.decisionGraph;
+    const viewportWidth = Math.max(1, (process.stdout.columns ?? 100) - 4);
+    const viewportHeight = Math.max(1, (process.stdout.rows ?? 30) - 8);
+    const current = this.#state.decisionGraphOffset;
+    this.#state = {
+      ...this.#state,
+      decisionGraphOffset: {
+        x: Math.min(
+          Math.max(0, (canvas?.width ?? 0) - viewportWidth),
+          Math.max(0, current.x + deltaX),
+        ),
+        y: Math.min(
+          Math.max(0, (canvas?.height ?? 0) - viewportHeight),
+          Math.max(0, current.y + deltaY),
+        ),
+      },
+    };
+    this.#queueRender();
+  }
+
+  #panActiveGraph(deltaX: number, deltaY: number): void {
+    if (this.#state.overlay === "decisions") this.#panDecisionGraph(deltaX, deltaY);
+    else this.#panSubagentGraph(deltaX, deltaY);
   }
 
   async #abort(): Promise<void> {
@@ -2406,6 +2626,11 @@ export class TerminalApp {
     this.#subagentGraphGeneration += 1;
     this.#subagentGraphAbortController?.abort();
     this.#subagentGraphAbortController = null;
+    this.#decisionGraphGeneration += 1;
+    this.#decisionGraphAbortController?.abort();
+    this.#decisionGraphAbortController = null;
+    if (this.#subagentGraphSpacingTimer) clearTimeout(this.#subagentGraphSpacingTimer);
+    if (this.#decisionGraphSpacingTimer) clearTimeout(this.#decisionGraphSpacingTimer);
     if (this.#renderTimer) clearTimeout(this.#renderTimer);
     if (this.#inputCarryTimer) clearTimeout(this.#inputCarryTimer);
     this.#inputCarryTimer = undefined;

@@ -67,6 +67,7 @@ export { startSessionInboxWorker } from "#runtime/inbox";
 export { startAiTurn, startDurableTurnRequestWorker } from "#runtime/turn-runner";
 export { appendApiMessage, getApiMessage, listApiMessages } from "#storage/api-messages";
 export { getTopic, upsertTopic } from "#storage/api-topics";
+export { readDecisions, writeDecisionGraphSvg } from "#storage/decisions";
 export type { StoredRuntimeEvent } from "#storage/runtime-events";
 export {
   latestRuntimeEventSeq,

@@ -89,6 +89,7 @@ indicator. Topics and transcript use temporary overlays.
 | Mouse drag | select screen text and copy it on release |
 | `Ctrl-O` | toggle topic overlay; `Ctrl-C` there exits the TUI while work continues |
 | `Ctrl-G` | toggle the subagent graph overlay |
+| `Ctrl-D` | toggle the current topic's decision graph (`Ctrl-D` deletes only inside Topics) |
 | `Ctrl-T` | toggle the Tasks sidebar |
 | `Ctrl-Y` | copy the latest agent response |
 | `Ctrl-X` | abort the active turn |

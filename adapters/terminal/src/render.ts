@@ -1240,7 +1240,7 @@ function helpLines(): UiLine[] {
     line("  Alt-Backspace delete word · Ctrl-U clear before cursor"),
     line("  Cmd-Backspace works when forwarded · Ctrl-W/K aliases"),
     line("  Mouse wheel / PgUp/PgDn scroll · Ctrl-E load older · Ctrl-T tasks"),
-    line("  Ctrl-O topics · Ctrl-G subagents · Ctrl-X abort"),
+    line("  Ctrl-O topics · Ctrl-G subagents · Ctrl-D decisions · Ctrl-X abort"),
     line("  In topics: type to filter · Ctrl-N new · Ctrl-D delete"),
     line("  Esc/Ctrl-C stop active turn · Ctrl-C twice when idle to quit"),
     line(""),
@@ -1788,6 +1788,50 @@ function subagentGraphLines(
   ].slice(0, height);
 }
 
+function decisionGraphLines(state: AppState, width: number, height: number): UiLine[] {
+  const headerHeight = 5;
+  const canvas = state.decisionGraph;
+  const offset = state.decisionGraphOffset;
+  const viewportWidth = Math.max(1, width - 4);
+  const viewportHeight = Math.max(1, height - headerHeight);
+  const maxX = Math.max(0, (canvas?.width ?? 0) - viewportWidth);
+  const maxY = Math.max(0, (canvas?.height ?? 0) - viewportHeight);
+  const x = Math.min(maxX, offset.x);
+  const y = Math.min(maxY, offset.y);
+  const position = maxX > 0 || maxY > 0 ? ` · view ${x + 1},${y + 1}/${maxX + 1},${maxY + 1}` : "";
+  const header = [
+    line("  Decision graph", { fg: theme.accent, bold: true }),
+    line(`  ${canvas?.title ?? activeTopic(state)?.title ?? "Current topic"}`, {
+      fg: theme.text,
+      bold: true,
+    }),
+    line(
+      `  [/] spacing ${state.decisionGraphSpacing} · drag/wheel/arrows/hjkl move · Ctrl-D/Esc close${position}`,
+      { fg: theme.muted },
+    ),
+    line("  ○ accepted · ◷ proposed · ✓ executed · ✗ rejected · ! superseded", {
+      fg: theme.subtle,
+    }),
+    line(""),
+  ];
+  if (state.decisionGraphLoading) {
+    return [...header, line("  Laying out decisions with Orchgraph…", { fg: theme.cyan })].slice(
+      0,
+      height,
+    );
+  }
+  if (!canvas || canvas.lines.length === 0) {
+    return [...header, line("  No decision graph data", { fg: theme.muted })].slice(0, height);
+  }
+  return [
+    ...header,
+    ...Array.from({ length: viewportHeight }, (_, index) => {
+      const text = sliceWidthRange(canvas.lines[y + index] ?? "", x, viewportWidth);
+      return line(`  ${text}`, { fg: /[╭╮╰╯]/.test(text) ? theme.cyan : theme.muted });
+    }),
+  ].slice(0, height);
+}
+
 function modelOverlayLines(state: AppState, height: number): UiLine[] {
   const currentModel = effectiveTopicModel(activeTopic(state));
   const modelColumnWidth = Math.max(
@@ -1948,6 +1992,7 @@ function conversationLines(
     return topicOverlayLines(state, width, height, animationFrame).slice(0, height);
   if (state.overlay === "subagents")
     return subagentGraphLines(state, width, height, animationFrame);
+  if (state.overlay === "decisions") return decisionGraphLines(state, width, height);
   if (state.overlay === "background-session")
     return backgroundSessionViewportLines(state, width, height, nowMs);
   if (state.overlay === "models") return modelOverlayLines(state, height).slice(0, height);
@@ -2190,7 +2235,7 @@ function composerPane(state: AppState, width: number): ComposerPane {
       ? state.vaultMode === "list"
         ? "Vault command · Enter run · Esc close"
         : `${state.vaultMode === "key" ? "key" : state.vaultMode === "value" ? "secret value" : "description"} · Enter continue · Esc cancel`
-      : "Ctrl-O topics · Ctrl-G subagents";
+      : "Ctrl-O topics · Ctrl-G subagents · Ctrl-D decisions";
   const visual = inputVisualLines(state, width);
   let inputStart = Math.max(0, visual.lines.length - 5);
   if (visual.cursorLine < inputStart) inputStart = visual.cursorLine;
@@ -2417,6 +2462,13 @@ function footerHintText(state: AppState): string[] {
   if (state.overlay === "subagents") {
     return ["arrows/hjkl/wheel move · Esc close  ", "arrows move · Esc close  ", "Esc close  "];
   }
+  if (state.overlay === "decisions") {
+    return [
+      "arrows/hjkl/wheel move · Ctrl-D/Esc close  ",
+      "arrows move · Esc close  ",
+      "Esc close  ",
+    ];
+  }
   if (state.overlay === "vault") {
     if (state.vaultMode === "list") return ["Enter run · Esc close  ", "Esc close  "];
     if (state.vaultMode === "confirm-delete") return ["Y delete · N cancel  ", "Y/N  "];
@@ -2510,6 +2562,7 @@ export function renderAppFrame(
     state.overlay === "background-session" ||
     state.overlay === "topics" ||
     state.overlay === "subagents" ||
+    state.overlay === "decisions" ||
     (state.overlay === "vault" && state.vaultMode === "confirm-delete");
   const composer = hideComposer ? { lines: [], cursor: null } : composerPane(state, width);
   const bodyHeight = Math.max(3, height - footer.length - decision.length - composer.lines.length);

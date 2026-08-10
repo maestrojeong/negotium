@@ -22,6 +22,7 @@
     "./runtime-helpers": "./src/runtime/public-helpers.ts",
     "./mcp-factories": "./src/mcp/factories/index.ts",
     "./mcp-factories/agent-health": "./src/mcp/factories/agent-health.ts",
+    "./mcp-factories/decision": "./src/mcp/factories/decision.ts",
     "./mcp-factories/system-health": "./src/mcp/factories/system-health.ts",
     "./mcp-factories/task": "./src/mcp/factories/task.ts",
     "./mcp-factories/token-stats": "./src/mcp/factories/token-stats.ts",

@@ -9,6 +9,7 @@ export interface HostedMcpServer {
 
 export const ACTIVE_HOSTED_MCP_SURFACES = [
   "task",
+  "decision",
   "token-stats",
   "system-health",
   "vault",
@@ -38,6 +39,16 @@ export async function buildHostedSurfaceServer(
         userId: context.userId,
         topic: context.topicTitle,
         topicId: context.topicId,
+      });
+    }
+    case "decision": {
+      const { createDecisionMcpServer } = await import("@negotium/core/mcp-factories/decision");
+      return createDecisionMcpServer({
+        userId: context.userId,
+        topic: context.topicTitle,
+        topicId: context.topicId,
+        agent: context.agent,
+        model: context.model,
       });
     }
     case "token-stats": {

@@ -56,6 +56,13 @@ describe("hosted built-in MCP surfaces", () => {
       "task_list",
       "task_update",
     ]);
+    expect(await surfaceTools("decision")).toEqual([
+      "decision_create",
+      "decision_delete",
+      "decision_get",
+      "decision_list",
+      "decision_update",
+    ]);
     expect(await surfaceTools("token-stats")).toEqual(["get_usage_stats"]);
     expect(await surfaceTools("system-health")).toEqual(["get_system_health"]);
     expect(await surfaceTools("agent-health")).toEqual([
