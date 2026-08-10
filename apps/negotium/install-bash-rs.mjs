@@ -5,16 +5,23 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { arch, homedir, platform } from "node:os";
 import { resolve } from "node:path";
 
-const VERSION = "v0.1.5";
+const VERSION = "v0.1.7";
 const RELEASE_BASE = `https://github.com/maestrojeong/bash-rs-mcp/releases/download/${VERSION}`;
 const TARGETS = {
   "darwin-arm64": {
     asset: "bash-rs-macos-arm64",
-    sha256: "b1c274d4fb5a6f9e028c623f149999f6482a2de02047b8065817d8671efa63de",
+    sha256: "e022996e43abdf7cd9ee4f3be7589c7f640234a300c6674c9324fe566559bc16",
   },
   "linux-x64": {
     asset: "bash-rs-linux-x64",
-    sha256: "97b61842716502178a29c56240fc9cbc66770d268b27c213c4cc6870d6959b5b",
+    sha256: "7683948a77ab8dfffb732e3c019998e6510a443e504daf626b92754fe9f7857d",
+  },
+  // Linux on arm64 is what an Apple Silicon machine runs containers as, and
+  // what the cheaper cloud instances are. Until v0.1.6 published this asset,
+  // background_bash was simply absent on those hosts.
+  "linux-arm64": {
+    asset: "bash-rs-linux-arm64",
+    sha256: "1a631a4fff1d9ea9fadc37bf0e81eefb8e401e266bf6b8266bb4734f24af2c79",
   },
 };
 
