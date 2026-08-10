@@ -303,7 +303,7 @@ function buildRuntimeToolSection(
     agentKind === "codex"
       ? `For task tracking, use \`task_create\`, \`task_update\`, \`task_list\`, \`task_get\`, and \`task_delete\` functions in the \`${taskNamespace}\` namespace.`
       : `For task tracking, use MCP tools "${taskNamespace}__task_create", "${taskNamespace}__task_update", "${taskNamespace}__task_list", "${taskNamespace}__task_get", and "${taskNamespace}__task_delete".`;
-  const decisionToolLine = `Use the shared Decision tools in the \`${decisionNamespace}\` namespace when an architectural, product, or operational choice establishes or changes a durable direction or constraint. Do not record routine task progress or temporary implementation details; link causal predecessors when relevant.`;
+  const decisionToolLine = `Record a decision with the shared Decision tools in the \`${decisionNamespace}\` namespace whenever you pick between real alternatives and the choice will constrain later work: which layer or repository owns a fix, what a version number claims, which dependency version to pin, what an interface promises, which of two diagnoses you are acting on. Write it at the moment you choose, not as a summary at the end of the turn, and link the decision it follows from or supersedes. Do not record routine task progress or temporary implementation details.`;
   const runtimeToolRef = (name: string): string =>
     agentKind === "codex" ? `\`${name}\`` : `"${runtimeNamespace}__${name}"`;
   const spawnSubagentToolLine = `Use ${runtimeToolRef("spawn_subagent")} for self-contained parallel or long-running background work; keep quick work inline.`;

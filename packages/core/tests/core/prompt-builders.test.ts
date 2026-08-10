@@ -48,7 +48,11 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain('Do not use provider built-in "AskUserQuestion"');
     expect(prompt).toContain("mcp__task__task_create");
     expect(prompt).toContain("## Shared Decisions");
-    expect(prompt).toContain("establishes or changes a durable direction or constraint");
+    // Named triggers rather than a definition to match against: the abstract
+    // wording left the graph empty through sessions full of real choices.
+    expect(prompt).toContain("pick between real alternatives");
+    expect(prompt).toContain("which layer or repository owns a fix");
+    expect(prompt).toContain("at the moment you choose");
     expect(prompt).toContain("Do not record routine task progress");
     expect(prompt).not.toContain("decision_create");
     expect(prompt).toContain("TodoWrite");
