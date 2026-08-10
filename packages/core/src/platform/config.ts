@@ -99,7 +99,7 @@ export function resolveOutputLanguage(): string {
 }
 
 /** Browser.rs release tested with this Negotium version. */
-export const BROWSER_RS_VERSION = "v0.1.19";
+export const BROWSER_RS_VERSION = "v0.1.21";
 /** Require the authenticated listener and the current Browser.rs tool contract. */
 export const BROWSER_RS_MIN_SECURE_VERSION = "0.1.15";
 
