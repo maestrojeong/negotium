@@ -55,6 +55,10 @@ export function buildMermaidHtml(
     .controls button:focus-visible{outline:2px solid var(--celadon);outline-offset:1px}
     .zoom-value{min-width:46px;color:var(--graphite);font:500 11px/1 Geist,system-ui,sans-serif;text-align:center;font-variant-numeric:tabular-nums}
     .error{margin:0;white-space:pre-wrap;color:#7D2E2E;background:#FFF5F2;border:1px solid #E4B9B1;border-radius:6px;padding:14px;font:13px ui-monospace,SFMono-Regular,Menlo,monospace}
+    .failure{max-width:56ch;margin:0 auto}
+    .failure p{margin:0 0 12px;color:var(--graphite);font:14px/1.6 Geist,system-ui,sans-serif}
+    .failure details{color:var(--graphite);font:12px/1.5 Geist,system-ui,sans-serif}
+    .failure summary{cursor:pointer;padding:4px 0}
     @media(max-width:600px){.viewport{padding:54px 14px 18px}.controls{top:10px;right:10px}}
   </style>
 </head>
@@ -100,7 +104,20 @@ export function buildMermaidHtml(
       applyScale(scale, false);
       } catch (error) {
         document.querySelector(".controls")?.remove();
-        document.querySelector(".viewport").innerHTML = '<pre class="error">' + String(error && error.message ? error.message : error).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])) + '</pre>';
+        const raw = String(error && error.message ? error.message : error);
+        const escape = (value) => value.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+        // Mermaid aborts the whole render when it cannot place an edge label:
+        // cardinality markers ask for a point a fixed distance along the edge,
+        // and a relation laid out shorter than that walks off the end. Nothing
+        // is wrong with the diagram, so the raw message sends authors looking
+        // for a syntax error that does not exist. Say what actually moves it.
+        const note = raw.indexOf("Could not find a suitable point") !== -1
+          ? "Two nodes ended up too close together for Mermaid to fit a label on the edge between them. Renaming a node, adding another, or setting an explicit direction usually spreads the layout enough to render."
+          : "This diagram could not be rendered.";
+        document.querySelector(".viewport").innerHTML =
+          '<div class="failure"><p>' + escape(note) +
+          '</p><details><summary>Technical detail</summary><pre class="error">' +
+          escape(raw) + '</pre></details></div>';
       }
     })();
   </script>
