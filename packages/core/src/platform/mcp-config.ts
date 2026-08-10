@@ -11,6 +11,7 @@ import {
   AGENT_HEALTH_SERVER,
   BROWSER_MCP_SSE_PROXY_SERVER,
   CANONICAL_MCP_PROXY_SERVER,
+  DECISION_SERVER,
   envText,
   FALLBACK_AGENT,
   resolveTopicWorkspaceDir,
@@ -417,6 +418,35 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
       );
     },
   },
+  decision: {
+    ...commonRuntimeMcpPolicy("decision"),
+    build(ctx) {
+      const { userId, session, topicId, queryId, agent, model, peerBridge } = ctx;
+      if (peerBridge) {
+        if (!topicId || !queryId) return null;
+        const env = canonicalMcpBridgeEnv({
+          surface: "decision",
+          userId,
+          topicId,
+          queryId,
+          peerBridge,
+        });
+        return env
+          ? buildStdioMcpServer(agent, CANONICAL_MCP_PROXY_SERVER, ["--surface=decision"], env)
+          : null;
+      }
+      const args = [
+        `--user-id=${userId}`,
+        `--topic=${session}`,
+        `--agent=${agent ?? FALLBACK_AGENT}`,
+      ];
+      if (topicId) args.push(`--topic-id=${topicId}`);
+      if (model) args.push(`--model=${model}`);
+      return buildBuiltinMcpServer("decision", ctx, () =>
+        buildStdioMcpServer(agent, DECISION_SERVER, args),
+      );
+    },
+  },
   "session-comm": {
     // Exposed in `manager` scope as well so the General-topic manager agent
     // can wake fresh-created topics via tell_session/ask_session right after
@@ -818,7 +848,7 @@ export function getForumMcpServers(opts: {
   } = opts;
 
   const filter = (name: string) => {
-    if (silent && name === "task") return false;
+    if (silent && (name === "task" || name === "decision")) return false;
     if (enabled === null) return true;
     return (
       enabled.includes(name) || (REQUIRED_FORUM_MCP_SERVERS as readonly string[]).includes(name)

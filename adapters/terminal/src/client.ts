@@ -1,6 +1,7 @@
 import {
   type AgentKind,
   type BackgroundSessionDto,
+  type DecisionSnapshot,
   deleteVaultEntry,
   type EffortLevel,
   ensurePersonalGeneral,
@@ -25,7 +26,12 @@ import {
   topicService,
   type VaultEntry,
 } from "@negotium/core";
-import { getTopicStats, type TopicUsageSummary } from "@negotium/core/storage";
+import {
+  getTopicStats,
+  readDecisions,
+  type TopicUsageSummary,
+  writeDecisionGraphSvg,
+} from "@negotium/core/storage";
 import {
   NODE_CONTROL_BASE_PATH,
   NODE_CONTROL_PROTOCOL_VERSION,
@@ -55,6 +61,8 @@ export interface NegotiumClient {
   listBackgroundSessions?(): ClientResult<BackgroundSessionDto[]>;
   listMessages(topicId: string): ClientResult<MessageDto[]>;
   listTopicUsage?(topicId: string): ClientResult<TopicUsageSummary>;
+  listDecisions?(topicId: string): ClientResult<DecisionSnapshot[]>;
+  saveDecisionGraph?(topicId: string, svg: string): ClientResult<void>;
   listMessagePage?(
     topicId: string,
     cursor?: string,
@@ -161,6 +169,14 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
 
   listTopicUsage(topicId: string): TopicUsageSummary {
     return getTopicStats(this.#userId, topicId);
+  }
+
+  listDecisions(topicId: string): DecisionSnapshot[] {
+    return readDecisions(this.#userId, topicId);
+  }
+
+  saveDecisionGraph(topicId: string, svg: string): void {
+    writeDecisionGraphSvg(this.#userId, topicId, svg);
   }
 
   listMessagePage(
@@ -405,6 +421,20 @@ export class RemoteNegotiumClient implements NegotiumClient {
       `/topics/${encodeURIComponent(topicId)}/usage?user=${encodeURIComponent(this.#userId)}`,
     );
     return result.usage as TopicUsageSummary;
+  }
+
+  async listDecisions(topicId: string): Promise<DecisionSnapshot[]> {
+    const result = await this.#request(
+      `/topics/${encodeURIComponent(topicId)}/decisions?user=${encodeURIComponent(this.#userId)}`,
+    );
+    return (result.decisions ?? []) as DecisionSnapshot[];
+  }
+
+  async saveDecisionGraph(topicId: string, svg: string): Promise<void> {
+    await this.#request(`/topics/${encodeURIComponent(topicId)}/decision-graph`, {
+      method: "POST",
+      body: JSON.stringify({ userId: this.#userId, svg }),
+    });
   }
 
   async listMessagePage(

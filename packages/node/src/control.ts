@@ -35,6 +35,7 @@ import {
   RUN_DIR,
   type RuntimeBusEvent,
   RuntimeGatewayIdempotencyConflictError,
+  readDecisions,
   STATE_DIR,
   type StoredRuntimeEvent,
   saveVaultEntry,
@@ -51,6 +52,7 @@ import {
   TopicTitleConflictError,
   topicService,
   upsertTopic,
+  writeDecisionGraphSvg,
 } from "@negotium/core/node-host";
 import { nodeFileStore } from "./files";
 import { createPollingSseStream } from "./polling-sse";
@@ -777,6 +779,25 @@ export function createNodeControlHandler(
         const userId = requiredText(url.searchParams.get("user"), "user");
         if (!topicForUser(topicId, userId)) return jsonError(404, "Topic not found");
         return Response.json({ ok: true, usage: getTopicStats(userId, topicId) });
+      }
+
+      const decisionsMatch = path.match(/^\/topics\/([^/]+)\/decisions$/);
+      if (decisionsMatch && req.method === "GET") {
+        const topicId = decodeURIComponent(decisionsMatch[1]);
+        const userId = requiredText(url.searchParams.get("user"), "user");
+        if (!topicForUser(topicId, userId)) return jsonError(404, "Topic not found");
+        return Response.json({ ok: true, decisions: readDecisions(userId, topicId) });
+      }
+
+      const decisionGraphMatch = path.match(/^\/topics\/([^/]+)\/decision-graph$/);
+      if (decisionGraphMatch && req.method === "POST") {
+        const topicId = decodeURIComponent(decisionGraphMatch[1]);
+        const body = await bodyRecord(req);
+        const userId = requiredText(body.userId, "userId");
+        const svg = requiredText(body.svg, "svg");
+        if (!topicForUser(topicId, userId)) return jsonError(404, "Topic not found");
+        writeDecisionGraphSvg(userId, topicId, svg);
+        return Response.json({ ok: true });
       }
 
       const modelMatch = path.match(/^\/topics\/([^/]+)\/model$/);

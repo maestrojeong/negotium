@@ -85,6 +85,72 @@ const taskTools: Tool[] = [
   },
 ];
 
+const decisionStatus = ["proposed", "accepted", "executed", "rejected", "superseded"];
+const decisionFields = {
+  action: { type: "string" },
+  reasoning: { type: "string" },
+  status: { type: "string", enum: decisionStatus },
+  caused_by: { type: "array", items: { type: "string" } },
+} as const;
+const decisionTools: Tool[] = [
+  {
+    name: "decision_create",
+    description: "Record durable decisions and their causal predecessors in this topic.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        decisions: {
+          type: "array",
+          minItems: 1,
+          items: {
+            type: "object",
+            properties: decisionFields,
+            required: ["action", "reasoning"],
+          },
+        },
+      },
+      required: ["decisions"],
+    },
+  },
+  {
+    name: "decision_update",
+    description: "Update decisions or causal links in this topic.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        updates: {
+          type: "array",
+          minItems: 1,
+          items: {
+            type: "object",
+            properties: { id: { type: "string" }, ...decisionFields },
+            required: ["id"],
+          },
+        },
+      },
+      required: ["updates"],
+    },
+  },
+  {
+    name: "decision_list",
+    description: "Read this topic's decisions.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "decision_get",
+    description: "Read one decision as JSON.",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+  },
+  {
+    name: "decision_delete",
+    description: "Delete decisions from this topic.",
+    inputSchema: {
+      type: "object",
+      properties: { ids: { type: "array", items: { type: "string" } }, all: { type: "boolean" } },
+    },
+  },
+];
+
 const wikiTools: Tool[] = [
   {
     name: "wiki_query",
@@ -160,7 +226,14 @@ const wikiTools: Tool[] = [
   },
 ];
 
-const tools = surface === "task" ? taskTools : surface === "wiki" ? wikiTools : [];
+const tools =
+  surface === "task"
+    ? taskTools
+    : surface === "decision"
+      ? decisionTools
+      : surface === "wiki"
+        ? wikiTools
+        : [];
 const allowed = new Set(tools.map((tool) => tool.name));
 
 function error(text: string): CallToolResult {

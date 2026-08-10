@@ -1,6 +1,6 @@
 import type { PeerRuntimeBridgeContext } from "#types";
 
-export type CanonicalMcpSurface = "task" | "wiki";
+export type CanonicalMcpSurface = "task" | "decision" | "wiki";
 
 export interface CanonicalMcpBridgeScope {
   surface: CanonicalMcpSurface;

@@ -14,6 +14,7 @@ available in the Negotium Terminal client.
 | Load older history | `Ctrl-E` |
 | Toggle shared tasks | `Ctrl-T` |
 | Open the live subagent graph | `Ctrl-G` |
+| Open the current topic's decision graph | `Ctrl-D` |
 | Abort the current turn | `Ctrl-C` |
 
 ## Chat commands
@@ -44,3 +45,10 @@ animated by [Orchgraph](https://github.com/maestrojeong/orchgraph).
 - **Close:** `Esc` or `Ctrl-G`
 
 ![Live subagent tree, laid out by Orchgraph](https://raw.githubusercontent.com/maestrojeong/orchgraph/main/docs/images/negotium-subagents.svg)
+
+## Decision graph
+
+Press `Ctrl-D` from a conversation to render the current topic's recorded decisions and
+their directed `causedBy` links with Orchgraph. Use arrow keys or `h` / `j` / `k` / `l`
+to pan, `[` / `]` to change spacing, and `Esc` or `Ctrl-D` to close. Inside the topic
+picker, `Ctrl-D` keeps its existing meaning: delete the selected topic.

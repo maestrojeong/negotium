@@ -9,6 +9,7 @@ import {
 import type { TopicUsageSummary } from "@negotium/core/storage";
 import type { TerminalCanvas, TerminalEdge } from "orchgraph";
 import { terminalNowMs } from "@/clock";
+import { DEFAULT_DECISION_GRAPH_SPACING, type DecisionGraphCanvas } from "@/decision-graph";
 import { DEFAULT_SUBAGENT_GRAPH_SPACING } from "@/subagent-graph";
 
 type Overlay =
@@ -17,6 +18,7 @@ type Overlay =
   | "context"
   | "topics"
   | "subagents"
+  | "decisions"
   | "background-session"
   | "models"
   | "effort"
@@ -110,6 +112,10 @@ export interface AppState {
   subagentGraphLoading: boolean;
   subagentGraphOffset: { x: number; y: number };
   subagentGraphSpacing: number;
+  decisionGraph?: DecisionGraphCanvas;
+  decisionGraphLoading: boolean;
+  decisionGraphOffset: { x: number; y: number };
+  decisionGraphSpacing: number;
   askChoiceIndex: number;
   taskSidebarEnabled: boolean;
   overlay: Overlay;
@@ -158,6 +164,9 @@ export function createInitialState(userId: string): AppState {
     subagentGraphLoading: false,
     subagentGraphOffset: { x: 0, y: 0 },
     subagentGraphSpacing: DEFAULT_SUBAGENT_GRAPH_SPACING,
+    decisionGraphLoading: false,
+    decisionGraphOffset: { x: 0, y: 0 },
+    decisionGraphSpacing: DEFAULT_DECISION_GRAPH_SPACING,
     askChoiceIndex: 0,
     taskSidebarEnabled: true,
     overlay: null,

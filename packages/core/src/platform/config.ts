@@ -277,6 +277,7 @@ export const TSCONFIG_PATH = resolve(PROJECT_ROOT, "tsconfig.json");
 export const SESSION_COMM_SERVER = resolve(PROJECT_ROOT, "src/mcp/session-comm/server.ts");
 
 export const TASK_SERVER = resolve(PROJECT_ROOT, "src/mcp/task-server.ts");
+export const DECISION_SERVER = resolve(PROJECT_ROOT, "src/mcp/decision-server.ts");
 export const BROWSER_MCP_SSE_PROXY_SERVER = resolve(
   PROJECT_ROOT,
   "src/mcp/browser-sse-proxy-server.ts",

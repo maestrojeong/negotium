@@ -25,6 +25,7 @@ const packageEntrypoints = new Map<string, string>([
   ["@negotium/core/runtime-helpers", "packages/core/src/runtime/public-helpers.ts"],
   ["@negotium/core/mcp-factories", "packages/core/src/mcp/factories/index.ts"],
   ["@negotium/core/mcp-factories/agent-health", "packages/core/src/mcp/factories/agent-health.ts"],
+  ["@negotium/core/mcp-factories/decision", "packages/core/src/mcp/factories/decision.ts"],
   [
     "@negotium/core/mcp-factories/system-health",
     "packages/core/src/mcp/factories/system-health.ts",

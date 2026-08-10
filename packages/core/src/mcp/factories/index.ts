@@ -30,6 +30,12 @@ export {
   createCompactionLogMcpServer,
 } from "./compaction-log";
 export {
+  createDecisionMcpServer,
+  type DecisionMcpContext,
+  type DecisionMcpHost,
+  defaultDecisionMcpHost,
+} from "./decision";
+export {
   createSessionCommMcpServer,
   type SessionCommMcpHost,
   type SessionCommMcpOptions,

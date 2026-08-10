@@ -17,6 +17,7 @@ export const RUNTIME_MCP_KEY = "runtime";
 export const RUNTIME_MCP_BASE_PATH = "/mcp/runtime";
 export const HOSTED_MCP_SURFACES = [
   "task",
+  "decision",
   "token-stats",
   "system-health",
   "vault",

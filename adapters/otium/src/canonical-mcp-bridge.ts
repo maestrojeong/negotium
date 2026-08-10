@@ -16,6 +16,13 @@ const FORWARD_TIMEOUT_MS = 25_000;
 
 const TOOL_ALLOWLIST: Record<CanonicalMcpSurface, ReadonlySet<string>> = {
   task: new Set(["task_create", "task_update", "task_list", "task_get", "task_delete"]),
+  decision: new Set([
+    "decision_create",
+    "decision_update",
+    "decision_list",
+    "decision_get",
+    "decision_delete",
+  ]),
   wiki: new Set([
     "wiki_query",
     "wiki_read",

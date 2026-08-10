@@ -274,6 +274,7 @@ function buildRuntimeToolSection(
   } = opts;
   const runtimeNamespace = "mcp__runtime";
   const taskNamespace = "mcp__task";
+  const decisionNamespace = "mcp__decision";
   const visualToolLine =
     agentKind === "codex"
       ? `To display charts, tables, or interactive HTML results to the user, call the \`show_html\` function in the \`${runtimeNamespace}\` namespace with { html: "<complete HTML string>", title?: "optional title" }.`
@@ -302,6 +303,7 @@ function buildRuntimeToolSection(
     agentKind === "codex"
       ? `For task tracking, use \`task_create\`, \`task_update\`, \`task_list\`, \`task_get\`, and \`task_delete\` functions in the \`${taskNamespace}\` namespace.`
       : `For task tracking, use MCP tools "${taskNamespace}__task_create", "${taskNamespace}__task_update", "${taskNamespace}__task_list", "${taskNamespace}__task_get", and "${taskNamespace}__task_delete".`;
+  const decisionToolLine = `Use the shared Decision tools in the \`${decisionNamespace}\` namespace when an architectural, product, or operational choice establishes or changes a durable direction or constraint. Do not record routine task progress or temporary implementation details; link causal predecessors when relevant.`;
   const runtimeToolRef = (name: string): string =>
     agentKind === "codex" ? `\`${name}\`` : `"${runtimeNamespace}__${name}"`;
   const spawnSubagentToolLine = `Use ${runtimeToolRef("spawn_subagent")} for self-contained parallel or long-running background work; keep quick work inline.`;
@@ -364,6 +366,9 @@ function buildRuntimeToolSection(
     taskToolLine,
     "Use this shared task store for plans, progress, and checklist updates; it is visible across claude/codex/maestro turns.",
     nativeTaskPolicyLine,
+    "",
+    "## Shared Decisions",
+    decisionToolLine,
     ...extensions.render("after-shared-tasks"),
     ...fileDeliverySection,
     ...extensions.render("before-session-communication"),

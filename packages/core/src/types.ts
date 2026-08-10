@@ -97,6 +97,19 @@ export interface TaskSnapshot {
   owner?: string;
 }
 
+/** One topic-scoped decision and its incoming causal edges. */
+export interface DecisionSnapshot {
+  id: string;
+  action: string;
+  reasoning: string;
+  agent: AgentKind;
+  model?: string;
+  status: "proposed" | "accepted" | "executed" | "rejected" | "superseded";
+  /** Upstream decision ids. Each entry forms a directed upstream -> this edge. */
+  causedBy?: string[];
+  timestamp: number;
+}
+
 export type UnifiedEvent =
   | {
       type: "user_message";

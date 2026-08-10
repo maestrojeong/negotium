@@ -11,6 +11,7 @@ export const COMMON_RUNTIME_MCP_POLICY = {
   runtime: { scopes: ["forum", "manager", "fork", "cron"], forumRequired: true },
   "token-stats": { scopes: ["dm", "forum", "manager", "cron"], forumRequired: true },
   task: { scopes: ["dm", "forum", "manager", "cron"], forumRequired: true },
+  decision: { scopes: ["dm", "forum", "manager", "cron"], forumRequired: true },
   "session-comm": { scopes: ["forum", "fork", "manager"], forumRequired: true },
   wiki: { scopes: ["dm", "forum", "manager", "cron"], forumRequired: true },
   skills: { scopes: ["dm", "forum", "manager", "cron"], forumRequired: true },
