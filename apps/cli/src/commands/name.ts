@@ -10,7 +10,7 @@
  * No args prints the current name; any other argument sets it directly
  * (`negotium name Jarvis`), so naming this node is a one-liner. `reset`
  * restores the default, and `get`/`set <name>` still work for scripts that
- * want an explicit verb. `negotium ai-name` remains as an alias.
+ * want an explicit verb.
  */
 
 import { DEFAULT_AI_NAME, getGlobalAiName, setGlobalAiName } from "@negotium/core";

@@ -161,8 +161,7 @@ switch (command) {
     vaultCommand(args);
     break;
   }
-  case "name":
-  case "ai-name": {
+  case "name": {
     const { nameCommand } = await import("@/commands/name");
     nameCommand(args);
     break;
