@@ -24,14 +24,13 @@ function option(args: string[], name: string): string | undefined {
 }
 
 /**
- * This machine's own default worker name — the OS hostname, lowercased and
- * trimmed to the node-name alphabet central accepts (`[a-z0-9._-]`, <= 32
- * chars). Central re-normalizes and de-duplicates it against the workspace's
- * other active nodes, so this only needs to be a reasonable first guess, not
- * a guaranteed-unique value.
+ * Trim and normalize a raw name into the node-name alphabet central accepts
+ * (`[a-z0-9._-]`, <= 32 chars). Central re-normalizes and de-duplicates it
+ * against the workspace's other active nodes, so this only needs to be a
+ * reasonable candidate, not a guaranteed-unique value.
  */
-export function localNodeNameDefault(): string | undefined {
-  const normalized = hostname()
+function normalizeNodeNameCandidate(raw: string): string | undefined {
+  const normalized = raw
     .trim()
     .toLowerCase()
     .replace(/\.local$/, "")
@@ -40,6 +39,28 @@ export function localNodeNameDefault(): string | undefined {
     .slice(0, 32)
     .replace(/[-._]+$/g, "");
   return normalized || undefined;
+}
+
+/**
+ * This machine's own default worker name.
+ *
+ * `NEGOTIUM_NODE_NAME` wins when set: an operator-chosen, persistent identity
+ * for the machine that survives every re-enrollment without retyping `--name`
+ * or depending on what the OS happens to call the host. Cloud hosts default
+ * their OS hostname to something like `ip-172-31-33-67` (AWS) — never wrong,
+ * but not a name a person would recognize in a room list either — so the OS
+ * hostname is only the fallback, not the answer, for a host an operator has
+ * deliberately named.
+ */
+export function localNodeNameDefault(): string | undefined {
+  const configured = process.env.NEGOTIUM_NODE_NAME?.trim();
+  // A configured value that normalizes to nothing (blank, or entirely outside
+  // the node-name alphabet) is not "chosen and empty" — it falls through to
+  // the hostname exactly like an unset env var, rather than winning as
+  // `undefined` and leaving the node with no default name at all.
+  return (
+    (configured && normalizeNodeNameCandidate(configured)) || normalizeNodeNameCandidate(hostname())
+  );
 }
 
 async function confirmEnrollment(message: string): Promise<boolean> {
@@ -77,10 +98,9 @@ export async function joinCommand(args: string[]): Promise<void> {
     try {
       const invite = parseEnrollmentInvite(code);
       const resuming = isEnrollmentPending(invite);
-      // Prefer this machine's own identity over a blind admin guess: an
-      // explicit `--name` wins, otherwise default to the local hostname (the
-      // name this Negotium node is already known by), and only fall back to
-      // the invite's `suggestedNodeName` if the hostname is unusable.
+      // Prefer this machine's own identity over a blind admin guess:
+      // `--name` > `NEGOTIUM_NODE_NAME` > OS hostname > the invite's
+      // `suggestedNodeName`, tried only if all three are unusable.
       let nodeName = option(args, "name") || localNodeNameDefault();
       if (resuming) {
         console.log(`Resuming interrupted Otium enrollment with ${invite.central}`);
