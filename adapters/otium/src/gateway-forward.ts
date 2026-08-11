@@ -17,7 +17,7 @@
  * scoped to one workspace, and the host capability never leaves the machine.
  *
  * Only the hub may call it (`fromIsPrimary`), and only the read/turn subset of
- * the contract plus the per-room operations the hub owns (delete, update,
+ * the contract plus the room operations the hub owns (create, delete, update,
  * abort, session reset/compact) is exposed — every other control route stays
  * loopback-only.
  */
@@ -46,6 +46,18 @@ function allowedRuntimePath(path: string, method: string): boolean {
   }
   if (method === "POST") {
     if (path === "/turns") return true;
+    // Creating a room on the worker the hub is already driving. This is not a
+    // new class of authority: the hub already starts turns on this worker's
+    // rooms, reconfigures them and deletes them (D-8), so refusing the one verb
+    // that brings a room into existence only meant a user with the worker in
+    // their Otium sidebar had to SSH into that machine and use the CLI to get a
+    // room there. D-1 is untouched — the node still owns the room it creates and
+    // shares it back to Otium through the same mirror/mapping pass as any other,
+    // so there is no second authority over the transcript.
+    //
+    // Exact path, so `/topics/:id/...` creation-adjacent routes (derive, import)
+    // are unaffected and stay loopback-only on their own terms.
+    if (path === "/topics") return true;
     // Turn and session control on a room the hub already runs turns on (D-8).
     // Aborting is strictly narrower than starting: it can only stop work the
     // hub itself queued. Reset and compact discard the agent session, never the
@@ -61,9 +73,8 @@ function allowedRuntimePath(path: string, method: string): boolean {
   // reconfiguring it, so the hub's agent/model/effort/AI-mode picker changes
   // the row the turn runner actually reads.
   //
-  // Scoped to exactly `/topics/:id`, one segment, no sub-path. Creating a topic
-  // (`POST /topics`) deliberately stays loopback-only, as does everything else
-  // that mutates.
+  // Scoped to exactly `/topics/:id`, one segment, no sub-path. Every other
+  // mutation stays loopback-only.
   if (method === "DELETE" || method === "PATCH") return /^\/topics\/[^/]+$/.test(path);
   return false;
 }

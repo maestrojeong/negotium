@@ -72,6 +72,11 @@ test("forwards the whole read/turn/room-mutation contract the gateway client spe
     ["GET", "/topics/abc"],
     ["GET", "/topics/abc/messages"],
     ["POST", "/turns"],
+    // Creating a room on the worker the hub already drives: the same hub that
+    // may start turns on, reconfigure and delete this worker's rooms may also
+    // bring one into existence, and without it the Otium worker picker has no
+    // way to place a room at all.
+    ["POST", "/topics"],
     // A hub deleting a topic it mirrored from this worker must reach the
     // worker's own copy, or the next sync pass just re-mirrors it (D-1/D-8).
     ["DELETE", "/topics/abc"],
@@ -99,9 +104,9 @@ test("forwards the whole read/turn/room-mutation contract the gateway client spe
 
 test("refuses control routes that are not part of the gateway contract", async () => {
   // These exist on the node but are loopback-only: reaching them with a peer
-  // token would let the hub fork a worker's room, create rooms it does not
-  // mirror, or read the vault. The per-room operations the hub does own are
-  // asserted as allowed above.
+  // token would let the hub fork a worker's room, seed a transcript it did not
+  // witness, or read the vault. The room operations the hub does own — creating,
+  // deleting, reconfiguring — are asserted as allowed above.
   for (const [method, path] of [
     ["POST", "/topics/abc/access-mode"],
     ["POST", "/topics/abc/derive"],
@@ -109,7 +114,6 @@ test("refuses control routes that are not part of the gateway contract", async (
     ["GET", "/vault"],
     ["POST", "/shutdown"],
     ["GET", "/status"],
-    ["POST", "/topics"],
     ["POST", "/topics/abc/import"],
   ] as const) {
     const { fetch: stub, calls } = captureFetch();
@@ -183,6 +187,11 @@ test("the forwarded POST sub-paths are exact, not a /topics/:id/* wildcard", asy
     "/topics/abc/def/abort",
     "/topics/abc/import",
     "/topics/abc/derive",
+    // Creation is an exact path, so it must not read as a prefix that drags in
+    // whatever the node later mounts beneath it.
+    "/topics/",
+    "/topics//",
+    "/topics/abc/anything",
   ]) {
     const { fetch: stub, calls } = captureFetch();
     const response = await forwardGatewayRequest(

@@ -158,6 +158,17 @@ already runs turns on exactly these rooms and aborting a turn is narrower than s
 Forking (`POST /topics/:id/derive`) stays loopback-only: it creates a room, which collides with
 the mirror/mapping lifecycle above and needs its own design pass.
 
+Since 0.3.8 the forward also carries `POST runtime/v1/topics`, so a room can be created on a
+worker from the Otium UI. Earlier releases held creation back as loopback-only, which read as a
+security line but was not one: the hub that may start turns on a worker's rooms, reconfigure them
+and delete them is the same hub, acting on the same worker, when it creates one — the authority is
+already granted, and withholding the one verb that brings a room into existence only meant the
+worker picker in the sidebar could not work and the user had to SSH into the worker and use the
+CLI. D-1 is unaffected: the node owns the room it creates and shares it back to Otium through the
+mirror/mapping pass like any other, so there is still exactly one transcript authority. Creation is
+allowlisted as the exact path `/topics`, not a prefix, so `derive` and `import` keep their own
+separate refusals.
+
 `packages/node/tests/runtime-contract-coverage.test.ts` now derives both route tables from
 `control.ts` and fails when a mutating control route is neither mirrored in the contract nor on an
 explicit, reasoned exclusion list, so this particular drift has to be a deliberate choice.
@@ -196,7 +207,8 @@ Implemented:
   `/api/v1/peer/runtime/*`, reached over the relay with a Central-minted peer token and
   restricted to the hub (`fromIsPrimary`). The worker swaps that token for its own
   `node-control-token` in-process, so the host capability never crosses the network. Only the
-  read/turn subset is forwarded — mutating control routes stay loopback-only.
+  read/turn subset plus the room operations the hub owns (create, delete, update, abort, session
+  reset/compact) is forwarded — every other control route stays loopback-only.
 - **Placed-turn receiver retired** (D-1/D-8). The worker-side mirror path is deleted:
   `turn-bridge.ts` (`provisionMirrorTopic` / `runPeerTurn` / `abortHostedPeerTurn`),
   `event-backflow.ts` (the worker→hub turn event stream and its terminal outbox), the
