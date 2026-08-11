@@ -12,13 +12,59 @@ import {
   OTIUM_ADAPTER_CONTROL_PREFIX,
   OTIUM_RELAYED_HEADER,
 } from "@/control-protocol";
-import { loadJoin } from "@/join";
+import { loadJoins, type OtiumJoin } from "@/join";
 import { MAX_PEER_REQUEST_BODY_BYTES } from "@/protocol";
-import { TunnelClient } from "@/tunnel-client";
+import { TunnelClient, type TunnelLogger } from "@/tunnel-client";
 
 export interface OtiumSidecarOptions {
   port: number;
   relayUrl?: string;
+}
+
+/** Stamp every log line from one workspace's tunnel with its cell id, so a
+ *  multi-workspace host's reconnect warnings say *which* cell is unreachable
+ *  instead of reading as one undifferentiated stream. */
+function withCellId(base: TunnelLogger, cellId: string): TunnelLogger {
+  return {
+    info: (obj, msg) => base.info({ ...obj, cellId }, msg),
+    warn: (obj, msg) => base.warn({ ...obj, cellId }, msg),
+    error: (obj, msg) => base.error({ ...obj, cellId }, msg),
+  };
+}
+
+export interface TunnelTarget {
+  cellId: string;
+  relayUrl: string;
+  secret: string;
+}
+
+/**
+ * Which of the joined workspaces get a tunnel, and to which relay.
+ *
+ * Pulled out of {@link runOtiumSidecar} so the one-tunnel-per-join decision —
+ * the fix for the bug where only `loadJoins()[0]` ever got dialed — is
+ * unit-testable without booting `Bun.serve`, a process lease, or a real
+ * WebSocket. `--relay`/`OTIUM_RELAY_URL` still override every join uniformly,
+ * matching the single-tunnel behaviour this replaces; a join with no relay
+ * anywhere (legacy v0 credential) is reported skipped rather than silently
+ * dropped.
+ */
+export function resolveTunnelTargets(
+  joins: readonly Pick<OtiumJoin, "cellId" | "relay" | "secret">[],
+  relayOverride?: string,
+): { targets: TunnelTarget[]; skippedNoRelay: string[] } {
+  const targets: TunnelTarget[] = [];
+  const skippedNoRelay: string[] = [];
+  const envRelay = process.env.OTIUM_RELAY_URL?.trim();
+  for (const join of joins) {
+    const relayUrl = relayOverride?.trim() || join.relay || envRelay;
+    if (!relayUrl) {
+      skippedNoRelay.push(join.cellId);
+      continue;
+    }
+    targets.push({ cellId: join.cellId, relayUrl, secret: join.secret });
+  }
+  return { targets, skippedNoRelay };
 }
 
 export interface OtiumSidecarDependencies {
@@ -91,8 +137,8 @@ export async function proxyOtiumPeerRequest(
 
 /** Run the public Otium peer surface and relay tunnel without embedding a Node. */
 export async function runOtiumSidecar(options: OtiumSidecarOptions): Promise<void> {
-  const join = loadJoin();
-  if (!join) {
+  const joins = loadJoins();
+  if (joins.length === 0) {
     throw new Error("not joined to an Otium workspace — run `negotium otium join <code>` first");
   }
   const initialNode = await inspectNodeDaemon();
@@ -127,29 +173,52 @@ export async function runOtiumSidecar(options: OtiumSidecarOptions): Promise<voi
     throw error;
   }
 
-  const selectedRelay =
-    options.relayUrl?.trim() || join.relay || process.env.OTIUM_RELAY_URL?.trim();
-  const tunnel = selectedRelay
-    ? new TunnelClient({
-        relayUrl: selectedRelay,
-        token: join.secret,
+  /**
+   * One tunnel per joined workspace, not just the first (M-6 parity with the
+   * node daemon's `mounted` map in node-runtime.ts).
+   *
+   * The sidecar used to build a single `TunnelClient` from `loadJoin()` —
+   * `loadJoins()[0]`, the *oldest* join by file order. A host joined to
+   * several workspaces (or carrying a dead join left over from a revoked
+   * enrollment) got relay reachability for exactly one of them, chosen by
+   * accident of ordering; the other N-1 credentials sat on disk with no
+   * tunnel ever attempted for them, in total silence. Multi-workspace attach
+   * was already real at the daemon layer — this was the one place it wasn't.
+   */
+  const { targets, skippedNoRelay } = resolveTunnelTargets(joins, options.relayUrl);
+  const tunnels = new Map<string, TunnelClient>();
+  for (const target of targets) {
+    tunnels.set(
+      target.cellId,
+      new TunnelClient({
+        relayUrl: target.relayUrl,
+        token: target.secret,
         targetOrigin: `http://127.0.0.1:${server.port}`,
         nodeVersion: `negotium@${NEGOTIUM_VERSION}`,
-        logger,
-      })
-    : null;
-  tunnel?.start();
+        logger: withCellId(logger, target.cellId),
+      }),
+    );
+  }
+  if (skippedNoRelay.length > 0) {
+    logger.warn(
+      { cellIds: skippedNoRelay },
+      "otium sidecar: no relay URL for these joined workspaces; they have no tunnel and will not be reachable",
+    );
+  }
+  for (const tunnel of tunnels.values()) tunnel.start();
 
   let resolveCompleted!: () => void;
   const completed = new Promise<void>((resolve) => {
     resolveCompleted = resolve;
   });
   onShutdown("otium-sidecar-server", 130, () => server?.stop(true));
-  onShutdown("otium-sidecar-tunnel", 120, () => tunnel?.stop());
+  onShutdown("otium-sidecar-tunnel", 120, () => {
+    for (const tunnel of tunnels.values()) tunnel.stop();
+  });
   onShutdown("otium-sidecar-lease", 110, () => lease.stop());
   onShutdown("otium-sidecar-completed", -100, resolveCompleted);
   process.stdout.write(
-    `negotium Otium adapter listening on 127.0.0.1:${server.port} (canonical node pid ${initialNode.info?.pid})\n`,
+    `negotium Otium adapter listening on 127.0.0.1:${server.port} (canonical node pid ${initialNode.info?.pid}, ${tunnels.size}/${joins.length} workspace tunnel${joins.length === 1 ? "" : "s"} started)\n`,
   );
   await completed;
 }
