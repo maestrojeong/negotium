@@ -315,7 +315,7 @@ export {
   stampUnscopedOtiumTopics,
   upsertTopic,
 } from "#storage/api-topics";
-export { getGlobalAiName } from "#storage/app-settings";
+export { DEFAULT_AI_NAME, getGlobalAiName, setGlobalAiName } from "#storage/app-settings";
 export { db } from "#storage/forum-db";
 export type { StoredRuntimeEvent } from "#storage/runtime-events";
 export {

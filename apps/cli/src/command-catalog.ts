@@ -53,6 +53,12 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     group: "Workspace",
   },
   {
+    name: "ai-name",
+    usage: "ai-name [get|set <name>|reset]",
+    description: "get/set this node's own AI persona name (node-local, never shared)",
+    group: "Workspace",
+  },
+  {
     name: "terminal",
     usage: "terminal [--embedded|--connect=URL|--port=N]",
     description: "run a Terminal client for the canonical node",

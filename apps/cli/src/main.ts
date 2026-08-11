@@ -161,6 +161,11 @@ switch (command) {
     vaultCommand(args);
     break;
   }
+  case "ai-name": {
+    const { aiNameCommand } = await import("@/commands/ai-name");
+    aiNameCommand(args);
+    break;
+  }
   case "cron": {
     const { cronCommand } = await import("@/commands/cron");
     await cronCommand(args);

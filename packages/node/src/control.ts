@@ -17,6 +17,7 @@ import {
   ensurePersonalGeneral,
   executeVaultCommand,
   getApiMessage,
+  getGlobalAiName,
   getTopic,
   getTopicStats,
   getVisibleTopics,
@@ -39,6 +40,7 @@ import {
   STATE_DIR,
   type StoredRuntimeEvent,
   saveVaultEntry,
+  setGlobalAiName,
   type startAiTurn,
   submitRuntimeGatewayTurn,
   submitUserMessage,
@@ -693,6 +695,27 @@ export function createNodeControlHandler(
         const userId = requiredText(url.searchParams.get("user"), "user");
         const key = requiredText(url.searchParams.get("key"), "key");
         return Response.json({ ok: true, deleted: deleteVaultEntry(userId, key) });
+      }
+
+      /**
+       * This node's own AI persona name — node identity, not topic state.
+       *
+       * Deliberately outside the runtime contract (`NODE_RUNTIME_CONTRACT_BASE_PATH`):
+       * `gateway-forward.ts`'s allowlist only ever forwards a fixed read/turn
+       * subset of that contract to a remote worker, and this route is not on it.
+       * So changing a node's name here is structurally loopback-only — a hub can
+       * rename itself through its own control token, but can never reach a
+       * worker's name over the relay. Each computer keeps the name its own
+       * operator gave it.
+       */
+      if (req.method === "GET" && path === "/ai-name") {
+        return Response.json({ ok: true, aiName: getGlobalAiName() });
+      }
+
+      if (req.method === "PATCH" && path === "/ai-name") {
+        const body = await bodyRecord(req);
+        const aiName = requiredText(body.aiName, "aiName");
+        return Response.json({ ok: true, aiName: setGlobalAiName(aiName) });
       }
 
       if (req.method === "POST" && path === "/topics") {
