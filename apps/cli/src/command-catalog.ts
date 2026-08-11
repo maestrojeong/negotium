@@ -54,8 +54,8 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   },
   {
     name: "ai-name",
-    usage: "ai-name [get|set <name>|reset]",
-    description: "get/set this node's own AI persona name (node-local, never shared)",
+    usage: "ai-name [name|reset]",
+    description: "show or set this node's own AI persona name (node-local, never shared)",
     group: "Workspace",
   },
   {
