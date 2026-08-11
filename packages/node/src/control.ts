@@ -367,6 +367,12 @@ export function createNodeControlHandler(
             // Which node this is, so a host can tell a re-pointed base URL from
             // a topic whose owner withdrew it.
             nodeId: NODE_ID,
+            // This node's own AI persona name (node-local, see `/ai-name`). Read
+            // here rather than only through the dedicated control route because
+            // `/health` is the one GET the gateway forward already relays to a
+            // worker (D-2) — exposing it here means a host can show which AI is
+            // actually running a room without adding a new forwarded route.
+            aiName: getGlobalAiName(),
             capabilities: [
               "turn-submit-idempotent",
               "turn-events-sse-resume",
