@@ -62,6 +62,9 @@ test("health advertises the delete/update/silent capabilities hosts feature-dete
   expect(body.capabilities).toContain("canonical-topic-delete");
   expect(body.capabilities).toContain("canonical-topic-update");
   expect(body.capabilities).toContain("turn-submit-silent");
+  expect(body.capabilities).toContain("canonical-topic-abort");
+  expect(body.capabilities).toContain("canonical-session-reset");
+  expect(body.capabilities).toContain("canonical-session-compact");
 });
 
 test("DELETE removes the canonical topic so a deleted mirror stays deleted", async () => {
@@ -261,6 +264,86 @@ test("PATCH is a 404 for another workspace's room and for a non-participant", as
   );
   expect(stranger?.status).toBe(404);
   expect(getTopic(created.id)?.title).toBe(created.title);
+});
+
+test("abort reports whether there was anything to stop", async () => {
+  const created = topic(`Runtime abort ${randomUUID()}`);
+  const response = await handler(
+    request(`/runtime/v1/topics/${encodeURIComponent(created.id)}/abort`, {
+      method: "POST",
+      body: JSON.stringify({ v: 1, userId }),
+    }),
+  );
+  expect(response?.status).toBe(200);
+  // An idle room is not an error: the host asked for "no turn running here"
+  // and that is now true, so `aborted: false` is the honest answer.
+  expect(await response?.json()).toEqual({ ok: true, v: 1, aborted: false });
+});
+
+test("session reset re-seats the agent session and keeps the transcript", async () => {
+  const created = topic(`Runtime reset ${randomUUID()}`);
+  const response = await handler(
+    request(`/runtime/v1/topics/${encodeURIComponent(created.id)}/session/reset`, {
+      method: "POST",
+      body: JSON.stringify({ v: 1, userId }),
+    }),
+  );
+  expect(response?.status).toBe(200);
+  const body = (await response?.json()) as { ok: boolean; v: number; result: string };
+  expect(body.ok).toBeTrue();
+  expect(body.v).toBe(1);
+  expect(typeof body.result).toBe("string");
+  // The room itself survives — this drops the session, not the history.
+  expect(getTopic(created.id)).not.toBeNull();
+});
+
+test("the turn and session verbs reject a bad envelope and a missing user", async () => {
+  const created = topic(`Runtime verbs invalid ${randomUUID()}`);
+  for (const suffix of ["abort", "session/reset", "session/compact"]) {
+    const path = `/runtime/v1/topics/${encodeURIComponent(created.id)}/${suffix}`;
+
+    const badVersion = await handler(
+      request(path, { method: "POST", body: JSON.stringify({ v: 2, userId }) }),
+    );
+    expect(badVersion?.status, suffix).toBe(400);
+    expect(((await badVersion?.json()) as { error: string }).error).toBe("Unsupported v");
+
+    const noUser = await handler(request(path, { method: "POST", body: JSON.stringify({ v: 1 }) }));
+    expect(noUser?.status, suffix).toBe(400);
+    expect(((await noUser?.json()) as { error: string }).error).toBe("userId is required");
+  }
+});
+
+test("the turn and session verbs are a 404 outside the caller's workspace", async () => {
+  const created = topic(`Runtime verbs scope ${randomUUID()}`);
+  for (const suffix of ["abort", "session/reset", "session/compact"]) {
+    // 404 rather than 403, so the contract cannot confirm that a neighbouring
+    // workspace's room exists (M-8) — same rule as DELETE and PATCH.
+    const foreign = await handler(
+      request(`/runtime/v1/topics/${encodeURIComponent(created.id)}/${suffix}`, {
+        method: "POST",
+        headers: foreignScope,
+        body: JSON.stringify({ v: 1, userId }),
+      }),
+    );
+    expect(foreign?.status, suffix).toBe(404);
+
+    const missing = await handler(
+      request(`/runtime/v1/topics/${randomUUID()}/${suffix}`, {
+        method: "POST",
+        body: JSON.stringify({ v: 1, userId }),
+      }),
+    );
+    expect(missing?.status, suffix).toBe(404);
+
+    const stranger = await handler(
+      request(`/runtime/v1/topics/${encodeURIComponent(created.id)}/${suffix}`, {
+        method: "POST",
+        body: JSON.stringify({ v: 1, userId: "not-a-member" }),
+      }),
+    );
+    expect(stranger?.status, suffix).toBe(404);
+  }
 });
 
 test("POST /turns with respond:false acknowledges the message without queueing a turn", async () => {

@@ -17,8 +17,9 @@
  * scoped to one workspace, and the host capability never leaves the machine.
  *
  * Only the hub may call it (`fromIsPrimary`), and only the read/turn subset of
- * the contract plus the two per-room mutations the hub owns (delete, update)
- * is exposed — every other control route stays loopback-only.
+ * the contract plus the per-room operations the hub owns (delete, update,
+ * abort, session reset/compact) is exposed — every other control route stays
+ * loopback-only.
  */
 import { NODE_CONTROL_TOKEN } from "@negotium/core";
 
@@ -43,7 +44,17 @@ function allowedRuntimePath(path: string, method: string): boolean {
     if (path === "/health" || path === "/events" || path === "/topics") return true;
     return /^\/topics\/[^/]+(\/messages)?$/.test(path);
   }
-  if (method === "POST") return path === "/turns";
+  if (method === "POST") {
+    if (path === "/turns") return true;
+    // Turn and session control on a room the hub already runs turns on (D-8).
+    // Aborting is strictly narrower than starting: it can only stop work the
+    // hub itself queued. Reset and compact discard the agent session, never the
+    // transcript, so the worst a hub can do here is make its own next turn
+    // start cold. Listed as exact sub-paths rather than a `/topics/:id/...`
+    // wildcard, so a future control route under the same prefix is not
+    // forwarded by accident.
+    return /^\/topics\/[^/]+\/(abort|session\/(reset|compact))$/.test(path);
+  }
   // The two mutations a hub must reach on a room it already runs turns on
   // (D-8): deleting it, so a room the hub no longer shows stops being
   // re-mirrored on the next sync pass instead of bouncing right back, and

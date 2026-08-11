@@ -146,8 +146,21 @@ holding state the node contradicts. Since 0.3.7 it is: `DELETE runtime/v1/topics
 `PATCH runtime/v1/topics/:id` (`canonical-topic-update`) so the agent/model/effort/AI-mode picker
 changes the row the turn runner actually reads, and `respond: false` on `POST /turns`
 (`turn-submit-silent`) so a room with the AI off or set to mention-only still records its
-messages canonically without queueing an answer. These two are also the only mutations the remote
-forward exposes (D-2), because the hub already runs turns on exactly these rooms.
+messages canonically without queueing an answer.
+
+0.3.8 closes the turn/session half of the same gap: `POST runtime/v1/topics/:id/abort`
+(`canonical-topic-abort`), `.../session/reset` (`canonical-session-reset`) and
+`.../session/compact` (`canonical-session-compact`). A host that starts a turn must be able to
+stop it, and a long-running room needs context management that is not "delete the room" — both
+existed as control routes, so the gap was purely that Otium could not reach them. All five
+mutations plus the two session verbs are what the remote forward exposes (D-2), because the hub
+already runs turns on exactly these rooms and aborting a turn is narrower than starting one.
+Forking (`POST /topics/:id/derive`) stays loopback-only: it creates a room, which collides with
+the mirror/mapping lifecycle above and needs its own design pass.
+
+`packages/node/tests/runtime-contract-coverage.test.ts` now derives both route tables from
+`control.ts` and fails when a mutating control route is neither mirrored in the contract nor on an
+explicit, reasoned exclusion list, so this particular drift has to be a deliberate choice.
 
 ## Current state
 

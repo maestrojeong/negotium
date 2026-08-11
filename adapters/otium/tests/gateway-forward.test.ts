@@ -78,6 +78,11 @@ test("forwards the whole read/turn/room-mutation contract the gateway client spe
     // Same for reconfiguring it: the turn runner reads the worker's own
     // agent/model/effort, so a hub-side picker is cosmetic without this.
     ["PATCH", "/topics/abc"],
+    // Stopping and re-seating the session of a room the hub already runs turns
+    // on. Abort is narrower than the POST /turns already allowed above.
+    ["POST", "/topics/abc/abort"],
+    ["POST", "/topics/abc/session/reset"],
+    ["POST", "/topics/abc/session/compact"],
   ] as const) {
     const { fetch: stub, calls } = captureFetch();
     const response = await forwardGatewayRequest(
@@ -94,12 +99,13 @@ test("forwards the whole read/turn/room-mutation contract the gateway client spe
 
 test("refuses control routes that are not part of the gateway contract", async () => {
   // These exist on the node but are loopback-only: reaching them with a peer
-  // token would let the hub reset a worker's session, create rooms it does not
-  // mirror, or read the vault. Deleting and updating one topic is the only
-  // mutation the hub owns, and it is asserted as allowed above.
+  // token would let the hub fork a worker's room, create rooms it does not
+  // mirror, or read the vault. The per-room operations the hub does own are
+  // asserted as allowed above.
   for (const [method, path] of [
     ["POST", "/topics/abc/access-mode"],
-    ["POST", "/topics/abc/session/reset"],
+    ["POST", "/topics/abc/derive"],
+    ["POST", "/topics/abc/model"],
     ["GET", "/vault"],
     ["POST", "/shutdown"],
     ["GET", "/status"],
@@ -162,6 +168,29 @@ test("the room mutations stay pinned to a single topic segment", async () => {
     });
     expect(response?.status, `${method} ${path}`).toBe(404);
     expect(calls, `${method} ${path}`).toHaveLength(0);
+  }
+});
+
+test("the forwarded POST sub-paths are exact, not a /topics/:id/* wildcard", async () => {
+  // The turn/session operations are the only POSTs under a topic that the hub
+  // owns. Anything else the node grows under the same prefix — forking a room,
+  // seeding history, switching models — must stay loopback-only until it is
+  // reviewed on its own terms.
+  for (const path of [
+    "/topics/abc/session",
+    "/topics/abc/session/reset/extra",
+    "/topics/abc/abort/extra",
+    "/topics/abc/def/abort",
+    "/topics/abc/import",
+    "/topics/abc/derive",
+  ]) {
+    const { fetch: stub, calls } = captureFetch();
+    const response = await forwardGatewayRequest(
+      forwardRequest(path, { method: "POST", body: "{}" }),
+      { nodeOrigin: NODE_ORIGIN, fetch: stub },
+    );
+    expect(response?.status, path).toBe(404);
+    expect(calls, path).toHaveLength(0);
   }
 });
 

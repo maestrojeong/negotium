@@ -388,6 +388,9 @@ export function createNodeControlHandler(
               "canonical-topic-delete",
               "turn-submit-silent",
               "canonical-history-import",
+              "canonical-topic-abort",
+              "canonical-session-reset",
+              "canonical-session-compact",
             ],
             cursor: latestRuntimeEventSeq(),
           });
@@ -623,6 +626,90 @@ export function createNodeControlHandler(
             ok: true,
             v: NODE_RUNTIME_CONTRACT_VERSION,
             imported,
+          });
+        }
+
+        /**
+         * Stop the turn running in a room the host surfaced.
+         *
+         * A host that starts a turn must be able to stop it, or a runaway
+         * answer can only be killed from Terminal on the node's own machine —
+         * and for a worker room reached over the relay, not at all. The control
+         * route already exists; this is the same call behind the contract's
+         * envelope and workspace check, so the ability is not surface-dependent
+         * (D-1).
+         */
+        const runtimeAbortMatch = runtimePath.match(/^\/topics\/([^/]+)\/abort$/);
+        if (runtimeAbortMatch && req.method === "POST") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const topicId = decodeURIComponent(runtimeAbortMatch[1]);
+          const topic = getTopic(topicId);
+          if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
+          const userId = requiredText(body.userId, "userId");
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            aborted: topicService.abortTurn(topicId, userId),
+          });
+        }
+
+        /**
+         * Drop the room's agent session, keeping its transcript.
+         *
+         * `/reset` and `/compact` are context-window management, which a host
+         * driving long-running rooms needs as much as Terminal does: without
+         * them the only recovery from a wedged or overlong session is deleting
+         * the room. Both mirror their control routes exactly, including the 409
+         * on `isError` — a session that cannot be restarted right now (a turn is
+         * in flight) is a conflict, not a bad request.
+         */
+        const runtimeResetMatch = runtimePath.match(/^\/topics\/([^/]+)\/session\/reset$/);
+        if (runtimeResetMatch && req.method === "POST") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const topicId = decodeURIComponent(runtimeResetMatch[1]);
+          const topic = getTopic(topicId);
+          if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
+          const userId = requiredText(body.userId, "userId");
+          const reason =
+            body.reason === undefined ? undefined : requiredText(body.reason, "reason");
+          const result = await topicService.reset({
+            topicId,
+            userId,
+            // The caller's reason is only ever a label on the audit line, so an
+            // absent one falls back to naming the surface rather than failing.
+            reason: reason ?? "runtime-contract-session-reset",
+          });
+          if (result.isError) return jsonError(409, result.text);
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            result: result.text,
+          });
+        }
+
+        const runtimeCompactMatch = runtimePath.match(/^\/topics\/([^/]+)\/session\/compact$/);
+        if (runtimeCompactMatch && req.method === "POST") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const topicId = decodeURIComponent(runtimeCompactMatch[1]);
+          const topic = getTopic(topicId);
+          if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
+          const userId = requiredText(body.userId, "userId");
+          const reason =
+            body.reason === undefined ? undefined : requiredText(body.reason, "reason");
+          const result = await topicService.compact({
+            topicId,
+            userId,
+            reason: reason ?? "runtime-contract-session-compact",
+            compactSession: options.compactSession,
+          });
+          if (result.isError) return jsonError(409, result.text);
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            result: result.text,
           });
         }
 
