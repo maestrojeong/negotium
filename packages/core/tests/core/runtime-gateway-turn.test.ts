@@ -5,7 +5,7 @@ import {
   submitRuntimeGatewayTurn,
 } from "#application/submit-runtime-gateway-turn";
 import { topicService } from "#application/topic-service";
-import { appendApiMessage } from "#storage/api-messages";
+import { appendApiMessage, getApiMessage } from "#storage/api-messages";
 import { deleteTopic, getTopic, setTopicSessionId } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
 import {
@@ -265,6 +265,75 @@ test("runtime gateway backfills a legacy null payload_hash row so later replays 
         allowAutoContinue: false,
       }),
     ).toThrow(RuntimeGatewayIdempotencyConflictError);
+  } finally {
+    cancelRuntimeUserTurnRequests(topic.id);
+    db.query("DELETE FROM runtime_gateway_submissions WHERE topic_id = ?").run(topic.id);
+    db.query("DELETE FROM runtime_events WHERE topic_id = ?").run(topic.id);
+    db.query("DELETE FROM api_messages WHERE topic_id = ?").run(topic.id);
+    deleteTopic(topic.id);
+  }
+});
+
+test("respond:false records the message without queueing an AI turn", () => {
+  const userId = `gateway-silent-${randomUUID()}`;
+  const topic = topicService.create({
+    title: `Gateway silent ${randomUUID()}`,
+    userId,
+    agent: "codex",
+  });
+  try {
+    const freshTopic = getTopic(topic.id);
+    if (!freshTopic) throw new Error("topic was not created");
+
+    const silent = submitRuntimeGatewayTurn({
+      topic: freshTopic,
+      userId,
+      text: "just talking to the humans",
+      clientMessageId: randomUUID(),
+      respond: false,
+    });
+    // The canonical transcript is still the node's, even when the room's AI is
+    // off or mention-only — otherwise Terminal and Telegram see a room with
+    // holes in it.
+    expect(silent.deduplicated).toBe(false);
+    expect(silent.ackCursor).toBeGreaterThan(0);
+    expect(silent.messageCursor).toBeGreaterThan(0);
+    expect(getApiMessage(topic.id, silent.messageId)?.text).toBe("just talking to the humans");
+    expect(getRuntimeUserTurnRequest(topic.id)).toBeNull();
+
+    // Same key replayed with `respond` flipped is a different turn: reusing the
+    // silent ACK would drop the answer with nothing to tell the caller.
+    expect(() =>
+      submitRuntimeGatewayTurn({
+        topic: freshTopic,
+        userId,
+        text: "just talking to the humans",
+        clientMessageId: silent.clientMessageId,
+        requestId: silent.requestId,
+      }),
+    ).toThrow(RuntimeGatewayIdempotencyConflictError);
+    // Replaying it unchanged still dedupes, and still queues nothing.
+    expect(
+      submitRuntimeGatewayTurn({
+        topic: freshTopic,
+        userId,
+        text: "just talking to the humans",
+        clientMessageId: silent.clientMessageId,
+        requestId: silent.requestId,
+        respond: false,
+      }).deduplicated,
+    ).toBe(true);
+    expect(getRuntimeUserTurnRequest(topic.id)).toBeNull();
+
+    submitRuntimeGatewayTurn({
+      topic: freshTopic,
+      userId,
+      text: "now please answer",
+      clientMessageId: randomUUID(),
+    });
+    expect(getRuntimeUserTurnRequest(topic.id)?.userMessages).toEqual([
+      { prompt: "now please answer", actorUserId: userId },
+    ]);
   } finally {
     cancelRuntimeUserTurnRequests(topic.id);
     db.query("DELETE FROM runtime_gateway_submissions WHERE topic_id = ?").run(topic.id);

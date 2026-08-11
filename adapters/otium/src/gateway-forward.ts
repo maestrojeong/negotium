@@ -17,7 +17,8 @@
  * scoped to one workspace, and the host capability never leaves the machine.
  *
  * Only the hub may call it (`fromIsPrimary`), and only the read/turn subset of
- * the contract is exposed — the mutating control routes stay loopback-only.
+ * the contract plus the two per-room mutations the hub owns (delete, update)
+ * is exposed — every other control route stays loopback-only.
  */
 import { NODE_CONTROL_TOKEN } from "@negotium/core";
 
@@ -43,6 +44,16 @@ function allowedRuntimePath(path: string, method: string): boolean {
     return /^\/topics\/[^/]+(\/messages)?$/.test(path);
   }
   if (method === "POST") return path === "/turns";
+  // The two mutations a hub must reach on a room it already runs turns on
+  // (D-8): deleting it, so a room the hub no longer shows stops being
+  // re-mirrored on the next sync pass instead of bouncing right back, and
+  // reconfiguring it, so the hub's agent/model/effort/AI-mode picker changes
+  // the row the turn runner actually reads.
+  //
+  // Scoped to exactly `/topics/:id`, one segment, no sub-path. Creating a topic
+  // (`POST /topics`) deliberately stays loopback-only, as does everything else
+  // that mutates.
+  if (method === "DELETE" || method === "PATCH") return /^\/topics\/[^/]+$/.test(path);
   return false;
 }
 

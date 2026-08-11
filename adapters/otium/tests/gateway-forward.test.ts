@@ -64,7 +64,7 @@ test("preserves the query string so SSE resume cursors survive the relay", async
   expect(url.searchParams.get("topicId")).toBe("abc");
 });
 
-test("forwards the whole read/turn contract the gateway client speaks", async () => {
+test("forwards the whole read/turn/room-mutation contract the gateway client speaks", async () => {
   for (const [method, path] of [
     ["GET", "/health"],
     ["GET", "/events"],
@@ -72,10 +72,19 @@ test("forwards the whole read/turn contract the gateway client speaks", async ()
     ["GET", "/topics/abc"],
     ["GET", "/topics/abc/messages"],
     ["POST", "/turns"],
+    // A hub deleting a topic it mirrored from this worker must reach the
+    // worker's own copy, or the next sync pass just re-mirrors it (D-1/D-8).
+    ["DELETE", "/topics/abc"],
+    // Same for reconfiguring it: the turn runner reads the worker's own
+    // agent/model/effort, so a hub-side picker is cosmetic without this.
+    ["PATCH", "/topics/abc"],
   ] as const) {
     const { fetch: stub, calls } = captureFetch();
     const response = await forwardGatewayRequest(
-      forwardRequest(path, { method, ...(method === "POST" ? { body: "{}" } : {}) }),
+      forwardRequest(path, {
+        method,
+        ...(method === "POST" || method === "PATCH" ? { body: "{}" } : {}),
+      }),
       { nodeOrigin: NODE_ORIGIN, fetch: stub },
     );
     expect(response?.status, `${method} ${path}`).toBe(200);
@@ -85,15 +94,17 @@ test("forwards the whole read/turn contract the gateway client speaks", async ()
 
 test("refuses control routes that are not part of the gateway contract", async () => {
   // These exist on the node but are loopback-only: reaching them with a peer
-  // token would let the hub delete topics or read the vault on the worker.
+  // token would let the hub reset a worker's session, create rooms it does not
+  // mirror, or read the vault. Deleting and updating one topic is the only
+  // mutation the hub owns, and it is asserted as allowed above.
   for (const [method, path] of [
     ["POST", "/topics/abc/access-mode"],
-    ["DELETE", "/topics/abc"],
     ["POST", "/topics/abc/session/reset"],
     ["GET", "/vault"],
     ["POST", "/shutdown"],
     ["GET", "/status"],
     ["POST", "/topics"],
+    ["POST", "/topics/abc/import"],
   ] as const) {
     const { fetch: stub, calls } = captureFetch();
     const response = await forwardGatewayRequest(
@@ -106,14 +117,18 @@ test("refuses control routes that are not part of the gateway contract", async (
   }
 });
 
-test("refuses a write method on an otherwise allowed read path", async () => {
-  const { fetch: stub, calls } = captureFetch();
-  const response = await forwardGatewayRequest(
-    forwardRequest("/topics/abc", { method: "DELETE" }),
-    { nodeOrigin: NODE_ORIGIN, fetch: stub },
-  );
-  expect(response?.status).toBe(404);
-  expect(calls).toHaveLength(0);
+test("refuses a write method that is not part of the contract", async () => {
+  // DELETE and PATCH on `/topics/:id` are allowed; nothing else is, so a method
+  // the contract never names cannot ride in on an allowed path.
+  for (const method of ["PUT", "POST"] as const) {
+    const { fetch: stub, calls } = captureFetch();
+    const response = await forwardGatewayRequest(
+      forwardRequest("/topics/abc", { method, body: "{}" }),
+      { nodeOrigin: NODE_ORIGIN, fetch: stub },
+    );
+    expect(response?.status, method).toBe(404);
+    expect(calls, method).toHaveLength(0);
+  }
 });
 
 test("does not let a nested path escape the allowed topic shape", async () => {
@@ -125,6 +140,28 @@ test("does not let a nested path escape the allowed topic shape", async () => {
     });
     expect(response?.status, path).toBe(404);
     expect(calls, path).toHaveLength(0);
+  }
+});
+
+test("the room mutations stay pinned to a single topic segment", async () => {
+  // `/topics/abc/messages` is a legitimate GET, so the mutation regex must not
+  // simply inherit the read shape — a DELETE or PATCH there would be a
+  // different, unreviewed operation on the worker.
+  for (const [method, path] of [
+    ["DELETE", "/topics"],
+    ["DELETE", "/topics/abc/messages"],
+    ["DELETE", "/topics/abc/session/reset"],
+    ["PATCH", "/topics"],
+    ["PATCH", "/topics/abc/messages"],
+    ["PATCH", "/turns"],
+  ] as const) {
+    const { fetch: stub, calls } = captureFetch();
+    const response = await forwardGatewayRequest(forwardRequest(path, { method, body: "{}" }), {
+      nodeOrigin: NODE_ORIGIN,
+      fetch: stub,
+    });
+    expect(response?.status, `${method} ${path}`).toBe(404);
+    expect(calls, `${method} ${path}`).toHaveLength(0);
   }
 });
 

@@ -11,6 +11,7 @@ import {
 import { dirname, resolve } from "node:path";
 import {
   type AgentKind,
+  type AiMode,
   appendApiMessage,
   type compactTopicSession,
   deleteVaultEntry,
@@ -52,7 +53,10 @@ import {
   TopicServiceError,
   type TopicSurface,
   TopicTitleConflictError,
+  TopicUpdateConflictError,
+  TopicValidationError,
   topicService,
+  updateTopicSettings,
   upsertTopic,
   writeDecisionGraphSvg,
 } from "@negotium/core/node-host";
@@ -380,6 +384,9 @@ export function createNodeControlHandler(
               "canonical-message-read",
               "canonical-topic-list",
               "canonical-topic-create",
+              "canonical-topic-update",
+              "canonical-topic-delete",
+              "turn-submit-silent",
               "canonical-history-import",
             ],
             cursor: latestRuntimeEventSeq(),
@@ -439,6 +446,10 @@ export function createNodeControlHandler(
             clientMessageId,
             requestId,
             allowAutoContinue: body.allowAutoContinue !== false,
+            // A room whose AI was removed, or set to mention-only, still owns
+            // its transcript here (D-1). The host decides whether this message
+            // deserves an answer; omitting the flag keeps the old behaviour.
+            respond: body.respond !== false,
             ...(threadRootId ? { threadRootId } : {}),
           });
           return Response.json(
@@ -621,6 +632,108 @@ export function createNodeControlHandler(
           if (topic && !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
           if (!topic) return jsonError(404, "Topic not found");
           return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, topic });
+        }
+
+        /**
+         * Delete a canonical topic a host surfaced, so a deleted mirror room
+         * stays deleted.
+         *
+         * Without this, deleting the Otium-side mirror of a shared topic left
+         * the node's own topic untouched — still `surface: otium` — so the
+         * next sync pass mirrored it right back. This is the seam that lets a
+         * delete actually reach the topic that owns the transcript (D-1),
+         * matching `canonical-topic-create`'s own reasoning in reverse.
+         */
+        if (runtimeTopicMatch && req.method === "DELETE") {
+          const topicId = decodeURIComponent(runtimeTopicMatch[1]);
+          const topic = getTopic(topicId);
+          if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
+          const userId = requiredText(url.searchParams.get("user"), "user");
+          try {
+            await topicService.delete({ topicId, userId });
+          } catch (err) {
+            if (err instanceof TopicServiceError) {
+              const status =
+                err.code === "TOPIC_NOT_FOUND" ? 404 : err.code === "TOPIC_FORBIDDEN" ? 403 : 400;
+              return jsonError(status, err.message);
+            }
+            throw err;
+          }
+          return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION });
+        }
+
+        /**
+         * Change a canonical topic's title, backend, model, effort or AI mode.
+         *
+         * The turn runner resolves execution from the *node's* `topic.agent` /
+         * `defaultModel` / `defaultEffort`, so a picker on the host was purely
+         * cosmetic without this: the room kept answering with whatever the node
+         * last stored. Same reasoning for `aiMode` — "remove the AI from this
+         * channel" is a property of the canonical room, not of the mirror.
+         *
+         * Absent fields are left alone, so a host that only renames a room does
+         * not have to resend a whole topic and risk clobbering a change made in
+         * Terminal between its read and its write.
+         */
+        if (runtimeTopicMatch && req.method === "PATCH") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const topicId = decodeURIComponent(runtimeTopicMatch[1]);
+          const existing = getTopic(topicId);
+          if (!existing || !topicInRequestScope(req, existing)) {
+            return jsonError(404, "Topic not found");
+          }
+          const userId = requiredText(body.userId, "userId");
+          // Same membership bar as running a turn on the room (M-8): a caller
+          // who could not speak in a room may not reconfigure it either.
+          if (!existing.participants.some((participant) => participant.userId === userId)) {
+            return jsonError(404, "Topic not found");
+          }
+          if (body.title !== undefined && typeof body.title !== "string") {
+            return jsonError(400, "title must be a string");
+          }
+          // `null` is a real value here — it removes the agent — so presence is
+          // checked with `in`, not against `undefined` alone.
+          if (
+            body.agent !== undefined &&
+            body.agent !== null &&
+            !["claude", "codex", "maestro"].includes(String(body.agent))
+          ) {
+            return jsonError(400, "Invalid agent");
+          }
+          if (body.defaultModel !== undefined && typeof body.defaultModel !== "string") {
+            return jsonError(400, "defaultModel must be a string");
+          }
+          if (body.defaultEffort !== undefined && typeof body.defaultEffort !== "string") {
+            return jsonError(400, "defaultEffort must be a string");
+          }
+          if (
+            body.aiMode !== undefined &&
+            !["always", "mention", "off"].includes(String(body.aiMode))
+          ) {
+            return jsonError(400, "Invalid aiMode");
+          }
+          try {
+            const topic = updateTopicSettings({
+              topicId,
+              ...(body.title !== undefined ? { title: body.title as string } : {}),
+              ...(body.agent !== undefined
+                ? { agent: (body.agent as AgentKind | null) ?? null }
+                : {}),
+              ...(body.defaultModel !== undefined
+                ? { defaultModel: body.defaultModel as string }
+                : {}),
+              ...(body.defaultEffort !== undefined
+                ? { defaultEffort: body.defaultEffort as string }
+                : {}),
+              ...(body.aiMode !== undefined ? { aiMode: body.aiMode as AiMode } : {}),
+            });
+            return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, topic });
+          } catch (err) {
+            if (err instanceof TopicUpdateConflictError) return jsonError(409, err.message);
+            if (err instanceof TopicValidationError) return jsonError(400, err.message);
+            throw err;
+          }
         }
 
         return jsonError(404, "Runtime contract route not found");

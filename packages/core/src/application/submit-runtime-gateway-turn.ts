@@ -27,6 +27,15 @@ export interface SubmitRuntimeGatewayTurnParams {
   clientMessageId: string;
   requestId?: string;
   allowAutoContinue?: boolean;
+  /**
+   * Whether this message should also run the AI. Defaults to true.
+   *
+   * A host whose room has the AI removed, or set to mention-only, still needs
+   * the message in the canonical transcript — otherwise Terminal and Telegram
+   * see a room with holes in it. `false` records the message and acknowledges
+   * it exactly as usual, and only declines to queue the turn.
+   */
+  respond?: boolean;
   /** Answer inside this thread instead of the room's main flow (S-13). */
   threadRootId?: string;
 }
@@ -97,6 +106,11 @@ function gatewayPayloadHash(
         params.clientMessageId,
         requestId,
         params.allowAutoContinue ?? true,
+        // Whether the message ran the AI is part of the turn's identity, not a
+        // presentation detail: replaying the same key with `respond` flipped
+        // would otherwise reuse the silent ACK and never queue the turn (or
+        // vice versa), with nothing to tell the caller it was ignored.
+        params.respond ?? true,
         // Part of the identity of the turn: the same key asked in the channel
         // and in a thread are different turns, and replaying one as the other
         // would answer in the wrong place.
@@ -130,6 +144,7 @@ export function submitRuntimeGatewayTurn(
 ): SubmitRuntimeGatewayTurnResult {
   const requestId = params.requestId ?? params.clientMessageId;
   const actorUserId = params.actorUserId ?? params.userId;
+  const respond = params.respond ?? true;
   const payloadHash = gatewayPayloadHash(params, requestId, actorUserId);
   const existing = findRuntimeGatewaySubmission(params.clientMessageId, requestId);
   if (existing) {
@@ -163,28 +178,34 @@ export function submitRuntimeGatewayTurn(
   try {
     db.transaction(() => {
       appendApiMessage(message, { notify: false });
-      mergeRuntimeUserTurnRequest({
-        topicId: params.topic.id,
-        userId: params.userId,
-        userMessages: [
-          {
-            prompt: params.text,
-            actorUserId,
-            ...(params.actorLabel ? { actorLabel: params.actorLabel } : {}),
+      // The only thing `respond: false` skips. Everything else — the canonical
+      // message, the accepted event, the idempotency record — still happens, so
+      // a silent message is indistinguishable from a normal one everywhere
+      // except that no turn is queued for it.
+      if (respond) {
+        mergeRuntimeUserTurnRequest({
+          topicId: params.topic.id,
+          userId: params.userId,
+          userMessages: [
+            {
+              prompt: params.text,
+              actorUserId,
+              ...(params.actorLabel ? { actorLabel: params.actorLabel } : {}),
+            },
+          ],
+          allowAutoContinue: params.allowAutoContinue ?? true,
+          requestId,
+          topicEpoch: getRuntimeTopicEpoch(params.topic.id),
+          execution: {
+            sessionId: getTopicSessionId(params.topic.id),
+            sessionIdSpecified: true,
+            conversationPrompts: [params.text],
+            loggedUserMessageCount: 0,
+            vaultUserId: params.vaultUserId,
+            ...(params.threadRootId ? { threadRootId: params.threadRootId } : {}),
           },
-        ],
-        allowAutoContinue: params.allowAutoContinue ?? true,
-        requestId,
-        topicEpoch: getRuntimeTopicEpoch(params.topic.id),
-        execution: {
-          sessionId: getTopicSessionId(params.topic.id),
-          sessionIdSpecified: true,
-          conversationPrompts: [params.text],
-          loggedUserMessageCount: 0,
-          vaultUserId: params.vaultUserId,
-          ...(params.threadRootId ? { threadRootId: params.threadRootId } : {}),
-        },
-      });
+        });
+      }
       const acceptedEvent = appendRuntimeEvent("runtime-gateway-ingress", {
         type: "ai-status",
         topicId: params.topic.id,
@@ -213,7 +234,11 @@ export function submitRuntimeGatewayTurn(
   // A new human message steers the active topic turn. The durable replacement
   // is committed first; the provider observes this abort on its next lease
   // heartbeat and the worker resumes the merged batch after unwind.
-  requestRuntimeTurnAbort(params.topic.id, "internal");
+  //
+  // That resume is the whole reason the abort is safe, so it is conditional on
+  // the merge: with `respond: false` there is no replacement batch, and
+  // aborting would kill a running answer with nothing left to resume it.
+  if (respond) requestRuntimeTurnAbort(params.topic.id, "internal");
 
   return { ...submission, message, deduplicated: false };
 }

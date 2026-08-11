@@ -77,6 +77,7 @@ export {
 } from "#storage/runtime-events";
 export { acquireRuntimeProcessLease } from "#storage/runtime-process-leases";
 export { getTopicStats } from "#storage/token-stats";
+export { TopicValidationError } from "#topics/create";
 export {
   getVisibleTopics,
   isParticipant,
@@ -86,6 +87,7 @@ export {
 } from "#topics/derive";
 export { ensurePersonalGeneral } from "#topics/personal-general";
 export { compactTopicSession } from "#topics/session";
+export { TopicUpdateConflictError, updateTopicSettings } from "#topics/update";
 export type { AgentKind } from "#types";
-export type { AttachmentDto, TopicDto, TopicSurface } from "#types/api";
+export type { AiMode, AttachmentDto, TopicDto, TopicSurface } from "#types/api";
 export { NEGOTIUM_VERSION } from "#version";

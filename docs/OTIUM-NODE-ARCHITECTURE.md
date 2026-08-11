@@ -140,6 +140,15 @@ topic that its owner had never published reachable from the workspace, which is 
 consent split D-6 draws, and they were a second execution path with its own event transport. The
 mirror receiver has been removed; there is one data plane.
 
+The room's whole lifecycle therefore has to be expressible over that one plane, or Otium ends up
+holding state the node contradicts. Since 0.3.7 it is: `DELETE runtime/v1/topics/:id`
+(`canonical-topic-delete`) so a deleted room is not re-mirrored on the next sync pass,
+`PATCH runtime/v1/topics/:id` (`canonical-topic-update`) so the agent/model/effort/AI-mode picker
+changes the row the turn runner actually reads, and `respond: false` on `POST /turns`
+(`turn-submit-silent`) so a room with the AI off or set to mention-only still records its
+messages canonically without queueing an answer. These two are also the only mutations the remote
+forward exposes (D-2), because the hub already runs turns on exactly these rooms.
+
 ## Current state
 
 > **Update 2026-08-08:** two bullets below (the access-mode cascade and the `accessMode=shared`
