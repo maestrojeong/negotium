@@ -289,6 +289,7 @@ export {
   appendApiMessage,
   getAllMessagesForTopic,
   getApiMessage,
+  getLastMessagePreviews,
   listApiMessages,
 } from "#storage/api-messages";
 export { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";

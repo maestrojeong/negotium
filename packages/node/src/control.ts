@@ -19,6 +19,7 @@ import {
   executeVaultCommand,
   getApiMessage,
   getGlobalAiName,
+  getLastMessagePreviews,
   getTopic,
   getTopicStats,
   getVisibleTopics,
@@ -505,13 +506,25 @@ export function createNodeControlHandler(
          * a surface *is* the consent that `accessMode=shared` used to encode,
          * so there is no per-topic flag left to filter on and no way for a host
          * to enumerate the owner's terminal or telegram rooms.
+         *
+         * The listing also carries `lastMessagePreview`. For a mapped room the
+         * node owns the transcript (D-1), so the host's own message table is
+         * empty and it can derive neither a subtitle nor a sane sort order from
+         * a store it never writes to. Previews are batched into the one query
+         * `getLastMessagePreviews` already does, keeping discovery a single
+         * round-trip, and the ids come straight from `gatewayVisibleTopics` so
+         * a preview can never escape the M-8 scope the listing is limited to.
          */
         if (req.method === "GET" && runtimePath === "/topics") {
           const topics = gatewayVisibleTopics(req);
+          const previews = getLastMessagePreviews(topics.map((topic) => topic.id));
           return Response.json({
             ok: true,
             v: NODE_RUNTIME_CONTRACT_VERSION,
-            topics,
+            topics: topics.map((topic) => {
+              const preview = previews.get(topic.id);
+              return preview ? { ...topic, lastMessagePreview: preview } : topic;
+            }),
             cursor: latestRuntimeEventSeq(),
           });
         }

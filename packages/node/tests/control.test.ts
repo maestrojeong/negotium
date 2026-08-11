@@ -315,6 +315,71 @@ test("runtime gateway topic list exposes only the otium surface", async () => {
   expect((body.topics ?? []).every((topic) => topic.surface === "otium")).toBe(true);
 });
 
+test("runtime gateway topic list carries the last message preview and time", async () => {
+  const listUser = `topic-preview-${randomUUID()}`;
+  const make = (title: string) =>
+    registerTopic({ title: `${title} ${randomUUID()}`, userId: listUser, surface: "otium" });
+
+  const chatty = make("Chatty");
+  const silent = make("Silent");
+  const tombstoned = make("Tombstoned");
+  const onlyTombstone = make("OnlyTombstone");
+
+  // `last_message_at` only ever moves forward and the row is seeded at creation
+  // time, so the fixtures have to be stamped after the topics exist for the
+  // timestamp assertion to mean anything.
+  const stamp = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString();
+  const chattyAt = stamp(1_000);
+  appendApiMessage({
+    id: randomUUID(),
+    topicId: chatty.id,
+    authorId: listUser,
+    text: "  first\nline   of\ttalk  ",
+    createdAt: chattyAt,
+  });
+  appendApiMessage({
+    id: randomUUID(),
+    topicId: tombstoned.id,
+    authorId: listUser,
+    text: "survivor",
+    createdAt: stamp(2_000),
+  });
+  // A tombstone is the newest row in the topic, so it would win the "latest
+  // message" race if the query did not exclude deleted rows.
+  appendApiMessage({
+    id: randomUUID(),
+    topicId: tombstoned.id,
+    authorId: listUser,
+    text: "",
+    deleted: true,
+    createdAt: stamp(3_000),
+  });
+  appendApiMessage({
+    id: randomUUID(),
+    topicId: onlyTombstone.id,
+    authorId: listUser,
+    text: "",
+    deleted: true,
+    createdAt: stamp(3_000),
+  });
+
+  const response = await handler(runtimeRequest("/topics"));
+  const body = (await response?.json()) as {
+    topics?: { id: string; lastMessagePreview?: string; lastMessageAt?: string }[];
+  };
+  const byId = new Map((body.topics ?? []).map((topic) => [topic.id, topic]));
+
+  // Whitespace collapsing comes from the shared preview derivation, so asserting
+  // it here keeps this surface pinned to the same rendering the UI list uses.
+  expect(byId.get(chatty.id)?.lastMessagePreview).toBe("first line of talk");
+  expect(byId.get(chatty.id)?.lastMessageAt).toBe(chattyAt);
+  expect(byId.get(tombstoned.id)?.lastMessagePreview).toBe("survivor");
+  // The field is absent, not empty: the host falls back to its own value only
+  // when it can see nothing was sent.
+  expect(byId.get(silent.id)).not.toHaveProperty("lastMessagePreview");
+  expect(byId.get(onlyTombstone.id)).not.toHaveProperty("lastMessagePreview");
+});
+
 test("runtime gateway topic list is scoped to the caller's workspace", async () => {
   const listUser = `topic-scope-${randomUUID()}`;
   const make = (surfaceScope: string | null) =>

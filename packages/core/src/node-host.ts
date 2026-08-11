@@ -65,7 +65,12 @@ export type { FileHooks, UploadAccess } from "#runtime/file-hooks";
 export { setFileHooks } from "#runtime/file-hooks";
 export { startSessionInboxWorker } from "#runtime/inbox";
 export { startAiTurn, startDurableTurnRequestWorker } from "#runtime/turn-runner";
-export { appendApiMessage, getApiMessage, listApiMessages } from "#storage/api-messages";
+export {
+  appendApiMessage,
+  getApiMessage,
+  getLastMessagePreviews,
+  listApiMessages,
+} from "#storage/api-messages";
 export { getTopic, upsertTopic } from "#storage/api-topics";
 export { getGlobalAiName, setGlobalAiName } from "#storage/app-settings";
 export { readDecisions, writeDecisionGraphSvg } from "#storage/decisions";
