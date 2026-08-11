@@ -7,6 +7,7 @@
  * peer routes whenever that file exists.
  */
 
+import { hostname } from "node:os";
 import { configureOtiumCentral, selfPeerNode } from "@/central";
 import {
   claimEnrollment,
@@ -20,6 +21,25 @@ import { parseInviteCode, saveJoin } from "@/join";
 function option(args: string[], name: string): string | undefined {
   const index = args.indexOf(`--${name}`);
   return index >= 0 ? args[index + 1]?.trim() : undefined;
+}
+
+/**
+ * This machine's own default worker name — the OS hostname, lowercased and
+ * trimmed to the node-name alphabet central accepts (`[a-z0-9._-]`, <= 32
+ * chars). Central re-normalizes and de-duplicates it against the workspace's
+ * other active nodes, so this only needs to be a reasonable first guess, not
+ * a guaranteed-unique value.
+ */
+export function localNodeNameDefault(): string | undefined {
+  const normalized = hostname()
+    .trim()
+    .toLowerCase()
+    .replace(/\.local$/, "")
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[-._]+|[-._]+$/g, "")
+    .slice(0, 32)
+    .replace(/[-._]+$/g, "");
+  return normalized || undefined;
 }
 
 async function confirmEnrollment(message: string): Promise<boolean> {
@@ -57,7 +77,11 @@ export async function joinCommand(args: string[]): Promise<void> {
     try {
       const invite = parseEnrollmentInvite(code);
       const resuming = isEnrollmentPending(invite);
-      let nodeName = option(args, "name");
+      // Prefer this machine's own identity over a blind admin guess: an
+      // explicit `--name` wins, otherwise default to the local hostname (the
+      // name this Negotium node is already known by), and only fall back to
+      // the invite's `suggestedNodeName` if the hostname is unusable.
+      let nodeName = option(args, "name") || localNodeNameDefault();
       if (resuming) {
         console.log(`Resuming interrupted Otium enrollment with ${invite.central}`);
       } else {
