@@ -148,7 +148,7 @@ changes the row the turn runner actually reads, and `respond: false` on `POST /t
 (`turn-submit-silent`) so a room with the AI off or set to mention-only still records its
 messages canonically without queueing an answer.
 
-0.3.8 closes the turn/session half of the same gap: `POST runtime/v1/topics/:id/abort`
+The same release closes the turn/session half of the gap: `POST runtime/v1/topics/:id/abort`
 (`canonical-topic-abort`), `.../session/reset` (`canonical-session-reset`) and
 `.../session/compact` (`canonical-session-compact`). A host that starts a turn must be able to
 stop it, and a long-running room needs context management that is not "delete the room" — both

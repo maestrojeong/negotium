@@ -160,7 +160,7 @@ test("the deliberate-exclusion list does not outlive the routes it excuses", () 
   }
 });
 
-test("the turn and session verbs closed in 0.3.8 are on both surfaces", () => {
+test("the turn and session verbs are on both surfaces", () => {
   for (const route of [
     "POST /topics/:id/abort",
     "POST /topics/:id/session/reset",
