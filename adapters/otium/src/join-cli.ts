@@ -8,6 +8,7 @@
  */
 
 import { hostname } from "node:os";
+import { DEFAULT_AI_NAME, getGlobalAiName } from "@negotium/core";
 import { configureOtiumCentral, selfPeerNode } from "@/central";
 import {
   claimEnrollment,
@@ -44,23 +45,32 @@ function normalizeNodeNameCandidate(raw: string): string | undefined {
 /**
  * This machine's own default worker name.
  *
- * `NEGOTIUM_NODE_NAME` wins when set: an operator-chosen, persistent identity
- * for the machine that survives every re-enrollment without retyping `--name`
- * or depending on what the OS happens to call the host. Cloud hosts default
- * their OS hostname to something like `ip-172-31-33-67` (AWS) — never wrong,
- * but not a name a person would recognize in a room list either — so the OS
- * hostname is only the fallback, not the answer, for a host an operator has
- * deliberately named.
+ * Priority: `NEGOTIUM_NODE_NAME` (an explicit, persistent operator override)
+ * > the node's own customized AI name (`getGlobalAiName()` — the identity a
+ * person already gave this assistant, e.g. "Nova", via Terminal/the app) >
+ * the OS hostname. Skipping straight to the AI name would be wrong: it
+ * defaults to `DEFAULT_AI_NAME` ("Otium") on every node nobody has renamed,
+ * so using it unconditionally would recreate the exact bug this whole chain
+ * exists to avoid — every never-renamed node colliding on the same literal
+ * name. Only a *customized* AI name is a real, deliberately chosen identity;
+ * an unrenamed one falls through to the hostname exactly like no name at
+ * all. Cloud hosts default their OS hostname to something like
+ * `ip-172-31-33-67` (AWS) — never wrong, but not a name a person would
+ * recognize in a room list — so the hostname is the last resort, not the
+ * first choice, once a real identity exists anywhere else.
  */
 export function localNodeNameDefault(): string | undefined {
   const configured = process.env.NEGOTIUM_NODE_NAME?.trim();
-  // A configured value that normalizes to nothing (blank, or entirely outside
-  // the node-name alphabet) is not "chosen and empty" — it falls through to
-  // the hostname exactly like an unset env var, rather than winning as
-  // `undefined` and leaving the node with no default name at all.
-  return (
-    (configured && normalizeNodeNameCandidate(configured)) || normalizeNodeNameCandidate(hostname())
-  );
+  if (configured) {
+    const normalized = normalizeNodeNameCandidate(configured);
+    if (normalized) return normalized;
+  }
+  const aiName = getGlobalAiName().trim();
+  if (aiName && aiName !== DEFAULT_AI_NAME) {
+    const normalized = normalizeNodeNameCandidate(aiName);
+    if (normalized) return normalized;
+  }
+  return normalizeNodeNameCandidate(hostname());
 }
 
 async function confirmEnrollment(message: string): Promise<boolean> {
@@ -99,8 +109,9 @@ export async function joinCommand(args: string[]): Promise<void> {
       const invite = parseEnrollmentInvite(code);
       const resuming = isEnrollmentPending(invite);
       // Prefer this machine's own identity over a blind admin guess:
-      // `--name` > `NEGOTIUM_NODE_NAME` > OS hostname > the invite's
-      // `suggestedNodeName`, tried only if all three are unusable.
+      // `--name` > `NEGOTIUM_NODE_NAME` > a customized AI name > OS hostname
+      // > the invite's `suggestedNodeName`, tried only if all four are
+      // unusable.
       let nodeName = option(args, "name") || localNodeNameDefault();
       if (resuming) {
         console.log(`Resuming interrupted Otium enrollment with ${invite.central}`);

@@ -1,20 +1,39 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { hostname } from "node:os";
+import { setGlobalAiName } from "@negotium/core";
 import { localNodeNameDefault } from "@/join-cli";
 
 /**
- * `NEGOTIUM_NODE_NAME` lets an operator give a host a persistent,
- * human-chosen identity that survives every re-enrollment, instead of
- * depending on whatever the OS calls the machine (an AWS EC2 default like
+ * Default worker-name priority: `NEGOTIUM_NODE_NAME` (an explicit, persistent
+ * operator override) > a customized AI name (`getGlobalAiName()` — someone
+ * already renamed this assistant, e.g. "Nova", so reuse that identity rather
+ * than inventing another one) > the OS hostname. An AWS EC2 default like
  * `ip-172-31-33-67` is never wrong, but nobody types `--name` every time they
- * re-join, so the OS hostname alone kept resurfacing it as the node name).
+ * re-join, so the hostname alone kept resurfacing it as the node name even
+ * after the person had already given the assistant a real name elsewhere.
  */
 
-const original = process.env.NEGOTIUM_NODE_NAME;
+const originalEnv = process.env.NEGOTIUM_NODE_NAME;
+
+function expectedHostname(): string | undefined {
+  return (
+    hostname()
+      .trim()
+      .toLowerCase()
+      .replace(/\.local$/, "")
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^[-._]+|[-._]+$/g, "")
+      .slice(0, 32)
+      .replace(/[-._]+$/g, "") || undefined
+  );
+}
 
 afterEach(() => {
-  if (original === undefined) delete process.env.NEGOTIUM_NODE_NAME;
-  else process.env.NEGOTIUM_NODE_NAME = original;
+  if (originalEnv === undefined) delete process.env.NEGOTIUM_NODE_NAME;
+  else process.env.NEGOTIUM_NODE_NAME = originalEnv;
+  // Every test in this file that customizes the AI name must not leak it to
+  // whichever test (in this file or another) runs next.
+  setGlobalAiName("");
 });
 
 describe("localNodeNameDefault", () => {
@@ -23,30 +42,34 @@ describe("localNodeNameDefault", () => {
     expect(localNodeNameDefault()).toBe("nova");
   });
 
-  test("falls back to the OS hostname when unset", () => {
+  test("NEGOTIUM_NODE_NAME wins over a customized AI name too", () => {
+    setGlobalAiName("Jarvis");
+    process.env.NEGOTIUM_NODE_NAME = "operator-chosen";
+    expect(localNodeNameDefault()).toBe("operator-chosen");
+  });
+
+  test("a customized AI name is used when NEGOTIUM_NODE_NAME is unset", () => {
     delete process.env.NEGOTIUM_NODE_NAME;
-    const expected = hostname()
-      .trim()
-      .toLowerCase()
-      .replace(/\.local$/, "")
-      .replace(/[^a-z0-9._-]+/g, "-")
-      .replace(/^[-._]+|[-._]+$/g, "")
-      .slice(0, 32)
-      .replace(/[-._]+$/g, "");
-    expect(localNodeNameDefault()).toBe(expected || undefined);
+    setGlobalAiName("Nova");
+    expect(localNodeNameDefault()).toBe("nova");
+  });
+
+  test("the default, never-renamed AI name does not win — it would collide on every node", () => {
+    delete process.env.NEGOTIUM_NODE_NAME;
+    setGlobalAiName(""); // resets to DEFAULT_AI_NAME ("Otium")
+    expect(localNodeNameDefault()).toBe(expectedHostname());
+  });
+
+  test("falls back to the OS hostname when nothing is configured", () => {
+    delete process.env.NEGOTIUM_NODE_NAME;
+    setGlobalAiName("");
+    expect(localNodeNameDefault()).toBe(expectedHostname());
   });
 
   test("falls back to the OS hostname when NEGOTIUM_NODE_NAME is blank", () => {
     process.env.NEGOTIUM_NODE_NAME = "   ";
-    const expected = hostname()
-      .trim()
-      .toLowerCase()
-      .replace(/\.local$/, "")
-      .replace(/[^a-z0-9._-]+/g, "-")
-      .replace(/^[-._]+|[-._]+$/g, "")
-      .slice(0, 32)
-      .replace(/[-._]+$/g, "");
-    expect(localNodeNameDefault()).toBe(expected || undefined);
+    setGlobalAiName("");
+    expect(localNodeNameDefault()).toBe(expectedHostname());
   });
 
   test("normalizes an operator-supplied name into the node-name alphabet", () => {
@@ -54,16 +77,21 @@ describe("localNodeNameDefault", () => {
     expect(localNodeNameDefault()).toBe("my-cool-mac-mini");
   });
 
-  test("a configured name that normalizes to nothing falls back to the hostname", () => {
+  test("normalizes a customized AI name into the node-name alphabet too", () => {
+    delete process.env.NEGOTIUM_NODE_NAME;
+    setGlobalAiName("Nova Prime!!");
+    expect(localNodeNameDefault()).toBe("nova-prime");
+  });
+
+  test("a configured name that normalizes to nothing falls back the same as unset", () => {
     process.env.NEGOTIUM_NODE_NAME = "!!!";
-    const expected = hostname()
-      .trim()
-      .toLowerCase()
-      .replace(/\.local$/, "")
-      .replace(/[^a-z0-9._-]+/g, "-")
-      .replace(/^[-._]+|[-._]+$/g, "")
-      .slice(0, 32)
-      .replace(/[-._]+$/g, "");
-    expect(localNodeNameDefault()).toBe(expected || undefined);
+    setGlobalAiName("");
+    expect(localNodeNameDefault()).toBe(expectedHostname());
+  });
+
+  test("a customized AI name that normalizes to nothing falls back to the hostname", () => {
+    delete process.env.NEGOTIUM_NODE_NAME;
+    setGlobalAiName("!!!");
+    expect(localNodeNameDefault()).toBe(expectedHostname());
   });
 });
