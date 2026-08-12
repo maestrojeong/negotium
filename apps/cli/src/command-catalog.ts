@@ -72,7 +72,7 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   },
   {
     name: "otium",
-    usage: "otium join|leave|serve",
+    usage: "otium join|leave|status|serve",
     description: "manage the Otium workspace connection",
     group: "Channels",
   },

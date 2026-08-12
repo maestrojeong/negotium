@@ -4,6 +4,7 @@
  *
  *   negotium-otium join <invite-code>   store credentials from an invite code
  *   negotium-otium leave                remove credentials
+ *   negotium-otium status               show the workspace(s) this node is joined to
  *   negotium-otium serve                canonical node + Otium sidecar
  *
  * There is no per-topic sharing switch. A room reaches Otium because it lives
@@ -125,6 +126,14 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
       await joinCommand(commandArgs);
       break;
     }
+    case "status": {
+      if (commandArgs.length > 0) {
+        throw new Error("usage: negotium otium status");
+      }
+      const { statusCommand } = await import("@/status-cli");
+      await statusCommand();
+      break;
+    }
     case "leave": {
       const targetCellId = commandArgs[0]?.trim();
       if (commandArgs.length > 1 || targetCellId?.startsWith("-")) {
@@ -190,10 +199,11 @@ export async function runOtiumCli(args = process.argv.slice(2)): Promise<void> {
         [
           "negotium otium — attach a Negotium node to an Otium workspace",
           "",
-          "usage: negotium otium <join|leave|serve> [args]",
+          "usage: negotium otium <join|leave|status|serve> [args]",
           "",
           "  join <code>   store credentials from an Otium invite code",
           "  leave         remove the stored workspace credentials",
+          "  status        show which workspace(s)/central this node is joined to",
           "  serve [--port <port>] [--relay <url>]",
           "                 run peer routes and an outbound relay tunnel",
           "",
