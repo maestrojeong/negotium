@@ -109,16 +109,17 @@ export async function joinCommand(args: string[]): Promise<void> {
       const invite = parseEnrollmentInvite(code);
       const resuming = isEnrollmentPending(invite);
       // Prefer this machine's own identity over a blind admin guess:
-      // `--name` > `NEGOTIUM_NODE_NAME` > a customized AI name > OS hostname
-      // > the invite's `suggestedNodeName`, tried only if all four are
-      // unusable.
-      let nodeName = option(args, "name") || localNodeNameDefault();
+      // `--name` > `NEGOTIUM_NODE_NAME` > a customized AI name > OS hostname.
+      // The invite's `suggestedNodeName` is deliberately not consulted: Otium
+      // no longer prompts an admin for one (the joining machine's own
+      // identity is always the better answer), so it is either absent or a
+      // stale guess from an old client build.
+      const nodeName = option(args, "name") || localNodeNameDefault();
       if (resuming) {
         console.log(`Resuming interrupted Otium enrollment with ${invite.central}`);
       } else {
         const preview = await previewEnrollment(invite);
         const workspace = preview.preview?.workspace;
-        nodeName ||= preview.preview?.suggestedNodeName || undefined;
         console.log(`Otium workspace: ${workspace?.name ?? workspace?.slug ?? workspace?.id}`);
         console.log(`  central:   ${invite.central}`);
         console.log(`  transport: ${preview.preview?.transport ?? "relay"}`);
