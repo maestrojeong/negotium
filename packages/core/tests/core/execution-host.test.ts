@@ -6,7 +6,6 @@ import {
   redactHostedSecrets,
   referencesHostedSecretStorage,
   resolveAgentExecutionHost,
-  shouldRedirectHostedVaultTool,
   substituteHostedSecrets,
   transformHostedQueryOptions,
   withAgentExecutionHost,
@@ -51,7 +50,6 @@ describe("agent execution host", () => {
         redactVaultSecrets: (_userId, value) => value.replaceAll("secret", "[redacted]"),
         substituteVaultSecrets: (_userId, value) => value.replaceAll("{{TOKEN}}", "secret"),
         referencesRuntimeSecretStorage: (value) => value === "/device/vault.db",
-        shouldRedirectVaultTool: (_userId, toolName) => toolName === "Bash",
       }),
     );
 
@@ -59,7 +57,6 @@ describe("agent execution host", () => {
     expect(redactHostedSecrets("u1", "a secret")).toBe("a [redacted]");
     expect(substituteHostedSecrets("u1", "use {{TOKEN}}")).toBe("use secret");
     expect(referencesHostedSecretStorage("/device/vault.db")).toBe(true);
-    expect(shouldRedirectHostedVaultTool("u1", "Bash", {})).toBe(true);
   });
 
   test("enforces auxiliary tool policy after an embedding host resolves MCP", () => {

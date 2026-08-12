@@ -56,7 +56,7 @@ async function setup(
   return { broker, dataDir: dir };
 }
 
-describe("browser Vault broker", () => {
+describe("browser Vault substitution", () => {
   test("uses a private socket and rejects a bad token", async () => {
     const { broker } = await setup("broker-auth-user");
     expect(statSync(broker.socketPath).mode & 0o777).toBe(0o600);

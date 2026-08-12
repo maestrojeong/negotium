@@ -10,9 +10,8 @@ model transcript.
 - Claude and Maestro replace `{{KEY}}` immediately before normal tool execution.
 - Browser MCP calls replace nested placeholders inside the browser process for every provider,
   including Codex, and redact secret values from browser results and errors.
-- The default Vault MCP surface now exposes `vault_list` only. `vault_run` and
-  `vault_http_request` remain available from `createVaultMcpServer` for compatibility when an
-  embedding host explicitly opts into those broker tools.
+- The default Vault MCP surface exposes key discovery only. Release 0.4.0 later removed the
+  deprecated credential execution compatibility surface from the factory entirely.
 - Vault values remain AES-256-GCM encrypted at rest. Raw, URL-encoded, base64, base64url, and hex
   forms remain redacted from provider-visible tool output.
 
@@ -33,5 +32,5 @@ bundled manager or mirror the browser Vault transform and user-id environment wi
 3. Inject Otium's `vaultSubstituteDetailed(...).text` through `substituteVaultSecrets`.
 4. Replace or update Otium's duplicated Playwright wrapper and manager so `browser_fill` and other
    browser inputs resolve Vault placeholders locally.
-5. Change Otium's normal Vault MCP launch to list-only and remove broker-only prompt guidance.
+5. Change Otium's normal Vault MCP launch to key discovery only.
 6. Run Otium typecheck, Vault security tests, browser wrapper tests, and runtime overlap audit.

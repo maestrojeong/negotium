@@ -7,10 +7,8 @@ browser automation, and hardens daemon handoff and browser-process ownership.
 
 - Claude and Maestro substitute `{{KEY}}` placeholders immediately before normal tool execution
   and redact matching values from tool output.
-- Browser form tools can consume Vault placeholders without routing the operation through a shell
-  or HTTP broker.
-- Codex native shell and HTTP calls continue to use the Vault broker because Codex does not expose
-  the same host-side tool hooks.
+- Browser form tools can consume Vault placeholders through execution-time substitution.
+- Release 0.4.0 adds Codex execution-time substitution through `PreToolUse`.
 - Direct reads of Vault database and runtime secret-storage files remain blocked.
 
 ## Browser passkeys

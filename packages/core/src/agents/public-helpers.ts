@@ -139,12 +139,3 @@ export {
   type TopicLogMaintenance,
   type TopicLogMaintenanceHost,
 } from "#agents/topic-cleanup";
-export {
-  createVaultToolPolicy,
-  isVaultBrokerTool,
-  referencesRuntimeSecretStorage,
-  shouldRedirectVaultTool,
-  VAULT_BROKER_REDIRECT_ERROR,
-  type VaultToolPolicy,
-  type VaultToolPolicyHost,
-} from "#agents/vault-tool-policy";

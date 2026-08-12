@@ -677,7 +677,6 @@ import type {
   TopicLogMaintenanceHost,
   TaskEventHost,
   ToolCallSummaryInput,
-  VaultToolPolicyHost,
 } from "negotium/agent-helpers";
 import type { BackgroundBashManager, BackgroundBashManagerOptions } from "negotium/background-bash";
 import type {
@@ -705,8 +704,8 @@ import type {
   SessionTargetCatalogHost,
   TokenStatsMcpContext,
   TokenStatsMcpHost,
-  VaultCredentialHost,
   VaultMcpContext,
+  VaultMcpHost,
   WikiMcpContext,
   WikiMcpHost,
 } from "negotium/mcp-factories";
@@ -859,8 +858,7 @@ if (
 }
 const forkHost = null as AgentForkHost | null;
 const treeHost = null as CodexTreeHost | null;
-const vaultPolicyHost = null as VaultToolPolicyHost | null;
-if (forkHost || treeHost || vaultPolicyHost) throw new Error("unreachable host smoke");
+if (forkHost || treeHost) throw new Error("unreachable host smoke");
 const codexStamp: CodexProcStamp = { pid: 1, lstart: "smoke" };
 if (typeof agentHelpers.killCodexTrees !== "function" || codexStamp.pid !== 1) {
   throw new Error("packed codex process helper export is missing");
@@ -948,12 +946,6 @@ if (typeof mcpFactories.createSystemHealthMcpServer !== "function") {
 if (typeof mcpFactories.createVaultMcpServer !== "function") {
   throw new Error("packed vault MCP factory export is missing");
 }
-if (
-  typeof mcpFactories.executeVaultRun !== "function" ||
-  typeof mcpFactories.executeVaultHttpRequest !== "function"
-) {
-  throw new Error("packed vault executor export is missing");
-}
 if (typeof mcpFactories.protectMcpStdio !== "function") {
   throw new Error("packed MCP stdio protection export is missing");
 }
@@ -969,12 +961,8 @@ const packedTaskServer = mcpFactories.createTaskMcpServer({
 });
 await packedTaskServer.close();
 const packedVaultServer = mcpFactories.createVaultMcpServer(
-  { userId: "smoke-user", httpOnly: true },
-  {
-    list: () => [],
-    substitute: (_userId, text) => ({ text, usedKeys: [] }),
-    redact: (_userId, text) => text,
-  },
+  { userId: "smoke-user" },
+  { list: () => [] },
 );
 await packedVaultServer.close();
 const packedWikiContext: WikiMcpContext = { userId: "smoke-user", surface: "wiki" };
@@ -1134,7 +1122,7 @@ const publicTypes = {} as {
   systemHealthSnapshot: SystemHealthSnapshot;
   tokenStatsMcpContext: TokenStatsMcpContext;
   tokenStatsMcpHost: TokenStatsMcpHost;
-  vaultCredentialHost: VaultCredentialHost;
+  vaultMcpHost: VaultMcpHost;
   vaultMcpContext: VaultMcpContext;
   registry: AgentRegistry;
   rolloutOptions: WriteRolloutOptions;

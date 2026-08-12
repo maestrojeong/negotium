@@ -146,12 +146,8 @@ process-global Vault state accidentally:
 import { createVaultMcpServer, protectMcpStdio } from "negotium/mcp-factories";
 
 const vaultServer = createVaultMcpServer(
-  { userId, httpOnly: true },
-  {
-    list: (id) => vault.list(id),
-    substitute: (id, text) => vault.substitute(id, text),
-    redact: (id, text) => vault.redact(id, text),
-  },
+  { userId },
+  { list: (id) => vault.list(id) },
 );
 ```
 

@@ -82,8 +82,8 @@ describe("hosted built-in MCP surfaces", () => {
     expect(skills).toEqual(["skill_query", "skill_save"]);
   });
 
-  test("keeps Vault mutation tools limited to Codex", async () => {
-    expect(await surfaceTools("vault")).toEqual(["vault_http_request", "vault_list", "vault_run"]);
+  test("keeps Vault discovery-only for every provider", async () => {
+    expect(await surfaceTools("vault")).toEqual(["vault_list"]);
     expect(await surfaceTools("vault", { ...baseContext, agent: "claude" })).toEqual([
       "vault_list",
     ]);

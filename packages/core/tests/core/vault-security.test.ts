@@ -5,12 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   referencesRuntimeSecretStorage,
-  shouldRedirectVaultTool,
   shouldSubstituteVaultToolInput,
 } from "#agents/vault-tool-policy";
-import type { VaultCredentialHost } from "#mcp/factories/vault";
-import { executeVaultHttpRequest } from "#mcp/vault-http";
-import { executeVaultRun } from "#mcp/vault-run";
 import { DATA_DIR } from "#platform/config";
 import { Database } from "#storage/sqlite";
 import {
@@ -18,19 +14,12 @@ import {
   redactVaultSecrets,
   vaultDel,
   vaultGetValue,
-  vaultList,
   vaultSet,
   vaultSubstituteDetailed,
 } from "#storage/vault";
 import { decryptVaultValue, encryptVaultValue, isEncryptedVaultValue } from "#storage/vault-crypto";
 
 const createdEntries: Array<{ userId: string; key: string }> = [];
-const vaultHost: VaultCredentialHost = {
-  list: vaultList,
-  substitute: vaultSubstituteDetailed,
-  redact: redactVaultSecrets,
-};
-
 function remember(userId: string, key: string, value: string): void {
   vaultSet(userId, key, value);
   createdEntries.push({ userId, key });
@@ -129,12 +118,6 @@ describe("Vault secret boundary", () => {
       text: "Bearer secret-token / {{MISSING}}",
       usedKeys: ["TOKEN"],
     });
-    expect(shouldRedirectVaultTool(userId, "Bash", { command: "use {{TOKEN}}" })).toBe(false);
-    expect(
-      shouldRedirectVaultTool(userId, "mcp__vault__vault_run", {
-        command: "use {{TOKEN}}",
-      }),
-    ).toBe(false);
   });
 
   test("blocks runtime secret storage paths at any tool-input depth", () => {
@@ -165,85 +148,9 @@ describe("Vault secret boundary", () => {
       "write_log",
       "Write",
       "Edit",
-      "mcp__vault__vault_run",
+      "mcp__vault__vault_list",
     ]) {
       expect(shouldSubstituteVaultToolInput(toolName)).toBe(false);
     }
-  });
-
-  test("vault_run executes internally and redacts command output", async () => {
-    const userId = `vault-run-${randomUUID()}`;
-    const secret = "run-secret-value";
-    remember(userId, "RUN_TOKEN", secret);
-
-    const result = await executeVaultRun(
-      userId,
-      {
-        command: "printf '%s' '{{RUN_TOKEN}}'; printf '\\n'; printf '%s' '{{RUN_TOKEN}}' | base64",
-        timeoutMs: 5_000,
-      },
-      vaultHost,
-    );
-    expect(result.ok).toBe(true);
-    expect(result.usedKeys).toEqual(["RUN_TOKEN"]);
-    expect(result.stdout).not.toContain(secret);
-    expect(result.stdout).not.toContain(Buffer.from(secret).toString("base64"));
-    expect(result.stdout).toContain("[REDACTED:RUN_TOKEN]");
-  });
-
-  test("vault_http_request keeps expanded credentials out of its result", async () => {
-    const userId = `vault-http-${randomUUID()}`;
-    const secret = "http-secret-value";
-    remember(userId, "HTTP_TOKEN", secret);
-    let receivedAuthorization = "";
-    const fetchImpl = (async (_input: Request | string | URL, init?: RequestInit) => {
-      receivedAuthorization = new Headers(init?.headers).get("authorization") ?? "";
-      return new Response(`echo ${secret}`, {
-        status: 200,
-        headers: {
-          "content-type": "text/plain",
-          location: `https://example.com/${secret}`,
-        },
-      });
-    }) as typeof fetch;
-
-    const result = await executeVaultHttpRequest(
-      userId,
-      {
-        method: "GET",
-        url: "https://api.example.com/data",
-        headers: { Authorization: "Bearer {{HTTP_TOKEN}}" },
-      },
-      vaultHost,
-      fetchImpl,
-    );
-    expect(receivedAuthorization).toBe(`Bearer ${secret}`);
-    expect(JSON.stringify(result)).not.toContain(secret);
-    expect(result.body).toContain("[REDACTED:HTTP_TOKEN]");
-    expect(result.headers?.location).toContain("[REDACTED:HTTP_TOKEN]");
-  });
-
-  test("vault_http_request rejects plaintext transport and credentials in URLs", async () => {
-    const userId = `vault-http-reject-${randomUUID()}`;
-    remember(userId, "TOKEN", "secret");
-    const http = await executeVaultHttpRequest(
-      userId,
-      {
-        method: "GET",
-        url: "http://example.com",
-        headers: { Authorization: "Bearer {{TOKEN}}" },
-      },
-      vaultHost,
-    );
-    const query = await executeVaultHttpRequest(
-      userId,
-      {
-        method: "GET",
-        url: "https://example.com/?token={{TOKEN}}",
-      },
-      vaultHost,
-    );
-    expect(http.error).toContain("HTTPS");
-    expect(query.error).toContain("out of URLs");
   });
 });

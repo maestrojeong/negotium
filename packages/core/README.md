@@ -44,8 +44,8 @@ import {
 configureAgentExecutionHost({
   getMcpServersForQuery: (query) => buildLocalMcpCatalog(query),
   redactVaultSecrets: (userId, value) => localVault.redact(userId, value),
-  shouldRedirectVaultTool: (userId, toolName, input) =>
-    localVault.shouldBroker(userId, toolName, input),
+  substituteVaultSecrets: (userId, value) => localVault.substitute(userId, value),
+  referencesRuntimeSecretStorage: (value) => localVault.isSensitivePath(value),
 });
 
 for await (const event of runHostedAgent(query)) {

@@ -22,10 +22,13 @@ import {
   snapshotCodexChildren,
   unregisterOwnedCodexPids,
 } from "#agents/codex-tree-kill";
+import { createCodexVaultHookBridge } from "#agents/codex-vault-hook-bridge";
+import { deepMapStrings } from "#agents/deep-map";
 import {
   hostedCodexAuthFilePath,
   hostedCodexHomePath,
   hostedMcpServers,
+  redactHostedSecrets,
 } from "#agents/execution-host";
 import {
   type CodexTokenTotals,
@@ -698,7 +701,15 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
             : {}),
         }
       : undefined;
+  let vaultHook: Awaited<ReturnType<typeof createCodexVaultHookBridge>>;
+  try {
+    vaultHook = await createCodexVaultHookBridge(opts.vaultUserId ?? opts.userId ?? "");
+  } catch (err) {
+    yield { type: "error", content: `Failed to initialize Codex Vault hooks: ${errMsg(err)}` };
+    return;
+  }
   const codex = new Codex({
+    codexPathOverride: vaultHook.codexPathOverride,
     ...(codexEnvironment ? { env: codexEnvironment } : {}),
     config: {
       // Otium exposes delegation through runtime.spawn_subagent so child work
@@ -710,7 +721,8 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
       // Codex model metadata can override these flags. The authoritative
       // catalog above sets multi_agent_version=disabled as the hard stop; keep
       // all feature switches off as a second layer and for future CLI versions.
-      features: { multi_agent: false, multi_agent_v2: false, enable_fanout: false },
+      features: { hooks: true, multi_agent: false, multi_agent_v2: false, enable_fanout: false },
+      hooks: vaultHook.hooks,
       model_catalog_json: codexModelCatalogPath,
       mcp_servers: codexMcpServers,
       ...(opts.toolPolicy ? { sandbox_permissions: [] } : {}),
@@ -889,7 +901,10 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
               const item = event.item;
               if (!item) break;
               if (item.type === "command_execution") {
-                const command = String(item.command ?? "");
+                const command = redactHostedSecrets(
+                  opts.vaultUserId ?? opts.userId ?? "",
+                  String(item.command ?? ""),
+                );
                 yield {
                   type: "tool_use",
                   name: "Bash",
@@ -897,13 +912,16 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
                   toolUseId: String(item.id ?? ""),
                 };
               } else if (item.type === "mcp_tool_call") {
+                const input =
+                  item.arguments && typeof item.arguments === "object"
+                    ? (item.arguments as Record<string, unknown>)
+                    : {};
                 yield {
                   type: "tool_use",
                   name: String(item.tool ?? "unknown"),
-                  input:
-                    item.arguments && typeof item.arguments === "object"
-                      ? (item.arguments as Record<string, unknown>)
-                      : {},
+                  input: deepMapStrings(input, (value) =>
+                    redactHostedSecrets(opts.vaultUserId ?? opts.userId ?? "", value),
+                  ) as Record<string, unknown>,
                   toolUseId: String(item.id ?? ""),
                 };
               }
@@ -945,7 +963,10 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
                 yield {
                   type: "tool_result",
                   toolUseId: String(item.id ?? ""),
-                  content: summarizeMcpToolCallResult(item as unknown as McpToolCallItem),
+                  content: redactHostedSecrets(
+                    opts.vaultUserId ?? opts.userId ?? "",
+                    summarizeMcpToolCallResult(item as unknown as McpToolCallItem),
+                  ),
                   ...(isError ? { isError: true } : {}),
                 };
               } else if (item.type === "command_execution") {
@@ -955,7 +976,10 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
                 yield {
                   type: "tool_result",
                   toolUseId: String(item.id ?? ""),
-                  content: String(item.aggregated_output ?? "").slice(0, 200),
+                  content: redactHostedSecrets(
+                    opts.vaultUserId ?? opts.userId ?? "",
+                    String(item.aggregated_output ?? "").slice(0, 200),
+                  ),
                   ...(isError ? { isError: true } : {}),
                 };
               } else if (item.type === "file_change") {
@@ -1075,5 +1099,6 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
   } finally {
     abortSignal?.removeEventListener("abort", onAbortKill);
     if (trackedPids.pids.length > 0) unregisterOwnedCodexPids(trackedPids.pids);
+    await vaultHook.close();
   }
 }

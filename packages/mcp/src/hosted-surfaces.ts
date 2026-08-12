@@ -95,26 +95,11 @@ export async function buildHostedSurfaceServer(
       );
     }
     case "vault": {
-      const [{ createVaultMcpServer }, vault, { logger }] = await Promise.all([
+      const [{ createVaultMcpServer }, vault] = await Promise.all([
         import("@negotium/core/mcp-factories/vault"),
         import("@negotium/core/vault"),
-        import("@negotium/core/mcp-runtime-host"),
       ]);
-      return createVaultMcpServer(
-        {
-          userId: context.userId,
-          listOnly: context.agent !== "codex",
-          cwd: context.cwd,
-        },
-        {
-          list: vault.vaultList,
-          substitute: vault.vaultSubstituteDetailed,
-          redact: vault.redactVaultSecrets,
-          log(level, details, message) {
-            logger[level](details, message);
-          },
-        },
-      );
+      return createVaultMcpServer({ userId: context.userId }, { list: vault.vaultList });
     }
     case "wiki":
     case "skills": {

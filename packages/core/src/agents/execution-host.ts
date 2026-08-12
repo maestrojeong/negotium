@@ -1,9 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { dirname } from "node:path";
-import {
-  referencesRuntimeSecretStorage as defaultReferencesRuntimeSecretStorage,
-  shouldRedirectVaultTool as defaultShouldRedirectVaultTool,
-} from "#agents/vault-tool-policy";
+import { referencesRuntimeSecretStorage as defaultReferencesRuntimeSecretStorage } from "#agents/vault-tool-policy";
 import { CLAUDE_EXECUTABLE, codexAuthFilePath } from "#platform/config";
 import { getMcpServersForQuery as defaultGetMcpServersForQuery } from "#platform/mcp-config";
 import {
@@ -25,7 +22,6 @@ export interface AgentExecutionHost {
   redactVaultSecrets(userId: string, value: string): string;
   substituteVaultSecrets(userId: string, value: string): string;
   referencesRuntimeSecretStorage(value: unknown): boolean;
-  shouldRedirectVaultTool(userId: string, toolName: string, input: unknown): boolean;
   claudeCodeExecutablePath(): string | undefined;
   codexAuthFilePath(): string;
   transformQueryOptions?(opts: AgentQueryOptions): AgentQueryOptions;
@@ -36,7 +32,6 @@ const defaultHost: AgentExecutionHost = {
   redactVaultSecrets: defaultRedactVaultSecrets,
   substituteVaultSecrets: (userId, value) => defaultVaultSubstituteDetailed(userId, value).text,
   referencesRuntimeSecretStorage: defaultReferencesRuntimeSecretStorage,
-  shouldRedirectVaultTool: defaultShouldRedirectVaultTool,
   claudeCodeExecutablePath: () => CLAUDE_EXECUTABLE,
   codexAuthFilePath,
 };
@@ -103,14 +98,6 @@ export function substituteHostedSecrets(userId: string, value: string): string {
 
 export function referencesHostedSecretStorage(value: unknown): boolean {
   return activeHost().referencesRuntimeSecretStorage(value);
-}
-
-export function shouldRedirectHostedVaultTool(
-  userId: string,
-  toolName: string,
-  input: unknown,
-): boolean {
-  return activeHost().shouldRedirectVaultTool(userId, toolName, input);
 }
 
 export function transformHostedQueryOptions(opts: AgentQueryOptions): AgentQueryOptions {

@@ -184,8 +184,10 @@ describe("codexProvider stale rollout recovery", () => {
     );
     expect(startThread).toHaveBeenCalledTimes(1);
     expect(codexConstructor).toHaveBeenCalledWith({
+      codexPathOverride: expect.stringContaining("negotium-codex-vault-"),
       config: {
-        features: { multi_agent: false, multi_agent_v2: false, enable_fanout: false },
+        features: { hooks: true, multi_agent: false, multi_agent_v2: false, enable_fanout: false },
+        hooks: expect.objectContaining({ PreToolUse: expect.any(Array) }),
         model_catalog_json: codexModelCatalogPath,
         mcp_servers: {
           playwright: expect.objectContaining({ enabled: false }),
@@ -224,8 +226,10 @@ describe("codexProvider stale rollout recovery", () => {
     }
 
     expect(codexConstructor).toHaveBeenCalledWith({
+      codexPathOverride: expect.stringContaining("negotium-codex-vault-"),
       config: {
-        features: { multi_agent: false, multi_agent_v2: false, enable_fanout: false },
+        features: { hooks: true, multi_agent: false, multi_agent_v2: false, enable_fanout: false },
+        hooks: expect.objectContaining({ PreToolUse: expect.any(Array) }),
         model_catalog_json: codexModelCatalogPath,
         mcp_servers: {
           playwright: expect.objectContaining({ enabled: false }),
@@ -260,8 +264,10 @@ describe("codexProvider stale rollout recovery", () => {
     }
 
     expect(codexConstructor).toHaveBeenCalledWith({
+      codexPathOverride: expect.stringContaining("negotium-codex-vault-"),
       config: {
-        features: { multi_agent: false, multi_agent_v2: false, enable_fanout: false },
+        features: { hooks: true, multi_agent: false, multi_agent_v2: false, enable_fanout: false },
+        hooks: expect.objectContaining({ PreToolUse: expect.any(Array) }),
         model_catalog_json: codexModelCatalogPath,
         mcp_servers: {
           playwright: expect.objectContaining({ enabled: false }),
