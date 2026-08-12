@@ -25,14 +25,26 @@ function resolveSourceAlias(specifier: string): string {
 }
 
 for (const entrypoint of entrypoints) {
-  // Build public entrypoints independently. This keeps a CLI importing the
-  // package's library entrypoint from creating cyclic shared chunks.
+  // Build public entrypoints independently, each one self-contained.
+  //
+  // `splitting` is off deliberately. With it on, Bun emitted shared chunks
+  // whose `export {}` block was written twice when a module was reached over
+  // more than one edge — `src/join.ts` is pulled in both statically and
+  // through the dynamic `import("@/join-cli")` / `import("@/status-cli")`
+  // paths in `src/cli.ts`. The resulting chunk failed to link with "Cannot
+  // export a duplicate name: parseInviteCode", which took out `negotium otium
+  // join` and `negotium otium status` entirely. Nothing caught it earlier
+  // because the bad chunk is only linked when the dynamic import runs, so
+  // importing the entrypoint itself still looked fine.
+  //
+  // The cost is duplicated code across entrypoints; the benefit is output
+  // that actually loads. Revisit if Bun fixes the duplicate-export emit.
   const build = await Bun.build({
     entrypoints: [entrypoint],
     outdir,
     target: "bun",
     packages: "external",
-    splitting: true,
+    splitting: false,
     plugins: [
       {
         name: "package-local-source-alias",
