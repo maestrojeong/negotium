@@ -61,7 +61,7 @@ import {
   upsertTopic,
   writeDecisionGraphSvg,
 } from "@negotium/core/node-host";
-import { nodeFileStore } from "./files";
+import { MAX_NODE_UPLOAD_BYTES, nodeFileStore } from "./files";
 import { createPollingSseStream } from "./polling-sse";
 
 export const NODE_CONTROL_PROTOCOL_VERSION = 1;
@@ -392,9 +392,37 @@ export function createNodeControlHandler(
               "canonical-topic-abort",
               "canonical-session-reset",
               "canonical-session-compact",
+              "canonical-input-files",
             ],
             cursor: latestRuntimeEventSeq(),
           });
+        }
+
+        if (req.method === "POST" && runtimePath === "/input-files") {
+          const form = await req.formData();
+          const topicId = requiredText(form.get("topicId"), "topicId");
+          const userId = requiredText(form.get("userId"), "userId");
+          const fileId = requiredText(form.get("fileId"), "fileId");
+          const file = form.get("file");
+          if (!(file instanceof File)) throw new ControlRequestError("file is required");
+          if (file.size > MAX_NODE_UPLOAD_BYTES) return jsonError(413, "File too large");
+          const topic = getTopic(topicId);
+          if (
+            !topic ||
+            !topicInRequestScope(req, topic) ||
+            !topic.participants.some((participant) => participant.userId === userId)
+          ) {
+            return jsonError(404, "Topic not found");
+          }
+          const attachment = await nodeFileStore.storeUploadedFile(fileId, file, {
+            topicId,
+            ownerUserId: userId,
+          });
+          if (!attachment) return jsonError(409, "File id is already bound to another upload");
+          return Response.json(
+            { ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, attachment },
+            { status: 201 },
+          );
         }
 
         if (req.method === "POST" && runtimePath === "/turns") {
@@ -418,7 +446,8 @@ export function createNodeControlHandler(
             body.vaultUserId === undefined
               ? undefined
               : requiredText(body.vaultUserId, "vaultUserId");
-          const text = requiredText(body.text, "text");
+          if (typeof body.text !== "string") throw new ControlRequestError("text is required");
+          const text = body.text;
           const clientMessageId = requiredText(body.clientMessageId, "clientMessageId");
           const requestId =
             body.requestId === undefined ? undefined : requiredText(body.requestId, "requestId");
@@ -426,10 +455,29 @@ export function createNodeControlHandler(
             body.threadRootId === undefined
               ? undefined
               : requiredText(body.threadRootId, "threadRootId");
+          const attachments =
+            body.attachments === undefined
+              ? []
+              : Array.isArray(body.attachments) &&
+                  body.attachments.every((value) => typeof value === "string" && value.trim())
+                ? body.attachments
+                : (() => {
+                    throw new ControlRequestError("attachments must be an array of file ids");
+                  })();
+          if (!text.trim() && attachments.length === 0) {
+            throw new ControlRequestError("text or attachments required");
+          }
           const topic = getTopic(topicId);
           if (!topic) return jsonError(404, "Topic not found");
           if (!topic.participants.some((participant) => participant.userId === userId)) {
             return jsonError(404, "Topic not found");
+          }
+          if (
+            attachments.some(
+              (fileId) => !nodeFileStore.allows(fileId, { topicId, ownerUserId: userId }),
+            )
+          ) {
+            return jsonError(404, "Attachment not found");
           }
           if (threadRootId) {
             // The root must be a real, undeleted message of this room that is
@@ -454,6 +502,7 @@ export function createNodeControlHandler(
             // its transcript here (D-1). The host decides whether this message
             // deserves an answer; omitting the flag keeps the old behaviour.
             respond: body.respond !== false,
+            ...(attachments.length ? { attachments } : {}),
             ...(threadRootId ? { threadRootId } : {}),
           });
           return Response.json(

@@ -171,8 +171,8 @@ function localCapabilities() {
     runtimeVersion: RUNTIME_VERSION,
     features: {
       remoteAsk: true,
-      // `/api/v1/peer/input-file` existed to stage attachments for a placed turn.
-      inputFiles: false,
+      // Input files now use the canonical Runtime Gateway for both local and remote nodes.
+      inputFiles: true,
       outputFiles: true,
       visualBridge: true,
       askUserBridge: true,

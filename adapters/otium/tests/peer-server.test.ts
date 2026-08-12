@@ -153,7 +153,7 @@ describe("capabilities / health", () => {
     expect(body.runtimeVersion).toBe(NEGOTIUM_VERSION);
     expect(body.features).toEqual({
       remoteAsk: true,
-      inputFiles: false,
+      inputFiles: true,
       outputFiles: true,
       visualBridge: true,
       askUserBridge: true,

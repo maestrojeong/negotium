@@ -72,6 +72,7 @@ test("forwards the whole read/turn/room-mutation contract the gateway client spe
     ["GET", "/topics/abc"],
     ["GET", "/topics/abc/messages"],
     ["POST", "/turns"],
+    ["POST", "/input-files"],
     // Creating a room on the worker the hub already drives: the same hub that
     // may start turns on, reconfigure and delete this worker's rooms may also
     // bring one into existence, and without it the Otium worker picker has no

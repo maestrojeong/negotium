@@ -41,3 +41,29 @@ test("node file store persists runtime output with topic-scoped download access"
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("node file store idempotently stages gateway input under its topic", async () => {
+  const root = mkdtempSync(join(tmpdir(), "negotium-node-input-files-"));
+  const store = new NodeFileStore(join(root, "uploads"));
+  const fileId = randomUUID();
+  const access = { ownerUserId: "local", topicId: randomUUID() };
+  const file = new File(["<html>ok</html>"], "report.html", { type: "text/html" });
+
+  try {
+    const first = await store.storeUploadedFile(fileId, file, access);
+    const replay = await store.storeUploadedFile(fileId, file, access);
+    expect(first).not.toBeNull();
+    expect(replay).toEqual(first);
+    expect(store.allows(fileId, access)).toBe(true);
+    expect(store.allows(fileId, { ...access, topicId: randomUUID() })).toBe(false);
+    expect(
+      await store.storeUploadedFile(
+        fileId,
+        new File(["different"], "report.html", { type: "text/html" }),
+        access,
+      ),
+    ).toBeNull();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

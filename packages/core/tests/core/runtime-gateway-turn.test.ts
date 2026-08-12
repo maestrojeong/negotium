@@ -5,6 +5,7 @@ import {
   submitRuntimeGatewayTurn,
 } from "#application/submit-runtime-gateway-turn";
 import { topicService } from "#application/topic-service";
+import { fileHooks, setFileHooks } from "#runtime/file-hooks";
 import { appendApiMessage, getApiMessage } from "#storage/api-messages";
 import { deleteTopic, getTopic, setTopicSessionId } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
@@ -335,6 +336,58 @@ test("respond:false records the message without queueing an AI turn", () => {
       { prompt: "now please answer", actorUserId: userId },
     ]);
   } finally {
+    cancelRuntimeUserTurnRequests(topic.id);
+    db.query("DELETE FROM runtime_gateway_submissions WHERE topic_id = ?").run(topic.id);
+    db.query("DELETE FROM runtime_events WHERE topic_id = ?").run(topic.id);
+    db.query("DELETE FROM api_messages WHERE topic_id = ?").run(topic.id);
+    deleteTopic(topic.id);
+  }
+});
+
+test("runtime gateway persists staged attachments into the message and durable turn", () => {
+  const userId = `gateway-files-${randomUUID()}`;
+  const topic = topicService.create({
+    title: `Gateway files ${randomUUID()}`,
+    userId,
+    agent: "codex",
+  });
+  const previousHooks = fileHooks();
+  const fileId = randomUUID();
+  setFileHooks({
+    resolveAttachmentByFileId: (id) =>
+      id === fileId
+        ? {
+            id,
+            type: "file",
+            filename: "report.html",
+            url: `/files/${id}`,
+            mimeType: "text/html",
+            sizeBytes: 17,
+          }
+        : null,
+    resolveUploadedFilePathByFileId: () => null,
+    storeLocalFileAsUpload: () => null,
+  });
+  try {
+    const freshTopic = getTopic(topic.id);
+    if (!freshTopic) throw new Error("topic was not created");
+    const submission = submitRuntimeGatewayTurn({
+      topic: freshTopic,
+      userId,
+      text: "",
+      clientMessageId: randomUUID(),
+      attachments: [fileId],
+    });
+    expect(submission.message.attachments?.[0]).toMatchObject({
+      id: fileId,
+      filename: "report.html",
+      mimeType: "text/html",
+    });
+    expect(getRuntimeUserTurnRequest(topic.id)?.userMessages).toEqual([
+      { prompt: "", actorUserId: userId, attachments: [fileId] },
+    ]);
+  } finally {
+    setFileHooks(previousHooks);
     cancelRuntimeUserTurnRequests(topic.id);
     db.query("DELETE FROM runtime_gateway_submissions WHERE topic_id = ?").run(topic.id);
     db.query("DELETE FROM runtime_events WHERE topic_id = ?").run(topic.id);

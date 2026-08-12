@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { resolveAttachmentByFileId } from "#runtime/file-hooks";
 import { appendApiMessage, getApiMessage } from "#storage/api-messages";
 import { getTopicSessionId } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
@@ -38,6 +39,8 @@ export interface SubmitRuntimeGatewayTurnParams {
   respond?: boolean;
   /** Answer inside this thread instead of the room's main flow (S-13). */
   threadRootId?: string;
+  /** Host-uploaded file ids already staged in this node's file store. */
+  attachments?: string[];
 }
 
 export interface SubmitRuntimeGatewayTurnResult extends RuntimeGatewaySubmission {
@@ -115,6 +118,7 @@ function gatewayPayloadHash(
         // and in a thread are different turns, and replaying one as the other
         // would answer in the wrong place.
         params.threadRootId ?? null,
+        params.attachments ?? [],
       ]),
     )
     .digest("hex");
@@ -152,6 +156,10 @@ export function submitRuntimeGatewayTurn(
   }
 
   const createdAt = new Date().toISOString();
+  const attachments = params.attachments?.map(resolveAttachmentByFileId);
+  if (attachments?.some((attachment) => !attachment)) {
+    throw new Error("gateway attachment could not be resolved");
+  }
   const message: MessageDto = {
     id: randomUUID(),
     topicId: params.topic.id,
@@ -160,6 +168,9 @@ export function submitRuntimeGatewayTurn(
     sourceAdapter: "runtime-gateway",
     sourceMessageId: params.clientMessageId,
     text: params.text,
+    ...(attachments?.length
+      ? { attachments: attachments as NonNullable<MessageDto["attachments"]> }
+      : {}),
     ...(params.threadRootId ? { threadRootId: params.threadRootId } : {}),
     createdAt,
   };
@@ -191,6 +202,7 @@ export function submitRuntimeGatewayTurn(
               prompt: params.text,
               actorUserId,
               ...(params.actorLabel ? { actorLabel: params.actorLabel } : {}),
+              ...(params.attachments?.length ? { attachments: params.attachments } : {}),
             },
           ],
           allowAutoContinue: params.allowAutoContinue ?? true,

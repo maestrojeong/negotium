@@ -19,7 +19,7 @@ import {
   type UploadAccess,
 } from "@negotium/core/node-host";
 
-const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
+export const MAX_NODE_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
 const FILE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface NodeUploadMetadata {
@@ -133,6 +133,62 @@ export class NodeFileStore {
     deleteFilesForTopic: (topicId) => this.deleteForTopic(topicId),
   };
 
+  async storeUploadedFile(
+    fileId: string,
+    file: File,
+    access: Required<Pick<UploadAccess, "ownerUserId" | "topicId">>,
+  ): Promise<AttachmentDto | null> {
+    if (!FILE_ID_RE.test(fileId) || file.size > MAX_NODE_UPLOAD_BYTES) return null;
+    this.#ensureDir();
+    const filename = basename(file.name || "upload") || "upload";
+    const extension = safeExtension(filename);
+    const mimeType = file.type || MIME_BY_EXT[extension] || "application/octet-stream";
+    const existing = this.#metadata(fileId);
+    if (existing) {
+      const matches =
+        existing.filename === filename &&
+        existing.mimeType === mimeType &&
+        existing.sizeBytes === file.size &&
+        existing.ownerUserId === access.ownerUserId &&
+        existing.topicId === access.topicId &&
+        existsSync(join(this.uploadDir, existing.savedName));
+      return matches ? this.#attachment(fileId, existing) : null;
+    }
+
+    const savedName = `${fileId}${extension}`;
+    const savedPath = join(this.uploadDir, savedName);
+    try {
+      const sizeBytes = await Bun.write(savedPath, file);
+      if (sizeBytes !== file.size) throw new Error("incomplete upload write");
+      const metadata: NodeUploadMetadata = {
+        filename,
+        mimeType,
+        sizeBytes,
+        savedName,
+        ownerUserId: access.ownerUserId,
+        topicId: access.topicId,
+        visibility: "private",
+      };
+      writeFileSync(this.#metadataPath(fileId), JSON.stringify(metadata), { mode: 0o600 });
+      return this.#attachment(fileId, metadata);
+    } catch (error) {
+      rmSync(savedPath, { force: true });
+      rmSync(this.#metadataPath(fileId), { force: true });
+      logger.warn({ err: error, fileId }, "node files: failed to store gateway upload");
+      return null;
+    }
+  }
+
+  allows(fileId: string, access: { ownerUserId: string; topicId: string }): boolean {
+    const metadata = this.#metadata(fileId);
+    return Boolean(
+      metadata &&
+        metadata.ownerUserId === access.ownerUserId &&
+        metadata.topicId === access.topicId &&
+        existsSync(join(this.uploadDir, metadata.savedName)),
+    );
+  }
+
   store(absPath: string, access: UploadAccess = {}): AttachmentDto | null {
     this.#ensureDir();
     const fileId = randomUUID();
@@ -141,7 +197,7 @@ export class NodeFileStore {
     const savedPath = join(this.uploadDir, savedName);
     try {
       const stats = statSync(absPath);
-      if (!stats.isFile() || stats.size > MAX_UPLOAD_BYTES) return null;
+      if (!stats.isFile() || stats.size > MAX_NODE_UPLOAD_BYTES) return null;
       const metadata: NodeUploadMetadata = {
         filename: basename(absPath),
         mimeType: MIME_BY_EXT[extension] ?? "application/octet-stream",
