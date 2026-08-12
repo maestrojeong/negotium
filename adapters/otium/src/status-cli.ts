@@ -18,14 +18,18 @@ import { attachOtiumCentralCell, configureOtiumCentral, selfPeerNodeForCell } fr
 import { loadJoins } from "@/join";
 
 export async function statusCommand(): Promise<void> {
-  const joins = loadJoins();
-  if (joins.length === 0) {
-    console.log("not joined to any Otium workspace");
-    process.exitCode = 1;
-    return;
-  }
-
+  // configureOtiumCentral is a process-wide singleton also used elsewhere in
+  // the adapter, so every path out of this function — including the
+  // not-joined early return — must clear it, not just the paths that attached
+  // something themselves.
   try {
+    const joins = loadJoins();
+    if (joins.length === 0) {
+      console.log("not joined to any Otium workspace");
+      process.exitCode = 1;
+      return;
+    }
+
     configureOtiumCentral(joins[0] ?? null);
     for (const join of joins.slice(1)) attachOtiumCentralCell(join);
     for (const [index, join] of joins.entries()) {

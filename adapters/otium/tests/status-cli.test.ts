@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, unlinkSync } from "node:fs";
-import { configureOtiumCentral, resetPeerCentralCaches } from "@/central";
+import {
+  attachedOtiumCells,
+  configureOtiumCentral,
+  isOtiumCentralConfigured,
+  resetPeerCentralCaches,
+} from "@/central";
 import { joinFilePath, saveJoin } from "@/join";
 import { statusCommand } from "@/status-cli";
 
@@ -53,6 +58,25 @@ describe("statusCommand", () => {
     }
     expect(capture.logs.join("\n")).toContain("not joined to any Otium workspace");
     expect(process.exitCode).toBe(1);
+  });
+
+  test("clears any pre-attached central cell state even on the not-joined path", async () => {
+    // configureOtiumCentral is a process-wide singleton also touched by other
+    // adapter code; the not-joined early return must not skip its cleanup.
+    configureOtiumCentral({
+      central: "http://127.0.0.1:4600",
+      cellId: "cell_stale",
+      secret: "rcs_stale",
+    });
+    expect(isOtiumCentralConfigured()).toBe(true);
+    const capture = captureConsole();
+    try {
+      await statusCommand();
+    } finally {
+      capture.restore();
+    }
+    expect(isOtiumCentralConfigured()).toBe(false);
+    expect(attachedOtiumCells()).toEqual([]);
   });
 
   test("prints cellId, central, and the node name resolved from central", async () => {
