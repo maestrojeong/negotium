@@ -65,7 +65,16 @@ describe("Codex Vault PreToolUse hook", () => {
     try {
       const command = bridge.hooks.PreToolUse[0]?.hooks[0]?.command;
       if (!command) throw new Error("hook command was not configured");
-      const child = spawn("/bin/sh", ["-c", command], { stdio: ["pipe", "pipe", "pipe"] });
+      expect(command).not.toContain(bridge.environment.NEGOTIUM_CODEX_VAULT_HOOK_SOCKET);
+      expect(command).not.toContain(bridge.environment.NEGOTIUM_CODEX_VAULT_HOOK_TOKEN);
+      const wrapper = await Bun.file(bridge.codexPathOverride).text();
+      expect(wrapper).toContain("exec --dangerously-bypass-hook-trust");
+      expect(wrapper).toContain("export NEGOTIUM_CODEX_VAULT_HOOK_SOCKET=");
+      expect(wrapper).toContain("export NEGOTIUM_CODEX_VAULT_HOOK_TOKEN=");
+      const child = spawn("/bin/sh", ["-c", command], {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, ...bridge.environment },
+      });
       child.stdin.end(
         JSON.stringify({
           hook_event_name: "PreToolUse",

@@ -56,6 +56,9 @@ type CodexEventUsage = {
   cache_write_input_tokens?: number;
 };
 
+const CODEX_HOOK_TRUST_BYPASS_NOTICE =
+  "`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.";
+
 function sameCodexUsage(usage: CodexEventUsage, total: CodexTokenTotals): boolean {
   return (
     usage.input_tokens === total.inputTokens &&
@@ -994,7 +997,10 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
                   yield fileEvent;
                 }
               } else if (item.type === "error") {
-                yield { type: "error", content: String(item.message ?? "") };
+                const message = String(item.message ?? "");
+                if (message !== CODEX_HOOK_TRUST_BYPASS_NOTICE) {
+                  yield { type: "error", content: message };
+                }
               }
               break;
             }

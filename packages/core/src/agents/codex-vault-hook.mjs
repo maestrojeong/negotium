@@ -1,7 +1,9 @@
 import { createConnection } from "node:net";
 
 const MAX_RESPONSE_BYTES = 1024 * 1024;
-const [socketPath, token] = process.argv.slice(2);
+const [socketPathArg, tokenArg] = process.argv.slice(2);
+const socketPath = socketPathArg || process.env.NEGOTIUM_CODEX_VAULT_HOOK_SOCKET;
+const token = tokenArg || process.env.NEGOTIUM_CODEX_VAULT_HOOK_TOKEN;
 
 function deny(reason) {
   return {

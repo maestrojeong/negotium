@@ -207,6 +207,43 @@ describe("codexProvider stale rollout recovery", () => {
     expect(events).toContainEqual({ type: "text", content: "fresh answer" });
   });
 
+  test("ignores the hook bypass notice without hiding other Codex errors", async () => {
+    streamedEvents = async function* hookNoticeAndError() {
+      yield { type: "thread.started", thread_id: "019dee65-ffff-7aaa-8aaa-cccccccccccc" };
+      yield {
+        type: "item.completed",
+        item: {
+          type: "error",
+          message:
+            "`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.",
+        },
+      };
+      yield {
+        type: "item.completed",
+        item: { type: "error", message: "real Codex error" },
+      };
+      yield {
+        type: "item.completed",
+        item: { type: "agent_message", text: "completed despite notice" },
+      };
+      yield { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } };
+    };
+
+    const events = [];
+    for await (const event of codexProvider(opts({ sessionId: null }))) events.push(event);
+
+    expect(events).not.toContainEqual({
+      type: "error",
+      content:
+        "`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.",
+    });
+    expect(events).toContainEqual({ type: "error", content: "real Codex error" });
+    expect(events).toContainEqual({ type: "text", content: "completed despite notice" });
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "result", content: "completed despite notice" }),
+    );
+  });
+
   test("isolates no-tool auxiliary calls from MCP, network, and writable sandbox access", async () => {
     const configPath = join(codexAuthDir, "config.toml");
     writeFileSync(

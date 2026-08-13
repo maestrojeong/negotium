@@ -13,6 +13,8 @@ import { shouldSubstituteVaultToolInput } from "#agents/vault-tool-policy";
 
 const MAX_HOOK_REQUEST_BYTES = 1024 * 1024;
 const SENSITIVE_STORAGE_DENIAL = "Runtime secret storage access is not permitted";
+const HOOK_SOCKET_ENV = "NEGOTIUM_CODEX_VAULT_HOOK_SOCKET";
+const HOOK_TOKEN_ENV = "NEGOTIUM_CODEX_VAULT_HOOK_TOKEN";
 
 export interface CodexPreToolUseInput {
   hook_event_name?: string;
@@ -69,9 +71,11 @@ function hookClientPath(): string {
   throw new Error("Codex Vault hook client is missing from this installation");
 }
 
-function privateCodexWrapper(codexScript: string): string {
+function privateCodexWrapper(codexScript: string, socketPath: string, token: string): string {
   return [
     "#!/bin/sh",
+    `export ${HOOK_SOCKET_ENV}=${shellQuote(socketPath)}`,
+    `export ${HOOK_TOKEN_ENV}=${shellQuote(token)}`,
     'if [ "$1" = "exec" ]; then',
     "  shift",
     `  exec ${shellQuote(process.execPath)} ${shellQuote(codexScript)} exec --dangerously-bypass-hook-trust "$@"`,
@@ -83,6 +87,7 @@ function privateCodexWrapper(codexScript: string): string {
 
 export interface CodexVaultHookBridge {
   codexPathOverride: string;
+  environment: Record<string, string>;
   hooks: {
     PreToolUse: Array<{
       matcher: string;
@@ -153,16 +158,17 @@ export async function createCodexVaultHookBridge(userId: string): Promise<CodexV
       });
     });
     await chmod(socketPath, 0o600);
-    await writeFile(wrapperPath, privateCodexWrapper(codexCliScriptPath()), { mode: 0o700 });
+    await writeFile(wrapperPath, privateCodexWrapper(codexCliScriptPath(), socketPath, token), {
+      mode: 0o700,
+    });
 
-    const command = [
-      shellQuote(process.execPath),
-      shellQuote(hookClientPath()),
-      shellQuote(socketPath),
-      shellQuote(token),
-    ].join(" ");
+    // Keep the capability out of the process list and reviewed hook command.
+    // The private wrapper explicitly authorizes this runtime-owned hook for
+    // headless Codex turns.
+    const command = [shellQuote(process.execPath), shellQuote(hookClientPath())].join(" ");
     return {
       codexPathOverride: wrapperPath,
+      environment: { [HOOK_SOCKET_ENV]: socketPath, [HOOK_TOKEN_ENV]: token },
       hooks: {
         PreToolUse: [
           {
