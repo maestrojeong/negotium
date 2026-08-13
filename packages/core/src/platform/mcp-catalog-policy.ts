@@ -19,6 +19,11 @@ export const COMMON_RUNTIME_MCP_POLICY = {
   "background-bash": { scopes: ["forum"], forumRequired: true },
   "agent-health": { scopes: ["forum", "manager", "cron"], forumRequired: true },
   vault: { scopes: ["dm", "forum", "manager", "cron"], forumRequired: true },
+  // macOS desktop control via maestrojeong/cua-rs. Deliberately NOT
+  // forumRequired: it advertises 12 tools, a meaningful slice of a turn's
+  // tool budget, and most topics never touch a native app. Opt in per topic
+  // through the enabled whitelist.
+  "cua-rs": { scopes: ["dm", "forum", "fork"], forumRequired: false },
 } as const satisfies Record<string, RuntimeMcpPolicyEntry>;
 
 export type CommonRuntimeMcpName = keyof typeof COMMON_RUNTIME_MCP_POLICY;

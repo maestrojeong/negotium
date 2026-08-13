@@ -1,3 +1,7 @@
+import { accessSync, constants as fsConstants } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import { canonicalMcpBridgeEnv } from "#mcp/canonical-bridge-config";
 import {
   buildHostedMcpSpec,
@@ -571,7 +575,59 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
       );
     },
   },
+  // macOS desktop control, delegated to maestrojeong/cua-rs rather than
+  // reimplemented. Not one of our servers: a third-party native binary spoken
+  // to over plain stdio.
+  //
+  // `buildStdioMcpServer` does not apply here — that helper exists to paper
+  // over codex's inability to handshake with bun-spawned TypeScript servers,
+  // and this is a signed Mach-O binary that both agents launch identically.
+  //
+  // Unlike cua-driver, cua-rs does not run a persistent daemon behind a proxy:
+  // `cua-rs` with no args serves MCP over stdio directly, one process per
+  // turn, and is by construction unable to move the cursor, steal keyboard
+  // focus, or switch Space -- it drives the Accessibility API against a
+  // targeted element rather than synthesizing input at a screen coordinate.
+  "cua-rs": {
+    ...commonRuntimeMcpPolicy("cua-rs"),
+    build() {
+      // Absent binary is the normal case on Linux hosts and on any Mac where
+      // the user has not installed it. Returning null omits the entry for this
+      // turn instead of advertising 12 tools that cannot run -- same contract
+      // the playwright entry uses when it has no port.
+      const bin = resolveCuaRsBinary();
+      if (!bin) return null;
+      return { command: bin, args: [] };
+    },
+  },
 };
+
+/**
+ * Locate the `cua-rs` binary, or `null` when it is not installed.
+ *
+ * Checked in order of specificity: an explicit env override for anyone running
+ * a local build, then the installer's default target, then `/usr/local/bin`
+ * for a `--bin-dir` install. PATH is deliberately not consulted -- the server
+ * is spawned by a supervised host process whose PATH is not the user's shell
+ * PATH, so a PATH lookup would succeed in a terminal and fail under pm2.
+ */
+function resolveCuaRsBinary(): string | null {
+  if (process.platform !== "darwin") return null;
+  const candidates = [
+    envText("NEGOTIUM_CUA_RS_BIN"),
+    join(homedir(), ".local", "bin", "cua-rs"),
+    "/usr/local/bin/cua-rs",
+  ].filter((p): p is string => Boolean(p));
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+      return candidate;
+    } catch {
+      // Not there, or not executable. Try the next one.
+    }
+  }
+  return null;
+}
 
 // --- Derived catalog views ---
 
