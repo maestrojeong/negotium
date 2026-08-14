@@ -602,3 +602,69 @@ describe("mcp-config: playwright transport selection per agent", () => {
     ).toBeUndefined();
   });
 });
+
+/**
+ * cua-rs: the macOS desktop-control server, and its one dangerous flag.
+ *
+ * Two properties worth pinning. The entry disappears when the binary is not
+ * installed, rather than advertising tools that cannot run — Linux hosts and
+ * un-installed Macs are the normal case, not an error. And `--allow-hid` is
+ * off unless someone says so explicitly: it lets the server fall back to a
+ * real mouse click, which borrows the user's pointer, so an empty or negative
+ * value must not enable it.
+ */
+describe("mcp-config: cua-rs HID opt-in", () => {
+  const userId = "9998";
+  const cuaRsFor = (env: Record<string, string | undefined>) => {
+    const saved: Record<string, string | undefined> = {};
+    for (const [k, v] of Object.entries(env)) {
+      saved[k] = process.env[k];
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    try {
+      const servers = getForumMcpServers({
+        userId,
+        session: "coding",
+        agent: "claude",
+        enabled: ["cua-rs"],
+      });
+      return (servers as Record<string, { command?: string; args?: string[] }>)["cua-rs"];
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  };
+
+  test("an unusable override falls through to the installed binary", () => {
+    // The override is the first candidate, not the only one: a stale
+    // NEGOTIUM_CUA_RS_BIN left over from a deleted local build must not take
+    // the server away from someone who has it installed normally.
+    const entry = cuaRsFor({
+      NEGOTIUM_CUA_RS_BIN: "/nonexistent/cua-rs",
+      NEGOTIUM_CUA_RS_ALLOW_HID: undefined,
+    });
+    expect(entry?.command).not.toBe("/nonexistent/cua-rs");
+  });
+
+  test("passes no flags by default, so the cursor stays the user's", () => {
+    const entry = cuaRsFor({ NEGOTIUM_CUA_RS_BIN: "/bin/echo", NEGOTIUM_CUA_RS_ALLOW_HID: undefined });
+    expect(entry?.command).toBe("/bin/echo");
+    expect(entry?.args).toEqual([]);
+  });
+
+  test("passes --allow-hid only for an explicit affirmative", () => {
+    for (const on of ["1", "true", "yes", "YES"]) {
+      const entry = cuaRsFor({ NEGOTIUM_CUA_RS_BIN: "/bin/echo", NEGOTIUM_CUA_RS_ALLOW_HID: on });
+      expect(entry?.args).toEqual(["--allow-hid"]);
+    }
+    // Someone who set the variable to say "no" gets no. An empty string is the
+    // shape an unset-but-exported variable takes, and must not arm it either.
+    for (const off of ["0", "false", "no", "", "  "]) {
+      const entry = cuaRsFor({ NEGOTIUM_CUA_RS_BIN: "/bin/echo", NEGOTIUM_CUA_RS_ALLOW_HID: off });
+      expect(entry?.args).toEqual([]);
+    }
+  });
+});

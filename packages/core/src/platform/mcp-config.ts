@@ -584,10 +584,17 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   // and this is a signed Mach-O binary that both agents launch identically.
   //
   // Unlike cua-driver, cua-rs does not run a persistent daemon behind a proxy:
-  // `cua-rs` with no args serves MCP over stdio directly, one process per
-  // turn, and is by construction unable to move the cursor, steal keyboard
-  // focus, or switch Space -- it drives the Accessibility API against a
-  // targeted element rather than synthesizing input at a screen coordinate.
+  // `cua-rs` with no args serves MCP over stdio directly, one process per turn.
+  //
+  // On its default path it drives the Accessibility API against a targeted
+  // element rather than synthesizing input at a screen coordinate, so it does
+  // not move the cursor, take keyboard focus, or switch Space. That is not a
+  // structural guarantee any more: started with `--allow-hid` it will fall
+  // back to a real mouse click for elements that advertise no accessibility
+  // action at all -- a chat app's conversation row, measured -- which borrows
+  // the pointer for a few frames and puts it back. Off unless
+  // NEGOTIUM_CUA_RS_ALLOW_HID is set, because it trades away the property that
+  // makes this server safe to run while someone is using the machine.
   "cua-rs": {
     ...commonRuntimeMcpPolicy("cua-rs"),
     build() {
@@ -597,10 +604,28 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
       // the playwright entry uses when it has no port.
       const bin = resolveCuaRsBinary();
       if (!bin) return null;
-      return { command: bin, args: [] };
+      return { command: bin, args: cuaRsArgs() };
     },
   },
 };
+
+/**
+ * Flags for the `cua-rs` process, which today is only the HID opt-in.
+ *
+ * Kept as a function rather than a constant so the environment is read when
+ * the server is spawned, not when this module is first imported -- the catalog
+ * is built once per turn and an operator flipping the variable should not have
+ * to restart the host to see it take effect.
+ */
+function cuaRsArgs(): string[] {
+  // Only an explicit affirmative turns it on. An empty string, "0" or "false"
+  // must not enable a mode that takes the user's pointer, and someone who
+  // exports the variable to document that they thought about it and said no
+  // should get what they asked for.
+  const raw = envText("NEGOTIUM_CUA_RS_ALLOW_HID")?.trim().toLowerCase();
+  const on = raw === "1" || raw === "true" || raw === "yes";
+  return on ? ["--allow-hid"] : [];
+}
 
 /**
  * Locate the `cua-rs` binary, or `null` when it is not installed.
