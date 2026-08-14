@@ -617,7 +617,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
  * is built once per turn and an operator flipping the variable should not have
  * to restart the host to see it take effect.
  */
-function cuaRsArgs(): string[] {
+export function cuaRsArgs(): string[] {
   // Only an explicit affirmative turns it on. An empty string, "0" or "false"
   // must not enable a mode that takes the user's pointer, and someone who
   // exports the variable to document that they thought about it and said no
@@ -636,8 +636,8 @@ function cuaRsArgs(): string[] {
  * is spawned by a supervised host process whose PATH is not the user's shell
  * PATH, so a PATH lookup would succeed in a terminal and fail under pm2.
  */
-function resolveCuaRsBinary(): string | null {
-  if (process.platform !== "darwin") return null;
+export function resolveCuaRsBinary(platform: NodeJS.Platform = process.platform): string | null {
+  if (platform !== "darwin") return null;
   const candidates = [
     envText("NEGOTIUM_CUA_RS_BIN"),
     join(homedir(), ".local", "bin", "cua-rs"),

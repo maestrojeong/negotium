@@ -10,6 +10,7 @@ import {
   browserOwnerCapability,
   buildStdioMcpServer,
   consumePlaywrightUnavailable,
+  cuaRsArgs,
   getCronMcpServers,
   getDmMcpServers,
   getForumMcpServers,
@@ -18,6 +19,7 @@ import {
   markPlaywrightUnavailable,
   OPTIONAL_FORUM_MCP_SERVERS,
   registerRuntimeMcpServer,
+  resolveCuaRsBinary,
 } from "#platform/mcp-config";
 
 /**
@@ -614,8 +616,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
  * value must not enable it.
  */
 describe("mcp-config: cua-rs HID opt-in", () => {
-  const userId = "9998";
-  const cuaRsFor = (env: Record<string, string | undefined>) => {
+  const withEnv = <T>(env: Record<string, string | undefined>, run: () => T): T => {
     const saved: Record<string, string | undefined> = {};
     for (const [k, v] of Object.entries(env)) {
       saved[k] = process.env[k];
@@ -623,13 +624,7 @@ describe("mcp-config: cua-rs HID opt-in", () => {
       else process.env[k] = v;
     }
     try {
-      const servers = getForumMcpServers({
-        userId,
-        session: "coding",
-        agent: "claude",
-        enabled: ["cua-rs"],
-      });
-      return (servers as Record<string, { command?: string; args?: string[] }>)["cua-rs"];
+      return run();
     } finally {
       for (const [k, v] of Object.entries(saved)) {
         if (v === undefined) delete process.env[k];
@@ -638,33 +633,36 @@ describe("mcp-config: cua-rs HID opt-in", () => {
     }
   };
 
+  test("is omitted outside macOS even when an executable override exists", () => {
+    const binary = withEnv({ NEGOTIUM_CUA_RS_BIN: "/bin/echo" }, () => resolveCuaRsBinary("linux"));
+    expect(binary).toBeNull();
+  });
+
   test("an unusable override falls through to the installed binary", () => {
     // The override is the first candidate, not the only one: a stale
     // NEGOTIUM_CUA_RS_BIN left over from a deleted local build must not take
     // the server away from someone who has it installed normally.
-    const entry = cuaRsFor({
-      NEGOTIUM_CUA_RS_BIN: "/nonexistent/cua-rs",
-      NEGOTIUM_CUA_RS_ALLOW_HID: undefined,
-    });
-    expect(entry?.command).not.toBe("/nonexistent/cua-rs");
+    const binary = withEnv({ NEGOTIUM_CUA_RS_BIN: "/nonexistent/cua-rs" }, () =>
+      resolveCuaRsBinary("darwin"),
+    );
+    expect(binary).not.toBe("/nonexistent/cua-rs");
   });
 
   test("passes no flags by default, so the cursor stays the user's", () => {
-    const entry = cuaRsFor({ NEGOTIUM_CUA_RS_BIN: "/bin/echo", NEGOTIUM_CUA_RS_ALLOW_HID: undefined });
-    expect(entry?.command).toBe("/bin/echo");
-    expect(entry?.args).toEqual([]);
+    const args = withEnv({ NEGOTIUM_CUA_RS_ALLOW_HID: undefined }, cuaRsArgs);
+    expect(args).toEqual([]);
   });
 
   test("passes --allow-hid only for an explicit affirmative", () => {
     for (const on of ["1", "true", "yes", "YES"]) {
-      const entry = cuaRsFor({ NEGOTIUM_CUA_RS_BIN: "/bin/echo", NEGOTIUM_CUA_RS_ALLOW_HID: on });
-      expect(entry?.args).toEqual(["--allow-hid"]);
+      const args = withEnv({ NEGOTIUM_CUA_RS_ALLOW_HID: on }, cuaRsArgs);
+      expect(args).toEqual(["--allow-hid"]);
     }
     // Someone who set the variable to say "no" gets no. An empty string is the
     // shape an unset-but-exported variable takes, and must not arm it either.
     for (const off of ["0", "false", "no", "", "  "]) {
-      const entry = cuaRsFor({ NEGOTIUM_CUA_RS_BIN: "/bin/echo", NEGOTIUM_CUA_RS_ALLOW_HID: off });
-      expect(entry?.args).toEqual([]);
+      const args = withEnv({ NEGOTIUM_CUA_RS_ALLOW_HID: off }, cuaRsArgs);
+      expect(args).toEqual([]);
     }
   });
 });
