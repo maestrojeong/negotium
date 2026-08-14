@@ -281,6 +281,41 @@ Start with the [documentation index](./docs/README.md), then see:
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution checks and
 [SECURITY.md](./SECURITY.md) for private vulnerability reporting.
 
+## FAQ
+
+**What is Negotium?** Negotium is a self-hosted local AI agent runtime — one
+durable node running on your own machine that runs Claude Code, Codex, or
+Maestro, and is reachable from Terminal, Telegram, and any number of Otium
+workspaces at once, all sharing the same memory, skills, vault, and schedules.
+
+**Is Negotium a Claude Code / Codex wrapper or its own runtime?** It's a
+runtime that hosts those agent backends. Topics keep their own history and
+tools regardless of which backend runs them, and the same node-wide memory,
+skills, vault, and Cron schedules are available no matter which surface or
+backend a topic uses.
+
+**Can I run Negotium without Telegram or Otium?** Yes — Negotium stays fully
+useful with Terminal alone, with Telegram alone, or with any combination,
+including no Otium workspace at all. See [The Negotium Node](#the-negotium-node).
+
+**Where does Negotium store data, and is anything sent to a remote server?**
+State (sessions, vault, wiki, logs) lives under `~/.negotium` on the machine
+running the node; hosts only send input and render events, and the vault
+encrypts secrets at rest. See [Local data and secrets](#local-data-and-secrets).
+
+**How does Negotium visualize what agents are doing?** `Ctrl-G` in Terminal
+renders a live graph of ownership, delegation, and run status, powered by
+[Orchgraph](https://github.com/maestrojeong/orchgraph). Browser tools are
+powered by [browser-rs](https://github.com/maestrojeong/browser-rs-mcp), a
+small single-binary Rust MCP server.
+
+## Related projects
+
+- **[Orchgraph](https://github.com/maestrojeong/orchgraph)** — the graph
+  renderer behind Negotium's live subagent view.
+- **[browser-rs](https://github.com/maestrojeong/browser-rs-mcp)** — the
+  stealth-oriented Rust MCP browser server behind Negotium's browser tools.
+
 ## License
 
 [Apache License 2.0](./LICENSE)
