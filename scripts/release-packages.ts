@@ -602,6 +602,15 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
       CODEX_HOME: join(smokeRoot, ".codex"),
       NEGOTIUM_CRON: "0",
       NEGOTIUM_STATE_DIR: join(smokeRoot, "state"),
+      // The smoke daemon is a *second* node, isolated from the developer's own.
+      // It is spawned with `--port=0` to mean "ask the kernel for a free port",
+      // but `NEGOTIUM_NODE_PORT` is read precisely when the requested port is 0
+      // and silently wins over ephemeral allocation. Inheriting it therefore
+      // aims the throwaway daemon at the workstation's real port, and the smoke
+      // test fails with EADDRINUSE against the live node -- a failure about the
+      // developer's machine, reported as if the tarball were broken. State is
+      // already isolated above; the port is part of the same isolation.
+      NEGOTIUM_NODE_PORT: undefined,
       TMPDIR: installTmp,
     };
     await run("npm", ["install", "--ignore-scripts=false"], smokeRoot, true, smokeEnv);
