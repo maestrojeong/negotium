@@ -304,16 +304,33 @@ function longLivedHttpMcp(agent: AgentKind | undefined, port: number) {
 // expose the legacy SSE endpoint. The port is installed by the node-owned
 // process manager once its singleton is ready.
 let cuaRsMcpPort: number | undefined;
+// cua-rs 0.8.0 requires `Authorization: Bearer` on /mcp, because loopback is not
+// an authorization boundary -- any local process, a web page included, could
+// otherwise drive the whole desktop. The node picks the token, hands it to the
+// child as CUA_HTTP_TOKEN, and publishes it here so turns can present it. Kept
+// beside the port because they are one fact: without both, the URL is useless.
+let cuaRsMcpToken: string | undefined;
 
-export function setCuaRsMcpPort(port: number | undefined): void {
+export function setCuaRsMcpPort(port: number | undefined, token?: string): void {
   if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65_535)) {
     throw new Error(`invalid cua-rs MCP port: ${port}`);
   }
   cuaRsMcpPort = port;
+  cuaRsMcpToken = port === undefined ? undefined : token;
 }
 
-function cuaRsHttpMcp(port: number) {
-  return { type: "http" as const, url: `http://127.0.0.1:${port}/mcp` };
+function cuaRsHttpMcp(agent: AgentKind | undefined, port: number, token: string | undefined) {
+  const url = `http://127.0.0.1:${port}/mcp`;
+  // No token means an older cua-rs that does not ask for one. Sending the header
+  // anyway would be harmless, but omitting it keeps the config honest about what
+  // the running server actually requires.
+  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+  // The shape is otherwise unchanged from before the token existed, including
+  // `type` for codex: only the header field is added, and only when there is a
+  // token to put in it. Codex spells that field `http_headers`.
+  const base = { type: "http" as const, url };
+  if (!headers) return base;
+  return agent === "codex" ? { ...base, http_headers: headers } : { ...base, headers };
 }
 
 function backgroundBashTransport(
@@ -596,8 +613,8 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   // turns only receive its loopback URL and must never spawn a stdio copy.
   "cua-rs": {
     ...commonRuntimeMcpPolicy("cua-rs"),
-    build() {
-      return cuaRsMcpPort ? cuaRsHttpMcp(cuaRsMcpPort) : null;
+    build({ agent }) {
+      return cuaRsMcpPort ? cuaRsHttpMcp(agent, cuaRsMcpPort, cuaRsMcpToken) : null;
     },
   },
 };
