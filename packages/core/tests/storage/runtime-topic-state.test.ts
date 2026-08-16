@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   claimRuntimeTurnLease,
   getRuntimeTurnLease,
@@ -12,6 +12,7 @@ import {
   completeRuntimeUserTurnRequest,
   enqueueRuntimeUserTurnRequest,
 } from "#storage/runtime-turn-requests";
+import { resetRuntimeTurnQueue } from "../fixtures/runtime-queue";
 
 const topicIds = new Set<string>();
 
@@ -20,6 +21,8 @@ function topicId(): string {
   topicIds.add(id);
   return id;
 }
+
+beforeEach(resetRuntimeTurnQueue);
 
 afterEach(() => {
   for (const id of topicIds) {

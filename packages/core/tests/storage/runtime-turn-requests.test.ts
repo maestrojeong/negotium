@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { db } from "#storage/forum-db";
 import {
   claimRuntimeTurnLease,
@@ -19,6 +19,7 @@ import {
   mergeRuntimeUserTurnRequest,
 } from "#storage/runtime-turn-requests";
 import type { StorageDatabase } from "#storage/storage-contract";
+import { resetRuntimeTurnQueue } from "../fixtures/runtime-queue";
 
 const topics = new Set<string>();
 const leases: Array<{ topicId: string; queryId: string; ownerId: string }> = [];
@@ -28,6 +29,8 @@ function topicId(): string {
   topics.add(id);
   return id;
 }
+
+beforeEach(resetRuntimeTurnQueue);
 
 afterEach(() => {
   for (const topic of topics) {

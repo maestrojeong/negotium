@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { ensurePersonalGeneral, getTopic, TopicServiceError, topicService } from "@negotium/core";
 import { runtimeBus } from "#bus";
@@ -9,6 +9,9 @@ import {
   enqueueRuntimeUserTurnRequest,
   getRuntimeUserTurnRequest,
 } from "#storage/runtime-turn-requests";
+import { resetRuntimeTurnQueue } from "../fixtures/runtime-queue";
+
+beforeEach(resetRuntimeTurnQueue);
 
 test("topicService creates topics and centralizes owner authorization", async () => {
   const owner = `topic-service-owner-${randomUUID()}`;

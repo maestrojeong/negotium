@@ -89,6 +89,11 @@ function stateEnv(): Record<string, string> {
     ...process.env,
     LOG_LEVEL: "silent",
     NEGOTIUM_CRON: "0",
+    // Neutralize an operator's pinned node port. `startDefaultNode` honors
+    // NEGOTIUM_NODE_PORT for every `port: 0` caller, so inheriting it makes
+    // both workers here ask for the same port — and this test exists to assert
+    // they get different ones. An empty value reads as unset.
+    NEGOTIUM_NODE_PORT: "",
     NEGOTIUM_STATE_DIR: root,
     NEGOTIUM_DATA_DIR: join(root, "data"),
     NEGOTIUM_LOG_DIR: join(root, "logs"),
