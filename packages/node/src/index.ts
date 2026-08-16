@@ -10,6 +10,7 @@
  * core's registerNodeRequestHandler (plugin chain ahead of the MCP handler).
  */
 
+import { randomBytes } from "node:crypto";
 import { rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
@@ -186,11 +187,18 @@ async function wireCuaRsMcp(): Promise<CuaRsMcpHost | undefined> {
   // stale copy lets an upgraded binary take effect on the next node start.
   rmSync(manifestFile, { force: true });
   const manifest = new McpManifest({ file: manifestFile });
+  // cua-rs 0.8.0 onwards requires a bearer token on /mcp. Pinning one here
+  // rather than letting the server generate its own is what makes it usable:
+  // a generated token is only printed to the child's stderr, and the node needs
+  // the value in hand to put it in the config turns receive. Fresh per node
+  // start, so a token cannot outlive the process that chose it.
+  const token = randomBytes(32).toString("hex");
   const spec: McpServerSpec = {
     key: CUA_RS_MCP_KEY,
     transport: "http",
     command: binary,
     args: ["{port}"],
+    env: { CUA_HTTP_TOKEN: token },
     portRange: CUA_RS_MCP_PORT_RANGE,
     scope: "node",
     healthIntervalMs: 15_000,
@@ -202,7 +210,7 @@ async function wireCuaRsMcp(): Promise<CuaRsMcpHost | undefined> {
   try {
     const instance = await host.ensure(CUA_RS_MCP_KEY);
     if (!instance.port) throw new Error("cua-rs started without an HTTP port");
-    setCuaRsMcpPort(instance.port);
+    setCuaRsMcpPort(instance.port, token);
     logger.info({ pid: instance.pid, port: instance.port }, "cua-rs MCP server ready");
     return { host, stopSweeper };
   } catch (error) {

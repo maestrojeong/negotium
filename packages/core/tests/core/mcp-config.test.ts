@@ -659,4 +659,56 @@ describe("mcp-config: cua-rs", () => {
       setCuaRsMcpPort(undefined);
     }
   });
+
+  test("presents the bearer token cua-rs 0.8.0 requires on /mcp", () => {
+    // Without the header the server answers 401 and every desktop tool
+    // disappears, so the token travelling with the URL is the whole point.
+    setCuaRsMcpPort(9350, "deadbeef");
+    try {
+      const forCodex = getForumMcpServers({
+        userId: "u",
+        session: "desktop",
+        agent: "codex",
+        enabled: ["cua-rs"],
+      })["cua-rs"];
+      expect(forCodex).toEqual({
+        type: "http",
+        url: "http://127.0.0.1:9350/mcp",
+        http_headers: { Authorization: "Bearer deadbeef" },
+      });
+
+      const forClaude = getForumMcpServers({
+        userId: "u",
+        session: "desktop",
+        agent: "claude",
+        enabled: ["cua-rs"],
+      })["cua-rs"];
+      expect(forClaude).toEqual({
+        type: "http",
+        url: "http://127.0.0.1:9350/mcp",
+        headers: { Authorization: "Bearer deadbeef" },
+      });
+    } finally {
+      setCuaRsMcpPort(undefined);
+    }
+  });
+
+  test("forgets the token when the port goes away", () => {
+    setCuaRsMcpPort(9350, "deadbeef");
+    setCuaRsMcpPort(undefined);
+    setCuaRsMcpPort(9350);
+    try {
+      const server = getForumMcpServers({
+        userId: "u",
+        session: "desktop",
+        agent: "claude",
+        enabled: ["cua-rs"],
+      })["cua-rs"];
+      // An older cua-rs asks for no token; sending a stale one would be worse
+      // than sending none.
+      expect(server).toEqual({ type: "http", url: "http://127.0.0.1:9350/mcp" });
+    } finally {
+      setCuaRsMcpPort(undefined);
+    }
+  });
 });
