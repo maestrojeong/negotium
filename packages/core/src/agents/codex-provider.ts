@@ -146,6 +146,9 @@ const CODEX_MCP_SERVER_NAME_OVERRIDES: Record<string, string> = {
   // server name, and adding Otium's per-topic HTTP `url` to that same table
   // makes Codex fail config parsing with "url is not supported for stdio".
   playwright: "otium_playwright",
+  // Disable any global `cua-rs` stdio entry below, while keeping Negotium's
+  // node-owned Streamable HTTP server independently addressable.
+  "cua-rs": "otium_cua_rs",
 };
 
 function codexMcpServerName(name: string): string {
@@ -203,17 +206,20 @@ export function toCodexMcpServers(
   claudeShape: Record<string, unknown>,
 ): Record<string, CodexMcpServer> {
   // Codex merges turn config with ~/.codex/config.toml instead of replacing it.
-  // Disable common global browser stdio servers so browser state can only flow
-  // through Negotium's long-lived, owner-scoped HTTP server.
-  const disabledBrowserStdio = (): CodexStdioServer => ({
+  // Disable the global stdio entries a user may have for servers Negotium owns
+  // as one long-lived process, so their state can only flow through that
+  // process: browsers, and cua-rs, whose per-turn stdio copy would be a second
+  // instance competing for the same desktop.
+  const disabledStdio = (): CodexStdioServer => ({
     command: process.execPath,
     args: ["-e", "process.exit(0)"],
     enabled: false,
   });
   const out: Record<string, CodexMcpServer> = {
-    playwright: disabledBrowserStdio(),
-    "browser-rs": disabledBrowserStdio(),
-    patchright: disabledBrowserStdio(),
+    playwright: disabledStdio(),
+    "browser-rs": disabledStdio(),
+    patchright: disabledStdio(),
+    "cua-rs": disabledStdio(),
   };
   for (const [name, srv] of Object.entries(claudeShape)) {
     if (!srv || typeof srv !== "object") continue;

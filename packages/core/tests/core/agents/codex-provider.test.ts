@@ -193,6 +193,7 @@ describe("codexProvider stale rollout recovery", () => {
           playwright: expect.objectContaining({ enabled: false }),
           "browser-rs": expect.objectContaining({ enabled: false }),
           patchright: expect.objectContaining({ enabled: false }),
+          "cua-rs": expect.objectContaining({ enabled: false }),
         },
       },
     });
@@ -272,6 +273,7 @@ describe("codexProvider stale rollout recovery", () => {
           playwright: expect.objectContaining({ enabled: false }),
           "browser-rs": expect.objectContaining({ enabled: false }),
           patchright: expect.objectContaining({ enabled: false }),
+          "cua-rs": expect.objectContaining({ enabled: false }),
           global_filesystem: expect.objectContaining({ enabled: false }),
         },
         sandbox_permissions: [],
@@ -310,6 +312,7 @@ describe("codexProvider stale rollout recovery", () => {
           playwright: expect.objectContaining({ enabled: false }),
           "browser-rs": expect.objectContaining({ enabled: false }),
           patchright: expect.objectContaining({ enabled: false }),
+          "cua-rs": expect.objectContaining({ enabled: false }),
         },
         sandbox_permissions: [],
       },
@@ -759,6 +762,7 @@ describe("codexProvider MCP config", () => {
     expect(servers.playwright).toMatchObject({ enabled: false });
     expect(servers["browser-rs"]).toMatchObject({ enabled: false });
     expect(servers.patchright).toMatchObject({ enabled: false });
+    expect(servers["cua-rs"]).toMatchObject({ enabled: false });
     expect(servers.otium_playwright).toMatchObject({
       url: "http://127.0.0.1:39001/mcp",
     });

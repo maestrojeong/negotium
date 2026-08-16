@@ -10,7 +10,6 @@ import {
   browserOwnerCapability,
   buildStdioMcpServer,
   consumePlaywrightUnavailable,
-  cuaRsArgs,
   getCronMcpServers,
   getDmMcpServers,
   getForumMcpServers,
@@ -20,6 +19,7 @@ import {
   OPTIONAL_FORUM_MCP_SERVERS,
   registerRuntimeMcpServer,
   resolveCuaRsBinary,
+  setCuaRsMcpPort,
 } from "#platform/mcp-config";
 
 /**
@@ -606,16 +606,13 @@ describe("mcp-config: playwright transport selection per agent", () => {
 });
 
 /**
- * cua-rs: the macOS desktop-control server, and its one dangerous flag.
+ * cua-rs: the macOS desktop-control server.
  *
  * Two properties worth pinning. The entry disappears when the binary is not
  * installed, rather than advertising tools that cannot run — Linux hosts and
- * un-installed Macs are the normal case, not an error. And `--allow-hid` is
- * off unless someone says so explicitly: it lets the server fall back to a
- * real mouse click, which borrows the user's pointer, so an empty or negative
- * value must not enable it.
+ * un-installed Macs are the normal case, not an error.
  */
-describe("mcp-config: cua-rs HID opt-in", () => {
+describe("mcp-config: cua-rs", () => {
   const withEnv = <T>(env: Record<string, string | undefined>, run: () => T): T => {
     const saved: Record<string, string | undefined> = {};
     for (const [k, v] of Object.entries(env)) {
@@ -648,21 +645,18 @@ describe("mcp-config: cua-rs HID opt-in", () => {
     expect(binary).not.toBe("/nonexistent/cua-rs");
   });
 
-  test("passes no flags by default, so the cursor stays the user's", () => {
-    const args = withEnv({ NEGOTIUM_CUA_RS_ALLOW_HID: undefined }, cuaRsArgs);
-    expect(args).toEqual([]);
-  });
-
-  test("passes --allow-hid only for an explicit affirmative", () => {
-    for (const on of ["1", "true", "yes", "YES"]) {
-      const args = withEnv({ NEGOTIUM_CUA_RS_ALLOW_HID: on }, cuaRsArgs);
-      expect(args).toEqual(["--allow-hid"]);
-    }
-    // Someone who set the variable to say "no" gets no. An empty string is the
-    // shape an unset-but-exported variable takes, and must not arm it either.
-    for (const off of ["0", "false", "no", "", "  "]) {
-      const args = withEnv({ NEGOTIUM_CUA_RS_ALLOW_HID: off }, cuaRsArgs);
-      expect(args).toEqual([]);
+  test("uses the node-owned Streamable HTTP server and never a stdio command", () => {
+    setCuaRsMcpPort(9350);
+    try {
+      const server = getForumMcpServers({
+        userId: "u",
+        session: "desktop",
+        agent: "codex",
+        enabled: ["cua-rs"],
+      })["cua-rs"];
+      expect(server).toEqual({ type: "http", url: "http://127.0.0.1:9350/mcp" });
+    } finally {
+      setCuaRsMcpPort(undefined);
     }
   });
 });

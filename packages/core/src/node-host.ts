@@ -36,7 +36,11 @@ export {
 export { onShutdown, runShutdown } from "#platform/lifecycle";
 export { logger } from "#platform/logger";
 export type { NodeMcpEntry } from "#platform/mcp-config";
-export { setNodeMcpServers } from "#platform/mcp-config";
+export {
+  resolveCuaRsBinary,
+  setCuaRsMcpPort,
+  setNodeMcpServers,
+} from "#platform/mcp-config";
 export type {
   NegotiumNodeModule,
   StartedNegotiumNodeModules,

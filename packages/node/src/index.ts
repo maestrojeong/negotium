@@ -10,7 +10,9 @@
  * core's registerNodeRequestHandler (plugin chain ahead of the MCP handler).
  */
 
+import { rmSync } from "node:fs";
 import { createServer } from "node:net";
+import { join } from "node:path";
 import { migrateLegacyCompactedConversations } from "@negotium/core/conversation-migration";
 import {
   abortAllRooms,
@@ -28,11 +30,13 @@ import {
   RUN_DIR,
   reapOrphanBrowsers,
   reconcilePendingAskUserQuestionGates,
+  resolveCuaRsBinary,
   runNodeRequestHandlers,
   runShutdown,
   runtimeBus,
   STATE_DIR,
   type StartedNegotiumNodeModules,
+  setCuaRsMcpPort,
   setFileHooks,
   setNodeMcpServers,
   setRuntimeMcpPort,
@@ -46,7 +50,7 @@ import {
   WORKSPACE_DIR,
 } from "@negotium/core/node-host";
 import { closeNegotiumMcpSessions, handleNegotiumMcpRequest } from "@negotium/mcp";
-import { McpHost, McpManifest } from "@negotium/mcp-host";
+import { McpHost, McpManifest, type McpServerSpec } from "@negotium/mcp-host";
 import {
   createNodeControlHandler,
   NODE_CONTROL_PROTOCOL_VERSION,
@@ -111,6 +115,21 @@ async function availableLoopbackPort(): Promise<number> {
 }
 
 /**
+ * A pinned node port for single-node workstations. When set to a valid
+ * 1-65535 integer, `startDefaultNode` binds that port instead of asking the
+ * kernel for an ephemeral one whenever `port: 0` is passed (which is the
+ * default for every detached `__node-daemon` spawn). Invalid or empty values
+ * fall back to ephemeral allocation. 0 is intentionally not a valid override
+ * so it can never shadow the "auto" signal.
+ */
+function readFixedNodePort(): number | undefined {
+  const raw = process.env.NEGOTIUM_NODE_PORT;
+  if (raw === undefined || raw === "") return undefined;
+  const port = Number.parseInt(raw, 10);
+  return Number.isInteger(port) && port >= 1 && port <= 65_535 ? port : undefined;
+}
+
+/**
  * Resolve the node's MCP manifest into live servers and install them into the
  * agent-turn catalog. Long-lived http servers are ensured (spawned + port
  * allocated) via mcp-host; stdio specs pass through as launch commands.
@@ -141,6 +160,57 @@ async function wireNodeMcps(host: McpHost, manifest: McpManifest): Promise<void>
   setNodeMcpServers(entries);
   if (entries.length > 0) {
     logger.info({ keys: entries.map((e) => e.key) }, "node mcp: manifest servers installed");
+  }
+}
+
+const CUA_RS_MCP_KEY = "cua-rs";
+const CUA_RS_MCP_MANIFEST_FILE = "cua-rs-mcp-manifest.json";
+const CUA_RS_MCP_PORT_RANGE = { base: 9350, max: 9399 };
+
+type CuaRsMcpHost = {
+  host: McpHost;
+  stopSweeper: () => void;
+};
+
+/**
+ * Start cua-rs as a node-owned HTTP service. Its dedicated manifest is
+ * transient node runtime state, not the user-managed `negotium mcp` manifest.
+ */
+async function wireCuaRsMcp(): Promise<CuaRsMcpHost | undefined> {
+  setCuaRsMcpPort(undefined);
+  const binary = resolveCuaRsBinary();
+  if (!binary) return undefined;
+
+  const manifestFile = join(RUN_DIR, CUA_RS_MCP_MANIFEST_FILE);
+  // This manifest is generated from the currently resolved binary. Removing a
+  // stale copy lets an upgraded binary take effect on the next node start.
+  rmSync(manifestFile, { force: true });
+  const manifest = new McpManifest({ file: manifestFile });
+  const spec: McpServerSpec = {
+    key: CUA_RS_MCP_KEY,
+    transport: "http",
+    command: binary,
+    args: ["{port}"],
+    portRange: CUA_RS_MCP_PORT_RANGE,
+    scope: "node",
+    healthIntervalMs: 15_000,
+  };
+  manifest.add(spec);
+
+  const host = new McpHost({ manifest });
+  const stopSweeper = host.startSweeper();
+  try {
+    const instance = await host.ensure(CUA_RS_MCP_KEY);
+    if (!instance.port) throw new Error("cua-rs started without an HTTP port");
+    setCuaRsMcpPort(instance.port);
+    logger.info({ pid: instance.pid, port: instance.port }, "cua-rs MCP server ready");
+    return { host, stopSweeper };
+  } catch (error) {
+    stopSweeper();
+    await host.stopAll();
+    setCuaRsMcpPort(undefined);
+    logger.warn({ err: error }, "cua-rs MCP server unavailable");
+    return undefined;
   }
 }
 
@@ -256,6 +326,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   const mcpHost = new McpHost();
   const manifest = new McpManifest();
   const stopSweeper = mcpHost.startSweeper();
+  const cuaRsMcp = wireCuaRsMcp();
 
   let resolveCompleted!: () => void;
   const completed = new Promise<void>((resolve) => {
@@ -266,6 +337,11 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     advertised = opts.advertise ? writeNodeDaemonInfo(port, startedAt) : null;
   } catch (error) {
     stopSweeper();
+    setCuaRsMcpPort(undefined);
+    void cuaRsMcp.then(async (managed) => {
+      managed?.stopSweeper();
+      await managed?.host.stopAll();
+    });
     stopTurnRequests();
     stopInbox();
     stopBashrsCompletions();
@@ -302,6 +378,12 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   onShutdown("node-mcp-host", 50, async () => {
     stopSweeper();
     await mcpHost.stopAll();
+  });
+  onShutdown("cua-rs-mcp-host", 50, async () => {
+    setCuaRsMcpPort(undefined);
+    const managed = await cuaRsMcp;
+    managed?.stopSweeper();
+    await managed?.host.stopAll();
   });
   onShutdown("playwright", 50, () => killAllPlaywright());
   onShutdown("background-bash", 50, () => killAllBgBash());
@@ -340,7 +422,8 @@ export async function startDefaultNode(
     const { createCronModule } = await import("@negotium/module-cron");
     modules.push(createCronModule());
   }
-  const port = opts.port === 0 ? await availableLoopbackPort() : opts.port;
+  const port =
+    opts.port === 0 ? (readFixedNodePort() ?? (await availableLoopbackPort())) : opts.port;
   return startNode({ ...opts, port, modules });
 }
 
