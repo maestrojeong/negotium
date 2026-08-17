@@ -5,7 +5,7 @@ import {
   type HostedMcpSurface,
   resolveHostedMcpToken,
 } from "#mcp/runtime-spec";
-import { BROWSER_MCP_SSE_PROXY_SERVER, TSX_LOADER } from "#platform/config";
+import { TSX_LOADER } from "#platform/config";
 import {
   browserOwnerCapability,
   buildStdioMcpServer,
@@ -25,9 +25,9 @@ import {
 /**
  * Playwright MCP transport selection.
  *
- * Claude uses authenticated SSE, Maestro uses a stdio-to-SSE credential
- * bridge, and Codex uses streamable HTTP. All connect to the same long-lived
- * Chromium/profile server with owner-scoped tabs.
+ * Claude and Maestro both use authenticated SSE, and Codex uses streamable
+ * HTTP. All connect to the same long-lived Chromium/profile server with
+ * owner-scoped tabs.
  *
  * Fallback (no port allocated): playwright is omitted. This avoids spawning
  * a per-turn Chromium child that dies with the agent process tree; the host
@@ -115,12 +115,9 @@ describe("mcp-config: playwright transport selection per agent", () => {
     });
     const query = new URLSearchParams({ owner: "user:9999:coding" });
     expect(servers.playwright).toEqual({
-      command: "bun",
-      args: ["run", BROWSER_MCP_SSE_PROXY_SERVER],
-      env: {
-        NEGOTIUM_BROWSER_SSE_URL: `http://127.0.0.1:${playwrightPort}/sse?${query}`,
-        NEGOTIUM_BROWSER_OWNER_CAPABILITY: capabilityFor("user:9999:coding"),
-      },
+      type: "sse",
+      url: `http://127.0.0.1:${playwrightPort}/sse?${query}`,
+      headers: { "X-Browser-Capability": capabilityFor("user:9999:coding") },
     });
   });
 
@@ -178,13 +175,6 @@ describe("mcp-config: playwright transport selection per agent", () => {
         playwrightPort,
         playwrightCapability,
       });
-      if (agent === "maestro") {
-        const spec = servers.playwright as { env: Record<string, string> };
-        const upstreamUrl = new URL(spec.env.NEGOTIUM_BROWSER_SSE_URL as string);
-        expect(upstreamUrl.searchParams.get("owner")).toBe(owner);
-        expect(upstreamUrl.searchParams.has("capability")).toBe(false);
-        continue;
-      }
       const url = new URL((servers.playwright as { url: string }).url);
       expect(url.searchParams.get("owner")).toBe(owner);
       expect(url.searchParams.has("capability")).toBe(false);

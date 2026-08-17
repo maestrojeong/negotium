@@ -13,7 +13,6 @@ import { peerSessionBridgeIpcEnv } from "#mcp/session-comm/bridge-ipc-config";
 import { bgBashContextCapability } from "#platform/background-bash/manager";
 import {
   AGENT_HEALTH_SERVER,
-  BROWSER_MCP_SSE_PROXY_SERVER,
   CANONICAL_MCP_PROXY_SERVER,
   DECISION_SERVER,
   envText,
@@ -278,15 +277,6 @@ function playwrightTransport(port: number, owner: string, capability: string, ag
     };
   }
   const query = new URLSearchParams({ owner });
-  if (agent === "maestro") {
-    // maestro-agent-sdk does not expose SSE headers. Route it through a
-    // tiny stdio bridge so the bearer capability stays in an environment
-    // variable rather than appearing in URLs and request logs.
-    return buildStdioMcpServer("maestro", BROWSER_MCP_SSE_PROXY_SERVER, [], {
-      NEGOTIUM_BROWSER_SSE_URL: `http://127.0.0.1:${port}/sse?${query}`,
-      NEGOTIUM_BROWSER_OWNER_CAPABILITY: ownerCapability,
-    });
-  }
   return {
     type: "sse" as const,
     url: `http://127.0.0.1:${port}/sse?${query}`,
