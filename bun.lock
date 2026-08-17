@@ -95,7 +95,7 @@
         "@modelcontextprotocol/sdk": "^1.30.0",
         "@openai/codex-sdk": "0.147.0",
         "diff": "^9.0.0",
-        "maestro-agent-sdk": "0.2.6",
+        "maestro-agent-sdk": "0.2.7",
         "node-telegram-bot-api": "^1.1.2",
         "orchgraph": "0.2.1",
         "pino": "^10.3.1",
@@ -671,6 +671,8 @@
     "encoding-sniffer/iconv-lite": ["iconv-lite@0.6.3", "", { "dependencies": { "safer-buffer": ">= 2.1.2 < 3.0.0" } }, "sha512-4fCk79wshMdzMp2rH06qWrJE4iolqLhCUH+OiuIgU++RB0+94NlDL81atO7GX55uUKueo0txHNtvEyI6D7WdMw=="],
 
     "htmlparser2/entities": ["entities@7.0.1", "", {}, "sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA=="],
+
+    "negotium/maestro-agent-sdk": ["maestro-agent-sdk@0.2.7", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.30.0", "cheerio": "^1.2.0", "pdfjs-dist": "^6.2.108", "undici": "^7.29.0" } }, "sha512-/6dun3rsA6B1kD4jM8QVQvheu8bxfDItbB0STaHtAQC1WBKhXBrtpitpNBpogyw/WFPzOAHDym9I9TnUwwTVDg=="],
 
     "orchgraph/zod": ["zod@4.3.6", "", {}, "sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg=="],
 
