@@ -1,6 +1,6 @@
 {
   "name": "negotium",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "type": "module",
   "description": "Install the Negotium multi-agent runtime and CLI with one package",
   "license": "Apache-2.0",
