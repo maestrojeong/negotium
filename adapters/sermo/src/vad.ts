@@ -64,7 +64,7 @@ export function startVad(config: SermoConfig, events: VadEvents): () => void {
   let prePadCount = 0;
 
   // Accumulate partial reads
-  let leftover = Buffer.alloc(0);
+  let leftover: Buffer = Buffer.alloc(0);
 
   ffmpeg.stdout!.on("data", (chunk: Buffer) => {
     // Prepend any leftover bytes from the last read
