@@ -742,11 +742,8 @@ async function spawnPlaywright(
   const mcpArgs = [
     "--port",
     String(port),
-    // Pin to IPv4. `--host 127.0.0.1` keeps every transport on the same
-    // address family. Without it, a `localhost`→`::1`-only bind breaks the
-    // Maestro MCP client (its SSEClientTransport forces `127.0.0.1` because
-    // the Node `eventsource` package's IPv6 lookup historically failed), so
-    // browser tools would silently disappear from maestro turns.
+    // Pin to IPv4 so every MCP client reaches the same address family and a
+    // future launcher default cannot resolve localhost to an IPv6-only bind.
     "--host",
     "127.0.0.1",
     // Keep the browser visible. Do not rely on the launcher's implicit

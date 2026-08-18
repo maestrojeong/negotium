@@ -277,6 +277,13 @@ function playwrightTransport(port: number, owner: string, capability: string, ag
     };
   }
   const query = new URLSearchParams({ owner });
+  if (agent === "maestro") {
+    return {
+      type: "http" as const,
+      url: `http://127.0.0.1:${port}/mcp?${query}`,
+      headers: { "X-Browser-Capability": ownerCapability },
+    };
+  }
   return {
     type: "sse" as const,
     url: `http://127.0.0.1:${port}/sse?${query}`,
@@ -349,7 +356,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   playwright: {
     ...commonRuntimeMcpPolicy("playwright"),
     build({ userId, session, topicId, playwrightPort, playwrightCapability, agent }) {
-      // Codex uses streamable HTTP while Claude and Maestro use SSE. Both
+      // Codex and Maestro use Streamable HTTP while Claude uses SSE. Both
       // transports terminate at the same long-lived browser/profile server.
       if (playwrightPort && playwrightCapability) {
         const owner = browserOwnerForContext({ userId, session, topicId });

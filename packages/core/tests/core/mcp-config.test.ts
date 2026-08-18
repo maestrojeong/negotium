@@ -25,9 +25,9 @@ import {
 /**
  * Playwright MCP transport selection.
  *
- * Claude and Maestro both use authenticated SSE, and Codex uses streamable
- * HTTP. All connect to the same long-lived Chromium/profile server with
- * owner-scoped tabs.
+ * Claude uses authenticated SSE, while Maestro and Codex use Streamable HTTP.
+ * All connect to the same long-lived Chromium/profile server with owner-scoped
+ * tabs.
  *
  * Fallback (no port allocated): playwright is omitted. This avoids spawning
  * a per-turn Chromium child that dies with the agent process tree; the host
@@ -105,7 +105,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
     });
   });
 
-  test("forum/maestro with port → owner-scoped SSE", () => {
+  test("forum/maestro with port → owner-scoped Streamable HTTP", () => {
     const servers = getForumMcpServers({
       userId,
       session: "coding",
@@ -115,8 +115,8 @@ describe("mcp-config: playwright transport selection per agent", () => {
     });
     const query = new URLSearchParams({ owner: "user:9999:coding" });
     expect(servers.playwright).toEqual({
-      type: "sse",
-      url: `http://127.0.0.1:${playwrightPort}/sse?${query}`,
+      type: "http",
+      url: `http://127.0.0.1:${playwrightPort}/mcp?${query}`,
       headers: { "X-Browser-Capability": capabilityFor("user:9999:coding") },
     });
   });
