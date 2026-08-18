@@ -7,7 +7,7 @@ import {
   type NodeToRelayFrame,
   PROTOCOL_VERSION,
 } from "@/relay-protocol";
-import { TunnelClient } from "@/tunnel-client";
+import { MAX_IN_FLIGHT_HTTP_REQUESTS, TunnelClient } from "@/tunnel-client";
 
 interface FakeRelay {
   server: Server<object>;
@@ -256,6 +256,44 @@ describe("Otium relay tunnel client", () => {
       expect(malformedClient.status).toBe("connecting");
     } finally {
       malformedClient.stop();
+    }
+  });
+
+  test("closes a tunnel that exceeds the aggregate in-flight HTTP limit", () => {
+    const sockets: HalfOpenWebSocket[] = [];
+    const limitedClient = new TunnelClient({
+      relayUrl: "wss://relay.invalid",
+      token: "rcs_limited",
+      targetOrigin: "http://127.0.0.1:1",
+      minReconnectDelayMs: 1_000,
+      maxReconnectDelayMs: 1_000,
+      webSocketFactory: () => {
+        const socket = new HalfOpenWebSocket();
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      limitedClient.start();
+      sockets[0]?.open();
+      for (let index = 0; index <= MAX_IN_FLIGHT_HTTP_REQUESTS; index += 1) {
+        sockets[0]?.receive(
+          encodeFrame({
+            type: "http_req_head",
+            id: `request-${index}`,
+            method: "POST",
+            path: "/echo",
+            headers: [],
+            hasBody: true,
+          }),
+        );
+      }
+      expect(sockets[0]?.closeCalls).toBe(1);
+      expect(sockets[0]?.closeCode).toBe(1002);
+      expect(limitedClient.status).toBe("connecting");
+    } finally {
+      limitedClient.stop();
     }
   });
 

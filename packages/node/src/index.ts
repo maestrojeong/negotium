@@ -28,6 +28,7 @@ import {
   type NodeMcpEntry,
   nodeRequestHandlerNames,
   onShutdown,
+  pruneRuntimeEvents,
   RUN_DIR,
   reapOrphanBrowsers,
   reconcilePendingAskUserQuestionGates,
@@ -370,6 +371,19 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   setRuntimeMcpPort(port);
   const stopTurnRequests = startDurableTurnRequestWorker();
   const stopInbox = startSessionInboxWorker();
+  const pruneEventLog = () => {
+    try {
+      const result = pruneRuntimeEvents();
+      if (result.deleted > 0) {
+        logger.info(result, "runtime event log pruned");
+      }
+    } catch (err) {
+      logger.warn({ err }, "runtime event log prune failed");
+    }
+  };
+  pruneEventLog();
+  const eventPruneTimer = setInterval(pruneEventLog, 5 * 60_000);
+  eventPruneTimer.unref?.();
   // bash-rs only writes result.json; this watcher is the sole path that
   // turns a finished background job into the turn the caller was promised.
   const stopBashrsCompletions = startBashrsCompletionsWorker();
@@ -386,6 +400,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   } catch (error) {
     stopTurnRequests();
     stopInbox();
+    clearInterval(eventPruneTimer);
     stopBashrsCompletions();
     server.stop(true);
     processLease?.stop();
@@ -416,6 +431,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     });
     stopTurnRequests();
     stopInbox();
+    clearInterval(eventPruneTimer);
     stopBashrsCompletions();
     server.stop(true);
     processLease?.stop();
@@ -431,6 +447,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   onShutdown("node-server", 130, () => {
     stopTurnRequests();
     stopInbox();
+    clearInterval(eventPruneTimer);
     stopBashrsCompletions();
     server.stop(true);
   });

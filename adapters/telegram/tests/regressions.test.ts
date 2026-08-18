@@ -347,7 +347,7 @@ describe("in-flight createForumTopic races (findings 4 & 5)", () => {
 });
 
 describe("send queue watchdog (finding 6)", () => {
-  test("a hung sendMessage is abandoned after the timeout and later messages still deliver", async () => {
+  test("a timed-out send is retried durably and later messages still deliver", async () => {
     const USER = `hang-user-${RUN}`;
     const chatId = freshChat();
     const fake = new FakeTelegramClient();
@@ -369,7 +369,7 @@ describe("send queue watchdog (finding 6)", () => {
       fake.sendMode = "auto";
       runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "lands anyway"));
       await waitFor(() => fake.callsFor(chatId).some((c) => c.text === "lands anyway"));
-      expect(fake.callsFor(chatId).some((c) => c.text === "never lands")).toBe(false);
+      expect(fake.callsFor(chatId).some((c) => c.text === "never lands")).toBe(true);
     } finally {
       adapter.stop();
     }

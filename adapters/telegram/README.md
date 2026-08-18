@@ -19,9 +19,11 @@ Single-operator by design: one human owner (one negotium `userId`), no multi-use
   combined turn; voice notes transcribe via core's local pipeline (or a custom `transcribe`
   hook); produced `[FILE:/abs/path]` outputs are sent back as photo/document (sensitive paths
   blocked)
-- **Durable delivery**: markdown → Telegram HTML subset, 4096-char splitting, per-chunk
-  plain-text fallback, typing indicator, durable SQLite retry outbox for 429/5xx/network failures,
-  optional `footer: true` turn footer
+- **Durable delivery**: ordered SQLite runtime inbox with restart replay, markdown → Telegram HTML
+  subset, 4096-char splitting, per-chunk plain-text fallback, typing indicator, durable SQLite retry
+  outbox for 429/5xx/network failures, optional `footer: true` turn footer. Runtime messages are
+  delivered at least once; a crash after Telegram accepts a send but before the local acknowledgement
+  can produce a duplicate.
 
 ## Usage
 

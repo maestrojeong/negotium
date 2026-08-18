@@ -15,6 +15,7 @@ import {
   appendApiMessage,
   type compactTopicSession,
   deleteVaultEntry,
+  earliestRuntimeEventSeq,
   ensurePersonalGeneral,
   executeVaultCommand,
   getApiMessage,
@@ -277,33 +278,44 @@ function createRuntimeContractEventStream(
   // every other workspace's events. Resolving each event's room is a cache hit
   // in the common case and the stream is already per-event work.
   const scoped = "surfaceScope" in scope;
-  const wanted = scope.surfaceScope ?? null;
   const visible = new Map<string, boolean>();
   const eventInScope = (eventTopicId: string): boolean => {
     if (!scoped) return true;
     const cached = visible.get(eventTopicId);
     if (cached !== undefined) return cached;
-    const roomScope = getTopic(eventTopicId)?.surfaceScope ?? null;
-    const allowed = roomScope === null || roomScope === wanted;
+    const topic = getTopic(eventTopicId);
+    const allowed = Boolean(topic && topicInRequestScope(req, topic));
     visible.set(eventTopicId, allowed);
     return allowed;
   };
   let cursor = Math.max(0, after);
+  let reportedCursor = cursor;
+  const oldestCursor = earliestRuntimeEventSeq();
   return createPollingSseStream(req, {
-    ready: { v: NODE_RUNTIME_CONTRACT_VERSION, cursor },
+    ready: {
+      v: NODE_RUNTIME_CONTRACT_VERSION,
+      cursor,
+      oldestCursor,
+      truncated: oldestCursor > 0 && cursor < oldestCursor - 1,
+    },
     pump(send) {
-      while (true) {
+      for (let batch = 0; batch < 5; batch += 1) {
         const events = listRuntimeEventsAfter(cursor, 500);
-        if (events.length === 0) break;
+        if (events.length === 0) {
+          if (reportedCursor < cursor && send("cursor", { cursor }, cursor))
+            reportedCursor = cursor;
+          break;
+        }
         for (const event of events) {
-          cursor = event.seq;
           if ((!topicId || event.topicId === topicId) && eventInScope(event.topicId)) {
-            send("runtime", runtimeEvent(event), event.seq);
+            if (!send("runtime", runtimeEvent(event), event.seq)) return;
           }
+          cursor = event.seq;
         }
         // A cursor is global because RuntimeBus ordering is global. This
         // lets a topic-filtered subscriber resume without rescanning it.
-        send("cursor", { cursor }, cursor);
+        if (!send("cursor", { cursor }, cursor)) return;
+        reportedCursor = cursor;
         if (events.length < 500) break;
       }
     },
@@ -318,14 +330,24 @@ function createEventStream(
 ): Response {
   const allowedTopics = new Set(topicsForUser(userId, surface).map((topic) => topic.id));
   let cursor = Math.max(0, after);
+  let reportedCursor = cursor;
+  const oldestCursor = earliestRuntimeEventSeq();
   return createPollingSseStream(req, {
-    ready: { protocolVersion: NODE_CONTROL_PROTOCOL_VERSION, cursor },
+    ready: {
+      protocolVersion: NODE_CONTROL_PROTOCOL_VERSION,
+      cursor,
+      oldestCursor,
+      truncated: oldestCursor > 0 && cursor < oldestCursor - 1,
+    },
     pump(send) {
-      while (true) {
+      for (let batch = 0; batch < 5; batch += 1) {
         const events = listRuntimeEventsAfter(cursor, 500);
-        if (events.length === 0) break;
+        if (events.length === 0) {
+          if (reportedCursor < cursor && send("cursor", { cursor }, cursor))
+            reportedCursor = cursor;
+          break;
+        }
         for (const event of events) {
-          cursor = event.seq;
           if (event.type === "topic-created" || event.type === "topic-updated") {
             const topic = getTopic(event.topicId);
             // Re-check the surface, not just membership: a room created on
@@ -337,12 +359,14 @@ function createEventStream(
             else allowedTopics.delete(event.topicId);
           }
           const visible = allowedTopics.has(event.topicId);
-          if (visible) send("runtime", runtimeEvent(event), event.seq);
+          if (visible && !send("runtime", runtimeEvent(event), event.seq)) return;
+          cursor = event.seq;
           if (event.type === "topic-deleted") allowedTopics.delete(event.topicId);
         }
         // Advance reconnect cursors even when a batch only contained topics
         // that are not visible to this user.
-        send("cursor", { cursor }, cursor);
+        if (!send("cursor", { cursor }, cursor)) return;
+        reportedCursor = cursor;
         if (events.length < 500) break;
       }
     },

@@ -97,6 +97,11 @@ function localWebSocketOptions(headers: HeaderPairs): {
 
 const DEFAULT_MIN_RECONNECT_MS = 1_000;
 const DEFAULT_MAX_RECONNECT_MS = 30_000;
+export const MAX_IN_FLIGHT_HTTP_REQUESTS = 128;
+export const MAX_BRIDGED_SOCKETS = 128;
+export const MAX_HTTP_REQUEST_BODY_BYTES = 16 * 1024 * 1024;
+export const MAX_PREOPEN_WEBSOCKET_BYTES = 1024 * 1024;
+export const MAX_TUNNEL_BUFFERED_AMOUNT = 8 * 1024 * 1024;
 const RECONNECT_JITTER_RATIO = 0.2;
 /** Liveness: relay pings every pingIntervalMs; absent ANY frame for this many
  *  intervals the socket is considered half-open and torn down for reconnect. */
@@ -111,6 +116,7 @@ interface PendingHttp {
   path: string;
   headers: Headers;
   started: boolean;
+  receivedBytes: number;
 }
 
 interface BridgedSocket {
@@ -118,6 +124,7 @@ interface BridgedSocket {
   opened: boolean;
   /** relay→local data frames buffered until the local socket opens. */
   buffer: Array<Extract<RelayToNodeFrame, { type: "ws_data" }>>;
+  bufferedBytes: number;
 }
 
 const noop: LogFn = () => {};
@@ -326,7 +333,27 @@ export class TunnelClient {
   }
 
   private send(frame: NodeToRelayFrame): void {
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(encodeFrame(frame));
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (Number(ws.bufferedAmount ?? 0) > MAX_TUNNEL_BUFFERED_AMOUNT) {
+      this.disconnectActiveConnection(
+        ws,
+        this.connectionGeneration,
+        { reason: "relay outbound buffer limit exceeded" },
+        true,
+      );
+      return;
+    }
+    try {
+      ws.send(encodeFrame(frame));
+    } catch {
+      this.disconnectActiveConnection(
+        ws,
+        this.connectionGeneration,
+        { reason: "relay send failed" },
+        true,
+      );
+    }
   }
 
   // ── Frame dispatch ──────────────────────────────────────────────
@@ -378,11 +405,20 @@ export class TunnelClient {
         break;
       case "http_req_chunk": {
         const pending = this.pendingHttp.get(frame.id);
+        if (!pending) break;
         try {
-          pending?.bodyController?.enqueue(fromB64(frame.dataB64));
-          if (pending) this.startPendingHttp(frame.id, pending);
+          if (!pending.body) throw new Error("body chunk received for bodyless request");
+          const chunk = fromB64(frame.dataB64);
+          pending.receivedBytes += chunk.byteLength;
+          if (pending.receivedBytes > MAX_HTTP_REQUEST_BODY_BYTES) {
+            throw new Error("relay HTTP request body limit exceeded");
+          }
+          pending.bodyController?.enqueue(chunk);
+          this.startPendingHttp(frame.id, pending);
         } catch {
-          // request already settled locally
+          pending.abort.abort();
+          this.pendingHttp.delete(frame.id);
+          throw new Error("invalid or oversized relay HTTP request body");
         }
         break;
       }
@@ -416,6 +452,15 @@ export class TunnelClient {
         const bridged = this.bridgedSockets.get(frame.id);
         if (!bridged) break;
         if (!bridged.opened) {
+          bridged.bufferedBytes +=
+            frame.text === undefined
+              ? Math.floor(((frame.dataB64 ?? "").length * 3) / 4)
+              : Buffer.byteLength(frame.text, "utf8");
+          if (bridged.bufferedBytes > MAX_PREOPEN_WEBSOCKET_BYTES) {
+            this.bridgedSockets.delete(frame.id);
+            bridged.ws.close(1009, "pre-open buffer limit exceeded");
+            throw new Error("bridged WebSocket pre-open buffer limit exceeded");
+          }
           bridged.buffer.push(frame);
           break;
         }
@@ -439,6 +484,10 @@ export class TunnelClient {
   // ── HTTP replay ─────────────────────────────────────────────────
 
   private startHttpRequest(frame: Extract<RelayToNodeFrame, { type: "http_req_head" }>): void {
+    if (this.pendingHttp.has(frame.id)) throw new Error("duplicate relay HTTP request id");
+    if (this.pendingHttp.size >= MAX_IN_FLIGHT_HTTP_REQUESTS) {
+      throw new Error("too many in-flight relay HTTP requests");
+    }
     const abort = new AbortController();
     const headers = new Headers();
     for (const [name, value] of frame.headers) headers.append(name, value);
@@ -450,6 +499,7 @@ export class TunnelClient {
       path: frame.path,
       headers,
       started: false,
+      receivedBytes: 0,
     };
     if (frame.hasBody) {
       pending.body = new ReadableStream<Uint8Array>({
@@ -540,6 +590,10 @@ export class TunnelClient {
   // ── WebSocket bridging ──────────────────────────────────────────
 
   private openBridgedSocket(id: string, path: string, headers: HeaderPairs): void {
+    if (this.bridgedSockets.has(id)) throw new Error("duplicate bridged WebSocket id");
+    if (this.bridgedSockets.size >= MAX_BRIDGED_SOCKETS) {
+      throw new Error("too many bridged WebSockets");
+    }
     const wsOrigin = this.opts.targetOrigin.replace(/^http/, "ws");
     let local: WebSocket;
     try {
@@ -555,7 +609,7 @@ export class TunnelClient {
       });
       return;
     }
-    const bridged: BridgedSocket = { ws: local, opened: false, buffer: [] };
+    const bridged: BridgedSocket = { ws: local, opened: false, buffer: [], bufferedBytes: 0 };
     this.bridgedSockets.set(id, bridged);
 
     local.onopen = () => {
@@ -563,6 +617,7 @@ export class TunnelClient {
       this.send({ type: "ws_open_ok", id });
       for (const frame of bridged.buffer) this.deliverToLocal(local, frame);
       bridged.buffer = [];
+      bridged.bufferedBytes = 0;
     };
 
     local.onmessage = (event) => {

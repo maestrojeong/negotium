@@ -276,6 +276,7 @@ Start with the [documentation index](./docs/README.md), then see:
 - [Feature review guide](./docs/FEATURE-REVIEW.md)
 - [Wiki search evaluation for 0.2.18](./docs/WIKI-SEARCH-EVALUATION-0.2.18.md)
 - [Migration 0.2.19](./docs/MIGRATION-0.2.19.md)
+- [Migration 0.4.9](./docs/MIGRATION-0.4.9.md)
 - [Release guide](./docs/RELEASING.md)
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution checks and

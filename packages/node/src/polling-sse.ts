@@ -1,4 +1,4 @@
-type SseSend = (event: string, data: unknown, id?: number) => void;
+type SseSend = (event: string, data: unknown, id?: number) => boolean;
 
 export interface PollingSseOptions {
   ready: unknown;
@@ -32,87 +32,93 @@ export function createPollingSseStream(req: Request, options: PollingSseOptions)
     return true;
   };
 
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      const fail = (error: unknown) => {
-        if (!stop()) return;
-        try {
-          controller.error(error);
-        } catch {
-          // The peer may already have closed the stream.
-        }
-      };
-      const send: SseSend = (event, data, id) => {
-        if (closed) return;
-        try {
-          const lines = [
-            id === undefined ? "" : `id: ${id}`,
-            `event: ${event}`,
-            `data: ${JSON.stringify(data)}`,
-          ]
-            .filter(Boolean)
-            .join("\n");
-          controller.enqueue(encoder.encode(`${lines}\n\n`));
-        } catch (error) {
-          fail(error);
-        }
-      };
-      const close = () => {
-        if (!stop()) return;
-        try {
-          controller.close();
-        } catch {
-          // The peer may already have closed the stream.
-        }
-      };
-      const pump = () => {
-        if (closed || pumping) return;
-        pumping = true;
-        try {
-          const result = options.pump(send);
-          if (result) {
-            void Promise.resolve(result).then(
-              () => {
-                pumping = false;
-              },
-              (error) => {
-                pumping = false;
-                fail(error);
-              },
-            );
-            return;
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      start(controller) {
+        const fail = (error: unknown) => {
+          if (!stop()) return;
+          try {
+            controller.error(error);
+          } catch {
+            // The peer may already have closed the stream.
           }
-        } catch (error) {
-          fail(error);
+        };
+        const send: SseSend = (event, data, id) => {
+          if (closed || (controller.desiredSize !== null && controller.desiredSize <= 0))
+            return false;
+          try {
+            const lines = [
+              id === undefined ? "" : `id: ${id}`,
+              `event: ${event}`,
+              `data: ${JSON.stringify(data)}`,
+            ]
+              .filter(Boolean)
+              .join("\n");
+            controller.enqueue(encoder.encode(`${lines}\n\n`));
+            return true;
+          } catch (error) {
+            fail(error);
+            return false;
+          }
+        };
+        const close = () => {
+          if (!stop()) return;
+          try {
+            controller.close();
+          } catch {
+            // The peer may already have closed the stream.
+          }
+        };
+        const pump = () => {
+          if (closed || pumping) return;
+          pumping = true;
+          try {
+            const result = options.pump(send);
+            if (result) {
+              void Promise.resolve(result).then(
+                () => {
+                  pumping = false;
+                },
+                (error) => {
+                  pumping = false;
+                  fail(error);
+                },
+              );
+              return;
+            }
+          } catch (error) {
+            fail(error);
+          }
+          pumping = false;
+        };
+
+        if (req.signal.aborted) {
+          close();
+          return;
         }
-        pumping = false;
-      };
+        const onAbort = () => close();
+        req.signal.addEventListener("abort", onAbort, { once: true });
+        removeAbortListener = () => req.signal.removeEventListener("abort", onAbort);
 
-      if (req.signal.aborted) {
-        close();
-        return;
-      }
-      const onAbort = () => close();
-      req.signal.addEventListener("abort", onAbort, { once: true });
-      removeAbortListener = () => req.signal.removeEventListener("abort", onAbort);
-
-      send("ready", options.ready);
-      pump();
-      if (closed) return;
-      pollTimer = setInterval(pump, options.pollIntervalMs ?? 100);
-      heartbeatTimer = setInterval(() => {
+        send("ready", options.ready);
+        pump();
         if (closed) return;
-        try {
-          controller.enqueue(encoder.encode(`: heartbeat ${Date.now()}\n\n`));
-        } catch (error) {
-          fail(error);
-        }
-      }, options.heartbeatIntervalMs ?? 15_000);
+        pollTimer = setInterval(pump, options.pollIntervalMs ?? 100);
+        heartbeatTimer = setInterval(() => {
+          if (closed || (controller.desiredSize !== null && controller.desiredSize <= 0)) return;
+          try {
+            controller.enqueue(encoder.encode(`: heartbeat ${Date.now()}\n\n`));
+          } catch (error) {
+            fail(error);
+          }
+        }, options.heartbeatIntervalMs ?? 15_000);
+      },
+      cancel() {
+        stop();
+      },
     },
-    cancel() {
-      stop();
-    },
-  });
+    { highWaterMark: 64 },
+  );
 
   return new Response(stream, {
     headers: {

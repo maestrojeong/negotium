@@ -320,9 +320,12 @@ export { DEFAULT_AI_NAME, getGlobalAiName, setGlobalAiName } from "#storage/app-
 export { db } from "#storage/forum-db";
 export type { StoredRuntimeEvent } from "#storage/runtime-events";
 export {
+  earliestRuntimeEventSeq,
+  heartbeatRuntimeEventConsumer,
   latestRuntimeEventSeq,
   listRecentRuntimeEventsForTopic,
   listRuntimeEventsAfter,
+  pruneRuntimeEvents,
 } from "#storage/runtime-events";
 export {
   claimRuntimeTurnLease,

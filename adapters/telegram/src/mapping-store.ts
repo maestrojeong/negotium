@@ -21,7 +21,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { DATA_DIR } from "@negotium/core";
+import { DATA_DIR, type RuntimeBusEvent } from "@negotium/core";
 
 export interface PersistedMapping {
   chatId: number;
@@ -33,6 +33,11 @@ export interface PersistedMapping {
 export interface PersistedTombstone {
   topicId: string;
   title: string;
+}
+
+export interface PersistedRuntimeEvent {
+  seq: number;
+  event: RuntimeBusEvent;
 }
 
 /** One durable outbound-retry entry (clawgram's telegram-outbox pattern,
@@ -73,6 +78,11 @@ export interface TelegramMappingStore {
   /** One-shot migration flags (e.g. the surface backfill). */
   isFlagSet(key: string): boolean;
   setFlag(key: string): void;
+  runtimeEventCursor(): number | undefined;
+  captureRuntimeEvent(event: RuntimeBusEvent & { seq: number }): void;
+  advanceRuntimeEventCursor(seq: number): void;
+  pendingRuntimeEvents(): PersistedRuntimeEvent[];
+  acknowledgeRuntimeEvent(seq: number): void;
   // ── outbound retry queue ──────────────────────────────────────────
   outboxEnqueue(entry: {
     chatId: number;
@@ -125,6 +135,11 @@ interface OutboxRow {
   next_try_at: number;
   dead: number;
   last_error: string | null;
+}
+
+interface RuntimeInboxRow {
+  seq: number;
+  event_json: string;
 }
 
 function outboxRowToEntry(row: OutboxRow): OutboxEntry {
@@ -197,6 +212,13 @@ function createTables(db: Database): void {
       value TEXT NOT NULL
     )`,
   );
+  db.run(
+    `CREATE TABLE IF NOT EXISTS runtime_inbox (
+      seq INTEGER PRIMARY KEY,
+      runtime_message_id TEXT,
+      event_json TEXT NOT NULL
+    )`,
+  );
 }
 
 function migrateOutboxSchema(db: Database): void {
@@ -215,6 +237,18 @@ function migrateOutboxSchema(db: Database): void {
   );
 }
 
+function migrateRuntimeInboxSchema(db: Database): void {
+  try {
+    db.run("ALTER TABLE runtime_inbox ADD COLUMN runtime_message_id TEXT");
+  } catch {
+    // Column already exists.
+  }
+  db.run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_runtime_inbox_message
+     ON runtime_inbox(runtime_message_id) WHERE runtime_message_id IS NOT NULL`,
+  );
+}
+
 /** Open (creating if needed) the mapping database. `path` is injectable for
  *  tests; production uses the node's data dir. */
 export function openMappingStore(path?: string): TelegramMappingStore {
@@ -224,6 +258,7 @@ export function openMappingStore(path?: string): TelegramMappingStore {
   migrateLegacySchema(db);
   createTables(db);
   migrateOutboxSchema(db);
+  migrateRuntimeInboxSchema(db);
   return {
     load(): PersistedMapping[] {
       const rows = db
@@ -308,6 +343,60 @@ export function openMappingStore(path?: string): TelegramMappingStore {
           entry.lastError ?? null,
         ],
       );
+    },
+    runtimeEventCursor(): number | undefined {
+      const row = db
+        .query("SELECT value FROM settings WHERE key = 'runtime_event_cursor'")
+        .get() as {
+        value: string;
+      } | null;
+      if (!row) return undefined;
+      const value = Number.parseInt(row.value, 10);
+      return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+    },
+    captureRuntimeEvent(event): void {
+      const messageId =
+        event.payload &&
+        typeof event.payload === "object" &&
+        "id" in event.payload &&
+        typeof event.payload.id === "string"
+          ? event.payload.id
+          : null;
+      db.transaction(() => {
+        db.run(
+          `INSERT OR IGNORE INTO runtime_inbox (seq, runtime_message_id, event_json)
+           VALUES (?, ?, ?)`,
+          [event.seq, messageId, JSON.stringify(event)],
+        );
+        db.run(
+          `INSERT INTO settings (key, value) VALUES ('runtime_event_cursor', ?)
+           ON CONFLICT(key) DO UPDATE SET value = MAX(CAST(value AS INTEGER), CAST(excluded.value AS INTEGER))`,
+          [String(event.seq)],
+        );
+      })();
+    },
+    advanceRuntimeEventCursor(seq): void {
+      db.run(
+        `INSERT INTO settings (key, value) VALUES ('runtime_event_cursor', ?)
+         ON CONFLICT(key) DO UPDATE SET value = MAX(CAST(value AS INTEGER), CAST(excluded.value AS INTEGER))`,
+        [String(seq)],
+      );
+    },
+    pendingRuntimeEvents(): PersistedRuntimeEvent[] {
+      const rows = db
+        .query("SELECT seq, event_json FROM runtime_inbox ORDER BY seq ASC")
+        .all() as RuntimeInboxRow[];
+      return rows.flatMap((row) => {
+        try {
+          return [{ seq: row.seq, event: JSON.parse(row.event_json) as RuntimeBusEvent }];
+        } catch {
+          db.run("DELETE FROM runtime_inbox WHERE seq = ?", [row.seq]);
+          return [];
+        }
+      });
+    },
+    acknowledgeRuntimeEvent(seq): void {
+      db.run("DELETE FROM runtime_inbox WHERE seq = ?", [seq]);
     },
     outboxDue(now: number): OutboxEntry[] {
       const rows = db

@@ -55,6 +55,13 @@ registerStorageSchemaInitializer((database) => {
       created_at TEXT NOT NULL
     )
   `);
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS runtime_event_consumers (
+      consumer_id TEXT PRIMARY KEY,
+      cursor INTEGER NOT NULL,
+      heartbeat_at INTEGER NOT NULL
+    )
+  `);
   database.exec(
     "CREATE INDEX IF NOT EXISTS idx_runtime_events_topic_seq ON runtime_events(topic_id, seq)",
   );
@@ -81,6 +88,13 @@ function rowToEvent(row: RuntimeEventRow): StoredRuntimeEvent | null {
 export function latestRuntimeEventSeq(): number {
   const row = db
     .query<{ seq: number | bigint | null }, []>("SELECT MAX(seq) AS seq FROM runtime_events")
+    .get();
+  return Number(row?.seq ?? 0);
+}
+
+export function earliestRuntimeEventSeq(): number {
+  const row = db
+    .query<{ seq: number | bigint | null }, []>("SELECT MIN(seq) AS seq FROM runtime_events")
     .get();
   return Number(row?.seq ?? 0);
 }
@@ -116,6 +130,61 @@ export function listRuntimeEventsAfter(seq: number, limit = 500): StoredRuntimeE
     )
     .all(Math.max(0, seq), Math.max(1, Math.min(limit, 5_000)));
   return rows.map(rowToEvent).filter((event): event is StoredRuntimeEvent => event !== null);
+}
+
+export function heartbeatRuntimeEventConsumer(
+  consumerId: string,
+  cursor: number,
+  now = Date.now(),
+): void {
+  db.query(
+    `INSERT INTO runtime_event_consumers (consumer_id, cursor, heartbeat_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(consumer_id) DO UPDATE SET
+       cursor = MAX(runtime_event_consumers.cursor, excluded.cursor),
+       heartbeat_at = excluded.heartbeat_at`,
+  ).run(consumerId, Math.max(0, cursor), now);
+}
+
+export interface RuntimeEventPruneOptions {
+  maxEvents?: number;
+  activeConsumerMaxAgeMs?: number;
+  now?: number;
+}
+
+export interface RuntimeEventPruneResult {
+  deleted: number;
+  cutoff: number;
+  retainedForConsumer: number | null;
+}
+
+/** Keep a soft event-count bound without deleting rows an active durable consumer has not captured. */
+export function pruneRuntimeEvents(
+  options: RuntimeEventPruneOptions = {},
+): RuntimeEventPruneResult {
+  const maxEvents = Math.max(1, Math.floor(options.maxEvents ?? 100_000));
+  const now = options.now ?? Date.now();
+  const activeAfter = now - Math.max(1_000, options.activeConsumerMaxAgeMs ?? 5 * 60_000);
+  db.query("DELETE FROM runtime_event_consumers WHERE heartbeat_at < ?").run(activeAfter);
+
+  const boundary = db
+    .query<{ seq: number | bigint }, [number]>(
+      "SELECT seq FROM runtime_events ORDER BY seq DESC LIMIT 1 OFFSET ?",
+    )
+    .get(maxEvents - 1);
+  if (!boundary) return { deleted: 0, cutoff: 0, retainedForConsumer: null };
+
+  const targetCutoff = Math.max(0, Number(boundary.seq) - 1);
+  const consumer = db
+    .query<{ cursor: number | bigint | null }, []>(
+      "SELECT MIN(cursor) AS cursor FROM runtime_event_consumers",
+    )
+    .get();
+  const retainedForConsumer = consumer?.cursor == null ? null : Number(consumer.cursor);
+  const cutoff = Math.min(targetCutoff, retainedForConsumer ?? targetCutoff);
+  if (cutoff <= 0) return { deleted: 0, cutoff, retainedForConsumer };
+  const result = db.query("DELETE FROM runtime_events WHERE seq <= ?").run(cutoff);
+  return { deleted: Number(result.changes), cutoff, retainedForConsumer };
 }
 
 /** Recent topic history used to hydrate a newly opened channel surface. */

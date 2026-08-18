@@ -80,9 +80,11 @@ export { getGlobalAiName, setGlobalAiName } from "#storage/app-settings";
 export { readDecisions, writeDecisionGraphSvg } from "#storage/decisions";
 export type { StoredRuntimeEvent } from "#storage/runtime-events";
 export {
+  earliestRuntimeEventSeq,
   latestRuntimeEventSeq,
   listRecentRuntimeEventsForTopic,
   listRuntimeEventsAfter,
+  pruneRuntimeEvents,
 } from "#storage/runtime-events";
 export { acquireRuntimeProcessLease } from "#storage/runtime-process-leases";
 export { getTopicStats } from "#storage/token-stats";

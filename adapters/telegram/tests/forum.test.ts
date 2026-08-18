@@ -337,6 +337,9 @@ describe("forum mode", () => {
     const threadId = fakeA.calls.find((c) => c.text === "before restart")?.opts
       ?.message_thread_id as number;
     adapterA.stop();
+    const offlineMessage = aiMessage(topic.id, "while adapter offline");
+    runtimeBus().broadcastMessage(topic.id, offlineMessage);
+    runtimeBus().broadcastMessage(topic.id, offlineMessage);
 
     const fakeB = new FakeTelegramClient();
     const adapterB = startTelegramAdapter({
@@ -347,6 +350,9 @@ describe("forum mode", () => {
       mappingDbPath: dbPath,
     });
     try {
+      await waitFor(() => fakeB.calls.some((c) => c.text === "while adapter offline"));
+      await Bun.sleep(150);
+      expect(fakeB.calls.filter((c) => c.text === "while adapter offline")).toHaveLength(1);
       runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "after restart"));
       await waitFor(() => fakeB.calls.some((c) => c.text === "after restart"));
       expect(fakeB.calls.find((c) => c.text === "after restart")?.opts?.message_thread_id).toBe(

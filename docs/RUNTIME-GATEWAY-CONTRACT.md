@@ -29,9 +29,17 @@ the canonical topic.
   the global durable RuntimeBus sequence, `cursor` records advance even when a topic filter omits an
   event, and reconnects resume from `after`. A submitted turn emits `ai-status.kind=turn_accepted`,
   then its canonical `message`, followed by normal `ai_active`, streaming/tool, and terminal events.
+  Strict workspace forwarding applies the same scope rule as topic REST routes. Per-connection
+  buffering and catch-up scans are bounded, so clients must continue reading and reconnect from the
+  last received cursor after a disconnect. The initial `ready` event includes `oldestCursor` and
+  `truncated`; a client receiving `truncated: true` must reconcile canonical topic/message state.
 - `GET /topics/:topicId` and `GET /topics/:topicId/messages?cursor=&limit=` reconcile canonical state.
 
 `turn_accepted` confirms durable acceptance, not worker placement or successful agent execution.
 Existing worker placement, turn leases, RuntimeBus event persistence, and Terminal projections remain
 unchanged. Otium-specific JWTs, tenancy, hosted handoff, attachments/media, and UI metadata stay on
 the Gateway side of this contract.
+
+The RuntimeBus log keeps a soft maximum of 100,000 events. Active durable consumers heartbeat the
+highest sequence they have captured; pruning never crosses the minimum active cursor. Inactive
+consumers must reconcile canonical topic/message state if their cursor predates the retained log.

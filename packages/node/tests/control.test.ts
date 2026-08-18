@@ -464,6 +464,44 @@ test("an unscoped room is legacy for one workspace and ambiguous for several", a
   expect(strict.status).toBe(404);
 });
 
+test("strict runtime SSE does not expose events from an unscoped legacy room", async () => {
+  const user = `strict-sse-${randomUUID()}`;
+  const legacy = registerTopic({
+    title: `Strict SSE legacy ${randomUUID()}`,
+    userId: user,
+    surface: "otium",
+    surfaceScope: null,
+  });
+  const after = latestRuntimeEventSeq();
+  runtimeBus().broadcastMessage(legacy.id, {
+    id: randomUUID(),
+    topicId: legacy.id,
+    authorId: "ai",
+    text: "must not cross the strict workspace boundary",
+    createdAt: new Date().toISOString(),
+  });
+
+  const response = await handler(
+    runtimeRequest(`/events?after=${after}`, {
+      headers: {
+        [NODE_RUNTIME_SURFACE_SCOPE_HEADER]: "ws_alpha",
+        [NODE_RUNTIME_SURFACE_SCOPE_STRICT_HEADER]: "1",
+      },
+    }),
+  );
+  const reader = response?.body?.getReader();
+  try {
+    const ready = await reader?.read();
+    expect(new TextDecoder().decode(ready?.value)).toContain("event: ready");
+    const next = await reader?.read();
+    const payload = new TextDecoder().decode(next?.value);
+    expect(payload).toContain("event: cursor");
+    expect(payload).not.toContain("must not cross the strict workspace boundary");
+  } finally {
+    await reader?.cancel();
+  }
+});
+
 test("knowing a room id does not get a foreign workspace past the boundary", async () => {
   const user = `topic-scope-id-${randomUUID()}`;
   const room = registerTopic({

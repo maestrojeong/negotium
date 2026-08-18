@@ -48,13 +48,17 @@ import {
   extractFileTagPaths,
   getTopic,
   getTopicByNameForUser,
+  heartbeatRuntimeEventConsumer,
   isSensitivePath,
   isTopicVisible,
   isTranscriptionConfigured,
+  latestRuntimeEventSeq,
+  listRuntimeEventsAfter,
   listTopics,
   logger,
   type MessageDto,
   type RegisterTopicOptions,
+  type RuntimeBusEvent,
   renderTurnFooter,
   resolveDeliveryAck,
   resolveUploadedFilePathByFileId,
@@ -207,6 +211,7 @@ interface OutboundPayload {
   files: OutboundFile[];
   runtimeMessageId?: string;
   deliveryAckRequested?: boolean;
+  onSettled?: (success: boolean) => void;
 }
 
 interface DeliveredMessageRef {
@@ -1056,24 +1061,35 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   // by a watchdog so one hung sendMessage can't wedge the topic forever, and
   // a drained chain removes its map entry so long-lived processes don't
   // accumulate one settled promise per topic ever spoken to.
-  const sendQueues = new Map<string, Promise<void>>();
-  function enqueueSend(topicId: string, task: () => Promise<void>): void {
-    const prev = sendQueues.get(topicId) ?? Promise.resolve();
+  const sendQueues = new Map<string, Promise<boolean>>();
+  function enqueueSend(topicId: string, task: () => Promise<void>): Promise<boolean> {
+    const prev = sendQueues.get(topicId) ?? Promise.resolve(true);
     const next = prev.then(
       () =>
-        new Promise<void>((resolve) => {
+        new Promise<boolean>((resolve) => {
+          let settled = false;
           const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
             logger.warn(
               { topicId, sendTimeoutMs },
               "telegram adapter: send timed out — abandoning it and continuing the queue",
             );
-            resolve();
+            resolve(false);
           }, sendTimeoutMs);
           task()
-            .catch((err) => logger.warn({ err, topicId }, "telegram adapter: send task failed"))
-            .finally(() => {
+            .then(() => {
+              if (settled) return;
+              settled = true;
               clearTimeout(timer);
-              resolve();
+              resolve(true);
+            })
+            .catch((err) => {
+              logger.warn({ err, topicId }, "telegram adapter: send task failed");
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              resolve(false);
             });
         }),
     );
@@ -1083,6 +1099,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       // may already have replaced `next`).
       if (sendQueues.get(topicId) === next) sendQueues.delete(topicId);
     });
+    return next;
   }
 
   /** Deliver into every chat/thread currently bound to the topic, in order. */
@@ -1092,11 +1109,15 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     payload: OutboundPayload,
   ): void {
     const targets = [...mappings];
-    enqueueSend(topicId, () => deliverToTargets(topicId, targets, payload));
+    void enqueueSend(topicId, () => deliverToTargets(topicId, targets, payload)).then(
+      payload.onSettled,
+    );
   }
 
   function enqueueTarget(topicId: string, target: ChatMapping, payload: OutboundPayload): void {
-    enqueueSend(topicId, () => deliverToTargets(topicId, [target], payload));
+    void enqueueSend(topicId, () => deliverToTargets(topicId, [target], payload)).then(
+      payload.onSettled,
+    );
   }
 
   // ── forum mode: materialize runtime topics as forum threads ─────────
@@ -1139,7 +1160,9 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     buffer: OutboundPayload[],
     send: (payload: OutboundPayload) => Promise<void>,
   ): void {
-    for (const payload of buffer) enqueueSend(topicId, () => send(payload));
+    for (const payload of buffer) {
+      void enqueueSend(topicId, () => send(payload)).then(payload.onSettled);
+    }
   }
 
   function materializeTopic(topic: TopicDto): boolean {
@@ -1240,7 +1263,11 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   function handleTopicDeleted(topicId: string): void {
     if (materializeTombstones.delete(topicId)) store.deleteTombstone(topicId);
     const pending = pendingByTopic.get(topicId);
-    if (pending) pending.cancelled = true; // in-flight creation — its continuation cleans up
+    if (pending) {
+      pending.cancelled = true; // in-flight creation — its continuation cleans up
+      for (const payload of pending.buffer) payload.onSettled?.(true);
+      pending.buffer = [];
+    }
     for (const [messageId, message] of runtimeMessages) {
       if (message.topicId === topicId) deleteDeliveredRuntimeMessage(topicId, messageId);
     }
@@ -1293,14 +1320,18 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     }
     const tombstoneTitle = materializeTombstones.get(topicId);
     if (tombstoneTitle !== undefined) {
-      enqueueSend(topicId, () => deliverFallback(topicId, tombstoneTitle, payload));
+      void enqueueSend(topicId, () => deliverFallback(topicId, tombstoneTitle, payload)).then(
+        payload.onSettled,
+      );
       return true;
     }
     const topic = getTopic(topicId);
     if (!topic) return false;
     if (forumMode) {
       if (!forumManageTopicsAvailable || permissionBlockedTopics.has(topicId)) {
-        enqueueSend(topicId, () => deliverFallback(topicId, topic.title, payload));
+        void enqueueSend(topicId, () => deliverFallback(topicId, topic.title, payload)).then(
+          payload.onSettled,
+        );
         return true;
       }
       // Lazy materialization: first message for a live topic with no binding
@@ -1870,6 +1901,108 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     );
   });
 
+  async function deliverPersistedRuntimeMessage(event: RuntimeBusEvent): Promise<boolean> {
+    const msg = event.payload as MessageDto;
+    if (msg.authorId === userId && msg.sourceAdapter === "telegram") return true;
+    if (msg.kind === "tool") return true;
+    const hasAttachments = Boolean(msg.attachments && msg.attachments.length > 0);
+    if (!msg.text && !hasAttachments) return true;
+    const runtimeMessageId = msg.authorId === "ai" ? msg.id : undefined;
+    if (runtimeMessageId) {
+      runtimeMessages.set(runtimeMessageId, msg);
+      if (!msg.queryId) {
+        const timer = setTimeout(() => {
+          runtimeMessages.delete(runtimeMessageId);
+          deliveredByRuntimeMessageId.delete(runtimeMessageId);
+        }, 5 * 60_000);
+        timer.unref?.();
+      }
+    }
+    const tagFiles: OutboundFile[] = msg.text
+      ? extractFileTagPaths(msg.text).map((path) => ({ path, filename: basename(path) }))
+      : [];
+    const attachmentFiles = hasAttachments
+      ? (msg.attachments ?? [])
+          .map((attachment): OutboundFile | null => {
+            const path = resolveUploadedFilePathByFileId(attachment.id);
+            if (!path) return null;
+            return {
+              path,
+              filename: basename(attachment.filename) || basename(path),
+              ...(attachment.mimeType ? { mimeType: attachment.mimeType } : {}),
+            };
+          })
+          .filter((file): file is OutboundFile => file !== null)
+      : [];
+    const files = [...tagFiles, ...attachmentFiles];
+    const rawText = tagFiles.length > 0 && msg.text ? stripFileTags(msg.text) : (msg.text ?? "");
+    const text = msg.authorId === userId && rawText ? `[From: User] ${rawText}` : rawText;
+    if (!text && files.length === 0) return true;
+    let settle!: (success: boolean) => void;
+    const settled = new Promise<boolean>((resolve) => {
+      settle = resolve;
+    });
+    const payload: OutboundPayload = {
+      text,
+      files,
+      runtimeMessageId,
+      deliveryAckRequested: msg.deliveryAckRequested === true,
+      onSettled: settle,
+    };
+    const routed = routeMessage(event.topicId, payload, msg.queryId);
+    if (routed && payload.deliveryAckRequested) claimDeliveryAck(event.topicId, msg.id);
+    return routed ? settled : true;
+  }
+
+  const savedRuntimeEventCursor = store.runtimeEventCursor();
+  let runtimeEventCursor = savedRuntimeEventCursor ?? latestRuntimeEventSeq();
+  if (savedRuntimeEventCursor === undefined) {
+    store.advanceRuntimeEventCursor(runtimeEventCursor);
+  }
+  const runtimeEventConsumerId = `telegram:${userId}:${opts.mappingDbPath ?? "default"}`;
+  heartbeatRuntimeEventConsumer(runtimeEventConsumerId, runtimeEventCursor);
+  let pollingRuntimeEvents = false;
+  let drainingRuntimeInbox = false;
+
+  const drainRuntimeInbox = async (): Promise<void> => {
+    if (drainingRuntimeInbox || stopped) return;
+    drainingRuntimeInbox = true;
+    try {
+      while (!stopped) {
+        const pending = store.pendingRuntimeEvents()[0];
+        if (!pending) break;
+        const delivered = await deliverPersistedRuntimeMessage(pending.event);
+        if (!delivered || stopped) break;
+        store.acknowledgeRuntimeEvent(pending.seq);
+      }
+    } catch (err) {
+      if (!stopped) logger.warn({ err }, "telegram adapter: durable runtime inbox drain failed");
+    } finally {
+      drainingRuntimeInbox = false;
+    }
+  };
+
+  const pollRuntimeEvents = (): void => {
+    if (pollingRuntimeEvents || stopped) return;
+    pollingRuntimeEvents = true;
+    try {
+      for (let batch = 0; batch < 5; batch += 1) {
+        const events = listRuntimeEventsAfter(runtimeEventCursor, 500);
+        if (events.length === 0) break;
+        for (const event of events) {
+          if (event.type === "message") store.captureRuntimeEvent({ ...event, seq: event.seq });
+          else store.advanceRuntimeEventCursor(event.seq);
+          runtimeEventCursor = event.seq;
+        }
+        if (events.length < 500) break;
+      }
+      void drainRuntimeInbox();
+      heartbeatRuntimeEventConsumer(runtimeEventConsumerId, runtimeEventCursor);
+    } finally {
+      pollingRuntimeEvents = false;
+    }
+  };
+
   // ── outbound: RuntimeBus → Telegram ─────────────────────────────────
   const unsubscribe = runtimeBus().subscribe((event) => {
     if (stopped) return;
@@ -1923,56 +2056,13 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       }
       return;
     }
-    if (event.type !== "message") return;
-    const msg = event.payload as MessageDto;
-    if (msg.authorId === userId && msg.sourceAdapter === "telegram") return;
-    if (msg.kind === "tool") return; // tool chatter stays off the chat
-    const hasAttachments = Boolean(msg.attachments && msg.attachments.length > 0);
-    if (!msg.text && !hasAttachments) return;
-    const runtimeMessageId = msg.authorId === "ai" ? msg.id : undefined;
-    if (runtimeMessageId) {
-      runtimeMessages.set(runtimeMessageId, msg);
-      if (!msg.queryId) {
-        const timer = setTimeout(() => {
-          runtimeMessages.delete(runtimeMessageId);
-          deliveredByRuntimeMessageId.delete(runtimeMessageId);
-        }, 5 * 60_000);
-        timer.unref?.();
-      }
-    }
-    // Produced files ride either as [FILE:] tags (channel-agnostic providers)
-    // or as real host-stored attachments (e.g. the send_file/send_files MCP
-    // tools) — resolve both to local paths so they reach sendPhoto/sendDocument.
-    const tagFiles: OutboundFile[] = msg.text
-      ? extractFileTagPaths(msg.text).map((path) => ({ path, filename: basename(path) }))
-      : [];
-    const attachmentFiles = hasAttachments
-      ? (msg.attachments ?? [])
-          .map((attachment): OutboundFile | null => {
-            const path = resolveUploadedFilePathByFileId(attachment.id);
-            if (!path) return null;
-            return {
-              path,
-              filename: basename(attachment.filename) || basename(path),
-              ...(attachment.mimeType ? { mimeType: attachment.mimeType } : {}),
-            };
-          })
-          .filter((file): file is OutboundFile => file !== null)
-      : [];
-    const files = [...tagFiles, ...attachmentFiles];
-    const rawText = tagFiles.length > 0 && msg.text ? stripFileTags(msg.text) : (msg.text ?? "");
-    const text = msg.authorId === userId && rawText ? `[From: User] ${rawText}` : rawText;
-    if (!text && files.length === 0) return;
-    const payload: OutboundPayload = {
-      text,
-      files,
-      runtimeMessageId,
-      deliveryAckRequested: msg.deliveryAckRequested === true,
-    };
-    if (routeMessage(event.topicId, payload, msg.queryId) && payload.deliveryAckRequested) {
-      claimDeliveryAck(event.topicId, msg.id);
-    }
+    // Durable message delivery is driven by the ordered SQLite tail below.
+    // The live bus remains responsible for ephemeral status and topic events.
   });
+
+  pollRuntimeEvents();
+  const runtimeEventPollTimer = setInterval(pollRuntimeEvents, 100);
+  runtimeEventPollTimer.unref?.();
 
   if (forumMode) {
     // The configured forum's General topic is always the control surface.
@@ -1994,6 +2084,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       typingHeartbeatByQueryId.clear();
       for (const queryId of toolStatusByQueryId.keys()) closeToolStatus(queryId);
       mediaIntake.stop();
+      clearInterval(runtimeEventPollTimer);
       unsubscribe();
       store.close();
     },
