@@ -507,6 +507,26 @@ export const WHISPER_MODEL = envText("WHISPER_MODEL_FILE") ?? "turbo";
 export const TESSERACT_BIN = envText("TESSERACT_BIN") ?? "tesseract";
 export const PDFTOTEXT_BIN = envText("PDFTOTEXT_BIN") ?? "pdftotext";
 
+// ── Whisper backend selection ──────────────────────────────────────
+// Different hosts want different whisper runtimes: Apple Silicon Macs get
+// real acceleration from mlx-whisper (see clawgram's transcribe.ts, which
+// this mirrors), while Linux/Ubuntu hubs have no MLX and use the CPU-friendly
+// faster-whisper wrapper instead. Both CLIs accept the same
+// `INPUT --model M --language L --output-dir D --output-format txt` shape
+// and write `{basename}.txt`, so extractFromAudio only needs to pick which
+// binary/args to use — no per-backend parsing logic.
+export type WhisperBackend = "faster-whisper" | "mlx-whisper";
+function resolveWhisperBackend(): WhisperBackend {
+  return envText("WHISPER_BACKEND") === "mlx-whisper" ? "mlx-whisper" : "faster-whisper";
+}
+export const WHISPER_BACKEND = resolveWhisperBackend();
+/** Path to the `mlx_whisper` CLI (only used when WHISPER_BACKEND=mlx-whisper). */
+export const MLX_WHISPER_BIN = envText("MLX_WHISPER_BIN");
+/** mlx-whisper model id, e.g. "mlx-community/whisper-large-v3-turbo". Falls
+ *  back to WHISPER_MODEL so a single WHISPER_MODEL_FILE can drive whichever
+ *  backend is active on a given host. */
+export const WHISPER_MODEL_MLX = envText("WHISPER_MODEL_MLX") ?? WHISPER_MODEL;
+
 // Max tell_session relay depth from origin user. ask_session forks reset to
 // depth=0, so this only caps tell_session chains. Override via MAX_TELL_DEPTH
 // (positive int); defaults to 20 when unset or invalid.

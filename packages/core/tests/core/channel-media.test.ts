@@ -108,6 +108,41 @@ printf 'fake transcript' > "$out/audio.txt"
     expect(isTranscriptionConfigured(opts)).toBe(true);
     expect(await transcribeAudio(voicePath, opts)).toBe("fake transcript");
   });
+
+  test("mlx-whisper backend: not configured without MLX_WHISPER_BIN, then runs like faster-whisper", async () => {
+    // Same fake CLI as the faster-whisper case — mlx_whisper accepts the
+    // identical `INPUT --model M --language L --output-dir D --output-format
+    // txt` shape (see clawgram's transcribe.ts), so extractFromAudio only
+    // swaps which binary it invokes.
+    const mlxBin = join(TMP, "fake-mlx-whisper.sh");
+    writeFileSync(
+      mlxBin,
+      `#!/bin/sh
+out=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--output-dir" ]; then out="$a"; fi
+  prev="$a"
+done
+printf 'fake mlx transcript' > "$out/audio.txt"
+`,
+    );
+    chmodSync(mlxBin, 0o755);
+    const voicePath = join(TMP, "voice-mlx.ogg");
+    writeFileSync(voicePath, "not really audio");
+
+    expect(isTranscriptionConfigured({ backend: "mlx-whisper", ffmpegBin: "/usr/bin/true" })).toBe(
+      false,
+    );
+
+    const opts = {
+      backend: "mlx-whisper" as const,
+      ffmpegBin: "/usr/bin/true",
+      mlxWhisperBin: mlxBin,
+    };
+    expect(isTranscriptionConfigured(opts)).toBe(true);
+    expect(await transcribeAudio(voicePath, opts)).toBe("fake mlx transcript");
+  });
 });
 
 describe("renderTurnFooter", () => {

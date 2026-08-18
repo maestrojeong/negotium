@@ -6,10 +6,14 @@ import { promisify } from "node:util";
 import {
   FASTER_WHISPER_WRAPPER,
   FFMPEG_BIN as FFMPEG_BIN_ENV,
+  MLX_WHISPER_BIN,
   PDFTOTEXT_BIN,
   PYTHON_BIN,
   TESSERACT_BIN,
+  WHISPER_BACKEND,
   WHISPER_MODEL,
+  WHISPER_MODEL_MLX,
+  type WhisperBackend,
 } from "#platform/config";
 import { errMsg } from "#platform/error";
 import { logger } from "#platform/logger";
@@ -207,29 +211,40 @@ async function extractFromImage(filePath: string): Promise<ExtractionResult> {
 }
 
 /** Injectable binaries/paths for {@link transcribeAudio} — defaults come from
- *  `#platform/config` env (PYTHON_BIN / FASTER_WHISPER_WRAPPER / FFMPEG_BIN /
- *  WHISPER_MODEL_FILE); overrides exist for custom hosts and token-free tests. */
+ *  `#platform/config` env. Two backends are supported (see `WHISPER_BACKEND`):
+ *  `faster-whisper` (PYTHON_BIN + FASTER_WHISPER_WRAPPER + FFMPEG_BIN,
+ *  CPU-friendly, any host) and `mlx-whisper` (MLX_WHISPER_BIN + FFMPEG_BIN,
+ *  Apple Silicon only — mirrors clawgram's transcribe.ts). Overrides exist
+ *  for custom hosts and token-free tests. */
 export interface TranscribeAudioOptions {
+  backend?: WhisperBackend;
   ffmpegBin?: string;
   pythonBin?: string;
   wrapperPath?: string;
+  mlxWhisperBin?: string;
   model?: string;
   language?: string;
 }
 
-/** True when the local faster-whisper pipeline can run: an ffmpeg binary is
- *  configured and the Python wrapper script exists on disk. */
+/** True when the configured whisper backend can actually run on this host:
+ *  an ffmpeg binary plus that backend's interpreter/CLI both resolve. */
 export function isTranscriptionConfigured(opts: TranscribeAudioOptions = {}): boolean {
   const ffmpeg = opts.ffmpegBin ?? FFMPEG_BIN_ENV;
+  if (!ffmpeg) return false;
+  const backend = opts.backend ?? WHISPER_BACKEND;
+  if (backend === "mlx-whisper") {
+    return Boolean(opts.mlxWhisperBin ?? MLX_WHISPER_BIN);
+  }
   const wrapper = opts.wrapperPath ?? FASTER_WHISPER_WRAPPER;
-  return Boolean(ffmpeg) && existsSync(wrapper);
+  return existsSync(wrapper);
 }
 
 /**
- * Transcribe an audio/voice file with the local faster-whisper pipeline.
- * Returns `null` when transcription is not configured on this node (missing
- * ffmpeg/wrapper) or when the pipeline fails/produces no text — callers treat
- * null as "no transcript available", never as an error.
+ * Transcribe an audio/voice file with the local whisper pipeline (see
+ * {@link TranscribeAudioOptions} for the backend choice). Returns `null` when
+ * transcription is not configured on this node (missing ffmpeg/backend CLI)
+ * or when the pipeline fails/produces no text — callers treat null as "no
+ * transcript available", never as an error.
  */
 export async function transcribeAudio(
   filePath: string,
@@ -240,12 +255,17 @@ export async function transcribeAudio(
   return result.text;
 }
 
-/** Extract text from audio/video using whisper */
+/** Extract text from audio/video using whisper (faster-whisper or mlx-whisper,
+ *  per {@link isTranscriptionConfigured}'s backend resolution). Both CLIs
+ *  accept the same `INPUT --model M --language L --output-dir D
+ *  --output-format txt` shape and write `{basename}.txt`, so only the
+ *  binary/model selection differs between backends. */
 async function extractFromAudio(
   filePath: string,
   opts: TranscribeAudioOptions = {},
 ): Promise<ExtractionResult> {
   const tmpDir = `${filePath}_whisper_tmp`;
+  const backend = opts.backend ?? WHISPER_BACKEND;
   try {
     mkdirSync(tmpDir, { recursive: true });
 
@@ -270,23 +290,30 @@ async function extractFromAudio(
       { timeout: 60000 },
     );
 
-    // Run faster-whisper via Python wrapper
-    await execFileAsync(
-      opts.pythonBin ?? PYTHON_BIN,
-      [
-        opts.wrapperPath ?? FASTER_WHISPER_WRAPPER,
-        mp3Path,
-        "--model",
-        opts.model ?? WHISPER_MODEL,
-        "--language",
-        opts.language ?? "ko",
-        "--output-dir",
-        tmpDir,
-        "--output-format",
-        "txt",
-      ],
-      { timeout: 120000 },
-    );
+    const whisperArgs = [
+      mp3Path,
+      "--model",
+      opts.model ?? (backend === "mlx-whisper" ? WHISPER_MODEL_MLX : WHISPER_MODEL),
+      "--language",
+      opts.language ?? "ko",
+      "--output-dir",
+      tmpDir,
+      "--output-format",
+      "txt",
+    ];
+    if (backend === "mlx-whisper") {
+      const mlxWhisperBin = opts.mlxWhisperBin ?? MLX_WHISPER_BIN;
+      if (!mlxWhisperBin) {
+        return { text: null, method: "whisper", error: "MLX_WHISPER_BIN not configured" };
+      }
+      await execFileAsync(mlxWhisperBin, whisperArgs, { timeout: 300000 });
+    } else {
+      await execFileAsync(
+        opts.pythonBin ?? PYTHON_BIN,
+        [opts.wrapperPath ?? FASTER_WHISPER_WRAPPER, ...whisperArgs],
+        { timeout: 120000 },
+      );
+    }
 
     const txtPath = join(tmpDir, "audio.txt");
     const text = existsSync(txtPath) ? readFileSync(txtPath, "utf-8").trim() : null;
@@ -296,7 +323,7 @@ async function extractFromAudio(
     }
     return { text, method: "whisper" };
   } catch (e) {
-    logger.debug({ err: e, filePath }, "whisper extraction failed");
+    logger.debug({ err: e, filePath, backend }, "whisper extraction failed");
     return {
       text: null,
       method: "whisper",

@@ -14,6 +14,7 @@ const packageEntrypoints = new Map<string, string>([
   ["@negotium/adapter-sdk/testkit", "packages/adapter-sdk/src/testkit.ts"],
   ["@negotium/core", "packages/core/src/index.ts"],
   ["@negotium/core/conversation-migration", "packages/core/src/storage/conversation-migration.ts"],
+  ["@negotium/core/media", "packages/core/src/media/text-extractor.ts"],
   ["@negotium/core/cron-host", "packages/core/src/cron-host.ts"],
   ["@negotium/core/hosted-agent", "packages/core/src/agents/hosted-agent.ts"],
   ["@negotium/core/registry", "packages/core/src/agents/registry.ts"],
@@ -165,6 +166,7 @@ await bundle(["apps/negotium/src/registry.ts", "apps/negotium/src/rollout.ts"]);
 // which produces invalid duplicate ESM export names.
 for (const entrypoint of [
   "apps/negotium/src/mcp-servers.ts",
+  "apps/negotium/src/media.ts",
   "apps/negotium/src/vault.ts",
   "apps/negotium/src/storage.ts",
   "apps/negotium/src/prompts.ts",
@@ -263,6 +265,7 @@ const declarations = Bun.spawn(
     resolve(root, "packages/core/src/agents/rollout/index.ts"),
     resolve(root, "packages/core/src/storage/vault-public.ts"),
     resolve(root, "packages/core/src/storage/storage-public.ts"),
+    resolve(root, "packages/core/src/media/text-extractor.ts"),
     resolve(root, "packages/core/src/prompts/builders.ts"),
     resolve(root, "packages/core/src/runtime/public-helpers.ts"),
     resolve(root, "packages/core/src/mcp/factories/index.ts"),
