@@ -1809,7 +1809,7 @@ function decisionGraphLines(state: AppState, width: number, height: number): UiL
       `  [/] spacing ${state.decisionGraphSpacing} · drag/wheel/arrows/hjkl move · Ctrl-D/Esc close${position}`,
       { fg: theme.muted },
     ),
-    line("  ○ accepted · ◷ proposed · ✓ executed · ✗ rejected · ! superseded", {
+    line("  ○ accepted · ◌ proposed · ✓ executed · ✕ rejected · ◆ superseded", {
       fg: theme.subtle,
     }),
     line(""),
