@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { extractFileTagPaths, stripFileTags } from "#media/file-events";
 import { isTranscriptionConfigured, transcribeAudio } from "#media/text-extractor";
-import { DATA_DIR } from "#platform/config";
+import { DATA_DIR, WHISPER_MODEL_MLX } from "#platform/config";
 import { composeAttachmentPrompt, ingestAttachment } from "#runtime/attachments";
 import { renderTurnFooter } from "#runtime/footer";
 
@@ -107,6 +107,17 @@ printf 'fake transcript' > "$out/audio.txt"
     };
     expect(isTranscriptionConfigured(opts)).toBe(true);
     expect(await transcribeAudio(voicePath, opts)).toBe("fake transcript");
+  });
+
+  test("mlx-whisper's default model is a full HF repo id, never the faster-whisper alias", () => {
+    // Regression test: WHISPER_MODEL_MLX used to fall back to WHISPER_MODEL
+    // (default "turbo"), which faster-whisper's own model-name normalization
+    // accepts but mlx_whisper's --model does not — it treats "turbo" as a
+    // literal HuggingFace repo id and fails with a 401
+    // RepositoryNotFoundError. Confirmed against the real mlx_whisper CLI
+    // while wiring up production mlx-whisper hosts.
+    expect(WHISPER_MODEL_MLX).not.toBe("turbo");
+    expect(WHISPER_MODEL_MLX).toContain("/");
   });
 
   test("mlx-whisper backend: not configured without MLX_WHISPER_BIN, then runs like faster-whisper", async () => {

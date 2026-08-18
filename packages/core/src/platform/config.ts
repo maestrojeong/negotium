@@ -522,10 +522,17 @@ function resolveWhisperBackend(): WhisperBackend {
 export const WHISPER_BACKEND = resolveWhisperBackend();
 /** Path to the `mlx_whisper` CLI (only used when WHISPER_BACKEND=mlx-whisper). */
 export const MLX_WHISPER_BIN = envText("MLX_WHISPER_BIN");
-/** mlx-whisper model id, e.g. "mlx-community/whisper-large-v3-turbo". Falls
- *  back to WHISPER_MODEL so a single WHISPER_MODEL_FILE can drive whichever
- *  backend is active on a given host. */
-export const WHISPER_MODEL_MLX = envText("WHISPER_MODEL_MLX") ?? WHISPER_MODEL;
+/** mlx-whisper model id, e.g. "mlx-community/whisper-large-v3-turbo".
+ *
+ * Deliberately does NOT fall back to WHISPER_MODEL: that env defaults to the
+ * bare alias "turbo", which faster-whisper's own model-name normalization
+ * accepts but mlx_whisper's `--model` does not — it expects a full
+ * HuggingFace repo id and otherwise fails hard with a 401
+ * RepositoryNotFoundError trying to resolve "turbo" as a repo. Confirmed by
+ * actually running mlx_whisper with each value while wiring up the
+ * mlx-whisper hub in production. */
+export const WHISPER_MODEL_MLX =
+  envText("WHISPER_MODEL_MLX") ?? "mlx-community/whisper-large-v3-turbo";
 
 // Max tell_session relay depth from origin user. ask_session forks reset to
 // depth=0, so this only caps tell_session chains. Override via MAX_TELL_DEPTH
