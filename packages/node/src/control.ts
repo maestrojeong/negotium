@@ -903,9 +903,15 @@ export function createNodeControlHandler(
           const topic = getTopic(topicId);
           if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
           const userId = requiredText(url.searchParams.get("user"), "user");
-          // Bytes are only readable through the room that owns them, so a
+          // Bytes are only readable through the room they are filed under, so a
           // UUID guessed or leaked from another workspace resolves to nothing.
-          if (!nodeFileStore.allows(fileId, { topicId, ownerUserId: userId })) {
+          //
+          // Room membership, not ownership: callers disagree on who owns a file.
+          // `send_file` stores with an owner, but a `show_image`/`show_video`
+          // resolved from `file_path` stores with only a topic, so checking the
+          // owner here 404'd every media visual while file delivery worked.
+          // `response` still applies the file's own visibility/owner rules.
+          if (!nodeFileStore.belongsToTopic(fileId, topicId)) {
             return jsonError(404, "File not found");
           }
           return nodeFileStore.response(fileId, userId) ?? jsonError(404, "File not found");
