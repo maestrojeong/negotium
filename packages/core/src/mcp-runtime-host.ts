@@ -10,6 +10,7 @@ export {
   createSpawnSubagentToolDefinition,
   createSubagentManagementToolDefinitions,
 } from "#agents/mcp-tools/spawn-subagent";
+export { showPngTool } from "#agents/mcp-tools/visual-compat";
 export { visualToolDefinitions } from "#agents/mcp-tools/visuals";
 export { WsHub } from "#bus";
 export {

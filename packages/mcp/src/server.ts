@@ -49,6 +49,7 @@ import {
   resolveRuntimeMcpToken,
   type SelfConfigContext,
   sessionInboxPath,
+  showPngTool,
   storeLocalFileAsUpload,
   textResult,
   visualToolDefinitions,
@@ -242,7 +243,11 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
   const server = new McpServer({ name: RUNTIME_MCP_KEY, version: "1.0.0" });
 
   if (ctx.visualTools === true) {
-    for (const def of visualToolDefinitions) {
+    // `show_png` is a pure alias of `show_image`, kept because Otium sessions
+    // and prompts persisted before the rename still call it by that name. It
+    // rides the same gate as the tools it aliases, so it only ever appears for
+    // a host that grants visual tools in the first place.
+    for (const def of [...visualToolDefinitions, showPngTool]) {
       const handler =
         ctx.peerBridge && (def.name === "show_html" || def.name === "show_mermaid")
           ? async () => textResult("Visual queued for ordered display on the canonical hub.")

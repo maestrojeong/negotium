@@ -532,6 +532,11 @@ export function createNodeControlHandler(
             // its transcript here (D-1). The host decides whether this message
             // deserves an answer; omitting the flag keeps the old behaviour.
             respond: body.respond !== false,
+            // Default-deny, unlike `allowAutoContinue`/`respond` above: a host
+            // that renders no visual panel and has no chat file surface must
+            // not be handed tools whose output it would silently drop.
+            visualTools: body.visualTools === true,
+            fileDeliveryTools: body.fileDeliveryTools === true,
             ...(attachments.length ? { attachments } : {}),
             ...(threadRootId ? { threadRootId } : {}),
           });

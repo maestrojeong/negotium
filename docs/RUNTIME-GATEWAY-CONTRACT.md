@@ -14,10 +14,16 @@ the canonical topic.
 ## Endpoints
 
 - `GET /health` returns `{ ok, v: 1, capabilities, cursor }` for capability negotiation.
-- `POST /turns` accepts `{ v: 1, topicId, userId, actorUserId?, actorLabel?, vaultUserId?, text, clientMessageId, requestId?, allowAutoContinue? }`.
+- `POST /turns` accepts `{ v: 1, topicId, userId, actorUserId?, actorLabel?, vaultUserId?, text, clientMessageId, requestId?, allowAutoContinue?, visualTools?, fileDeliveryTools? }`.
   `userId` is the canonical execution principal. A trusted gateway may preserve the authenticated
   human author separately in `actorUserId`/`actorLabel` and select the topic owner's credential
   namespace with `vaultUserId`.
+  `visualTools` and `fileDeliveryTools` are capabilities minted by the gateway and are
+  **default-deny**: unless the gateway sends `true`, the turn's runtime MCP omits `show_html`,
+  `show_mermaid`, `show_image`, `show_video`, `publish_html`, and the file-delivery tools. A gateway
+  should grant them only if it actually renders a visual panel and a chat file surface, because the
+  node has no other way to know whether that output would be displayed or dropped. They describe the
+  caller, not the message, so they are excluded from the idempotency payload hash.
   It returns `202` only after the canonical user message, durable turn request, acknowledgement event,
   and message event have been committed in one SQLite transaction. `cursor` is the exact sequence of
   that turn's `turn_accepted` event.

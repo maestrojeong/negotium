@@ -45,7 +45,10 @@ export function isVisualsShowMermaidTool(name: string): boolean {
 }
 
 export function isVisualsShowImageTool(name: string): boolean {
-  return isRuntimeTool(name, "show_image");
+  // `show_png` is the pre-rename alias of `show_image`. It has to be matched
+  // here as well as registered, or a session that still calls it by the old
+  // name would get an accepted tool call that renders nothing.
+  return isRuntimeTool(name, "show_image") || isRuntimeTool(name, "show_png");
 }
 
 export function isVisualsShowVideoTool(name: string): boolean {
