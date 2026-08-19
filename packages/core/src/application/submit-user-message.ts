@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { runtimeBus } from "#bus";
 import { type StartAiTurnParams, startAiTurn } from "#runtime/turn-runner";
 import { appendApiMessage } from "#storage/api-messages";
+import { recordTopicToolCapabilities } from "#storage/topic-tool-capabilities";
 import type { MessageDto, TopicDto } from "#types/api";
 
 export interface SubmitUserMessageParams {
@@ -30,6 +31,12 @@ export interface SubmitUserMessageResult {
  * turn is rejected or deferred.
  */
 export function submitUserMessage(params: SubmitUserMessageParams): SubmitUserMessageResult {
+  // Same reason as the gateway path: record what this adapter grants so the
+  // room's adapter-less turns (tell/ask, cron, auto-continue) inherit it.
+  recordTopicToolCapabilities(params.topic.id, {
+    visualTools: params.visualTools === true,
+    fileDeliveryTools: params.fileDeliveryTools === true,
+  });
   const message: MessageDto = {
     id: randomUUID(),
     topicId: params.topic.id,

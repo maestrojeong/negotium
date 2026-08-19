@@ -13,6 +13,7 @@ import {
 import { requestRuntimeTurnAbort } from "#storage/runtime-leases";
 import { getRuntimeTopicEpoch } from "#storage/runtime-topic-state";
 import { mergeRuntimeUserTurnRequest } from "#storage/runtime-turn-requests";
+import { recordTopicToolCapabilities } from "#storage/topic-tool-capabilities";
 import type { MessageDto, TopicDto } from "#types/api";
 
 export interface SubmitRuntimeGatewayTurnParams {
@@ -166,6 +167,14 @@ export function submitRuntimeGatewayTurn(
   if (existing) {
     return duplicateResult(existing, params, requestId, actorUserId, payloadHash);
   }
+
+  // Remember what this adapter grants for the room, so the turns that never
+  // see an adapter — tell/ask, cron, auto-continue, subagent reports — inherit
+  // it instead of silently running without the tools.
+  recordTopicToolCapabilities(params.topic.id, {
+    visualTools: params.visualTools === true,
+    fileDeliveryTools: params.fileDeliveryTools === true,
+  });
 
   const createdAt = new Date().toISOString();
   const attachments = params.attachments?.map(resolveAttachmentByFileId);
