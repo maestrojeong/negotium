@@ -1295,7 +1295,10 @@ test("runtime gateway can read back a visual a node turn rendered", async () => 
  * another's bytes just by learning a file UUID.
  */
 test("runtime gateway file reads are scoped to the room that owns them", async () => {
-  const fileUser = `node-file-scope-${randomUUID()}`;
+  // Registered under the execution principal, which is what a mapped room
+  // actually looks like: `POST /turns` refuses a topic that principal is not a
+  // participant of, so every gateway room has it.
+  const fileUser = NODE_EXECUTION_PRINCIPAL_FOR_TEST;
   const topic = registerTopic({
     title: `Files ${randomUUID()}`,
     userId: fileUser,
@@ -1317,6 +1320,13 @@ test("runtime gateway file reads are scoped to the room that owns them", async (
   });
   if (!stored) throw new Error("could not stage a node file");
 
+  // A media visual resolved from `file_path` is stored with a topic and *no
+  // owner* (see `resolveVisualMediaInput`), unlike `send_file` which sets both.
+  // Gating the read on ownership therefore 404'd every `show_image`/`show_video`
+  // while file delivery worked — the read must key on room membership only.
+  const ownerless = nodeFileStore.store(scratch, { topicId: topic.id });
+  if (!ownerless) throw new Error("could not stage an ownerless node file");
+
   const ok = await handler(
     runtimeRequest(
       `/topics/${topic.id}/files/${stored.id}?user=${NODE_EXECUTION_PRINCIPAL_FOR_TEST}`,
@@ -1327,12 +1337,29 @@ test("runtime gateway file reads are scoped to the room that owns them", async (
 
   // The same UUID, named through a room that does not own it, must not resolve
   // — this is the cross-workspace read the bare `/files/<id>` route allowed.
+  const ownerlessRead = await handler(
+    runtimeRequest(
+      `/topics/${topic.id}/files/${ownerless.id}?user=${NODE_EXECUTION_PRINCIPAL_FOR_TEST}`,
+    ),
+  );
+  expect(ownerlessRead?.status).toBe(200);
+  expect(await ownerlessRead?.text()).toBe("delivered bytes");
+
   const wrongRoom = await handler(
     runtimeRequest(
       `/topics/${otherTopic.id}/files/${stored.id}?user=${NODE_EXECUTION_PRINCIPAL_FOR_TEST}`,
     ),
   );
   expect(wrongRoom?.status).toBe(404);
+
+  // Room membership still confines the read: an ownerless file is not a public
+  // file, it is just one whose owner was never recorded.
+  const ownerlessWrongRoom = await handler(
+    runtimeRequest(
+      `/topics/${otherTopic.id}/files/${ownerless.id}?user=${NODE_EXECUTION_PRINCIPAL_FOR_TEST}`,
+    ),
+  );
+  expect(ownerlessWrongRoom?.status).toBe(404);
 
   unlinkSync(scratch);
 });

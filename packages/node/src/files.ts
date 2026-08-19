@@ -189,6 +189,32 @@ export class NodeFileStore {
     );
   }
 
+  /**
+   * Is this file filed under this room?
+   *
+   * Deliberately separate from {@link allows}, which additionally requires the
+   * caller to be the principal that stored the file. That extra condition is
+   * right for the upload path — a host may only attach a file it staged — and
+   * wrong for a read, because callers do not agree on who "owns" a file:
+   * `send_file` stores with `{ ownerUserId, topicId }`, while a `show_image` /
+   * `show_video` resolved from `file_path` stores with `{ topicId }` alone and
+   * therefore has no owner at all. Gating reads on `allows` silently 404'd
+   * every media visual while file delivery worked.
+   *
+   * Room membership is what the gateway actually needs to enforce (M-8): a
+   * caller must not reach another workspace's bytes by knowing a UUID. Who may
+   * then read them is left to {@link response}, which applies the file's own
+   * visibility/owner/participant rules.
+   */
+  belongsToTopic(fileId: string, topicId: string): boolean {
+    const metadata = this.#metadata(fileId);
+    return Boolean(
+      metadata &&
+        metadata.topicId === topicId &&
+        existsSync(join(this.uploadDir, metadata.savedName)),
+    );
+  }
+
   store(absPath: string, access: UploadAccess = {}): AttachmentDto | null {
     this.#ensureDir();
     const fileId = randomUUID();
