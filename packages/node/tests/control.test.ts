@@ -1217,3 +1217,66 @@ test("an open SSE stream stops exposing a topic after participant removal", asyn
     await reader?.cancel();
   }
 });
+
+/**
+ * The gap that made `show_html` useless in a mapped room even once the
+ * capability reached the node: the visual was rendered and stored *here*, and
+ * the gateway had no way to read it back, so the hub's panel asked its own
+ * database for an id that only exists on this node.
+ */
+test("runtime gateway can read back a visual a node turn rendered", async () => {
+  const visualUser = `node-visual-${randomUUID()}`;
+  const topic = registerTopic({
+    title: `Visual ${randomUUID()}`,
+    userId: visualUser,
+    agent: "codex",
+    surface: "otium",
+  });
+  // Stands in for what `show_html` does on this node during a mapped-room
+  // turn. Inserted directly rather than via the core write helper, which is
+  // not on the node-host surface and should not be widened for a test.
+  const vizId = Number(
+    (
+      db
+        .query(
+          `INSERT INTO api_topic_visuals (topic_id, html, title, created_at, kind, source)
+           VALUES (?, ?, ?, ?, 'html', ?) RETURNING id`,
+        )
+        .get(topic.id, "<section>chart</section>", "Quarterly", Date.now(), "<p>chart</p>") as {
+        id: number;
+      }
+    ).id,
+  );
+
+  const response = await handler(runtimeRequest(`/topics/${topic.id}/visuals/${vizId}`));
+  expect(response?.status).toBe(200);
+  const body = (await response?.json()) as {
+    ok: boolean;
+    v: number;
+    visual: Record<string, unknown>;
+  };
+  expect(body.ok).toBe(true);
+  expect(body.v).toBe(NODE_RUNTIME_CONTRACT_VERSION);
+  expect(body.visual).toMatchObject({
+    id: vizId,
+    kind: "html",
+    title: "Quarterly",
+    // `source` keeps the agent's own input; `html` is the rendered document,
+    // so a copying hub reproduces the card rather than re-styling it.
+    source: "<p>chart</p>",
+  });
+  expect(String(body.visual.html)).toContain("chart");
+
+  // A visual id from another room must not be readable by naming this one.
+  const otherTopic = registerTopic({
+    title: `Other ${randomUUID()}`,
+    userId: visualUser,
+    agent: "codex",
+    surface: "otium",
+  });
+  const crossRoom = await handler(runtimeRequest(`/topics/${otherTopic.id}/visuals/${vizId}`));
+  expect(crossRoom?.status).toBe(404);
+
+  const missing = await handler(runtimeRequest(`/topics/${topic.id}/visuals/999999`));
+  expect(missing?.status).toBe(404);
+});

@@ -428,6 +428,48 @@ export function deleteTopicVisuals(topicId: string): { visuals: number; views: n
   })();
 }
 
+/** A visual as another host needs it to reproduce the card in its own store. */
+export interface PortableTopicVisual {
+  id: number;
+  kind: VisualKind;
+  title: string | null;
+  /** Rendered document. For media kinds it still carries the media placeholder. */
+  html: string;
+  /** The agent's own input (raw HTML, Mermaid DSL), kept for edit context. */
+  source: string | null;
+  /** Set for image/video: the uploaded file holding the bytes, on this host. */
+  fileId: string | null;
+  mimeType: string | null;
+  createdAt: number;
+}
+
+/**
+ * Read a visual back in a form another host can re-insert.
+ *
+ * A turn that runs on a node renders into that node's store, so a hub which
+ * owns the room but not the execution has no row to serve. Rather than proxy
+ * every panel load back to a node that may be offline, the hub copies the
+ * visual once and serves it like any other. `fileId` is only meaningful on the
+ * host that produced it — a copying hub has to fetch those bytes and re-upload
+ * them under its own id.
+ */
+export function getPortableTopicVisual(topicId: string, vizId: number): PortableTopicVisual | null {
+  const row = db
+    .query("SELECT * FROM api_topic_visuals WHERE id = ? AND topic_id = ?")
+    .get(vizId, topicId) as VisualRow | null;
+  if (!row) return null;
+  return {
+    id: row.id,
+    kind: normalizeVisualKind(row.kind),
+    title: row.title,
+    html: row.html,
+    source: row.source,
+    fileId: row.file_id,
+    mimeType: row.mime_type,
+    createdAt: row.created_at,
+  };
+}
+
 /** URL that serves the HTML content for a specific visual id (used by iframe). */
 export function topicVisualUrl(topicId: string, vizId: number): string {
   return `/api/v1/topics/${encodeURIComponent(topicId)}/visual/${vizId}/html`;

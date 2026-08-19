@@ -21,6 +21,7 @@ import {
   getApiMessage,
   getGlobalAiName,
   getLastMessagePreviews,
+  getPortableTopicVisual,
   getTopic,
   getTopicStats,
   getVisibleTopics,
@@ -850,6 +851,47 @@ export function createNodeControlHandler(
             queryId: answered.queryId,
             answerMessage: answered.answerMessage,
           });
+        }
+
+        /**
+         * Read a visual a turn rendered on this node, in a form the calling
+         * host can re-insert into its own store.
+         *
+         * A mapped room's turn runs here, so `show_html` and friends write to
+         * this node's visual store and the URL on the runtime event points at
+         * a topic id only this node knows. A host that owns the room but not
+         * the execution has nothing to serve its panel from. Copying beats
+         * proxying: the host keeps serving visuals after this node goes
+         * offline, and its own access control stays in charge of who sees the
+         * room.
+         *
+         * Media kinds carry `fileId`, which names a file in *this* node's
+         * store — the caller has to fetch those bytes separately (`/files`)
+         * and re-upload them under an id of its own.
+         */
+        const runtimeVisualMatch = runtimePath.match(/^\/topics\/([^/]+)\/visuals\/(\d+)$/);
+        if (runtimeVisualMatch && req.method === "GET") {
+          const topicId = decodeURIComponent(runtimeVisualMatch[1]);
+          const topic = getTopic(topicId);
+          if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
+          const visual = getPortableTopicVisual(topicId, Number(runtimeVisualMatch[2]));
+          if (!visual) return jsonError(404, "Visual not found");
+          return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, visual });
+        }
+
+        /**
+         * Read bytes this node holds, so a host can copy them into its own
+         * file store. Covers both halves of the same gap: the media behind an
+         * `show_image`/`show_video` visual, and a file the agent delivered to
+         * the chat. The contract could upload *to* a node but never read back,
+         * which is why either one arriving from a node turn was unreachable.
+         */
+        const runtimeFileMatch = runtimePath.match(/^\/files\/([0-9a-f-]+)$/i);
+        if (runtimeFileMatch && req.method === "GET") {
+          const userId = requiredText(url.searchParams.get("user"), "user");
+          return (
+            nodeFileStore.response(runtimeFileMatch[1], userId) ?? jsonError(404, "File not found")
+          );
         }
 
         const runtimeTopicMatch = runtimePath.match(/^\/topics\/([^/]+)$/);

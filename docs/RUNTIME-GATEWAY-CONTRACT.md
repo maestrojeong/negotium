@@ -31,6 +31,18 @@ the canonical topic.
   `deduplicated: true` with the same message id and cursor; reusing either identifier for another
   turn returns `409`. Messages accepted while a topic turn is active request immediate steering;
   arrivals during provider unwind are retained in order and folded into the next durable batch.
+- `GET /topics/<id>/visuals/<vizId>` returns `{ ok, v: 1, visual }` for a visual a turn rendered on
+  this node: `{ id, kind, title, html, source, fileId, mimeType, createdAt }`. A turn in a mapped
+  room runs here, so `show_html` and friends write to *this* node's visual store and the URL on the
+  `visual` runtime event names a topic id only this node knows. A gateway that owns the room but not
+  the execution has nothing to serve its panel from, so it copies the visual into its own store on
+  receipt. Copying rather than proxying keeps panels working when the node is offline and leaves the
+  gateway's own access control in charge. `fileId` names a file in this node's store; a copying
+  gateway has to fetch those bytes and re-upload them under an id of its own.
+- `GET /files/<fileId>?user=<userId>` returns the bytes of a file this node holds. The contract could
+  previously upload *to* a node but never read back, so both the media behind an
+  `show_image`/`show_video` visual and a file the agent delivered to the chat were unreachable from
+  the gateway. Access is checked against the same node file store the upload path uses.
 - `GET /events?after=<global-seq>&topicId=<optional>` is an SSE stream. `runtime` events preserve
   the global durable RuntimeBus sequence, `cursor` records advance even when a topic filter omits an
   event, and reconnects resume from `after`. A submitted turn emits `ai-status.kind=turn_accepted`,
