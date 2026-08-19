@@ -8,6 +8,7 @@ import {
 import { TSX_LOADER } from "#platform/config";
 import {
   browserOwnerCapability,
+  buildPlaywrightMcpTransport,
   buildStdioMcpServer,
   consumePlaywrightUnavailable,
   getCronMcpServers,
@@ -45,6 +46,18 @@ describe("mcp-config: playwright transport selection per agent", () => {
     expect(ctx).not.toBeNull();
     return ctx!;
   };
+
+  test("public transport builder keeps Maestro on authenticated Streamable HTTP", () => {
+    const owner = "topic:topic-abc";
+    const query = new URLSearchParams({ owner });
+    expect(
+      buildPlaywrightMcpTransport(playwrightPort, owner, playwrightCapability, "maestro"),
+    ).toEqual({
+      type: "http",
+      url: `http://127.0.0.1:${playwrightPort}/mcp?${query}`,
+      headers: { "X-Browser-Capability": capabilityFor(owner) },
+    });
+  });
 
   test("codex stdio servers use the in-process tsx loader", () => {
     expect(buildStdioMcpServer("codex", "/tmp/server.ts", ["--flag"])).toEqual({

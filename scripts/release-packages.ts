@@ -776,6 +776,9 @@ if (typeof hostedAgent.configureAgentExecutionHost !== "function") {
 if (typeof browserRuntime.configurePlaywrightManagerHost !== "function") {
   throw new Error("packed browser runtime host configurator is missing");
 }
+if (typeof browserRuntime.buildPlaywrightMcpTransport !== "function") {
+  throw new Error("packed browser runtime MCP transport builder is missing");
+}
 if (typeof browserRuntime.stopPlaywrightProfile !== "function") {
   throw new Error("packed browser runtime profile stop is missing");
 }

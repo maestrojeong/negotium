@@ -79,6 +79,9 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain("typically over 2 minutes");
     expect(prompt).toContain("Run ordinary builds, tests");
     expect(prompt).toContain("do not background work merely to avoid waiting");
+    expect(prompt).toContain(
+      "Computer Use: if unavailable, check `get_mcp_config` for optional `cua-rs`; MCP changes apply next session.",
+    );
     expect(prompt.replaceAll("{{KEY}}", "")).not.toContain("{{");
   });
 

@@ -34,6 +34,10 @@ import {
   type RuntimeMcpScope,
 } from "#platform/mcp-catalog-policy";
 import { browserOwnerCapability } from "#platform/playwright/capability";
+import {
+  buildPlaywrightMcpTransport,
+  CODEX_BROWSER_CAPABILITY_ENV,
+} from "#platform/playwright/mcp-transport";
 import type { AgentKind, AgentQueryOptions, PeerRuntimeBridgeContext } from "#types";
 
 export type { RuntimeMcpScope } from "#platform/mcp-catalog-policy";
@@ -253,9 +257,7 @@ export interface RuntimeMcpCatalogEntry {
 
 // --- Playwright transport builders ---
 
-export const CODEX_BROWSER_CAPABILITY_ENV = "NEGOTIUM_BROWSER_CAPABILITY";
-
-export { browserOwnerCapability };
+export { browserOwnerCapability, buildPlaywrightMcpTransport, CODEX_BROWSER_CAPABILITY_ENV };
 
 export function browserOwnerForContext(ctx: {
   userId?: string;
@@ -265,30 +267,6 @@ export function browserOwnerForContext(ctx: {
   if (ctx.topicId) return `topic:${ctx.topicId}`;
   if (ctx.userId && ctx.session) return `user:${ctx.userId}:${ctx.session}`;
   return undefined;
-}
-
-function playwrightTransport(port: number, owner: string, capability: string, agent?: AgentKind) {
-  const ownerCapability = browserOwnerCapability(capability, owner);
-  if (agent === "codex") {
-    const query = new URLSearchParams({ owner });
-    return {
-      url: `http://127.0.0.1:${port}/mcp?${query}`,
-      env_http_headers: { "X-Browser-Capability": CODEX_BROWSER_CAPABILITY_ENV },
-    };
-  }
-  const query = new URLSearchParams({ owner });
-  if (agent === "maestro") {
-    return {
-      type: "http" as const,
-      url: `http://127.0.0.1:${port}/mcp?${query}`,
-      headers: { "X-Browser-Capability": ownerCapability },
-    };
-  }
-  return {
-    type: "sse" as const,
-    url: `http://127.0.0.1:${port}/sse?${query}`,
-    headers: { "X-Browser-Capability": ownerCapability },
-  };
 }
 
 function longLivedHttpMcp(agent: AgentKind | undefined, port: number) {
@@ -361,7 +339,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
       if (playwrightPort && playwrightCapability) {
         const owner = browserOwnerForContext({ userId, session, topicId });
         if (!owner) return null;
-        return playwrightTransport(playwrightPort, owner, playwrightCapability, agent);
+        return buildPlaywrightMcpTransport(playwrightPort, owner, playwrightCapability, agent);
       }
       // No port available — the playwright manager could not allocate one
       // for this turn. The previous behavior was to fall back to a per-turn

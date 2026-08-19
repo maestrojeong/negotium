@@ -41,6 +41,7 @@ export {
   waitForChildProcessExit,
   waitForChildProcessSpawnError,
 } from "./manager-utils";
+export { buildPlaywrightMcpTransport, CODEX_BROWSER_CAPABILITY_ENV } from "./mcp-transport";
 export {
   type DeleteManagedBrowserProfileResult,
   deleteManagedBrowserProfile,
