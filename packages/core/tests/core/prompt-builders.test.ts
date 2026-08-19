@@ -114,6 +114,70 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain("mcp__runtime__schedule_self");
   });
 
+  test("omits the capability tool notes when the tools are not granted", () => {
+    const denied = buildTopicSystemPrompt({
+      aiLabel: "Otium",
+      topicTitle: "Research",
+      workspaceCwd: "/otium/workspace/topics/research",
+      agentKind: "claude",
+      visualTools: false,
+      fileDeliveryTools: false,
+    });
+
+    // A default-deny room must not be told to reach for a tool it was never
+    // given; "the visual tool below" is a dangling reference with no section.
+    expect(denied).not.toContain("use the visual tool below");
+    expect(denied).not.toContain("use the file-delivery tool");
+    // The ungated notes around them still render, with no blank line left where
+    // the two bullets were removed.
+    expect(denied).toContain(
+      "Use a tool only when it is actually available; otherwise say so instead of pretending.\n- Voice:",
+    );
+    expect(denied).toContain("- Skills:");
+
+    const granted = buildTopicSystemPrompt({
+      aiLabel: "Otium",
+      topicTitle: "Research",
+      workspaceCwd: "/otium/workspace/topics/research",
+      agentKind: "claude",
+      visualTools: true,
+      fileDeliveryTools: true,
+    });
+
+    expect(granted).toContain("use the visual tool below");
+    expect(granted).toContain("use the file-delivery tool");
+    expect(granted).toContain("- Voice:");
+    // Each note only appears alongside the section that actually registers it.
+    expect(granted).toContain("show_html");
+    expect(granted).toContain("send_file");
+  });
+
+  test("pairs each capability tool note with only its own capability", () => {
+    const visualOnly = buildTopicSystemPrompt({
+      aiLabel: "Otium",
+      topicTitle: "Research",
+      workspaceCwd: "/otium/workspace/topics/research",
+      agentKind: "claude",
+      visualTools: true,
+      fileDeliveryTools: false,
+    });
+
+    expect(visualOnly).toContain("use the visual tool below");
+    expect(visualOnly).not.toContain("use the file-delivery tool");
+
+    const filesOnly = buildTopicSystemPrompt({
+      aiLabel: "Otium",
+      topicTitle: "Research",
+      workspaceCwd: "/otium/workspace/topics/research",
+      agentKind: "claude",
+      visualTools: false,
+      fileDeliveryTools: true,
+    });
+
+    expect(filesOnly).not.toContain("use the visual tool below");
+    expect(filesOnly).toContain("use the file-delivery tool");
+  });
+
   test("inserts replacement-pattern characters literally", () => {
     const prompt = buildTopicSystemPrompt({
       aiLabel: "Otium",

@@ -23,6 +23,16 @@ import {
 } from "@negotium/core";
 import { handleNegotiumMcpRequest } from "../src/index";
 
+/** The node's snippet backend, read the way `SNIPPETS_API_URL` reads it. Taken
+ *  from the environment rather than from the tool factory on purpose: comparing
+ *  registration against the factory's own output is what let these tools stay
+ *  missing in production while the test agreed with the bug. */
+const NODE_SNIPPET_BACKEND = (
+  process.env.NEGOTIUM_SNIPPETS_API_URL ??
+  process.env.SNIPPETS_API_URL ??
+  ""
+).trim();
+
 const USER_ID = "test-user";
 
 let server: ReturnType<typeof Bun.serve>;
@@ -155,6 +165,14 @@ describe("negotium MCP endpoint", () => {
       }
       expect(names).not.toContain("send_file");
       expect(names).not.toContain("send_files");
+      // publish_html is gated by the capability *and* by this node's own snippet
+      // backend, which the gateway cannot supply. Pinned against the config
+      // value rather than against the factory's output, so it fails either way
+      // round: a publish tool offered with no backend to mint links, or one
+      // missing on a node that has a backend configured.
+      for (const publishTool of ["publish_html", "unpublish_html"]) {
+        expect(names.includes(publishTool)).toBe(Boolean(NODE_SNIPPET_BACKEND));
+      }
     } finally {
       await visualClient.close();
     }

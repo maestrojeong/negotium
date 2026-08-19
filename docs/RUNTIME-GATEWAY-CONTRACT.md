@@ -24,6 +24,11 @@ the canonical topic.
   should grant them only if it actually renders a visual panel and a chat file surface, because the
   node has no other way to know whether that output would be displayed or dropped. They describe the
   caller, not the message, so they are excluded from the idempotency payload hash.
+  `publish_html`/`unpublish_html` need `visualTools` *and* a snippet backend on the node
+  (`NEGOTIUM_SNIPPETS_API_URL`), which the capability cannot supply because it is the node's own
+  configuration. A node without one grants the visual tools and omits the publish tools, logging a
+  warning when it does. Configure the backend on every node behind a gateway that has one, or the
+  same room offers different tools depending on which host ran the turn.
   It returns `202` only after the canonical user message, durable turn request, acknowledgement event,
   and message event have been committed in one SQLite transaction. `cursor` is the exact sequence of
   that turn's `turn_accepted` event.

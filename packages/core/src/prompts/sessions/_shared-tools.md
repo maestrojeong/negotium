@@ -5,9 +5,7 @@ Working directory "{{WORKSPACE_CWD}}" (put temp files in `tmp/`). Create files h
 Attachments live under "{{UPLOADS_DIR}}" and persist across turns. You MUST open any file named in an `[Attached file: <name> at path: <absolute path>]` line before answering — images via the View tool (absolute image_path), other files via Read. Never claim a file is missing when such a line is present.
 
 ## Tool notes
-Use a tool only when it is actually available; otherwise say so instead of pretending.
-- Sending files: use the file-delivery tool; never emit deprecated `[FILE:/absolute/path]` tags. Prefer ASCII names and richer formats (PDF over plain `.txt`).
-- Visual output (HTML/CSS, dashboards, charts, tables): use the visual tool below instead of pasting large HTML into chat.
+Use a tool only when it is actually available; otherwise say so instead of pretending.{{CAPABILITY_TOOL_NOTES}}
 - Voice: user voice arrives transcribed; fix misheard proper nouns from context.
 - Skills: when a task looks unfamiliar, slow, or error-prone, `skill_query` first; save or update a reusable solution with `skill_save`.
 - Memory: when a Memory section is injected, use it for past context; `wiki_query` for deeper recall.

@@ -658,6 +658,35 @@ export interface AiTurnExecutionOptions {
   from?: string;
 }
 
+/**
+ * A turn that came from an adapter states its own capabilities. One that did not
+ * — `triggerTopicAiTurn` for tell/ask, cron, subagent reports, and config-change
+ * auto-continue — inherits what the room's adapter last granted. Without this a
+ * scheduled job or a resumed turn runs in an Otium room with no `show_html`,
+ * even though the panel that would render it is right there.
+ *
+ * Absence, not `false`, is what defers: an adapter that says `false` keeps
+ * saying no, so a host that stopped rendering a surface is not overridden by the
+ * grant it left behind. A room no adapter has ever granted stays default-deny.
+ *
+ * Exported so the inheritance can be asserted directly. It is the half of this
+ * feature that a storage test cannot reach, and the half that decides whether a
+ * cron job in a mapped room can draw anything.
+ */
+export function resolveTurnToolCapabilities(
+  topicId: string,
+  params: { visualTools?: boolean; fileDeliveryTools?: boolean },
+): { visualTools: boolean; fileDeliveryTools: boolean } {
+  const granted =
+    params.visualTools === undefined || params.fileDeliveryTools === undefined
+      ? getTopicToolCapabilities(topicId)
+      : null;
+  return {
+    visualTools: params.visualTools ?? granted?.visualTools ?? false,
+    fileDeliveryTools: params.fileDeliveryTools ?? granted?.fileDeliveryTools ?? false,
+  };
+}
+
 export interface StartAiTurnParams extends AiTurnExecutionOptions {
   topic: AiTurnTopic;
   userId: string;
@@ -959,19 +988,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   const cwd = params.cwd;
   const sessionName = params.sessionName ?? topic.title;
   const sessionType = params.sessionType;
-  // A turn that came from an adapter states its own capabilities. One that did
-  // not — `triggerTopicAiTurn` for tell/ask, cron, subagent reports, and
-  // config-change auto-continue — inherits what the room's adapter last
-  // granted. Without this a scheduled job or a resumed turn runs in an Otium
-  // room with no `show_html`, even though the panel that would render it is
-  // right there. Absence, not `false`, is what defers: an adapter that says
-  // `false` keeps saying no.
-  const grantedForTopic =
-    params.visualTools === undefined || params.fileDeliveryTools === undefined
-      ? getTopicToolCapabilities(topicId)
-      : null;
-  const visualTools = params.visualTools ?? grantedForTopic?.visualTools ?? false;
-  const fileDeliveryTools = params.fileDeliveryTools ?? grantedForTopic?.fileDeliveryTools ?? false;
+  const { visualTools, fileDeliveryTools } = resolveTurnToolCapabilities(topicId, params);
   const onSessionId = params.onSessionId;
   const onSessionReset = params.onSessionReset;
   const bridgeSessionFromHistory = params.bridgeSessionFromHistory === true;
