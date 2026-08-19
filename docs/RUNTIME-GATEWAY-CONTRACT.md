@@ -39,10 +39,14 @@ the canonical topic.
   receipt. Copying rather than proxying keeps panels working when the node is offline and leaves the
   gateway's own access control in charge. `fileId` names a file in this node's store; a copying
   gateway has to fetch those bytes and re-upload them under an id of its own.
-- `GET /files/<fileId>?user=<userId>` returns the bytes of a file this node holds. The contract could
-  previously upload *to* a node but never read back, so both the media behind an
-  `show_image`/`show_video` visual and a file the agent delivered to the chat were unreachable from
-  the gateway. Access is checked against the same node file store the upload path uses.
+- `GET /topics/<id>/files/<fileId>?user=<userId>` returns the bytes of a file this node holds for
+  that room. The contract could previously upload *to* a node but never read back, so both the media
+  behind an `show_image`/`show_video` visual and a file the agent delivered to the chat were
+  unreachable from the gateway. Addressed through the owning room on purpose: every mapped room
+  executes as the same `local` principal, so a file ACL keyed on the caller's user id authorizes
+  nothing across workspaces. Routing through the topic puts the read behind the same
+  `topicInRequestScope` check as every other topic-scoped route (M-8), and the file must belong to
+  the room named in the path.
 - `GET /events?after=<global-seq>&topicId=<optional>` is an SSE stream. `runtime` events preserve
   the global durable RuntimeBus sequence, `cursor` records advance even when a topic filter omits an
   event, and reconnects resume from `after`. A submitted turn emits `ai-status.kind=turn_accepted`,

@@ -885,13 +885,30 @@ export function createNodeControlHandler(
          * `show_image`/`show_video` visual, and a file the agent delivered to
          * the chat. The contract could upload *to* a node but never read back,
          * which is why either one arriving from a node turn was unreachable.
+         *
+         * Deliberately addressed through the owning room rather than as a bare
+         * `/files/<id>`. Every mapped room executes as the same `local`
+         * principal, so a file ACL keyed on the caller's user id authorizes
+         * nothing across workspaces: a gateway scoped to workspace A that
+         * learned a workspace-B file UUID would be handed B's bytes, even
+         * though B's rooms 404 for it. Routing through the topic puts the read
+         * behind the same `topicInRequestScope` check as every other
+         * topic-scoped route (M-8), and the file must actually belong to the
+         * room being named.
          */
-        const runtimeFileMatch = runtimePath.match(/^\/files\/([0-9a-f-]+)$/i);
+        const runtimeFileMatch = runtimePath.match(/^\/topics\/([^/]+)\/files\/([0-9a-f-]+)$/i);
         if (runtimeFileMatch && req.method === "GET") {
+          const topicId = decodeURIComponent(runtimeFileMatch[1]);
+          const fileId = runtimeFileMatch[2];
+          const topic = getTopic(topicId);
+          if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
           const userId = requiredText(url.searchParams.get("user"), "user");
-          return (
-            nodeFileStore.response(runtimeFileMatch[1], userId) ?? jsonError(404, "File not found")
-          );
+          // Bytes are only readable through the room that owns them, so a
+          // UUID guessed or leaked from another workspace resolves to nothing.
+          if (!nodeFileStore.allows(fileId, { topicId, ownerUserId: userId })) {
+            return jsonError(404, "File not found");
+          }
+          return nodeFileStore.response(fileId, userId) ?? jsonError(404, "File not found");
         }
 
         const runtimeTopicMatch = runtimePath.match(/^\/topics\/([^/]+)$/);

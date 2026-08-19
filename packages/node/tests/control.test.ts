@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { readFileSync, unlinkSync } from "node:fs";
+import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   appendApiMessage,
   claimRuntimeTurnLease,
@@ -38,6 +40,10 @@ import {
   NODE_RUNTIME_SURFACE_SCOPE_HEADER,
   NODE_RUNTIME_SURFACE_SCOPE_STRICT_HEADER,
 } from "../src/control";
+import { nodeFileStore } from "../src/files";
+
+/** The principal every mapped room executes as. */
+const NODE_EXECUTION_PRINCIPAL_FOR_TEST = "local";
 
 const userId = `node-control-${randomUUID()}`;
 const handler = createNodeControlHandler({
@@ -1279,4 +1285,54 @@ test("runtime gateway can read back a visual a node turn rendered", async () => 
 
   const missing = await handler(runtimeRequest(`/topics/${topic.id}/visuals/999999`));
   expect(missing?.status).toBe(404);
+});
+
+/**
+ * Every mapped room executes as the same `local` principal, so a file ACL
+ * keyed on the caller's user id authorizes nothing between workspaces. The
+ * read is therefore addressed through its room and scoped like any other
+ * topic route (M-8) — otherwise a gateway scoped to one workspace could fetch
+ * another's bytes just by learning a file UUID.
+ */
+test("runtime gateway file reads are scoped to the room that owns them", async () => {
+  const fileUser = `node-file-scope-${randomUUID()}`;
+  const topic = registerTopic({
+    title: `Files ${randomUUID()}`,
+    userId: fileUser,
+    agent: "codex",
+    surface: "otium",
+  });
+  const otherTopic = registerTopic({
+    title: `Other files ${randomUUID()}`,
+    userId: fileUser,
+    agent: "codex",
+    surface: "otium",
+  });
+
+  const scratch = join(tmpdir(), `node-file-scope-${randomUUID()}.txt`);
+  writeFileSync(scratch, "delivered bytes");
+  const stored = nodeFileStore.store(scratch, {
+    ownerUserId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+    topicId: topic.id,
+  });
+  if (!stored) throw new Error("could not stage a node file");
+
+  const ok = await handler(
+    runtimeRequest(
+      `/topics/${topic.id}/files/${stored.id}?user=${NODE_EXECUTION_PRINCIPAL_FOR_TEST}`,
+    ),
+  );
+  expect(ok?.status).toBe(200);
+  expect(await ok?.text()).toBe("delivered bytes");
+
+  // The same UUID, named through a room that does not own it, must not resolve
+  // — this is the cross-workspace read the bare `/files/<id>` route allowed.
+  const wrongRoom = await handler(
+    runtimeRequest(
+      `/topics/${otherTopic.id}/files/${stored.id}?user=${NODE_EXECUTION_PRINCIPAL_FOR_TEST}`,
+    ),
+  );
+  expect(wrongRoom?.status).toBe(404);
+
+  unlinkSync(scratch);
 });
