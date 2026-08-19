@@ -395,3 +395,51 @@ test("runtime gateway persists staged attachments into the message and durable t
     deleteTopic(topic.id);
   }
 });
+
+// Regression: the adapter's capability grant has to survive the hop into the
+// durable turn request. The turn worker builds the runtime MCP from
+// `execution`, so a gateway that grants visual tools but has them dropped here
+// produces a turn whose prompt advertises `show_html` while the MCP omits it.
+test("runtime gateway forwards the adapter's tool capabilities to the durable turn", () => {
+  const userId = `gateway-caps-${randomUUID()}`;
+  const topic = topicService.create({
+    title: `Gateway caps ${randomUUID()}`,
+    userId,
+    agent: "codex",
+  });
+  try {
+    const freshTopic = getTopic(topic.id);
+    if (!freshTopic) throw new Error("topic was not created");
+    submitRuntimeGatewayTurn({
+      topic: freshTopic,
+      userId,
+      text: "draw me a chart",
+      clientMessageId: randomUUID(),
+      visualTools: true,
+      fileDeliveryTools: true,
+    });
+    expect(getRuntimeUserTurnRequest(topic.id)?.execution).toMatchObject({
+      visualTools: true,
+      fileDeliveryTools: true,
+    });
+
+    cancelRuntimeUserTurnRequests(topic.id);
+
+    // Default-deny: a gateway that says nothing grants nothing.
+    submitRuntimeGatewayTurn({
+      topic: getTopic(topic.id)!,
+      userId,
+      text: "draw me another chart",
+      clientMessageId: randomUUID(),
+    });
+    const execution = getRuntimeUserTurnRequest(topic.id)?.execution;
+    expect(execution?.visualTools).toBeUndefined();
+    expect(execution?.fileDeliveryTools).toBeUndefined();
+  } finally {
+    cancelRuntimeUserTurnRequests(topic.id);
+    db.query("DELETE FROM runtime_gateway_submissions WHERE topic_id = ?").run(topic.id);
+    db.query("DELETE FROM runtime_events WHERE topic_id = ?").run(topic.id);
+    db.query("DELETE FROM api_messages WHERE topic_id = ?").run(topic.id);
+    deleteTopic(topic.id);
+  }
+});

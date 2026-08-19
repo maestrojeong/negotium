@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { readFileSync, unlinkSync } from "node:fs";
+import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   appendApiMessage,
   claimRuntimeTurnLease,
@@ -38,6 +40,10 @@ import {
   NODE_RUNTIME_SURFACE_SCOPE_HEADER,
   NODE_RUNTIME_SURFACE_SCOPE_STRICT_HEADER,
 } from "../src/control";
+import { nodeFileStore } from "../src/files";
+
+/** The principal every mapped room executes as. */
+const NODE_EXECUTION_PRINCIPAL_FOR_TEST = "local";
 
 const userId = `node-control-${randomUUID()}`;
 const handler = createNodeControlHandler({
@@ -1216,4 +1222,117 @@ test("an open SSE stream stops exposing a topic after participant removal", asyn
   } finally {
     await reader?.cancel();
   }
+});
+
+/**
+ * The gap that made `show_html` useless in a mapped room even once the
+ * capability reached the node: the visual was rendered and stored *here*, and
+ * the gateway had no way to read it back, so the hub's panel asked its own
+ * database for an id that only exists on this node.
+ */
+test("runtime gateway can read back a visual a node turn rendered", async () => {
+  const visualUser = `node-visual-${randomUUID()}`;
+  const topic = registerTopic({
+    title: `Visual ${randomUUID()}`,
+    userId: visualUser,
+    agent: "codex",
+    surface: "otium",
+  });
+  // Stands in for what `show_html` does on this node during a mapped-room
+  // turn. Inserted directly rather than via the core write helper, which is
+  // not on the node-host surface and should not be widened for a test.
+  const vizId = Number(
+    (
+      db
+        .query(
+          `INSERT INTO api_topic_visuals (topic_id, html, title, created_at, kind, source)
+           VALUES (?, ?, ?, ?, 'html', ?) RETURNING id`,
+        )
+        .get(topic.id, "<section>chart</section>", "Quarterly", Date.now(), "<p>chart</p>") as {
+        id: number;
+      }
+    ).id,
+  );
+
+  const response = await handler(runtimeRequest(`/topics/${topic.id}/visuals/${vizId}`));
+  expect(response?.status).toBe(200);
+  const body = (await response?.json()) as {
+    ok: boolean;
+    v: number;
+    visual: Record<string, unknown>;
+  };
+  expect(body.ok).toBe(true);
+  expect(body.v).toBe(NODE_RUNTIME_CONTRACT_VERSION);
+  expect(body.visual).toMatchObject({
+    id: vizId,
+    kind: "html",
+    title: "Quarterly",
+    // `source` keeps the agent's own input; `html` is the rendered document,
+    // so a copying hub reproduces the card rather than re-styling it.
+    source: "<p>chart</p>",
+  });
+  expect(String(body.visual.html)).toContain("chart");
+
+  // A visual id from another room must not be readable by naming this one.
+  const otherTopic = registerTopic({
+    title: `Other ${randomUUID()}`,
+    userId: visualUser,
+    agent: "codex",
+    surface: "otium",
+  });
+  const crossRoom = await handler(runtimeRequest(`/topics/${otherTopic.id}/visuals/${vizId}`));
+  expect(crossRoom?.status).toBe(404);
+
+  const missing = await handler(runtimeRequest(`/topics/${topic.id}/visuals/999999`));
+  expect(missing?.status).toBe(404);
+});
+
+/**
+ * Every mapped room executes as the same `local` principal, so a file ACL
+ * keyed on the caller's user id authorizes nothing between workspaces. The
+ * read is therefore addressed through its room and scoped like any other
+ * topic route (M-8) — otherwise a gateway scoped to one workspace could fetch
+ * another's bytes just by learning a file UUID.
+ */
+test("runtime gateway file reads are scoped to the room that owns them", async () => {
+  const fileUser = `node-file-scope-${randomUUID()}`;
+  const topic = registerTopic({
+    title: `Files ${randomUUID()}`,
+    userId: fileUser,
+    agent: "codex",
+    surface: "otium",
+  });
+  const otherTopic = registerTopic({
+    title: `Other files ${randomUUID()}`,
+    userId: fileUser,
+    agent: "codex",
+    surface: "otium",
+  });
+
+  const scratch = join(tmpdir(), `node-file-scope-${randomUUID()}.txt`);
+  writeFileSync(scratch, "delivered bytes");
+  const stored = nodeFileStore.store(scratch, {
+    ownerUserId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+    topicId: topic.id,
+  });
+  if (!stored) throw new Error("could not stage a node file");
+
+  const ok = await handler(
+    runtimeRequest(
+      `/topics/${topic.id}/files/${stored.id}?user=${NODE_EXECUTION_PRINCIPAL_FOR_TEST}`,
+    ),
+  );
+  expect(ok?.status).toBe(200);
+  expect(await ok?.text()).toBe("delivered bytes");
+
+  // The same UUID, named through a room that does not own it, must not resolve
+  // — this is the cross-workspace read the bare `/files/<id>` route allowed.
+  const wrongRoom = await handler(
+    runtimeRequest(
+      `/topics/${otherTopic.id}/files/${stored.id}?user=${NODE_EXECUTION_PRINCIPAL_FOR_TEST}`,
+    ),
+  );
+  expect(wrongRoom?.status).toBe(404);
+
+  unlinkSync(scratch);
 });

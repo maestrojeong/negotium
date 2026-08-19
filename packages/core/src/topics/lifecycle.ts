@@ -50,6 +50,7 @@ import { deletePendingAsksForTopic } from "#storage/session-asks";
 import { deleteTopicStats } from "#storage/token-stats";
 import { archiveConversationEvents, archiveTopicMessages } from "#storage/topic-archive";
 import { deleteTopicArchiveState } from "#storage/topic-archive-state";
+import { deleteTopicToolCapabilities } from "#storage/topic-tool-capabilities";
 import type { TopicDto } from "#types/api";
 
 const DELETE_TURN_WAIT_MS = 5_000;
@@ -332,6 +333,7 @@ async function deleteTopicCascadeImpl(
     }
 
     deleteTopicVisuals(topicId);
+    deleteTopicToolCapabilities(topicId);
     deleteTopicArchiveState(topicId);
     deleteMessagesForTopic(topicId);
     deleteApiTopicConfig(topicId);

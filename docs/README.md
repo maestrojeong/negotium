@@ -20,6 +20,7 @@ instead of copying the explanation.
 | [Migration 0.5.0](./MIGRATION-0.5.0.md) | Chronological decision-graph spine and Browser.rs v0.1.23 |
 | [Migration 0.5.3](./MIGRATION-0.5.3.md) | Streamable HTTP browser transport for Maestro agents |
 | [Migration 0.5.4](./MIGRATION-0.5.4.md) | Public Browser.rs transport builder for embedding runtimes |
+| [Migration 0.5.6](./MIGRATION-0.5.6.md) | Gateway-minted visual and file-delivery capabilities |
 | [Migration 0.2.0](./MIGRATION-0.2.0.md) | Historical single-user filesystem migration and completion marker |
 | [Migration 0.1.18](./MIGRATION-0.1.18.md) | Public helper adoption and Otium thin-adapter upgrade order |
 | [Migration 0.1.19](./MIGRATION-0.1.19.md) | Reset memory safety and the next Otium deduplication boundary |

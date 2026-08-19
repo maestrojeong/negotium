@@ -69,6 +69,8 @@ export type { FileHooks, UploadAccess } from "#runtime/file-hooks";
 export { setFileHooks } from "#runtime/file-hooks";
 export { startSessionInboxWorker } from "#runtime/inbox";
 export { startAiTurn, startDurableTurnRequestWorker } from "#runtime/turn-runner";
+export type { PortableTopicVisual } from "#runtime/visual-store";
+export { getPortableTopicVisual } from "#runtime/visual-store";
 export {
   appendApiMessage,
   getApiMessage,

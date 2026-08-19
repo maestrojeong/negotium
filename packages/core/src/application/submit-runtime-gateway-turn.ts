@@ -13,6 +13,7 @@ import {
 import { requestRuntimeTurnAbort } from "#storage/runtime-leases";
 import { getRuntimeTopicEpoch } from "#storage/runtime-topic-state";
 import { mergeRuntimeUserTurnRequest } from "#storage/runtime-turn-requests";
+import { recordTopicToolCapabilities } from "#storage/topic-tool-capabilities";
 import type { MessageDto, TopicDto } from "#types/api";
 
 export interface SubmitRuntimeGatewayTurnParams {
@@ -41,6 +42,14 @@ export interface SubmitRuntimeGatewayTurnParams {
   threadRootId?: string;
   /** Host-uploaded file ids already staged in this node's file store. */
   attachments?: string[];
+  /**
+   * Capability minted by the calling adapter, forwarded to the turn's runtime
+   * MCP. Default-deny: a host that never says `true` gets no `show_*` tools,
+   * which is correct for a gateway with no visual surface to render into.
+   */
+  visualTools?: boolean;
+  /** Capability minted by the calling adapter. Default-deny, like `visualTools`. */
+  fileDeliveryTools?: boolean;
 }
 
 export interface SubmitRuntimeGatewayTurnResult extends RuntimeGatewaySubmission {
@@ -119,6 +128,10 @@ function gatewayPayloadHash(
         // would answer in the wrong place.
         params.threadRootId ?? null,
         params.attachments ?? [],
+        // `visualTools`/`fileDeliveryTools` are deliberately absent. They are a
+        // property of the calling adapter, not of the message, so they are the
+        // same for every turn a given host sends. Hashing them would only turn
+        // an adapter upgrade into a 409 for keys that were already in flight.
       ]),
     )
     .digest("hex");
@@ -154,6 +167,14 @@ export function submitRuntimeGatewayTurn(
   if (existing) {
     return duplicateResult(existing, params, requestId, actorUserId, payloadHash);
   }
+
+  // Remember what this adapter grants for the room, so the turns that never
+  // see an adapter — tell/ask, cron, auto-continue, subagent reports — inherit
+  // it instead of silently running without the tools.
+  recordTopicToolCapabilities(params.topic.id, {
+    visualTools: params.visualTools === true,
+    fileDeliveryTools: params.fileDeliveryTools === true,
+  });
 
   const createdAt = new Date().toISOString();
   const attachments = params.attachments?.map(resolveAttachmentByFileId);
@@ -214,6 +235,12 @@ export function submitRuntimeGatewayTurn(
             conversationPrompts: [params.text],
             loggedUserMessageCount: 0,
             vaultUserId: params.vaultUserId,
+            // The adapter's capability grant has to ride the durable request:
+            // the turn worker builds the runtime MCP from `execution`, so a
+            // flag left here undefined is what makes `show_html` and friends
+            // absent from a mapped room's turn.
+            visualTools: params.visualTools,
+            fileDeliveryTools: params.fileDeliveryTools,
             ...(params.threadRootId ? { threadRootId: params.threadRootId } : {}),
           },
         });

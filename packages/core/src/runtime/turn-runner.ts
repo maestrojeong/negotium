@@ -102,6 +102,7 @@ import {
   releaseRuntimeUserTurnClaim,
 } from "#storage/runtime-turn-requests";
 import type { PendingAskUserId } from "#storage/session-asks";
+import { getTopicToolCapabilities } from "#storage/topic-tool-capabilities";
 import { getSharedWikiDir } from "#storage/wiki";
 import {
   isTopicBriefFile,
@@ -958,8 +959,19 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   const cwd = params.cwd;
   const sessionName = params.sessionName ?? topic.title;
   const sessionType = params.sessionType;
-  const visualTools = params.visualTools === true;
-  const fileDeliveryTools = params.fileDeliveryTools === true;
+  // A turn that came from an adapter states its own capabilities. One that did
+  // not — `triggerTopicAiTurn` for tell/ask, cron, subagent reports, and
+  // config-change auto-continue — inherits what the room's adapter last
+  // granted. Without this a scheduled job or a resumed turn runs in an Otium
+  // room with no `show_html`, even though the panel that would render it is
+  // right there. Absence, not `false`, is what defers: an adapter that says
+  // `false` keeps saying no.
+  const grantedForTopic =
+    params.visualTools === undefined || params.fileDeliveryTools === undefined
+      ? getTopicToolCapabilities(topicId)
+      : null;
+  const visualTools = params.visualTools ?? grantedForTopic?.visualTools ?? false;
+  const fileDeliveryTools = params.fileDeliveryTools ?? grantedForTopic?.fileDeliveryTools ?? false;
   const onSessionId = params.onSessionId;
   const onSessionReset = params.onSessionReset;
   const bridgeSessionFromHistory = params.bridgeSessionFromHistory === true;

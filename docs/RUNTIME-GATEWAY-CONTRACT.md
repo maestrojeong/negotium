@@ -14,10 +14,16 @@ the canonical topic.
 ## Endpoints
 
 - `GET /health` returns `{ ok, v: 1, capabilities, cursor }` for capability negotiation.
-- `POST /turns` accepts `{ v: 1, topicId, userId, actorUserId?, actorLabel?, vaultUserId?, text, clientMessageId, requestId?, allowAutoContinue? }`.
+- `POST /turns` accepts `{ v: 1, topicId, userId, actorUserId?, actorLabel?, vaultUserId?, text, clientMessageId, requestId?, allowAutoContinue?, visualTools?, fileDeliveryTools? }`.
   `userId` is the canonical execution principal. A trusted gateway may preserve the authenticated
   human author separately in `actorUserId`/`actorLabel` and select the topic owner's credential
   namespace with `vaultUserId`.
+  `visualTools` and `fileDeliveryTools` are capabilities minted by the gateway and are
+  **default-deny**: unless the gateway sends `true`, the turn's runtime MCP omits `show_html`,
+  `show_mermaid`, `show_image`, `show_video`, `publish_html`, and the file-delivery tools. A gateway
+  should grant them only if it actually renders a visual panel and a chat file surface, because the
+  node has no other way to know whether that output would be displayed or dropped. They describe the
+  caller, not the message, so they are excluded from the idempotency payload hash.
   It returns `202` only after the canonical user message, durable turn request, acknowledgement event,
   and message event have been committed in one SQLite transaction. `cursor` is the exact sequence of
   that turn's `turn_accepted` event.
@@ -25,6 +31,22 @@ the canonical topic.
   `deduplicated: true` with the same message id and cursor; reusing either identifier for another
   turn returns `409`. Messages accepted while a topic turn is active request immediate steering;
   arrivals during provider unwind are retained in order and folded into the next durable batch.
+- `GET /topics/<id>/visuals/<vizId>` returns `{ ok, v: 1, visual }` for a visual a turn rendered on
+  this node: `{ id, kind, title, html, source, fileId, mimeType, createdAt }`. A turn in a mapped
+  room runs here, so `show_html` and friends write to *this* node's visual store and the URL on the
+  `visual` runtime event names a topic id only this node knows. A gateway that owns the room but not
+  the execution has nothing to serve its panel from, so it copies the visual into its own store on
+  receipt. Copying rather than proxying keeps panels working when the node is offline and leaves the
+  gateway's own access control in charge. `fileId` names a file in this node's store; a copying
+  gateway has to fetch those bytes and re-upload them under an id of its own.
+- `GET /topics/<id>/files/<fileId>?user=<userId>` returns the bytes of a file this node holds for
+  that room. The contract could previously upload *to* a node but never read back, so both the media
+  behind an `show_image`/`show_video` visual and a file the agent delivered to the chat were
+  unreachable from the gateway. Addressed through the owning room on purpose: every mapped room
+  executes as the same `local` principal, so a file ACL keyed on the caller's user id authorizes
+  nothing across workspaces. Routing through the topic puts the read behind the same
+  `topicInRequestScope` check as every other topic-scoped route (M-8), and the file must belong to
+  the room named in the path.
 - `GET /events?after=<global-seq>&topicId=<optional>` is an SSE stream. `runtime` events preserve
   the global durable RuntimeBus sequence, `cursor` records advance even when a topic filter omits an
   event, and reconnects resume from `after`. A submitted turn emits `ai-status.kind=turn_accepted`,

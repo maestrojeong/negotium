@@ -128,7 +128,7 @@ describe("negotium MCP endpoint", () => {
     ]) {
       expect(names).toContain(expected);
     }
-    for (const visual of ["show_html", "show_mermaid", "show_image", "show_video"]) {
+    for (const visual of ["show_html", "show_mermaid", "show_image", "show_png", "show_video"]) {
       expect(names).not.toContain(visual);
     }
     expect(names).not.toContain("send_message");
@@ -148,7 +148,9 @@ describe("negotium MCP endpoint", () => {
     try {
       await visualClient.connect(new StreamableHTTPClientTransport(url));
       const names = (await visualClient.listTools()).tools.map((tool) => tool.name);
-      for (const visual of ["show_html", "show_mermaid", "show_image", "show_video"]) {
+      // `show_png` is the pre-rename alias of `show_image`; it rides the same
+      // capability, so a session that still calls it by the old name works.
+      for (const visual of ["show_html", "show_mermaid", "show_image", "show_png", "show_video"]) {
         expect(names).toContain(visual);
       }
       expect(names).not.toContain("send_file");
@@ -205,6 +207,7 @@ describe("negotium MCP endpoint", () => {
         "show_html",
         "show_mermaid",
         "show_image",
+        "show_png",
         "show_video",
         "send_file",
         "send_files",
