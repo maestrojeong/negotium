@@ -85,6 +85,31 @@ function sharedToolsPartial(): string {
   return _sharedToolsPartial;
 }
 
+/** The "Tool notes" bullets that name a capability-gated tool. They used to sit
+ *  in `_shared-tools.md` unconditionally, so a default-deny room — Telegram,
+ *  headless, any node turn the caller did not mint the capability for — was told
+ *  to "use the visual tool below" when no such tool was registered and no such
+ *  section followed. Rendering them from the same flags that gate the tools
+ *  keeps the prompt and the tool list from disagreeing.
+ *
+ *  Appended to the end of the preceding line rather than occupying one of its
+ *  own, so the empty case leaves no blank line in the bullet list. */
+function capabilityToolNotes(opts: { visualTools?: boolean; fileDeliveryTools?: boolean }): string {
+  const notes = [
+    ...(opts.fileDeliveryTools
+      ? [
+          "- Sending files: use the file-delivery tool; never emit deprecated `[FILE:/absolute/path]` tags. Prefer ASCII names and richer formats (PDF over plain `.txt`).",
+        ]
+      : []),
+    ...(opts.visualTools
+      ? [
+          "- Visual output (HTML/CSS, dashboards, charts, tables): use the visual tool below instead of pasting large HTML into chat.",
+        ]
+      : []),
+  ];
+  return notes.length ? `\n${notes.join("\n")}` : "";
+}
+
 function topicSystemPromptTemplate(): string {
   if (_topicSystemPromptTemplate === null) {
     _topicSystemPromptTemplate = loadSessionPrompt(
@@ -499,6 +524,7 @@ export function createPromptBuilders(host: PromptBuilderHost = {}): PromptBuilde
     // {{UPLOADS_DIR}}, which the later keys in this same pass then resolve.
     const templateVars: Record<string, string> = {
       SHARED_TOOLS: sharedToolsPartial(),
+      CAPABILITY_TOOL_NOTES: capabilityToolNotes(opts),
       AI_LABEL: opts.aiLabel,
       TOPIC_TITLE: opts.topicTitle,
       WORKSPACE_CWD: opts.workspaceCwd,

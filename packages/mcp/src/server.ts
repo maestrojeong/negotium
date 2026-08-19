@@ -258,8 +258,21 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
     // user — with a shareable link instead of an in-app panel, so it rides
     // the same gate. Unlike the show_* tools it does its own work, and it is
     // node-agnostic, so it keeps its real handler even behind a peer bridge.
-    for (const def of createPublishHtmlToolDefinitions({ cwd: ctx.cwd })) {
+    const publishTools = createPublishHtmlToolDefinitions({ cwd: ctx.cwd });
+    for (const def of publishTools) {
       server.tool(def.name, def.description, def.schema as any, def.handler as any);
+    }
+    // Unlike the show_* tools, publishing needs a snippet backend, which is the
+    // node's own configuration and not something the gateway's capability can
+    // supply. So a granted turn can still come up without `publish_html`, and
+    // the room's tool surface then depends on where the turn was executed. Say
+    // so once per server: the last time these tools disappeared it was from a
+    // config change with no log, and the silence is what made it expensive.
+    if (publishTools.length === 0) {
+      logger.warn(
+        { topicId: ctx.topicId },
+        "negotium MCP: visual tools granted but publish_html omitted; set NEGOTIUM_SNIPPETS_API_URL on this node to match a hub that has one",
+      );
     }
   }
 
