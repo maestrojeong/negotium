@@ -417,6 +417,12 @@ export function createNodeControlHandler(
               "canonical-session-reset",
               "canonical-session-compact",
               "canonical-input-files",
+              // Lets a host tell "this node can settle an ask_user_question
+              // card" from a node that predates the route and answers 404. The
+              // host renders the card either way, so without the flag its only
+              // signal is a failed click that looks identical to the bug this
+              // route fixes.
+              "canonical-ask-answer",
             ],
             cursor: latestRuntimeEventSeq(),
           });
@@ -796,6 +802,48 @@ export function createNodeControlHandler(
             ok: true,
             v: NODE_RUNTIME_CONTRACT_VERSION,
             result: result.text,
+          });
+        }
+
+        /**
+         * Settle an `ask_user_question` card the node itself is blocked on.
+         *
+         * The gate, the pending promise and the card row all live in this
+         * process (see `#agents/mcp-tools/ask-user`), so the selection has to
+         * come back here to resume the turn. A host that mirrors the room — the
+         * Otium hub — renders the card and receives the click, but answering it
+         * against the host's own store can only ever 404: the card was never
+         * written there. Without this route that click has nowhere to go, so the
+         * card silently rolls back and the agent keeps re-asking.
+         *
+         * Strictly narrower than `/turns`: it cannot start work, only deliver
+         * one of the choices the node already published for a turn it is already
+         * running.
+         */
+        const runtimeAskAnswerMatch = runtimePath.match(
+          /^\/topics\/([^/]+)\/messages\/([^/]+)\/ask-answer$/,
+        );
+        if (runtimeAskAnswerMatch && req.method === "POST") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const topicId = decodeURIComponent(runtimeAskAnswerMatch[1]);
+          const messageId = decodeURIComponent(runtimeAskAnswerMatch[2]);
+          const topic = getTopic(topicId);
+          if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
+          const userId = requiredText(body.userId, "userId");
+          const label = requiredText(body.label, "label");
+          const answered = topicService.answerQuestion(topicId, messageId, label, userId);
+          // 409, matching `/session/reset`: the card exists but is no longer
+          // awaiting an answer (expired, already selected, or the turn ended).
+          // That is a conflict with current state, not a malformed request, and
+          // the hub needs to tell the two apart to decide whether to expire its
+          // rendered card or just surface a retry.
+          if (!answered.ok) return jsonError(409, answered.error);
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            queryId: answered.queryId,
+            answerMessage: answered.answerMessage,
           });
         }
 

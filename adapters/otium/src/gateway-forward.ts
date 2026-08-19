@@ -65,6 +65,13 @@ function allowedRuntimePath(path: string, method: string): boolean {
     // start cold. Listed as exact sub-paths rather than a `/topics/:id/...`
     // wildcard, so a future control route under the same prefix is not
     // forwarded by accident.
+    // Delivering the user's selection for an `ask_user_question` card this
+    // worker published. Narrower than `/turns`, which the hub already has: it
+    // cannot start work, only unblock a turn the worker is already running, and
+    // only with a choice the worker itself offered. Without it a mirrored room's
+    // ask card is unanswerable from the hub, which is the whole point of
+    // rendering it there.
+    if (/^\/topics\/[^/]+\/messages\/[^/]+\/ask-answer$/.test(path)) return true;
     return /^\/topics\/[^/]+\/(abort|session\/(reset|compact))$/.test(path);
   }
   // The two mutations a hub must reach on a room it already runs turns on

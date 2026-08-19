@@ -65,6 +65,7 @@ test("health advertises the delete/update/silent capabilities hosts feature-dete
   expect(body.capabilities).toContain("canonical-topic-abort");
   expect(body.capabilities).toContain("canonical-session-reset");
   expect(body.capabilities).toContain("canonical-session-compact");
+  expect(body.capabilities).toContain("canonical-ask-answer");
 });
 
 test("DELETE removes the canonical topic so a deleted mirror stays deleted", async () => {
@@ -278,6 +279,49 @@ test("abort reports whether there was anything to stop", async () => {
   // An idle room is not an error: the host asked for "no turn running here"
   // and that is now true, so `aborted: false` is the honest answer.
   expect(await response?.json()).toEqual({ ok: true, v: 1, aborted: false });
+});
+
+/**
+ * The card, its gate and the promise the MCP tool awaits all live in this
+ * process, so a host that only mirrors the room has to hand the selection back
+ * here. Before this route existed the hub's click hit the hub's own store,
+ * 404'd on a row that was never written there, and the agent re-asked forever.
+ */
+test("ask-answer is reachable on the contract and reports an unanswerable card as a conflict", async () => {
+  const created = topic(`Runtime ask answer ${randomUUID()}`);
+  const response = await handler(
+    request(
+      `/runtime/v1/topics/${encodeURIComponent(created.id)}/messages/ask-nonexistent/ask-answer`,
+      { method: "POST", body: JSON.stringify({ v: 1, userId, label: "Yes" }) },
+    ),
+  );
+  // 409, not 404: the route matched and the room is in scope. Only the card is
+  // not awaiting an answer, which is the state a host must be able to tell apart
+  // from "this node does not speak ask-answer at all".
+  expect(response?.status).toBe(409);
+});
+
+test("ask-answer validates its envelope and rejects a room outside the caller's scope", async () => {
+  const created = topic(`Runtime ask answer guards ${randomUUID()}`);
+  const path = `/runtime/v1/topics/${encodeURIComponent(created.id)}/messages/ask-1/ask-answer`;
+
+  const badVersion = await handler(
+    request(path, { method: "POST", body: JSON.stringify({ v: 99, userId, label: "Yes" }) }),
+  );
+  expect(badVersion?.status).toBe(400);
+
+  const missingLabel = await handler(
+    request(path, { method: "POST", body: JSON.stringify({ v: 1, userId }) }),
+  );
+  expect(missingLabel?.status).toBe(400);
+
+  const unknownTopic = await handler(
+    request("/runtime/v1/topics/does-not-exist/messages/ask-1/ask-answer", {
+      method: "POST",
+      body: JSON.stringify({ v: 1, userId, label: "Yes" }),
+    }),
+  );
+  expect(unknownTopic?.status).toBe(404);
 });
 
 test("session reset re-seats the agent session and keeps the transcript", async () => {

@@ -89,6 +89,10 @@ test("forwards the whole read/turn/room-mutation contract the gateway client spe
     ["POST", "/topics/abc/abort"],
     ["POST", "/topics/abc/session/reset"],
     ["POST", "/topics/abc/session/compact"],
+    // Answering an ask_user_question card this worker published. The hub renders
+    // the card, so without this the click has nowhere to go: the hub's own store
+    // has no such row, the answer 404s, and the agent re-asks forever.
+    ["POST", "/topics/abc/messages/ask-1/ask-answer"],
   ] as const) {
     const { fetch: stub, calls } = captureFetch();
     const response = await forwardGatewayRequest(
@@ -188,6 +192,12 @@ test("the forwarded POST sub-paths are exact, not a /topics/:id/* wildcard", asy
     "/topics/abc/def/abort",
     "/topics/abc/import",
     "/topics/abc/derive",
+    // ask-answer is exact too: neither the message collection nor a deeper path
+    // under a card becomes forwardable by allowing the one leaf verb.
+    "/topics/abc/messages",
+    "/topics/abc/messages/ask-1",
+    "/topics/abc/messages/ask-1/ask-answer/extra",
+    "/topics/abc/messages/ask-1/delete",
     // Creation is an exact path, so it must not read as a prefix that drags in
     // whatever the node later mounts beneath it.
     "/topics/",
