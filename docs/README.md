@@ -23,6 +23,7 @@ instead of copying the explanation.
 | [Migration 0.5.6](./MIGRATION-0.5.6.md) | Gateway-minted visual and file-delivery capabilities |
 | [Migration 0.5.7](./MIGRATION-0.5.7.md) | Media visuals readable over the gateway read-back |
 | [Migration 0.5.8](./MIGRATION-0.5.8.md) | Capability-gated tool notes in the shared prompt |
+| [Migration 0.5.9](./MIGRATION-0.5.9.md) | show_video removed from the runtime tool surface |
 | [Migration 0.2.0](./MIGRATION-0.2.0.md) | Historical single-user filesystem migration and completion marker |
 | [Migration 0.1.18](./MIGRATION-0.1.18.md) | Public helper adoption and Otium thin-adapter upgrade order |
 | [Migration 0.1.19](./MIGRATION-0.1.19.md) | Reset memory safety and the next Otium deduplication boundary |
