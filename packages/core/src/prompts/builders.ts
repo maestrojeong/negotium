@@ -310,8 +310,8 @@ function buildRuntimeToolSection(
       : `For diagrams that Mermaid supports, prefer the MCP tool "${runtimeNamespace}__show_mermaid" with { code: "<Mermaid DSL without markdown fences>", title?: "...", theme?: "neutral" }.`;
   const mediaToolLine =
     agentKind === "codex"
-      ? `To display an existing image or video in the visual panel, use \`show_image\` or \`show_video\` in the \`${runtimeNamespace}\` namespace with either { file_path: "...", title?: "..." } for a topic-workspace file or { file_id: "...", title?: "..." } for an uploaded file already attached in this topic.`
-      : `To display an existing image or video in the visual panel, use MCP tool "${runtimeNamespace}__show_image" or "${runtimeNamespace}__show_video" with either { file_path: "...", title?: "..." } for a topic-workspace file or { file_id: "...", title?: "..." } for an uploaded file already attached in this topic.`;
+      ? `To display an existing image in the visual panel, use \`show_image\` in the \`${runtimeNamespace}\` namespace with either { file_path: "...", title?: "..." } for a topic-workspace file or { file_id: "...", title?: "..." } for an uploaded file already attached in this topic.`
+      : `To display an existing image in the visual panel, use MCP tool "${runtimeNamespace}__show_image" with either { file_path: "...", title?: "..." } for a topic-workspace file or { file_id: "...", title?: "..." } for an uploaded file already attached in this topic.`;
   const sendFileTool =
     agentKind === "codex"
       ? `\`send_file\` function in the \`${runtimeNamespace}\` namespace`

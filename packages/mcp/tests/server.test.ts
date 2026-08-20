@@ -160,9 +160,12 @@ describe("negotium MCP endpoint", () => {
       const names = (await visualClient.listTools()).tools.map((tool) => tool.name);
       // `show_png` is the pre-rename alias of `show_image`; it rides the same
       // capability, so a session that still calls it by the old name works.
-      for (const visual of ["show_html", "show_mermaid", "show_image", "show_png", "show_video"]) {
+      for (const visual of ["show_html", "show_mermaid", "show_image", "show_png"]) {
         expect(names).toContain(visual);
       }
+      // Removed as a capability, not merely ungranted: a room that gets every
+      // visual tool still must not get this one back.
+      expect(names).not.toContain("show_video");
       expect(names).not.toContain("send_file");
       expect(names).not.toContain("send_files");
       // publish_html is gated by the capability *and* by this node's own snippet

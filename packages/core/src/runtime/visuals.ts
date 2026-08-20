@@ -51,10 +51,6 @@ export function isVisualsShowImageTool(name: string): boolean {
   return isRuntimeTool(name, "show_image") || isRuntimeTool(name, "show_png");
 }
 
-export function isVisualsShowVideoTool(name: string): boolean {
-  return isRuntimeTool(name, "show_video");
-}
-
 export function normalizeToolUseId(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized ? normalized : undefined;

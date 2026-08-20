@@ -1,10 +1,5 @@
 import type { SharedMcpTool } from "#agents/mcp-tools/common";
-import {
-  showHtmlTool,
-  showImageTool,
-  showMermaidTool,
-  showVideoTool,
-} from "#agents/mcp-tools/visuals";
+import { showHtmlTool, showImageTool, showMermaidTool } from "#agents/mcp-tools/visuals";
 
 /** Backward-compatible Otium alias retained for persisted prompts and sessions. */
 export const showPngTool = {
@@ -20,5 +15,4 @@ export const otiumVisualToolDefinitions = [
   showMermaidTool,
   showImageTool,
   showPngTool,
-  showVideoTool,
 ] as const;

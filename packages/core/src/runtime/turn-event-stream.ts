@@ -52,7 +52,6 @@ import {
   isVisualsShowHtmlTool,
   isVisualsShowImageTool,
   isVisualsShowMermaidTool,
-  isVisualsShowVideoTool,
   normalizeMermaidTheme,
   normalizeToolUseId,
   resolveVisualMediaInput,
@@ -464,14 +463,14 @@ export async function runTurnEventStream(
                 broadcastStoredVisual(event, vizId, title, "mermaid");
               }
             }
-          } else if (isVisualsShowImageTool(event.name) || isVisualsShowVideoTool(event.name)) {
+          } else if (isVisualsShowImageTool(event.name)) {
             const input = event.input as {
               file_path?: unknown;
               file_id?: unknown;
               title?: unknown;
               alt?: unknown;
             };
-            const kind = isVisualsShowImageTool(event.name) ? "image" : "video";
+            const kind = "image" as const;
             const toolUseId = bindToolUseId(event.toolUseId);
             const label = formatToolUse(event.name, event.input);
             const failMediaVisual = (reason: string) => {
@@ -506,12 +505,8 @@ export async function runTurnEventStream(
               failMediaVisual(media.error);
               break;
             }
-            if (kind === "image" && !media.mimeType.startsWith("image/")) {
+            if (!media.mimeType.startsWith("image/")) {
               failMediaVisual(`expected image media, got ${media.mimeType}`);
-              break;
-            }
-            if (kind === "video" && !media.mimeType.startsWith("video/")) {
-              failMediaVisual(`expected video media, got ${media.mimeType}`);
               break;
             }
             try {

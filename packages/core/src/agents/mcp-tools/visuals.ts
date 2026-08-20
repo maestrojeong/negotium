@@ -57,32 +57,4 @@ export const showImageTool = {
   },
 } satisfies SharedMcpTool;
 
-export const showVideoTool = {
-  name: "show_video",
-  description:
-    "Display a playable video in the user's visual side panel. Provide either file_path for a video in the topic workspace, or file_id for an uploaded file already attached in this topic.",
-  schema: {
-    file_path: z
-      .string()
-      .optional()
-      .describe("Absolute or workspace-relative path to a video file."),
-    file_id: z
-      .string()
-      .optional()
-      .describe("Full Otium uploaded file UUID for a video attached in this topic."),
-    title: z.string().optional().describe("Optional title shown above the rendered card."),
-  },
-  async handler(input) {
-    if (!input?.file_path && !input?.file_id) {
-      return errorResult("file_path or file_id is required.");
-    }
-    return textResult("Video displayed to the user.");
-  },
-} satisfies SharedMcpTool;
-
-export const visualToolDefinitions = [
-  showHtmlTool,
-  showMermaidTool,
-  showImageTool,
-  showVideoTool,
-] as const;
+export const visualToolDefinitions = [showHtmlTool, showMermaidTool, showImageTool] as const;
