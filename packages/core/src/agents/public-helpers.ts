@@ -81,7 +81,6 @@ export {
   showHtmlTool,
   showImageTool,
   showMermaidTool,
-  showVideoTool,
   VISUALS_MCP_KEY,
   visualToolDefinitions,
 } from "#agents/mcp-tools/visuals";

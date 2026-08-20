@@ -20,7 +20,7 @@ the canonical topic.
   namespace with `vaultUserId`.
   `visualTools` and `fileDeliveryTools` are capabilities minted by the gateway and are
   **default-deny**: unless the gateway sends `true`, the turn's runtime MCP omits `show_html`,
-  `show_mermaid`, `show_image`, `show_video`, `publish_html`, and the file-delivery tools. A gateway
+  `show_mermaid`, `show_image`, `publish_html`, and the file-delivery tools. A gateway
   should grant them only if it actually renders a visual panel and a chat file surface, because the
   node has no other way to know whether that output would be displayed or dropped. They describe the
   caller, not the message, so they are excluded from the idempotency payload hash.
@@ -46,7 +46,7 @@ the canonical topic.
   gateway has to fetch those bytes and re-upload them under an id of its own.
 - `GET /topics/<id>/files/<fileId>?user=<userId>` returns the bytes of a file this node holds for
   that room. The contract could previously upload *to* a node but never read back, so both the media
-  behind an `show_image`/`show_video` visual and a file the agent delivered to the chat were
+  behind a `show_image` visual and a file the agent delivered to the chat were
   unreachable from the gateway. Addressed through the owning room on purpose: every mapped room
   executes as the same `local` principal, so a file ACL keyed on the caller's user id authorizes
   nothing across workspaces. Routing through the topic puts the read behind the same
