@@ -44,6 +44,7 @@ export { isSensitivePath } from "#security/sensitive-path";
 export { appendApiMessage } from "#storage/api-messages";
 export { getApiTopicConfig } from "#storage/api-topic-config";
 export { defaultTopicSurface, getTopic, getTopicByNameForUser } from "#storage/api-topics";
+export { enqueueSessionInbox } from "#storage/session-inbox";
 export { registerTopic, TopicValidationError } from "#topics/create";
 export {
   getTopics,

@@ -1,9 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BASHRS_SPILL_ROOT } from "#platform/config";
-import { sessionInboxPath } from "#query/session-inbox-path";
 import { flushBashrsCompletions } from "#runtime/bashrs-completions";
+import { db } from "#storage/forum-db";
+
+function entries(topicId: string): Array<Record<string, unknown>> {
+  return db
+    .query<{ payload: string }, [string]>(
+      "SELECT payload FROM session_inbox WHERE topic_id = ? ORDER BY sequence",
+    )
+    .all(topicId)
+    .map((row) => JSON.parse(row.payload) as Record<string, unknown>);
+}
 
 function writeResult(bashId: string, body: Record<string, unknown>): string {
   const dir = join(BASHRS_SPILL_ROOT, bashId);
@@ -16,6 +25,7 @@ function writeResult(bashId: string, body: Record<string, unknown>): string {
 
 afterEach(() => {
   rmSync(BASHRS_SPILL_ROOT, { recursive: true, force: true });
+  db.run("DELETE FROM session_inbox WHERE id LIKE 'bashrs:%'");
 });
 
 describe("bashrs-completions", () => {
@@ -31,10 +41,9 @@ describe("bashrs-completions", () => {
 
     await flushBashrsCompletions();
 
-    const inboxPath = sessionInboxPath("user-1", "topic-1");
-    const lines = readFileSync(inboxPath, "utf8").trim().split("\n");
-    expect(lines.length).toBe(1);
-    const entry = JSON.parse(lines[0]);
+    const queued = entries("topic-1");
+    expect(queued.length).toBe(1);
+    const entry = queued[0]!;
     expect(entry.type).toBe("tell");
     expect(entry.from).toBe("__bg_bash__");
     expect(entry.requestId).toBe("bash_abc123");
@@ -60,9 +69,7 @@ describe("bashrs-completions", () => {
     await flushBashrsCompletions();
     await flushBashrsCompletions();
 
-    const inboxPath = sessionInboxPath("user-2", "topic-2");
-    const lines = readFileSync(inboxPath, "utf8").trim().split("\n");
-    expect(lines.length).toBe(1);
+    expect(entries("topic-2")).toHaveLength(1);
   });
 
   test("skips owners that aren't negotium's userId\\0topicId convention", async () => {
@@ -95,8 +102,7 @@ describe("bashrs-completions", () => {
 
     await flushBashrsCompletions();
 
-    const inboxPath = sessionInboxPath("user-3", "topic-3");
-    const entry = JSON.parse(readFileSync(inboxPath, "utf8").trim());
+    const entry = entries("topic-3")[0]!;
     expect(entry.message).toContain("matched]");
     expect(entry.message).toContain("deploy ready");
   });
@@ -113,8 +119,7 @@ describe("bashrs-completions", () => {
 
     await flushBashrsCompletions();
 
-    const inboxPath = sessionInboxPath("user-4", "topic-4");
-    const entry = JSON.parse(readFileSync(inboxPath, "utf8").trim());
+    const entry = entries("topic-4")[0]!;
     expect(entry.message).toContain("exit code: unknown");
   });
 });

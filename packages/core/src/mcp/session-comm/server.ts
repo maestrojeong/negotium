@@ -1,11 +1,10 @@
 #!/usr/bin/env node
-import { mkdirSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { ACTIVE_QUERY_STALE_MS, USERS_LOG_DIR } from "#platform/config";
 import { errMsg } from "#platform/error";
-import { appendJsonlEntry, readJsonFile } from "#platform/jsonl";
+import { readJsonFile } from "#platform/jsonl";
 import {
   formatMcpStatus,
   OPTIONAL_FORUM_MCP_SERVERS,
@@ -28,6 +27,7 @@ import {
   describePendingAskState,
   listPendingAsksForCaller,
 } from "#storage/session-asks";
+import { enqueueSessionInbox } from "#storage/session-inbox";
 import { connectStdio, mcpError, mcpOk } from "../mcp-helpers";
 import { forwardToPeer, peerSessionsForUser } from "./peer-forward";
 import {
@@ -50,7 +50,6 @@ import {
   setMcpConfig,
 } from "./topic-config";
 import {
-  buildInboxPath,
   getTopicsForUser,
   listSessionTargetsForUser,
   type QueryState,
@@ -525,7 +524,6 @@ if (!isReplyOnly) {
             clearPendingAsk({ userId, from: fromRef.key, to, requestId });
             return mcpError(`Error: "${to}" 세션의 토픽 ID를 찾을 수 없습니다.`);
           }
-          const inboxFile = buildInboxPath(targetTopicId);
           const entry = {
             type: "ask" as const,
             requestId,
@@ -538,7 +536,7 @@ if (!isReplyOnly) {
             fromDepth: currentDepth,
             timestamp: new Date().toISOString(),
           };
-          appendJsonlEntry(inboxFile, entry);
+          enqueueSessionInbox({ userId, topicId: targetTopicId, entry });
           process.stderr.write(
             `[session-comm] ask_session: ${fromRef.key} → ${to} requestId=${requestId}\n`,
           );
@@ -598,12 +596,14 @@ if (!isReplyOnly) {
           if (!targetTopicId) {
             return mcpError(`Error: "${to}" 세션의 토픽 ID를 찾을 수 없습니다.`);
           }
-          const inboxFile = buildInboxPath(targetTopicId);
-          mkdirSync(dirname(inboxFile), { recursive: true });
           // Send query abort signal via inbox
-          appendJsonlEntry(inboxFile, {
-            type: "abort",
-            timestamp: new Date().toISOString(),
+          enqueueSessionInbox({
+            userId,
+            topicId: targetTopicId,
+            entry: {
+              type: "abort",
+              timestamp: new Date().toISOString(),
+            },
           });
           process.stderr.write(`[session-comm] abort_session: ${currentTopic} → ${to}\n`);
         } catch (err) {
@@ -695,15 +695,19 @@ if (!isReplyOnly) {
       const fromRef = currentTopicRef();
       const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       try {
-        appendJsonlEntry(buildInboxPath(targetTopicId), {
-          type: "tell",
-          requestId,
-          from: fromRef.key,
-          fromTitle: fromRef.title,
-          ...(fromRef.topicId ? { fromTopicId: fromRef.topicId } : {}),
-          message,
-          depth: currentDepth + 1,
-          timestamp: new Date().toISOString(),
+        enqueueSessionInbox({
+          userId,
+          topicId: targetTopicId,
+          entry: {
+            type: "tell",
+            requestId,
+            from: fromRef.key,
+            fromTitle: fromRef.title,
+            ...(fromRef.topicId ? { fromTopicId: fromRef.topicId } : {}),
+            message,
+            depth: currentDepth + 1,
+            timestamp: new Date().toISOString(),
+          },
         });
       } catch (err: unknown) {
         const e = err instanceof Error ? err : new Error(String(err));

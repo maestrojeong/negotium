@@ -16,7 +16,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { db } from "@negotium/core";
+import { db, enqueueSessionInbox } from "@negotium/core";
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS otium_peer_inbox_requests (
@@ -133,8 +133,39 @@ export function claimPeerInboxRequest(args: {
   return { outcome: existing.payload_hash === args.payloadHash ? "replay" : "conflict" };
 }
 
-/** Undo a claim whose side effect (inbox append) failed, so the sender's
- *  retry can re-claim instead of being swallowed as a replay. */
+/**
+ * Atomically claim a network request and hand its payload to core's durable
+ * session inbox. The HTTP handler may acknowledge as soon as this commits.
+ */
+export function claimPeerInboxRequestWithDelivery(args: {
+  fromCellId: string;
+  requestId: string;
+  kind: PeerInboxKind;
+  topicId: string;
+  payloadHash: string;
+  userId: string;
+  entry: unknown;
+}): { outcome: PeerInboxClaimOutcome } {
+  return db
+    .transaction(() => {
+      const claim = claimPeerInboxRequest(args);
+      if (claim.outcome !== "claimed") return claim;
+      const queueId = createHash("sha256")
+        .update(`otium\0${args.fromCellId}\0${args.kind}\0${args.requestId}`)
+        .digest("hex");
+      const queued = enqueueSessionInbox({
+        id: `otium:${queueId}`,
+        userId: args.userId,
+        topicId: args.topicId,
+        entry: args.entry,
+      });
+      if (!queued.inserted) throw new Error(`peer inbox queue id collision: ${queued.id}`);
+      return claim;
+    })
+    .immediate();
+}
+
+/** Undo a standalone claim whose downstream side effect failed. */
 export function releasePeerInboxRequest(
   fromCellId: string,
   requestId: string,

@@ -8,11 +8,10 @@ import {
 } from "#mcp/session-comm/tell-permissions";
 import { createSessionTargetCatalog } from "#mcp/session-comm/topic-catalog";
 import { ACTIVE_QUERY_STALE_MS, MAX_TELL_DEPTH, USERS_LOG_DIR } from "#platform/config";
-import { appendJsonlEntry, readJsonFile } from "#platform/jsonl";
+import { readJsonFile } from "#platform/jsonl";
 import { OPTIONAL_FORUM_MCP_SERVERS, REQUIRED_FORUM_MCP_SERVERS } from "#platform/mcp-config";
 import { closeBrowserOwnerTabs } from "#platform/playwright/manager";
 import { deleteManagedBrowserProfile } from "#platform/playwright/profile-management";
-import { sessionInboxPath } from "#query/session-inbox-path";
 import { sanitizeId } from "#security/sanitize";
 import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
 import {
@@ -35,6 +34,7 @@ import {
   describePendingAskState,
   listPendingAsksForCaller,
 } from "#storage/session-asks";
+import { enqueueSessionInbox } from "#storage/session-inbox";
 import { isAgentKind, type QueryState } from "#types";
 
 const MAX_MESSAGE_LENGTH = 10_000;
@@ -320,15 +320,19 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
           clearAsk();
           return error(`Error: "${to}" has no topic id.`);
         }
-        appendJsonlEntry(sessionInboxPath(context.userId, targetTopicId), {
-          type: "ask",
-          requestId,
-          from: from.key,
-          fromTitle: from.title,
-          ...(from.topicId ? { fromTopicId: from.topicId } : {}),
-          message,
-          fromDepth: context.depth,
-          timestamp: new Date().toISOString(),
+        enqueueSessionInbox({
+          userId: context.userId,
+          topicId: targetTopicId,
+          entry: {
+            type: "ask",
+            requestId,
+            from: from.key,
+            fromTitle: from.title,
+            ...(from.topicId ? { fromTopicId: from.topicId } : {}),
+            message,
+            fromDepth: context.depth,
+            timestamp: new Date().toISOString(),
+          },
         });
       }
       return ok(`Ask sent to "${to}". request_id: ${requestId}`);
@@ -351,9 +355,13 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
       const targetTopicId = validation.target.topicId;
       if (!targetTopicId) return error(`Error: "${to}" has no topic id.`);
       if (targetTopicId === context.currentTopicId) return error("Error: cannot abort self.");
-      appendJsonlEntry(sessionInboxPath(context.userId, targetTopicId), {
-        type: "abort",
-        timestamp: new Date().toISOString(),
+      enqueueSessionInbox({
+        userId: context.userId,
+        topicId: targetTopicId,
+        entry: {
+          type: "abort",
+          timestamp: new Date().toISOString(),
+        },
       });
       return ok(`Abort sent to "${to}".`);
     },
@@ -392,15 +400,19 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
         return error("Error: subagent tell_session target is not permitted.");
       }
       const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      appendJsonlEntry(sessionInboxPath(context.userId, targetTopicId), {
-        type: "tell",
-        requestId,
-        from: from.key,
-        fromTitle: from.title,
-        ...(from.topicId ? { fromTopicId: from.topicId } : {}),
-        message,
-        depth: context.depth + 1,
-        timestamp: new Date().toISOString(),
+      enqueueSessionInbox({
+        userId: context.userId,
+        topicId: targetTopicId,
+        entry: {
+          type: "tell",
+          requestId,
+          from: from.key,
+          fromTitle: from.title,
+          ...(from.topicId ? { fromTopicId: from.topicId } : {}),
+          message,
+          depth: context.depth + 1,
+          timestamp: new Date().toISOString(),
+        },
       });
       return ok(`Message sent to "${to}". request_id: ${requestId}`);
     },

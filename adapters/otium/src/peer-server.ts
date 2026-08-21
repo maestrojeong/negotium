@@ -23,9 +23,9 @@
 import { statfsSync } from "node:fs";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import {
-  appendJsonlEntry,
   checkAgentModelAuth,
   DATA_DIR,
+  enqueueSessionInbox,
   flushSessionInbox,
   getRegistry,
   getTopicByNameForUser,
@@ -37,7 +37,6 @@ import {
   normalizeVaultKey,
   OPTIONAL_FORUM_MCP_SERVERS,
   SUPPORTED_AGENTS,
-  sessionInboxPath,
   type TopicDto,
   VAULT_DESCRIPTION_MAX_LENGTH,
   VAULT_VALUE_MAX_BYTES,
@@ -52,10 +51,9 @@ import { forwardGatewayRequest, OTIUM_GATEWAY_FORWARD_PREFIX } from "@/gateway-f
 import { MAX_PEER_MESSAGE_LENGTH, PEER_PROTOCOL_VERSION, type PeerSessionEntry } from "@/protocol";
 import { acceptRemoteAskReplyResult } from "@/session-bridge";
 import {
-  claimPeerInboxRequest,
+  claimPeerInboxRequestWithDelivery,
   type PeerInboxKind,
   peerInboxPayloadHash,
-  releasePeerInboxRequest,
 } from "@/store";
 import { surfaceScopeForCell, unscopedRoomsAddressable } from "@/workspace-scope";
 
@@ -232,9 +230,13 @@ async function handleAbort(req: Request): Promise<Response> {
   if (!topic || !peerAddressable(topic, peer)) {
     return jsonError(`shared topic "${toTopic}" not found on this node`, 404);
   }
-  appendJsonlEntry(sessionInboxPath(userId, topic.id), {
-    type: "abort",
-    timestamp: new Date().toISOString(),
+  enqueueSessionInbox({
+    userId,
+    topicId: topic.id,
+    entry: {
+      type: "abort",
+      timestamp: new Date().toISOString(),
+    },
   });
   void flushSessionInbox();
   logger.info({ fromNode: peer.verified.fromNodeName, toTopic }, "otium: peer abort accepted");
@@ -273,29 +275,26 @@ async function handleTell(req: Request): Promise<Response> {
     return jsonError(`shared topic "${toTopic}" not found on this node`, 404);
   }
 
+  const entry = {
+    type: "tell" as const,
+    requestId,
+    from: fromLabel,
+    fromTitle: fromLabel,
+    message,
+    depth,
+    timestamp: new Date().toISOString(),
+  };
   const claim = claimInboundPeerMessage({
     fromCellId: peer.verified.fromCellId,
     requestId,
     kind: "tell",
     topicId: topic.id,
     payload: { userId, toTopic, fromLabel, message, depth },
+    userId,
+    entry,
   });
   if (claim === "conflict") return jsonError("requestId already belongs to another tell", 409);
   if (claim === "replay") return Response.json({ ok: true, replayed: true });
-  try {
-    appendJsonlEntry(sessionInboxPath(userId, topic.id), {
-      type: "tell",
-      requestId,
-      from: fromLabel,
-      fromTitle: fromLabel,
-      message,
-      depth,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    releasePeerInboxRequest(peer.verified.fromCellId, requestId, "tell");
-    throw error;
-  }
   void flushSessionInbox();
   logger.info(
     { from: fromLabel, fromNode: peer.verified.fromNodeName, toTopic, requestId },
@@ -310,13 +309,17 @@ function claimInboundPeerMessage(args: {
   kind: PeerInboxKind;
   topicId: string;
   payload: unknown;
+  userId: string;
+  entry: unknown;
 }): "claimed" | "replay" | "conflict" {
-  return claimPeerInboxRequest({
+  return claimPeerInboxRequestWithDelivery({
     fromCellId: args.fromCellId,
     requestId: args.requestId,
     kind: args.kind,
     topicId: args.topicId,
     payloadHash: peerInboxPayloadHash(args.payload),
+    userId: args.userId,
+    entry: args.entry,
   }).outcome;
 }
 
@@ -396,36 +399,33 @@ async function handleAsk(req: Request): Promise<Response> {
   }
   if (!topic.agent) return jsonError(`topic "${toTopic}" has no AI invited`, 409);
 
+  const entry = {
+    type: "ask" as const,
+    requestId,
+    from: fromLabel,
+    fromTitle: fromLabel,
+    message,
+    fromDepth,
+    timestamp: new Date().toISOString(),
+    remoteReply: {
+      nodeName: peer.verified.fromNodeName ?? "",
+      nodeCellId: peer.verified.fromCellId,
+      topicId: replyTopicId,
+      userId,
+      requestId,
+    },
+  };
   const claim = claimInboundPeerMessage({
     fromCellId: peer.verified.fromCellId,
     requestId,
     kind: "ask",
     topicId: topic.id,
     payload: { userId, toTopic, fromLabel, message, fromDepth, replyTopicId },
+    userId,
+    entry,
   });
   if (claim === "conflict") return jsonError("requestId already belongs to another ask", 409);
   if (claim === "replay") return Response.json({ ok: true, replayed: true });
-  try {
-    appendJsonlEntry(sessionInboxPath(userId, topic.id), {
-      type: "ask",
-      requestId,
-      from: fromLabel,
-      fromTitle: fromLabel,
-      message,
-      fromDepth,
-      timestamp: new Date().toISOString(),
-      remoteReply: {
-        nodeName: peer.verified.fromNodeName ?? "",
-        nodeCellId: peer.verified.fromCellId,
-        topicId: replyTopicId,
-        userId,
-        requestId,
-      },
-    });
-  } catch (error) {
-    releasePeerInboxRequest(peer.verified.fromCellId, requestId, "ask");
-    throw error;
-  }
   void flushSessionInbox();
   return Response.json({ ok: true });
 }

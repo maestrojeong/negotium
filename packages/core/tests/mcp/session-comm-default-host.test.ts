@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import type { SessionCommContext } from "#mcp/session-comm/context";
 import { createDefaultSessionCommMcpHost } from "#mcp/session-comm/default-host";
 import { sessionInboxPath } from "#query/session-inbox-path";
 import { deleteTopic, upsertTopic } from "#storage/api-topics";
+import { db } from "#storage/forum-db";
 import { listPendingAsksForCaller } from "#storage/session-asks";
 import type { TopicDto } from "#types/api";
 
@@ -64,10 +65,12 @@ describe("default session-comm MCP host", () => {
     });
 
     expect("isError" in result ? result.isError : false).not.toBe(true);
-    const entries = readFileSync(inboxPath, "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
+    const entries = db
+      .query<{ payload: string }, [string]>(
+        "SELECT payload FROM session_inbox WHERE topic_id = ? ORDER BY sequence",
+      )
+      .all(target.id)
+      .map((row) => JSON.parse(row.payload));
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
       type: "tell",

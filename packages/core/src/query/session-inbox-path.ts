@@ -5,7 +5,7 @@ const TOPIC_ID_FILE_PREFIX = "topic-id-";
 const JSONL_SUFFIX = ".jsonl";
 const SCHEDULE_SUFFIX = ".schedule";
 
-/** Build a flat inbox path from the canonical topic id, never its title. */
+/** Legacy rolling-upgrade inbox path; new writers use the SQLite queue. */
 export function sessionInboxPath(userId: string, topicId: string): string {
   const key = Buffer.from(topicId, "utf8").toString("base64url");
   return join(SESSION_INBOX_DIR, userId, `${TOPIC_ID_FILE_PREFIX}${key}${JSONL_SUFFIX}`);

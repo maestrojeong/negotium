@@ -31,14 +31,13 @@ import {
 import { join } from "node:path";
 import { debouncedFlush, FALLBACK_INTERVAL_MS, watchDir } from "#outbox/utils";
 import { BASHRS_SPILL_ROOT } from "#platform/config";
-import { appendJsonlEntry } from "#platform/jsonl";
 import { logger } from "#platform/logger";
-import { sessionInboxPath } from "#query/session-inbox-path";
 import {
   acquireRuntimeProcessLease,
   PROCESS_LEASE_HEARTBEAT_MS,
   type RuntimeProcessLeaseHandle,
 } from "#storage/runtime-process-leases";
+import { enqueueSessionInbox } from "#storage/session-inbox";
 
 /**
  * Where a finished background job's turn is delivered.
@@ -63,13 +62,18 @@ export interface BashrsCompletion {
 export type BashrsCompletionSink = (completion: BashrsCompletion) => void;
 
 const defaultSink: BashrsCompletionSink = ({ userId, topicId, bashId, message }) => {
-  appendJsonlEntry(sessionInboxPath(userId, topicId), {
-    type: "tell",
-    from: "__bg_bash__",
-    message,
-    depth: 0,
-    requestId: bashId,
-    timestamp: new Date().toISOString(),
+  enqueueSessionInbox({
+    userId,
+    topicId,
+    id: `bashrs:${bashId}`,
+    entry: {
+      type: "tell",
+      from: "__bg_bash__",
+      message,
+      depth: 0,
+      requestId: bashId,
+      timestamp: new Date().toISOString(),
+    },
   });
 };
 

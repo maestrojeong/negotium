@@ -1,10 +1,11 @@
 /**
- * Session-inbox consumer — reads MCP-written JSONL inbox files and dispatches
- * inter-session messages (ask/tell/abort) in the runtime process.
+ * Session-inbox consumer — claims SQLite-backed inter-session messages and
+ * dispatches ask/tell/abort in the runtime process. Legacy JSONL files remain
+ * readable during rolling upgrades.
  *
  * Architecture:
- *   MCP tools (session-comm server.ts) → appendJsonlEntry → inbox JSONL
- *   Runtime host (this module)         → drainOutboxFile  → process entries
+ *   MCP tools / adapters → enqueueSessionInbox → shared WAL SQLite
+ *   Runtime host         → claimSessionInboxBatch → process entries
  *
  * Both converge on `triggerTopicAiTurn` from the turn runner.
  *
@@ -20,13 +21,12 @@ import type { ForkHandle } from "#agents/fork";
 import { WsHub } from "#bus";
 import { deliverPeerReply, type RemoteReplyRoute } from "#mcp/session-comm/peer-forward";
 import { deleteProcessingFile, drainOutboxFile, parseOutboxLine } from "#outbox/file-ops";
-import { debouncedFlush, FALLBACK_INTERVAL_MS, watchDir } from "#outbox/utils";
+import { debouncedFlush, watchDir } from "#outbox/utils";
 import { resolveTopicWorkspaceDir, SESSION_INBOX_DIR } from "#platform/config";
 import { FROM_AUTO_CONTINUE, FROM_SELF_SCHEDULE } from "#platform/constants";
 import { appendJsonlEntry, readJsonlLines } from "#platform/jsonl";
 import { logger } from "#platform/logger";
 import {
-  sessionInboxPath,
   topicIdFromScheduledSessionInboxFileName,
   topicIdFromSessionInboxFileName,
 } from "#query/session-inbox-path";
@@ -48,6 +48,14 @@ import {
   releaseSelfScheduleClaim,
 } from "#storage/self-schedules";
 import { clearPendingAsk } from "#storage/session-asks";
+import {
+  claimSessionInboxBatch,
+  completeSessionInboxBatch,
+  enqueueSessionInbox,
+  listPendingSessionInboxTopics,
+  recoverSessionInboxClaims,
+  releaseSessionInboxBatch,
+} from "#storage/session-inbox";
 import type { AgentKind } from "#types";
 import type { TopicSurface } from "#types/api";
 
@@ -326,13 +334,24 @@ const topicWorkerBusy = new Set<string>();
  * Scan all user inbox dirs and kick a worker per topic. Returns immediately
  * — workers run in the background.
  *
- * Triggered by fs.watch (200ms debounce) + {@link FALLBACK_INTERVAL_MS} fallback poll.
+ * Triggered by SQLite polling plus fs.watch for rolling-upgrade JSONL files.
  */
 export async function flushSessionInbox() {
   await dispatchDueSelfSchedules();
   // Upgrade compatibility: schedules written by versions before the SQLite
   // manager remain consumable from their legacy `.schedule` sidecars.
   sweepScheduledSessionInbox();
+
+  for (const pending of listPendingSessionInboxTopics()) {
+    const topicKey = `${pending.userId}/id:${pending.topicId}`;
+    if (topicWorkerBusy.has(topicKey)) continue;
+    topicWorkerBusy.add(topicKey);
+    processQueuedTopicInbox({ ...pending, topicKey })
+      .catch((e) => logger.error({ err: e, topicKey }, "session-inbox: SQLite worker crashed"))
+      .finally(() => topicWorkerBusy.delete(topicKey));
+  }
+
+  // Continue draining JSONL written by an older process during rolling upgrades.
   let userDirs: string[];
   try {
     userDirs = readdirSync(SESSION_INBOX_DIR);
@@ -369,7 +388,7 @@ export async function flushSessionInbox() {
         if (topicWorkerBusy.has(topicKey)) continue;
 
         topicWorkerBusy.add(topicKey);
-        processTopicInbox({ topicKey, filePath: entryPath, userId: uid, topicId, topicName })
+        processLegacyTopicInbox({ topicKey, filePath: entryPath, userId: uid, topicId, topicName })
           .catch((e) => logger.error({ err: e, topicKey }, "session-inbox: topic worker crashed"))
           .finally(() => topicWorkerBusy.delete(topicKey));
       }
@@ -533,7 +552,12 @@ export function sweepScheduledSessionInbox(nowMs = Date.now()): void {
         }
         const { deliverAt: _deliverAt, ...liveEntry } = entry;
         try {
-          appendJsonlEntry(sessionInboxPath(userId, topicId), liveEntry);
+          enqueueSessionInbox({
+            userId,
+            topicId,
+            id: `scheduled:${entry.requestId}`,
+            entry: liveEntry,
+          });
         } catch (err) {
           failure = err;
           unfinished.push(entry);
@@ -591,124 +615,164 @@ export function sweepScheduledSessionInbox(nowMs = Date.now()): void {
 
 // ── Topic worker ────────────────────────────────────────────────────
 
-async function processTopicInbox(args: {
+async function processInboxLines(args: {
+  topicKey: string;
+  sourcePath: string;
+  userId: string;
+  topicId: string | null;
+  topicName: string;
+  lines: string[];
+}) {
+  // Lazy-import to avoid circular deps at module-load time.
+  const { getTopic, getTopicByNameForUser } = await import("#storage/api-topics");
+  const { topicKey, sourcePath, userId, topicId, topicName, lines } = args;
+  const scope = pendingAskScope(userId);
+  const seenRequestIds = new Set<string>();
+
+  for (const line of lines) {
+    const raw = parseOutboxLine<Record<string, unknown>>(line, "session-inbox");
+    if (!raw) continue;
+
+    // Normalize: Otium legacy compat (command/type-less → tell/ask).
+    let entry: SessionInboxEntry;
+    if (raw.type === "abort") {
+      entry = raw as SessionInboxEntry;
+    } else if (raw.command || raw.type === "command" || raw.type === "tell") {
+      entry = { ...raw, type: "tell" } as SessionInboxEntry;
+    } else {
+      entry = { ...raw, type: "ask" } as SessionInboxEntry;
+    }
+
+    if (!topicId && !topicName) {
+      logger.error({ sourcePath, topicKey }, "session-inbox: could not extract topic name");
+      continue;
+    }
+
+    // ── abort ──────────────────────────────────────────────────
+    if (entry.type === "abort") {
+      await handleAbortEntry(userId, topicName, topicId, entry.timestamp);
+      continue;
+    }
+
+    // ── validate from/message ──────────────────────────────────
+    if (!entry.from || !entry.message) {
+      logger.error({ entry }, "session-inbox: missing from/message, dropping");
+      // MCP writer clears its own pending ask on write failure;
+      // the inbox consumer only drops the entry.
+      if (entry.type === "ask") {
+        clearPendingAskForEntry(scope, entry, topicName, "invalid-entry");
+        logger.warn({ from: entry.from, to: topicName }, "session-inbox: dropping invalid ask");
+        await notifyAskDrop(scope, entry, topicName, "(error: invalid ask entry)");
+      }
+      continue;
+    }
+
+    if (entry.requestId) {
+      if (seenRequestIds.has(entry.requestId)) {
+        logger.info(
+          { topicKey, topicName, requestId: entry.requestId, from: entry.from },
+          "session-inbox: duplicate requestId in drained batch, skipping",
+        );
+        continue;
+      }
+      seenRequestIds.add(entry.requestId);
+    }
+
+    // Look up the target topic.
+    //
+    // The by-NAME fallback must stay inside the caller's surface (S-7).
+    // Names are only unique per surface since S-3, so an unscoped lookup can
+    // resolve `General` on `terminal` for a message sent from `telegram`.
+    // The session-target catalog already refuses to *offer* a cross-surface
+    // target, so this is the second line of defence for entries that name a
+    // topic directly — including ones written before the catalog was scoped.
+    // With no `fromTopicId` (legacy entries) the caller's surface is unknown
+    // and the lookup stays as it was rather than dropping the message; a
+    // `fromTopicId` that no longer resolves denies the fallback instead.
+    const byId = topicId ? getTopic(topicId) : null;
+    const nameLookupOpts = scopeToLookupOpts(callerScope(entry, getTopic));
+    const topic = topicId
+      ? byId?.participants.some((participant) => participant.userId === userId)
+        ? byId
+        : null
+      : nameLookupOpts && getTopicByNameForUser(topicName, userId, nameLookupOpts);
+    if (!topic) {
+      logger.warn({ topicName, from: entry.from }, "session-inbox: topic not found, dropping");
+      if (entry.type === "ask") {
+        clearPendingAskForEntry(scope, entry, topicName, "target-topic-not-found");
+        await notifyAskDrop(
+          scope,
+          entry,
+          topicName,
+          `(error: target topic "${topicName}" was not found)`,
+        );
+      }
+      continue;
+    }
+
+    // The AI-enabled check: topics without agent can't run AI turns.
+    const isAiEnabled = Boolean(topic.agent?.trim());
+
+    // ── tell ───────────────────────────────────────────────────
+    if (entry.type === "tell") {
+      await handleTellEntry(topic, topic.title, entry, isAiEnabled, scope);
+      continue;
+    }
+
+    // ── ask ────────────────────────────────────────────────────
+    if (entry.type === "ask") {
+      await handleAskEntry(topic, topic.title, entry, isAiEnabled, scope);
+    }
+  }
+}
+
+async function processLegacyTopicInbox(args: {
   topicKey: string;
   filePath: string;
   userId: string;
   topicId: string | null;
   topicName: string;
 }) {
-  // Lazy-import to avoid circular deps at module-load time.
-  const { getTopic, getTopicByNameForUser } = await import("#storage/api-topics");
-  const { topicKey, filePath, userId, topicId, topicName } = args;
-  const scope = pendingAskScope(userId);
-
   while (true) {
-    const drained = drainOutboxFile(filePath, "session-inbox");
+    const drained = drainOutboxFile(args.filePath, "session-inbox");
     if (!drained) return;
-    const { lines, processingPath } = drained;
-    const seenRequestIds = new Set<string>();
+    await processInboxLines({
+      ...args,
+      sourcePath: args.filePath,
+      lines: drained.lines,
+    });
+    // At-least-once compatibility: a crash leaves the file claim for replay.
+    deleteProcessingFile(drained.processingPath, "session-inbox", drained.lines.length);
+  }
+}
 
-    for (const line of lines) {
-      const raw = parseOutboxLine<Record<string, unknown>>(line, "session-inbox");
-      if (!raw) continue;
-
-      // Normalize: Otium legacy compat (command/type-less → tell/ask).
-      let entry: SessionInboxEntry;
-      if (raw.type === "abort") {
-        entry = raw as SessionInboxEntry;
-      } else if (raw.command || raw.type === "command" || raw.type === "tell") {
-        entry = { ...raw, type: "tell" } as SessionInboxEntry;
-      } else {
-        entry = { ...raw, type: "ask" } as SessionInboxEntry;
-      }
-
-      if (!topicId && !topicName) {
-        logger.error({ filePath, topicKey }, "session-inbox: could not extract topic name");
-        continue;
-      }
-
-      // ── abort ──────────────────────────────────────────────────
-      if (entry.type === "abort") {
-        await handleAbortEntry(userId, topicName, topicId, entry.timestamp);
-        continue;
-      }
-
-      // ── validate from/message ──────────────────────────────────
-      if (!entry.from || !entry.message) {
-        logger.error({ entry }, "session-inbox: missing from/message, dropping");
-        // MCP writer clears its own pending ask on write failure;
-        // the inbox consumer only drops the entry.
-        if (entry.type === "ask") {
-          clearPendingAskForEntry(scope, entry, topicName, "invalid-entry");
-          logger.warn({ from: entry.from, to: topicName }, "session-inbox: dropping invalid ask");
-          await notifyAskDrop(scope, entry, topicName, "(error: invalid ask entry)");
-        }
-        continue;
-      }
-
-      if (entry.requestId) {
-        if (seenRequestIds.has(entry.requestId)) {
-          logger.info(
-            { topicKey, topicName, requestId: entry.requestId, from: entry.from },
-            "session-inbox: duplicate requestId in drained batch, skipping",
-          );
-          continue;
-        }
-        seenRequestIds.add(entry.requestId);
-      }
-
-      // Look up the target topic.
-      //
-      // The by-NAME fallback must stay inside the caller's surface (S-7).
-      // Names are only unique per surface since S-3, so an unscoped lookup can
-      // resolve `General` on `terminal` for a message sent from `telegram`.
-      // The session-target catalog already refuses to *offer* a cross-surface
-      // target, so this is the second line of defence for entries that name a
-      // topic directly — including ones written before the catalog was scoped.
-      // With no `fromTopicId` (legacy entries) the caller's surface is unknown
-      // and the lookup stays as it was rather than dropping the message; a
-      // `fromTopicId` that no longer resolves denies the fallback instead.
-      const byId = topicId ? getTopic(topicId) : null;
-      const nameLookupOpts = scopeToLookupOpts(callerScope(entry, getTopic));
-      const topic = topicId
-        ? byId?.participants.some((participant) => participant.userId === userId)
-          ? byId
-          : null
-        : nameLookupOpts && getTopicByNameForUser(topicName, userId, nameLookupOpts);
-      if (!topic) {
-        logger.warn({ topicName, from: entry.from }, "session-inbox: topic not found, dropping");
-        if (entry.type === "ask") {
-          clearPendingAskForEntry(scope, entry, topicName, "target-topic-not-found");
-          await notifyAskDrop(
-            scope,
-            entry,
-            topicName,
-            `(error: target topic "${topicName}" was not found)`,
-          );
-        }
-        continue;
-      }
-
-      // The AI-enabled check: topics without agent can't run AI turns.
-      const isAiEnabled = Boolean(topic.agent?.trim());
-
-      // ── tell ───────────────────────────────────────────────────
-      if (entry.type === "tell") {
-        await handleTellEntry(topic, topic.title, entry, isAiEnabled, scope);
-        continue;
-      }
-
-      // ── ask ────────────────────────────────────────────────────
-      if (entry.type === "ask") {
-        await handleAskEntry(topic, topic.title, entry, isAiEnabled, scope);
-      }
+async function processQueuedTopicInbox(args: {
+  topicKey: string;
+  userId: string;
+  topicId: string;
+}): Promise<void> {
+  const ownerId = `${RUNTIME_INSTANCE_ID}:session-inbox:${randomUUID()}`;
+  while (true) {
+    const rows = claimSessionInboxBatch({ ...args, ownerId });
+    if (rows.length === 0) return;
+    try {
+      await processInboxLines({
+        ...args,
+        topicName: "",
+        sourcePath: "sqlite:session_inbox",
+        lines: rows.map((row) => row.payload),
+      });
+      completeSessionInboxBatch(
+        rows.map((row) => row.id),
+        ownerId,
+      );
+    } catch (error) {
+      releaseSessionInboxBatch(
+        rows.map((row) => row.id),
+        ownerId,
+      );
+      throw error;
     }
-
-    // At-least-once: drop the claim only after the whole batch was handled.
-    // A crash mid-batch leaves the `.processing` claim on disk; the next
-    // drain's leftover-merge redelivers it.
-    deleteProcessingFile(processingPath, "session-inbox", lines.length);
   }
 }
 
@@ -1094,6 +1158,7 @@ let workerLease: RuntimeProcessLeaseHandle | null = null;
 let workerStarted = false;
 
 const SESSION_INBOX_PROCESS_ROLE = "worker:session-inbox";
+const SESSION_INBOX_POLL_MS = 100;
 
 function stopLeaderResources(): void {
   if (watcher) {
@@ -1122,9 +1187,13 @@ function tryBecomeSessionInboxLeader(): void {
   if (!acquired) return;
 
   workerLease = acquired;
+  const recovered = recoverSessionInboxClaims();
+  if (recovered > 0) {
+    logger.warn({ recovered }, "session-inbox: recovered interrupted SQLite claims");
+  }
   debouncedTrigger = debouncedFlush(flushSessionInbox, "session-inbox", 200);
   watcher = watchDir(SESSION_INBOX_DIR, () => debouncedTrigger?.());
-  fallbackTimer = setInterval(() => debouncedTrigger?.(), FALLBACK_INTERVAL_MS);
+  fallbackTimer = setInterval(() => debouncedTrigger?.(), SESSION_INBOX_POLL_MS);
   fallbackTimer.unref?.();
 
   logger.info(

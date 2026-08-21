@@ -349,6 +349,12 @@ export {
   waitForRuntimeProcessLease,
 } from "#storage/runtime-process-leases";
 export { clearPendingAsk } from "#storage/session-asks";
+export {
+  deleteSessionInboxForTopic,
+  enqueueSessionInbox,
+  type SessionInboxRow,
+  type SessionInboxTopic,
+} from "#storage/session-inbox";
 export type { VaultEntry, VaultEntryWithValue } from "#storage/vault";
 export {
   normalizeVaultKey,

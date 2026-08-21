@@ -3,6 +3,7 @@ import { basename, join } from "node:path";
 import { SESSION_INBOX_DIR } from "#platform/config";
 import { logger } from "#platform/logger";
 import { scheduledSessionInboxPath, sessionInboxPath } from "#query/session-inbox-path";
+import { deleteSessionInboxForTopic } from "#storage/session-inbox";
 
 /**
  * Delete pending, scheduled, and crash-claimed inbox files for a topic.
@@ -29,7 +30,7 @@ export function cleanupSessionInboxFiles(
     }
   }
 
-  let deleted = 0;
+  let deleted = deleteSessionInboxForTopic(topicId);
   for (const path of candidates) {
     try {
       unlinkSync(path);

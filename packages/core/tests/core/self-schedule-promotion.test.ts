@@ -4,13 +4,13 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { FROM_SELF_SCHEDULE } from "#platform/constants";
 import { readJsonlLines } from "#platform/jsonl";
-import { scheduledSessionInboxPath, sessionInboxPath } from "#query/session-inbox-path";
+import { scheduledSessionInboxPath } from "#query/session-inbox-path";
 import { sweepScheduledSessionInbox } from "#runtime/inbox";
+import { db } from "#storage/forum-db";
 
 const userId = `self-sched-${randomUUID()}`;
 const topicId = randomUUID();
 const schedulePath = scheduledSessionInboxPath(userId, topicId);
-const inboxPath = sessionInboxPath(userId, topicId);
 const processingPath = `${schedulePath}.processing`;
 
 function entry(message: string, deliverAt: string) {
@@ -32,6 +32,16 @@ function messages(path: string): string[] {
     .sort();
 }
 
+function queuedMessages(): string[] {
+  return db
+    .query<{ payload: string }, [string]>(
+      "SELECT payload FROM session_inbox WHERE topic_id = ? ORDER BY sequence",
+    )
+    .all(topicId)
+    .map((row) => (JSON.parse(row.payload) as { message: string }).message)
+    .sort();
+}
+
 function seed(entries: ReturnType<typeof entry>[]): void {
   mkdirSync(dirname(schedulePath), { recursive: true });
   writeFileSync(schedulePath, `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`);
@@ -42,6 +52,7 @@ const future = () => new Date(Date.now() + 3_600_000).toISOString();
 
 afterEach(() => {
   rmSync(dirname(schedulePath), { recursive: true, force: true });
+  db.run("DELETE FROM session_inbox WHERE topic_id = ?", [topicId]);
 });
 
 test("a clean promotion delivers each due entry once and keeps the future one", () => {
@@ -49,13 +60,13 @@ test("a clean promotion delivers each due entry once and keeps the future one", 
 
   sweepScheduledSessionInbox(Date.now());
 
-  expect(messages(inboxPath)).toEqual(["due-A", "due-B"]);
+  expect(queuedMessages()).toEqual(["due-A", "due-B"]);
   expect(messages(schedulePath)).toEqual(["not-yet"]);
   expect(existsSync(processingPath)).toBeFalse();
 
   // Recovery sweeps must be idempotent.
   sweepScheduledSessionInbox(Date.now());
-  expect(messages(inboxPath)).toEqual(["due-A", "due-B"]);
+  expect(queuedMessages()).toEqual(["due-A", "due-B"]);
 });
 
 test("an interrupted promotion retains only what it had not delivered", async () => {
@@ -99,7 +110,7 @@ test("an interrupted promotion retains only what it had not delivered", async ()
   }
 
   // The due entries went out.
-  expect(messages(inboxPath)).toEqual(["due-A", "due-B"]);
+  expect(queuedMessages()).toEqual(["due-A", "due-B"]);
 
   // The claim survives for recovery, but holding the WHOLE batch would make the
   // next sweep re-deliver due-A and due-B. Only the undelivered entry remains.
@@ -108,6 +119,6 @@ test("an interrupted promotion retains only what it had not delivered", async ()
 
   // Recovery therefore adds nothing to the inbox and reschedules the future one.
   sweepScheduledSessionInbox(Date.now());
-  expect(messages(inboxPath)).toEqual(["due-A", "due-B"]);
+  expect(queuedMessages()).toEqual(["due-A", "due-B"]);
   expect(messages(schedulePath)).toEqual(["not-yet"]);
 }, 30_000);

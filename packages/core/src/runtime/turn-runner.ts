@@ -75,7 +75,7 @@ import {
 } from "#runtime/user-turn-envelope";
 import { getActiveVisualForPrompt } from "#runtime/visual-store";
 import { activeVisualHtmlForPrompt } from "#runtime/visuals";
-import { appendApiMessage } from "#storage/api-messages";
+import { appendApiMessage, getApiMessage } from "#storage/api-messages";
 import { resolveTopicBrief } from "#storage/api-topic-brief";
 import {
   clearTopicSessionId,
@@ -1908,7 +1908,7 @@ export function triggerTopicAiTurn(
     // running user turn, but participants should see the inject arrive now.
     const now = new Date().toISOString();
     const injectMsg: MessageDto = {
-      id: `tell-${randomUUID()}`,
+      id: opts?.requestId ? `tell-${opts.requestId}` : `tell-${randomUUID()}`,
       topicId,
       authorId: opts?.injectAuthorId ?? userId,
       sourceAdapter: opts?.injectSourceAdapter,
@@ -1920,8 +1920,14 @@ export function triggerTopicAiTurn(
       model: execution.model,
       createdAt: now,
     };
-    appendApiMessage(injectMsg);
-    WsHub.get().broadcastMessage(topicId, injectMsg);
+    try {
+      appendApiMessage(injectMsg);
+      WsHub.get().broadcastMessage(topicId, injectMsg);
+    } catch (error) {
+      // Session-inbox rows are replayed after an interrupted worker. A stable
+      // request-derived id makes the visible handoff converge on one message.
+      if (!opts?.requestId || !getApiMessage(topicId, injectMsg.id)) throw error;
+    }
   }
 
   // Dispatch (or defer) the AI turn. origin != "user" → never preempts a
