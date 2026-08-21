@@ -28,6 +28,16 @@ function resolveAgentEnv(envKey: string, fallback: AgentKind, legacyEnvKey?: str
 
 const HOME = homedir();
 
+function resolveStateDir(): string {
+  const configured = envText("NEGOTIUM_STATE_DIR");
+  if (process.env.NODE_ENV === "test" && !configured) {
+    throw new Error(
+      "NEGOTIUM_STATE_DIR must be set before importing #platform/config in test processes",
+    );
+  }
+  return configured ? resolve(configured) : resolve(HOME, ".negotium");
+}
+
 // new URL("../..", import.meta.url) causes webpack to treat "../.." as a module import.
 // Split into fileURLToPath → dirname → resolve to avoid that.
 function resolveProjectRoot(): string {
@@ -53,8 +63,7 @@ function resolveDependencyBin(name: string): string {
 
 // Each machine is one negotium node; all node state lives in one dotdir.
 // NEGOTIUM_STATE_DIR overrides (useful for tests and multi-node-on-one-box).
-const STATE_DIR_ENV = envText("NEGOTIUM_STATE_DIR");
-export const STATE_DIR = STATE_DIR_ENV ? resolve(STATE_DIR_ENV) : resolve(HOME, ".negotium");
+export const STATE_DIR = resolveStateDir();
 
 function resolveLocalStateDir(envKey: string, stateName: string): string {
   const envValue = envText(envKey);

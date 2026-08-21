@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
 import {
   BINARIES_DIR,
   BROWSER_DIR,
@@ -16,6 +16,20 @@ import {
 } from "#platform/config";
 
 describe("0.2 state layout", () => {
+  test("test processes never resolve state into the live Negotium directory", () => {
+    const liveStateDir = resolve(homedir(), ".negotium");
+    const stateRelativeToLive = relative(liveStateDir, STATE_DIR);
+
+    expect(process.env.NODE_ENV).toBe("test");
+    expect(process.env.NEGOTIUM_STATE_DIR).toBeDefined();
+    expect(stateRelativeToLive).not.toBe("");
+    expect(stateRelativeToLive.startsWith("..")).toBe(true);
+    expect(dirname(WORKSPACE_DIR)).toBe(STATE_DIR);
+    expect(relative(liveStateDir, WORKSPACE_DIR).startsWith("..")).toBe(true);
+    expect(relative(liveStateDir, BROWSER_DIR).startsWith("..")).toBe(true);
+    expect(relative(liveStateDir, RUN_DIR).startsWith("..")).toBe(true);
+  });
+
   test("resolves the browser, binaries, secrets, uploads, and vault roots", () => {
     expect(BROWSER_DIR).toBe(join(STATE_DIR, "browser"));
     expect(BROWSER_PROFILES_DIR).toBe(join(STATE_DIR, "browser", "profiles"));
@@ -59,5 +73,21 @@ describe("0.2 state layout", () => {
     } finally {
       rmSync(stateDir, { recursive: true, force: true });
     }
+  });
+
+  test("rejects a test process without an isolated state directory", () => {
+    const source = resolve(import.meta.dir, "../../src/platform/config.ts");
+    const child = Bun.spawnSync({
+      cmd: [process.execPath, "-e", `await import(${JSON.stringify(source)})`],
+      env: {
+        ...process.env,
+        NODE_ENV: "test",
+        NEGOTIUM_STATE_DIR: "",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.exitCode).not.toBe(0);
+    expect(new TextDecoder().decode(child.stderr)).toContain("NEGOTIUM_STATE_DIR must be set");
   });
 });

@@ -32,6 +32,7 @@ describe("daemon import boundaries", () => {
         ].join(";"),
       ],
       cwd: root,
+      env: process.env,
       stdout: "pipe",
       stderr: "pipe",
     });

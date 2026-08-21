@@ -56,3 +56,5 @@ process.env.NEGOTIUM_DATA_DIR = join(testRoot, "data");
 process.env.NEGOTIUM_LOG_DIR = join(testRoot, "logs");
 // Isolate `run/` so tests don't read/write the host's IPC queues.
 process.env.NEGOTIUM_RUN_DIR = join(testRoot, "run");
+process.env.NEGOTIUM_WORKSPACE_DIR = join(testRoot, "workspace");
+process.env.NEGOTIUM_BROWSER_DIR = join(testRoot, "browser");
