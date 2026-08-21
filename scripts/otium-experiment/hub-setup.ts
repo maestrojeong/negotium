@@ -23,6 +23,13 @@
  *   EXPERIMENT_DIR   (default: /tmp/otium-experiment)
  *   ADMIN_EMAIL      (default: yeonwoo.jeong@bluehole.net)
  *   CENTRAL_PORT / HUB_PORT / WORKER_PORT (default: 4600 / 4000 / 7777)
+ *   NODE_PORT        (default: 6479) — the negotium canonical Node's own
+ *     control port (NEGOTIUM_NODE_PORT), distinct from the sidecar's
+ *     WORKER_PORT. Defaults away from negotium's real default (6370) so this
+ *     experiment does not collide with a Node already running for other
+ *     purposes on the same machine. Needed by `enable-gateway.ts` (Runtime
+ *     Gateway, D-1/D-2 in docs/OTIUM-NODE-ARCHITECTURE.md) — the sidecar port
+ *     only carries the legacy peer/ready routes, not the Gateway contract.
  */
 
 import { randomBytes } from "node:crypto";
@@ -36,6 +43,7 @@ const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "yeonwoo.jeong@bluehole.net";
 const CENTRAL_PORT = Number(process.env.CENTRAL_PORT ?? 4600);
 const HUB_PORT = Number(process.env.HUB_PORT ?? 4000);
 const WORKER_PORT = Number(process.env.WORKER_PORT ?? 7777);
+const NODE_PORT = Number(process.env.NODE_PORT ?? 6479);
 
 const CENTRAL_URL = `http://127.0.0.1:${CENTRAL_PORT}`;
 const HUB_URL = `http://127.0.0.1:${HUB_PORT}`;
@@ -210,27 +218,32 @@ console.log(`  hub cell ${hubCell.cell.id} assigned as primary`);
 
 console.log(`[5/7] booting hub runtime-api on :${HUB_PORT}`);
 const adminKey = `exp-admin-${randomBytes(8).toString("hex")}`;
+// Captured (not just passed inline) so `enable-gateway.ts` can restart this
+// exact process later with `OTIUM_NEGOTIUM_GATEWAY_*` added — it cannot
+// reconstruct these from its own env, and re-deriving them independently
+// would drift the moment one of these values changes here.
+const hubEnv: Record<string, string> = {
+  API_PORT: String(HUB_PORT),
+  HOSTNAME: "127.0.0.1",
+  CENTRAL_API_URL: CENTRAL_URL,
+  RUNTIME_CELL_ID: hubCell.cell.id,
+  RUNTIME_CELL_SECRET: hubCell.secret,
+  OTIUM_MULTI_NODE: "1",
+  // Keep local access-code login working in hosted mode so run-e2e can
+  // create a hub user with ADMIN_KEY instead of the central handoff flow.
+  OTIUM_ALLOW_LOCAL_AUTH_IN_HOSTED: "1",
+  JWT_SECRET: "dev-anything",
+  ADMIN_KEY: adminKey,
+  OTIUM_WORKSPACE_DIR: join(EXPERIMENT_DIR, "hub-state/workspace"),
+  BOT_DATA_DIR: join(EXPERIMENT_DIR, "hub-state/data"),
+  BOT_RUN_DIR: join(EXPERIMENT_DIR, "hub-state/run"),
+  NODE_ENV: "development",
+};
 const hubPid = spawnDetached({
   label: "hub-runtime-api",
   cmd: ["bun", "src/api/server.ts"],
   cwd: join(OTIUM_COPY_DIR, "apps/runtime-api"),
-  env: {
-    API_PORT: String(HUB_PORT),
-    HOSTNAME: "127.0.0.1",
-    CENTRAL_API_URL: CENTRAL_URL,
-    RUNTIME_CELL_ID: hubCell.cell.id,
-    RUNTIME_CELL_SECRET: hubCell.secret,
-    OTIUM_MULTI_NODE: "1",
-    // Keep local access-code login working in hosted mode so run-e2e can
-    // create a hub user with ADMIN_KEY instead of the central handoff flow.
-    OTIUM_ALLOW_LOCAL_AUTH_IN_HOSTED: "1",
-    JWT_SECRET: "dev-anything",
-    ADMIN_KEY: adminKey,
-    OTIUM_WORKSPACE_DIR: join(EXPERIMENT_DIR, "hub-state/workspace"),
-    BOT_DATA_DIR: join(EXPERIMENT_DIR, "hub-state/data"),
-    BOT_RUN_DIR: join(EXPERIMENT_DIR, "hub-state/run"),
-    NODE_ENV: "development",
-  },
+  env: hubEnv,
 });
 await waitForHttp(`${HUB_URL}/ready`, "hub runtime-api", 30_000);
 
@@ -275,21 +288,24 @@ const state = {
   slug,
   adminEmail: ADMIN_EMAIL,
   adminKey,
-  hub: { cellId: hubCell.cell.id, pid: hubPid },
-  worker: { cellId: workerCell.cell.id, nodeName: "nego" },
+  hub: { cellId: hubCell.cell.id, pid: hubPid, env: hubEnv },
+  worker: { cellId: workerCell.cell.id, nodeName: "nego", nodePort: NODE_PORT },
   central: { pid: centralPid },
   invite,
 };
 await Bun.write(STATE_FILE, `${JSON.stringify(state, null, 2)}\n`);
 
 console.log(`[7/7] done — state saved to ${STATE_FILE}\n`);
-console.log("── worker node: run these ─────────────────────────────────────");
+console.log("── worker node: run these (note NEGOTIUM_NODE_PORT) ───────────");
 console.log(
-  `  NEGOTIUM_STATE_DIR=${WORKER_STATE_DIR} bun apps/cli/src/main.ts otium join ${invite}`,
+  `  NEGOTIUM_STATE_DIR=${WORKER_STATE_DIR} bun apps/cli/src/main.ts otium join ${invite} --legacy`,
 );
 console.log(
-  `  NEGOTIUM_STATE_DIR=${WORKER_STATE_DIR} bun apps/cli/src/main.ts otium serve --port ${WORKER_PORT}`,
+  `  NEGOTIUM_STATE_DIR=${WORKER_STATE_DIR} NEGOTIUM_NODE_PORT=${NODE_PORT} ` +
+    `bun apps/cli/src/main.ts otium serve --port ${WORKER_PORT}`,
 );
+console.log("\n── then turn the Runtime Gateway on ─────────────────────────────");
+console.log("  bun scripts/otium-experiment/enable-gateway.ts");
 console.log("\n── then drive the E2E ─────────────────────────────────────────");
 console.log("  bun scripts/otium-experiment/run-e2e.ts");
 console.log("\n(servers keep running; stop with `kill <pid>` — PIDs in state.json)");
