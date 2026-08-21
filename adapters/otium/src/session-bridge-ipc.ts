@@ -4,6 +4,7 @@ import { registerPeerSessionBridgeIpcConfig } from "@negotium/core/peer-session-
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_INFLIGHT = 32;
+const MAX_QUEUE_DEPTH = MAX_INFLIGHT * 4;
 const BODY_TIMEOUT_MS = 10_000;
 
 type BridgeRequest =
@@ -57,20 +58,29 @@ function validRequest(payload: BridgeRequest): boolean {
   return false;
 }
 
-async function readLimitedJson(request: Request): Promise<BridgeRequest | null> {
+async function readLimitedJson(request: Request, deadline: number): Promise<BridgeRequest | null> {
   const declaredLength = Number(request.headers.get("content-length") ?? "0");
   if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) return null;
   const reader = request.body?.getReader();
   if (!reader) return null;
   const chunks: Uint8Array[] = [];
   let size = 0;
-  const timeout = setTimeout(
-    () => void reader.cancel("peer bridge request body timeout").catch(() => undefined),
-    BODY_TIMEOUT_MS,
-  );
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return null;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const { done, value } = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(
+            () => reject(new Error("peer bridge request body timeout")),
+            remaining,
+          );
+        }),
+      ]).finally(() => {
+        if (timeout) clearTimeout(timeout);
+      });
       if (done) break;
       size += value.byteLength;
       if (size > MAX_BODY_BYTES) {
@@ -80,9 +90,8 @@ async function readLimitedJson(request: Request): Promise<BridgeRequest | null> 
       chunks.push(value);
     }
   } catch {
+    await reader.cancel().catch(() => undefined);
     return null;
-  } finally {
-    clearTimeout(timeout);
   }
   try {
     return JSON.parse(Buffer.concat(chunks).toString("utf8")) as BridgeRequest;
@@ -96,20 +105,72 @@ export interface PeerSessionBridgeIpcHandle {
   stop(): void;
 }
 
+export interface PeerSessionBridgeIpcOptions {
+  /** Test seam; production uses the fixed defaults above. */
+  maxInflight?: number;
+  /** Test seam; production uses the fixed defaults above. */
+  maxQueueDepth?: number;
+  /** Shared queue and body-read budget; production uses BODY_TIMEOUT_MS. */
+  requestTimeoutMs?: number;
+}
+
 /** Expose the worker bridge to inherited MCP subprocesses over authenticated loopback IPC. */
-export function startPeerSessionBridgeIpc(bridge: PeerSessionBridge): PeerSessionBridgeIpcHandle {
+export function startPeerSessionBridgeIpc(
+  bridge: PeerSessionBridge,
+  options: PeerSessionBridgeIpcOptions = {},
+): PeerSessionBridgeIpcHandle {
   const token = crypto.randomUUID() + crypto.randomUUID();
+  const maxInflight = options.maxInflight ?? MAX_INFLIGHT;
+  const maxQueueDepth = options.maxQueueDepth ?? MAX_QUEUE_DEPTH;
+  const requestTimeoutMs = options.requestTimeoutMs ?? BODY_TIMEOUT_MS;
   let inflight = 0;
+  type QueueWaiter = {
+    resolve: (admitted: boolean) => void;
+    timeout: ReturnType<typeof setTimeout>;
+  };
+  const queue: QueueWaiter[] = [];
+
+  function release(): void {
+    inflight -= 1;
+    const waiter = queue.shift();
+    if (!waiter) return;
+    clearTimeout(waiter.timeout);
+    inflight += 1;
+    waiter.resolve(true);
+  }
+
+  function acquire(waitTimeoutMs: number): Promise<boolean> | boolean {
+    if (inflight < maxInflight) {
+      inflight += 1;
+      return true;
+    }
+    if (waitTimeoutMs <= 0 || queue.length >= maxQueueDepth) return false;
+    return new Promise<boolean>((resolve) => {
+      const waiter = {
+        resolve,
+        timeout: setTimeout(() => {
+          const index = queue.indexOf(waiter);
+          if (index >= 0) queue.splice(index, 1);
+          resolve(false);
+        }, waitTimeoutMs),
+      };
+      queue.push(waiter);
+    });
+  }
+
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     async fetch(request) {
       if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
       if (!authorized(request, token)) return new Response("unauthorized", { status: 401 });
-      if (inflight >= MAX_INFLIGHT) return new Response("busy", { status: 503 });
-      inflight += 1;
+      const deadline = Date.now() + requestTimeoutMs;
+      const admitted = await acquire(deadline - Date.now());
+      if (!admitted) {
+        return new Response("busy", { status: 503, headers: { "retry-after": "1" } });
+      }
       try {
-        const payload = await readLimitedJson(request);
+        const payload = await readLimitedJson(request, deadline);
         if (!payload || !validRequest(payload)) {
           return new Response("invalid request", { status: 400 });
         }
@@ -130,7 +191,7 @@ export function startPeerSessionBridgeIpc(bridge: PeerSessionBridge): PeerSessio
       } catch {
         return new Response("bridge failed", { status: 502 });
       } finally {
-        inflight -= 1;
+        release();
       }
     },
   });
