@@ -144,6 +144,7 @@ export async function runTurnEventStream(
   const peerBridge = execution?.peerBridge ?? control.injectParams?.peerBridge;
   let errorOccurred = false;
   let terminalEmitted = false;
+  let lastEventType: UnifiedEvent["type"] | null = null;
   let pendingSawDelta = false;
   let accumulatedText = "";
   let pendingText = "";
@@ -306,6 +307,7 @@ export async function runTurnEventStream(
   try {
     for await (const event of events) {
       if (abortController.signal.aborted) break;
+      lastEventType = event.type;
 
       // A provider may publish its session id before it appends the user
       // prompt to the native rollout. Only semantic provider output proves
@@ -845,14 +847,28 @@ export async function runTurnEventStream(
       if (silent) deliverAskError(queryId, topicTitle, msg);
     }
   } finally {
+    if (!terminalEmitted && !abortController.signal.aborted) {
+      const error = "Provider stream ended without a terminal event";
+      outcome = { kind: "provider-error", error };
+      logger.warn(
+        {
+          topicId,
+          queryId,
+          agentType,
+          model,
+          silent,
+          lastEventType,
+          hadAssistantOutput: visibleMessageIds.length > 0 || pendingText.length > 0,
+          hadToolActivity: syntheticToolCounter > 0 || providerToolIds.size > 0,
+        },
+        "ai: provider stream ended without result, error, or abort",
+      );
+    }
     const discardIncompleteSegments =
       outcome.kind === "session-expired" ||
       outcome.kind === "provider-error" ||
       (!terminalEmitted && !abortController.signal.aborted);
     if (discardIncompleteSegments) discardVisibleAssistantMessages();
-    if (!terminalEmitted && !silent) {
-      hub.broadcastDone(topicId, queryId, undefined, { agent: agentType, model });
-    }
     // Release the room slot — but only if a newer turn hasn't already taken it
     // (abort-and-replace sets a fresh control synchronously before this dying
     // turn's generator unwinds here). Query-state cleanup follows the same

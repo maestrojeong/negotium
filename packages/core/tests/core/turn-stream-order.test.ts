@@ -879,6 +879,84 @@ describe("turn stream ordering", () => {
     ).toBe(false);
   });
 
+  test("classifies a terminal-less provider EOF as an error instead of ai_done", async () => {
+    const topicId = seedTopic();
+    const queryId = randomUUID();
+    const after = latestRuntimeEventSeq();
+    const control: RoomQueryControl = {
+      topicId,
+      queryId,
+      origin: "user",
+      prompt: "test",
+      abortController: new AbortController(),
+      abortReason: AbortReason.None,
+    };
+    async function* truncatedStream(): AsyncGenerator<UnifiedEvent> {
+      yield { type: "text", content: "incomplete answer" };
+    }
+
+    const outcome = await streamAgentEvents(
+      topicId,
+      "stream order",
+      queryId,
+      truncatedStream(),
+      control,
+      "claude",
+      "sonnet",
+      "medium",
+      "owner",
+    );
+
+    expect(outcome).toEqual({
+      kind: "provider-error",
+      error: "Provider stream ended without a terminal event",
+    });
+    expect(listApiMessages(topicId).page).toHaveLength(0);
+    const terminalKinds = listRuntimeEventsAfter(after)
+      .filter(
+        (event) =>
+          event.topicId === topicId &&
+          event.type === "ai-status" &&
+          (event.payload as { queryId?: string }).queryId === queryId,
+      )
+      .map((event) => (event.payload as { kind?: string }).kind);
+    expect(terminalKinds).not.toContain("ai_done");
+    expect(terminalKinds).not.toContain("ai_aborted");
+  });
+
+  test("classifies an empty provider stream as a terminal-less error", async () => {
+    const topicId = seedTopic();
+    const queryId = randomUUID();
+    const control: RoomQueryControl = {
+      topicId,
+      queryId,
+      origin: "user",
+      prompt: "test",
+      abortController: new AbortController(),
+      abortReason: AbortReason.None,
+    };
+    async function* emptyStream(): AsyncGenerator<UnifiedEvent> {
+      yield* [] as UnifiedEvent[];
+    }
+
+    expect(
+      await streamAgentEvents(
+        topicId,
+        "stream order",
+        queryId,
+        emptyStream(),
+        control,
+        "codex",
+        "gpt-5.6-luna",
+        "medium",
+        "owner",
+      ),
+    ).toEqual({
+      kind: "provider-error",
+      error: "Provider stream ended without a terminal event",
+    });
+  });
+
   test("promotes browser infrastructure aborts to provider errors", async () => {
     const topicId = seedTopic();
     const queryId = randomUUID();
