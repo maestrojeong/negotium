@@ -9,10 +9,10 @@
  *   - discard utterances < 0.8 s
  */
 
-import { spawn, ChildProcess } from "node:child_process";
-import { createWriteStream, mkdirSync, renameSync, unlinkSync, WriteStream } from "node:fs";
+import { spawn } from "node:child_process";
+import { createWriteStream, mkdirSync, unlinkSync, type WriteStream } from "node:fs";
 import { join } from "node:path";
-import { SermoConfig, Utterance } from "./types";
+import type { SermoConfig, Utterance } from "./types";
 
 export interface VadEvents {
   onUtterance: (utt: Utterance) => void;
@@ -32,19 +32,29 @@ export function startVad(config: SermoConfig, events: VadEvents): () => void {
   mkdirSync(recDir, { recursive: true });
 
   // ── ffmpeg: AVFoundation → raw s16le PCM stdout ──────────────────────
-  const ffmpeg = spawn("ffmpeg", [
-    "-f", "avfoundation",
-    "-i", ":1",                   // device 1 = MacBook Pro microphone
-    "-ac", "1",                   // mono
-    "-ar", String(config.sampleRate),
-    "-f", "s16le",                // raw signed 16-bit little-endian
-    "-c:a", "pcm_s16le",
-    "-",                          // stdout
-  ], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const ffmpeg = spawn(
+    "ffmpeg",
+    [
+      "-f",
+      "avfoundation",
+      "-i",
+      ":1", // device 1 = MacBook Pro microphone
+      "-ac",
+      "1", // mono
+      "-ar",
+      String(config.sampleRate),
+      "-f",
+      "s16le", // raw signed 16-bit little-endian
+      "-c:a",
+      "pcm_s16le",
+      "-", // stdout
+    ],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
 
-  const bytesPerSample = 2;       // s16le
+  const bytesPerSample = 2; // s16le
   const bytesPerFrame = bytesPerSample; // mono
   const framesPerSec = config.sampleRate;
   const rmsWindowFrames = Math.floor(framesPerSec * 0.03); // ~30 ms windows
@@ -55,22 +65,20 @@ export function startVad(config: SermoConfig, events: VadEvents): () => void {
   let currentFilePath = "";
   let speechFrames = 0;
   let silenceFrames = 0;
-  const silenceFrameThreshold = Math.floor(config.silenceTimeoutSec * framesPerSec / rmsWindowFrames);
-  const minUtteranceFrames = Math.floor(config.minUtteranceSec * framesPerSec / rmsWindowFrames);
-  const prePadFrames = Math.floor(config.prePadSec * framesPerSec / rmsWindowFrames);
+  const silenceFrameThreshold = Math.floor(
+    (config.silenceTimeoutSec * framesPerSec) / rmsWindowFrames,
+  );
+  const prePadFrames = Math.floor((config.prePadSec * framesPerSec) / rmsWindowFrames);
 
   // Ring buffer for pre-padding
   const prePadBuffer: Buffer[] = [];
-  let prePadCount = 0;
 
   // Accumulate partial reads
   let leftover: Buffer = Buffer.alloc(0);
 
   ffmpeg.stdout!.on("data", (chunk: Buffer) => {
     // Prepend any leftover bytes from the last read
-    const data = leftover.length > 0
-      ? Buffer.concat([leftover, chunk])
-      : chunk;
+    const data = leftover.length > 0 ? Buffer.concat([leftover, chunk]) : chunk;
 
     // How many complete frames we can consume
     const frameCount = Math.floor(data.length / bytesPerFrame);
@@ -78,7 +86,11 @@ export function startVad(config: SermoConfig, events: VadEvents): () => void {
     leftover = data.subarray(consumed);
 
     // Process in RMS windows
-    for (let i = 0; i + rmsWindowFrames * bytesPerFrame <= consumed; i += rmsWindowFrames * bytesPerFrame) {
+    for (
+      let i = 0;
+      i + rmsWindowFrames * bytesPerFrame <= consumed;
+      i += rmsWindowFrames * bytesPerFrame
+    ) {
       const window = data.subarray(i, i + rmsWindowFrames * bytesPerFrame);
       const rms = computeRms(window);
 
@@ -88,7 +100,6 @@ export function startVad(config: SermoConfig, events: VadEvents): () => void {
       if (!recording) {
         prePadBuffer.push(Buffer.from(window));
         if (prePadBuffer.length > prePadFrames) prePadBuffer.shift();
-        prePadCount++;
       }
 
       if (isSpeech && !recording) {
@@ -100,7 +111,6 @@ export function startVad(config: SermoConfig, events: VadEvents): () => void {
           speechFrames++;
         }
         prePadBuffer.length = 0;
-        prePadCount = 0;
       }
 
       if (recording) {
@@ -195,16 +205,26 @@ function computeRms(buffer: Buffer): number {
 /** Convert raw s16le PCM to a WAV file with a proper header. */
 async function convertToWav(rawPath: string, wavPath: string, sampleRate: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    const ffmpeg = spawn("ffmpeg", [
-      "-f", "s16le",
-      "-ar", String(sampleRate),
-      "-ac", "1",
-      "-i", rawPath,
-      "-acodec", "pcm_s16le",
-      "-ar", "16000",  // resample to 16kHz for whisper
-      "-y",
-      wavPath,
-    ], { stdio: "ignore" });
+    const ffmpeg = spawn(
+      "ffmpeg",
+      [
+        "-f",
+        "s16le",
+        "-ar",
+        String(sampleRate),
+        "-ac",
+        "1",
+        "-i",
+        rawPath,
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        "16000", // resample to 16kHz for whisper
+        "-y",
+        wavPath,
+      ],
+      { stdio: "ignore" },
+    );
     ffmpeg.on("close", (code) => {
       if (code === 0) resolve();
       else reject(new Error(`ffmpeg convert exited with ${code}`));

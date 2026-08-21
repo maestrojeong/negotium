@@ -87,6 +87,7 @@
       },
       "dependencies": {
         "@negotium/adapter-otium": "workspace:*",
+        "@negotium/adapter-sermo": "workspace:*",
         "@negotium/adapter-telegram": "workspace:*",
         "@negotium/adapter-terminal": "workspace:*",
         "@negotium/core": "workspace:*",

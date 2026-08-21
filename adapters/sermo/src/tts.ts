@@ -10,16 +10,13 @@
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SermoConfig } from "./types";
+import type { SermoConfig } from "./types";
 
 /**
  * Speak the given text using kokoro-onnx + afplay.
  * Resolves when playback has finished.
  */
-export async function speak(
-  text: string,
-  config: SermoConfig,
-): Promise<void> {
+export async function speak(text: string, config: SermoConfig): Promise<void> {
   if (!text || text.trim().length === 0) return;
 
   const outPath = join(tmpdir(), `sermo_tts_${Date.now()}.wav`);

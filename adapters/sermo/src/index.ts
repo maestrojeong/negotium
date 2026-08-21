@@ -7,10 +7,10 @@
  */
 
 import { defineNegotiumAdapter, type NegotiumAdapterHandle } from "@negotium/adapter-sdk";
-import { SermoConfig, SermoState, DEFAULT_CONFIG } from "./types";
-import { startVad } from "./vad";
-import { transcribe, isValidTranscription } from "./stt";
+import { isValidTranscription, transcribe } from "./stt";
 import { speak } from "./tts";
+import { DEFAULT_CONFIG, type SermoConfig, SermoState } from "./types";
+import { startVad } from "./vad";
 
 export type { SermoConfig, SermoState, Utterance } from "./types";
 export { DEFAULT_CONFIG } from "./types";

@@ -6,9 +6,12 @@
  * Reads topic/user IDs from CLI args or environment.
  */
 
-import { startSermoAdapter, type SermoAdapterHandle } from "./index";
+import { type SermoAdapterHandle, startSermoAdapter } from "./index";
 
-export function runSermoCli(argv: string[], options?: { userId?: string; topicId?: string }): SermoAdapterHandle {
+export function runSermoCli(
+  argv: string[],
+  options?: { userId?: string; topicId?: string },
+): SermoAdapterHandle {
   // Read config from CLI args: --topic-id, --user-id, --rms-floor, etc.
   const args: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
@@ -29,7 +32,7 @@ export function runSermoCli(argv: string[], options?: { userId?: string; topicId
   const handle = startSermoAdapter({
     userId: options?.userId ?? args["user-id"],
     topicId: options?.topicId ?? args["topic-id"],
-    config: Object.keys(config).length > 0 ? config as any : undefined,
+    config: Object.keys(config).length > 0 ? (config as any) : undefined,
   });
 
   return handle;

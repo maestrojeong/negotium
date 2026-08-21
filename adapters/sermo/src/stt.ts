@@ -9,15 +9,12 @@
  */
 
 import { spawn } from "node:child_process";
-import { SermoConfig } from "./types";
+import type { SermoConfig } from "./types";
 
 /**
  * Transcribe a WAV file to text using mlx-whisper.
  */
-export async function transcribe(
-  wavPath: string,
-  config: SermoConfig,
-): Promise<string> {
+export async function transcribe(wavPath: string, config: SermoConfig): Promise<string> {
   return new Promise((resolve) => {
     const script = [
       "import sys, mlx_whisper",
