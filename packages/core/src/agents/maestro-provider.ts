@@ -41,10 +41,9 @@
  *     ever makes deferral not worth it.
  *
  * v0.1.42 host overrides:
- *   - `disallowedTools` removes provider-native AskUserQuestion, Agent, and
- *     Task* tools from the schema/catalog. Otium owns those surfaces via
- *     runtime ask_user_question/spawn_subagent and the shared task MCP server
- *     so state survives agent switches.
+ *   - `disallowedTools` removes the provider-native AskUserQuestion tool from
+ *     the schema/catalog; Otium owns that surface via the runtime
+ *     ask_user_question MCP tool so state survives agent switches.
  *
  * If a future override becomes per-call (cwd-aware, topic-aware, etc.)
  * we lift the static spread into a per-call wrapper. For now the
@@ -75,25 +74,8 @@ import type { AgentQueryOptions, UnifiedEvent } from "#types";
  */
 const MAESTRO_DEFAULT_MAX_TOKENS = 32_768;
 const PROVIDER_ASK_USER_TOOL = "AskUserQuestion";
-const PROVIDER_SUBAGENT_TOOL = "Agent";
-const MAESTRO_NATIVE_TASK_TOOLS = [
-  "TaskCreate",
-  "TaskUpdate",
-  "TaskList",
-  "TaskGet",
-  "TaskOutput",
-  "TaskStop",
-] as const;
-const MAESTRO_PROVIDER_OWNED_TOOL_SET = new Set<string>([
-  PROVIDER_ASK_USER_TOOL,
-  PROVIDER_SUBAGENT_TOOL,
-  ...MAESTRO_NATIVE_TASK_TOOLS,
-]);
-const DEFAULT_MAESTRO_DISALLOWED_TOOLS = [
-  PROVIDER_ASK_USER_TOOL,
-  PROVIDER_SUBAGENT_TOOL,
-  ...MAESTRO_NATIVE_TASK_TOOLS,
-] as const;
+const MAESTRO_PROVIDER_OWNED_TOOL_SET = new Set<string>([PROVIDER_ASK_USER_TOOL]);
+const DEFAULT_MAESTRO_DISALLOWED_TOOLS = [PROVIDER_ASK_USER_TOOL] as const;
 const MAESTRO_ALL_BUILTIN_TOOLS = [
   "Bash",
   "Read",
@@ -156,17 +138,8 @@ export function buildMaestroToolHooks(userId: string): HookRegistration[] {
   return [buildVaultHook(userId), buildProviderOwnedToolBlockHook()];
 }
 
-function providerOwnedToolRedirect(toolName: string): string {
-  if (toolName === PROVIDER_ASK_USER_TOOL) {
-    return "Use the runtime ask_user_question MCP tool instead.";
-  }
-  if (toolName === PROVIDER_SUBAGENT_TOOL) {
-    return "Use the runtime spawn_subagent MCP tool instead.";
-  }
-  return (
-    "Use the shared task MCP tools instead " +
-    "(mcp__task__task_create / task_update / task_list / task_get / task_delete)."
-  );
+function providerOwnedToolRedirect(): string {
+  return "Use the runtime ask_user_question MCP tool instead.";
 }
 
 /**
@@ -198,7 +171,7 @@ function buildProviderOwnedToolBlockHook(): HookRegistration {
       if (!MAESTRO_PROVIDER_OWNED_TOOL_SET.has(toolName)) return { decision: "allow" };
       return {
         decision: "block",
-        error: `${toolName} is disabled in this environment. ${providerOwnedToolRedirect(toolName)}`,
+        error: `${toolName} is disabled in this environment. ${providerOwnedToolRedirect()}`,
       };
     },
   };

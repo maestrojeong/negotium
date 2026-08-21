@@ -18,26 +18,10 @@ describe("maestroProvider host tool policy", () => {
     expect(source).toContain("ephemeralSystemPrompt: opts.ephemeralSystemPrompt,");
   });
 
-  test("disallows provider-native ask/task/subagent tools through the SDK denylist", () => {
-    expect(buildMaestroDisallowedTools()).toEqual([
-      "AskUserQuestion",
-      "Agent",
-      "TaskCreate",
-      "TaskUpdate",
-      "TaskList",
-      "TaskGet",
-      "TaskOutput",
-      "TaskStop",
-    ]);
+  test("disallows the provider-native ask tool through the SDK denylist", () => {
+    expect(buildMaestroDisallowedTools()).toEqual(["AskUserQuestion"]);
     expect(buildMaestroDisallowedTools(["Bash", "AskUserQuestion"])).toEqual([
       "AskUserQuestion",
-      "Agent",
-      "TaskCreate",
-      "TaskUpdate",
-      "TaskList",
-      "TaskGet",
-      "TaskOutput",
-      "TaskStop",
       "Bash",
     ]);
   });
@@ -55,13 +39,6 @@ describe("maestroProvider host tool policy", () => {
       "GeminiImageQA",
       "ToolSearch",
       "AskUserQuestion",
-      "Agent",
-      "TaskCreate",
-      "TaskUpdate",
-      "TaskList",
-      "TaskGet",
-      "TaskOutput",
-      "TaskStop",
     ];
     expect(buildMaestroDisallowedTools([], "none")).toEqual(allBuiltIns);
     expect(buildMaestroDisallowedTools([], "compaction-log")).toEqual(allBuiltIns);
@@ -127,27 +104,14 @@ describe("maestroProvider host tool policy", () => {
     }
   });
 
-  test("blocks stale provider-owned task, ask, and subagent calls in runtime hooks", async () => {
+  test("blocks the provider-native ask tool in runtime hooks", async () => {
     const hooks = buildMaestroToolHooks("user-1");
     const policyHook = hooks.find((hook) => hook.name === "provider-owned-tool-redirect");
     expect(policyHook).toBeDefined();
 
-    const blocked = await policyHook?.pre?.({
-      toolName: "TaskCreate",
-      input: {},
-    });
-    expect(blocked?.decision).toBe("block");
-    if (blocked?.decision === "block") {
-      expect(blocked.error).toContain("shared task MCP");
-    }
-
     const ask = await policyHook?.pre?.({ toolName: "AskUserQuestion", input: {} });
     expect(ask?.decision).toBe("block");
     if (ask?.decision === "block") expect(ask.error).toContain("ask_user_question");
-
-    const agent = await policyHook?.pre?.({ toolName: "Agent", input: {} });
-    expect(agent?.decision).toBe("block");
-    if (agent?.decision === "block") expect(agent.error).toContain("spawn_subagent");
 
     const allowed = await policyHook?.pre?.({
       toolName: "Read",
