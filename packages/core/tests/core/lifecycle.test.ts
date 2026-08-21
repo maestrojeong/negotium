@@ -19,6 +19,7 @@ import {
   __resetForTests,
   __triggered,
   createLifecycleManager,
+  type LifecycleProcessHost,
   onShutdown,
   runShutdown,
 } from "#platform/lifecycle";
@@ -28,6 +29,17 @@ const silentLogger = {
   warn: () => {},
   error: () => {},
 };
+
+function createFakeProcess(exits: number[] = []): LifecycleProcessHost {
+  return {
+    once: () => {},
+    removeListener: () => {},
+    exit(code): never {
+      exits.push(code);
+      return undefined as never;
+    },
+  };
+}
 
 describe("lifecycle shutdown registry", () => {
   beforeEach(() => {
@@ -105,15 +117,20 @@ describe("lifecycle shutdown registry", () => {
   test("concurrent triggers join the in-flight shutdown", async () => {
     let release!: () => void;
     let count = 0;
-    onShutdown("slow", 100, async () => {
+    const exits: number[] = [];
+    const registry = createLifecycleManager({
+      logger: silentLogger,
+      process: createFakeProcess(exits),
+    });
+    registry.onShutdown("slow", 100, async () => {
       count++;
       await new Promise<void>((resolve) => {
         release = resolve;
       });
     });
 
-    const first = runShutdown("SIGINT");
-    const second = runShutdown("SIGTERM");
+    const first = registry.runShutdown("SIGINT");
+    const second = registry.runShutdown("SIGTERM");
     expect(second).toBe(first);
     await Bun.sleep(10);
     expect(count).toBe(1);
@@ -121,7 +138,51 @@ describe("lifecycle shutdown registry", () => {
     release();
     await Promise.all([first, second]);
     expect(count).toBe(1);
+    expect(exits).toEqual([0]);
   });
+
+  for (const reason of ["SIGINT", "SIGTERM"] as const) {
+    test(`${reason} exits successfully after shutdown completes`, async () => {
+      const events: string[] = [];
+      const registry = createLifecycleManager({
+        logger: {
+          ...silentLogger,
+          info: (_fields, message) => {
+            if (message === "lifecycle: shutdown sequence complete") events.push("complete");
+          },
+        },
+        process: {
+          ...createFakeProcess(),
+          exit(code): never {
+            events.push(`exit:${code}`);
+            return undefined as never;
+          },
+        },
+      });
+      registry.onShutdown("tracked", 1, () => {
+        events.push("handler");
+      });
+
+      await registry.runShutdown(reason);
+
+      expect(events).toEqual(["handler", "complete", "exit:0"]);
+    });
+  }
+
+  for (const reason of ["test", "beforeExit"] as const) {
+    test(`${reason} shutdown does not exit the process`, async () => {
+      const exits: number[] = [];
+      const registry = createLifecycleManager({
+        logger: silentLogger,
+        process: createFakeProcess(exits),
+      });
+      registry.onShutdown("noop", 1, () => {});
+
+      await registry.runShutdown(reason);
+
+      expect(exits).toEqual([]);
+    });
+  }
 
   test("async handlers are awaited (next handler waits for prior completion)", async () => {
     const log: string[] = [];

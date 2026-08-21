@@ -117,6 +117,9 @@ export function createLifecycleManager(options: LifecycleManagerOptions): Lifecy
 
     clearTimeout(hardExit);
     options.logger.info({ reason }, "lifecycle: shutdown sequence complete");
+    if (reason === "SIGINT" || reason === "SIGTERM") {
+      options.process.exit(0);
+    }
   }
 
   function runShutdown(reason: SignalReason): Promise<void> {
