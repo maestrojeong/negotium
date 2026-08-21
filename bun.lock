@@ -85,7 +85,7 @@
     },
     "apps/negotium": {
       "name": "negotium",
-      "version": "0.5.9",
+      "version": "0.5.10",
       "bin": {
         "negotium": "dist/main.js",
       },
@@ -95,7 +95,7 @@
         "@modelcontextprotocol/sdk": "^1.30.0",
         "@openai/codex-sdk": "0.147.0",
         "diff": "^9.0.0",
-        "maestro-agent-sdk": "0.2.8",
+        "maestro-agent-sdk": "0.3.0",
         "node-telegram-bot-api": "^1.1.2",
         "orchgraph": "0.2.1",
         "pino": "^10.3.1",
@@ -111,7 +111,7 @@
     },
     "packages/adapter-sdk": {
       "name": "@negotium/adapter-sdk",
-      "version": "0.5.9",
+      "version": "0.5.10",
       "devDependencies": {
         "@types/node": "^20",
         "bun-types": "^1.3.11",
@@ -127,7 +127,7 @@
         "@modelcontextprotocol/sdk": "^1.30.0",
         "@openai/codex-sdk": "0.147.0",
         "diff": "^9.0.0",
-        "maestro-agent-sdk": "0.2.8",
+        "maestro-agent-sdk": "0.3.0",
         "pino": "^10.3.1",
         "pino-pretty": "^13.1.3",
         "tsx": "^4.22.4",
@@ -518,7 +518,7 @@
 
     "json-schema-typed": ["json-schema-typed@8.0.2", "", {}, "sha512-fQhoXdcvc3V28x7C7BMs4P5+kNlgUURe2jmUT1T//oBRMDrqy1QPelJimwZGo7Hg9VPV3EQV5Bnq4hbFy2vetA=="],
 
-    "maestro-agent-sdk": ["maestro-agent-sdk@0.2.8", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.30.0", "cheerio": "^1.2.0", "pdfjs-dist": "^6.2.108", "undici": "^7.29.0" } }, "sha512-Bpai4P8Od1lLj7ESZV8dOG4jr/aKkXQntZ8RXm+fpMPTTwmaTYpht8WtBHbWB6aUvU+lQOPmdngfNx9GTTKTMA=="],
+    "maestro-agent-sdk": ["maestro-agent-sdk@0.3.0", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.30.0", "cheerio": "^1.2.0", "pdfjs-dist": "^6.2.108", "undici": "^7.29.0" } }, "sha512-WnzVOonig5rSHxCdH2X4dLo9JMERO6ixlsD0o9Xe+rFAvQPWQsG8wTVb7g7Dd3wnsH+ylu6mopS0wB+lBiC+EQ=="],
 
     "math-intrinsics": ["math-intrinsics@1.1.0", "", {}, "sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g=="],
 
