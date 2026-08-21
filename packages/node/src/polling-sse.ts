@@ -103,7 +103,15 @@ export function createPollingSseStream(req: Request, options: PollingSseOptions)
         send("ready", options.ready);
         pump();
         if (closed) return;
-        pollTimer = setInterval(pump, options.pollIntervalMs ?? 100);
+        // Lowered from 100ms (latency review, otium-latency): every open SSE
+        // stream — per-topic projection *and* the unfiltered global discovery
+        // stream added for push-based topic-sync — waits up to one tick for a
+        // freshly written event to appear. 40ms keeps the added query load
+        // modest (~25/s vs ~10/s per open stream, against an indexed cursor
+        // read) while cutting the worst-case per-event delay by more than
+        // half. A true wake-on-write design would remove polling entirely,
+        // but is a larger change than this pass covers.
+        pollTimer = setInterval(pump, options.pollIntervalMs ?? 40);
         heartbeatTimer = setInterval(() => {
           if (closed || (controller.desiredSize !== null && controller.desiredSize <= 0)) return;
           try {

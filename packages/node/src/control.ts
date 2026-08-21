@@ -281,11 +281,20 @@ function createRuntimeContractEventStream(
   const scoped = "surfaceScope" in scope;
   const visible = new Map<string, boolean>();
   const eventInScope = (eventTopicId: string): boolean => {
-    if (!scoped) return true;
     const cached = visible.get(eventTopicId);
     if (cached !== undefined) return cached;
     const topic = getTopic(eventTopicId);
-    const allowed = Boolean(topic && topicInRequestScope(req, topic));
+    // Unlike the topic list, this stream has no `surface` query parameter.
+    // Keep it on the gateway's Otium-only contract here so an unfiltered
+    // subscriber cannot discover terminal or Telegram rooms through events.
+    const allowed = Boolean(
+      topic &&
+        // A filtered stream is an existing per-topic contract and remains
+        // usable by non-Otium adapters. Only global discovery is Otium-only,
+        // matching the gateway's unfiltered `/topics` contract.
+        (topicId || topic.surface === "otium") &&
+        (!scoped || topicInRequestScope(req, topic)),
+    );
     visible.set(eventTopicId, allowed);
     return allowed;
   };

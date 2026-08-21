@@ -429,6 +429,48 @@ test("runtime gateway topic list is scoped to the caller's workspace", async () 
   expect(forLoopback).toEqual(expect.arrayContaining([alpha.id, beta.id, unscoped.id]));
 });
 
+test("unfiltered runtime events expose only the Otium surface", async () => {
+  const user = `event-surface-${randomUUID()}`;
+  const controller = new AbortController();
+  const after = latestRuntimeEventSeq();
+  const response = await handler(
+    runtimeRequest(`/events?after=${after}`, { signal: controller.signal }),
+  );
+  const reader = response!.body!.getReader();
+  const decoder = new TextDecoder();
+  // Consume the ready frame before adding events to the runtime bus.
+  await reader.read();
+
+  const terminal = registerTopic({
+    title: `Terminal ${randomUUID()}`,
+    userId: user,
+    agent: "codex",
+    surface: "terminal",
+  });
+  const otium = registerTopic({
+    title: `Otium ${randomUUID()}`,
+    userId: user,
+    agent: "codex",
+    surface: "otium",
+  });
+
+  let received = "";
+  for (let reads = 0; reads < 4 && !received.includes(otium.id); reads += 1) {
+    const next = await Promise.race([
+      reader.read(),
+      new Promise<ReadableStreamReadResult<Uint8Array>>((_, reject) =>
+        setTimeout(() => reject(new Error("timed out waiting for Otium event")), 1_000),
+      ),
+    ]);
+    received += decoder.decode(next.value);
+  }
+  controller.abort();
+  await reader.cancel();
+
+  expect(received).toContain(otium.id);
+  expect(received).not.toContain(terminal.id);
+});
+
 test("an unscoped room is legacy for one workspace and ambiguous for several", async () => {
   const user = `topic-scope-strict-${randomUUID()}`;
   const legacy = registerTopic({
