@@ -317,6 +317,14 @@ small single-binary Rust MCP server.
   renderer behind Negotium's live subagent view.
 - **[browser-rs](https://github.com/maestrojeong/browser-rs-mcp)** — the
   stealth-oriented Rust MCP browser server behind Negotium's browser tools.
+- **[cua-rs](https://github.com/maestrojeong/cua-rs-mcp)** — the Rust MCP
+  computer-use server that drives macOS apps through the Accessibility API
+  without taking over the mouse, keyboard, or screen.
+- **[bash-rs](https://github.com/maestrojeong/bash-rs-mcp)** — the
+  background-bash Rust MCP server behind Negotium's long-running shell jobs.
+- **[maestro-agent-sdk](https://github.com/maestrojeong/maestro-agent-sdk)** —
+  the lightweight ESM harness engine that assembles agent loops, tools,
+  sessions, memory, MCP, and guardrails.
 
 ## License
 
