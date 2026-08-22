@@ -20,8 +20,9 @@ import { join } from "node:path";
 import type { ForkHandle } from "#agents/fork";
 import { WsHub } from "#bus";
 import { deliverPeerReply, type RemoteReplyRoute } from "#mcp/session-comm/peer-forward";
+import { type CoalescingRunner, createCoalescingRunner } from "#outbox/coalescing-runner";
 import { deleteProcessingFile, drainOutboxFile, parseOutboxLine } from "#outbox/file-ops";
-import { debouncedFlush, watchDir } from "#outbox/utils";
+import { watchDir } from "#outbox/utils";
 import { resolveTopicWorkspaceDir, SESSION_INBOX_DIR } from "#platform/config";
 import { FROM_AUTO_CONTINUE, FROM_SELF_SCHEDULE } from "#platform/constants";
 import { appendJsonlEntry, readJsonlLines } from "#platform/jsonl";
@@ -56,6 +57,7 @@ import {
   recoverSessionInboxClaims,
   releaseSessionInboxBatch,
 } from "#storage/session-inbox";
+import { subscribeSessionInboxWrite } from "#storage/session-inbox-signal";
 import type { AgentKind } from "#types";
 import type { TopicSurface } from "#types/api";
 
@@ -151,9 +153,11 @@ function scheduledEntryDeliveryTime(value: unknown): number | null {
 
 /**
  * Avoid claiming and rewriting a future-only schedule file. Rewriting emits
- * fs.watch events which would otherwise create a 200ms self-triggering flush
- * loop until the earliest entry becomes due. A concurrent append is safe: it
- * emits its own watch event and the fallback poll covers missed notifications.
+ * fs.watch events which would otherwise self-trigger a flush loop until the
+ * earliest entry becomes due — the trigger runner rate-limits that loop to
+ * `SESSION_INBOX_COALESCE_MS` but there is no reason to spin at all. A
+ * concurrent append is safe: it emits its own watch event and the fallback
+ * poll covers missed notifications.
  */
 function scheduledFileNeedsClaim(filePath: string, nowMs: number): boolean {
   try {
@@ -334,7 +338,8 @@ const topicWorkerBusy = new Set<string>();
  * Scan all user inbox dirs and kick a worker per topic. Returns immediately
  * — workers run in the background.
  *
- * Triggered by SQLite polling plus fs.watch for rolling-upgrade JSONL files.
+ * Triggered by the enqueue wake signal, fs.watch on the rolling-upgrade JSONL
+ * files, and a fallback poll — all coalesced by one `CoalescingRunner`.
  */
 export async function flushSessionInbox() {
   await dispatchDueSelfSchedules();
@@ -414,7 +419,7 @@ export async function dispatchDueSelfSchedules(
   let started = 0;
 
   // Bound one sweep so a corrupt/hostile database cannot monopolize the inbox
-  // worker. The 5s fallback poll picks up any remaining due topics.
+  // worker. The fallback poll picks up any remaining due topics.
   for (let index = 0; index < 100; index++) {
     const schedule = claimNextDueSelfSchedule(ownerId, nowMs);
     if (!schedule) break;
@@ -1152,13 +1157,38 @@ async function handleAskEntry(
 
 let watcher: ReturnType<typeof watchDir> | null = null;
 let fallbackTimer: ReturnType<typeof setInterval> | null = null;
-let debouncedTrigger: (() => void) | null = null;
+let inboxRunner: CoalescingRunner | null = null;
+let unsubscribeWakeSignal: (() => void) | null = null;
 let leadershipTimer: ReturnType<typeof setInterval> | null = null;
 let workerLease: RuntimeProcessLeaseHandle | null = null;
 let workerStarted = false;
 
 const SESSION_INBOX_PROCESS_ROLE = "worker:session-inbox";
-const SESSION_INBOX_POLL_MS = 100;
+
+/**
+ * Trigger design (see `#outbox/coalescing-runner` for the invariant).
+ *
+ *   enqueueSessionInbox ─► wake signal ─┐
+ *   legacy JSONL write ─► fs.watch ─────┼─► runner.trigger() ─► flushSessionInbox()
+ *   fallback poll ──────────────────────┘      (leading edge, ≥100ms apart)
+ *
+ * Every source funnels into one runner that can only ever pull a run *earlier*.
+ * No source can starve another, so the poll interval and the coalescing window
+ * are now independent knobs instead of a landmine.
+ *
+ * Regression history: the trigger used to be a 200ms trailing debounce fed by a
+ * 100ms poll (b919a2e). Each tick re-armed the debounce before it could fire,
+ * so `flushSessionInbox()` never ran again after boot and every local
+ * tell_session/ask_session hung. `coalescing-runner.test.ts` replays exactly
+ * that timing against these constants.
+ */
+
+/** Upper bound on trigger→flush latency, and the floor on flush start spacing. */
+export const SESSION_INBOX_COALESCE_MS = 100;
+/** Safety net for a missed fs.watch event or a wake signal from a dead writer. */
+export const SESSION_INBOX_POLL_MS = 1_000;
+/** With no watcher the poll carries all cross-process latency, so tighten it. */
+export const SESSION_INBOX_POLL_WITHOUT_WATCH_MS = 250;
 
 function stopLeaderResources(): void {
   if (watcher) {
@@ -1169,7 +1199,12 @@ function stopLeaderResources(): void {
     clearInterval(fallbackTimer);
     fallbackTimer = null;
   }
-  debouncedTrigger = null;
+  if (unsubscribeWakeSignal) {
+    unsubscribeWakeSignal();
+    unsubscribeWakeSignal = null;
+  }
+  inboxRunner?.stop();
+  inboxRunner = null;
 }
 
 function tryBecomeSessionInboxLeader(): void {
@@ -1191,17 +1226,31 @@ function tryBecomeSessionInboxLeader(): void {
   if (recovered > 0) {
     logger.warn({ recovered }, "session-inbox: recovered interrupted SQLite claims");
   }
-  debouncedTrigger = debouncedFlush(flushSessionInbox, "session-inbox", 200);
-  watcher = watchDir(SESSION_INBOX_DIR, () => debouncedTrigger?.());
-  fallbackTimer = setInterval(() => debouncedTrigger?.(), SESSION_INBOX_POLL_MS);
+  // Recreated per leadership term: a fresh runner cannot inherit a stale timer
+  // from a previous term, and `stopLeaderResources` disarms the old one first.
+  const runner = createCoalescingRunner({
+    run: flushSessionInbox,
+    label: "session-inbox",
+    minIntervalMs: SESSION_INBOX_COALESCE_MS,
+  });
+  inboxRunner = runner;
+  watcher = watchDir(SESSION_INBOX_DIR, () => runner.trigger());
+  unsubscribeWakeSignal = subscribeSessionInboxWrite(() => runner.trigger());
+  const pollMs = watcher ? SESSION_INBOX_POLL_MS : SESSION_INBOX_POLL_WITHOUT_WATCH_MS;
+  fallbackTimer = setInterval(() => runner.trigger(), pollMs);
   fallbackTimer.unref?.();
 
   logger.info(
-    { dir: SESSION_INBOX_DIR, role: SESSION_INBOX_PROCESS_ROLE },
+    {
+      dir: SESSION_INBOX_DIR,
+      role: SESSION_INBOX_PROCESS_ROLE,
+      pollMs,
+      watching: Boolean(watcher),
+    },
     "session-inbox: worker leadership acquired",
   );
-  // Fire an initial flush to drain entries written before this leader started.
-  void flushSessionInbox();
+  // Drain entries written before this leader started, bypassing the rate limit.
+  void runner.runNow();
 }
 
 /**

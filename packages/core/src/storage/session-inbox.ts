@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { db } from "#storage/forum-db";
+import { notifySessionInboxWrite } from "#storage/session-inbox-signal";
 import { registerStorageSchemaInitializer } from "#storage/storage-host";
 
 export interface SessionInboxRow {
@@ -73,7 +74,10 @@ export function enqueueSessionInbox(args: {
        VALUES (?, ?, ?, ?, 'pending', NULL, NULL, ?)`,
     )
     .run(id, args.userId, args.topicId, JSON.stringify(args.entry), args.createdAt ?? Date.now());
-  return { id, inserted: Number(result.changes ?? 0) === 1 };
+  const inserted = Number(result.changes ?? 0) === 1;
+  // Wake the elected worker instead of leaving the row for the next poll tick.
+  if (inserted) notifySessionInboxWrite();
+  return { id, inserted };
 }
 
 export function listPendingSessionInboxTopics(): SessionInboxTopic[] {

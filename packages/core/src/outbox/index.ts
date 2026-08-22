@@ -1,4 +1,10 @@
 export {
+  type CoalescingRunner,
+  type CoalescingRunnerLogger,
+  type CoalescingRunnerOptions,
+  createCoalescingRunner,
+} from "./coalescing-runner";
+export {
   createOutboxFileOps,
   deleteProcessingFile,
   drainOutboxFile,
