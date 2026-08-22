@@ -1,4 +1,8 @@
 export {
+  type CoalescingRunner,
+  type CoalescingRunnerLogger,
+  type CoalescingRunnerOptions,
+  createCoalescingRunner,
   createOutboxFileOps,
   createOutboxWatchOps,
   debouncedFlush,
