@@ -195,6 +195,8 @@ export interface AgentQueryOptions {
    */
   ephemeralSystemPrompt?: string;
   userId?: string;
+  /** Product actor identity when execution uses a canonical node principal. */
+  actorUserId?: string;
   /** Credential namespace when it differs from the execution principal. */
   vaultUserId?: string;
   session?: string;

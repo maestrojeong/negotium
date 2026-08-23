@@ -16,6 +16,8 @@ export interface CronJobRecord {
   id: string;
   name: string;
   ownerUserId: string;
+  /** Product-side owner when execution uses a shared canonical principal. */
+  actorOwnerUserId?: string;
   topicId: string;
   prompt?: string;
   script?: string;
@@ -32,6 +34,10 @@ export interface CronJobRecord {
   nextRunAt: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export function cronActorOwnerUserId(job: Pick<CronJobRecord, "ownerUserId" | "actorOwnerUserId">) {
+  return job.actorOwnerUserId ?? job.ownerUserId;
 }
 
 export interface CronJobPatch {
@@ -83,6 +89,7 @@ interface JobRow {
   id: string;
   name: string;
   owner_user_id: string;
+  actor_owner_user_id: string | null;
   topic_id: string;
   prompt: string;
   script: string | null;
@@ -185,6 +192,7 @@ export function ensureCronSchema(): void {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       owner_user_id TEXT NOT NULL,
+      actor_owner_user_id TEXT,
       topic_id TEXT NOT NULL REFERENCES api_topics(id) ON DELETE CASCADE,
       prompt TEXT NOT NULL,
       script TEXT,
@@ -200,8 +208,6 @@ export function ensureCronSchema(): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_negotium_cron_owner_name
-      ON negotium_cron_jobs(owner_user_id, name);
     CREATE INDEX IF NOT EXISTS idx_negotium_cron_due
       ON negotium_cron_jobs(enabled, next_run_at);
     CREATE TABLE IF NOT EXISTS negotium_cron_runs (
@@ -257,6 +263,12 @@ export function ensureCronSchema(): void {
   if (!jobColumns.has("script")) {
     db.exec("ALTER TABLE negotium_cron_jobs ADD COLUMN script TEXT");
   }
+  if (!jobColumns.has("actor_owner_user_id")) {
+    db.exec("ALTER TABLE negotium_cron_jobs ADD COLUMN actor_owner_user_id TEXT");
+  }
+  db.exec("DROP INDEX IF EXISTS idx_negotium_cron_owner_name");
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_negotium_cron_actor_name
+    ON negotium_cron_jobs(COALESCE(actor_owner_user_id, owner_user_id), name)`);
   if (!jobColumns.has("summary")) {
     db.exec("ALTER TABLE negotium_cron_jobs ADD COLUMN summary TEXT");
   }
@@ -328,6 +340,7 @@ function toJob(row: JobRow): CronJobRecord {
     id: row.id,
     name: row.name,
     ownerUserId: row.owner_user_id,
+    actorOwnerUserId: row.actor_owner_user_id ?? undefined,
     topicId: row.topic_id,
     prompt: row.prompt.trim() || undefined,
     script: row.script?.trim() || undefined,
@@ -389,6 +402,7 @@ function toRun(row: RunRow): CronRunRecord {
 export function createCronJob(input: {
   name: string;
   ownerUserId: string;
+  actorOwnerUserId?: string;
   topicId: string;
   prompt?: string;
   script?: string;
@@ -433,6 +447,7 @@ export function createCronJob(input: {
     id: randomUUID(),
     name: input.name,
     ownerUserId: input.ownerUserId,
+    actorOwnerUserId: input.actorOwnerUserId?.trim() || undefined,
     topicId: input.topicId,
     prompt,
     script,
@@ -449,12 +464,13 @@ export function createCronJob(input: {
   };
   db.query(
     `INSERT INTO negotium_cron_jobs
-      (id,name,owner_user_id,topic_id,prompt,script,summary,schedule,timezone,enabled,agent,model,effort,session_id,next_run_at,created_at,updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      (id,name,owner_user_id,actor_owner_user_id,topic_id,prompt,script,summary,schedule,timezone,enabled,agent,model,effort,session_id,next_run_at,created_at,updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     job.id,
     job.name,
     job.ownerUserId,
+    job.actorOwnerUserId ?? null,
     job.topicId,
     job.prompt ?? "",
     job.script ?? null,
@@ -523,9 +539,22 @@ export function getCronJob(id: string): CronJobRecord | null {
 export function getCronJobByOwnerAndName(ownerUserId: string, name: string): CronJobRecord | null {
   ensureCronSchema();
   const row = db
-    .query("SELECT * FROM negotium_cron_jobs WHERE owner_user_id = ? AND name = ?")
+    .query(
+      "SELECT * FROM negotium_cron_jobs WHERE COALESCE(actor_owner_user_id, owner_user_id) = ? AND name = ?",
+    )
     .get(ownerUserId, name) as JobRow | undefined;
   return row ? toJob(row) : null;
+}
+
+export function listCronJobsForActorOwner(actorOwnerUserId: string): CronJobRecord[] {
+  ensureCronSchema();
+  return (
+    db
+      .query(
+        "SELECT * FROM negotium_cron_jobs WHERE COALESCE(actor_owner_user_id, owner_user_id) = ? ORDER BY created_at DESC",
+      )
+      .all(actorOwnerUserId) as JobRow[]
+  ).map(toJob);
 }
 
 export function cronJobPatchChangesContext(job: CronJobRecord, patch: CronJobPatch): boolean {

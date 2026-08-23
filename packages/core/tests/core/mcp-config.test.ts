@@ -584,17 +584,24 @@ describe("mcp-config: playwright transport selection per agent", () => {
     const unregister = registerRuntimeMcpServer("test-cron-manager", {
       scopes: ["forum", "manager"],
       forumRequired: true,
-      build: ({ userId }) => ({ command: "test-cron", args: [userId] }),
+      build: ({ userId, actorUserId }) => ({
+        command: "test-cron",
+        args: [userId, actorUserId],
+      }),
     });
 
     try {
       const servers = getForumMcpServers({
         userId,
+        actorUserId: "product-user",
         session: "coding",
         agent: "codex",
         enabled: [],
       });
-      expect(servers["test-cron-manager"]).toEqual({ command: "test-cron", args: [userId] });
+      expect(servers["test-cron-manager"]).toEqual({
+        command: "test-cron",
+        args: [userId, "product-user"],
+      });
       expect(OPTIONAL_FORUM_MCP_SERVERS).not.toContain("test-cron-manager");
     } finally {
       unregister();

@@ -73,8 +73,9 @@ export function createCronModule(options: CronModuleOptions = {}): NegotiumNodeM
       const unregisterMcp = host.registerRuntimeMcpServer("cron-manager", {
         scopes: ["forum", "manager"],
         forumRequired: true,
-        build({ userId, session, topicId, agent }) {
+        build({ userId, actorUserId, session, topicId, agent }) {
           const args = [`--user-id=${userId}`, `--topic=${session}`];
+          if (actorUserId) args.push(`--actor-user-id=${actorUserId}`);
           if (topicId) args.push(`--topic-id=${topicId}`);
           if (host.authorize?.(userId, "cron:admin", { type: "cron" })) {
             args.push("--authorized=true");

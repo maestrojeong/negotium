@@ -34,6 +34,8 @@ export interface RuntimeUserTurnExecution {
   from?: string;
   /** Vault namespace for this turn, independent from the local execution principal. */
   vaultUserId?: string;
+  /** Product actor identity, independent from the canonical execution principal. */
+  actorUserId?: string;
   /** Newly accepted user texts not yet recorded in the unified conversation log. */
   conversationPrompts?: string[];
   /** Number of leading userMessages already present in the unified conversation log. */

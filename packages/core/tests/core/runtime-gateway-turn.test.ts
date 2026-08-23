@@ -120,6 +120,7 @@ test("runtime gateway snapshots the pre-turn provider session for durable handof
         },
       ],
       execution: {
+        actorUserId: "actor-alice",
         sessionId: null,
         sessionIdSpecified: true,
         conversationPrompts: ["fresh gateway turn"],
