@@ -103,8 +103,50 @@ test("runtime gateway health negotiates the v1 capability set", async () => {
       "canonical-visual-read",
       "canonical-topic-list",
       "canonical-topic-create",
+      "canonical-manager-topic",
     ]),
   });
+});
+
+test("runtime gateway ensures one private manager topic per external user", async () => {
+  const managerUser = `manager-${randomUUID()}`;
+  const ensure = () =>
+    handler(
+      runtimeRequest("/manager-topic", {
+        method: "POST",
+        body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, userId: managerUser }),
+      }),
+    );
+
+  const first = await ensure();
+  const firstBody = (await first?.json()) as { topic?: TopicDto };
+  const second = await ensure();
+  const secondBody = (await second?.json()) as { topic?: TopicDto };
+
+  expect(first?.status).toBe(200);
+  expect(firstBody.topic).toMatchObject({
+    title: "General",
+    kind: "manager",
+    agent: "maestro",
+    participants: [{ userId: managerUser, role: "owner" }],
+    surface: "otium",
+  });
+  expect(secondBody.topic?.id).toBe(firstBody.topic?.id);
+
+  const turn = await handler(
+    runtimeRequest("/turns", {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        topicId: firstBody.topic?.id,
+        userId: managerUser,
+        text: "manage my workspace",
+        clientMessageId: `manager-${randomUUID()}`,
+        allowAutoContinue: false,
+      }),
+    }),
+  );
+  expect(turn?.status).toBe(202);
 });
 
 test("runtime gateway topic create makes a shared canonical topic", async () => {

@@ -76,6 +76,7 @@ test("forwards the whole read/turn/room-mutation contract the gateway client spe
     ["GET", "/topics/abc/visuals/42"],
     ["POST", "/turns"],
     ["POST", "/input-files"],
+    ["POST", "/manager-topic"],
     // Creating a room on the worker the hub already drives: the same hub that
     // may start turns on, reconfigure and delete this worker's rooms may also
     // bring one into existence, and without it the Otium worker picker has no
@@ -215,6 +216,7 @@ test("the forwarded POST sub-paths are exact, not a /topics/:id/* wildcard", asy
     "/topics/",
     "/topics//",
     "/topics/abc/anything",
+    "/manager-topic/extra",
   ]) {
     const { fetch: stub, calls } = captureFetch();
     const response = await forwardGatewayRequest(

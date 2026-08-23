@@ -68,6 +68,14 @@ export interface RuntimeGatewayTopicUsage {
   estimatedCostUsd: number;
 }
 
+export interface RuntimeGatewayManagerTopic {
+  id: string;
+  title: string;
+  kind: "manager";
+  agent?: "claude" | "codex" | "maestro";
+  participants: Array<{ userId: string; role: "owner" | "member" }>;
+}
+
 export type RuntimeGatewayToken = string | (() => string | Promise<string>);
 export type RuntimeGatewayFetch = (
   input: string | URL | Request,
@@ -124,6 +132,16 @@ function validTurnAck(value: unknown): value is RuntimeGatewayTurnAcknowledgemen
       typeof body.topicId === "string" &&
       typeof body.messageId === "string" &&
       typeof body.cursor === "number",
+  );
+}
+
+function validManagerTopic(value: unknown): value is RuntimeGatewayManagerTopic {
+  const topic = record(value);
+  return Boolean(
+    typeof topic?.id === "string" &&
+      typeof topic.title === "string" &&
+      topic.kind === "manager" &&
+      Array.isArray(topic.participants),
   );
 }
 
@@ -271,6 +289,33 @@ export class RuntimeGatewayClient {
       );
     }
     return body;
+  }
+
+  async ensureManagerTopic(userId: string): Promise<RuntimeGatewayManagerTopic> {
+    const response = await this.send(
+      "/manager-topic",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ v: RUNTIME_GATEWAY_VERSION, userId }),
+      },
+      this.requestTimeoutMs,
+    );
+    if (!response.ok) {
+      throw new RuntimeGatewayError(
+        "Runtime Gateway manager topic request failed",
+        "http",
+        response.status,
+      );
+    }
+    const body = record(await json(response));
+    if (body?.ok !== true || body.v !== RUNTIME_GATEWAY_VERSION || !validManagerTopic(body.topic)) {
+      throw new RuntimeGatewayError(
+        "Runtime Gateway manager topic response is incompatible",
+        "protocol",
+      );
+    }
+    return body.topic;
   }
 
   async *events(
