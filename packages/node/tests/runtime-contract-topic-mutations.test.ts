@@ -1,10 +1,13 @@
 import { afterAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
+  appendApiMessage,
   deleteTopicCascade,
+  getApiMessage,
   getTopic,
   NODE_CONTROL_TOKEN,
   registerTopic,
+  runtimeBus,
   upsertTopic,
 } from "@negotium/core";
 import {
@@ -60,6 +63,7 @@ test("health advertises the delete/update/silent capabilities hosts feature-dete
   const response = await handler(request("/runtime/v1/health"));
   const body = (await response?.json()) as { capabilities: string[] };
   expect(body.capabilities).toContain("canonical-topic-delete");
+  expect(body.capabilities).toContain("canonical-message-delete");
   expect(body.capabilities).toContain("canonical-topic-update");
   expect(body.capabilities).toContain("turn-submit-silent");
   expect(body.capabilities).toContain("canonical-topic-abort");
@@ -279,6 +283,126 @@ test("abort reports whether there was anything to stop", async () => {
   // An idle room is not an error: the host asked for "no turn running here"
   // and that is now true, so `aborted: false` is the honest answer.
   expect(await response?.json()).toEqual({ ok: true, v: 1, aborted: false });
+});
+
+test("message DELETE soft-deletes an actor-owned canonical message and publishes its tombstone", async () => {
+  const created = topic(`Runtime message delete ${randomUUID()}`);
+  const messageId = `message-${randomUUID()}`;
+  appendApiMessage({
+    id: messageId,
+    topicId: created.id,
+    authorId: userId,
+    text: "delete me",
+    deleted: false,
+    createdAt: new Date().toISOString(),
+  });
+  const events: unknown[] = [];
+  const unsubscribe = runtimeBus().subscribe((event) => {
+    if (event.topicId === created.id && event.type === "message-updated")
+      events.push(event.payload);
+  });
+  try {
+    const response = await handler(
+      request(
+        `/runtime/v1/topics/${encodeURIComponent(created.id)}/messages/${encodeURIComponent(messageId)}`,
+        {
+          method: "DELETE",
+          body: JSON.stringify({ v: 1, actorUserId: userId }),
+        },
+      ),
+    );
+    expect(response?.status).toBe(200);
+    expect(await response?.json()).toMatchObject({
+      ok: true,
+      v: 1,
+      message: {
+        id: messageId,
+        topicId: created.id,
+        authorId: userId,
+        text: "",
+        deleted: true,
+      },
+    });
+    expect(getApiMessage(created.id, messageId)).toMatchObject({ deleted: true, text: "" });
+    expect(events).toContainEqual({ messageId, patch: { deleted: true, text: "" } });
+  } finally {
+    unsubscribe();
+  }
+});
+
+test("message DELETE preserves actor ownership and explicit admin override", async () => {
+  const created = topic(`Runtime message delete auth ${randomUUID()}`);
+  const messageId = `message-${randomUUID()}`;
+  appendApiMessage({
+    id: messageId,
+    topicId: created.id,
+    authorId: "someone-else",
+    text: "protected",
+    deleted: false,
+    createdAt: new Date().toISOString(),
+  });
+  const path = `/runtime/v1/topics/${encodeURIComponent(created.id)}/messages/${encodeURIComponent(messageId)}`;
+
+  const forbidden = await handler(
+    request(path, {
+      method: "DELETE",
+      body: JSON.stringify({ v: 1, actorUserId: userId }),
+    }),
+  );
+  expect(forbidden?.status).toBe(403);
+  expect(getApiMessage(created.id, messageId)).toMatchObject({ deleted: false });
+
+  const overridden = await handler(
+    request(path, {
+      method: "DELETE",
+      body: JSON.stringify({ v: 1, actorUserId: userId, allowAdmin: true }),
+    }),
+  );
+  expect(overridden?.status).toBe(200);
+  expect(getApiMessage(created.id, messageId)).toMatchObject({ deleted: true });
+});
+
+test("message DELETE validates its envelope and hides another workspace", async () => {
+  const created = topic(`Runtime message delete guards ${randomUUID()}`);
+  const path = `/runtime/v1/topics/${encodeURIComponent(created.id)}/messages/missing`;
+
+  const badVersion = await handler(
+    request(path, {
+      method: "DELETE",
+      body: JSON.stringify({ v: 99, actorUserId: userId }),
+    }),
+  );
+  expect(badVersion?.status).toBe(400);
+
+  const missingActor = await handler(
+    request(path, { method: "DELETE", body: JSON.stringify({ v: 1 }) }),
+  );
+  expect(missingActor?.status).toBe(400);
+
+  const badAdmin = await handler(
+    request(path, {
+      method: "DELETE",
+      body: JSON.stringify({ v: 1, actorUserId: userId, allowAdmin: "yes" }),
+    }),
+  );
+  expect(badAdmin?.status).toBe(400);
+
+  const foreign = await handler(
+    request(path, {
+      method: "DELETE",
+      headers: foreignScope,
+      body: JSON.stringify({ v: 1, actorUserId: userId, allowAdmin: true }),
+    }),
+  );
+  expect(foreign?.status).toBe(404);
+
+  const missing = await handler(
+    request(path, {
+      method: "DELETE",
+      body: JSON.stringify({ v: 1, actorUserId: userId }),
+    }),
+  );
+  expect(missing?.status).toBe(404);
 });
 
 /**

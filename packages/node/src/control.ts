@@ -45,6 +45,7 @@ import {
   type StoredRuntimeEvent,
   saveVaultEntry,
   setGlobalAiName,
+  softDeleteApiMessage,
   type startAiTurn,
   submitRuntimeGatewayTurn,
   submitUserMessage,
@@ -61,6 +62,7 @@ import {
   topicService,
   updateTopicSettings,
   upsertTopic,
+  WsHub,
   writeDecisionGraphSvg,
 } from "@negotium/core/node-host";
 import {
@@ -501,6 +503,7 @@ export function createNodeControlHandler(
               "turn-events-sse-resume",
               "canonical-topic-read",
               "canonical-message-read",
+              "canonical-message-delete",
               "canonical-topic-usage",
               "canonical-file-read",
               "canonical-visual-read",
@@ -846,6 +849,40 @@ export function createNodeControlHandler(
             limit: Number.isFinite(parsedLimit) ? parsedLimit : 50,
           });
           return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, ...result });
+        }
+
+        /**
+         * Soft-delete one canonical transcript message on behalf of an
+         * authenticated product host. The product actor is not necessarily a
+         * participant on ordinary mapped rooms (those execute as `local`), so
+         * authorship — not canonical membership — is the mutation boundary.
+         * `allowAdmin` is an explicit trusted-host override.
+         */
+        const runtimeMessageMatch = runtimePath.match(/^\/topics\/([^/]+)\/messages\/([^/]+)$/);
+        if (runtimeMessageMatch && req.method === "DELETE") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const topicId = decodeURIComponent(runtimeMessageMatch[1]);
+          const messageId = decodeURIComponent(runtimeMessageMatch[2]);
+          const topic = getTopic(topicId);
+          if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
+          const actorUserId = requiredText(body.actorUserId, "actorUserId");
+          if (body.allowAdmin !== undefined && typeof body.allowAdmin !== "boolean") {
+            return jsonError(400, "allowAdmin must be boolean");
+          }
+          const existing = getApiMessage(topicId, messageId);
+          if (!existing || existing.deleted) return jsonError(404, "Message not found");
+          if (existing.authorId !== actorUserId && body.allowAdmin !== true) {
+            return jsonError(403, "Not allowed");
+          }
+          const message = softDeleteApiMessage(topicId, messageId);
+          if (!message) return jsonError(404, "Message not found");
+          WsHub.get().broadcastMessageUpdated(topicId, messageId, { deleted: true, text: "" });
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            message,
+          });
         }
 
         /**

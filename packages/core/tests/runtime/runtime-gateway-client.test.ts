@@ -143,6 +143,43 @@ describe("RuntimeGatewayClient", () => {
     expect(await request?.json()).toEqual({ v: 1, userId: "otium-user" });
   });
 
+  test("deletes a canonical message as a product actor", async () => {
+    let request: Request | undefined;
+    const client = new RuntimeGatewayClient({
+      baseUrl: "http://127.0.0.1:7777",
+      token: "secret",
+      fetch: async (input, init) => {
+        request = requestFrom(input, init);
+        return json({
+          ok: true,
+          v: 1,
+          message: {
+            id: "message-1",
+            topicId: "topic-1",
+            authorId: "product-user",
+            text: "",
+            deleted: true,
+            createdAt: "2026-08-24T00:00:00.000Z",
+          },
+        });
+      },
+    });
+
+    expect(await client.deleteMessage("topic-1", "message-1", "product-user", true)).toMatchObject({
+      id: "message-1",
+      deleted: true,
+    });
+    expect(request?.method).toBe("DELETE");
+    expect(request?.url).toBe(
+      `http://127.0.0.1:7777${RUNTIME_GATEWAY_CONTROL_PATH}/topics/topic-1/messages/message-1`,
+    );
+    expect(await request?.json()).toEqual({
+      v: 1,
+      actorUserId: "product-user",
+      allowAdmin: true,
+    });
+  });
+
   test("derives a canonical topic through the typed client", async () => {
     let request: Request | undefined;
     const client = new RuntimeGatewayClient({

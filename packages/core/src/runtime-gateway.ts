@@ -95,6 +95,15 @@ export interface RuntimeGatewayManagerTopic {
   participants: Array<{ userId: string; role: "owner" | "member" }>;
 }
 
+export interface RuntimeGatewayDeletedMessage {
+  id: string;
+  topicId: string;
+  authorId: string;
+  text: string;
+  deleted: true;
+  createdAt: string;
+}
+
 export interface RuntimeGatewayCronJob {
   id: string;
   name: string;
@@ -212,6 +221,18 @@ function validManagerTopic(value: unknown): value is RuntimeGatewayManagerTopic 
       typeof topic.title === "string" &&
       topic.kind === "manager" &&
       Array.isArray(topic.participants),
+  );
+}
+
+function validDeletedMessage(value: unknown): value is RuntimeGatewayDeletedMessage {
+  const message = record(value);
+  return Boolean(
+    typeof message?.id === "string" &&
+      typeof message.topicId === "string" &&
+      typeof message.authorId === "string" &&
+      typeof message.text === "string" &&
+      message.deleted === true &&
+      typeof message.createdAt === "string",
   );
 }
 
@@ -433,6 +454,46 @@ export class RuntimeGatewayClient {
       );
     }
     return body.topic;
+  }
+
+  async deleteMessage(
+    topicId: string,
+    messageId: string,
+    actorUserId: string,
+    allowAdmin = false,
+  ): Promise<RuntimeGatewayDeletedMessage> {
+    const response = await this.send(
+      `/topics/${encodeURIComponent(topicId)}/messages/${encodeURIComponent(messageId)}`,
+      {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          v: RUNTIME_GATEWAY_VERSION,
+          actorUserId,
+          ...(allowAdmin ? { allowAdmin: true } : {}),
+        }),
+      },
+      this.requestTimeoutMs,
+    );
+    if (!response.ok) {
+      throw new RuntimeGatewayError(
+        "Runtime Gateway message delete failed",
+        "http",
+        response.status,
+      );
+    }
+    const body = record(await json(response));
+    if (
+      body?.ok !== true ||
+      body.v !== RUNTIME_GATEWAY_VERSION ||
+      !validDeletedMessage(body.message)
+    ) {
+      throw new RuntimeGatewayError(
+        "Runtime Gateway message delete response is incompatible",
+        "protocol",
+      );
+    }
+    return body.message;
   }
 
   private async cronRequest(path: string, init: RequestInit): Promise<Record<string, unknown>> {
