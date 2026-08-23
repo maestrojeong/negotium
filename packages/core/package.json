@@ -15,6 +15,7 @@
     "./hosted-agent": "./src/agents/hosted-agent.ts",
     "./registry": "./src/agents/registry.ts",
     "./rollout": "./src/agents/rollout/index.ts",
+    "./cron-mcp-host": "./src/cron-mcp-host.ts",
     "./vault": "./src/storage/vault-public.ts",
     "./storage": "./src/storage/storage-public.ts",
     "./version": "./src/version.ts",

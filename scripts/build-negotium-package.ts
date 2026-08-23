@@ -16,6 +16,7 @@ const packageEntrypoints = new Map<string, string>([
   ["@negotium/core/conversation-migration", "packages/core/src/storage/conversation-migration.ts"],
   ["@negotium/core/media", "packages/core/src/media/text-extractor.ts"],
   ["@negotium/core/cron-host", "packages/core/src/cron-host.ts"],
+  ["@negotium/core/cron-mcp-host", "packages/core/src/cron-mcp-host.ts"],
   ["@negotium/core/hosted-agent", "packages/core/src/agents/hosted-agent.ts"],
   ["@negotium/core/registry", "packages/core/src/agents/registry.ts"],
   ["@negotium/core/rollout", "packages/core/src/agents/rollout/index.ts"],
@@ -208,6 +209,7 @@ for (const entry of await readdir(resolve(runtimeRoot, "cron"))) {
   const path = resolve(runtimeRoot, "cron", entry);
   const source = await readFile(path, "utf8");
   const portable = source
+    .replaceAll("@negotium/core/cron-mcp-host", "../src/cron-mcp-host.ts")
     .replaceAll("@negotium/core/cron-host", "../src/cron-host.ts")
     .replaceAll('from "@negotium/core"', 'from "../src/index.ts"');
   if (portable !== source) await writeFile(path, portable);

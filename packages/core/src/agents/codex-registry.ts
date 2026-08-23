@@ -1,6 +1,5 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { forkCodexSession } from "#agents/codex-app-server";
 import type { AgentRegistry, AgentRegistryOperations } from "#agents/contracts";
 import { hostedCodexHomePath } from "#agents/execution-host";
 import { writeCodexRollout } from "#agents/rollout/codex";
@@ -69,6 +68,10 @@ export const codexRegistryOperations: AgentRegistryOperations = {
   // including tool structure, which gives prompt caching the best chance to
   // reuse the parent context. Callers retain unified-log synthesis as fallback.
   async forkSession({ parentSessionId }) {
+    // The app-server integration resolves the SDK's bundled CLI. Keep that
+    // provider-only dependency out of lightweight registry consumers such as
+    // the stdio Cron MCP server, which runs under Node + tsx.
+    const { forkCodexSession } = await import("#agents/codex-app-server");
     return await forkCodexSession(parentSessionId);
   },
 
