@@ -111,7 +111,7 @@
     },
     "packages/adapter-sdk": {
       "name": "@negotium/adapter-sdk",
-      "version": "0.6.2",
+      "version": "0.6.3",
       "devDependencies": {
         "@types/node": "^20",
         "bun-types": "^1.3.11",
