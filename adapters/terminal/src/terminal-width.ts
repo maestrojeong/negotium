@@ -80,6 +80,31 @@ function isWideSymbol(code: number): boolean {
   );
 }
 
+/**
+ * Conjoining Hangul medials (jungseong) and finals (jongseong): they compose
+ * onto the preceding initial consonant, so they occupy no column of their own.
+ *
+ * They are not `\p{Mn}` — Unicode classifies them as letters — so the combining
+ * probe above cannot find them, and their East Asian Width is Neutral rather
+ * than Wide. Only `wcwidth` (and every terminal that follows it) sizes them at
+ * zero, and the terminal is what this measurement has to agree with.
+ *
+ * Load-bearing on macOS: HFS+/APFS return filenames in NFD, so any dragged-in
+ * path containing Hangul ("스크린샷 …") arrives here decomposed. Left at one
+ * column each, a four-syllable name over-measures by six columns, which pads
+ * the row short and pushes the composer's hardware cursor past the text.
+ *
+ * Scoped to the base block on purpose. Initials (choseong, U+1100–U+115F and
+ * Extended-A U+A960–U+A97F) stay wide: they are the base the rest composes
+ * onto. Extended-B (U+D7B0–U+D7FF) is the same class of jamo and arguably
+ * belongs here too, but it stays wide because terminals disagree about it and
+ * the only observed break involves the base block; see the Extended-B case in
+ * `terminal-width.test.ts`.
+ */
+function isConjoiningJamo(code: number): boolean {
+  return code >= 0x1160 && code <= 0x11ff;
+}
+
 function isWideBlock(code: number): boolean {
   return (
     code >= 0x1100 &&
@@ -114,6 +139,7 @@ function widthOfCode(code: number): number {
   if (code < 0x0300) return 1;
   if (code === 0x200b || code === 0x200d || code === 0xfeff) return 0;
   if (code >= 0xfe00 && code <= 0xfe0f) return 0;
+  if (isConjoiningJamo(code)) return 0;
   // Marks are probed before the wide blocks: several of them (Combining Half
   // Marks, CJK tone marks, kana sound marks) sit inside otherwise-wide ranges.
   for (const [start, end] of COMBINING_PROBE_RANGES) {

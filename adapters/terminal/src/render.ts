@@ -239,11 +239,29 @@ function linkifyUrls(text: string): string {
   });
 }
 
+/**
+ * Spaces substituted for a tab anywhere in rendered output.
+ *
+ * A tab must never survive into a frame: `runeWidth` measures it as one column
+ * while the terminal advances to the next tab stop, so a single tab makes the
+ * printed row wider than the width `renderBody` clipped it to. With the task
+ * sidebar on, the row is a string concatenation of pane + gap + sidebar, so the
+ * extra columns push that row's sidebar slice right and shred the pane border;
+ * without it, the over-wide row auto-wraps and desynchronises every physical row
+ * coordinate the line-diff renderer addresses (see `renderAppFrame`).
+ *
+ * Substituting a fixed count rather than aligning to a real tab stop keeps the
+ * expansion position-independent, which matters because `safeText` also runs on
+ * mid-line slices (`sliceWidth`, `sliceWidthRange`) that do not know their own
+ * starting column. Matches `PASTED_TAB_WIDTH` so input and output agree.
+ */
+export const RENDERED_TAB_WIDTH = 4;
+
 function safeText(value: string): string {
-  return [...stripAnsi(value).replaceAll("\r", "")]
+  return [...stripAnsi(value).replaceAll("\r", "").replaceAll("\t", " ".repeat(RENDERED_TAB_WIDTH))]
     .filter((character) => {
       const code = character.charCodeAt(0);
-      return code === 0x09 || code === 0x0a || (code >= 0x20 && code !== 0x7f);
+      return code === 0x0a || (code >= 0x20 && code !== 0x7f);
     })
     .join("");
 }

@@ -16,6 +16,22 @@ describe("runeWidth", () => {
     expect(displayWidth("a한b")).toBe(4);
   });
 
+  test("measures decomposed Hangul exactly like the composed form", () => {
+    // macOS returns filenames in NFD, so a dragged-in path arrives with every
+    // syllable split into conjoining jamo. The terminal composes them back into
+    // one cell per syllable, so both spellings must measure the same: the
+    // initial carries the two columns and the medial/final carry none.
+    expect(runeWidth("ᄉ")).toBe(2); // Choseong (initial): the base cell
+    expect(runeWidth("ᅳ")).toBe(0); // Jungseong (medial)
+    expect(runeWidth("ᆫ")).toBe(0); // Jongseong (final)
+
+    const composed = "스크린샷 2026-08-23 오전 7.16.37.png";
+    const decomposed = composed.normalize("NFD");
+    expect(decomposed).not.toBe(composed);
+    expect(displayWidth(decomposed)).toBe(displayWidth(composed));
+    expect(displayWidth(decomposed)).toBe(36);
+  });
+
   test("counts Hangul Jamo Extended blocks as two columns", () => {
     // Extended-A (U+A960..A97F) and Extended-B (U+D7B0..D7FF) are emitted by
     // some IMEs while a syllable is still being composed.

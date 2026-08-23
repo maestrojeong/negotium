@@ -2,7 +2,7 @@ import { EFFORT_VALUES, getRegistry, type RuntimeBusEvent, type TopicDto } from 
 import type { NegotiumClient } from "@/client";
 import { terminalNowMs } from "@/clock";
 import type { CodeCopyTarget } from "@/render";
-import { WORKING_FRAME_INTERVAL_MS } from "@/render";
+import { RENDERED_TAB_WIDTH, WORKING_FRAME_INTERVAL_MS } from "@/render";
 import type { ScreenPoint } from "@/selection";
 import { type AppState, activeTopic } from "@/state";
 
@@ -17,8 +17,13 @@ const TERMINAL_VAULT_USAGE =
 export const BRACKETED_PASTE_START = "\u001b[200~";
 export const BRACKETED_PASTE_END = "\u001b[201~";
 
-/** Spaces substituted for a pasted tab. See {@link sanitizePastedText}. */
-export const PASTED_TAB_WIDTH = 4;
+/**
+ * Spaces substituted for a pasted tab. See {@link sanitizePastedText}.
+ *
+ * Aliases the renderer's expansion so a pasted tab and a tab arriving through
+ * tool output collapse to the same number of columns.
+ */
+export const PASTED_TAB_WIDTH = RENDERED_TAB_WIDTH;
 
 const ESC = "\\u001b";
 /** The ESC byte itself. `ESC` above is its regex-source spelling. */
@@ -56,6 +61,10 @@ const REMAINING_CONTROL_PATTERN = new RegExp(
  * judged cheaper than destabilising every width calculation. Revisit — by fixing
  * `displayWidth` rather than by simply passing the tab through — if pasted
  * tabular data turns out to matter in practice.
+ *
+ * The renderer applies the same substitution in `safeText`, because a tab that
+ * arrives through tool output (an Edit preview of a tab-indented file) overflows
+ * its pane for exactly the same reason. Both sides share {@link RENDERED_TAB_WIDTH}.
  */
 export function sanitizePastedText(value: string): string {
   return value

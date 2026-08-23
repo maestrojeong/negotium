@@ -805,6 +805,11 @@ describe("terminal renderer", () => {
   describe("never renders a line wider than the terminal reports", () => {
     const widths = [1, 2, 3, 5, 8, 10, 12, 16, 20, 28, 31, 32, 33, 40, 44, 60, 80, 120, 200];
 
+    /** What a Finder drag-and-drop actually pastes: macOS hands back NFD. */
+    const DECOMPOSED_PATH = "'/Users/me/Desktop/스크린샷 2026-08-23 오전 7.16.37.png'".normalize(
+      "NFD",
+    );
+
     const longMessages: MessageDto[] = [
       {
         id: "cjk",
@@ -886,6 +891,12 @@ describe("terminal renderer", () => {
       },
       "conversation with decision overlay": populated,
       "conversation scrolled": { ...populated, scrollOffset: 5 },
+      // Dropping a macOS file onto the terminal pastes an NFD path.
+      "composer holding a decomposed Hangul path": {
+        ...setTopics(createInitialState("local"), [topic()]),
+        input: DECOMPOSED_PATH,
+        inputCursor: { row: 0, col: [...DECOMPOSED_PATH].length },
+      },
       "task sidebar": {
         ...setMessages(setTopics(createInitialState("local"), [topic()]), "topic", [
           {
@@ -934,6 +945,38 @@ describe("terminal renderer", () => {
         },
       },
       notice: { ...populated, notice: "Copy failed: ENOENT while writing to the clipboard" },
+      // A tab-indented file (the common case for Go, or any tab-styled TS repo)
+      // reaches the renderer verbatim inside an Edit preview. `displayWidth`
+      // scores a tab as one column while the terminal advances to the next tab
+      // stop, so an unexpanded tab silently overflows the conversation pane.
+      "tab-indented tool diff beside the task sidebar": {
+        ...setMessages(setTopics(createInitialState("local"), [topic()]), "topic", [
+          {
+            id: "tasks-tab",
+            topicId: "topic",
+            authorId: "ai",
+            // First line is the panel header; `taskItems` slices it off.
+            text: "Tasks\n- [ ] keep the sidebar aligned\n- [ ] and stay one column wide",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          } as MessageDto,
+          {
+            id: "tool-tab",
+            topicId: "topic",
+            authorId: "ai",
+            kind: "tool",
+            text: [
+              "Edit · /a/very/long/path/to/some/file.ts (+4 -1)",
+              "296 +export function parseLegacyTellText(",
+              "297 +\tvalue: unknown,",
+              '298 +): Message["tellCard"] | undefined {',
+              '299 +\t\tif (typeof value !== "string") return undefined;',
+              "300 +\t\t\tconst patterns = [",
+            ].join("\n"),
+            createdAt: "2026-01-01T00:00:01.000Z",
+          } as MessageDto,
+        ]),
+        taskSidebarEnabled: true,
+      },
     };
 
     for (const [name, state] of Object.entries(scenarios)) {
@@ -954,6 +997,85 @@ describe("terminal renderer", () => {
         }
       });
     }
+
+    // `displayWidth` is the renderer's own measure, so it cannot catch a tab:
+    // it scores one column for a byte the terminal expands to the next tab
+    // stop. The width vector above therefore passes on an over-wide row. This
+    // asserts the property the terminal actually sees.
+    test("emits no tab, so measured width matches what the terminal prints", () => {
+      const TERMINAL_TAB_STOP = 8;
+      const printedWidth = (row: string): number => {
+        let columns = 0;
+        for (const character of stripAnsi(row)) {
+          columns =
+            character === "\t"
+              ? (Math.floor(columns / TERMINAL_TAB_STOP) + 1) * TERMINAL_TAB_STOP
+              : columns + displayWidth(character);
+        }
+        return columns;
+      };
+
+      for (const [name, state] of Object.entries(scenarios)) {
+        for (const cols of widths) {
+          const rows = renderAppFrame(state, cols, 24).frame.split("\n");
+          expect({ name, cols, tabs: rows.some((row) => row.includes("\t")) }).toEqual({
+            name,
+            cols,
+            tabs: false,
+          });
+          expect({ name, cols, widths: rows.map(printedWidth) }).toEqual({
+            name,
+            cols,
+            widths: rows.map(() => cols),
+          });
+        }
+      }
+    });
+
+    // A decomposed path renders the same glyphs as the composed one, so the
+    // frame and the hardware cursor must be byte-identical between the two.
+    // Over-measuring the medial/final jamo pads the composer row short and
+    // leaves the caret parked in the blank space past the text.
+    test("renders a decomposed Hangul path exactly like the composed one", () => {
+      const composed = DECOMPOSED_PATH.normalize("NFC");
+      const stateFor = (input: string) => ({
+        ...setTopics(createInitialState("local"), [topic()]),
+        input,
+        inputCursor: { row: 0, col: [...input].length },
+      });
+
+      for (const cols of [44, 80, 120]) {
+        const nfd = renderAppFrame(stateFor(DECOMPOSED_PATH), cols, 24);
+        const nfc = renderAppFrame(stateFor(composed), cols, 24);
+        expect({ cols, cursor: nfd.cursor }).toEqual({ cols, cursor: nfc.cursor });
+        expect({ cols, frame: stripAnsi(nfd.frame).normalize("NFC") }).toEqual({
+          cols,
+          frame: stripAnsi(nfc.frame),
+        });
+      }
+    });
+
+    // The sidebar is a per-row string concatenation of pane + gap + sidebar, so
+    // an over-wide conversation row shifts that row's border and shreds the
+    // pane. Asserting the border column is identical on every row catches the
+    // tear directly, independent of how the row width was measured.
+    test("keeps the task sidebar border in one column on every row", () => {
+      const state = scenarios["tab-indented tool diff beside the task sidebar"];
+      // Below TASK_SIDEBAR_MIN_WIDTH the panel renders inline and there is no
+      // border to align, so the sidebar widths are the only interesting ones.
+      for (const cols of [110, 120, 200]) {
+        const borderColumns = new Set(
+          stripAnsi(renderAppFrame(state, cols, 24).frame)
+            .split("\n")
+            .map((row) => row.search(/[╭╰│]/))
+            .filter((column) => column >= 0),
+        );
+        expect({ cols, borderColumns: [...borderColumns] }).toEqual({
+          cols,
+          borderColumns: [cols - 36],
+        });
+      }
+    });
 
     test("keeps a bordered pane exactly at the requested width", () => {
       // The pane that PR #34775 was about: a decision box whose content is far
