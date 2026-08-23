@@ -40,7 +40,9 @@ export const OTIUM_GATEWAY_FORWARD_PREFIX = "/api/v1/peer/runtime";
 function allowedRuntimePath(path: string, method: string): boolean {
   if (method === "GET") {
     if (path === "/health" || path === "/events" || path === "/topics") return true;
-    return /^\/topics\/[^/]+(\/messages)?$/.test(path);
+    if (/^\/topics\/[^/]+(\/messages|\/usage)?$/.test(path)) return true;
+    if (/^\/topics\/[^/]+\/files\/[^/]+$/.test(path)) return true;
+    return /^\/topics\/[^/]+\/visuals\/\d+$/.test(path);
   }
   if (method === "POST") {
     if (path === "/turns" || path === "/input-files") return true;

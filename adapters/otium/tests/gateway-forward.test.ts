@@ -71,6 +71,9 @@ test("forwards the whole read/turn/room-mutation contract the gateway client spe
     ["GET", "/topics"],
     ["GET", "/topics/abc"],
     ["GET", "/topics/abc/messages"],
+    ["GET", "/topics/abc/usage"],
+    ["GET", "/topics/abc/files/file-1"],
+    ["GET", "/topics/abc/visuals/42"],
     ["POST", "/turns"],
     ["POST", "/input-files"],
     // Creating a room on the worker the hub already drives: the same hub that
@@ -147,7 +150,16 @@ test("refuses a write method that is not part of the contract", async () => {
 });
 
 test("does not let a nested path escape the allowed topic shape", async () => {
-  for (const path of ["/topics/abc/vault", "/topics/abc/messages/extra", "/topics/abc/abort"]) {
+  for (const path of [
+    "/topics/abc/vault",
+    "/topics/abc/messages/extra",
+    "/topics/abc/abort",
+    "/topics/abc/usage/extra",
+    "/topics/abc/files",
+    "/topics/abc/files/file-1/extra",
+    "/topics/abc/visuals/not-a-number",
+    "/topics/abc/visuals/42/extra",
+  ]) {
     const { fetch: stub, calls } = captureFetch();
     const response = await forwardGatewayRequest(forwardRequest(path), {
       nodeOrigin: NODE_ORIGIN,
