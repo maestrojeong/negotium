@@ -926,6 +926,20 @@ export function createNodeControlHandler(
           return nodeFileStore.response(fileId, userId) ?? jsonError(404, "File not found");
         }
 
+        const runtimeUsageMatch = runtimePath.match(/^\/topics\/([^/]+)\/usage$/);
+        if (runtimeUsageMatch && req.method === "GET") {
+          const topicId = decodeURIComponent(runtimeUsageMatch[1]);
+          const topic = getTopic(topicId);
+          if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
+          const userId = requiredText(url.searchParams.get("user"), "user");
+          if (!isParticipant(topic, userId)) return jsonError(404, "Topic not found");
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            usage: getTopicStats(userId, topicId),
+          });
+        }
+
         const runtimeTopicMatch = runtimePath.match(/^\/topics\/([^/]+)$/);
         if (runtimeTopicMatch && req.method === "GET") {
           const topic = getTopic(decodeURIComponent(runtimeTopicMatch[1]));
