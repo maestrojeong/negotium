@@ -1538,6 +1538,48 @@ describe("terminal renderer", () => {
     expect((target?.xEnd ?? 0) - (target?.xStart ?? 0) + 1).toBe(header.length);
   });
 
+  test("renders a visualize reference as a bounded passive card", () => {
+    const path = "/tmp/architecture review.html";
+    const message: MessageDto = {
+      id: "visualization-message",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text: `\ue200visualize\ue202${JSON.stringify({ path, mode: "wide" })}\ue201`,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [message]);
+
+    const rendered = renderAppFrame(state, 100, 30);
+    const plain = stripAnsi(rendered.frame);
+    expect(plain).toContain("◇ visualization · wide · architecture review.html");
+    expect(plain).not.toContain("\ue200visualize");
+    expect(message.text).toContain("\ue200visualize");
+
+    const narrow = renderAppFrame(state, 24, 20);
+    for (const row of stripAnsi(narrow.frame).split("\n")) {
+      expect(displayWidth(row)).toBeLessThanOrEqual(24);
+    }
+  });
+
+  test("leaves malformed visualize references literal", () => {
+    const text = "\ue200visualize\ue202not-json\ue201";
+    const message: MessageDto = {
+      id: "malformed-visualization",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [message]);
+
+    const rendered = renderAppFrame(state, 60, 20);
+    expect(stripAnsi(rendered.frame)).toContain(text);
+  });
+
   test("does not inject the speaker marker into a leading code block", () => {
     const message: MessageDto = {
       id: "message",
