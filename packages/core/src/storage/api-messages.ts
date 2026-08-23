@@ -34,6 +34,7 @@ function initializeApiMessagesSchema(): void {
     reactions TEXT,
     kind TEXT,
     ask_user_question TEXT,
+    tell_card TEXT,
     mentions TEXT,
     thread_root_id TEXT,
     created_at TEXT NOT NULL
@@ -72,6 +73,11 @@ function initializeApiMessagesSchema(): void {
   }
   try {
     db.exec("ALTER TABLE api_messages ADD COLUMN ask_user_question TEXT");
+  } catch {
+    // Column already exists.
+  }
+  try {
+    db.exec("ALTER TABLE api_messages ADD COLUMN tell_card TEXT");
   } catch {
     // Column already exists.
   }
@@ -121,6 +127,7 @@ export interface ApiMessageRow {
   reactions: string | null;
   kind: string | null;
   ask_user_question: string | null;
+  tell_card: string | null;
   subagent_card: string | null;
   mentions: string | null;
   thread_root_id: string | null;
@@ -175,6 +182,7 @@ function rowToDto(r: ApiMessageRow): MessageDto {
     reactions: r.reactions ? JSON.parse(r.reactions) : undefined,
     kind: (r.kind as MessageDto["kind"] | null) ?? undefined,
     askUserQuestion: r.ask_user_question ? JSON.parse(r.ask_user_question) : undefined,
+    tellCard: r.tell_card ? JSON.parse(r.tell_card) : undefined,
     subagentCard: r.subagent_card ? JSON.parse(r.subagent_card) : undefined,
     mentions: r.mentions ? JSON.parse(r.mentions) : undefined,
     threadRootId: r.thread_root_id ?? undefined,
@@ -210,8 +218,8 @@ export function appendApiMessage(msg: MessageDto, options: AppendApiMessageOptio
     const result = db
       .query(
         `INSERT INTO api_messages
-         (id, topic_id, parent_id, author_id, source_adapter, source_node, source_message_id, text, query_id, agent_type, model, attachments, usage, deleted, edited_at, reactions, kind, ask_user_question, subagent_card, mentions, thread_root_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (id, topic_id, parent_id, author_id, source_adapter, source_node, source_message_id, text, query_id, agent_type, model, attachments, usage, deleted, edited_at, reactions, kind, ask_user_question, tell_card, subagent_card, mentions, thread_root_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO NOTHING`,
       )
       .run(
@@ -233,6 +241,7 @@ export function appendApiMessage(msg: MessageDto, options: AppendApiMessageOptio
         msg.reactions?.length ? JSON.stringify(msg.reactions) : null,
         msg.kind ?? null,
         msg.askUserQuestion ? JSON.stringify(msg.askUserQuestion) : null,
+        msg.tellCard ? JSON.stringify(msg.tellCard) : null,
         msg.subagentCard ? JSON.stringify(msg.subagentCard) : null,
         msg.mentions?.length ? JSON.stringify(msg.mentions) : null,
         msg.threadRootId ?? null,

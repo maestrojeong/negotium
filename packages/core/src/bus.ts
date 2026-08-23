@@ -58,9 +58,14 @@ export interface RuntimeBus {
     topicId: string,
     queryId: string,
     usage?: NonNullable<MessageDto["usage"]>,
-    meta?: { agent?: AgentKind; model?: string },
+    meta?: { agent?: AgentKind; model?: string; budgetReason?: "cost" | "wall_time" },
   ): void;
   broadcastError(topicId: string, queryId: string, error: string): void;
+  broadcastTopicNotice(
+    topicId: string,
+    severity: "info" | "warning" | "error",
+    label: string,
+  ): void;
   broadcastAborted(topicId: string, queryId: string, reason?: "superseded" | "stopped"): void;
   broadcastToolCall(
     topicId: string,
@@ -214,7 +219,7 @@ export class SqliteRuntimeBus implements RuntimeBus {
     topicId: string,
     queryId: string,
     usage?: NonNullable<MessageDto["usage"]>,
-    meta?: { agent?: AgentKind; model?: string },
+    meta?: { agent?: AgentKind; model?: string; budgetReason?: "cost" | "wall_time" },
   ): void {
     this.broadcastAiStatus(topicId, {
       kind: "ai_done",
@@ -222,11 +227,25 @@ export class SqliteRuntimeBus implements RuntimeBus {
       usage,
       agent: meta?.agent,
       model: meta?.model,
+      budgetReason: meta?.budgetReason,
     });
   }
 
   broadcastError(topicId: string, queryId: string, error: string): void {
     this.broadcastAiStatus(topicId, { kind: "ai_error", queryId, error });
+  }
+
+  broadcastTopicNotice(
+    topicId: string,
+    severity: "info" | "warning" | "error",
+    label: string,
+  ): void {
+    this.broadcastAiStatus(topicId, {
+      kind: "topic_notice",
+      severity,
+      label,
+      ts: new Date().toISOString(),
+    });
   }
 
   broadcastAborted(topicId: string, queryId: string, reason?: "superseded" | "stopped"): void {

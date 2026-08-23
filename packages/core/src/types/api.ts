@@ -257,9 +257,10 @@ export interface MessageDto {
   threadLastReplyAt?: string;
   /** Emoji reactions, one entry per (user, emoji). */
   reactions?: ReactionDto[];
-  kind?: "message" | "system" | "tool" | "ask_user_question" | "subagent";
+  kind?: "message" | "system" | "tool" | "ask_user_question" | "subagent" | "tell";
   askUserQuestion?: AskUserQuestionDto;
   subagentCard?: SubagentCardDto;
+  tellCard?: TellCardDto;
   createdAt: string;
 }
 export interface AskUserQuestionDto {
@@ -267,6 +268,15 @@ export interface AskUserQuestionDto {
   choices: { label: string; description?: string }[];
   selectedLabel?: string;
   expired?: boolean;
+}
+
+/** Structured cross-session delivery. Never inferred from system-message text. */
+export interface TellCardDto {
+  fromLabel: string;
+  fromTopicId?: string;
+  /** Display heading for Ask/Reply/Error variants using the shared session card. */
+  label?: string;
+  message: string;
 }
 
 export type SubagentCardStatus = "ready" | "spawned" | "running" | "completed" | "failed";

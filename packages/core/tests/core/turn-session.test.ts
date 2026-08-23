@@ -146,6 +146,47 @@ afterEach(() => {
 });
 
 describe("turn session resolution", () => {
+  test("visible session injects persist explicit TellCard metadata", () => {
+    const topicId = seedTopic();
+    setRoomQuery({
+      topicId,
+      queryId: "running-user",
+      origin: "user",
+      prompt: "running prompt",
+      abortController: new AbortController(),
+      abortReason: AbortReason.None,
+    });
+    try {
+      expect(
+        triggerTopicAiTurn(topicId, "owner", "[Tell from **source-room**]\n\nhello", undefined, {
+          origin: "source-room",
+          requestId: "tell-visible",
+          injectAuthorId: "system",
+          injectSourceAdapter: "session-comm",
+          injectKind: "tell",
+          injectTellCard: {
+            fromLabel: "source-room",
+            fromTopicId: "source-topic-id",
+            message: "hello",
+          },
+        }),
+      ).toBeNull();
+
+      expect(getAllMessagesForTopic(topicId).at(-1)).toMatchObject({
+        author_id: "system",
+        source_adapter: "session-comm",
+        kind: "tell",
+        tell_card: JSON.stringify({
+          fromLabel: "source-room",
+          fromTopicId: "source-topic-id",
+          message: "hello",
+        }),
+      });
+    } finally {
+      clearRoomQuery(topicId, "running-user");
+    }
+  });
+
   test("direct turns resume the durable topic session", () => {
     const topicId = seedTopic();
     setTopicSessionId(topicId, "persisted-session", { reason: "test", agent: "codex" });
@@ -455,6 +496,12 @@ describe("turn session resolution", () => {
       error: "failed to prepare isolated session: provider unavailable",
     });
     expect(statuses.some((status) => status.kind === "ai_done")).toBe(false);
+    expect(listRecentRuntimeEventsForTopic(topicId).map((event) => event.payload)).toContainEqual({
+      kind: "topic_notice",
+      severity: "error",
+      label: "응답 실패",
+      ts: expect.any(String),
+    });
   });
 });
 

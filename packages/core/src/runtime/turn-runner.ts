@@ -182,11 +182,15 @@ function notifyPlaywrightUnavailable(topicId: string) {
     topicId,
     "Playwright browser tools are unavailable this turn. Browser automation was removed from the tool catalog; retry shortly if browser interaction is required.",
   );
+  WsHub.get().broadcastTopicNotice(topicId, "info", "Playwright 사용 불가");
 }
 
 function appendAskReplyMessage(
   topicId: string,
   text: string,
+  sourceLabel: string,
+  body: string,
+  kind: "reply" | "error",
   agentType?: AgentKind | null,
 ): MessageDto {
   const message: MessageDto = {
@@ -194,6 +198,12 @@ function appendAskReplyMessage(
     topicId,
     authorId: "ai",
     text,
+    kind: "tell",
+    tellCard: {
+      fromLabel: sourceLabel,
+      label: `${kind === "error" ? "Error" : "Reply"} from ${sourceLabel}`,
+      message: body,
+    },
     ...(agentType ? { agentType } : {}),
     createdAt: new Date().toISOString(),
   };
@@ -445,7 +455,7 @@ export async function deliverAskCallbackToCaller(
 
   if (!callerTopic?.agent) {
     try {
-      appendAskReplyMessage(pending.callerTopicId, prompt);
+      appendAskReplyMessage(pending.callerTopicId, prompt, sourceLabel, body, kind);
       await clearPendingAskFile(pending);
       return true;
     } catch (err) {
@@ -485,7 +495,14 @@ export async function deliverAskCallbackToCaller(
   if (queued) {
     // Keep individual replies visible in topic history; only the model-facing
     // caller turn is coalesced into one prompt.
-    appendAskReplyMessage(pending.callerTopicId, prompt, callerTopic.agent);
+    appendAskReplyMessage(
+      pending.callerTopicId,
+      prompt,
+      sourceLabel,
+      body,
+      kind,
+      callerTopic.agent,
+    );
     await markPendingAskFile(pending, "queued_for_caller");
     return true;
   }
@@ -501,7 +518,7 @@ export async function deliverAskCallbackToCaller(
     { requestId: pending.requestId, callerTopicId: pending.callerTopicId, source: sourceLabel },
     "sessions: ask callback could not enter caller batch; appending direct fallback",
   );
-  appendAskReplyMessage(pending.callerTopicId, prompt, callerTopic.agent);
+  appendAskReplyMessage(pending.callerTopicId, prompt, sourceLabel, body, kind, callerTopic.agent);
   await clearPendingAskFile(pending);
   return true;
 }
@@ -715,6 +732,9 @@ export interface TriggerTopicAiTurnOptions extends AiTurnExecutionOptions {
   hideInjectMessage?: boolean;
   /** Visible injected-message author. Execution still runs as `userId`. */
   injectAuthorId?: string;
+  /** Structured presentation metadata for an explicit cross-session delivery. */
+  injectKind?: MessageDto["kind"];
+  injectTellCard?: MessageDto["tellCard"];
   /** Identifies the subsystem that created the visible injected message. */
   injectSourceAdapter?: string;
   injectSourceNode?: string;
@@ -1783,6 +1803,40 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         }
       }
 
+      if (outcome.kind === "budget-capped") {
+        const error = "The job reached its cost limit";
+        if (!silent) {
+          appendSystemMessage(
+            topicId,
+            "여기까지 완료했어요. 비용 예산 한도에 도달해 작업을 멈췄습니다.",
+          );
+          WsHub.get().broadcastDone(
+            topicId,
+            queryId,
+            outcome.usage
+              ? {
+                  input: outcome.usage.inputTokens,
+                  output: outcome.usage.outputTokens,
+                  cachedInput: outcome.usage.cacheReadInputTokens,
+                  context: outcome.usage.contextTokens,
+                  contextWindow: outcome.usage.contextWindow,
+                }
+              : undefined,
+            { agent: agentKind, model: resolvedModel, budgetReason: outcome.reason },
+          );
+          WsHub.get().broadcastTopicNotice(topicId, "warning", "예산 한도 도달");
+        } else {
+          await deliverAskError(queryId, topic.title, error);
+        }
+        await settleSubagentFailure(queryId, error);
+        try {
+          onSettled?.({ queryId, kind: "error", error });
+        } catch (err) {
+          logger.warn({ err, topicId, queryId }, "ai: turn settlement hook failed");
+        }
+        return;
+      }
+
       if (outcome.kind === "provider-error") {
         if (!silent) {
           // Provider failures are user-visible, but Otium does not automatically
@@ -1793,6 +1847,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
             `${classifyAgentError(outcome.error, agentKind)}\n\n다른 등록된 모델을 쓰려면 /model <model>로 바꾼 뒤 다시 보내세요.`,
           );
           WsHub.get().broadcastError(topicId, queryId, outcome.error);
+          WsHub.get().broadcastTopicNotice(topicId, "error", "응답 실패");
         }
         await deliverAskError(queryId, topic.title, outcome.error);
         await settleSubagentFailure(queryId, classifyAgentError(outcome.error, agentKind));
@@ -1826,6 +1881,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       );
       if (!silent) {
         WsHub.get().broadcastError(topicId, queryId, error);
+        WsHub.get().broadcastTopicNotice(topicId, "error", "응답 실패");
       }
       await settleSubagentFailure(queryId, classifyAgentError(error, agentKind));
       try {
@@ -1918,6 +1974,8 @@ export function triggerTopicAiTurn(
       text: prompt,
       agentType: execution.agent,
       model: execution.model,
+      kind: opts?.injectKind,
+      tellCard: opts?.injectTellCard,
       createdAt: now,
     };
     try {

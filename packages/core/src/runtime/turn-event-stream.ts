@@ -81,6 +81,7 @@ import type { MessageDto } from "#types/api";
 export type StreamAgentOutcome =
   | { kind: "completed" }
   | { kind: "aborted" }
+  | { kind: "budget-capped"; reason: "cost"; usage?: TokenUsage }
   | { kind: "session-expired"; error: string }
   | { kind: "provider-error"; error: string };
 
@@ -706,6 +707,10 @@ export async function runTurnEventStream(
           );
           terminalEmitted = true;
           errorOccurred = true;
+          if (event.code === "budget_exceeded") {
+            outcome = { kind: "budget-capped", reason: "cost", usage: event.usage };
+            return outcome;
+          }
           if (retryableSessionExpired && isSessionExpiredError(event.content)) {
             outcome = { kind: "session-expired", error: event.content };
             return outcome;

@@ -409,6 +409,7 @@ export type {
   SubagentCardDto,
   SubagentCardStatus,
   SubagentReportMode,
+  TellCardDto,
   TopicDto,
   TopicKind,
   TopicVisibility,

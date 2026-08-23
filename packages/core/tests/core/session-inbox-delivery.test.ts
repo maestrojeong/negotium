@@ -18,10 +18,13 @@ import { join } from "node:path";
 import { SESSION_INBOX_DIR } from "#platform/config";
 import { sessionInboxPath } from "#query/session-inbox-path";
 import {
+  notifyCallerTopic,
   SESSION_INBOX_COALESCE_MS,
   SESSION_INBOX_POLL_MS,
   startSessionInboxWorker,
 } from "#runtime/inbox";
+import { deleteMessagesForTopic, getApiMessage } from "#storage/api-messages";
+import "#storage/api-topics";
 import { db } from "#storage/forum-db";
 import { enqueueSessionInbox } from "#storage/session-inbox";
 import { SESSION_INBOX_WAKE_FILE } from "#storage/session-inbox-signal";
@@ -72,8 +75,32 @@ async function waitForDrain(topicId: string, timeoutMs: number): Promise<number 
 
 afterEach(() => {
   while (stoppers.length > 0) stoppers.pop()?.();
-  for (const id of topicIds) db.run("DELETE FROM session_inbox WHERE topic_id = ?", [id]);
+  for (const id of topicIds) {
+    db.run("DELETE FROM session_inbox WHERE topic_id = ?", [id]);
+    deleteMessagesForTopic(id);
+  }
   topicIds.clear();
+});
+
+test("ask_session replies persist explicit TellCard metadata", () => {
+  const topicId = newTopicId();
+  notifyCallerTopic(topicId, "target-room", "reference result");
+
+  const row = db
+    .query<{ id: string }, [string]>(
+      "SELECT id FROM api_messages WHERE topic_id = ? ORDER BY rowid DESC LIMIT 1",
+    )
+    .get(topicId);
+  expect(row).toBeDefined();
+  expect(getApiMessage(topicId, row?.id ?? "")).toMatchObject({
+    authorId: "system",
+    kind: "tell",
+    tellCard: {
+      fromLabel: "target-room",
+      label: "Reply from target-room",
+      message: "reference result",
+    },
+  });
 });
 
 function startWorker(): void {

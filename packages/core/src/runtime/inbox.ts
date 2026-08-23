@@ -59,7 +59,7 @@ import {
 } from "#storage/session-inbox";
 import { subscribeSessionInboxWrite } from "#storage/session-inbox-signal";
 import type { AgentKind } from "#types";
-import type { TopicSurface } from "#types/api";
+import type { MessageDto, TopicSurface } from "#types/api";
 
 // ── Entry types (match MCP server.ts write format) ──────────────────
 
@@ -254,12 +254,23 @@ async function resolveEntryCallerTopic(
   return getTopicByNameForUser(entry.from, String(scope.userId), opts);
 }
 
-function notifyCallerTopic(callerTopicId: string, targetLabel: string, message: string): void {
-  const msg = {
+export function notifyCallerTopic(
+  callerTopicId: string,
+  targetLabel: string,
+  message: string,
+  label = `Reply from ${targetLabel}`,
+): void {
+  const msg: MessageDto = {
     id: randomUUID(),
     topicId: callerTopicId,
     authorId: "system",
     text: `[<- ${targetLabel}]\n${message}`,
+    kind: "tell",
+    tellCard: {
+      fromLabel: targetLabel,
+      label,
+      message,
+    },
     createdAt: new Date().toISOString(),
   };
   appendApiMessage(msg, { notify: false });
@@ -273,11 +284,17 @@ function persistVisibleAskMessage(args: {
   requestId: string;
   message: string;
 }): void {
-  const msg = {
+  const msg: MessageDto = {
     id: `ask-${args.requestId}-sent`,
     topicId: args.callerTopicId,
     authorId: args.callerUserId,
     text: `[Ask to **${args.targetLabel}**]\n\n${args.message}`,
+    kind: "tell",
+    tellCard: {
+      fromLabel: args.targetLabel,
+      label: `Ask to ${args.targetLabel}`,
+      message: args.message,
+    },
     createdAt: new Date().toISOString(),
   };
   try {
@@ -306,7 +323,7 @@ async function notifyAskDrop(
     return;
   }
   try {
-    notifyCallerTopic(callerTopic.id, targetLabel, message);
+    notifyCallerTopic(callerTopic.id, targetLabel, message, `Error from ${targetLabel}`);
   } catch (err) {
     logger.warn(
       { err, from: entry.from, to: targetLabel, requestId: entry.requestId },
@@ -866,6 +883,12 @@ async function handleTellEntry(
         authorId: "system",
         sourceAdapter: "session-comm",
         text,
+        kind: "tell",
+        tellCard: {
+          fromLabel,
+          fromTopicId: entry.fromTopicId,
+          message: entry.message,
+        },
         createdAt: now,
       });
     } catch (e) {
@@ -890,6 +913,12 @@ async function handleTellEntry(
         hideInjectMessage: isHiddenContinue,
         injectAuthorId: "system",
         injectSourceAdapter: "session-comm",
+        injectKind: "tell",
+        injectTellCard: {
+          fromLabel,
+          fromTopicId: entry.fromTopicId,
+          message: entry.message,
+        },
       },
     );
   }
