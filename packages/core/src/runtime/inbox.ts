@@ -472,6 +472,12 @@ export async function dispatchDueSelfSchedules(
         depth: 0,
         from: fromLabel,
         injectAuthorId: "system",
+        injectSourceAdapter: "self-schedule",
+        injectKind: "tell",
+        injectTellCard: {
+          fromLabel,
+          message: schedule.message,
+        },
         onSettled: (result) => {
           settled = true;
           stopClaimHeartbeat();

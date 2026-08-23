@@ -223,6 +223,11 @@ describe("self-config core", () => {
         expect(dispatchedTopicId).toBe(topicId);
         expect(dispatchedUserId).toBe(USER);
         expect(prompt).toContain("Check the build.");
+        expect(options?.injectKind).toBe("tell");
+        expect(options?.injectTellCard).toMatchObject({
+          fromLabel: "Scheduled self",
+          message: "Check the build.",
+        });
         settle = options?.onSettled as typeof settle;
         return "scheduled-query";
       },
