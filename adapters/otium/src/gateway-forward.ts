@@ -22,9 +22,7 @@
  * loopback-only.
  */
 import { NODE_CONTROL_TOKEN } from "@negotium/core";
-
-/** Mirrors `NODE_RUNTIME_CONTRACT_BASE_PATH` without importing @negotium/node. */
-const RUNTIME_CONTRACT_PATH = "/api/v1/control/runtime/v1";
+import { RUNTIME_GATEWAY_CONTROL_PATH } from "@negotium/core/runtime-gateway";
 
 /** Mirrors `NODE_RUNTIME_SURFACE_SCOPE_HEADER`, for the same reason. */
 const SURFACE_SCOPE_HEADER = "x-negotium-surface-scope";
@@ -123,7 +121,7 @@ export async function forwardGatewayRequest(
   }
 
   const target = new URL(
-    `${options.nodeOrigin.replace(/\/+$/, "")}${RUNTIME_CONTRACT_PATH}${runtimePath}`,
+    `${options.nodeOrigin.replace(/\/+$/, "")}${RUNTIME_GATEWAY_CONTROL_PATH}${runtimePath}`,
   );
   target.search = url.search;
   const headers = new Headers(req.headers);

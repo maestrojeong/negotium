@@ -768,10 +768,14 @@ const rollout = await import("negotium/rollout");
 const vault = await import("negotium/vault");
 const prompts = await import("negotium/prompts");
 const runtimeHelpers = await import("negotium/runtime-helpers");
+const runtimeGateway = await import("negotium/runtime-gateway");
 const storage = await import("negotium/storage");
 const sqlite = await import("negotium/sqlite");
 if (typeof hostedAgent.configureAgentExecutionHost !== "function") {
   throw new Error("packed hosted-agent export is missing");
+}
+if (typeof runtimeGateway.RuntimeGatewayClient !== "function") {
+  throw new Error("packed runtime-gateway client export is missing");
 }
 if (typeof browserRuntime.configurePlaywrightManagerHost !== "function") {
   throw new Error("packed browser runtime host configurator is missing");
@@ -1245,6 +1249,7 @@ for (const subpath of [
   "./vault",
   "./prompts",
   "./runtime-helpers",
+  "./runtime-gateway",
   "./sqlite",
   "./storage",
 ]) {
