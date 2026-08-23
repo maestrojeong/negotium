@@ -52,6 +52,28 @@ export function listCronScripts(): string[] {
     .sort();
 }
 
+/**
+ * Scripts exposed to one relayed workspace. Loopback callers omit a scope and
+ * retain the node-local catalog; scoped callers receive only names explicitly
+ * assigned through NEGOTIUM_CRON_SCRIPT_SCOPES JSON.
+ */
+export function listCronScriptsForScope(surfaceScope?: string | null): string[] {
+  const scripts = listCronScripts();
+  if (surfaceScope === undefined) return scripts;
+  const raw = process.env.NEGOTIUM_CRON_SCRIPT_SCOPES?.trim();
+  if (!raw || !surfaceScope) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+    const allowed = (parsed as Record<string, unknown>)[surfaceScope];
+    if (!Array.isArray(allowed)) return [];
+    const names = new Set(allowed.filter((value): value is string => typeof value === "string"));
+    return scripts.filter((script) => names.has(script));
+  } catch {
+    return [];
+  }
+}
+
 export function cronScriptExists(script: string): boolean {
   try {
     return existsSync(resolveCronScriptPath(script));

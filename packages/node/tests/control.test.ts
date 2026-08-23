@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -31,6 +31,7 @@ import {
   recordUsage,
   writeDecisions,
 } from "@negotium/core/storage";
+import { CRON_JOBS_DIR } from "@negotium/module-cron";
 import {
   createNodeControlHandler,
   NODE_CONTROL_BASE_PATH,
@@ -147,6 +148,93 @@ test("runtime gateway ensures one private manager topic per external user", asyn
     }),
   );
   expect(turn?.status).toBe(202);
+});
+
+test("runtime gateway keeps Cron execution and actor ownership separate", async () => {
+  const principal = `cron-principal-${randomUUID()}`;
+  const topic = registerTopic({
+    title: `Cron actor ${randomUUID()}`,
+    userId: principal,
+    agent: "codex",
+    surface: "otium",
+  });
+  const script = `gateway-${randomUUID()}.py`;
+  const scriptPath = join(CRON_JOBS_DIR, script);
+  mkdirSync(CRON_JOBS_DIR, { recursive: true });
+  writeFileSync(scriptPath, "print('ok')");
+  const name = `same-name-${randomUUID()}`;
+  const create = async (actorUserId: string) =>
+    handler(
+      runtimeRequest("/cron/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          v: NODE_RUNTIME_CONTRACT_VERSION,
+          userId: principal,
+          actorUserId,
+          topicId: topic.id,
+          name,
+          script,
+          schedule: "*/5 * * * *",
+          timezone: "UTC",
+        }),
+      }),
+    );
+  try {
+    const first = await create("product-a");
+    const firstJob = (await first?.json()) as {
+      job?: { id: string; executionPrincipalUserId: string; actorOwnerUserId: string };
+    };
+    const second = await create("product-b");
+    expect(first?.status).toBe(201);
+    expect(second?.status).toBe(201);
+    expect(firstJob.job).toMatchObject({
+      executionPrincipalUserId: principal,
+      actorOwnerUserId: "product-a",
+    });
+
+    const own = await handler(
+      runtimeRequest(`/cron/jobs?user=${principal}&actorUserId=product-a&actorIsAdmin=0`),
+    );
+    expect(((await own?.json()) as { jobs?: Array<{ id: string }> }).jobs).toEqual([
+      expect.objectContaining({ id: firstJob.job?.id }),
+    ]);
+
+    const denied = await handler(
+      runtimeRequest(`/cron/jobs/${firstJob.job?.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          v: NODE_RUNTIME_CONTRACT_VERSION,
+          userId: principal,
+          actorUserId: "product-b",
+          patch: { enabled: false },
+        }),
+      }),
+    );
+    expect(denied?.status).toBe(403);
+    const updated = await handler(
+      runtimeRequest(`/cron/jobs/${firstJob.job?.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          v: NODE_RUNTIME_CONTRACT_VERSION,
+          userId: principal,
+          actorUserId: "product-a",
+          patch: { enabled: false },
+        }),
+      }),
+    );
+    expect((await updated?.json()) as { job?: { enabled: boolean } }).toMatchObject({
+      job: { enabled: false },
+    });
+    const deleted = await handler(
+      runtimeRequest(
+        `/cron/jobs/${firstJob.job?.id}?user=${principal}&actorUserId=product-a&actorIsAdmin=0`,
+        { method: "DELETE" },
+      ),
+    );
+    expect(deleted?.status).toBe(200);
+  } finally {
+    unlinkSync(scriptPath);
+  }
 });
 
 test("runtime gateway topic create makes a shared canonical topic", async () => {

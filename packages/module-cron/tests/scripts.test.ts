@@ -4,12 +4,14 @@ import { join } from "node:path";
 import {
   CRON_JOBS_DIR,
   CronScriptError,
+  listCronScriptsForScope,
   runCronPromptScript,
   validateCronScriptName,
 } from "../src/scripts";
 
 const created: string[] = [];
 const originalPython = process.env.NEGOTIUM_CRON_PYTHON;
+const originalScopes = process.env.NEGOTIUM_CRON_SCRIPT_SCOPES;
 
 function writeNodeFixture(name: string, source: string): void {
   mkdirSync(CRON_JOBS_DIR, { recursive: true });
@@ -29,6 +31,8 @@ afterEach(() => {
   }
   if (originalPython === undefined) delete process.env.NEGOTIUM_CRON_PYTHON;
   else process.env.NEGOTIUM_CRON_PYTHON = originalPython;
+  if (originalScopes === undefined) delete process.env.NEGOTIUM_CRON_SCRIPT_SCOPES;
+  else process.env.NEGOTIUM_CRON_SCRIPT_SCOPES = originalScopes;
 });
 
 describe("cron prompt scripts", () => {
@@ -37,6 +41,18 @@ describe("cron prompt scripts", () => {
     expect(validateCronScriptName("../escape.py").ok).toBe(false);
     expect(validateCronScriptName("nested/job.py").ok).toBe(false);
     expect(validateCronScriptName("job.sh").ok).toBe(false);
+  });
+
+  test("exposes relayed scripts only to their configured workspace scope", () => {
+    writeNodeFixture("scope-a.py", 'console.log("a")');
+    writeNodeFixture("scope-b.py", 'console.log("b")');
+    process.env.NEGOTIUM_CRON_SCRIPT_SCOPES = JSON.stringify({
+      "workspace-a": ["scope-a.py", "missing.py"],
+    });
+
+    expect(listCronScriptsForScope(undefined)).toEqual(["scope-a.py", "scope-b.py"]);
+    expect(listCronScriptsForScope("workspace-a")).toEqual(["scope-a.py"]);
+    expect(listCronScriptsForScope("workspace-b")).toEqual([]);
   });
 
   test("uses stdout as the agent prompt", async () => {
