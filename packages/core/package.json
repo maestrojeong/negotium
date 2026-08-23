@@ -20,6 +20,7 @@
     "./version": "./src/version.ts",
     "./prompts": "./src/prompts/builders.ts",
     "./runtime-helpers": "./src/runtime/public-helpers.ts",
+    "./runtime-gateway": "./src/runtime-gateway.ts",
     "./mcp-factories": "./src/mcp/factories/index.ts",
     "./mcp-factories/agent-health": "./src/mcp/factories/agent-health.ts",
     "./mcp-factories/decision": "./src/mcp/factories/decision.ts",

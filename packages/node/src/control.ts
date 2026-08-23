@@ -63,13 +63,17 @@ import {
   upsertTopic,
   writeDecisionGraphSvg,
 } from "@negotium/core/node-host";
+import {
+  RUNTIME_GATEWAY_CONTROL_PATH,
+  RUNTIME_GATEWAY_VERSION,
+} from "@negotium/core/runtime-gateway";
 import { MAX_NODE_UPLOAD_BYTES, nodeFileStore } from "./files";
 import { createPollingSseStream } from "./polling-sse";
 
 export const NODE_CONTROL_PROTOCOL_VERSION = 1;
 export const NODE_CONTROL_BASE_PATH = "/api/v1/control";
 /** Stable gateway contract, intentionally separate from the UI control routes. */
-export const NODE_RUNTIME_CONTRACT_VERSION = 1;
+export const NODE_RUNTIME_CONTRACT_VERSION = RUNTIME_GATEWAY_VERSION;
 
 /**
  * Which Otium workspace a relayed gateway call speaks for (M-8).
@@ -95,7 +99,7 @@ export const NODE_RUNTIME_SURFACE_SCOPE_HEADER = "x-negotium-surface-scope";
  * hub would undo the isolation, so the adapter says which situation this is.
  */
 export const NODE_RUNTIME_SURFACE_SCOPE_STRICT_HEADER = "x-negotium-surface-scope-strict";
-export const NODE_RUNTIME_CONTRACT_BASE_PATH = `${NODE_CONTROL_BASE_PATH}/runtime/v1`;
+export const NODE_RUNTIME_CONTRACT_BASE_PATH = RUNTIME_GATEWAY_CONTROL_PATH;
 export const NODE_DAEMON_ROLE = "node-daemon";
 export const NODE_DAEMON_INFO_PATH = resolve(RUN_DIR, "node-daemon.json");
 const NODE_VERSION = NEGOTIUM_VERSION;
