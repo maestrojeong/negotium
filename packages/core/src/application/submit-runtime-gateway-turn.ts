@@ -38,6 +38,8 @@ export interface SubmitRuntimeGatewayTurnParams {
    * it exactly as usual, and only declines to queue the turn.
    */
   respond?: boolean;
+  /** Hide both the injected prompt and provider output from the visible topic. */
+  silent?: boolean;
   /** Answer inside this thread instead of the room's main flow (S-13). */
   threadRootId?: string;
   /** Host-uploaded file ids already staged in this node's file store. */
@@ -64,7 +66,20 @@ function duplicateResult(
   actorUserId: string,
   payloadHash: string,
 ): SubmitRuntimeGatewayTurnResult {
-  const message = getApiMessage(submission.topicId, submission.messageId);
+  const message =
+    getApiMessage(submission.topicId, submission.messageId) ??
+    (params.silent
+      ? {
+          id: submission.messageId,
+          topicId: params.topic.id,
+          authorId: actorUserId,
+          authorName: params.actorLabel,
+          sourceAdapter: "runtime-gateway",
+          sourceMessageId: params.clientMessageId,
+          text: params.text,
+          createdAt: submission.createdAt,
+        }
+      : null);
   if (!message) throw new Error("gateway submission references a missing canonical message");
   if (submission.payloadHash && submission.payloadHash !== payloadHash) {
     throw new RuntimeGatewayIdempotencyConflictError();
@@ -123,6 +138,7 @@ function gatewayPayloadHash(
         // would otherwise reuse the silent ACK and never queue the turn (or
         // vice versa), with nothing to tell the caller it was ignored.
         params.respond ?? true,
+        params.silent ?? false,
         // Part of the identity of the turn: the same key asked in the channel
         // and in a thread are different turns, and replaying one as the other
         // would answer in the wrong place.
@@ -209,7 +225,7 @@ export function submitRuntimeGatewayTurn(
 
   try {
     db.transaction(() => {
-      appendApiMessage(message, { notify: false });
+      if (!params.silent) appendApiMessage(message, { notify: false });
       // The only thing `respond: false` skips. Everything else — the canonical
       // message, the accepted event, the idempotency record — still happens, so
       // a silent message is indistinguishable from a normal one everywhere
@@ -236,6 +252,7 @@ export function submitRuntimeGatewayTurn(
             loggedUserMessageCount: 0,
             vaultUserId: params.vaultUserId,
             actorUserId,
+            silent: params.silent === true,
             // The adapter's capability grant has to ride the durable request:
             // the turn worker builds the runtime MCP from `execution`, so a
             // flag left here undefined is what makes `show_html` and friends
@@ -256,13 +273,15 @@ export function submitRuntimeGatewayTurn(
           messageId: message.id,
         },
       });
-      const messageEvent = appendRuntimeEvent("runtime-gateway-ingress", {
-        type: "message",
-        topicId: params.topic.id,
-        payload: message,
-      });
+      const messageEvent = params.silent
+        ? null
+        : appendRuntimeEvent("runtime-gateway-ingress", {
+            type: "message",
+            topicId: params.topic.id,
+            payload: message,
+          });
       submission.ackCursor = acceptedEvent.seq;
-      submission.messageCursor = messageEvent.seq;
+      submission.messageCursor = messageEvent?.seq ?? 0;
       recordRuntimeGatewaySubmission(submission);
     })();
   } catch {

@@ -899,6 +899,7 @@ async function drainOneDurableUserTurn(): Promise<void> {
       sessionType: execution?.sessionType,
       visualTools: execution?.visualTools,
       fileDeliveryTools: execution?.fileDeliveryTools,
+      silent: execution?.silent,
       bridgeSessionFromHistory: execution?.bridgeSessionFromHistory,
       peerBridge: execution?.peerBridge,
       from: execution?.from,

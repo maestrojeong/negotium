@@ -36,6 +36,8 @@ export interface RuntimeGatewayTurnInput {
   allowAutoContinue?: boolean;
   threadRootId?: string;
   respond?: boolean;
+  /** Run without adding the injected prompt or output to the visible transcript. */
+  silent?: boolean;
   attachments?: string[];
   visualTools?: boolean;
   fileDeliveryTools?: boolean;
@@ -51,6 +53,23 @@ export interface RuntimeGatewayTurnAcknowledgement {
   topicId: string;
   messageId: string;
   cursor: number;
+}
+
+export interface RuntimeGatewayTopicDeriveInput {
+  userId: string;
+  copyHistory: boolean;
+  name?: string;
+}
+
+export interface RuntimeGatewayDerivedTopic {
+  id: string;
+  title: string;
+  kind?: string;
+  agent?: string;
+  defaultModel?: string;
+  defaultEffort?: string;
+  parentTopicId?: string;
+  isFork?: boolean;
 }
 
 export interface RuntimeGatewaySseEvent {
@@ -355,6 +374,38 @@ export class RuntimeGatewayClient {
       );
     }
     return body;
+  }
+
+  async deriveTopic(
+    topicId: string,
+    input: RuntimeGatewayTopicDeriveInput,
+  ): Promise<RuntimeGatewayDerivedTopic> {
+    const response = await this.send(
+      `/topics/${encodeURIComponent(topicId)}/derive`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ v: RUNTIME_GATEWAY_VERSION, ...input }),
+      },
+      this.requestTimeoutMs,
+    );
+    if (response.status !== 201) {
+      throw new RuntimeGatewayError("Runtime Gateway topic derive failed", "http", response.status);
+    }
+    const body = await json(response);
+    const topic = record(body)?.topic;
+    const topicRecord = record(topic);
+    if (
+      !topicRecord ||
+      typeof topicRecord.id !== "string" ||
+      typeof topicRecord.title !== "string"
+    ) {
+      throw new RuntimeGatewayError(
+        "Runtime Gateway topic derive response is incompatible",
+        "protocol",
+      );
+    }
+    return topic as unknown as RuntimeGatewayDerivedTopic;
   }
 
   async ensureManagerTopic(userId: string): Promise<RuntimeGatewayManagerTopic> {
