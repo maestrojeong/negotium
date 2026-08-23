@@ -426,6 +426,7 @@ export function createNodeControlHandler(
               "canonical-visual-read",
               "canonical-topic-list",
               "canonical-topic-create",
+              "canonical-manager-topic",
               "canonical-topic-update",
               "canonical-topic-delete",
               "turn-submit-silent",
@@ -470,6 +471,18 @@ export function createNodeControlHandler(
             { ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, attachment },
             { status: 201 },
           );
+        }
+
+        if (req.method === "POST" && runtimePath === "/manager-topic") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const userId = requiredText(body.userId, "userId");
+          const topic = ensurePersonalGeneral(userId, "otium", requestSurfaceScope(req));
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            topic,
+          });
         }
 
         if (req.method === "POST" && runtimePath === "/turns") {

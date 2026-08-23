@@ -112,6 +112,35 @@ describe("RuntimeGatewayClient", () => {
     });
   });
 
+  test("ensures a canonical manager topic for an external user", async () => {
+    let request: Request | undefined;
+    const client = new RuntimeGatewayClient({
+      baseUrl: "http://127.0.0.1:7777",
+      token: "secret",
+      fetch: async (input, init) => {
+        request = requestFrom(input, init);
+        return json({
+          ok: true,
+          v: 1,
+          topic: {
+            id: "manager-1",
+            title: "General",
+            kind: "manager",
+            agent: "maestro",
+            participants: [{ userId: "otium-user", role: "owner" }],
+          },
+        });
+      },
+    });
+
+    expect(await client.ensureManagerTopic("otium-user")).toMatchObject({
+      id: "manager-1",
+      kind: "manager",
+    });
+    expect(request?.url).toBe(`http://127.0.0.1:7777${RUNTIME_GATEWAY_CONTROL_PATH}/manager-topic`);
+    expect(await request?.json()).toEqual({ v: 1, userId: "otium-user" });
+  });
+
   test("preserves an idempotency conflict as an HTTP error", async () => {
     const client = new RuntimeGatewayClient({
       baseUrl: "http://127.0.0.1:7777",

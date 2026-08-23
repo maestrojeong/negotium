@@ -45,7 +45,7 @@ function allowedRuntimePath(path: string, method: string): boolean {
     return /^\/topics\/[^/]+\/visuals\/\d+$/.test(path);
   }
   if (method === "POST") {
-    if (path === "/turns" || path === "/input-files") return true;
+    if (path === "/turns" || path === "/input-files" || path === "/manager-topic") return true;
     // Creating a room on the worker the hub is already driving. This is not a
     // new class of authority: the hub already starts turns on this worker's
     // rooms, reconfigures them and deletes them (D-8), so refusing the one verb
