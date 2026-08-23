@@ -657,6 +657,7 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
       join(smokeRoot, "cron-mcp-smoke.ts"),
       `import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { createRequire } from "node:module";
 import { resolve } from "node:path";
 
 const client = new Client({ name: "packed-cron-smoke", version: "1.0.0" });
@@ -666,10 +667,13 @@ const env = Object.fromEntries(
   ),
 );
 env.NEGOTIUM_STATE_DIR = resolve("cron-smoke-state");
+env.TSX_TSCONFIG_PATH = resolve("node_modules/negotium/dist/runtime/tsconfig.json");
+const tsxLoader = createRequire(resolve("node_modules/negotium/package.json")).resolve("tsx");
 const transport = new StdioClientTransport({
-  command: process.execPath,
+  command: "node",
   args: [
-    "run",
+    "--import",
+    tsxLoader,
     resolve("node_modules/negotium/dist/runtime/cron/mcp-server.ts"),
     "--user-id=local",
   ],

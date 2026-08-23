@@ -8,8 +8,8 @@ import {
   getTopic,
   getTopicByNameForUser,
   isAgentKind,
-} from "@negotium/core";
-import type { TopicSurface } from "@negotium/core/mcp-runtime-host";
+  type TopicSurface,
+} from "@negotium/core/cron-mcp-host";
 import { z } from "zod";
 import {
   CRON_CONTEXT_RETAIN_TURNS,
