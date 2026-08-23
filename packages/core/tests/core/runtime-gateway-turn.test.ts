@@ -9,6 +9,7 @@ import { fileHooks, setFileHooks } from "#runtime/file-hooks";
 import { appendApiMessage, getApiMessage } from "#storage/api-messages";
 import { deleteTopic, getTopic, setTopicSessionId } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
+import { listRuntimeEventsAfter } from "#storage/runtime-events";
 import {
   findRuntimeGatewaySubmission,
   recordRuntimeGatewaySubmission,
@@ -436,6 +437,55 @@ test("runtime gateway forwards the adapter's tool capabilities to the durable tu
     const execution = getRuntimeUserTurnRequest(topic.id)?.execution;
     expect(execution?.visualTools).toBeUndefined();
     expect(execution?.fileDeliveryTools).toBeUndefined();
+  } finally {
+    cancelRuntimeUserTurnRequests(topic.id);
+    db.query("DELETE FROM runtime_gateway_submissions WHERE topic_id = ?").run(topic.id);
+    db.query("DELETE FROM runtime_events WHERE topic_id = ?").run(topic.id);
+    db.query("DELETE FROM api_messages WHERE topic_id = ?").run(topic.id);
+    deleteTopic(topic.id);
+  }
+});
+
+test("runtime gateway keeps a silent programmatic turn out of the canonical transcript", () => {
+  const userId = `gateway-silent-${randomUUID()}`;
+  const topic = topicService.create({
+    title: `Gateway silent ${randomUUID()}`,
+    userId,
+    agent: "codex",
+  });
+  try {
+    const freshTopic = getTopic(topic.id);
+    if (!freshTopic) throw new Error("topic was not created");
+    const clientMessageId = randomUUID();
+    const submission = submitRuntimeGatewayTurn({
+      topic: freshTopic,
+      userId,
+      text: "hidden ask context",
+      clientMessageId,
+      silent: true,
+    });
+
+    expect(getApiMessage(topic.id, submission.message.id)).toBeNull();
+    expect(getRuntimeUserTurnRequest(topic.id)).toMatchObject({
+      execution: { silent: true },
+      userMessages: [{ prompt: "hidden ask context" }],
+    });
+    expect(
+      listRuntimeEventsAfter(0).filter(
+        (event) => event.topicId === topic.id && event.type === "message",
+      ),
+    ).toEqual([]);
+
+    const duplicate = submitRuntimeGatewayTurn({
+      topic: freshTopic,
+      userId,
+      text: "hidden ask context",
+      clientMessageId,
+      requestId: submission.requestId,
+      silent: true,
+    });
+    expect(duplicate.deduplicated).toBe(true);
+    expect(duplicate.message.id).toBe(submission.message.id);
   } finally {
     cancelRuntimeUserTurnRequests(topic.id);
     db.query("DELETE FROM runtime_gateway_submissions WHERE topic_id = ?").run(topic.id);

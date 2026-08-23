@@ -506,11 +506,13 @@ export function createNodeControlHandler(
               "canonical-visual-read",
               "canonical-topic-list",
               "canonical-topic-create",
+              "canonical-topic-derive",
               "canonical-manager-topic",
               ...(process.env.NEGOTIUM_CRON === "0" ? [] : ["scheduler.cron.gateway.v1"]),
               "canonical-topic-update",
               "canonical-topic-delete",
               "turn-submit-silent",
+              "turn-submit-hidden",
               "canonical-history-import",
               "canonical-topic-abort",
               "canonical-session-reset",
@@ -794,6 +796,7 @@ export function createNodeControlHandler(
             // its transcript here (D-1). The host decides whether this message
             // deserves an answer; omitting the flag keeps the old behaviour.
             respond: body.respond !== false,
+            silent: body.silent === true,
             // Default-deny, unlike `allowAutoContinue`/`respond` above: a host
             // that renders no visual panel and has no chat file surface must
             // not be handed tools whose output it would silently drop.

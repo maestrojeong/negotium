@@ -64,6 +64,7 @@ describe("RuntimeGatewayClient", () => {
       text: "hello",
       requestId: "request-1",
       clientMessageId: "message-1",
+      silent: true,
     });
     expect(request?.url).toBe("https://relay.example/cell/api/v1/peer/runtime/turns");
     expect(request?.headers.get("authorization")).toBe("Bearer peer-token");
@@ -75,6 +76,7 @@ describe("RuntimeGatewayClient", () => {
       text: "hello",
       requestId: "request-1",
       clientMessageId: "message-1",
+      silent: true,
     });
   });
 
@@ -139,6 +141,35 @@ describe("RuntimeGatewayClient", () => {
     });
     expect(request?.url).toBe(`http://127.0.0.1:7777${RUNTIME_GATEWAY_CONTROL_PATH}/manager-topic`);
     expect(await request?.json()).toEqual({ v: 1, userId: "otium-user" });
+  });
+
+  test("derives a canonical topic through the typed client", async () => {
+    let request: Request | undefined;
+    const client = new RuntimeGatewayClient({
+      baseUrl: "http://127.0.0.1:7777",
+      token: "secret",
+      fetch: async (input, init) => {
+        request = requestFrom(input, init);
+        return json({ ok: true, topic: { id: "fork-1", title: "Fork 1", isFork: true } }, 201);
+      },
+    });
+
+    expect(
+      await client.deriveTopic("topic/1", {
+        userId: "local",
+        copyHistory: true,
+        name: "Fork 1",
+      }),
+    ).toMatchObject({ id: "fork-1", isFork: true });
+    expect(request?.url).toBe(
+      `http://127.0.0.1:7777${RUNTIME_GATEWAY_CONTROL_PATH}/topics/topic%2F1/derive`,
+    );
+    expect(await request?.json()).toEqual({
+      v: 1,
+      userId: "local",
+      copyHistory: true,
+      name: "Fork 1",
+    });
   });
 
   test("speaks the actor-aware Cron CRUD contract", async () => {
