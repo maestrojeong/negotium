@@ -88,6 +88,9 @@ test("forwards the whole read/turn/room-mutation contract the gateway client spe
     // A hub deleting a topic it mirrored from this worker must reach the
     // worker's own copy, or the next sync pass just re-mirrors it (D-1/D-8).
     ["DELETE", "/topics/abc"],
+    // The worker owns mapped transcripts too. A hub-side delete must mutate
+    // that canonical row rather than only hiding its local projection.
+    ["DELETE", "/topics/abc/messages/message-1"],
     // Same for reconfiguring it: the turn runner reads the worker's own
     // agent/model/effort, so a hub-side picker is cosmetic without this.
     ["PATCH", "/topics/abc"],
@@ -158,7 +161,6 @@ test("refuses a write method that is not part of the contract", async () => {
 test("does not let a nested path escape the allowed topic shape", async () => {
   for (const path of [
     "/topics/abc/vault",
-    "/topics/abc/messages/extra",
     "/topics/abc/abort",
     "/topics/abc/usage/extra",
     "/topics/abc/files",
@@ -183,6 +185,7 @@ test("the room mutations stay pinned to a single topic segment", async () => {
   for (const [method, path] of [
     ["DELETE", "/topics"],
     ["DELETE", "/topics/abc/messages"],
+    ["DELETE", "/topics/abc/messages/message-1/extra"],
     ["DELETE", "/topics/abc/session/reset"],
     ["PATCH", "/topics"],
     ["PATCH", "/topics/abc/messages"],

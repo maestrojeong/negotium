@@ -82,9 +82,10 @@ function allowedRuntimePath(path: string, method: string): boolean {
   // reconfiguring it, so the hub's agent/model/effort/AI-mode picker changes
   // the row the turn runner actually reads.
   //
-  // Scoped to exactly `/topics/:id`, one segment, no sub-path. Every other
-  // mutation stays loopback-only.
+  // Scoped to exactly `/topics/:id` plus the reviewed canonical message-delete
+  // leaf. Every other mutation stays loopback-only.
   if (method === "DELETE" || method === "PATCH") {
+    if (method === "DELETE" && /^\/topics\/[^/]+\/messages\/[^/]+$/.test(path)) return true;
     return /^\/topics\/[^/]+$/.test(path) || /^\/cron\/jobs\/[^/]+$/.test(path);
   }
   return false;
