@@ -1448,7 +1448,21 @@ async function localPublish(packages: ReleasePackage[]): Promise<void> {
       continue;
     }
     console.log(`\n==> publish ${pkg.name}@${pkg.manifest?.version}`);
-    await runNpmInteractive(["publish", "--access", "public"], resolve(root, pkg.directory));
+    try {
+      await runNpmInteractive(["publish", "--access", "public"], resolve(root, pkg.directory));
+    } catch (publishError) {
+      // npm may accept a version into its staging pipeline, return E409 on an
+      // immediate retry, and expose the version through the registry moments
+      // later. Treat that race as success only after registry verification;
+      // a genuine publish failure still surfaces unchanged.
+      try {
+        await waitUntilPublished(pkg);
+        console.log(`recovered ${pkg.name}@${pkg.manifest?.version} after publish race`);
+        continue;
+      } catch {
+        throw publishError;
+      }
+    }
     await waitUntilPublished(pkg);
   }
 }
