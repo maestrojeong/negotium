@@ -141,6 +141,59 @@ describe("RuntimeGatewayClient", () => {
     expect(await request?.json()).toEqual({ v: 1, userId: "otium-user" });
   });
 
+  test("speaks the actor-aware Cron CRUD contract", async () => {
+    const requests: Request[] = [];
+    const job = {
+      id: "job-1",
+      name: "health",
+      executionPrincipalUserId: "local",
+      actorOwnerUserId: "product-user",
+      topicId: "topic-1",
+      source: "script" as const,
+      script: "health.py",
+      scriptExists: true,
+      prompt: null,
+      promptPreview: null,
+      summary: null,
+      schedule: "*/5 * * * *",
+      timezone: "UTC",
+      enabled: true,
+      agent: null,
+      model: null,
+      effort: null,
+      nextRunAt: "2026-08-24T00:00:00.000Z",
+      runCount: 0,
+      lastRun: null,
+      createdAt: "2026-08-23T00:00:00.000Z",
+      updatedAt: "2026-08-23T00:00:00.000Z",
+      canMutate: true,
+    };
+    const client = new RuntimeGatewayClient({
+      baseUrl: "http://127.0.0.1:7777",
+      token: "secret",
+      fetch: async (input, init) => {
+        const request = requestFrom(input, init);
+        requests.push(request);
+        if (request.method === "DELETE") return json({ ok: true, v: 1, deleted: "job-1" });
+        return json({ ok: true, v: 1, job, jobs: [job] }, request.method === "POST" ? 201 : 200);
+      },
+    });
+
+    expect(await client.listCronJobs("local", "product-user")).toEqual([job]);
+    expect(
+      await client.createCronJob({
+        userId: "local",
+        actorUserId: "product-user",
+        topicId: "topic-1",
+        name: "health",
+        script: "health.py",
+        schedule: "*/5 * * * *",
+      }),
+    ).toEqual(job);
+    expect(await client.deleteCronJob("job-1", "local", "product-user")).toBe("job-1");
+    expect(requests.map((request) => request.method)).toEqual(["GET", "POST", "DELETE"]);
+  });
+
   test("preserves an idempotency conflict as an HTTP error", async () => {
     const client = new RuntimeGatewayClient({
       baseUrl: "http://127.0.0.1:7777",

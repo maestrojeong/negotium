@@ -32,6 +32,7 @@ export {
   CRON_JOBS_DIR,
   cronScriptExists,
   listCronScripts,
+  listCronScriptsForScope,
   resolveCronScriptPath,
   runCronPromptScript,
   validateCronScriptName,

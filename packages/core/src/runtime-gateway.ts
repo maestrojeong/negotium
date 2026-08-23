@@ -76,6 +76,57 @@ export interface RuntimeGatewayManagerTopic {
   participants: Array<{ userId: string; role: "owner" | "member" }>;
 }
 
+export interface RuntimeGatewayCronJob {
+  id: string;
+  name: string;
+  executionPrincipalUserId: string;
+  actorOwnerUserId: string;
+  topicId: string;
+  source: "prompt" | "script";
+  script: string | null;
+  scriptExists: boolean;
+  prompt: string | null;
+  promptPreview: string | null;
+  summary: string | null;
+  schedule: string;
+  timezone: string | null;
+  enabled: boolean;
+  agent: "claude" | "codex" | "maestro" | null;
+  model: string | null;
+  effort: string | null;
+  nextRunAt: string;
+  runCount: number;
+  lastRun: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+  canMutate: boolean;
+}
+
+export interface RuntimeGatewayCronCreateInput {
+  userId: string;
+  actorUserId: string;
+  topicId: string;
+  name: string;
+  script: string;
+  schedule: string;
+  timezone?: string;
+  agent?: "claude" | "codex" | "maestro";
+  model?: string;
+  effort?: string;
+}
+
+export interface RuntimeGatewayCronPatch {
+  name?: string;
+  topicId?: string;
+  script?: string;
+  schedule?: string;
+  timezone?: string | null;
+  enabled?: boolean;
+  agent?: "claude" | "codex" | "maestro" | null;
+  model?: string | null;
+  effort?: string | null;
+}
+
 export type RuntimeGatewayToken = string | (() => string | Promise<string>);
 export type RuntimeGatewayFetch = (
   input: string | URL | Request,
@@ -142,6 +193,21 @@ function validManagerTopic(value: unknown): value is RuntimeGatewayManagerTopic 
       typeof topic.title === "string" &&
       topic.kind === "manager" &&
       Array.isArray(topic.participants),
+  );
+}
+
+function validCronJob(value: unknown): value is RuntimeGatewayCronJob {
+  const job = record(value);
+  return Boolean(
+    typeof job?.id === "string" &&
+      typeof job.name === "string" &&
+      typeof job.executionPrincipalUserId === "string" &&
+      typeof job.actorOwnerUserId === "string" &&
+      typeof job.topicId === "string" &&
+      typeof job.schedule === "string" &&
+      typeof job.enabled === "boolean" &&
+      typeof job.nextRunAt === "string" &&
+      typeof job.canMutate === "boolean",
   );
 }
 
@@ -316,6 +382,99 @@ export class RuntimeGatewayClient {
       );
     }
     return body.topic;
+  }
+
+  private async cronRequest(path: string, init: RequestInit): Promise<Record<string, unknown>> {
+    const response = await this.send(path, init, this.requestTimeoutMs);
+    if (!response.ok) {
+      throw new RuntimeGatewayError("Runtime Gateway cron request failed", "http", response.status);
+    }
+    const body = record(await json(response));
+    if (body?.ok !== true || body.v !== RUNTIME_GATEWAY_VERSION) {
+      throw new RuntimeGatewayError("Runtime Gateway cron response is incompatible", "protocol");
+    }
+    return body;
+  }
+
+  async listCronScripts(): Promise<string[]> {
+    const body = await this.cronRequest("/cron/scripts", { method: "GET" });
+    if (!Array.isArray(body.scripts) || !body.scripts.every((value) => typeof value === "string")) {
+      throw new RuntimeGatewayError("Runtime Gateway cron scripts are incompatible", "protocol");
+    }
+    return body.scripts;
+  }
+
+  async listCronJobs(
+    userId: string,
+    actorUserId: string,
+    actorIsAdmin = false,
+  ): Promise<RuntimeGatewayCronJob[]> {
+    const search = new URLSearchParams({
+      user: userId,
+      actorUserId,
+      actorIsAdmin: actorIsAdmin ? "1" : "0",
+    });
+    const body = await this.cronRequest(`/cron/jobs?${search}`, { method: "GET" });
+    if (!Array.isArray(body.jobs) || !body.jobs.every(validCronJob)) {
+      throw new RuntimeGatewayError("Runtime Gateway cron jobs are incompatible", "protocol");
+    }
+    return body.jobs;
+  }
+
+  async createCronJob(input: RuntimeGatewayCronCreateInput): Promise<RuntimeGatewayCronJob> {
+    const body = await this.cronRequest("/cron/jobs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ v: RUNTIME_GATEWAY_VERSION, ...input }),
+    });
+    if (!validCronJob(body.job)) {
+      throw new RuntimeGatewayError("Runtime Gateway cron job is incompatible", "protocol");
+    }
+    return body.job;
+  }
+
+  async updateCronJob(
+    jobId: string,
+    userId: string,
+    actorUserId: string,
+    patch: RuntimeGatewayCronPatch,
+    actorIsAdmin = false,
+  ): Promise<RuntimeGatewayCronJob> {
+    const body = await this.cronRequest(`/cron/jobs/${encodeURIComponent(jobId)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        v: RUNTIME_GATEWAY_VERSION,
+        userId,
+        actorUserId,
+        actorIsAdmin,
+        patch,
+      }),
+    });
+    if (!validCronJob(body.job)) {
+      throw new RuntimeGatewayError("Runtime Gateway cron job is incompatible", "protocol");
+    }
+    return body.job;
+  }
+
+  async deleteCronJob(
+    jobId: string,
+    userId: string,
+    actorUserId: string,
+    actorIsAdmin = false,
+  ): Promise<string> {
+    const search = new URLSearchParams({
+      user: userId,
+      actorUserId,
+      actorIsAdmin: actorIsAdmin ? "1" : "0",
+    });
+    const body = await this.cronRequest(`/cron/jobs/${encodeURIComponent(jobId)}?${search}`, {
+      method: "DELETE",
+    });
+    if (typeof body.deleted !== "string") {
+      throw new RuntimeGatewayError("Runtime Gateway cron delete is incompatible", "protocol");
+    }
+    return body.deleted;
   }
 
   async *events(
