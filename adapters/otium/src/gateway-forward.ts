@@ -40,6 +40,8 @@ export const OTIUM_GATEWAY_FORWARD_PREFIX = "/api/v1/peer/runtime";
 function allowedRuntimePath(path: string, method: string): boolean {
   if (method === "GET") {
     if (path === "/health" || path === "/events" || path === "/topics") return true;
+    if (path === "/cron/scripts" || path === "/cron/jobs") return true;
+    if (/^\/cron\/jobs\/[^/]+\/runs$/.test(path)) return true;
     if (/^\/topics\/[^/]+(\/messages|\/usage)?$/.test(path)) return true;
     if (/^\/topics\/[^/]+\/files\/[^/]+$/.test(path)) return true;
     return /^\/topics\/[^/]+\/visuals\/\d+$/.test(path);
@@ -58,6 +60,8 @@ function allowedRuntimePath(path: string, method: string): boolean {
     // Exact path, so `/topics/:id/...` creation-adjacent routes (derive, import)
     // are unaffected and stay loopback-only on their own terms.
     if (path === "/topics") return true;
+    if (path === "/cron/jobs") return true;
+    if (/^\/cron\/jobs\/[^/]+\/(run|cancel)$/.test(path)) return true;
     // Turn and session control on a room the hub already runs turns on (D-8).
     // Aborting is strictly narrower than starting: it can only stop work the
     // hub itself queued. Reset and compact discard the agent session, never the
@@ -82,7 +86,9 @@ function allowedRuntimePath(path: string, method: string): boolean {
   //
   // Scoped to exactly `/topics/:id`, one segment, no sub-path. Every other
   // mutation stays loopback-only.
-  if (method === "DELETE" || method === "PATCH") return /^\/topics\/[^/]+$/.test(path);
+  if (method === "DELETE" || method === "PATCH") {
+    return /^\/topics\/[^/]+$/.test(path) || /^\/cron\/jobs\/[^/]+$/.test(path);
+  }
   return false;
 }
 

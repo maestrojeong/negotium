@@ -74,9 +74,15 @@ test("forwards the whole read/turn/room-mutation contract the gateway client spe
     ["GET", "/topics/abc/usage"],
     ["GET", "/topics/abc/files/file-1"],
     ["GET", "/topics/abc/visuals/42"],
+    ["GET", "/cron/scripts"],
+    ["GET", "/cron/jobs"],
+    ["GET", "/cron/jobs/job-1/runs"],
     ["POST", "/turns"],
     ["POST", "/input-files"],
     ["POST", "/manager-topic"],
+    ["POST", "/cron/jobs"],
+    ["POST", "/cron/jobs/job-1/run"],
+    ["POST", "/cron/jobs/job-1/cancel"],
     // Creating a room on the worker the hub already drives: the same hub that
     // may start turns on, reconfigure and delete this worker's rooms may also
     // bring one into existence, and without it the Otium worker picker has no
@@ -88,6 +94,8 @@ test("forwards the whole read/turn/room-mutation contract the gateway client spe
     // Same for reconfiguring it: the turn runner reads the worker's own
     // agent/model/effort, so a hub-side picker is cosmetic without this.
     ["PATCH", "/topics/abc"],
+    ["PATCH", "/cron/jobs/job-1"],
+    ["DELETE", "/cron/jobs/job-1"],
     // Stopping and re-seating the session of a room the hub already runs turns
     // on. Abort is narrower than the POST /turns already allowed above.
     ["POST", "/topics/abc/abort"],
@@ -217,6 +225,9 @@ test("the forwarded POST sub-paths are exact, not a /topics/:id/* wildcard", asy
     "/topics//",
     "/topics/abc/anything",
     "/manager-topic/extra",
+    "/cron/jobs/job-1/run/extra",
+    "/cron/jobs/job-1/runs/extra",
+    "/cron/jobs/job-1/unknown",
   ]) {
     const { fetch: stub, calls } = captureFetch();
     const response = await forwardGatewayRequest(

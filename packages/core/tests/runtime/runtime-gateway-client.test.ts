@@ -141,6 +141,53 @@ describe("RuntimeGatewayClient", () => {
     expect(await request?.json()).toEqual({ v: 1, userId: "otium-user" });
   });
 
+  test("speaks the node-native cron management contract", async () => {
+    const requests: Request[] = [];
+    const job = {
+      id: "job-1",
+      name: "health",
+      ownerUserId: "otium-user",
+      topicId: "topic-1",
+      prompt: "check",
+      schedule: "*/5 * * * *",
+      enabled: true,
+      nextRunAt: "2026-08-24T00:00:00.000Z",
+      createdAt: "2026-08-23T00:00:00.000Z",
+      updatedAt: "2026-08-23T00:00:00.000Z",
+    };
+    const client = new RuntimeGatewayClient({
+      baseUrl: "http://127.0.0.1:7777",
+      token: "secret",
+      fetch: async (input, init) => {
+        const request = requestFrom(input, init);
+        requests.push(request);
+        if (request.url.endsWith("/run")) {
+          return json({ ok: true, v: 1, requestId: "run-1" });
+        }
+        return json({ ok: true, v: 1, job, jobs: [job] }, request.method === "POST" ? 201 : 200);
+      },
+    });
+
+    expect(await client.listCronJobs("otium-user")).toEqual([job]);
+    expect(
+      await client.createCronJob({
+        userId: "otium-user",
+        topicId: "topic-1",
+        name: "health",
+        prompt: "check",
+        schedule: "*/5 * * * *",
+      }),
+    ).toEqual(job);
+    expect(await client.requestCronRun("job-1", "otium-user")).toBe("run-1");
+    expect(requests.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual(
+      [
+        "GET /api/v1/control/runtime/v1/cron/jobs",
+        "POST /api/v1/control/runtime/v1/cron/jobs",
+        "POST /api/v1/control/runtime/v1/cron/jobs/job-1/run",
+      ],
+    );
+  });
+
   test("preserves an idempotency conflict as an HTTP error", async () => {
     const client = new RuntimeGatewayClient({
       baseUrl: "http://127.0.0.1:7777",

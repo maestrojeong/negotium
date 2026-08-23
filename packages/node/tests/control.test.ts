@@ -149,6 +149,106 @@ test("runtime gateway ensures one private manager topic per external user", asyn
   expect(turn?.status).toBe(202);
 });
 
+test("runtime gateway manages node-native cron jobs for the topic owner", async () => {
+  const cronUser = `cron-owner-${randomUUID()}`;
+  const topic = registerTopic({
+    title: `Cron gateway ${randomUUID()}`,
+    userId: cronUser,
+    agent: "codex",
+    surface: "otium",
+  });
+  const create = await handler(
+    runtimeRequest("/cron/jobs", {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        userId: cronUser,
+        topicId: topic.id,
+        name: `job-${randomUUID()}`,
+        prompt: "check the system",
+        schedule: "*/5 * * * *",
+        timezone: "UTC",
+      }),
+    }),
+  );
+  const created = (await create?.json()) as { job?: { id: string; enabled: boolean } };
+  expect(create?.status).toBe(201);
+  expect(created.job?.enabled).toBe(true);
+
+  const listed = await handler(runtimeRequest(`/cron/jobs?user=${encodeURIComponent(cronUser)}`));
+  expect(
+    ((await listed?.json()) as { jobs?: Array<{ id: string }> }).jobs?.map((job) => job.id),
+  ).toContain(created.job?.id);
+
+  const patched = await handler(
+    runtimeRequest(`/cron/jobs/${created.job?.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        userId: cronUser,
+        patch: { enabled: false },
+      }),
+    }),
+  );
+  expect((await patched?.json()) as { job?: { enabled: boolean } }).toMatchObject({
+    job: { enabled: false },
+  });
+
+  const disabledRun = await handler(
+    runtimeRequest(`/cron/jobs/${created.job?.id}/run`, {
+      method: "POST",
+      body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, userId: cronUser }),
+    }),
+  );
+  expect(disabledRun?.status).toBe(400);
+
+  await handler(
+    runtimeRequest(`/cron/jobs/${created.job?.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        userId: cronUser,
+        patch: { enabled: true },
+      }),
+    }),
+  );
+  const run = await handler(
+    runtimeRequest(`/cron/jobs/${created.job?.id}/run`, {
+      method: "POST",
+      body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, userId: cronUser }),
+    }),
+  );
+  expect((await run?.json()) as { requestId?: string }).toMatchObject({
+    requestId: expect.any(String),
+  });
+
+  const cancel = await handler(
+    runtimeRequest(`/cron/jobs/${created.job?.id}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, userId: cronUser }),
+    }),
+  );
+  expect((await cancel?.json()) as { requestId?: string }).toMatchObject({
+    requestId: expect.any(String),
+  });
+
+  const runs = await handler(
+    runtimeRequest(`/cron/jobs/${created.job?.id}/runs?user=${encodeURIComponent(cronUser)}`),
+  );
+  expect((await runs?.json()) as { runs?: unknown[] }).toMatchObject({ runs: [] });
+
+  const denied = await handler(
+    runtimeRequest(`/cron/jobs/${created.job?.id}?user=another-user`, { method: "DELETE" }),
+  );
+  expect(denied?.status).toBe(404);
+  const deleted = await handler(
+    runtimeRequest(`/cron/jobs/${created.job?.id}?user=${encodeURIComponent(cronUser)}`, {
+      method: "DELETE",
+    }),
+  );
+  expect(deleted?.status).toBe(200);
+});
+
 test("runtime gateway topic create makes a shared canonical topic", async () => {
   const createUser = `topic-create-${randomUUID()}`;
   const title = `Created ${randomUUID()}`;
