@@ -3,6 +3,7 @@ import {
   parseRuntimeGatewaySse,
   RUNTIME_GATEWAY_CONTROL_PATH,
   RuntimeGatewayClient,
+  RuntimeGatewayError,
 } from "../../src/runtime-gateway";
 
 function json(body: unknown, status = 200): Response {
@@ -109,5 +110,63 @@ describe("RuntimeGatewayClient", () => {
       cacheReadInputTokens: 0,
       estimatedCostUsd: 0,
     });
+  });
+
+  test("preserves an idempotency conflict as an HTTP error", async () => {
+    const client = new RuntimeGatewayClient({
+      baseUrl: "http://127.0.0.1:7777",
+      token: "secret",
+      fetch: async () => json({ ok: false, error: "conflict" }, 409),
+    });
+
+    await expect(
+      client.submitTurn({
+        topicId: "topic-1",
+        userId: "local",
+        text: "hello",
+        requestId: "stable-request",
+        clientMessageId: "stable-message",
+      }),
+    ).rejects.toMatchObject({ kind: "http", status: 409 });
+  });
+
+  test("classifies token-provider failure as configuration, before transport", async () => {
+    let contacted = false;
+    const client = new RuntimeGatewayClient({
+      baseUrl: "https://relay.example/cell",
+      token: async () => {
+        throw new Error("peer unavailable");
+      },
+      fetch: async () => {
+        contacted = true;
+        return json({});
+      },
+    });
+
+    await expect(client.health()).rejects.toMatchObject({
+      kind: "config",
+      message: "peer unavailable",
+    });
+    expect(contacted).toBe(false);
+  });
+
+  test("fails a malformed SSE payload as a protocol error", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("data: not-json\n\n"));
+        controller.close();
+      },
+    });
+
+    let error: unknown;
+    try {
+      for await (const _event of parseRuntimeGatewaySse(stream)) {
+        // No event can be yielded from malformed data.
+      }
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(RuntimeGatewayError);
+    expect(error).toMatchObject({ kind: "protocol" });
   });
 });
