@@ -97,6 +97,48 @@ async function runInteractive(command: string, commandArgs: string[], cwd = root
   }
 }
 
+const npmInvocation = Bun.which("npm")
+  ? [Bun.which("npm") as string]
+  : [process.execPath, "x", "npm@10"];
+
+function runNpm(
+  commandArgs: string[],
+  cwd = root,
+  printOutput = true,
+  env: Record<string, string | undefined> = process.env,
+): Promise<string> {
+  const [command, ...prefix] = npmInvocation;
+  return run(command ?? process.execPath, [...prefix, ...commandArgs], cwd, printOutput, env);
+}
+
+function runNpmInteractive(commandArgs: string[], cwd = root): Promise<void> {
+  const [command, ...prefix] = npmInvocation;
+  return runInteractive(command ?? process.execPath, [...prefix, ...commandArgs], cwd);
+}
+
+const nodeInvocation = Bun.which("node")
+  ? [Bun.which("node") as string]
+  : [process.execPath, "x", "node@22.13.0"];
+
+function runNode(
+  commandArgs: string[],
+  cwd = root,
+  printOutput = true,
+  env: Record<string, string | undefined> = process.env,
+): Promise<string> {
+  const [command, ...prefix] = nodeInvocation;
+  return run(command ?? process.execPath, [...prefix, ...commandArgs], cwd, printOutput, env);
+}
+
+function runTsc(
+  commandArgs: string[],
+  cwd = root,
+  printOutput = true,
+  env: Record<string, string | undefined> = process.env,
+): Promise<string> {
+  return run(process.execPath, ["x", "tsc", ...commandArgs], cwd, printOutput, env);
+}
+
 function unusedLoopbackPort(): number {
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -419,7 +461,7 @@ async function dryRun(packages: ReleasePackage[]): Promise<void> {
     console.log(`\n==> dry-run ${pkg.name}@${pkg.manifest?.version}`);
     const packRoot = await mkdtemp(join(tmpdir(), `negotium-npm-pack-${randomUUID()}-`));
     try {
-      await run("npm", ["pack", "--pack-destination", packRoot], resolve(root, pkg.directory));
+      await runNpm(["pack", "--pack-destination", packRoot], resolve(root, pkg.directory));
       const packedFiles = (await readdir(packRoot)).filter((entry) => entry.endsWith(".tgz"));
       if (packedFiles.length !== 1) {
         fail(`${pkg.name}: expected one npm tarball, found ${packedFiles.length}`);
@@ -563,12 +605,7 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
       const safeName = pkg.name.replaceAll(/[^a-zA-Z0-9.-]/g, "-");
       const packRoot = join(smokeRoot, "packs", safeName);
       await mkdir(packRoot, { recursive: true });
-      await run(
-        "npm",
-        ["pack", "--pack-destination", packRoot],
-        resolve(root, pkg.directory),
-        false,
-      );
+      await runNpm(["pack", "--pack-destination", packRoot], resolve(root, pkg.directory), false);
       const packedFiles = (await readdir(packRoot)).filter((entry) => entry.endsWith(".tgz"));
       if (packedFiles.length !== 1) {
         fail(`${pkg.name}: expected one npm tarball, found ${packedFiles.length}`);
@@ -613,7 +650,7 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
       NEGOTIUM_NODE_PORT: undefined,
       TMPDIR: installTmp,
     };
-    await run("npm", ["install", "--ignore-scripts=false"], smokeRoot, true, smokeEnv);
+    await runNpm(["install", "--ignore-scripts=false"], smokeRoot, true, smokeEnv);
     await assertPackedExportParity(smokeRoot, packages);
 
     await Bun.write(
@@ -1294,10 +1331,8 @@ const dispose = configureStorageHost(config);
 dispose();
 `,
     );
-    await run(
-      "npx",
+    await runTsc(
       [
-        "tsc",
         "--noEmit",
         "--strict",
         "--skipLibCheck",
@@ -1316,10 +1351,8 @@ dispose();
       smokeEnv,
     );
     await run("bun", ["imports.ts"], smokeRoot, true, smokeEnv);
-    await run(
-      "npx",
+    await runTsc(
       [
-        "tsc",
         "--noEmit",
         "--strict",
         "--moduleResolution",
@@ -1336,8 +1369,7 @@ dispose();
       true,
       smokeEnv,
     );
-    await run(
-      "node",
+    await runNode(
       [
         "--input-type=module",
         "-e",
@@ -1416,7 +1448,7 @@ async function localPublish(packages: ReleasePackage[]): Promise<void> {
       continue;
     }
     console.log(`\n==> publish ${pkg.name}@${pkg.manifest?.version}`);
-    await runInteractive("npm", ["publish", "--access", "public"], resolve(root, pkg.directory));
+    await runNpmInteractive(["publish", "--access", "public"], resolve(root, pkg.directory));
     await waitUntilPublished(pkg);
   }
 }
