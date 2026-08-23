@@ -629,6 +629,8 @@ export interface AiTurnExecutionOptions {
   attachments?: string[];
   /** "user" (default) for a human message; otherwise the inject source topic. */
   origin?: string;
+  /** Product actor identity when the node executes as a shared principal. */
+  actorUserId?: string;
   /** Origin node for transcript echo suppression. */
   sourceNode?: string;
   /** Answer inside this thread instead of the room's main flow (S-13). */
@@ -778,6 +780,7 @@ function serializableUserTurnExecution(params: StartAiTurnParams): RuntimeUserTu
   return {
     runtimeEpoch: params._runtimeEpoch ?? getRuntimeTopicEpoch(params.topic.id),
     sourceRequestId: params.requestId,
+    actorUserId: params.actorUserId,
     agentOverride: params.agentOverride,
     modelOverride: params.modelOverride,
     effortOverride: params.effortOverride,
@@ -873,6 +876,7 @@ async function drainOneDurableUserTurn(): Promise<void> {
     const queryId = startAiTurn({
       topic,
       userId: request.userId,
+      actorUserId: execution?.actorUserId,
       vaultUserId: execution?.vaultUserId,
       prompt: request.prompt,
       _userMessages: request.userMessages,
@@ -1654,6 +1658,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         systemPrompt,
         sessionId,
         userId,
+        actorUserId: params.actorUserId,
         vaultUserId,
         session: sessionName,
         sessionType: sessionType ?? (isManager ? "manager" : "forum"),

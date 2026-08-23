@@ -21,6 +21,7 @@ import { cronScriptExists, listCronScripts } from "#scripts";
 import {
   countCronRuns,
   createCronJob,
+  cronActorOwnerUserId,
   deleteCronJob,
   getCronJob,
   getCronJobByOwnerAndName,
@@ -38,6 +39,7 @@ const args = process.argv.slice(2);
 const arg = (name: string) =>
   args.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3) ?? "";
 const userId = arg("user-id");
+const actorUserId = arg("actor-user-id") || userId;
 const currentTopic = arg("topic");
 const currentTopicId = arg("topic-id");
 const authorized = arg("authorized") === "true";
@@ -111,7 +113,7 @@ function ownsTopic(topic: NonNullable<ReturnType<typeof getTopic>>): boolean {
 
 function canSeeJob(job: NonNullable<ReturnType<typeof getCronJob>>): boolean {
   if (authorized) return true;
-  if (job.ownerUserId === userId) return true;
+  if (cronActorOwnerUserId(job) === actorUserId) return true;
   const topic = getTopic(job.topicId);
   return Boolean(topic && ownsTopic(topic));
 }
@@ -134,7 +136,7 @@ function resolveVisibleJob(input: { job_id?: string; name?: string }) {
 
 function resolveOwnedJob(input: { job_id?: string; name?: string }) {
   const job = resolveVisibleJob(input);
-  if (!authorized && job.ownerUserId !== userId)
+  if (!authorized && cronActorOwnerUserId(job) !== actorUserId)
     throw new Error("only the job owner can mutate this cron job");
   return job;
 }
@@ -142,7 +144,7 @@ function resolveOwnedJob(input: { job_id?: string; name?: string }) {
 function jobDto(job: NonNullable<ReturnType<typeof getCronJob>>) {
   const runs = listCronRuns(job.id, 1);
   const contextState = getCronTopicContext(job.topicId);
-  const canMutate = authorized || job.ownerUserId === userId;
+  const canMutate = authorized || cronActorOwnerUserId(job) === actorUserId;
   const prompt = job.prompt?.trim() ?? "";
   return {
     ...job,
@@ -207,7 +209,7 @@ server.tool(
       if (cleanScript && !cronScriptExists(cleanScript)) {
         throw new Error(`cron script not found: ${cleanScript}`);
       }
-      if (getCronJobByOwnerAndName(userId, cleanName))
+      if (getCronJobByOwnerAndName(actorUserId, cleanName))
         throw new Error(`cron job already exists: ${cleanName}`);
       const target = resolveTopic({ topic_id, topic });
       if (!target || !ownsTopic(target)) throw new Error("target topic not found");
@@ -233,6 +235,7 @@ server.tool(
           const job = createCronJob({
             name: cleanName,
             ownerUserId: userId,
+            actorOwnerUserId: actorUserId === userId ? undefined : actorUserId,
             topicId: target.id,
             prompt: cleanPrompt,
             script: cleanScript,

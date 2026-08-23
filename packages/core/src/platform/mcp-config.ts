@@ -215,6 +215,8 @@ export function consumePlaywrightUnavailable(userId: string, topic: string | und
 
 export interface RuntimeMcpBuildContext {
   userId: string;
+  /** Product actor identity when it differs from the execution principal. */
+  actorUserId?: string;
   /** Vault namespace when credentials belong to a different principal. */
   vaultUserId?: string;
   /** "dm" for DM scope, topic/session name for forum/fork. */
@@ -848,6 +850,7 @@ export function getManagerMcpServers(opts: {
  */
 export function getForumMcpServers(opts: {
   userId: string;
+  actorUserId?: string;
   vaultUserId?: string;
   session: string;
   topicId?: string;
@@ -872,6 +875,7 @@ export function getForumMcpServers(opts: {
 }) {
   const {
     userId,
+    actorUserId,
     vaultUserId,
     session,
     topicId,
@@ -907,6 +911,7 @@ export function getForumMcpServers(opts: {
     "forum",
     {
       userId,
+      actorUserId,
       vaultUserId,
       session,
       topicId,
@@ -1029,6 +1034,7 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
   }
   return getForumMcpServers({
     userId: opts.userId || "local",
+    actorUserId: opts.actorUserId,
     vaultUserId: opts.vaultUserId,
     session: opts.session || "default",
     topicId: opts.topicId,

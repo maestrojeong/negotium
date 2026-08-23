@@ -235,6 +235,7 @@ export function submitRuntimeGatewayTurn(
             conversationPrompts: [params.text],
             loggedUserMessageCount: 0,
             vaultUserId: params.vaultUserId,
+            actorUserId,
             // The adapter's capability grant has to ride the durable request:
             // the turn worker builds the runtime MCP from `execution`, so a
             // flag left here undefined is what makes `show_html` and friends

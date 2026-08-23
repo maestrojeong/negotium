@@ -13,6 +13,7 @@ import {
   getCronTopicContext,
   getCronTopicSession,
   getLastCronRun,
+  listCronJobsForActorOwner,
   listCronRuns,
   listCronTopicSessions,
   markCronRunStarted,
@@ -79,6 +80,31 @@ async function waitFor(check: () => boolean): Promise<void> {
 }
 
 describe("cron store", () => {
+  test("separates product actor ownership from the canonical execution principal", () => {
+    const topic = createTopic("local");
+    const name = `shared-name-${randomUUID()}`;
+    const createFor = (actorOwnerUserId: string, prompt: string) => {
+      const job = createCronJob({
+        name,
+        ownerUserId: "local",
+        actorOwnerUserId,
+        topicId: topic.id,
+        prompt,
+        schedule: "0 * * * *",
+      });
+      jobIds.push(job.id);
+      return job;
+    };
+    const first = createFor("otium-user-a", "first actor");
+    const second = createFor("otium-user-b", "second actor");
+
+    expect(first.ownerUserId).toBe("local");
+    expect(first.actorOwnerUserId).toBe("otium-user-a");
+    expect(listCronJobsForActorOwner("otium-user-a").map((job) => job.id)).toContain(first.id);
+    expect(listCronJobsForActorOwner("otium-user-b").map((job) => job.id)).toContain(second.id);
+    expect(() => createFor("otium-user-a", "duplicate actor namespace")).toThrow();
+  });
+
   test("uses the due-time index for idle scheduler polling", () => {
     const topic = createTopic();
     createJob(topic);
