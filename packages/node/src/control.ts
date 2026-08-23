@@ -67,6 +67,17 @@ import {
   RUNTIME_GATEWAY_CONTROL_PATH,
   RUNTIME_GATEWAY_VERSION,
 } from "@negotium/core/runtime-gateway";
+import {
+  createCronJob,
+  deleteCronJob,
+  getCronJob,
+  listCronJobs,
+  listCronRuns,
+  listCronScripts,
+  requestCronCancel,
+  requestCronRun,
+  updateCronJobWithContextReset,
+} from "@negotium/module-cron";
 import { MAX_NODE_UPLOAD_BYTES, nodeFileStore } from "./files";
 import { createPollingSseStream } from "./polling-sse";
 
@@ -191,6 +202,27 @@ function topicServiceError(error: TopicServiceError): Response {
   const status =
     error.code === "TOPIC_NOT_FOUND" ? 404 : error.code === "TOPIC_FORBIDDEN" ? 403 : 400;
   return jsonError(status, error.message);
+}
+
+function cronJobForUser(req: Request, jobId: string, userId: string) {
+  const job = getCronJob(jobId);
+  if (!job || job.ownerUserId !== userId)
+    throw new TopicServiceError("TOPIC_NOT_FOUND", "Cron job not found");
+  const topic = getTopic(job.topicId);
+  if (!topic || !topicInRequestScope(req, topic)) {
+    throw new TopicServiceError("TOPIC_NOT_FOUND", "Cron job not found");
+  }
+  return job;
+}
+
+function optionalText(value: unknown, name: string): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string") throw new ControlRequestError(`${name} must be a string`);
+  return value;
+}
+
+function cronError(error: unknown): never {
+  throw new ControlRequestError(error instanceof Error ? error.message : "Cron request failed");
 }
 
 function safeEqual(left: string, right: string): boolean {
@@ -427,6 +459,7 @@ export function createNodeControlHandler(
               "canonical-topic-list",
               "canonical-topic-create",
               "canonical-manager-topic",
+              "canonical-cron",
               "canonical-topic-update",
               "canonical-topic-delete",
               "turn-submit-silent",
@@ -482,6 +515,126 @@ export function createNodeControlHandler(
             ok: true,
             v: NODE_RUNTIME_CONTRACT_VERSION,
             topic,
+          });
+        }
+
+        if (req.method === "GET" && runtimePath === "/cron/scripts") {
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            scripts: listCronScripts(),
+          });
+        }
+
+        if (req.method === "GET" && runtimePath === "/cron/jobs") {
+          const userId = requiredText(url.searchParams.get("user"), "user");
+          const jobs = listCronJobs(userId).filter((job) => {
+            const topic = getTopic(job.topicId);
+            return Boolean(topic && topicInRequestScope(req, topic));
+          });
+          return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, jobs });
+        }
+
+        if (req.method === "POST" && runtimePath === "/cron/jobs") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const userId = requiredText(body.userId, "userId");
+          const topicId = requiredText(body.topicId, "topicId");
+          const topic = getTopic(topicId);
+          if (
+            !topic ||
+            !topicInRequestScope(req, topic) ||
+            !topic.agent ||
+            !topic.participants.some((participant) => participant.userId === userId)
+          ) {
+            return jsonError(404, "Topic not found");
+          }
+          const agent = optionalText(body.agent, "agent");
+          if (agent && !["claude", "codex", "maestro"].includes(agent)) {
+            throw new ControlRequestError("Invalid agent");
+          }
+          try {
+            const job = createCronJob({
+              name: requiredText(body.name, "name"),
+              ownerUserId: userId,
+              topicId,
+              prompt: optionalText(body.prompt, "prompt"),
+              script: optionalText(body.script, "script"),
+              schedule: requiredText(body.schedule, "schedule"),
+              timezone: optionalText(body.timezone, "timezone"),
+              agent: agent as AgentKind | undefined,
+              model: optionalText(body.model, "model"),
+              effort: optionalText(body.effort, "effort") as
+                | "low"
+                | "medium"
+                | "high"
+                | "xhigh"
+                | "max"
+                | undefined,
+            });
+            return Response.json(
+              { ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, job },
+              { status: 201 },
+            );
+          } catch (error) {
+            cronError(error);
+          }
+        }
+
+        const cronJobMatch = runtimePath.match(/^\/cron\/jobs\/([^/]+)$/);
+        if (cronJobMatch && req.method === "PATCH") {
+          const jobId = decodeURIComponent(cronJobMatch[1]);
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const userId = requiredText(body.userId, "userId");
+          cronJobForUser(req, jobId, userId);
+          if (!body.patch || typeof body.patch !== "object" || Array.isArray(body.patch)) {
+            throw new ControlRequestError("patch must be an object");
+          }
+          try {
+            const job = await updateCronJobWithContextReset(jobId, body.patch);
+            if (!job) return jsonError(404, "Cron job not found");
+            return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, job });
+          } catch (error) {
+            cronError(error);
+          }
+        }
+        if (cronJobMatch && req.method === "DELETE") {
+          const jobId = decodeURIComponent(cronJobMatch[1]);
+          const userId = requiredText(url.searchParams.get("user"), "user");
+          cronJobForUser(req, jobId, userId);
+          deleteCronJob(jobId);
+          return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION });
+        }
+
+        const cronActionMatch = runtimePath.match(/^\/cron\/jobs\/([^/]+)\/(run|cancel)$/);
+        if (cronActionMatch && req.method === "POST") {
+          const jobId = decodeURIComponent(cronActionMatch[1]);
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const userId = requiredText(body.userId, "userId");
+          const job = cronJobForUser(req, jobId, userId);
+          if (cronActionMatch[2] === "run" && !job.enabled) {
+            throw new ControlRequestError("Cron job is disabled");
+          }
+          const requestId =
+            cronActionMatch[2] === "run" ? requestCronRun(jobId) : requestCronCancel(jobId);
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            requestId,
+          });
+        }
+
+        const cronRunsMatch = runtimePath.match(/^\/cron\/jobs\/([^/]+)\/runs$/);
+        if (cronRunsMatch && req.method === "GET") {
+          const jobId = decodeURIComponent(cronRunsMatch[1]);
+          const userId = requiredText(url.searchParams.get("user"), "user");
+          cronJobForUser(req, jobId, userId);
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            runs: listCronRuns(jobId, 20),
           });
         }
 
