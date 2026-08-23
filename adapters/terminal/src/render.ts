@@ -24,6 +24,7 @@ import {
   visibleTopicPickerIds,
 } from "@/state";
 import { displayWidth, runeWidth, stripAnsi } from "@/terminal-width";
+import { parseVisualizationReference } from "@/visualization";
 
 export { displayWidth, stripAnsi } from "@/terminal-width";
 
@@ -823,6 +824,19 @@ function renderMarkdown(value: string, width: number): UiLine[] {
   const rawLines = safeText(value).split("\n");
   for (let lineIndex = 0; lineIndex < rawLines.length; lineIndex += 1) {
     const rawLine = rawLines[lineIndex] ?? "";
+    const visualization = parseVisualizationReference(rawLine);
+    if (visualization) {
+      flushTable();
+      const mode = visualization.mode ? ` · ${visualization.mode}` : "";
+      result.push(
+        line(`  ◇ visualization${mode} · ${visualization.name}`, {
+          fg: theme.cyan,
+          bg: theme.surfaceRaised,
+          bold: true,
+        }),
+      );
+      continue;
+    }
     const fence = rawLine.match(/^\s*```([^`]*)$/);
     if (fence) {
       flushTable();
