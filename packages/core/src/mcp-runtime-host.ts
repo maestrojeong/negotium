@@ -31,7 +31,7 @@ export {
   resolveRuntimeMcpToken,
 } from "#mcp/runtime-spec";
 export { WORKSPACE_DIR } from "#platform/config";
-export { FROM_AUTO_CONTINUE } from "#platform/constants";
+export { FROM_AUTO_CONTINUE, NODE_LOCAL_USER_ID } from "#platform/constants";
 export { errMsg } from "#platform/error";
 export { appendJsonlEntry } from "#platform/jsonl";
 export { logger } from "#platform/logger";

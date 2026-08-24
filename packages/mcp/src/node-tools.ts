@@ -24,6 +24,7 @@ import {
   getTopics,
   isParticipant,
   logger,
+  NODE_LOCAL_USER_ID,
   type RuntimeMcpContext,
   registerTopic,
   restartTopicSession,
@@ -118,6 +119,27 @@ function resolveTopicForUser(
   const byTitle = getTopicByNameForUser(trimmed, ctx.userId, { surface });
   if (byTitle) return { topic: byTitle };
   return { error: notFound };
+}
+
+/**
+ * The principal this turn administers `target` as.
+ *
+ * A room's turns all execute as the principal that owns it, and its logs,
+ * memory and archives are filed under that principal. A hub-backed room is
+ * owned by the hub's execution principal, never by a person (D-4), so an owner
+ * check against `ctx.userId` on one of those is not a permission — it is a
+ * rule that can never pass, and a manager room was refused every room in its
+ * own workspace with "only the topic owner can delete it". Those rooms are
+ * administered as their own owner, which also files the archive under the user
+ * the room actually ran as.
+ *
+ * A room a *person* owns is untouched by this, on every surface: two people
+ * sharing an Otium room still means only its owner may delete or reset it.
+ */
+function actingUserFor(ctx: RuntimeMcpContext, target: TopicDto): string {
+  const owner = target.participants.find((p) => p.role === "owner")?.userId;
+  if (callerSurface(ctx) !== "otium" || owner !== NODE_LOCAL_USER_ID) return ctx.userId;
+  return owner;
 }
 
 function describeTopic(topic: TopicDto): string {
@@ -241,7 +263,11 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
         return errorResult("Error: manager rooms are system-managed and cannot be restarted.");
       }
 
-      const result = await restartTopicSession(target.id, ctx.userId, "runtime-mcp-session-reset");
+      const result = await restartTopicSession(
+        target.id,
+        actingUserFor(ctx, target),
+        "runtime-mcp-session-reset",
+      );
       return result.isError ? errorResult(`Error: ${result.text}`) : textResult(result.text);
     },
   );
@@ -267,15 +293,16 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
       if (target.kind === "manager") {
         return errorResult("Error: manager rooms are system-managed and cannot be deleted.");
       }
+      const actingUser = actingUserFor(ctx, target);
       const isOwner = target.participants.some(
-        (participant) => participant.userId === ctx.userId && participant.role === "owner",
+        (participant) => participant.userId === actingUser && participant.role === "owner",
       );
       if (!isOwner) {
         return errorResult("Error: only the topic owner can delete it.");
       }
 
       try {
-        await deleteTopicCascade(target, ctx.userId, { force: force === true });
+        await deleteTopicCascade(target, actingUser, { force: force === true });
       } catch (err) {
         if (err instanceof TopicArchiveRequiredError) {
           return errorResult(

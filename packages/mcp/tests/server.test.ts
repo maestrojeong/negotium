@@ -12,6 +12,7 @@ import {
   getTopicByNameForUser,
   getTopicSessionId,
   issueRuntimeMcpToken,
+  NODE_LOCAL_USER_ID,
   type RuntimeMcpContext,
   registerPeerRuntimeBridge,
   registerTopic,
@@ -560,7 +561,8 @@ describe("negotium MCP endpoint", () => {
    */
   test("list_topics on the Otium surface covers the caller's workspace", async () => {
     const suffix = randomUUID();
-    const hubPrincipal = `hub-principal-${suffix}`;
+    // The hub files every room it backs under its own execution principal.
+    const hubPrincipal = NODE_LOCAL_USER_ID;
     const person = `hub-person-${suffix}`;
     const scope = `workspace-${suffix}`;
 
@@ -614,6 +616,59 @@ describe("negotium MCP endpoint", () => {
         arguments: { topic: backed.id },
       });
       expect(aborted.isError).toBeFalsy();
+    } finally {
+      await managerClient.close();
+    }
+  });
+
+  /**
+   * No person owns a hub-backed room, so an owner check against the turn's
+   * user could never pass: the manager room could see every room in its
+   * workspace and was refused every one of them with "only the topic owner can
+   * delete it".
+   */
+  test("delete_topic administers a hub-backed room as the room's own owner", async () => {
+    const suffix = randomUUID();
+    const hubPrincipal = NODE_LOCAL_USER_ID;
+    const person = `hub-person-delete-${suffix}`;
+    const scope = `workspace-delete-${suffix}`;
+
+    const backed = registerTopic({
+      title: `hub-doomed-${suffix}`,
+      userId: hubPrincipal,
+      agent: "codex",
+      surface: "otium",
+      surfaceScope: scope,
+    });
+    const general = ensurePersonalGeneral(person, "otium", { surfaceScope: scope });
+
+    const managerClient = new Client({ name: "negotium-otium-delete-test", version: "1.0.0" });
+    const token = issueRuntimeMcpToken({
+      ...ctx,
+      userId: person,
+      topicId: general.id,
+      topicTitle: general.title,
+    });
+    const url = new URL(
+      `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+    );
+
+    try {
+      await managerClient.connect(new StreamableHTTPClientTransport(url));
+      const result = await managerClient.callTool({
+        name: "delete_topic",
+        arguments: { topic: backed.id, force: true },
+      });
+      expect(result.isError).toBeFalsy();
+      expect(resultText(result)).toContain("deleted");
+      expect(getTopic(backed.id)).toBeNull();
+
+      // A manager room is still nobody's to delete, including one's own.
+      const refused = await managerClient.callTool({
+        name: "delete_topic",
+        arguments: { topic: general.id, force: true },
+      });
+      expect(refused.isError).toBe(true);
     } finally {
       await managerClient.close();
     }
