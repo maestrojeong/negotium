@@ -79,7 +79,10 @@ export interface RunArchiverTurnParams {
   rawArchivePaths?: string[];
   /** Number of messages in the archive — gates the MIN threshold. */
   messageCount: number;
-  /** Deleted topics update the #General memory hub; active idle snapshots do not. */
+  /**
+   * Both update the #General memory hub the same way; only the prompt and the
+   * fallback completion text differ ("deleted" vs. "snapshotted").
+   */
   mode?: "deleted-topic" | "active-topic";
   /** Override the archiver agent backend (default: maestro). */
   agent?: AgentKind;
@@ -227,6 +230,12 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
     const model = params.model;
 
     const outputLanguage = resolveMemoryLanguage();
+    // Both a deleted topic and an idle/session-reset snapshot roll into the
+    // #General memory hub (see `finalizeGeneralMemory` below), so both modes
+    // ask the archiver for the same short completion reply to display there.
+    const generalReplyInstruction =
+      `Reply with a short completion message in ${outputLanguage} for display in #General. ` +
+      "Do not include tool-call logs or raw transcripts — just briefly name the summary / brief / articles you saved.";
     const prompt =
       mode === "active-topic"
         ? [
@@ -235,6 +244,8 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
             ...rawArchivePaths.map((path) => `raw_archive_path: ${path}`),
             `wiki_dir: ${wikiDir}`,
             `output_language: ${outputLanguage}`,
+            "",
+            generalReplyInstruction,
           ].join("\n")
         : [
             `Session "${topicTitle}" was deleted. Extract durable memory from the archive below and save it into the wiki.`,
@@ -243,8 +254,7 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
             `wiki_dir: ${wikiDir}`,
             `output_language: ${outputLanguage}`,
             "",
-            `Reply with a short completion message in ${outputLanguage} for display in #General. ` +
-              "Do not include tool-call logs or raw transcripts — just briefly name the summary / brief / articles you saved.",
+            generalReplyInstruction,
           ].join("\n");
 
     const activeSessionId = `memory:${host.config.createId()}`;
@@ -421,21 +431,23 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
             host.config.warn({ err, userId, topicTitle }, "archiver: settlement callback failed");
           }
         }
-        if (mode === "deleted-topic") {
-          // Roll the deleted topic into the #General memory hub regardless of LLM
-          // success — even a failed distillation should leave a digest breadcrumb.
-          const text = finalText.trimEnd();
-          finalizeGeneralMemory(
-            host,
-            userId,
-            topicTitle,
-            messageCount,
-            startMs,
-            ok,
-            topicId,
-            ok && text ? { text, agent, model, usage } : undefined,
-          );
-        }
+        // Roll every archiver run — deleted topic or idle/session-reset
+        // snapshot alike — into the #General memory hub regardless of LLM
+        // success: even a failed distillation should leave a digest
+        // breadcrumb, and participants should see the hub absorb memory no
+        // matter why the archiver ran.
+        const text = finalText.trimEnd();
+        finalizeGeneralMemory(
+          host,
+          userId,
+          topicTitle,
+          messageCount,
+          startMs,
+          ok,
+          mode,
+          topicId,
+          ok && text ? { text, agent, model, usage } : undefined,
+        );
       });
     topicQueues.set(safeTopic, work);
     void work.finally(() => {
@@ -499,9 +511,10 @@ export function findSummaryFile(
 
 /**
  * Update the #General brief with a rolling digest entry for the archived topic
- * and post the archiver completion reply. The brief feeds the General turn's
- * system prompt, so this is the channel that carries deleted-topic memory into
- * the user's private hub. Best-effort — never throws.
+ * (deleted, or idle/session-reset snapshot) and post the archiver completion
+ * reply. The brief feeds the General turn's system prompt, so this is the
+ * channel that carries every archiver run's memory into the user's private
+ * hub. Best-effort — never throws.
  */
 function finalizeGeneralMemory(
   host: ArchiverHost,
@@ -510,6 +523,7 @@ function finalizeGeneralMemory(
   messageCount: number,
   startMs: number,
   ok: boolean,
+  mode: "deleted-topic" | "active-topic",
   topicId?: string,
   generalReply?: GeneralArchiverReply,
 ): void {
@@ -533,7 +547,7 @@ function finalizeGeneralMemory(
       newEntry,
       ...prevEntries.filter((l) => !l.startsWith(`- **${topicTitle}** `)),
     ].slice(0, MAX_BRIEF_ENTRIES);
-    const briefMd = `# Workspace Memory Hub\n\nRecent memory digest distilled from deleted topics. Use \`wiki_query\` for details.\n\n## Recent Archives\n${rolled.join("\n")}`;
+    const briefMd = `# Workspace Memory Hub\n\nRecent memory digest distilled from archived topics (deletions and idle/session-reset snapshots). Use \`wiki_query\` for details.\n\n## Recent Archives\n${rolled.join("\n")}`;
 
     host.storage.setTopicBrief(generalTopicId, {
       briefMd,
@@ -554,9 +568,13 @@ function finalizeGeneralMemory(
     const replyText = generalReply?.text.trim();
     const text =
       replyText ||
-      (ok
-        ? `🗂 Topic "${topicTitle}" was deleted and archived into #General memory.`
-        : `🗂 Archived topic "${topicTitle}" (summary extraction failed — raw log preserved in wiki/archive).`);
+      (mode === "deleted-topic"
+        ? ok
+          ? `🗂 Topic "${topicTitle}" was deleted and archived into #General memory.`
+          : `🗂 Archived topic "${topicTitle}" (summary extraction failed — raw log preserved in wiki/archive).`
+        : ok
+          ? `🗂 Session "${topicTitle}" was snapshotted and archived into #General memory.`
+          : `🗂 Archived a snapshot of "${topicTitle}" (summary extraction failed — raw log preserved in wiki/archive).`);
     const replyMeta =
       generalReply && replyText
         ? {

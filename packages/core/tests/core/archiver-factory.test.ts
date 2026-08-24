@@ -212,7 +212,13 @@ describe("archiver runtime factory", () => {
 
     expect(await runAndSettle(runtime, params)).toBe(true);
     expect(fixture.definitionLoads()).toBe(1);
-    expect(fixture.messages).toEqual([]);
+    // Idle/session-reset snapshots roll into #General exactly like a deleted
+    // topic does — one completion message per successful archiver run.
+    expect(fixture.messages).toHaveLength(2);
+    expect(fixture.messages[0]).toMatchObject({
+      topicId: "general:owner",
+      text: "saved memory",
+    });
 
     fixture.advanceTime(1_001);
     expect(runtime.listActiveMemoryArchiverSessions("owner")).toEqual([]);
