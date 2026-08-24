@@ -278,6 +278,54 @@ test("runtime gateway topic create makes a shared canonical topic", async () => 
   expect(turn?.status).toBe(202);
 });
 
+/**
+ * The capability was advertised while the route lived only on the control
+ * surface, so a host feature-detected support and got a 404 from the contract
+ * dispatcher — forking a room in Otium failed, and rooms derived before the
+ * refusal existed only in the hub's store.
+ */
+test("runtime gateway topic derive forks the room the contract advertises", async () => {
+  const deriveUser = `topic-derive-${randomUUID()}`;
+  const created = await handler(
+    runtimeRequest("/topics", {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        userId: deriveUser,
+        title: `Derive source ${randomUUID()}`,
+      }),
+    }),
+  );
+  const source = ((await created?.json()) as { topic: TopicDto }).topic;
+
+  const health = await handler(runtimeRequest("/health"));
+  const capabilities = ((await health?.json()) as { capabilities?: string[] }).capabilities ?? [];
+  expect(capabilities).toContain("canonical-topic-derive");
+
+  const name = `Derived ${randomUUID()}`;
+  const response = await handler(
+    runtimeRequest(`/topics/${encodeURIComponent(source.id)}/derive`, {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        userId: deriveUser,
+        copyHistory: false,
+        name,
+      }),
+    }),
+  );
+  const body = (await response?.json()) as { v?: number; topic?: TopicDto };
+  expect(response?.status).toBe(201);
+  expect(body.v).toBe(NODE_RUNTIME_CONTRACT_VERSION);
+  expect(body.topic?.title).toBe(name);
+  expect(body.topic?.parentTopicId).toBe(source.id);
+  // Derived on the node means the canonical list holds it too; a room the
+  // node does not know is a room only the hub can run.
+  const listed = await handler(runtimeRequest("/topics"));
+  const ids = (((await listed?.json()) as { topics?: TopicDto[] }).topics ?? []).map((t) => t.id);
+  expect(ids).toContain(body.topic!.id);
+});
+
 test("runtime gateway history import seeds a topic verbatim without running a turn", async () => {
   const importUser = `import-${randomUUID()}`;
   const created = await handler(

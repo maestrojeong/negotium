@@ -52,10 +52,6 @@ const DELIBERATELY_LOCAL_ONLY = new Map<string, string>([
   // A callback from the node's own visual renderer writing back a rendered SVG;
   // there is no remote caller for it.
   ["POST /topics/:id/decision-graph", "local renderer callback, not a host operation"],
-  // Forking creates a room, which collides with Otium's mirror/mapping
-  // lifecycle: the new topic would appear unmapped and be re-mirrored as a
-  // second room. Needs its own design pass before it gets a contract verb.
-  ["POST /topics/:id/derive", "creates a room; needs a mirror/mapping design pass first"],
   // A real gap, but the write alone is unusable: the contract has no way to
   // *read* the pending questions, so a host could never learn the message id to
   // answer. Both halves have to land together.
