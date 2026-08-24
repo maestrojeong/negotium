@@ -157,6 +157,8 @@ export class TopicCleanupRequiredError extends Error {
 
 export interface DeleteTopicCascadeOptions {
   force?: boolean;
+  /** Upstream product actor whose personal General receives archive memory. */
+  memoryUserId?: string;
   /** Account deletion may remove that account's otherwise-protected private General. */
   allowManager?: boolean;
   /** Account deletion must not recreate a private General via the archiver. */
@@ -256,7 +258,8 @@ async function deleteTopicCascadeImpl(
         const memoryTopic = topic.memoryKey ? topic : (getTopicMemoryOrigin(topicId) ?? topic);
         const memoryTitle = memoryTopic.memoryKey?.trim() || memoryTopic.title;
         runArchiverTurn({
-          userId,
+          userId: options.memoryUserId ?? userId,
+          sourceTopicId: topicId,
           // A memory origin that is also disappearing in this cascade must use
           // file + General memory only. Passing its id to wiki MCP would let the
           // detached archiver recreate an orphan api_topic_brief row later.

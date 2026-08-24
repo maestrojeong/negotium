@@ -1117,11 +1117,16 @@ export function createNodeControlHandler(
           const topic = getTopic(topicId);
           if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
           const userId = requiredText(body.userId, "userId");
+          const actorUserId =
+            body.actorUserId === undefined
+              ? undefined
+              : requiredText(body.actorUserId, "actorUserId");
           const reason =
             body.reason === undefined ? undefined : requiredText(body.reason, "reason");
           const result = await topicService.reset({
             topicId,
             userId,
+            actorUserId,
             // The caller's reason is only ever a label on the audit line, so an
             // absent one falls back to naming the surface rather than failing.
             reason: reason ?? "runtime-contract-session-reset",
@@ -1142,11 +1147,16 @@ export function createNodeControlHandler(
           const topic = getTopic(topicId);
           if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
           const userId = requiredText(body.userId, "userId");
+          const actorUserId =
+            body.actorUserId === undefined
+              ? undefined
+              : requiredText(body.actorUserId, "actorUserId");
           const reason =
             body.reason === undefined ? undefined : requiredText(body.reason, "reason");
           const result = await topicService.compact({
             topicId,
             userId,
+            actorUserId,
             reason: reason ?? "runtime-contract-session-compact",
             compactSession: options.compactSession,
           });
@@ -1301,8 +1311,9 @@ export function createNodeControlHandler(
           const topic = getTopic(topicId);
           if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
           const userId = requiredText(url.searchParams.get("user"), "user");
+          const actorUserId = url.searchParams.get("actor")?.trim() || undefined;
           try {
-            await topicService.delete({ topicId, userId });
+            await topicService.delete({ topicId, userId, memoryUserId: actorUserId });
           } catch (err) {
             if (err instanceof TopicServiceError) {
               const status =

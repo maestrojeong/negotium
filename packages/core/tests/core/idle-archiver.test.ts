@@ -158,12 +158,50 @@ describe("idle archiver defaults", () => {
     expect(archiveActiveTopicForMemory(topic.id, "idle-owner", options)).toBe("archived");
     expect(launches).toHaveLength(1);
     expect(launches[0]?.mode).toBe("active-topic");
+    expect(launches[0]?.sourceTopicId).toBe(topic.id);
     expect(launches[0]?.rawArchivePaths).toEqual(["/tmp/reset-memory-events.jsonl"]);
     expect(archiveCalls).toEqual([{ reason: "reset", afterRowid: 0 }]);
     expect(getTopicArchiveState(topic.id)?.lastArchivedRowid).toBeGreaterThan(0);
 
     expect(archiveActiveTopicForMemory(topic.id, "idle-owner", options)).toBe("below-threshold");
     expect(launches).toHaveLength(1);
+  });
+
+  test("routes a hosted actor's snapshot to that actor's General", () => {
+    const topic = makeTopic(false, {
+      participants: [{ userId: "local", role: "owner" }],
+      surface: "otium",
+      surfaceScope: "workspace-1",
+    });
+    appendApiMessage({
+      id: randomUUID(),
+      topicId: topic.id,
+      authorId: "otium-hosted-user",
+      text: "remember this",
+      createdAt: new Date().toISOString(),
+    });
+    const launches: RunArchiverTurnParams[] = [];
+
+    expect(
+      archiveActiveTopicForMemory(topic.id, "otium-hosted-user", {
+        reason: "idle",
+        minMessages: 1,
+        archiveMessages: () => ({
+          path: "/tmp/hosted-actor-memory.jsonl",
+          messageCount: 1,
+          exchangeCount: 0,
+          lastRowid: 44,
+        }),
+        launchArchiver: (params) => {
+          launches.push(params);
+          return true;
+        },
+      }),
+    ).toBe("archived");
+    expect(launches[0]).toMatchObject({
+      userId: "otium-hosted-user",
+      sourceTopicId: topic.id,
+    });
   });
 
   test("reset preserves a short raw snapshot but skips the memory agent", () => {

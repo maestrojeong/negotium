@@ -209,6 +209,27 @@ describe("RuntimeGatewayClient", () => {
     });
   });
 
+  test("sends the product actor separately for session memory routing", async () => {
+    let request: Request | undefined;
+    const client = new RuntimeGatewayClient({
+      baseUrl: "http://127.0.0.1:7777",
+      token: "secret",
+      fetch: async (input, init) => {
+        request = requestFrom(input, init);
+        return json({ ok: true, v: 1, result: "reset" });
+      },
+    });
+
+    await client.resetSession("topic-1", "local", "slash-new", "otium-hosted-user");
+
+    expect(await request?.json()).toEqual({
+      v: 1,
+      userId: "local",
+      actorUserId: "otium-hosted-user",
+      reason: "slash-new",
+    });
+  });
+
   test("speaks the actor-aware Cron CRUD contract", async () => {
     const requests: Request[] = [];
     const job = {

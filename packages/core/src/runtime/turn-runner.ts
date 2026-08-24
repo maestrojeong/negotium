@@ -289,6 +289,7 @@ export async function streamAgentEvents(
   onSessionId?: (sessionId: string) => void,
   execution?: {
     silent?: boolean;
+    actorUserId?: string;
     peerBridge?: PeerRuntimeBridgeContext;
     sourceNode?: string;
     threadRootId?: string;
@@ -1721,7 +1722,13 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     userId,
     !sessionRetried,
     onSessionId,
-    { silent, peerBridge, sourceNode, ...(threadRootId ? { threadRootId } : {}) },
+    {
+      silent,
+      actorUserId: params.actorUserId,
+      peerBridge,
+      sourceNode,
+      ...(threadRootId ? { threadRootId } : {}),
+    },
   )
     .then(async (streamOutcome) => {
       let outcome = streamOutcome;

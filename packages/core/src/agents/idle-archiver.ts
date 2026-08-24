@@ -181,6 +181,7 @@ export function archiveActiveTopicForMemory(
   const memoryTitle = memoryTopic.memoryKey?.trim() || memoryTopic.title;
   const launched = (options.launchArchiver ?? runArchiverTurn)({
     userId,
+    sourceTopicId: topic.id,
     topicId: memoryTopic.id,
     topicTitle: memoryTitle,
     archivePath: job.archivePath,

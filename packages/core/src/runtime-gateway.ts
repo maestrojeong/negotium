@@ -662,16 +662,18 @@ export class RuntimeGatewayClient {
     topicId: string,
     userId: string,
     reason?: string,
+    actorUserId?: string,
   ): Promise<string | undefined> {
-    return this.sessionCommand(topicId, userId, "reset", reason);
+    return this.sessionCommand(topicId, userId, "reset", reason, actorUserId);
   }
 
   async compactSession(
     topicId: string,
     userId: string,
     reason?: string,
+    actorUserId?: string,
   ): Promise<string | undefined> {
-    return this.sessionCommand(topicId, userId, "compact", reason);
+    return this.sessionCommand(topicId, userId, "compact", reason, actorUserId);
   }
 
   private async sessionCommand(
@@ -679,6 +681,7 @@ export class RuntimeGatewayClient {
     userId: string,
     command: "reset" | "compact",
     reason?: string,
+    actorUserId?: string,
   ): Promise<string | undefined> {
     const response = await this.send(
       `/topics/${encodeURIComponent(topicId)}/session/${command}`,
@@ -688,6 +691,7 @@ export class RuntimeGatewayClient {
         body: JSON.stringify({
           v: RUNTIME_GATEWAY_VERSION,
           userId,
+          ...(actorUserId ? { actorUserId } : {}),
           ...(reason ? { reason } : {}),
         }),
       },

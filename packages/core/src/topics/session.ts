@@ -91,6 +91,8 @@ export interface CompactedRolloutRequest extends Omit<CompactSummaryRequest, "so
 
 export interface RestartTopicSessionOptions {
   archiveMemory?: typeof archiveActiveTopicForMemory;
+  /** Upstream product actor whose personal General receives archive memory. */
+  memoryUserId?: string;
   purgeLogs?: typeof purgeTopicLogs;
   /** Maximum time to wait for durable memory before leaving the session unchanged. */
   memoryArchiveWaitMs?: number;
@@ -183,15 +185,19 @@ export async function restartTopicSession(
     const memoryArchiveSettled = new Promise<void>((resolve) => {
       settleMemoryArchive = resolve;
     });
-    const archiveStatus = (options.archiveMemory ?? archiveActiveTopicForMemory)(topicId, userId, {
-      reason: "reset",
-      minMessages: 1,
-      minExchanges: MIN_MEMORY_ARCHIVE_EXCHANGES,
-      allowMentionOnly: true,
-      skipBusyCheck: true,
-      rawArchivePaths,
-      onSettled: () => settleMemoryArchive?.(),
-    });
+    const archiveStatus = (options.archiveMemory ?? archiveActiveTopicForMemory)(
+      topicId,
+      options.memoryUserId ?? userId,
+      {
+        reason: "reset",
+        minMessages: 1,
+        minExchanges: MIN_MEMORY_ARCHIVE_EXCHANGES,
+        allowMentionOnly: true,
+        skipBusyCheck: true,
+        rawArchivePaths,
+        onSettled: () => settleMemoryArchive?.(),
+      },
+    );
     // Keep maintenance ownership until durable memory has settled. All reset
     // surfaces share this service, so terminal, Telegram, MCP, and embedding
     // hosts cannot start the fresh session against stale wiki memory.

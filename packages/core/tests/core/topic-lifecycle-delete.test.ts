@@ -143,6 +143,7 @@ describe("deleteTopicCascade archive policy", () => {
     expect(calls.archiver).toEqual([
       {
         userId: "owner-user",
+        sourceTopicId: topic.id,
         topicTitle: topic.title,
         archivePath: `/tmp/${topic.id}.jsonl`,
         messageCount: 6,
@@ -172,11 +173,29 @@ describe("deleteTopicCascade archive policy", () => {
     expect(calls.archiver).toEqual([
       {
         userId: "owner-user",
+        sourceTopicId: topic.id,
         topicTitle: topic.title,
         archivePath: `/tmp/${topic.id}.jsonl`,
         rawArchivePaths: [rawArchivePath],
         messageCount: 6,
       },
+    ]);
+  });
+
+  test("routes a canonical deletion archive to the upstream product actor", async () => {
+    const topic = makeTopic("topic-delete-hosted", "Hosted Delete Topic", {
+      participants: [{ userId: "local", role: "owner" }],
+      surface: "otium",
+      surfaceScope: "workspace-1",
+    });
+
+    await deleteTopicCascade(topic, "local", { memoryUserId: "otium-hosted-user" });
+
+    expect(calls.archiver).toEqual([
+      expect.objectContaining({
+        userId: "otium-hosted-user",
+        sourceTopicId: topic.id,
+      }),
     ]);
   });
 
@@ -332,6 +351,7 @@ describe("deleteTopicCascade archive policy", () => {
     expect(calls.archiver).toEqual([
       {
         userId: "owner-user",
+        sourceTopicId: child.id,
         topicId: "root-topic",
         topicTitle: "Root Topic",
         archivePath: "/tmp/child-topic.jsonl",
@@ -356,12 +376,14 @@ describe("deleteTopicCascade archive policy", () => {
     expect(calls.archiver).toEqual([
       {
         userId: "owner-user",
+        sourceTopicId: root.id,
         topicTitle: root.title,
         archivePath: `/tmp/${root.id}.jsonl`,
         messageCount: 6,
       },
       {
         userId: "owner-user",
+        sourceTopicId: child.id,
         topicTitle: root.title,
         archivePath: `/tmp/${child.id}.jsonl`,
         messageCount: 6,

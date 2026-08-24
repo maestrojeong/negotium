@@ -11,6 +11,7 @@ import { COMPLETED_BACKGROUND_SESSION_RETENTION_MS } from "#runtime/background-s
 import { sanitizeTopicName } from "#security/sanitize";
 import { appendApiMessage } from "#storage/api-messages";
 import { getTopicBrief, setTopicBrief } from "#storage/api-topic-brief";
+import { getTopic } from "#storage/api-topics";
 import { getSharedWikiDir } from "#storage/wiki";
 import { isTopicSummaryFile, wikiSummaryFilename } from "#storage/wiki-summary-names";
 import { ensurePersonalGeneral } from "#topics/personal-general";
@@ -69,6 +70,8 @@ function formatArchiverTool(name: string, input: Record<string, unknown>): strin
 export interface RunArchiverTurnParams {
   /** Stringified user id (route layer hands us strings). */
   userId: string;
+  /** Topic whose placement selects the matching personal #General room. */
+  sourceTopicId?: string;
   /** Wiki-memory topic id. Derived topics pass their root memory origin here. */
   topicId?: string;
   /** Human-readable topic title — becomes the wiki `topic` name. */
@@ -106,7 +109,7 @@ export interface ArchiverStorageHost {
   readTextFile(path: string): string;
   fileSize(path: string): number;
   fileModifiedAt(path: string): number;
-  getGeneralTopicId(userId: string): string;
+  getGeneralTopicId(userId: string, sourceTopicId?: string): string;
   getTopicBrief(topicId: string): { briefMd: string } | null;
   setTopicBrief(
     topicId: string,
@@ -205,6 +208,7 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
   const runTurn = (params: RunArchiverTurnParams): boolean => {
     const {
       userId,
+      sourceTopicId,
       topicId,
       topicTitle,
       archivePath,
@@ -212,6 +216,11 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
       messageCount,
       mode = "deleted-topic",
     } = params;
+
+    // Resolve while the source row still exists. Deleted-topic archivers settle
+    // after the cascade removes it, but its surface/scope is required to select
+    // the same personal General that the originating host mapped.
+    const generalTopicId = host.storage.getGeneralTopicId(userId, sourceTopicId);
 
     let definition: AgentDef;
     try {
@@ -446,6 +455,7 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
           ok,
           mode,
           topicId,
+          generalTopicId,
           ok && text ? { text, agent, model, usage } : undefined,
         );
       });
@@ -525,9 +535,10 @@ function finalizeGeneralMemory(
   ok: boolean,
   mode: "deleted-topic" | "active-topic",
   topicId?: string,
+  generalTopicId?: string,
   generalReply?: GeneralArchiverReply,
 ): void {
-  const generalTopicId = host.storage.getGeneralTopicId(userId);
+  const resolvedGeneralTopicId = generalTopicId ?? host.storage.getGeneralTopicId(userId, topicId);
   const date = host.config.now().toISOString().slice(0, 10);
   try {
     const summaryPath = ok
@@ -537,7 +548,7 @@ function finalizeGeneralMemory(
     const oneLine = (summaryMd && distillOneLine(summaryMd)) || `Archived ${messageCount} messages`;
 
     // Rolling digest: dedupe same-title, prepend newest, cap at MAX_BRIEF_ENTRIES.
-    const prev = host.storage.getTopicBrief(generalTopicId);
+    const prev = host.storage.getTopicBrief(resolvedGeneralTopicId);
     const prevEntries = (prev?.briefMd ?? "")
       .split("\n")
       .map((l) => l.trim())
@@ -549,7 +560,7 @@ function finalizeGeneralMemory(
     ].slice(0, MAX_BRIEF_ENTRIES);
     const briefMd = `# Workspace Memory Hub\n\nRecent memory digest distilled from archived topics (deletions and idle/session-reset snapshots). Use \`wiki_query\` for details.\n\n## Recent Archives\n${rolled.join("\n")}`;
 
-    host.storage.setTopicBrief(generalTopicId, {
+    host.storage.setTopicBrief(resolvedGeneralTopicId, {
       briefMd,
       ...(summaryMd ? { latestSummaryMd: summaryMd, summaryDate: date } : {}),
     });
@@ -586,13 +597,13 @@ function finalizeGeneralMemory(
         : { authorId: "system" };
     const msg = {
       id: host.config.createId(),
-      topicId: generalTopicId,
+      topicId: resolvedGeneralTopicId,
       text,
       ...replyMeta,
       createdAt: host.config.now().toISOString(),
     };
     host.messaging.appendMessage(msg);
-    host.messaging.broadcastMessage(generalTopicId, msg);
+    host.messaging.broadcastMessage(resolvedGeneralTopicId, msg);
   } catch (err) {
     host.config.warn({ err, topicTitle }, "archiver: failed to post #General notification");
   }
@@ -606,7 +617,14 @@ const defaultArchiverRuntime = createArchiverRuntime({
     readTextFile: (path) => readFileSync(path, "utf-8"),
     fileSize: (path) => statSync(path).size,
     fileModifiedAt: (path) => statSync(path).mtimeMs,
-    getGeneralTopicId: (userId) => ensurePersonalGeneral(userId).id,
+    getGeneralTopicId: (userId, sourceTopicId) => {
+      const source = sourceTopicId ? getTopic(sourceTopicId) : null;
+      return source
+        ? ensurePersonalGeneral(userId, source.surface, {
+            surfaceScope: source.surfaceScope ?? null,
+          }).id
+        : ensurePersonalGeneral(userId).id;
+    },
     getTopicBrief,
     setTopicBrief: (topicId, fields) => {
       setTopicBrief(topicId, fields);

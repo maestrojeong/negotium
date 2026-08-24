@@ -21,6 +21,7 @@ function createHost(eventFactory: () => AsyncIterable<UnifiedEvent>) {
     fields: { briefMd: string; latestSummaryMd?: string; summaryDate?: string };
   }> = [];
   const scheduled: Array<() => void> = [];
+  const generalResolutions: Array<{ userId: string; sourceTopicId?: string }> = [];
 
   const host: ArchiverHost = {
     storage: {
@@ -30,7 +31,10 @@ function createHost(eventFactory: () => AsyncIterable<UnifiedEvent>) {
       readTextFile: () => "---\ntopic: archived\n---\n\n# Summary\nA durable summary line.",
       fileSize: () => 2048,
       fileModifiedAt: () => nowMs,
-      getGeneralTopicId: (userId) => `general:${userId}`,
+      getGeneralTopicId: (userId, sourceTopicId) => {
+        generalResolutions.push({ userId, sourceTopicId });
+        return `general:${userId}`;
+      },
       getTopicBrief: () => null,
       setTopicBrief: (topicId, fields) => {
         briefs.push({ topicId, fields });
@@ -82,6 +86,7 @@ function createHost(eventFactory: () => AsyncIterable<UnifiedEvent>) {
     broadcasts,
     briefs,
     scheduled,
+    generalResolutions,
     definitionLoads: () => definitionLoads,
     advanceTime: (ms: number) => {
       nowMs += ms;
@@ -238,6 +243,7 @@ describe("archiver runtime factory", () => {
     expect(
       await runAndSettle(runtime, {
         userId: "owner",
+        sourceTopicId: "topic-id",
         topicId: "topic-id",
         topicTitle: "Deleted Topic",
         archivePath: "/archive/messages.jsonl",
@@ -270,5 +276,6 @@ describe("archiver runtime factory", () => {
       { topicId: "general:owner", message: fixture.messages[0]! },
     ]);
     expect(fixture.agentOptions[0]?.prompt).toContain("raw_archive_path: /archive/events.jsonl");
+    expect(fixture.generalResolutions).toEqual([{ userId: "owner", sourceTopicId: "topic-id" }]);
   });
 });

@@ -130,6 +130,7 @@ export async function runTurnEventStream(
   onSessionId?: (sessionId: string) => void,
   execution?: {
     silent?: boolean;
+    actorUserId?: string;
     peerBridge?: PeerRuntimeBridgeContext;
     sourceNode?: string;
     /** Answer inside this thread instead of the room's main flow (S-13). */
@@ -654,7 +655,7 @@ export async function runTurnEventStream(
             }
           }
           if (!silent) {
-            scheduleIdleArchiveForTopic(topicId, userId);
+            scheduleIdleArchiveForTopic(topicId, execution?.actorUserId ?? userId);
             hub.broadcastDone(
               topicId,
               queryId,

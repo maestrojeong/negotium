@@ -55,6 +55,7 @@ export interface DeleteUserTopicParams extends DeleteTopicCascadeOptions {
 export interface TopicSessionParams {
   topicId: string;
   userId: string;
+  actorUserId?: string;
   reason?: string;
 }
 
@@ -90,6 +91,7 @@ export const topicService = {
     }
     await deleteTopicCascade(topic, params.userId, {
       ...(params.force !== undefined ? { force: params.force } : {}),
+      ...(params.memoryUserId !== undefined ? { memoryUserId: params.memoryUserId } : {}),
       ...(params.allowManager !== undefined ? { allowManager: params.allowManager } : {}),
       ...(params.skipArchive !== undefined ? { skipArchive: params.skipArchive } : {}),
       ...(params.purgeLogs !== undefined ? { purgeLogs: params.purgeLogs } : {}),
@@ -98,7 +100,9 @@ export const topicService = {
 
   async reset(params: TopicSessionParams): Promise<RestartTopicSessionResult> {
     ownerTopic(params.topicId, params.userId);
-    return restartTopicSession(params.topicId, params.userId, params.reason);
+    return restartTopicSession(params.topicId, params.userId, params.reason, {
+      memoryUserId: params.actorUserId,
+    });
   },
 
   async compact(params: CompactUserTopicParams): Promise<RestartTopicSessionResult> {
