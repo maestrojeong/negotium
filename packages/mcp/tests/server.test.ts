@@ -7,6 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
   claimDeliveryAck,
+  ensurePersonalGeneral,
   getTopic,
   getTopicByNameForUser,
   getTopicSessionId,
@@ -548,5 +549,73 @@ describe("negotium MCP endpoint", () => {
     });
     expect(result.isError).toBe(true);
     expect(resultText(result)).toContain("current topic");
+  });
+
+  /**
+   * A hub creates every room it backs under its own execution principal and
+   * keeps per-person membership in its own store, so scoping the Otium surface
+   * by the turn's user matched nothing: the manager room reported "one topic",
+   * naming only the private General this node had just made for that person,
+   * while the workspace it spoke for held all the rooms.
+   */
+  test("list_topics on the Otium surface covers the caller's workspace", async () => {
+    const suffix = randomUUID();
+    const hubPrincipal = `hub-principal-${suffix}`;
+    const person = `hub-person-${suffix}`;
+    const scope = `workspace-${suffix}`;
+
+    const backed = registerTopic({
+      title: `hub-room-${suffix}`,
+      userId: hubPrincipal,
+      agent: "codex",
+      surface: "otium",
+      surfaceScope: scope,
+    });
+    const otherWorkspace = registerTopic({
+      title: `other-workspace-room-${suffix}`,
+      userId: hubPrincipal,
+      agent: "codex",
+      surface: "otium",
+      surfaceScope: `other-${suffix}`,
+    });
+    const general = ensurePersonalGeneral(person, "otium", { surfaceScope: scope });
+    const someoneElsesGeneral = ensurePersonalGeneral(`bystander-${suffix}`, "otium", {
+      surfaceScope: scope,
+    });
+
+    const callerCtx: RuntimeMcpContext = {
+      ...ctx,
+      userId: person,
+      topicId: general.id,
+      topicTitle: general.title,
+    };
+    const managerClient = new Client({ name: "negotium-otium-manager-test", version: "1.0.0" });
+    const token = issueRuntimeMcpToken(callerCtx);
+    const url = new URL(
+      `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+    );
+
+    try {
+      await managerClient.connect(new StreamableHTTPClientTransport(url));
+      const text = resultText(await managerClient.callTool({ name: "list_topics", arguments: {} }));
+      expect(text).toContain(backed.id);
+      expect(text).toContain(general.id);
+      // Another workspace on the same node, and another person's private
+      // General inside this one, both stay out.
+      expect(text).not.toContain(otherWorkspace.id);
+      expect(text).not.toContain(someoneElsesGeneral.id);
+      // The terminal rooms this node also holds are a different surface.
+      expect(text).not.toContain(mainTopic.id);
+
+      // A room the caller does not participate in is still addressable, so the
+      // listing and the lifecycle tools agree on what exists.
+      const aborted = await managerClient.callTool({
+        name: "abort_topic",
+        arguments: { topic: backed.id },
+      });
+      expect(aborted.isError).toBeFalsy();
+    } finally {
+      await managerClient.close();
+    }
   });
 });

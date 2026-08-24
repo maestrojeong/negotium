@@ -52,6 +52,40 @@ function callerSurface(ctx: RuntimeMcpContext): TopicSurface {
   return getTopic(ctx.topicId)?.surface ?? defaultTopicSurface();
 }
 
+/** The workspace instance the calling turn belongs to. Always null off `otium`. */
+function callerSurfaceScope(ctx: RuntimeMcpContext): string | null {
+  return getTopic(ctx.topicId)?.surfaceScope ?? null;
+}
+
+/**
+ * The rooms the calling turn is allowed to see and name.
+ *
+ * On `terminal` and `telegram` this node owns membership, so participation is
+ * the only boundary there is and nothing weaker would be safe.
+ *
+ * On `otium` it is not a boundary at all. A hub backs each of its rooms with a
+ * node topic created under the hub's own execution principal, and per-person
+ * membership stays in the hub's store (D-3) — the hub has already decided who
+ * may speak in a room before the turn reaches this node. Scoping that surface
+ * by `ctx.userId` therefore matched none of the rooms the caller actually
+ * works in: a manager turn asked "what topics do I have?" answered "one",
+ * naming only the private General this node had just created for that person,
+ * while the workspace it was speaking for held every other room. The
+ * workspace — surface plus scope — is the real boundary there. Other people's
+ * private Generals are still excluded, because a manager room is the one
+ * per-user room on that surface and the one thing membership does decide.
+ */
+function topicsForCaller(ctx: RuntimeMcpContext): TopicDto[] {
+  const surface = callerSurface(ctx);
+  if (surface !== "otium") {
+    return getTopics({ surface }).filter((topic) => isParticipant(topic, ctx.userId));
+  }
+  return getTopics({ surface, surfaceScope: callerSurfaceScope(ctx) }).filter(
+    (topic) =>
+      topic.kind !== "manager" || topic.id === ctx.topicId || isParticipant(topic, ctx.userId),
+  );
+}
+
 function resolveTopicForUser(
   ctx: RuntimeMcpContext,
   ref: string,
@@ -60,6 +94,16 @@ function resolveTopicForUser(
   if (!trimmed) return { error: "Error: topic is required." };
   const notFound = `Error: topic '${trimmed}' not found (or not uniquely named). Use list_topics to see available topics.`;
   const surface = callerSurface(ctx);
+  if (surface === "otium") {
+    // Same visibility as `list_topics`, or the manager room could list a room
+    // it is then told does not exist.
+    const visible = topicsForCaller(ctx);
+    const byId = visible.find((topic) => topic.id === trimmed);
+    if (byId) return { topic: byId };
+    const wanted = trimmed.toLowerCase();
+    const byTitle = visible.filter((topic) => topic.title.toLowerCase() === wanted);
+    return byTitle.length === 1 ? { topic: byTitle[0]! } : { error: notFound };
+  }
   const byId = getTopic(trimmed);
   if (byId) {
     // Membership is not enough. The by-title branch below is surface-scoped,
@@ -128,12 +172,10 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
 
   server.tool(
     "list_topics",
-    "List the calling user's topics on this negotium node: title, id, kind, agent, and whether a turn is currently running.",
+    "List the topics this turn can reach on this negotium node: title, id, kind, agent, and whether a turn is currently running.",
     {},
     async () => {
-      const topics = getTopics({ surface: callerSurface(ctx) }).filter((topic) =>
-        isParticipant(topic, ctx.userId),
-      );
+      const topics = topicsForCaller(ctx);
       if (topics.length === 0) {
         return textResult("No topics found. Use register_topic to create one.");
       }

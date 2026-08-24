@@ -7,9 +7,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { MANAGER_TOPIC_LOG_NAME, NODE_LOCAL_USER_ID } from "#platform/constants";
 import { appendJsonlLine } from "#platform/jsonl";
 import { logger } from "#platform/logger";
-import { sanitizeTopicName } from "#security/sanitize";
+import { sanitizeId, sanitizeTopicName } from "#security/sanitize";
 import { resolveStorageDataDir } from "#storage/storage-host";
 import type { AgentKind, UnifiedEvent } from "#types";
 
@@ -20,6 +21,9 @@ import type { AgentKind, UnifiedEvent } from "#types";
  * Storage layout:
  *   {DATA_DIR}/conversations/{sanitizedTopicName}.jsonl
  *   {DATA_DIR}/conversations/{sanitizedTopicName}.active.jsonl
+ *
+ * A private General is the one room several users may hold at once, so its
+ * pair is qualified with the owner — see {@link topicFilename}.
  *
  * The first file is append-only and retains every yielded UnifiedEvent for
  * archive and teardown. The optional active file is a replaceable provider
@@ -49,14 +53,30 @@ function conversationDir(_userId: number | string): string {
   return join(resolveStorageDataDir(), "conversations");
 }
 
-function topicFilename(topicName: string): string {
+/**
+ * One flat namespace is safe because a room title is unique per surface (S-3)
+ * — with exactly one exception. A manager room is deliberately exempt from
+ * title conflicts, since every person gets a private "General" per workspace,
+ * and `general` is a reserved name no other room can take. Keying the log on
+ * the title alone therefore pointed every user's private General at the same
+ * `general.jsonl`: two people's transcripts interleaved in one append-only
+ * file, and whatever reads it back by name (rollout reconstruction, archive,
+ * teardown) hands one person the other's private history.
+ *
+ * Only that room is qualified with its owner, so nothing else moves, and the
+ * standalone node's own principal keeps the unqualified path it has always
+ * written — an existing install needs no migration.
+ */
+function topicFilename(userId: number | string, topicName: string): string {
   const t = sanitizeTopicName(topicName, true);
-  return `${t}.jsonl`;
+  const owner = String(userId);
+  if (t !== MANAGER_TOPIC_LOG_NAME || owner === NODE_LOCAL_USER_ID) return `${t}.jsonl`;
+  return `${t}.${sanitizeId(owner)}.jsonl`;
 }
 
 /** Compute the absolute path for a given user/topic conversation log. */
 export function getConversationPath(userId: number | string, topicName: string): string {
-  return join(conversationDir(userId), topicFilename(topicName));
+  return join(conversationDir(userId), topicFilename(userId, topicName));
 }
 
 /** Replaceable provider context derived from the append-only raw conversation log. */
