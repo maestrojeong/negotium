@@ -950,6 +950,52 @@ export function createNodeControlHandler(
         }
 
         /**
+         * Fork or spawn a room, on the node that owns the source transcript.
+         *
+         * `canonical-topic-derive` was advertised in `/health` while the route
+         * itself existed only on the control surface below, which the contract
+         * dispatcher never reaches. A host therefore feature-detected support,
+         * called it, and got "Runtime contract route not found" — so forking a
+         * room in Otium failed with "Topic not found or access denied" (the
+         * hub refuses to create a derived room it cannot back with a node
+         * topic), and rooms derived before that refusal existed only in the
+         * hub's store: invisible to every other surface and running their
+         * turns off the canonical node, which is the second store D-1 forbids.
+         *
+         * Scope is checked the way every other contract topic route checks it,
+         * so a host can only derive from a room in its own workspace.
+         */
+        const runtimeDeriveMatch = runtimePath.match(/^\/topics\/([^/]+)\/derive$/);
+        if (runtimeDeriveMatch && req.method === "POST") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const topicId = decodeURIComponent(runtimeDeriveMatch[1]);
+          const userId = requiredText(body.userId, "userId");
+          if (typeof body.copyHistory !== "boolean") {
+            return jsonError(400, "copyHistory must be a boolean");
+          }
+          if (body.name !== undefined && typeof body.name !== "string") {
+            return jsonError(400, "name must be a string");
+          }
+          const source = topicForUser(topicId, userId);
+          if (!source || source.kind === "manager" || !topicInRequestScope(req, source)) {
+            return jsonError(404, "Topic not found");
+          }
+          const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : "";
+          const derived = await topicService.derive({
+            sourceTopicId: topicId,
+            userId,
+            copyHistory: body.copyHistory,
+            ...(name ? { name } : {}),
+          });
+          if (!derived) return jsonError(500, "Failed to derive topic");
+          return Response.json(
+            { ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, topic: derived },
+            { status: 201 },
+          );
+        }
+
+        /**
          * One-time history import, for adopting a room that predates the node.
          *
          * A host that mapped an existing room would otherwise hide its own
