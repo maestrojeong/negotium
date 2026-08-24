@@ -180,6 +180,7 @@ async function assertPackedServerStarts(
   listeningLabel: string,
   cwd: string,
   env: Record<string, string | undefined>,
+  validateBody?: (body: Record<string, unknown>) => boolean,
 ): Promise<void> {
   let lastFailure = "";
   for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -203,11 +204,19 @@ async function assertPackedServerStarts(
         if (stdout.text().includes(listeningMarker)) {
           try {
             const response = await fetch(`http://127.0.0.1:${port}${healthPath}`, {
+              headers: env.NEGOTIUM_CONTROL_TOKEN
+                ? { authorization: `Bearer ${env.NEGOTIUM_CONTROL_TOKEN}` }
+                : undefined,
               signal: AbortSignal.timeout(500),
             });
-            const body = (await response.json()) as { ok?: boolean; pid?: number };
+            const body = (await response.json()) as Record<string, unknown>;
             const pidMatches = healthPath !== "/health" || body.pid === child.pid;
-            if (response.ok && body.ok === true && pidMatches) {
+            if (
+              response.ok &&
+              body.ok === true &&
+              pidMatches &&
+              (!validateBody || validateBody(body))
+            ) {
               healthy = true;
               break;
             }
@@ -638,6 +647,7 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
       ...process.env,
       CODEX_HOME: join(smokeRoot, ".codex"),
       NEGOTIUM_CRON: "0",
+      NEGOTIUM_CONTROL_TOKEN: "release-smoke-control-token",
       NEGOTIUM_STATE_DIR: join(smokeRoot, "state"),
       // The smoke daemon is a *second* node, isolated from the developer's own.
       // It is spawned with `--port=0` to mean "ask the kernel for a free port",
@@ -817,6 +827,9 @@ if (typeof hostedAgent.configureAgentExecutionHost !== "function") {
 }
 if (typeof runtimeGateway.RuntimeGatewayClient !== "function") {
   throw new Error("packed runtime-gateway client export is missing");
+}
+if (typeof runtimeGateway.RuntimeGatewayClient.prototype.deleteMessage !== "function") {
+  throw new Error("packed runtime-gateway message delete client is missing");
 }
 if (typeof browserRuntime.configurePlaywrightManagerHost !== "function") {
   throw new Error("packed browser runtime host configurator is missing");
@@ -1413,10 +1426,12 @@ try {
     await assertPackedServerStarts(
       bin,
       ["serve"],
-      "/health",
+      "/api/v1/control/runtime/v1/health",
       "negotium node listening",
       smokeRoot,
       smokeEnv,
+      (body) =>
+        Array.isArray(body.capabilities) && body.capabilities.includes("canonical-message-delete"),
     );
     const otiumEnv = {
       ...smokeEnv,
