@@ -157,7 +157,7 @@ export async function runOtiumSidecar(options: OtiumSidecarOptions): Promise<voi
     workloadName: "Otium adapter",
     onLost: () => {
       process.stderr.write("negotium otium: singleton lease lost; shutting down\n");
-      void runShutdown("test");
+      void runShutdown("singleton-lease-lost");
     },
   });
   try {

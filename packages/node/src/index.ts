@@ -295,7 +295,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     ? acquireRuntimeProcessLease(NODE_DAEMON_ROLE, {
         onLost: () => {
           logger.error("node daemon: singleton lease lost; shutting down");
-          void runShutdown("test");
+          void runShutdown("singleton-lease-lost");
         },
       })
     : null;
@@ -321,7 +321,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   }
 
   let requestStop = () => {
-    void runShutdown("test");
+    void runShutdown("manual");
   };
   let server: ReturnType<typeof Bun.serve>;
   const control = createNodeControlHandler({
@@ -489,7 +489,12 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     "negotium node started",
   );
 
-  const stop = () => runShutdown("test");
+  // "manual" = an explicit stop request (NodeHandle.stop(), the CLI's
+  // `negotium stop`, or the control API's POST /shutdown) as opposed to a
+  // process signal or a real test harness call — keeps the shutdown log
+  // honest about why the daemon (and everything it owns, including the
+  // Playwright/browser MCP) went down.
+  const stop = () => runShutdown("manual");
   requestStop = () => {
     void stop();
   };

@@ -121,7 +121,7 @@ export async function runTelegramCli(args = process.argv.slice(2)): Promise<void
     workloadName: "Telegram adapter",
     onLost: () => {
       process.stderr.write("negotium-telegram: singleton lease lost; shutting down\n");
-      void runShutdown("test");
+      void runShutdown("singleton-lease-lost");
     },
   });
   let channel: TelegramEnvironmentHandle;

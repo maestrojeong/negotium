@@ -6,7 +6,13 @@ export interface ShutdownHandler {
   fn: () => Promise<void> | void;
 }
 
-export type SignalReason = "beforeExit" | "SIGINT" | "SIGTERM" | "test";
+export type SignalReason =
+  | "beforeExit"
+  | "SIGINT"
+  | "SIGTERM"
+  | "test"
+  | "manual"
+  | "singleton-lease-lost";
 
 export interface LifecycleLogger {
   info(fields: Record<string, unknown>, message: string): void;
