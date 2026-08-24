@@ -509,7 +509,12 @@ export async function startDefaultNode(
   const modules: NegotiumNodeModule[] = [];
   if (process.env.NEGOTIUM_CRON !== "0") {
     const { createCronModule } = await import("@negotium/module-cron");
-    modules.push(createCronModule());
+    // Opt-in escape hatch for a single-operator local node: when set, any
+    // surface talking to this node can see/manage every user's cron jobs
+    // (debugging convenience). Never set this on a node that hosts more
+    // than one real person — it has no per-user isolation once enabled.
+    const trustedLocal = process.env.NEGOTIUM_CRON_TRUSTED_LOCAL === "1";
+    modules.push(createCronModule(trustedLocal ? { host: { authorize: () => true } } : {}));
   }
   const port =
     opts.port === 0 ? (readFixedNodePort() ?? (await availableLoopbackPort())) : opts.port;
