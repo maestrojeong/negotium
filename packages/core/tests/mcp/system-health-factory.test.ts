@@ -15,9 +15,16 @@ describe("system health MCP factory", () => {
       readSystemHealth: async () => ({
         cpuLoad: [1, 2, 3],
         cpuCount: 8,
-        memoryTotal: 16 * 1024 ** 3,
-        memoryFree: 4 * 1024 ** 3,
-        memoryPressure: "normal",
+        memory: {
+          usedBytes: 8 * 1024 ** 3,
+          cacheBytes: 4 * 1024 ** 3,
+          compressorBytes: 1 * 1024 ** 3,
+          availableBytes: 8 * 1024 ** 3,
+          totalBytes: 16 * 1024 ** 3,
+          activeBytes: 5 * 1024 ** 3,
+          wiredBytes: 3 * 1024 ** 3,
+        },
+        memoryPressure: { level: "normal", freePct: 42 },
         swap: "none",
         disk: "10GB / 100GB (10%)",
         thermal: "nominal",
@@ -31,6 +38,7 @@ describe("system health MCP factory", () => {
       const result = await client.callTool({ name: "get_system_health", arguments: {} });
       expect(textOf(result)).toContain("1.00 / 2.00 / 3.00");
       expect(textOf(result)).toContain("코어 8개");
+      expect(textOf(result)).toContain("normal (free 42%)");
       expect(textOf(result)).toContain("프로세스 수:   123개");
     } finally {
       await client.close();
