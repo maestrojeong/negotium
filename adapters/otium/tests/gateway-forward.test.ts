@@ -71,6 +71,8 @@ test("forwards the whole read/turn/room-mutation contract the gateway client spe
     ["GET", "/topics"],
     ["GET", "/topics/abc"],
     ["GET", "/topics/abc/messages"],
+    ["GET", "/topics/abc/messages/message-1/thread"],
+    ["GET", "/topics/abc/config"],
     ["GET", "/topics/abc/usage"],
     ["GET", "/topics/abc/files/file-1"],
     ["GET", "/topics/abc/visuals/42"],
@@ -85,6 +87,8 @@ test("forwards the whole read/turn/room-mutation contract the gateway client spe
     // bring one into existence, and without it the Otium worker picker has no
     // way to place a room at all.
     ["POST", "/topics"],
+    ["POST", "/topics/abc/messages/system"],
+    ["POST", "/topics/abc/messages/message-1/reactions"],
     // A hub deleting a topic it mirrored from this worker must reach the
     // worker's own copy, or the next sync pass just re-mirrors it (D-1/D-8).
     ["DELETE", "/topics/abc"],
@@ -94,6 +98,8 @@ test("forwards the whole read/turn/room-mutation contract the gateway client spe
     // Same for reconfiguring it: the turn runner reads the worker's own
     // agent/model/effort, so a hub-side picker is cosmetic without this.
     ["PATCH", "/topics/abc"],
+    ["PATCH", "/topics/abc/config"],
+    ["PATCH", "/topics/abc/messages/message-1"],
     ["PATCH", "/cron/jobs/job-1"],
     ["DELETE", "/cron/jobs/job-1"],
     // Stopping and re-seating the session of a room the hub already runs turns

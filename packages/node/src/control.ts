@@ -19,6 +19,7 @@ import {
   ensurePersonalGeneral,
   executeVaultCommand,
   getApiMessage,
+  getApiTopicConfig,
   getGlobalAiName,
   getLastMessagePreviews,
   getPortableTopicVisual,
@@ -46,6 +47,7 @@ import {
   type StoredRuntimeEvent,
   saveVaultEntry,
   setApiMessageReactions,
+  setApiTopicConfig,
   setGlobalAiName,
   softDeleteApiMessage,
   type startAiTurn,
@@ -53,6 +55,7 @@ import {
   submitUserMessage,
   switchTopicEffort,
   switchTopicModel,
+  type TopicConfig,
   type TopicDeletedMeta,
   TopicDeriveBusyError,
   type TopicDto,
@@ -557,6 +560,8 @@ export function createNodeControlHandler(
               "canonical-visual-read",
               "canonical-topic-list",
               "canonical-topic-create",
+              "canonical-topic-create-config",
+              "canonical-topic-config",
               "canonical-topic-derive",
               "canonical-manager-topic",
               ...(process.env.NEGOTIUM_CRON === "0" ? [] : ["scheduler.cron.gateway.v1"]),
@@ -1069,7 +1074,11 @@ export function createNodeControlHandler(
             v: NODE_RUNTIME_CONTRACT_VERSION,
             topics: topics.map((topic) => {
               const preview = previews.get(topic.id);
-              return preview ? { ...topic, lastMessagePreview: preview } : topic;
+              return {
+                ...topic,
+                config: getApiTopicConfig(topic.id) ?? {},
+                ...(preview ? { lastMessagePreview: preview } : {}),
+              };
             }),
             cursor: latestRuntimeEventSeq(),
           });
@@ -1090,18 +1099,41 @@ export function createNodeControlHandler(
           const userId = requiredText(body.userId, "userId");
           const title = requiredText(body.title, "title");
           const agent = body.agent;
-          if (agent !== undefined && !["claude", "codex", "maestro"].includes(String(agent))) {
+          if (
+            agent !== undefined &&
+            agent !== null &&
+            !["none", "claude", "codex", "maestro"].includes(String(agent))
+          ) {
             return jsonError(400, "Invalid agent");
+          }
+          const kind = body.kind ?? "agent";
+          if (kind !== "agent" && kind !== "channel") return jsonError(400, "Invalid kind");
+          if (body.model !== undefined && typeof body.model !== "string") {
+            return jsonError(400, "model must be a string");
+          }
+          if (
+            body.effort !== undefined &&
+            !["low", "medium", "high", "xhigh", "max"].includes(String(body.effort))
+          ) {
+            return jsonError(400, "Invalid effort");
           }
           const topic = topicService.create({
             title,
             userId,
-            kind: "agent",
+            kind,
             surface: "otium",
             // Born in the workspace that asked for it, not in whichever one
             // this process happens to have resolved last (M-1).
             ...requestSurfaceScope(req),
-            ...(agent ? { agent: agent as AgentKind } : {}),
+            ...(agent === null || agent === "none"
+              ? { agent: "none" as const }
+              : agent
+                ? { agent: agent as AgentKind }
+                : {}),
+            ...(typeof body.model === "string" ? { model: body.model } : {}),
+            ...(typeof body.effort === "string"
+              ? { effort: body.effort as "low" | "medium" | "high" | "xhigh" | "max" }
+              : {}),
           });
           return Response.json(
             { ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, topic },
@@ -1449,11 +1481,71 @@ export function createNodeControlHandler(
         }
 
         const runtimeTopicMatch = runtimePath.match(/^\/topics\/([^/]+)$/);
+        const runtimeTopicConfigMatch = runtimePath.match(/^\/topics\/([^/]+)\/config$/);
+        if (runtimeTopicConfigMatch && req.method === "GET") {
+          const topicId = decodeURIComponent(runtimeTopicConfigMatch[1]);
+          const topic = getTopic(topicId);
+          if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            topic,
+            config: getApiTopicConfig(topicId) ?? {},
+          });
+        }
+        if (runtimeTopicConfigMatch && req.method === "PATCH") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const topicId = decodeURIComponent(runtimeTopicConfigMatch[1]);
+          const topic = getTopic(topicId);
+          if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
+          const next: TopicConfig = { ...(getApiTopicConfig(topicId) ?? {}) };
+          for (const key of ["model", "effort"] as const) {
+            if (!(key in body)) continue;
+            const value = body[key];
+            if (value === null) delete next[key];
+            else if (typeof value === "string" && value.trim()) {
+              if (key === "effort" && !["low", "medium", "high", "xhigh", "max"].includes(value)) {
+                return jsonError(400, "Invalid effort");
+              }
+              next[key] = value as never;
+            } else return jsonError(400, `${key} must be a string or null`);
+          }
+          if ("mcp" in body) {
+            if (body.mcp === null) delete next.mcp;
+            else if (
+              Array.isArray(body.mcp) &&
+              body.mcp.every((item) => typeof item === "string")
+            ) {
+              next.mcp = [...new Set(body.mcp.map((item) => item.trim()).filter(Boolean))];
+            } else return jsonError(400, "mcp must be an array of strings or null");
+          }
+          for (const key of ["agentLocked", "modelLocked", "effortLocked"] as const) {
+            if (!(key in body)) continue;
+            const value = body[key];
+            if (value === null || value === false) delete next[key];
+            else if (value === true) next[key] = true;
+            else return jsonError(400, `${key} must be a boolean or null`);
+          }
+          setApiTopicConfig(topicId, next);
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            topic,
+            config: getApiTopicConfig(topicId) ?? {},
+          });
+        }
+
         if (runtimeTopicMatch && req.method === "GET") {
           const topic = getTopic(decodeURIComponent(runtimeTopicMatch[1]));
           if (topic && !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
           if (!topic) return jsonError(404, "Topic not found");
-          return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, topic });
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            topic,
+            config: getApiTopicConfig(topic.id) ?? {},
+          });
         }
 
         /**

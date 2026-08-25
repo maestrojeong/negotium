@@ -81,6 +81,11 @@ export {
   softDeleteApiMessage,
   updateApiMessageText,
 } from "#storage/api-messages";
+export {
+  getApiTopicConfig,
+  setApiTopicConfig,
+  type TopicConfig,
+} from "#storage/api-topic-config";
 export { getTopic, upsertTopic } from "#storage/api-topics";
 export { getGlobalAiName, setGlobalAiName } from "#storage/app-settings";
 export { readDecisions, writeDecisionGraphSvg } from "#storage/decisions";
@@ -105,6 +110,6 @@ export {
 export { ensurePersonalGeneral } from "#topics/personal-general";
 export { compactTopicSession } from "#topics/session";
 export { TopicUpdateConflictError, updateTopicSettings } from "#topics/update";
-export type { AgentKind } from "#types";
+export type { AgentKind, EffortLevel } from "#types";
 export type { AiMode, AttachmentDto, TopicDto, TopicSurface } from "#types/api";
 export { NEGOTIUM_VERSION } from "#version";

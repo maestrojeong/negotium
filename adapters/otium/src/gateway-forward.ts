@@ -41,7 +41,8 @@ function allowedRuntimePath(path: string, method: string): boolean {
   if (method === "GET") {
     if (path === "/health" || path === "/events" || path === "/topics") return true;
     if (path === "/cron/scripts" || path === "/cron/jobs") return true;
-    if (/^\/topics\/[^/]+(\/messages|\/usage)?$/.test(path)) return true;
+    if (/^\/topics\/[^/]+(\/messages|\/usage|\/config)?$/.test(path)) return true;
+    if (/^\/topics\/[^/]+\/messages\/[^/]+\/thread$/.test(path)) return true;
     if (/^\/topics\/[^/]+\/files\/[^/]+$/.test(path)) return true;
     return /^\/topics\/[^/]+\/visuals\/\d+$/.test(path);
   }
@@ -74,6 +75,8 @@ function allowedRuntimePath(path: string, method: string): boolean {
     // ask card is unanswerable from the hub, which is the whole point of
     // rendering it there.
     if (/^\/topics\/[^/]+\/messages\/[^/]+\/ask-answer$/.test(path)) return true;
+    if (/^\/topics\/[^/]+\/messages\/system$/.test(path)) return true;
+    if (/^\/topics\/[^/]+\/messages\/[^/]+\/reactions$/.test(path)) return true;
     return /^\/topics\/[^/]+\/(abort|session\/(reset|compact))$/.test(path);
   }
   // The two mutations a hub must reach on a room it already runs turns on
@@ -86,6 +89,8 @@ function allowedRuntimePath(path: string, method: string): boolean {
   // leaf. Every other mutation stays loopback-only.
   if (method === "DELETE" || method === "PATCH") {
     if (method === "DELETE" && /^\/topics\/[^/]+\/messages\/[^/]+$/.test(path)) return true;
+    if (method === "PATCH" && /^\/topics\/[^/]+\/messages\/[^/]+$/.test(path)) return true;
+    if (method === "PATCH" && /^\/topics\/[^/]+\/config$/.test(path)) return true;
     return /^\/topics\/[^/]+$/.test(path) || /^\/cron\/jobs\/[^/]+$/.test(path);
   }
   return false;

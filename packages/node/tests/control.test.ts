@@ -278,6 +278,57 @@ test("runtime gateway topic create makes a shared canonical topic", async () => 
   expect(turn?.status).toBe(202);
 });
 
+test("runtime gateway topic create preserves channel execution config", async () => {
+  const createUser = `topic-create-config-${randomUUID()}`;
+  const response = await handler(
+    runtimeRequest("/topics", {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        userId: createUser,
+        title: `Configured ${randomUUID()}`,
+        kind: "channel",
+        agent: null,
+        model: "kimi-k2.5",
+        effort: "high",
+      }),
+    }),
+  );
+
+  expect(response?.status).toBe(201);
+  expect(await response?.json()).toMatchObject({
+    topic: { kind: "channel", aiMode: "off", defaultEffort: "high" },
+  });
+});
+
+test("runtime gateway reads and writes canonical per-topic config", async () => {
+  const owner = `runtime-config-${randomUUID()}`;
+  const topic = registerTopic({ title: `Gateway config ${randomUUID()}`, userId: owner });
+  const path = `/topics/${encodeURIComponent(topic.id)}/config`;
+  const updated = await handler(
+    runtimeRequest(path, {
+      method: "PATCH",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        model: "kimi-k2.5",
+        effort: "high",
+        mcp: ["browser"],
+        modelLocked: true,
+      }),
+    }),
+  );
+  expect(updated?.status).toBe(200);
+  expect(await updated?.json()).toMatchObject({
+    config: { model: "kimi-k2.5", effort: "high", mcp: ["browser"], modelLocked: true },
+  });
+
+  const read = await handler(runtimeRequest(path));
+  expect(await read?.json()).toMatchObject({
+    topic: { id: topic.id },
+    config: { model: "kimi-k2.5", effort: "high", mcp: ["browser"], modelLocked: true },
+  });
+});
+
 /**
  * The capability was advertised while the route lived only on the control
  * surface, so a host feature-detected support and got a 404 from the contract
