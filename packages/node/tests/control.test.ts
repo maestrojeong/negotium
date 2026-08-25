@@ -940,6 +940,100 @@ test("runtime gateway returns a canonical thread when addressed by its root or a
   }
 });
 
+test("runtime gateway appends a host system message to the canonical transcript", async () => {
+  const owner = `runtime-system-${randomUUID()}`;
+  const topic = registerTopic({ title: `Gateway system ${randomUUID()}`, userId: owner });
+  const response = await handler(
+    runtimeRequest(`/topics/${encodeURIComponent(topic.id)}/messages/system`, {
+      method: "POST",
+      body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, text: "Session reset" }),
+    }),
+  );
+
+  expect(response?.status).toBe(200);
+  const body = (await response?.json()) as { message: { id: string } };
+  expect(body).toMatchObject({
+    ok: true,
+    v: NODE_RUNTIME_CONTRACT_VERSION,
+    message: { authorId: "system", kind: "system", text: "Session reset" },
+  });
+  expect(getApiMessage(topic.id, body.message.id)).toMatchObject({ text: "Session reset" });
+});
+
+test("runtime gateway edits canonical messages with author-or-admin authorization", async () => {
+  const owner = `runtime-edit-${randomUUID()}`;
+  const topic = registerTopic({ title: `Gateway edit ${randomUUID()}`, userId: owner });
+  const messageId = randomUUID();
+  appendApiMessage({
+    id: messageId,
+    topicId: topic.id,
+    authorId: owner,
+    text: "before",
+    createdAt: new Date().toISOString(),
+  });
+  const path = `/topics/${encodeURIComponent(topic.id)}/messages/${encodeURIComponent(messageId)}`;
+
+  const forbidden = await handler(
+    runtimeRequest(path, {
+      method: "PATCH",
+      body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, actorUserId: "other", text: "no" }),
+    }),
+  );
+  expect(forbidden?.status).toBe(403);
+
+  const response = await handler(
+    runtimeRequest(path, {
+      method: "PATCH",
+      body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, actorUserId: owner, text: "after" }),
+    }),
+  );
+  expect(response?.status).toBe(200);
+  expect(await response?.json()).toMatchObject({
+    ok: true,
+    v: NODE_RUNTIME_CONTRACT_VERSION,
+    message: { id: messageId, text: "after", editedAt: expect.any(String) },
+  });
+  expect(getApiMessage(topic.id, messageId)?.text).toBe("after");
+});
+
+test("runtime gateway toggles reactions in the canonical message store", async () => {
+  const owner = `runtime-reaction-${randomUUID()}`;
+  const topic = registerTopic({ title: `Gateway reaction ${randomUUID()}`, userId: owner });
+  const messageId = randomUUID();
+  appendApiMessage({
+    id: messageId,
+    topicId: topic.id,
+    authorId: owner,
+    text: "react here",
+    createdAt: new Date().toISOString(),
+  });
+  const path = `/topics/${encodeURIComponent(topic.id)}/messages/${encodeURIComponent(messageId)}/reactions`;
+  const toggle = () =>
+    handler(
+      runtimeRequest(path, {
+        method: "POST",
+        body: JSON.stringify({
+          v: NODE_RUNTIME_CONTRACT_VERSION,
+          actorUserId: "reactor",
+          actorName: "Reactor",
+          emoji: "ok",
+        }),
+      }),
+    );
+
+  const added = await toggle();
+  expect(added?.status).toBe(200);
+  expect(await added?.json()).toMatchObject({
+    reactions: [{ emoji: "ok", userId: "reactor", userName: "Reactor" }],
+  });
+  expect(getApiMessage(topic.id, messageId)?.reactions).toHaveLength(1);
+
+  const removed = await toggle();
+  expect(removed?.status).toBe(200);
+  expect(await removed?.json()).toMatchObject({ reactions: [] });
+  expect(getApiMessage(topic.id, messageId)?.reactions).toBeUndefined();
+});
+
 test("runtime gateway rejects a user who is not a topic participant", async () => {
   const owner = `runtime-owner-${randomUUID()}`;
   const topic = registerTopic({ title: `Gateway membership ${randomUUID()}`, userId: owner });

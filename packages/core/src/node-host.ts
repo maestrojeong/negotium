@@ -77,7 +77,9 @@ export {
   getLastMessagePreviews,
   listApiMessages,
   listThreadMessages,
+  setApiMessageReactions,
   softDeleteApiMessage,
+  updateApiMessageText,
 } from "#storage/api-messages";
 export { getTopic, upsertTopic } from "#storage/api-topics";
 export { getGlobalAiName, setGlobalAiName } from "#storage/app-settings";

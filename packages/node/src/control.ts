@@ -45,6 +45,7 @@ import {
   STATE_DIR,
   type StoredRuntimeEvent,
   saveVaultEntry,
+  setApiMessageReactions,
   setGlobalAiName,
   softDeleteApiMessage,
   type startAiTurn,
@@ -62,6 +63,7 @@ import {
   TopicUpdateConflictError,
   TopicValidationError,
   topicService,
+  updateApiMessageText,
   updateTopicSettings,
   upsertTopic,
   WsHub,
@@ -914,14 +916,66 @@ export function createNodeControlHandler(
           return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, ...result });
         }
 
+        const runtimeSystemMessageMatch = runtimePath.match(
+          /^\/topics\/([^/]+)\/messages\/system$/,
+        );
+        if (runtimeSystemMessageMatch && req.method === "POST") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const topicId = decodeURIComponent(runtimeSystemMessageMatch[1]);
+          const topic = getTopic(topicId);
+          if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
+          const text = requiredText(body.text, "text");
+          const message = {
+            id: randomUUID(),
+            topicId,
+            authorId: "system",
+            text,
+            kind: "system" as const,
+            createdAt: new Date().toISOString(),
+          };
+          appendApiMessage(message, { notify: false });
+          WsHub.get().broadcastMessage(topicId, message);
+          return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, message });
+        }
+
         /**
-         * Soft-delete one canonical transcript message on behalf of an
-         * authenticated product host. The product actor is not necessarily a
-         * participant on ordinary mapped rooms (those execute as `local`), so
-         * authorship — not canonical membership — is the mutation boundary.
-         * `allowAdmin` is an explicit trusted-host override.
+         * Mutate one canonical transcript message on behalf of an authenticated
+         * product host. The product actor is not necessarily a participant on
+         * ordinary mapped rooms (those execute as `local`), so authorship — not
+         * canonical membership — is the edit/delete boundary. `allowAdmin` is
+         * an explicit trusted-host override.
          */
         const runtimeMessageMatch = runtimePath.match(/^\/topics\/([^/]+)\/messages\/([^/]+)$/);
+        if (runtimeMessageMatch && req.method === "PATCH") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const topicId = decodeURIComponent(runtimeMessageMatch[1]);
+          const messageId = decodeURIComponent(runtimeMessageMatch[2]);
+          const topic = getTopic(topicId);
+          if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
+          const actorUserId = requiredText(body.actorUserId, "actorUserId");
+          const text = requiredText(body.text, "text");
+          if (body.allowAdmin !== undefined && typeof body.allowAdmin !== "boolean") {
+            return jsonError(400, "allowAdmin must be boolean");
+          }
+          const existing = getApiMessage(topicId, messageId);
+          if (!existing || existing.deleted) return jsonError(404, "Message not found");
+          if (existing.authorId !== actorUserId && body.allowAdmin !== true) {
+            return jsonError(403, "Not allowed");
+          }
+          const editedAt = new Date().toISOString();
+          const message = updateApiMessageText(topicId, messageId, text, editedAt);
+          if (!message) return jsonError(404, "Message not found");
+          WsHub.get().broadcastMessageUpdated(topicId, messageId, { text, editedAt });
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            message,
+            previousText: existing.text,
+          });
+        }
+
         if (runtimeMessageMatch && req.method === "DELETE") {
           const body = await bodyRecord(req);
           if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
@@ -945,6 +999,49 @@ export function createNodeControlHandler(
             ok: true,
             v: NODE_RUNTIME_CONTRACT_VERSION,
             message,
+          });
+        }
+
+        const runtimeReactionMatch = runtimePath.match(
+          /^\/topics\/([^/]+)\/messages\/([^/]+)\/reactions$/,
+        );
+        if (runtimeReactionMatch && req.method === "POST") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const topicId = decodeURIComponent(runtimeReactionMatch[1]);
+          const messageId = decodeURIComponent(runtimeReactionMatch[2]);
+          const topic = getTopic(topicId);
+          if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
+          const actorUserId = requiredText(body.actorUserId, "actorUserId");
+          const emoji = requiredText(body.emoji, "emoji");
+          if (emoji.length > 16) return jsonError(400, "emoji is too long");
+          if (body.actorName !== undefined && typeof body.actorName !== "string") {
+            return jsonError(400, "actorName must be a string");
+          }
+          const existing = getApiMessage(topicId, messageId);
+          if (!existing || existing.deleted) return jsonError(404, "Message not found");
+          const current = existing.reactions ?? [];
+          const hasReaction = current.some(
+            (reaction) => reaction.emoji === emoji && reaction.userId === actorUserId,
+          );
+          const reactions = hasReaction
+            ? current.filter(
+                (reaction) => !(reaction.emoji === emoji && reaction.userId === actorUserId),
+              )
+            : [
+                ...current,
+                {
+                  emoji,
+                  userId: actorUserId,
+                  userName: typeof body.actorName === "string" ? body.actorName : "",
+                },
+              ];
+          const message = setApiMessageReactions(topicId, messageId, reactions);
+          if (!message) return jsonError(404, "Message not found");
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            reactions: message.reactions ?? [],
           });
         }
 
