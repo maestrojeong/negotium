@@ -903,6 +903,43 @@ test("runtime gateway accepts durably, deduplicates client messages, and streams
   });
 });
 
+test("runtime gateway returns a canonical thread when addressed by its root or a reply", async () => {
+  const owner = `runtime-thread-${randomUUID()}`;
+  const topic = registerTopic({ title: `Gateway thread ${randomUUID()}`, userId: owner });
+  const root = {
+    id: randomUUID(),
+    topicId: topic.id,
+    authorId: owner,
+    text: "root",
+    createdAt: new Date().toISOString(),
+  };
+  const reply = {
+    id: randomUUID(),
+    topicId: topic.id,
+    authorId: owner,
+    text: "reply",
+    threadRootId: root.id,
+    createdAt: new Date().toISOString(),
+  };
+  appendApiMessage(root);
+  appendApiMessage(reply);
+
+  for (const messageId of [root.id, reply.id]) {
+    const response = await handler(
+      runtimeRequest(
+        `/topics/${encodeURIComponent(topic.id)}/messages/${encodeURIComponent(messageId)}/thread`,
+      ),
+    );
+    expect(response?.status).toBe(200);
+    expect(await response?.json()).toMatchObject({
+      ok: true,
+      v: NODE_RUNTIME_CONTRACT_VERSION,
+      root: { id: root.id },
+      replies: [{ id: reply.id, threadRootId: root.id }],
+    });
+  }
+});
+
 test("runtime gateway rejects a user who is not a topic participant", async () => {
   const owner = `runtime-owner-${randomUUID()}`;
   const topic = registerTopic({ title: `Gateway membership ${randomUUID()}`, userId: owner });

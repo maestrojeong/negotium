@@ -32,6 +32,7 @@ import {
   listRecentRuntimeEventsForTopic,
   listRunningTopicQueries,
   listRuntimeEventsAfter,
+  listThreadMessages,
   listVaultEntries,
   logger,
   NEGOTIUM_VERSION,
@@ -848,6 +849,23 @@ export function createNodeControlHandler(
             cursor,
             limit: Number.isFinite(parsedLimit) ? parsedLimit : 50,
           });
+          return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, ...result });
+        }
+
+        const runtimeThreadMatch = runtimePath.match(
+          /^\/topics\/([^/]+)\/messages\/([^/]+)\/thread$/,
+        );
+        if (runtimeThreadMatch && req.method === "GET") {
+          const topicId = decodeURIComponent(runtimeThreadMatch[1]);
+          const messageId = decodeURIComponent(runtimeThreadMatch[2]);
+          const messagesTopic = getTopic(topicId);
+          if (!messagesTopic || !topicInRequestScope(req, messagesTopic)) {
+            return jsonError(404, "Topic not found");
+          }
+          const target = getApiMessage(topicId, messageId);
+          if (!target || target.deleted) return jsonError(404, "Message not found");
+          const rootId = target.threadRootId ?? target.id;
+          const result = listThreadMessages(topicId, rootId);
           return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, ...result });
         }
 
