@@ -52,6 +52,7 @@ import {
   submitUserMessage,
   switchTopicEffort,
   switchTopicModel,
+  type TopicDeletedMeta,
   TopicDeriveBusyError,
   type TopicDto,
   TopicForkCompactionError,
@@ -356,6 +357,18 @@ function runtimeEvent(event: StoredRuntimeEvent): RuntimeBusEvent {
   };
 }
 
+function isTopicDeletedMeta(payload: unknown): payload is TopicDeletedMeta {
+  if (!payload || typeof payload !== "object") return false;
+  const { surface, surfaceScope } = payload as Record<string, unknown>;
+  return (
+    (surface === undefined ||
+      surface === "terminal" ||
+      surface === "telegram" ||
+      surface === "otium") &&
+    (surfaceScope === undefined || typeof surfaceScope === "string" || surfaceScope === null)
+  );
+}
+
 function createRuntimeContractEventStream(
   req: Request,
   after: number,
@@ -367,23 +380,55 @@ function createRuntimeContractEventStream(
   // in the common case and the stream is already per-event work.
   const scoped = "surfaceScope" in scope;
   const visible = new Map<string, boolean>();
-  const eventInScope = (eventTopicId: string): boolean => {
-    const cached = visible.get(eventTopicId);
-    if (cached !== undefined) return cached;
-    const topic = getTopic(eventTopicId);
+  const scopeAllows = (topic: Pick<TopicDto, "surface" | "surfaceScope">): boolean =>
     // Unlike the topic list, this stream has no `surface` query parameter.
     // Keep it on the gateway's Otium-only contract here so an unfiltered
     // subscriber cannot discover terminal or Telegram rooms through events.
-    const allowed = Boolean(
-      topic &&
-        // A filtered stream is an existing per-topic contract and remains
-        // usable by non-Otium adapters. Only global discovery is Otium-only,
-        // matching the gateway's unfiltered `/topics` contract.
-        (topicId || topic.surface === "otium") &&
-        (!scoped || topicInRequestScope(req, topic)),
+    Boolean(
+      // A filtered stream is an existing per-topic contract and remains
+      // usable by non-Otium adapters. Only global discovery is Otium-only,
+      // matching the gateway's unfiltered `/topics` contract.
+      (topicId || topic.surface === "otium") && (!scoped || topicInRequestScope(req, topic)),
     );
-    visible.set(eventTopicId, allowed);
-    return allowed;
+  const eventInScope = (event: StoredRuntimeEvent): boolean => {
+    const eventTopicId = event.topicId;
+    // Topic lifecycle events may change the fields used for this decision.
+    // Re-evaluate them so a previously visible room cannot remain visible after
+    // being moved to another surface or workspace scope.
+    if (event.type === "topic-created" || event.type === "topic-updated") {
+      visible.delete(eventTopicId);
+    }
+    // A deleted row cannot be re-checked. Do not let an earlier cached result
+    // bypass the pre-delete scope recorded on the event.
+    if (event.type === "topic-deleted") visible.delete(eventTopicId);
+    const cached = visible.get(eventTopicId);
+    if (cached !== undefined) return cached;
+    const topic = getTopic(eventTopicId);
+    if (topic) {
+      const allowed = scopeAllows(topic);
+      visible.set(eventTopicId, allowed);
+      return allowed;
+    }
+    // The row is gone by the time a `topic-deleted` event reaches this
+    // stream (delete order is: drop the row, then broadcast). Re-querying
+    // `getTopic` above therefore always misses for this one event type,
+    // which used to drop every deletion notice on the floor — including the
+    // one a mirroring host needs to remove its own copy of the room. The
+    // event carries the room's pre-delete scope for exactly this case, so
+    // fall back to that instead of caching a false negative.
+    if (event.type === "topic-deleted") {
+      if (
+        isTopicDeletedMeta(event.payload) &&
+        (event.payload.surface !== undefined || event.payload.surfaceScope !== undefined)
+      ) {
+        // Not cached: a topic id is only ever deleted once, so there is no
+        // repeat lookup to save, and caching `true` here would also make
+        // later, unrelated events for a reused-in-tests id visible.
+        return scopeAllows(event.payload);
+      }
+    }
+    visible.set(eventTopicId, false);
+    return false;
   };
   let cursor = Math.max(0, after);
   let reportedCursor = cursor;
@@ -404,7 +449,7 @@ function createRuntimeContractEventStream(
           break;
         }
         for (const event of events) {
-          if ((!topicId || event.topicId === topicId) && eventInScope(event.topicId)) {
+          if ((!topicId || event.topicId === topicId) && eventInScope(event)) {
             if (!send("runtime", runtimeEvent(event), event.seq)) return;
           }
           cursor = event.seq;

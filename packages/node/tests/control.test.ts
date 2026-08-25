@@ -1485,6 +1485,104 @@ test("an open SSE stream stops exposing a topic after participant removal", asyn
 });
 
 /**
+ * Regression for the delete-order race: `deleteTopicCascade` drops the
+ * `api_topics` row before it broadcasts `topic-deleted`, so a naive filter
+ * that re-queries `getTopic(topicId)` to decide whether the event is
+ * in-scope always finds nothing and drops the notice — a mirroring host
+ * (e.g. Otium) then never learns the room is gone and keeps an orphaned
+ * copy forever. The event must carry the room's pre-delete scope so the
+ * gateway can still authorize it after the row is gone.
+ */
+test("an open SSE stream still delivers topic-deleted after the topic row is gone", async () => {
+  const member = `deleted-${randomUUID()}`;
+  const topic = registerTopic({
+    title: `Deleted ${randomUUID()}`,
+    userId: member,
+    agent: "codex",
+    surface: "otium",
+  });
+  // Cursor set *after* the topic-created event: a fresh subscriber that only
+  // reconnects once the room already exists must resolve scope from the
+  // topic-deleted event alone, with a cold `visible` cache, the same way a
+  // resumed gateway connection would after missing the creation notice.
+  const after = latestRuntimeEventSeq();
+  // The gateway's runtime-contract stream, not the local `/events` route: it
+  // is this one `topic-sync.ts` polls on Otium's behalf, and the one whose
+  // `eventInScope` re-queries `getTopic` per event.
+  const response = await handler(runtimeRequest(`/events?after=${after}`));
+  const reader = response?.body?.getReader();
+
+  try {
+    const ready = await reader?.read();
+    expect(new TextDecoder().decode(ready?.value)).toContain("event: ready");
+
+    // Mirror deleteTopicCascade's own order: the row is gone before the
+    // bus hears about it, so getTopic(topic.id) below is already null.
+    db.query("DELETE FROM api_topics WHERE id = ?").run(topic.id);
+    expect(getTopic(topic.id)).toBeNull();
+    runtimeBus().broadcastTopicDeleted(topic.id, {
+      surface: topic.surface,
+      surfaceScope: topic.surfaceScope,
+    });
+
+    const update = await reader?.read();
+    const payload = new TextDecoder().decode(update?.value);
+    expect(payload).toContain("event: runtime");
+    expect(payload).toContain("topic-deleted");
+    expect(payload).toContain(topic.id);
+  } finally {
+    await reader?.cancel();
+  }
+});
+
+test("runtime SSE re-evaluates a cached topic before its scoped deletion", async () => {
+  const topic = registerTopic({
+    title: `Moved before delete ${randomUUID()}`,
+    userId: `moved-${randomUUID()}`,
+    agent: "codex",
+    surface: "otium",
+    surfaceScope: "ws_alpha",
+  });
+  const after = latestRuntimeEventSeq();
+  const response = await handler(
+    runtimeRequest(`/events?after=${after}`, {
+      headers: { [NODE_RUNTIME_SURFACE_SCOPE_HEADER]: "ws_alpha" },
+    }),
+  );
+  const reader = response?.body?.getReader();
+
+  try {
+    expect(new TextDecoder().decode((await reader?.read())?.value)).toContain("event: ready");
+
+    // Cache the topic as visible, then move it to another workspace before its
+    // deletion event is emitted. The original workspace must not receive it.
+    runtimeBus().broadcastMessage(topic.id, {
+      id: randomUUID(),
+      topicId: topic.id,
+      authorId: "ai",
+      text: "cache visibility",
+      createdAt: new Date().toISOString(),
+    });
+    expect(new TextDecoder().decode((await reader?.read())?.value)).toContain("cache visibility");
+
+    const moved = { ...topic, surfaceScope: "ws_beta" };
+    upsertTopic(moved);
+    runtimeBus().broadcastTopicUpdated(topic.id);
+    db.query("DELETE FROM api_topics WHERE id = ?").run(topic.id);
+    runtimeBus().broadcastTopicDeleted(topic.id, {
+      surface: moved.surface,
+      surfaceScope: moved.surfaceScope,
+    });
+
+    const update = new TextDecoder().decode((await reader?.read())?.value);
+    expect(update).toContain("event: cursor");
+    expect(update).not.toContain("topic-deleted");
+  } finally {
+    await reader?.cancel();
+  }
+});
+
+/**
  * The gap that made `show_html` useless in a mapped room even once the
  * capability reached the node: the visual was rendered and stored *here*, and
  * the gateway had no way to read it back, so the hub's panel asked its own

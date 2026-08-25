@@ -94,7 +94,7 @@ export {
   VAULT_COMMAND_HELP,
 } from "#application/vault-command";
 // ── Host boundary ───────────────────────────────────────────────────
-export type { RuntimeBus, RuntimeBusEvent, RuntimeBusListener } from "#bus";
+export type { RuntimeBus, RuntimeBusEvent, RuntimeBusListener, TopicDeletedMeta } from "#bus";
 export { runtimeBus, setRuntimeBus, WsHub } from "#bus";
 export type {
   PeerRuntimeAskUserRequest,

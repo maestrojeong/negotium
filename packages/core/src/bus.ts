@@ -21,7 +21,21 @@ import {
   listRuntimeEventsAfter,
 } from "#storage/runtime-events";
 import type { AgentKind } from "#types";
-import type { MessageDto } from "#types/api";
+import type { MessageDto, TopicSurface } from "#types/api";
+
+/**
+ * Scope a `topic-deleted` event carries about the room it just removed.
+ *
+ * A delete event fires after the topic row is already gone, so any consumer
+ * that filters events by re-querying `getTopic(topicId)` (the node gateway's
+ * SSE stream) would find nothing and drop the event. Carrying the scope the
+ * room had right before deletion lets that filtering happen from the event
+ * itself instead of a lookup that is guaranteed to miss.
+ */
+export interface TopicDeletedMeta {
+  surface?: TopicSurface;
+  surfaceScope?: string | null;
+}
 
 export interface RuntimeBusEvent {
   type:
@@ -50,7 +64,7 @@ export interface RuntimeBus {
   broadcastAiStatus(topicId: string, status: Record<string, unknown>): void;
   broadcastTopicCreated(topic: { id: string }): void;
   broadcastTopicUpdated(topicId: string): void;
-  broadcastTopicDeleted(topicId: string): void;
+  broadcastTopicDeleted(topicId: string, meta?: TopicDeletedMeta): void;
   // ── AI turn lifecycle (otium WsHub-compatible surface used by the turn runner) ──
   /** Announce a just-started AI turn so every subscriber learns its queryId. */
   broadcastAiActive(topicId: string, queryId: string): void;
@@ -204,8 +218,8 @@ export class SqliteRuntimeBus implements RuntimeBus {
     this.emit({ type: "topic-updated", topicId, payload: null });
   }
 
-  broadcastTopicDeleted(topicId: string): void {
-    this.emit({ type: "topic-deleted", topicId, payload: null });
+  broadcastTopicDeleted(topicId: string, meta?: TopicDeletedMeta): void {
+    this.emit({ type: "topic-deleted", topicId, payload: meta ?? null });
   }
 
   // The turn-lifecycle methods all flow through the "ai-status" channel with a

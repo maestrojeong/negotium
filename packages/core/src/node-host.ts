@@ -20,7 +20,7 @@ export {
   listVaultEntries,
   saveVaultEntry,
 } from "#application/vault-command";
-export type { RuntimeBusEvent } from "#bus";
+export type { RuntimeBusEvent, TopicDeletedMeta } from "#bus";
 export { runtimeBus, WsHub } from "#bus";
 export { setRuntimeMcpPort } from "#mcp/runtime-spec";
 export { killAllBgBash } from "#platform/background-bash/manager";

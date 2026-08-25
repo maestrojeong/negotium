@@ -349,8 +349,14 @@ async function deleteTopicCascadeImpl(
     }
     deleted = true;
     // Mirror the deletion onto the bus so channel adapters (Telegram forum
-    // threads, web clients, …) can drop their bindings for the topic.
-    WsHub.get().broadcastTopicDeleted(topicId);
+    // threads, web clients, …) can drop their bindings for the topic. The
+    // gateway's SSE filter needs this room's pre-delete surface/scope: by the
+    // time it runs, `getTopic(topicId)` already returns nothing to look it
+    // up from.
+    WsHub.get().broadcastTopicDeleted(topicId, {
+      surface: topic.surface,
+      surfaceScope: topic.surfaceScope,
+    });
     for (const childId of reparentedChildIds) WsHub.get().broadcastTopicUpdated(childId);
   } finally {
     if (deleted) {
