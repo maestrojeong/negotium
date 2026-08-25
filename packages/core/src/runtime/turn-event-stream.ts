@@ -685,7 +685,7 @@ export async function runTurnEventStream(
             const { resolveAskCallback } = await import("#runtime/ask-callbacks");
             const pending = resolveAskCallback(queryId);
             if (pending) {
-              const sourceLabel = topicTitle;
+              const sourceLabel = pending.sourceLabel ?? topicTitle;
               const replyText = pending.timedOut
                 ? `⚠️ [Timeout - reply from ${sourceLabel} took too long and was dropped]`
                 : accumulatedText.trim() || "(처리됨, 별도 응답 없음)";

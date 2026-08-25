@@ -50,6 +50,7 @@ export interface AskPending {
   timedOut?: boolean; // set when resolved past TTL — caller gets timeout notice
   pendingAsk?: PendingAskIdentity;
   remoteReply?: RemoteReplyRoute;
+  sourceLabel?: string;
 }
 
 /** Active callbacks stay in memory for the normal completion path. Remote

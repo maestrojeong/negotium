@@ -8,6 +8,8 @@ export interface SessionCommContext {
   /** Present for a subagent room; outbound ask_session is not exposed. */
   subagentParentTopicId?: string;
   peerHostQueryId?: string;
+  /** Snapshot supplied to standalone MCP child processes by the runtime host. */
+  cronSessionId?: string;
   depth: number;
   replyOnly: boolean;
   agent: AgentKind;
@@ -43,6 +45,7 @@ export function parseSessionCommContext(
     currentTopicId: value(args, "topic-id") || undefined,
     subagentParentTopicId: value(args, "subagent-parent-topic-id") || undefined,
     peerHostQueryId: value(args, "peer-host-query-id") || undefined,
+    cronSessionId: value(args, "cron-session-id") || undefined,
     depth,
     replyOnly: value(args, "reply-only") === "true",
     agent: agentValue ?? defaults.agent,

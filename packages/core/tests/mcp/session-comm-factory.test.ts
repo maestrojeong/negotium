@@ -61,6 +61,7 @@ function host(overrides: Partial<SessionCommMcpHost> = {}): SessionCommMcpHost {
     peekSession: ok,
     setDescription: ok,
     askSession: ok,
+    askCron: ok,
     abortSession: ok,
     tellSession: ok,
     ...overrides,
@@ -106,11 +107,33 @@ describe("session-comm MCP factory", () => {
     await client.close();
   });
 
+  test("exposes ask_cron with a required message", async () => {
+    let seen: string | undefined;
+    const client = await connected(
+      context,
+      host({
+        askCron: (_context, message) => {
+          seen = message;
+          return mcpOk("asked cron");
+        },
+      }),
+    );
+    const tool = (await client.listTools()).tools.find((entry) => entry.name === "ask_cron");
+    expect(tool?.inputSchema).toMatchObject({
+      required: ["message"],
+      properties: { message: { type: "string" } },
+    });
+    await client.callTool({ name: "ask_cron", arguments: { message: "Cron question" } });
+    expect(seen).toBe("Cron question");
+    await client.close();
+  });
+
   test("omits outbound tools in reply-only sessions", async () => {
     const client = await connected({ ...context, replyOnly: true }, host());
     const names = (await client.listTools()).tools.map((tool) => tool.name);
     expect(names).toContain("list_sessions");
     expect(names).not.toContain("ask_session");
+    expect(names).not.toContain("ask_cron");
     expect(names).not.toContain("tell_session");
     expect(names).not.toContain("abort_session");
     await client.close();
@@ -121,6 +144,7 @@ describe("session-comm MCP factory", () => {
     const names = (await client.listTools()).tools.map((tool) => tool.name);
     expect(names).toContain("tell_session");
     expect(names).not.toContain("ask_session");
+    expect(names).not.toContain("ask_cron");
     expect(names).not.toContain("abort_session");
     await client.close();
   });

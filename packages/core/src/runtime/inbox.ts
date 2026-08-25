@@ -32,8 +32,9 @@ import {
   topicIdFromSessionInboxFileName,
 } from "#query/session-inbox-path";
 import { AbortReason } from "#query/types";
+import { getRegisteredCronSession } from "#runtime/cron-sessions";
 import { appendApiMessage, getApiMessage } from "#storage/api-messages";
-import type { TopicNameLookupScope } from "#storage/api-topics";
+import { getTopicSessionId, type TopicNameLookupScope } from "#storage/api-topics";
 import type { ConversationEntry } from "#storage/conversations";
 import { RUNTIME_INSTANCE_ID } from "#storage/runtime-leases";
 import {
@@ -74,6 +75,7 @@ type SessionInboxEntry =
       message: string;
       contextId?: string;
       fromDepth?: number;
+      target?: "main" | "cron";
       remoteReply?: RemoteReplyRoute;
       timestamp: string;
     }
@@ -96,6 +98,7 @@ interface PendingAskScope {
 interface AskForkPlanOptions {
   entries: ConversationEntry[];
   forkNative?: () => Promise<ForkHandle>;
+  prepareSession?: () => Promise<ForkHandle>;
   synthesize: (entries: ConversationEntry[]) => ForkHandle | Promise<ForkHandle>;
   onNativeForkError?: (error: unknown) => void;
 }
@@ -106,6 +109,22 @@ export interface AskForkPlan {
   prepareSession: () => Promise<ForkHandle>;
 }
 
+export function normalizeAskTarget(target: unknown): "main" | "cron" | null {
+  if (target === undefined || target === "main") return "main";
+  return target === "cron" ? "cron" : null;
+}
+
+export function resolveAskParentSessionId(
+  topicId: string,
+  agent: AgentKind,
+  target: "main" | "cron" = "main",
+): string | null {
+  if (target === "cron") {
+    return getRegisteredCronSession(topicId, agent)?.sessionId ?? null;
+  }
+  return getTopicSessionId(topicId);
+}
+
 /**
  * Create the first ask fork eagerly while retaining a replay recipe over the
  * exact provider-neutral history observed when the inbox entry was consumed.
@@ -114,8 +133,9 @@ export interface AskForkPlan {
  */
 export async function createAskForkPlan(options: AskForkPlanOptions): Promise<AskForkPlan> {
   const snapshot = structuredClone(options.entries);
-  const prepareSession = async (): Promise<ForkHandle> =>
-    options.synthesize(structuredClone(snapshot));
+  const prepareSession =
+    options.prepareSession ??
+    (async (): Promise<ForkHandle> => options.synthesize(structuredClone(snapshot)));
 
   let forkHandle: ForkHandle | undefined;
   if (options.forkNative) {
@@ -125,7 +145,7 @@ export async function createAskForkPlan(options: AskForkPlanOptions): Promise<As
       options.onNativeForkError?.(error);
     }
   }
-  forkHandle ??= await prepareSession();
+  forkHandle ??= await options.synthesize(structuredClone(snapshot));
   return { forkHandle, prepareSession };
 }
 
@@ -946,9 +966,23 @@ async function handleAskEntry(
   const { registerAskCallback } = await import("#runtime/ask-callbacks");
   const fromLabel = entryFromLabel(entry);
   const remoteReply = entry.remoteReply;
+  const askTarget = normalizeAskTarget(entry.target);
+  if (!askTarget) {
+    clearPendingAskForEntry(scope, entry, topicName, "invalid-target");
+    if (remoteReply) {
+      await deliverPeerReply(remoteReply, topicName, "(error: invalid ask target)", "error");
+    } else {
+      await notifyAskDrop(scope, entry, topicName, "(error: invalid ask target)");
+    }
+    return;
+  }
+  const targetLabel = askTarget === "cron" ? `${topic.title}:cron` : topic.title;
 
   // Build the prompt with read-only instruction (mirrors Otium).
-  const prompt = `[ASK from ${fromLabel}]\n${entry.message}\n\n이건 ${fromLabel}이 당신의 context를 참조하려는 요청입니다 (READ-only).\n가지고 있는 정보를 그대로 공유하세요.\n출력 내용은 자동으로 "${fromLabel}" 세션에 돌아갑니다.`;
+  const prompt =
+    askTarget === "cron"
+      ? `[ASK from ${fromLabel} -> ${targetLabel}]\n${entry.message}\n\n이건 ${fromLabel}이 이 토픽의 크론 세션에 묻는 질문입니다 (READ-only).\n크론 작업이 수집하고 처리한 정보를 바탕으로 답변하세요.\n출력 내용은 자동으로 "${fromLabel}" 세션에 돌아갑니다.`
+      : `[ASK from ${fromLabel}]\n${entry.message}\n\n이건 ${fromLabel}이 당신의 context를 참조하려는 요청입니다 (READ-only).\n가지고 있는 정보를 그대로 공유하세요.\n출력 내용은 자동으로 "${fromLabel}" 세션에 돌아갑니다.`;
 
   if (!isAiEnabled) {
     logger.warn({ topicName, from: entry.from }, "session-inbox: ask to non-AI topic, dropping");
@@ -991,13 +1025,13 @@ async function handleAskEntry(
     persistVisibleAskMessage({
       callerTopicId,
       callerUserId: String(scope.userId),
-      targetLabel: topic.title,
+      targetLabel,
       requestId,
       message: entry.message,
     });
   }
 
-  const { getTopic, getTopicSessionId } = await import("#storage/api-topics");
+  const { getTopic } = await import("#storage/api-topics");
   const fullTopic = getTopic(topic.id);
   const agentOverride = (fullTopic?.agent ?? topic.agent ?? undefined) as AgentKind | undefined;
   const cwd = resolveTopicWorkspaceDir(topic.id);
@@ -1010,7 +1044,7 @@ async function handleAskEntry(
   // Fork immediately — snapshot the target topic's state at the moment the
   // inbox entry is consumed (just like clawgram). The ask session reads the
   // history that exists right now, not after any in-flight user turn finishes.
-  const { forkAgentSession } = await import("#agents/fork");
+  const { cleanupAgentFork, forkAgentSession } = await import("#agents/fork");
   const { getRegistry, getRegistryOperations } = await import("#agents/registry");
   const { resolveModelForAgent } = await import("#agents/model-catalog");
   const { getApiTopicConfig } = await import("#storage/api-topic-config");
@@ -1027,30 +1061,47 @@ async function handleAskEntry(
     requestedEffort && registry.validateEffort(requestedEffort)
       ? requestedEffort
       : registry.defaultEffort;
-  const parentSessionId = getTopicSessionId(topic.id);
+  const cronSession =
+    askTarget === "cron" ? getRegisteredCronSession(topic.id, agentOverride) : null;
+  const parentSessionId =
+    askTarget === "cron" ? (cronSession?.sessionId ?? null) : getTopicSessionId(topic.id);
+  if (askTarget === "cron" && !parentSessionId) {
+    clearPendingAskForEntry(scope, entry, topicName, "cron-session-missing");
+    const message = "(error: cron 작업이 최소 한 번 실행되어야 합니다)";
+    if (remoteReply) {
+      await deliverPeerReply(remoteReply, targetLabel, message, "error");
+    } else {
+      await notifyAskDrop(scope, entry, targetLabel, message);
+    }
+    return;
+  }
+
+  const forkNative = parentSessionId
+    ? () =>
+        forkAgentSession({
+          agent: agentOverride,
+          parentSessionId,
+          cwd,
+          userId: scope.userId,
+          topicName,
+          title: `ask: ${entry.from} -> ${targetLabel}`,
+          model,
+          ...(effort ? { effort } : {}),
+        })
+    : undefined;
 
   let forkPlan: AskForkPlan;
   try {
     forkPlan = await createAskForkPlan({
       // Read once: queued/replayed asks must keep the history visible at inbox
       // consumption time even if the target topic advances while they wait.
-      entries: readConversation(scope.userId, topicName),
-      ...(parentSessionId
-        ? {
-            forkNative: () =>
-              forkAgentSession({
-                agent: agentOverride,
-                parentSessionId,
-                cwd,
-                userId: scope.userId,
-                topicName,
-                title: `ask: ${entry.from} -> ${topicName}`,
-                model,
-                ...(effort ? { effort } : {}),
-              }),
-          }
-        : {}),
+      entries: askTarget === "cron" ? [] : readConversation(scope.userId, topicName),
+      ...(forkNative ? { forkNative } : {}),
+      ...(askTarget === "cron" && forkNative ? { prepareSession: forkNative } : {}),
       synthesize: async (entries) => {
+        if (askTarget === "cron") {
+          throw new Error("cron session fork failed");
+        }
         const rollout = getRegistryOperations(agentOverride).writeRollout({
           cwd,
           entries,
@@ -1064,11 +1115,9 @@ async function handleAskEntry(
         };
       },
       onNativeForkError: (err) => {
-        // A stale provider session should not make ask_session unusable. The
-        // unified log is the durable source of truth and can seed a new fork.
         logger.warn(
           { err, topicName, from: entry.from, requestId, parentSessionId },
-          "session-inbox: native target fork failed; synthesizing from unified history",
+          "session-inbox: native target fork failed",
         );
       },
     });
@@ -1091,7 +1140,7 @@ async function handleAskEntry(
     const message = "(error: target session could not be prepared)";
     if (remoteReply) {
       try {
-        const delivered = await deliverPeerReply(remoteReply, topic.title, message, "error");
+        const delivered = await deliverPeerReply(remoteReply, targetLabel, message, "error");
         if (!delivered) {
           logger.warn(
             { topicName, from: entry.from, requestId },
@@ -1106,7 +1155,7 @@ async function handleAskEntry(
       }
     } else {
       try {
-        await notifyAskDrop(scope, entry, topicName, message);
+        await notifyAskDrop(scope, entry, targetLabel, message);
       } catch (deliveryError) {
         logger.warn(
           { err: deliveryError, topicName, from: entry.from, requestId },
@@ -1115,6 +1164,27 @@ async function handleAskEntry(
       }
     }
     return;
+  }
+
+  if (askTarget === "cron") {
+    const currentCronSession = getRegisteredCronSession(topic.id, agentOverride);
+    if (
+      !cronSession ||
+      !currentCronSession ||
+      currentCronSession.sessionId !== cronSession.sessionId ||
+      currentCronSession.ownerUserId !== cronSession.ownerUserId
+    ) {
+      cleanupAgentFork(forkPlan.forkHandle);
+      clearPendingAskForEntry(scope, entry, topicName, "cron-session-changed-during-fork");
+      const message =
+        "(error: cron session changed while preparing the request; retry the request)";
+      if (remoteReply) {
+        await deliverPeerReply(remoteReply, targetLabel, message, "error");
+      } else {
+        await notifyAskDrop(scope, entry, targetLabel, message);
+      }
+      return;
+    }
   }
 
   // Trigger the AI turn immediately with the pre-forked session.
@@ -1146,7 +1216,7 @@ async function handleAskEntry(
         if (remoteReply) {
           void deliverPeerReply(
             remoteReply,
-            topic.title,
+            targetLabel,
             `(error: target topic became unavailable before dispatch)`,
             "error",
           );
@@ -1154,7 +1224,7 @@ async function handleAskEntry(
           void notifyAskDrop(
             scope,
             entry,
-            topicName,
+            targetLabel,
             `(error: target topic became unavailable before dispatch)`,
           );
         }
@@ -1177,6 +1247,7 @@ async function handleAskEntry(
                   requestId,
                 },
               }),
+          sourceLabel: targetLabel,
         });
       },
     },

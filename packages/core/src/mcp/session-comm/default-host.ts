@@ -9,9 +9,11 @@ import {
 import { createSessionTargetCatalog } from "#mcp/session-comm/topic-catalog";
 import { ACTIVE_QUERY_STALE_MS, MAX_TELL_DEPTH, USERS_LOG_DIR } from "#platform/config";
 import { readJsonFile } from "#platform/jsonl";
+import { logger } from "#platform/logger";
 import { OPTIONAL_FORUM_MCP_SERVERS, REQUIRED_FORUM_MCP_SERVERS } from "#platform/mcp-config";
 import { closeBrowserOwnerTabs } from "#platform/playwright/manager";
 import { deleteManagedBrowserProfile } from "#platform/playwright/profile-management";
+import { getRegisteredCronSession } from "#runtime/cron-sessions";
 import { sanitizeId } from "#security/sanitize";
 import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
 import {
@@ -336,6 +338,55 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
         });
       }
       return ok(`Ask sent to "${to}". request_id: ${requestId}`);
+    },
+
+    askCron(context, message) {
+      if (message.length > MAX_MESSAGE_LENGTH) return error("Error: message too long.");
+      const topic = currentTopic(context);
+      if (!topic) return error("Error: 현재 토픽을 찾을 수 없습니다.");
+      if (!getRegisteredCronSession(topic.id, context.agent)) {
+        return error(
+          `Error: "${topic.title}" 토픽에 cron 세션이 없습니다. 크론 작업이 최소 한 번 실행되어야 합니다.`,
+        );
+      }
+      const from = currentRef(context);
+      const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const pending = createPendingAsk({
+        userId: context.userId,
+        from: from.key,
+        to: topic.title,
+        requestId,
+      });
+      if (!pending.ok) {
+        return error(`Error: "${topic.title}"에 이미 진행 중인 요청이 있습니다.`);
+      }
+      try {
+        enqueueSessionInbox({
+          userId: context.userId,
+          topicId: topic.id,
+          entry: {
+            type: "ask",
+            target: "cron",
+            requestId,
+            from: from.key,
+            fromTitle: from.title,
+            fromTopicId: topic.id,
+            message,
+            fromDepth: context.depth,
+            timestamp: new Date().toISOString(),
+          },
+        });
+      } catch (err) {
+        clearPendingAsk({ userId: context.userId, from: from.key, to: topic.title, requestId });
+        logger.warn(
+          { err, topicId: topic.id, requestId },
+          "session-comm: failed to enqueue cron ask",
+        );
+        return error("Error: cron 세션에 메시지를 전송하지 못했습니다.");
+      }
+      return ok(
+        `"${topic.title}:cron" 세션에 참조 요청을 보냈습니다.\n\nrequest_id: ${requestId}\n\n응답은 '[Reply from ${topic.title}:cron]' 형식으로 이 세션에 자동으로 돌아옵니다. 응답이 도착할 때까지 같은 요청으로 ask_cron을 재호출하지 마세요.`,
+      );
     },
 
     async abortSession(context, to) {

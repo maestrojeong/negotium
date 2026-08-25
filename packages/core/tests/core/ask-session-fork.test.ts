@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ForkHandle } from "#agents/fork";
-import { createAskForkPlan } from "#runtime/inbox";
+import { getRegisteredCronSession, registerCronSessionProvider } from "#runtime/cron-sessions";
+import { createAskForkPlan, normalizeAskTarget, resolveAskParentSessionId } from "#runtime/inbox";
 import { prepareInjectReplayAfterUserPreemption } from "#runtime/turn-runner";
 import type { ConversationEntry } from "#storage/conversations";
 
@@ -17,6 +18,62 @@ function conversation(content: string): ConversationEntry {
 }
 
 describe("ask session fork planning", () => {
+  test("ask targets default to main and reject unknown persisted values", () => {
+    expect(normalizeAskTarget(undefined)).toBe("main");
+    expect(normalizeAskTarget("main")).toBe("main");
+    expect(normalizeAskTarget("cron")).toBe("cron");
+    expect(normalizeAskTarget("Cron")).toBeNull();
+  });
+
+  test("cron-targeted asks select the registered cron session", () => {
+    const restore = registerCronSessionProvider((topicId, agent) =>
+      topicId === "target" && agent === "codex"
+        ? { sessionId: "cron-session", ownerUserId: "owner" }
+        : null,
+    );
+    try {
+      expect(resolveAskParentSessionId("target", "codex", "cron")).toBe("cron-session");
+      expect(resolveAskParentSessionId("target", "claude", "cron")).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  test("cron provider disposal cannot remove or resurrect overlapping registrations", () => {
+    const provider = () => ({
+      sessionId: "first",
+      ownerUserId: "owner",
+    });
+    const unregisterFirst = registerCronSessionProvider(provider);
+    const unregisterSecond = registerCronSessionProvider(() => ({
+      sessionId: "second",
+      ownerUserId: "owner",
+    }));
+
+    unregisterFirst();
+    expect(getRegisteredCronSession("target", "codex")?.sessionId).toBe("second");
+    unregisterSecond();
+    expect(getRegisteredCronSession("target", "codex")).toBeNull();
+
+    const unregisterSameFirst = registerCronSessionProvider(provider);
+    const unregisterSameSecond = registerCronSessionProvider(provider);
+    unregisterSameFirst();
+    expect(getRegisteredCronSession("target", "codex")?.sessionId).toBe("first");
+    unregisterSameSecond();
+    expect(getRegisteredCronSession("target", "codex")).toBeNull();
+  });
+
+  test("cron provider failures fail closed", () => {
+    const unregister = registerCronSessionProvider(() => {
+      throw new Error("database unavailable");
+    });
+    try {
+      expect(getRegisteredCronSession("target", "codex")).toBeNull();
+    } finally {
+      unregister();
+    }
+  });
+
   test("an eager fork replays with a fresh rollout from the inbox-time snapshot", async () => {
     const liveEntries = [conversation("visible when consumed")];
     const synthesizedSnapshots: ConversationEntry[][] = [];

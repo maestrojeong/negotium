@@ -13,6 +13,7 @@ export {
   backgroundSessionProgress,
   registerBackgroundSessionProvider,
 } from "#runtime/background-sessions";
+export { registerCronSessionProvider } from "#runtime/cron-sessions";
 export {
   type AiTurnSettlement,
   triggerTopicAiTurn,

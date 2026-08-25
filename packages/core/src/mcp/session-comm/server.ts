@@ -31,6 +31,7 @@ import { enqueueSessionInbox } from "#storage/session-inbox";
 import { connectStdio, mcpError, mcpOk } from "../mcp-helpers";
 import { forwardToPeer, peerSessionsForUser } from "./peer-forward";
 import {
+  cronSessionId,
   currentDepth,
   currentTopic,
   currentTopicId,
@@ -556,6 +557,65 @@ if (!isReplyOnly) {
 
         return mcpOk(
           `"${to}" 세션에 참조 요청을 보냈습니다.\n\nrequest_id: ${requestId}\n\n"${to}"의 응답은 '[ask_session 응답 ← ${to} | request_id: ${requestId}]' 형식으로 이 세션에 자동으로 돌아옵니다. 응답이 도착할 때까지 같은 요청으로 ask_session을 재호출하지 마세요.`,
+        );
+      },
+    );
+
+    server.tool(
+      "ask_cron",
+      "Ask this topic's shared Cron session a question. The query runs asynchronously in a fork and the answer is injected back into this conversation.",
+      {
+        message: z.string().describe("Question or message to send to the Cron session"),
+      },
+      async ({ message }) => {
+        if (message.length > MAX_MESSAGE_LENGTH) {
+          return mcpError(
+            `Error: message too long (${message.length} chars, max ${MAX_MESSAGE_LENGTH})`,
+          );
+        }
+        const fromRef = currentTopicRef();
+        if (!fromRef.topicId) return mcpError("Error: 현재 토픽 ID를 찾을 수 없습니다.");
+        if (!cronSessionId) {
+          return mcpError(
+            `Error: "${fromRef.title}" 토픽에 cron 세션이 없습니다. 크론 작업이 최소 한 번 실행되어야 합니다.`,
+          );
+        }
+        const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const pending = createPendingAsk({
+          userId,
+          from: fromRef.key,
+          to: fromRef.title,
+          requestId,
+        });
+        if (!pending.ok) {
+          return mcpError(`Error: "${fromRef.title}"에 이미 진행 중인 요청이 있습니다.`);
+        }
+        try {
+          enqueueSessionInbox({
+            userId,
+            topicId: fromRef.topicId,
+            entry: {
+              type: "ask" as const,
+              target: "cron" as const,
+              requestId,
+              from: fromRef.key,
+              fromTitle: fromRef.title,
+              fromTopicId: fromRef.topicId,
+              message,
+              fromDepth: currentDepth,
+              timestamp: new Date().toISOString(),
+            },
+          });
+        } catch (err) {
+          clearPendingAsk({ userId, from: fromRef.key, to: fromRef.title, requestId });
+          const e = err as { message?: string };
+          process.stderr.write(
+            `[session-comm] ask_cron: failed ${currentTopic} requestId=${requestId}: ${e.message || "Unknown"}\n`,
+          );
+          return mcpError("Error: cron 세션에 메시지를 전송하지 못했습니다.");
+        }
+        return mcpOk(
+          `"${fromRef.title}:cron" 세션에 참조 요청을 보냈습니다.\n\nrequest_id: ${requestId}\n\n응답은 '[Reply from ${fromRef.title}:cron]' 형식으로 이 세션에 자동으로 돌아옵니다. 응답이 도착할 때까지 같은 요청으로 ask_cron을 재호출하지 마세요.`,
         );
       },
     );

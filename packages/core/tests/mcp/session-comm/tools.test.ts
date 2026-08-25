@@ -5,6 +5,8 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { SESSION_COMM_SERVER } from "#platform/config";
 import { clearQueryState, writeQueryState } from "#query/state";
 import { upsertTopic } from "#storage/api-topics";
+import { db } from "#storage/forum-db";
+import { clearPendingAsk } from "#storage/session-asks";
 import { registerTopic } from "#topics/create";
 import { ensurePersonalGeneral } from "#topics/personal-general";
 
@@ -15,6 +17,7 @@ async function listSessionCommTools(args: {
   topicId: string;
   subagentParentTopicId?: string;
   agent: "claude" | "codex" | "maestro";
+  cronSessionId?: string;
 }): Promise<string[]> {
   const client = new Client({ name: "session-comm-tools-test", version: "1.0.0" });
   const env = Object.fromEntries(
@@ -35,6 +38,7 @@ async function listSessionCommTools(args: {
         : []),
       "--depth=0",
       `--agent=${args.agent}`,
+      ...(args.cronSessionId ? [`--cron-session-id=${args.cronSessionId}`] : []),
     ],
     env,
   });
@@ -123,6 +127,7 @@ async function callSessionCommTool(args: {
   title: string;
   topicId: string;
   agent: "claude" | "codex" | "maestro";
+  cronSessionId?: string;
   name: string;
   input: Record<string, unknown>;
 }): Promise<{ text: string; isError?: boolean }> {
@@ -137,6 +142,7 @@ async function callSessionCommTool(args: {
       `--topic-id=${args.topicId}`,
       "--depth=0",
       `--agent=${args.agent}`,
+      ...(args.cronSessionId ? [`--cron-session-id=${args.cronSessionId}`] : []),
     ],
     env: Object.fromEntries(
       Object.entries(process.env).filter(
@@ -165,6 +171,7 @@ function expectCommunicationContract(names: string[]): void {
       "peek_session",
       "tell_session",
       "ask_session",
+      "ask_cron",
       "abort_session",
     ]),
   );
@@ -198,6 +205,52 @@ describe("session-comm tool exposure", () => {
     );
   });
 
+  test("ask_cron rejects topics without a run and enqueues cron-targeted asks", async () => {
+    const topic = registerTopic({
+      title: `ask-cron-${randomUUID()}`,
+      userId: USER_ID,
+      agent: "codex",
+    });
+    const missing = await callSessionCommTool({
+      title: topic.title,
+      topicId: topic.id,
+      agent: "codex",
+      name: "ask_cron",
+      input: { message: "What did the scheduled task find?" },
+    });
+    expect(missing.isError).toBe(true);
+    expect(missing.text).toContain("최소 한 번 실행");
+
+    const sent = await callSessionCommTool({
+      title: topic.title,
+      topicId: topic.id,
+      agent: "codex",
+      cronSessionId: "cron-parent-session",
+      name: "ask_cron",
+      input: { message: "What did the scheduled task find?" },
+    });
+    expect(sent.isError).toBe(false);
+    expect(sent.text).toContain(`${topic.title}:cron`);
+    const row = db
+      .query<{ payload: string }, [string]>(
+        "SELECT payload FROM session_inbox WHERE topic_id = ? ORDER BY sequence DESC LIMIT 1",
+      )
+      .get(topic.id);
+    const entry = JSON.parse(row?.payload ?? "null") as {
+      target?: string;
+      requestId: string;
+      from: string;
+    };
+    expect(entry.target).toBe("cron");
+    db.run("DELETE FROM session_inbox WHERE topic_id = ?", [topic.id]);
+    clearPendingAsk({
+      userId: USER_ID,
+      from: entry.from,
+      to: topic.title,
+      requestId: entry.requestId,
+    });
+  });
+
   test("missing topic records fail closed instead of exposing ask and abort", async () => {
     const names = await listSessionCommTools({
       title: "missing-subagent",
@@ -207,6 +260,7 @@ describe("session-comm tool exposure", () => {
     });
     expect(names).toContain("tell_session");
     expect(names).not.toContain("ask_session");
+    expect(names).not.toContain("ask_cron");
     expect(names).not.toContain("abort_session");
   });
 
@@ -231,6 +285,7 @@ describe("session-comm tool exposure", () => {
     });
     expect(names).toContain("tell_session");
     expect(names).not.toContain("ask_session");
+    expect(names).not.toContain("ask_cron");
 
     const unrelated = registerTopic({
       title: `session-unrelated-${randomUUID()}`,

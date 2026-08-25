@@ -38,6 +38,7 @@ import {
   buildPlaywrightMcpTransport,
   CODEX_BROWSER_CAPABILITY_ENV,
 } from "#platform/playwright/mcp-transport";
+import { getRegisteredCronSession } from "#runtime/cron-sessions";
 import type { AgentKind, AgentQueryOptions, PeerRuntimeBridgeContext } from "#types";
 
 export type { RuntimeMcpScope } from "#platform/mcp-catalog-policy";
@@ -479,6 +480,9 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
         peerBridge,
       } = ctx;
       const effectiveAgent = agent ?? FALLBACK_AGENT;
+      const cronSessionId = topicId
+        ? getRegisteredCronSession(topicId, effectiveAgent)?.sessionId
+        : undefined;
       const args = [
         `--user-id=${userId}`,
         `--topic=${session}`,
@@ -486,6 +490,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
         ...(subagentParentTopicId ? [`--subagent-parent-topic-id=${subagentParentTopicId}`] : []),
         `--depth=${depth}`,
         `--agent=${effectiveAgent}`,
+        ...(cronSessionId ? [`--cron-session-id=${cronSessionId}`] : []),
         ...(silent ? ["--reply-only=true"] : []),
         ...(peerBridge ? [`--peer-host-query-id=${peerBridge.hostQueryId}`] : []),
       ];

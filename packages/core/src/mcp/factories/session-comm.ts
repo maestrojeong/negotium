@@ -35,6 +35,7 @@ export interface SessionCommMcpHost {
     context: SessionCommContext,
     input: { to: string; message: string },
   ): MaybePromise<SessionCommMcpResult>;
+  askCron(context: SessionCommContext, message: string): MaybePromise<SessionCommMcpResult>;
   abortSession(context: SessionCommContext, to: string): MaybePromise<SessionCommMcpResult>;
   tellSession(
     context: SessionCommContext,
@@ -122,6 +123,12 @@ export function createSessionCommMcpServer(
         "Ask another local or remote session a question and wait for its answer.",
         { to: z.string(), message: z.string() },
         async (input) => host.askSession(context, input),
+      );
+      server.tool(
+        "ask_cron",
+        "Ask this topic's shared Cron session a question. The answer is injected asynchronously into the current conversation.",
+        { message: z.string() },
+        async ({ message }) => host.askCron(context, message),
       );
     }
     if (!subagentIdentity.restricted) {

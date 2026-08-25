@@ -4,6 +4,7 @@ import {
   cancelDeferredInject,
   logger,
   type NegotiumNodeModule,
+  registerCronSessionProvider,
   triggerTopicAiTurn,
 } from "@negotium/core/cron-host";
 import { listCronBackgroundSessions } from "#background-sessions";
@@ -15,6 +16,7 @@ import {
   type CronDatabase,
   configureCronDatabase,
   ensureCronSchema,
+  getCronTopicSession,
   listOrphanedCronTopicSessions,
 } from "#store";
 
@@ -153,6 +155,7 @@ export function createCronModule(options: CronModuleOptions = {}): NegotiumNodeM
       };
       const scheduler = new CronScheduler(schedulerOptions);
       scheduler.start();
+      const unregisterCronSessions = registerCronSessionProvider(getCronTopicSession);
 
       return {
         async stop() {
@@ -160,6 +163,7 @@ export function createCronModule(options: CronModuleOptions = {}): NegotiumNodeM
           unsubscribeTopicCleanup();
           unregisterBackgroundSessions();
           unregisterMcp();
+          unregisterCronSessions();
           await Promise.allSettled(cleanupTasks);
           restoreHost();
           restoreDatabase();

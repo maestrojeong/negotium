@@ -399,6 +399,7 @@ type AskPendingFileRef = {
     requestId?: string;
   };
   remoteReply?: import("#mcp/session-comm/peer-forward").RemoteReplyRoute;
+  sourceLabel?: string;
 };
 
 async function clearPendingAskFile(
@@ -531,7 +532,12 @@ async function deliverAskError(queryId: string, sourceLabel: string, error: stri
     const pending = resolveAskCallback(queryId);
     if (pending) {
       const prefix = pending.timedOut ? "⚠️ [Timeout - error notification was dropped]\n\n" : "";
-      await deliverAskCallbackToCaller(pending, sourceLabel, `${prefix}${error}`, "error");
+      await deliverAskCallbackToCaller(
+        pending,
+        pending.sourceLabel ?? sourceLabel,
+        `${prefix}${error}`,
+        "error",
+      );
     }
   } catch {
     // Best-effort — don't let callback failure crash the main agent loop.
