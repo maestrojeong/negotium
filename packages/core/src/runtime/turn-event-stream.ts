@@ -681,7 +681,9 @@ export async function runTurnEventStream(
             // caller synchronously below and have no user-facing chat to
             // retry into, so they skip the retry path the caller applies to
             // "empty-response" and go straight to a reported provider-error.
-            outcome = silent ? { kind: "provider-error", error } : { kind: "empty-response", error };
+            outcome = silent
+              ? { kind: "provider-error", error }
+              : { kind: "empty-response", error };
             logger.warn(
               { topicId, queryId, agentType, model, silent },
               "ai: provider completed without assistant text",
