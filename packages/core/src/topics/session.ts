@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ACTIVE_TASK_TEMPLATE, estimateConversationTokens } from "#agents/compaction-support";
 import { archiveActiveTopicForMemory, cancelIdleArchiveForTopic } from "#agents/idle-archiver";
+import { cancelIdleCompactForTopic } from "#agents/idle-compact";
 import { runAgent } from "#agents/index";
 import { MIN_MEMORY_ARCHIVE_EXCHANGES } from "#agents/memory-archive-policy";
 import { resolveCompactionExecution, resolveModelForAgent } from "#agents/model-catalog";
@@ -40,7 +41,10 @@ import {
   beginRuntimeTopicMaintenance,
   type RuntimeTopicMaintenanceHandle,
 } from "#storage/runtime-topic-state";
-import { cancelRuntimeUserTurnRequestsBeforeEpoch } from "#storage/runtime-turn-requests";
+import {
+  cancelRuntimeUserTurnRequestsBeforeEpoch,
+  getRuntimeUserTurnRequest,
+} from "#storage/runtime-turn-requests";
 import { archiveConversationEvents } from "#storage/topic-archive";
 import { isLegacySharedGeneral } from "#topics/personal-general";
 import type { AgentKind, EffortLevel } from "#types";
@@ -62,6 +66,8 @@ export const AUTO_FORK_COMPACTION_TOKENS = 28_000;
 export interface RestartTopicSessionResult {
   text: string;
   isError?: boolean;
+  /** True when a non-preemptive compact bailed because a turn was already in flight (see `preemptive`). */
+  busy?: boolean;
 }
 
 export interface CompactSummaryRequest {
@@ -79,6 +85,15 @@ export interface CompactSummaryRequest {
 export interface CompactTopicSessionOptions {
   summarize?: (request: CompactSummaryRequest) => Promise<string>;
   cleanupOldRollouts?: typeof cleanupTopicRolloutsFromEntries;
+  /**
+   * When `false`, never interrupt work already in flight: instead of calling
+   * `fenceTopicWork` (which aborts local/remote turns and cancels queued
+   * requests), bail out as soon as maintenance reveals any turn is running or
+   * queued. Defaults to `true`, preserving `/compact`'s existing preemptive
+   * behavior — a human invoking it has implicitly accepted the interruption.
+   * Automatic/idle-triggered compaction must pass `false`.
+   */
+  preemptive?: boolean;
 }
 
 export interface CompactedRolloutRequest extends Omit<CompactSummaryRequest, "source"> {
@@ -135,6 +150,27 @@ async function fenceTopicWork(
   return maintenance.isOwned() ? null : "Topic maintenance ownership was lost. Try again.";
 }
 
+/** True when any turn is running (this process or a remote node) or queued for this topic. */
+function hasTopicWorkInFlight(topicId: string): boolean {
+  return Boolean(
+    getRoomQuery(topicId) || getRuntimeTurnLease(topicId) || getRuntimeUserTurnRequest(topicId),
+  );
+}
+
+/**
+ * Non-preemptive counterpart to `fenceTopicWork`: never abort or cancel
+ * anything. `beginRuntimeTopicMaintenance` unconditionally bumps the topic's
+ * epoch just by being called, so callers must check *before* acquiring it
+ * (skip the bump entirely in the common busy case) and check again
+ * immediately *after* acquiring it (the authoritative read — once maintenance
+ * is held, `claimRuntimeTurnLease`'s own `WHERE NOT EXISTS (...maintenance)`
+ * guarantees no *new* turn can start, so anything found here was already
+ * running before we got here). Returns `true` when it is safe to proceed.
+ */
+function topicIsQuiescedForNonPreemptiveWork(topicId: string): boolean {
+  return !hasTopicWorkInFlight(topicId);
+}
+
 /**
  * Reset provider-native and provider-neutral context without deleting the
  * topic or its visible message history. Mirrors Otium's `/new` contract.
@@ -164,6 +200,7 @@ export async function restartTopicSession(
     const fenceError = await fenceTopicWork(topicId, maintenance);
     if (fenceError) return { text: fenceError, isError: true };
     cancelIdleArchiveForTopic(topicId);
+    cancelIdleCompactForTopic(topicId);
     const rawArchivePaths: string[] = [];
     try {
       for (const participantUserId of new Set([
@@ -731,12 +768,32 @@ export async function compactTopicSession(
   );
   if (!owner) return { text: "Only the topic owner can compact the session.", isError: true };
 
+  const preemptive = options.preemptive ?? true;
+  if (!preemptive && hasTopicWorkInFlight(topicId)) {
+    // Fast path: skip acquiring maintenance at all (which would otherwise
+    // unconditionally bump the topic epoch) in the common busy case.
+    return { text: "A turn is active or queued; compaction skipped.", isError: true, busy: true };
+  }
+
   const maintenance = beginRuntimeTopicMaintenance(topicId);
   if (!maintenance) return { text: "Topic maintenance is already in progress.", isError: true };
 
   try {
-    const fenceError = await fenceTopicWork(topicId, maintenance);
-    if (fenceError) return { text: fenceError, isError: true };
+    if (preemptive) {
+      const fenceError = await fenceTopicWork(topicId, maintenance);
+      if (fenceError) return { text: fenceError, isError: true };
+    } else if (!topicIsQuiescedForNonPreemptiveWork(topicId)) {
+      // Authoritative check, now that no *new* turn can start under this
+      // epoch. Never abort or cancel anything already running — bail instead.
+      return {
+        text: "A turn is active or queued; compaction skipped.",
+        isError: true,
+        busy: true,
+      };
+    } else if (!maintenance.isOwned()) {
+      return { text: "Topic maintenance ownership was lost. Try again.", isError: true };
+    }
+    cancelIdleCompactForTopic(topicId);
 
     const agent = (topic.agent ?? "maestro") as AgentKind;
     const registry = getRegistry(agent);

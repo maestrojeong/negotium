@@ -1266,6 +1266,44 @@ test("background session route exposes only the requesting user's active Cron tu
   }
 });
 
+test("background session route widens to every user's active Cron turns when allUsers=true", async () => {
+  const topic = registerTopic({ title: `Cron ${randomUUID()}`, userId, agent: "codex" });
+  const other = registerTopic({
+    title: `Other Cron ${randomUUID()}`,
+    userId: `other-${randomUUID()}`,
+    agent: "codex",
+  });
+  const queryId = randomUUID();
+  const otherQueryId = randomUUID();
+  claimRuntimeTurnLease({ topicId: topic.id, queryId, origin: `cron:job:${randomUUID()}` });
+  claimRuntimeTurnLease({
+    topicId: other.id,
+    queryId: otherQueryId,
+    origin: `cron:job:${randomUUID()}`,
+  });
+  try {
+    const scoped = await handler(
+      request(`/background-sessions?user=${encodeURIComponent(userId)}`),
+    );
+    const widened = await handler(
+      request(`/background-sessions?user=${encodeURIComponent(userId)}&allUsers=true`),
+    );
+    const scopedBody = (await scoped?.json()) as { sessions: Array<{ topicId?: string }> };
+    const widenedBody = (await widened?.json()) as { sessions: Array<{ topicId?: string }> };
+
+    expect(widened?.status).toBe(200);
+    // Without allUsers, the other user's cron turn stays hidden (regression
+    // guard for the existing scoped behavior)...
+    expect(scopedBody.sessions.some((session) => session.topicId === other.id)).toBe(false);
+    // ...but allUsers=true surfaces it, matching the terminal/Telegram
+    // single-owner client's opt-in.
+    expect(widenedBody.sessions.some((session) => session.topicId === other.id)).toBe(true);
+  } finally {
+    releaseRuntimeTurnLease(topic.id, queryId);
+    releaseRuntimeTurnLease(other.id, otherQueryId);
+  }
+});
+
 test("topic usage route returns exact totals only to a participant", async () => {
   const topic = registerTopic({ title: `Usage ${randomUUID()}`, userId, agent: "codex" });
   recordUsage(

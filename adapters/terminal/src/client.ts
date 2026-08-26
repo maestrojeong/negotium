@@ -157,7 +157,10 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
   }
 
   listBackgroundSessions(): BackgroundSessionDto[] {
-    return listBackgroundSessionsForUser(this.#userId);
+    // The terminal adapter is single-owner by design (see adapter.ts docs),
+    // so memory-archiver and cron sessions triggered from any other surface
+    // sharing this node (Telegram, etc.) are still "mine" to see here.
+    return listBackgroundSessionsForUser(this.#userId, true);
   }
 
   listMessages(topicId: string): MessageDto[] {
@@ -403,8 +406,10 @@ export class RemoteNegotiumClient implements NegotiumClient {
   }
 
   async listBackgroundSessions(): Promise<BackgroundSessionDto[]> {
+    // Same single-owner reasoning as the in-process client: show memory and
+    // cron background sessions across the whole node, not just my own turns.
     const result = await this.#request(
-      `/background-sessions?user=${encodeURIComponent(this.#userId)}`,
+      `/background-sessions?user=${encodeURIComponent(this.#userId)}&allUsers=true`,
     );
     return (result.sessions ?? []) as BackgroundSessionDto[];
   }

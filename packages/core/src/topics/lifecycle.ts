@@ -8,6 +8,7 @@
 import { rmSync } from "node:fs";
 import { runArchiverTurn } from "#agents/archiver";
 import { cancelIdleArchiveForTopic } from "#agents/idle-archiver";
+import { cancelIdleCompactForTopic } from "#agents/idle-compact";
 import { cancelSubagentWatchForDeletedTopic } from "#agents/mcp-tools/spawn-subagent";
 import {
   MIN_MEMORY_ARCHIVE_EXCHANGES,
@@ -59,6 +60,7 @@ async function abortAndWaitForTopic(topicId: string): Promise<boolean> {
   // Drop first: the dying turn's finally block must not dispatch queued work.
   interSessionQueue.drop(topicId);
   cancelIdleArchiveForTopic(topicId);
+  cancelIdleCompactForTopic(topicId);
   const aborted = abortRoom(topicId);
   if (!aborted) return true;
 

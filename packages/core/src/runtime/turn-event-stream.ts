@@ -4,6 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import { estimateTextTokens } from "#agents/compaction-support";
 import { cleanupAgentFork } from "#agents/fork";
 import { scheduleIdleArchiveForTopic } from "#agents/idle-archiver";
+import { scheduleIdleCompactForTopic } from "#agents/idle-compact";
 import { cancelPendingAskUserQuestions } from "#agents/mcp-tools/ask-user";
 import {
   settleSubagentFailure,
@@ -146,6 +147,7 @@ export async function runTurnEventStream(
   const peerBridge = execution?.peerBridge ?? control.injectParams?.peerBridge;
   let errorOccurred = false;
   let terminalEmitted = false;
+  const streamStartedAt = Date.now();
   let lastEventType: UnifiedEvent["type"] | null = null;
   let pendingSawDelta = false;
   let accumulatedText = "";
@@ -632,6 +634,13 @@ export async function runTurnEventStream(
           break;
         case "result":
           if (event.usage) recordEventUsage(event.usage);
+          // Most providers emit assistant text before the terminal result, but
+          // accept result-only providers too. Without this fallback a valid
+          // final payload was indistinguishable from the silent-turn bug.
+          if (!accumulatedText.trim() && event.content.trim()) {
+            accumulatedText = event.content;
+            pendingText = event.content;
+          }
           {
             const usage: MessageDto["usage"] = event.usage
               ? {
@@ -654,8 +663,20 @@ export async function runTurnEventStream(
               }
             }
           }
+          if (!accumulatedText.trim()) {
+            const error = "Provider completed without an assistant response";
+            terminalEmitted = true;
+            outcome = { kind: "provider-error", error };
+            logger.warn(
+              { topicId, queryId, agentType, model, silent },
+              "ai: provider completed without assistant text",
+            );
+            if (silent) void deliverAskError(queryId, topicTitle, error);
+            return outcome;
+          }
           if (!silent) {
             scheduleIdleArchiveForTopic(topicId, execution?.actorUserId ?? userId);
+            scheduleIdleCompactForTopic(topicId, execution?.actorUserId ?? userId);
             hub.broadcastDone(
               topicId,
               queryId,
@@ -909,6 +930,18 @@ export async function runTurnEventStream(
       const next = takeDeferredInject(topicId);
       if (next) redispatchInject(next);
     }
+    logger.info(
+      {
+        topicId,
+        queryId,
+        outcomeKind: outcome.kind,
+        assistantMessageCount: visibleMessageIds.length,
+        assistantTextChars: accumulatedText.length,
+        durationMs: Date.now() - streamStartedAt,
+        lastEventType,
+      },
+      "ai: turn settled",
+    );
   }
   return outcome;
 }

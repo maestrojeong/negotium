@@ -67,6 +67,30 @@ describe("transient background sessions", () => {
     await Bun.sleep(10);
     expect(listBackgroundSessionsForUser("compact-owner")).toEqual([]);
   });
+
+  test("allUsers surfaces a transient (compact) session started under a different userId", () => {
+    const handle = beginTransientBackgroundSession("compact-owner-2", {
+      id: "compact:topic:allusers-test",
+      kind: "compact",
+      title: "Compact Research",
+      topicId: "topic",
+      status: "Preparing",
+      retentionMs: 5,
+    });
+
+    // Without allUsers, a different caller still sees nothing...
+    expect(listBackgroundSessionsForUser("other-user")).toEqual([]);
+    // ...but a single-owner surface (terminal, Telegram) opting into the
+    // node-wide view sees idle-compact (and manual /compact) regardless of
+    // which local userId triggered it.
+    expect(listBackgroundSessionsForUser("other-user", true)).toEqual([
+      expect.objectContaining({ id: "compact:topic:allusers-test" }),
+    ]);
+    expect(listBackgroundSessionsForUser("compact-owner-2", true)).toEqual([
+      expect.objectContaining({ id: "compact:topic:allusers-test" }),
+    ]);
+    handle.finish();
+  });
 });
 
 describe("durable background session progress", () => {

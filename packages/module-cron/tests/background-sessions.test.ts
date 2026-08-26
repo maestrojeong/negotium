@@ -121,4 +121,13 @@ describe("Cron background sessions", () => {
       releaseRuntimeTurnLease(topic.id, queryId);
     }
   });
+
+  test("allUsers surfaces a job owned by someone else on the same node", () => {
+    const { topic } = fixture();
+
+    expect(listCronBackgroundSessions("someone-else")).toEqual([]);
+    expect(listCronBackgroundSessions("someone-else", true)).toEqual([
+      expect.objectContaining({ id: `cron:${topic.id}`, topicId: topic.id }),
+    ]);
+  });
 });

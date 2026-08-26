@@ -49,6 +49,31 @@ test("remote topic usage uses the authenticated node control boundary", async ()
   expect(requests[0]?.headers.get("authorization")).toBe("Bearer node-token");
 });
 
+test("remote background sessions always request the node-wide (allUsers) view", async () => {
+  const requests: Request[] = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const request =
+      typeof input === "string"
+        ? new Request(input, init)
+        : input instanceof Request
+          ? new Request(input, init)
+          : new Request(input.toString(), init);
+    requests.push(request);
+    return Response.json({ ok: true, sessions: [] });
+  }) as typeof fetch;
+
+  const client = new RemoteNegotiumClient({
+    userId: "remote-user",
+    baseUrl: "http://127.0.0.1:43210",
+    token: "node-token",
+  });
+
+  expect(await client.listBackgroundSessions()).toEqual([]);
+  expect(requests[0]?.url).toBe(
+    `http://127.0.0.1:43210${NODE_CONTROL_BASE_PATH}/background-sessions?user=remote-user&allUsers=true`,
+  );
+});
+
 test("remote Vault commands use the authenticated node control boundary", async () => {
   const requests: Request[] = [];
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {

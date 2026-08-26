@@ -149,7 +149,7 @@ export interface ArchiverHost {
 
 export interface ArchiverRuntime {
   runArchiverTurn(params: RunArchiverTurnParams): boolean;
-  listActiveMemoryArchiverSessions(userId: string): BackgroundSessionDto[];
+  listActiveMemoryArchiverSessions(userId: string, allUsers?: boolean): BackgroundSessionDto[];
 }
 
 export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
@@ -169,7 +169,7 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
     }
   };
 
-  const listSessions = (userId: string): BackgroundSessionDto[] => {
+  const listSessions = (userId: string, allUsers = false): BackgroundSessionDto[] => {
     const now = host.config.now().getTime();
     for (const [id, session] of activeSessions) {
       if (session.expiresAt !== undefined && session.expiresAt <= now) {
@@ -180,7 +180,7 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
       }
     }
     return [...activeSessions.values()]
-      .filter((session) => session.userId === userId)
+      .filter((session) => allUsers || session.userId === userId)
       .map(({ userId: _userId, expiresAt: _expiresAt, expiryTimer: _expiryTimer, ...session }) => ({
         ...session,
         steps: [...session.steps],
@@ -660,6 +660,9 @@ export function runArchiverTurn(params: RunArchiverTurnParams): boolean {
   return defaultArchiverRuntime.runArchiverTurn(params);
 }
 
-export function listActiveMemoryArchiverSessions(userId: string): BackgroundSessionDto[] {
-  return defaultArchiverRuntime.listActiveMemoryArchiverSessions(userId);
+export function listActiveMemoryArchiverSessions(
+  userId: string,
+  allUsers = false,
+): BackgroundSessionDto[] {
+  return defaultArchiverRuntime.listActiveMemoryArchiverSessions(userId, allUsers);
 }

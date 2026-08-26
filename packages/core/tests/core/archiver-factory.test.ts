@@ -200,6 +200,11 @@ describe("archiver runtime factory", () => {
     expect(sessions[0]?.steps).toContain("wiki_save(topic: Factory Test)");
     expect(sessions[0]?.steps.at(-1)).toBe("Memory archive completed · 12 B");
     expect(otherRuntime.listActiveMemoryArchiverSessions("owner")).toEqual([]);
+    // A different caller's userId sees nothing by default...
+    expect(runtime.listActiveMemoryArchiverSessions("someone-else")).toEqual([]);
+    // ...but single-owner surfaces (terminal, Telegram) can opt into the
+    // node-wide view regardless of whose userId triggered the archive.
+    expect(runtime.listActiveMemoryArchiverSessions("someone-else", true)).toHaveLength(1);
 
     sessions[0]!.steps.push("external mutation");
     expect(runtime.listActiveMemoryArchiverSessions("owner")[0]?.steps).not.toContain(

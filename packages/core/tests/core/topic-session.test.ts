@@ -513,6 +513,76 @@ describe("compactTopicSession", () => {
     });
   });
 
+  test("non-preemptive compact bails without touching a locally running turn", async () => {
+    const { owner, topic } = createTopic();
+    appendConversationEventStrict(owner, topic.title, "codex", {
+      type: "user_message",
+      content: "context to compact",
+    });
+    const queryId = randomUUID();
+    claimRuntimeTurnLease({ topicId: topic.id, queryId, origin: "test" });
+    const summarize = mock(async () => "should never run");
+    try {
+      const result = await compactTopicSession(topic.id, owner, "test-idle-compact-busy", {
+        summarize,
+        preemptive: false,
+      });
+
+      expect(result).toMatchObject({ isError: true, busy: true });
+      expect(summarize).not.toHaveBeenCalled();
+      // The turn lease must still be intact — non-preemptive compact never
+      // aborts or cancels work already in flight.
+      expect(getRuntimeUserTurnRequest(topic.id)).toBeNull();
+    } finally {
+      releaseRuntimeTurnLease(topic.id, queryId);
+    }
+  });
+
+  test("non-preemptive compact bails on a queued turn request even with no active lease", async () => {
+    const { owner, topic } = createTopic();
+    appendConversationEventStrict(owner, topic.title, "codex", {
+      type: "user_message",
+      content: "context to compact",
+    });
+    enqueueRuntimeUserTurnRequest({
+      topicId: topic.id,
+      userId: owner,
+      prompt: "queued follow-up",
+      allowAutoContinue: false,
+    });
+    const summarize = mock(async () => "should never run");
+
+    const result = await compactTopicSession(topic.id, owner, "test-idle-compact-queued", {
+      summarize,
+      preemptive: false,
+    });
+
+    expect(result).toMatchObject({ isError: true, busy: true });
+    expect(summarize).not.toHaveBeenCalled();
+    expect(getRuntimeUserTurnRequest(topic.id)).not.toBeNull();
+  });
+
+  test("non-preemptive compact proceeds once the topic is truly idle", async () => {
+    const { owner, topic } = createTopic();
+    appendConversationEventStrict(owner, topic.title, "codex", {
+      type: "user_message",
+      content: "context to compact",
+    });
+    appendConversationEventStrict(owner, topic.title, "codex", {
+      type: "result",
+      content: "provider response to preserve",
+      stopReason: "end_turn",
+    });
+
+    const result = await compactTopicSession(topic.id, owner, "test-idle-compact-quiet", {
+      summarize: async () => "idle compact summary",
+      preemptive: false,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.busy).toBeUndefined();
+  });
+
   test("keeps a committed compact session when old rollout cleanup is deferred", async () => {
     const { owner, topic } = createTopic();
     const oldSessionId = "01940000-0000-7000-8000-000000000003";

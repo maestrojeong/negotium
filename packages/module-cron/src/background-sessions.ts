@@ -27,11 +27,14 @@ function latestRun(jobs: CronJobRecord[]): DisplayRun | undefined {
     .sort((left, right) => right.run.scheduledAt.localeCompare(left.run.scheduledAt))[0];
 }
 
-export function listCronBackgroundSessions(userId: string): BackgroundSessionDto[] {
+export function listCronBackgroundSessions(
+  userId: string,
+  allUsers = false,
+): BackgroundSessionDto[] {
   const jobsByTopic = new Map<string, CronJobRecord[]>();
   for (const job of listCronJobs()) {
     const topic = getTopic(job.topicId);
-    if (!topic || !isParticipant(topic, userId)) continue;
+    if (!topic || !(allUsers || isParticipant(topic, userId))) continue;
     const jobs = jobsByTopic.get(job.topicId) ?? [];
     jobs.push(job);
     jobsByTopic.set(job.topicId, jobs);

@@ -6,7 +6,10 @@ import { listRuntimeTurnLeases } from "#storage/runtime-leases";
 import type { BackgroundSessionDto } from "#types/api";
 import { COMPLETED_BACKGROUND_SESSION_RETENTION_MS } from "./background-session-policy";
 
-export type BackgroundSessionProvider = (userId: string) => BackgroundSessionDto[];
+export type BackgroundSessionProvider = (
+  userId: string,
+  allUsers?: boolean,
+) => BackgroundSessionDto[];
 
 const providers = new Set<BackgroundSessionProvider>();
 interface TransientBackgroundSessionRecord extends BackgroundSessionDto {
@@ -220,8 +223,19 @@ export function backgroundSessionProgress(
   return { status, steps };
 }
 
-export function listBackgroundSessionsForUser(userId: string): BackgroundSessionDto[] {
-  const memory = listActiveMemoryArchiverSessions(userId);
+/**
+ * `allUsers` widens every section — memory archiver, compact/transient, and
+ * cron — past the caller's own participation. Meant for single-owner
+ * surfaces (terminal, Telegram) where "my view" and "everything on this
+ * node" are the same person anyway, so idle background upkeep (and compact,
+ * manual or idle-triggered) triggered under a different local userId is
+ * still visible.
+ */
+export function listBackgroundSessionsForUser(
+  userId: string,
+  allUsers = false,
+): BackgroundSessionDto[] {
+  const memory = listActiveMemoryArchiverSessions(userId, allUsers);
   const now = Date.now();
   for (const [id, session] of transientSessions) {
     if (session.expiresAt !== undefined && session.expiresAt <= now) {
@@ -230,12 +244,12 @@ export function listBackgroundSessionsForUser(userId: string): BackgroundSession
     }
   }
   const transient = [...transientSessions.values()]
-    .filter((session) => session.userId === userId)
+    .filter((session) => allUsers || session.userId === userId)
     .map(({ userId: _userId, expiresAt: _expiresAt, expiryTimer: _expiryTimer, ...session }) => ({
       ...session,
       steps: [...session.steps],
     }));
-  const provided = [...providers].flatMap((provider) => provider(userId));
+  const provided = [...providers].flatMap((provider) => provider(userId, allUsers));
   const providedCronTopicIds = new Set(
     provided
       .filter((session) => session.kind === "cron")
@@ -246,9 +260,8 @@ export function listBackgroundSessionsForUser(userId: string): BackgroundSession
     .filter((lease) => lease.origin.startsWith("cron:"))
     .flatMap((lease): BackgroundSessionDto[] => {
       const topic = getTopic(lease.topicId);
-      const isParticipant = topic?.participants.some(
-        (participant) => participant.userId === userId,
-      );
+      const isParticipant =
+        allUsers || topic?.participants.some((participant) => participant.userId === userId);
       if (!topic || !isParticipant || providedCronTopicIds.has(lease.topicId)) {
         return [];
       }

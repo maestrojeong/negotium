@@ -957,6 +957,49 @@ describe("turn stream ordering", () => {
     });
   });
 
+  test("classifies a terminal result without assistant text as an error", async () => {
+    const topicId = seedTopic();
+    const queryId = randomUUID();
+    const after = latestRuntimeEventSeq();
+    const control: RoomQueryControl = {
+      topicId,
+      queryId,
+      origin: "user",
+      prompt: "test",
+      abortController: new AbortController(),
+      abortReason: AbortReason.None,
+    };
+    async function* silentCompletion(): AsyncGenerator<UnifiedEvent> {
+      yield { type: "result", content: "", stopReason: "end_turn" };
+    }
+
+    await expect(
+      streamAgentEvents(
+        topicId,
+        "stream order",
+        queryId,
+        silentCompletion(),
+        control,
+        "claude",
+        "sonnet",
+        "medium",
+        "owner",
+      ),
+    ).resolves.toEqual({
+      kind: "provider-error",
+      error: "Provider completed without an assistant response",
+    });
+    const terminalKinds = listRuntimeEventsAfter(after)
+      .filter(
+        (event) =>
+          event.topicId === topicId &&
+          event.type === "ai-status" &&
+          (event.payload as { queryId?: string }).queryId === queryId,
+      )
+      .map((event) => (event.payload as { kind?: string }).kind);
+    expect(terminalKinds).not.toContain("ai_done");
+  });
+
   test("promotes browser infrastructure aborts to provider errors", async () => {
     const topicId = seedTopic();
     const queryId = randomUUID();

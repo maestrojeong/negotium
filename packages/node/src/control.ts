@@ -1690,7 +1690,11 @@ export function createNodeControlHandler(
 
       if (req.method === "GET" && path === "/background-sessions") {
         const userId = requiredText(url.searchParams.get("user"), "user");
-        return Response.json({ ok: true, sessions: listBackgroundSessionsForUser(userId) });
+        const allUsers = url.searchParams.get("allUsers") === "true";
+        return Response.json({
+          ok: true,
+          sessions: listBackgroundSessionsForUser(userId, allUsers),
+        });
       }
 
       const fileMatch = path.match(/^\/files\/([0-9a-f-]+)$/i);
