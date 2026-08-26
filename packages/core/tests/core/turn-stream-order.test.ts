@@ -957,7 +957,7 @@ describe("turn stream ordering", () => {
     });
   });
 
-  test("classifies a terminal result without assistant text as an error", async () => {
+  test("classifies a terminal result without assistant text as retryable empty-response", async () => {
     const topicId = seedTopic();
     const queryId = randomUUID();
     const after = latestRuntimeEventSeq();
@@ -986,7 +986,7 @@ describe("turn stream ordering", () => {
         "owner",
       ),
     ).resolves.toEqual({
-      kind: "provider-error",
+      kind: "empty-response",
       error: "Provider completed without an assistant response",
     });
     const terminalKinds = listRuntimeEventsAfter(after)
@@ -998,6 +998,42 @@ describe("turn stream ordering", () => {
       )
       .map((event) => (event.payload as { kind?: string }).kind);
     expect(terminalKinds).not.toContain("ai_done");
+  });
+
+  test("classifies a silent terminal result without assistant text as a reported error (no user-facing chat to retry into)", async () => {
+    const topicId = seedTopic();
+    const queryId = randomUUID();
+    const control: RoomQueryControl = {
+      topicId,
+      queryId,
+      origin: "user",
+      prompt: "test",
+      abortController: new AbortController(),
+      abortReason: AbortReason.None,
+    };
+    async function* silentCompletion(): AsyncGenerator<UnifiedEvent> {
+      yield { type: "result", content: "", stopReason: "end_turn" };
+    }
+
+    await expect(
+      streamAgentEvents(
+        topicId,
+        "stream order",
+        queryId,
+        silentCompletion(),
+        control,
+        "claude",
+        "sonnet",
+        "medium",
+        "owner",
+        true,
+        undefined,
+        { silent: true },
+      ),
+    ).resolves.toEqual({
+      kind: "provider-error",
+      error: "Provider completed without an assistant response",
+    });
   });
 
   test("promotes browser infrastructure aborts to provider errors", async () => {

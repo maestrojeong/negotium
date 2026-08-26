@@ -734,6 +734,8 @@ export interface StartAiTurnParams extends AiTurnExecutionOptions {
   /** Durable rows whose envelopes are already present in _userMessages. */
   _durableRequestIds?: string[];
   _sessionRetried?: boolean;
+  /** Internal only. Caps the empty-provider-response retry to a single attempt. */
+  _emptyResponseRetried?: boolean;
 }
 
 export interface TriggerTopicAiTurnOptions extends AiTurnExecutionOptions {
@@ -1028,6 +1030,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   const peerBridge = params.peerBridge;
   const askReplySources = params.askReplySources;
   const sessionRetried = params._sessionRetried === true;
+  const emptyResponseRetried = params._emptyResponseRetried === true;
   const queryId = params._queryId ?? randomUUID();
   const roomId = turnConcurrency === "isolated" ? isolatedTurnRoomId(topicId, queryId) : topicId;
   const currentRuntimeEpoch = getRuntimeTopicEpoch(topic.id);
@@ -1817,6 +1820,66 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
             askReplySources,
             _runtimeEpoch: runtimeEpoch,
             _sessionRetried: true,
+          });
+          return;
+        }
+      }
+
+      if (outcome.kind === "empty-response") {
+        if (emptyResponseRetried) {
+          // Already retried once and still got nothing back — stop masking it
+          // and report a normal provider failure.
+          outcome = { kind: "provider-error", error: outcome.error };
+        } else {
+          // Observed cause: a queued background-task notification flushes into
+          // the CLI session at the same instant this turn is dispatched, and
+          // the CLI self-interrupts within ~1-2s with a zero-usage "success".
+          // A same-session retry has reliably produced a real reply in every
+          // case seen so far, so retry once before surfacing a failure.
+          if (!silent) WsHub.get().broadcastAborted(topicId, queryId, "stopped");
+          logger.info(
+            { topicId, prevQueryId: queryId, agent: agentKind },
+            "ai: retrying query after empty provider response",
+          );
+          startAiTurn({
+            topic,
+            userId,
+            vaultUserId,
+            prompt,
+            _userMessages: userMessages,
+            _conversationPrompts: conversationPrompts,
+            _loggedUserMessageCount: loggedUserMessageCount,
+            _durableRequestIds: durableRequestIds,
+            attachments,
+            allowAutoContinue,
+            origin,
+            onDispatched,
+            requestId,
+            depth,
+            silent,
+            contextId,
+            agentOverride,
+            modelOverride,
+            effortOverride,
+            sessionId,
+            sessionScope,
+            turnConcurrency,
+            forkHandle,
+            prepareSession,
+            cwd,
+            sessionName,
+            sessionType,
+            visualTools,
+            fileDeliveryTools,
+            onSessionId,
+            onSessionReset,
+            bridgeSessionFromHistory,
+            onSettled,
+            peerBridge,
+            askReplySources,
+            _runtimeEpoch: runtimeEpoch,
+            _sessionRetried: sessionRetried,
+            _emptyResponseRetried: true,
           });
           return;
         }

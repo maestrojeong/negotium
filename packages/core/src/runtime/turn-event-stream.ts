@@ -84,7 +84,18 @@ export type StreamAgentOutcome =
   | { kind: "aborted" }
   | { kind: "budget-capped"; reason: "cost"; usage?: TokenUsage }
   | { kind: "session-expired"; error: string }
-  | { kind: "provider-error"; error: string };
+  | { kind: "provider-error"; error: string }
+  /**
+   * The provider's terminal result carried no assistant text at all — the
+   * "silent turn" bug: a session-level race (e.g. a queued background-task
+   * notification flushing into the CLI session at the same instant a new
+   * user turn is dispatched) makes the underlying CLI self-interrupt within
+   * ~1-2s and report a trivial zero-usage "success". Distinct from
+   * provider-error so the caller can retry once before surfacing a failure —
+   * a manual resend has reliably produced a normal reply in every observed
+   * case.
+   */
+  | { kind: "empty-response"; error: string };
 
 export interface TurnEventStreamHooks {
   appendSystemMessage: (topicId: string, text: string) => MessageDto;
@@ -666,7 +677,11 @@ export async function runTurnEventStream(
           if (!accumulatedText.trim()) {
             const error = "Provider completed without an assistant response";
             terminalEmitted = true;
-            outcome = { kind: "provider-error", error };
+            // Silent turns (asks, subagent calls) delivered their error to the
+            // caller synchronously below and have no user-facing chat to
+            // retry into, so they skip the retry path the caller applies to
+            // "empty-response" and go straight to a reported provider-error.
+            outcome = silent ? { kind: "provider-error", error } : { kind: "empty-response", error };
             logger.warn(
               { topicId, queryId, agentType, model, silent },
               "ai: provider completed without assistant text",
@@ -894,6 +909,7 @@ export async function runTurnEventStream(
     const discardIncompleteSegments =
       outcome.kind === "session-expired" ||
       outcome.kind === "provider-error" ||
+      outcome.kind === "empty-response" ||
       (!terminalEmitted && !abortController.signal.aborted);
     if (discardIncompleteSegments) discardVisibleAssistantMessages();
     // Release the room slot — but only if a newer turn hasn't already taken it
@@ -912,6 +928,7 @@ export async function runTurnEventStream(
     if (
       forkHandle &&
       outcome.kind !== "session-expired" &&
+      outcome.kind !== "empty-response" &&
       (!forkRequestId || !interSessionQueue.hasRequest(topicId, forkRequestId))
     ) {
       cleanupAgentFork(forkHandle);
@@ -924,6 +941,7 @@ export async function runTurnEventStream(
     if (
       roomId === topicId &&
       outcome.kind !== "session-expired" &&
+      outcome.kind !== "empty-response" &&
       !getRoomQuery(topicId) &&
       !hasReplacementUserTurn
     ) {
