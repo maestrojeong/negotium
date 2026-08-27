@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
+  CONTEXT_LIMIT_COMPACT_PERCENT,
   cancelIdleCompactForTopic,
   idleCompactDelayMs,
   idleCompactMinContextPercent,
   runIdleCompactForTopic,
+  scheduleContextLimitCompactForTopic,
   scheduleIdleCompactForTopic,
 } from "#agents/idle-compact";
 import { deleteTopic, upsertTopic } from "#storage/api-topics";
@@ -118,6 +120,18 @@ describe("idle compact defaults", () => {
     expect(cancelIdleCompactForTopic(topic.id)).toBe(false);
   });
 
+  test("schedules near-immediate compaction only at 90% context occupancy", () => {
+    const topic = makeTopic();
+    expect(CONTEXT_LIMIT_COMPACT_PERCENT).toBe(90);
+    expect(scheduleContextLimitCompactForTopic(topic.id, "idle-owner", 179_999, 200_000)).toBe(
+      "below-threshold",
+    );
+    expect(scheduleContextLimitCompactForTopic(topic.id, "idle-owner", 180_000, 200_000)).toBe(
+      "scheduled",
+    );
+    expect(cancelIdleCompactForTopic(topic.id)).toBe(true);
+  });
+
   test("respects NEGOTIUM_IDLE_COMPACT_ENABLED=false", async () => {
     process.env.NEGOTIUM_IDLE_COMPACT_ENABLED = "false";
     const topic = makeTopic();
@@ -223,6 +237,24 @@ describe("idle compact defaults", () => {
 
     expect(status).toBe("compacted");
     expect(compacted).toBe(1);
+  });
+
+  test("passes a context-limit reason to non-preemptive compaction", async () => {
+    const topic = makeTopic();
+    const reasons: string[] = [];
+    const status = await runIdleCompactForTopic(topic.id, "idle-owner", {
+      isBusy: () => false,
+      minContextPercent: 90,
+      reason: "context-limit-compact",
+      getStats: statsAt(190_000, 200_000),
+      compact: async (_topicId, _userId, reason) => {
+        reasons.push(reason);
+        return { text: "compacted" };
+      },
+    });
+
+    expect(status).toBe("compacted");
+    expect(reasons).toEqual(["context-limit-compact"]);
   });
 
   test("surfaces a failed compaction without throwing", async () => {

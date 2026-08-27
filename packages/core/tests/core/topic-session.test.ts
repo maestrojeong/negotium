@@ -28,6 +28,7 @@ import {
   restartTopicSession,
   shouldCompactForkEntries,
   shouldUseCompactionLog,
+  splitCompactionPairs,
 } from "#topics/session";
 
 const createdTopicIds = new Set<string>();
@@ -329,6 +330,59 @@ describe("compactTopicSession", () => {
     // Korean characters scored ~36.6k and tripped the 28k threshold even
     // though the real cost is ~22.3k — Korean topics compacted far too early.
     expect(shouldCompactForkEntries(koreanEntries(20_000))).toBe(false);
+  });
+
+  test("keeps a token-bounded recent tail out of the summary prefix", async () => {
+    const { owner, topic } = createTopic();
+    const entries = Array.from({ length: 4 }, (_, index) => [
+      {
+        ts: new Date().toISOString(),
+        agent: "codex" as const,
+        event: {
+          type: "user_message" as const,
+          content: `user-${index}-${"u".repeat(40_000)}`,
+        },
+      },
+      {
+        ts: new Date().toISOString(),
+        agent: "codex" as const,
+        event: {
+          type: "result" as const,
+          content: `assistant-${index}-${"a".repeat(40_000)}`,
+          stopReason: "end_turn",
+        },
+      },
+    ]).flat();
+    const split = splitCompactionPairs(entries, 64_000);
+    expect(split.summaryPairs.length).toBeGreaterThan(0);
+    expect(split.retainedPairs.length).toBeGreaterThan(0);
+
+    let source = "";
+    const compacted = await createCompactedRolloutEntries(
+      {
+        topicId: topic.id,
+        topicTitle: topic.title,
+        userId: owner,
+        entries,
+        visibleMessages: [],
+        retainedTailTokens: 64_000,
+        agent: "codex",
+        model: "gpt-5.6-luna",
+        cwd: "/tmp",
+      },
+      async (request) => {
+        source = request.source;
+        return "summary";
+      },
+    );
+
+    expect(source).toContain("user-0-");
+    expect(source).not.toContain("user-3-");
+    expect(
+      compacted.some(
+        (entry) => entry.event.type === "user_message" && entry.event.content.includes("user-3-"),
+      ),
+    ).toBe(true);
   });
 
   test("aborts a compactor that exceeds its deadline", async () => {

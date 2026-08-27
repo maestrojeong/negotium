@@ -4,7 +4,10 @@ import { isAbsolute, resolve } from "node:path";
 import { estimateTextTokens } from "#agents/compaction-support";
 import { cleanupAgentFork } from "#agents/fork";
 import { scheduleIdleArchiveForTopic } from "#agents/idle-archiver";
-import { scheduleIdleCompactForTopic } from "#agents/idle-compact";
+import {
+  scheduleContextLimitCompactForTopic,
+  scheduleIdleCompactForTopic,
+} from "#agents/idle-compact";
 import { cancelPendingAskUserQuestions } from "#agents/mcp-tools/ask-user";
 import {
   settleSubagentFailure,
@@ -694,6 +697,17 @@ export async function runTurnEventStream(
           if (!silent) {
             scheduleIdleArchiveForTopic(topicId, execution?.actorUserId ?? userId);
             scheduleIdleCompactForTopic(topicId, execution?.actorUserId ?? userId);
+            if (
+              event.usage?.contextTokens !== undefined &&
+              event.usage.contextWindow !== undefined
+            ) {
+              scheduleContextLimitCompactForTopic(
+                topicId,
+                execution?.actorUserId ?? userId,
+                event.usage.contextTokens,
+                event.usage.contextWindow,
+              );
+            }
             hub.broadcastDone(
               topicId,
               queryId,

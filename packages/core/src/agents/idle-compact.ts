@@ -6,6 +6,8 @@ import { getTopicStats } from "#storage/token-stats";
 import type { RestartTopicSessionResult } from "#topics/session";
 
 const DEFAULT_IDLE_DELAY_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_CONTEXT_LIMIT_DELAY_MS = 1_000;
+export const CONTEXT_LIMIT_COMPACT_PERCENT = 90;
 // Mirrors the 80%-occupancy usage alert in `#runtime/turn-event-stream` at a
 // lower bar: an idle topic gets auto-compacted once its *last known* context
 // usage (as the provider itself reported it) has crossed the halfway mark.
@@ -27,6 +29,7 @@ export interface IdleCompactOptions {
   isBusy?: (topicId: string) => boolean;
   onBusy?: (topicId: string, userId: string) => void;
   minContextPercent?: number;
+  reason?: string;
   /** Injected for tests; defaults to the real `getTopicStats`. */
   getStats?: typeof getTopicStats;
   /** Injected for tests; defaults to the real `compactTopicSession`. */
@@ -34,14 +37,17 @@ export interface IdleCompactOptions {
 }
 
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
+const contextLimitTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 /** Cancel a pending idle-compact timer, e.g. before a topic is reset or deleted. */
 export function cancelIdleCompactForTopic(topicId: string): boolean {
   const timer = timers.get(topicId);
-  if (!timer) return false;
-  clearTimeout(timer);
+  const contextLimitTimer = contextLimitTimers.get(topicId);
+  if (timer) clearTimeout(timer);
+  if (contextLimitTimer) clearTimeout(contextLimitTimer);
   timers.delete(topicId);
-  return true;
+  contextLimitTimers.delete(topicId);
+  return Boolean(timer || contextLimitTimer);
 }
 
 function envFlagEnabled(name: string, fallback: boolean): boolean {
@@ -92,6 +98,47 @@ export function scheduleIdleCompactForTopic(topicId: string, userId: string): Id
   }, idleCompactDelayMs());
   timer.unref?.();
   timers.set(topicId, timer);
+  return "scheduled";
+}
+
+/**
+ * Schedule a near-immediate, non-preemptive compact after a completed turn
+ * reports at least 90% context occupancy. A short delay lets the turn lease
+ * unwind before the maintenance check; if it is still busy, retry shortly
+ * without interrupting the live turn.
+ */
+export function scheduleContextLimitCompactForTopic(
+  topicId: string,
+  userId: string,
+  contextTokens: number,
+  contextWindow: number,
+): IdleCompactStatus {
+  if (!idleCompactEnabled()) return "disabled";
+  if (!Number.isFinite(contextWindow) || contextWindow <= 0) return "below-threshold";
+  const percent = (contextTokens / contextWindow) * 100;
+  if (!Number.isFinite(percent) || percent < CONTEXT_LIMIT_COMPACT_PERCENT) {
+    return "below-threshold";
+  }
+
+  const topic = getTopic(topicId);
+  if (!topic) return "topic-not-found";
+  if (!topic.agent) return "not-ai-invited";
+  if (topic.aiMode === "mention") return "mention-only-channel";
+
+  const existing = contextLimitTimers.get(topicId);
+  if (existing) clearTimeout(existing);
+  const retry = () =>
+    scheduleContextLimitCompactForTopic(topicId, userId, contextTokens, contextWindow);
+  const timer = setTimeout(() => {
+    contextLimitTimers.delete(topicId);
+    void runIdleCompactForTopic(topicId, userId, {
+      minContextPercent: CONTEXT_LIMIT_COMPACT_PERCENT,
+      reason: "context-limit-compact",
+      onBusy: retry,
+    });
+  }, DEFAULT_CONTEXT_LIMIT_DELAY_MS);
+  timer.unref?.();
+  contextLimitTimers.set(topicId, timer);
   return "scheduled";
 }
 
@@ -146,7 +193,7 @@ export async function runIdleCompactForTopic(
     });
 
   try {
-    const result = await compact(topicId, owner, "idle-compact");
+    const result = await compact(topicId, owner, options.reason ?? "idle-compact");
     if (result.busy) {
       logger.debug(
         { topicId, percent: Math.round(percent) },

@@ -19,6 +19,7 @@ import {
 import { logger } from "#platform/logger";
 import { renderUserPromptBatch } from "#runtime/user-turn-envelope";
 import type { ConversationEntry } from "#storage/conversations";
+import type { UnifiedEvent } from "#types";
 
 export interface RolloutHostOptions {
   /** Absolute workspace roots under which synthetic provider sessions may be written. */
@@ -136,8 +137,10 @@ function truncate(text: string, n: number): string {
  */
 export type ChatPair = { userText: string; assistantText: string };
 
-interface ExtractOptions {
+export interface ExtractOptions {
   includeToolAnnotations: boolean;
+  formatToolUse?: (event: Extract<UnifiedEvent, { type: "tool_use" }>) => string;
+  formatToolResult?: (event: Extract<UnifiedEvent, { type: "tool_result" }>) => string;
 }
 
 export function extractChatPairs(
@@ -251,13 +254,18 @@ export function extractChatPairs(
         // Skip — final `text`/`result` event carries the complete content.
         break;
       case "tool_use": {
-        const u = ev as { name: string; input: Record<string, unknown> };
-        toolBuffer.push(`<!-- Tool: ${u.name} ${truncate(JSON.stringify(u.input), 200)} -->`);
+        const u = ev as Extract<UnifiedEvent, { type: "tool_use" }>;
+        toolBuffer.push(
+          opts.formatToolUse?.(u) ??
+            `<!-- Tool: ${u.name} ${truncate(JSON.stringify(u.input), 200)} -->`,
+        );
         break;
       }
       case "tool_result": {
-        const u = ev as { content: string };
-        toolBuffer.push(`<!-- Tool result: ${truncate(u.content, 200)} -->`);
+        const u = ev as Extract<UnifiedEvent, { type: "tool_result" }>;
+        toolBuffer.push(
+          opts.formatToolResult?.(u) ?? `<!-- Tool result: ${truncate(u.content, 200)} -->`,
+        );
         break;
       }
       case "error": {

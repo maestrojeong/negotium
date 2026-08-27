@@ -5,13 +5,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ACTIVE_TASK_TEMPLATE, estimateConversationTokens } from "#agents/compaction-support";
+import { extractCompactionChatPairs } from "#agents/compaction-tool-projection";
 import { archiveActiveTopicForMemory, cancelIdleArchiveForTopic } from "#agents/idle-archiver";
 import { cancelIdleCompactForTopic } from "#agents/idle-compact";
 import { runAgent } from "#agents/index";
 import { MIN_MEMORY_ARCHIVE_EXCHANGES } from "#agents/memory-archive-policy";
 import { resolveCompactionExecution, resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry, getRegistryOperations } from "#agents/registry";
-import { extractChatPairs } from "#agents/rollout/shared";
+import { type ChatPair, extractChatPairs } from "#agents/rollout/shared";
 import { cleanupTopicRolloutsFromEntries, purgeTopicLogs } from "#agents/topic-cleanup";
 import { WsHub } from "#bus";
 import { COMPACTION_LOG_SERVER, resolveTopicWorkspaceDir } from "#platform/config";
@@ -55,6 +56,7 @@ const COMPACTION_INLINE_CHARS = 100_000;
 const COMPACTION_SOURCE_CHARS = 512 * 1024;
 const COMPACTION_MEMORY_CHARS = 80_000;
 const COMPACTION_OUTPUT_CHARS = 30_000;
+export const COMPACTION_RETAINED_TAIL_TOKENS = 64_000;
 const COMPACTION_TIMEOUT_MS = 2 * 60_000;
 const COMPACTION_LOG_TIMEOUT_MS = 5 * 60_000;
 const COMPACTION_LOG_MAX_CALLS = 12;
@@ -102,6 +104,8 @@ export interface CompactedRolloutRequest extends Omit<CompactSummaryRequest, "so
   timeoutMs?: number;
   summaryModel?: string;
   summaryEffort?: EffortLevel;
+  /** Recent complete user/assistant pairs preserved verbatim after the summary. */
+  retainedTailTokens?: number;
 }
 
 export interface RestartTopicSessionOptions {
@@ -310,6 +314,75 @@ function previousCompactedSummary(entries: ConversationEntry[]): string | undefi
   return undefined;
 }
 
+function withoutCompactionSentinels(entries: ConversationEntry[]): ConversationEntry[] {
+  const filtered: ConversationEntry[] = [];
+  for (let index = 0; index < entries.length; index++) {
+    const current = entries[index]?.event;
+    const next = entries[index + 1]?.event;
+    if (
+      current?.type === "user_message" &&
+      current.synthetic === "compaction" &&
+      next?.type === "result"
+    ) {
+      index += 1;
+      continue;
+    }
+    const entry = entries[index];
+    if (entry) filtered.push(entry);
+  }
+  return filtered;
+}
+
+function pairTokens(pair: ChatPair): number {
+  return estimateConversationTokens([{ content: pair.userText }, { content: pair.assistantText }]);
+}
+
+export function splitCompactionPairs(
+  entries: ConversationEntry[],
+  retainedTailTokens = COMPACTION_RETAINED_TAIL_TOKENS,
+): { summaryPairs: ChatPair[]; retainedPairs: ChatPair[] } {
+  const pairs = extractCompactionChatPairs(withoutCompactionSentinels(entries));
+  let retainedStart = pairs.length;
+  let retainedTokens = 0;
+  for (let index = pairs.length - 1; index >= 0; index--) {
+    const pair = pairs[index];
+    if (!pair) continue;
+    const tokens = pairTokens(pair);
+    if (retainedTokens + tokens > retainedTailTokens) break;
+    retainedTokens += tokens;
+    retainedStart = index;
+  }
+
+  // If the whole conversation fits in the tail budget, summarizing it and
+  // retaining it verbatim would only duplicate context. Preserve the existing
+  // summary-only behavior for these short/manual compactions.
+  if (retainedStart === 0) return { summaryPairs: pairs, retainedPairs: [] };
+  return {
+    summaryPairs: pairs.slice(0, retainedStart),
+    retainedPairs: pairs.slice(retainedStart),
+  };
+}
+
+function retainedPairEntries(agent: AgentKind, pairs: ChatPair[]): ConversationEntry[] {
+  const entries: ConversationEntry[] = [];
+  for (const pair of pairs) {
+    const now = new Date().toISOString();
+    entries.push(
+      {
+        ts: now,
+        agent,
+        event: { type: "user_message", content: pair.userText },
+      },
+      {
+        ts: now,
+        agent,
+        event: { type: "result", content: pair.assistantText, stopReason: "end_turn" },
+      },
+    );
+  }
+  return entries;
+}
+
 function fitCompactionChunk(text: string, limit: number): string {
   if (text.length <= limit) return text;
   const marker = "\n[…]\n";
@@ -325,6 +398,7 @@ function buildCompactionSource(
   userId: string,
   entries: ConversationEntry[],
   visibleMessages?: ApiMessageRow[],
+  providerPairs?: ChatPair[],
 ): string {
   const sections: string[] = [];
   const previous = previousCompactedSummary(entries);
@@ -338,7 +412,11 @@ function buildCompactionSource(
     );
   }
 
-  const rows = (visibleMessages ?? getAllMessagesForTopic(topicId)).filter(
+  // Once a compacted summary exists, the active provider projection already
+  // contains only that checkpoint plus its retained tail and later delta.
+  // Re-reading the full visible SQLite history would defeat incremental
+  // compaction by feeding the old summarized prefix to the worker again.
+  const rows = (previous ? [] : (visibleMessages ?? getAllMessagesForTopic(topicId))).filter(
     (row) =>
       row.author_id !== "system" &&
       row.kind !== "system" &&
@@ -348,7 +426,7 @@ function buildCompactionSource(
   );
   const usedByContext = sections.reduce((sum, section) => sum + section.length + 2, 0);
   const conversationBudget = Math.max(0, COMPACTION_SOURCE_CHARS - usedByContext);
-  const pairs = extractChatPairs(entries);
+  const pairs = providerPairs ?? extractCompactionChatPairs(entries);
   const hasVisibleRows = rows.length > 0;
   const providerBudget =
     pairs.length > 0
@@ -715,16 +793,22 @@ export async function createCompactedRolloutEntries(
   request: CompactedRolloutRequest,
   summarize: (request: CompactSummaryRequest) => Promise<string> = summarizeTopicContext,
 ): Promise<ConversationEntry[]> {
+  const { summaryPairs, retainedPairs } = splitCompactionPairs(
+    request.entries,
+    request.retainedTailTokens,
+  );
   const source = buildCompactionSource(
     request.topicId,
     request.userId,
     request.entries,
     request.visibleMessages,
+    summaryPairs,
   );
   if (!source) throw new Error(`Nothing to compact in "${request.topicTitle}".`);
   const {
     entries: _entries,
     visibleMessages: _visibleMessages,
+    retainedTailTokens: _retainedTailTokens,
     timeoutMs = shouldUseCompactionLog(source) ? COMPACTION_LOG_TIMEOUT_MS : COMPACTION_TIMEOUT_MS,
     summaryModel,
     summaryEffort,
@@ -743,7 +827,10 @@ export async function createCompactedRolloutEntries(
     )
   ).trim();
   if (!summary) throw new Error("Context compaction returned an empty summary.");
-  return compactEntries(request.agent, summary.slice(0, COMPACTION_OUTPUT_CHARS));
+  return [
+    ...compactEntries(request.agent, summary.slice(0, COMPACTION_OUTPUT_CHARS)),
+    ...retainedPairEntries(request.agent, retainedPairs),
+  ];
 }
 
 async function cleanupNewRollout(agent: AgentKind, cwd: string, sessionId: string): Promise<void> {
