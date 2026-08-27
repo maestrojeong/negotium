@@ -43,6 +43,11 @@ const CLAUDE_DEFAULT_DISALLOWED_TOOLS = [
   "TaskUpdate",
   "TaskList",
   "TaskGet",
+  // Monitor spawns a long-running background watcher tied to the CLI's own
+  // interactive session/notification loop, which our headless spawned turns
+  // don't have — it doesn't reliably deliver events back into a Negotium
+  // topic. Use the background-bash MCP tools (run/watch) instead.
+  "Monitor",
   // Native scheduling/cron tools duplicate Negotium's own runtime MCP surface
   // (`mcp__runtime__schedule_self`, the `cron-manager` server) and bypass its
   // persistence/host wiring if used directly.
