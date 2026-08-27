@@ -25,3 +25,4 @@ evals/
 # misc
 .DS_Store
 *.pem
+tmp/
