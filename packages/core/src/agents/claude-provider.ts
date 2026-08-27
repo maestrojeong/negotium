@@ -215,6 +215,48 @@ type SpawnClaudeCodeResult = ReturnType<SpawnClaudeCodeProcess>;
 
 const CLAUDE_ABORT_SIGKILL_DELAY_MS = 2500;
 
+type ClaudeProcessExit = { code: number | null; signal: NodeJS.Signals | null };
+
+// The Agent SDK can keep its stdout reader open for several minutes after its
+// CLI child has gone away (CLAUDE_CODE_STREAM_CLOSE_TIMEOUT defaults to five
+// minutes in our host environment).  Keep a per-query hook so the provider
+// can abort that stuck reader and emit a normal terminal error instead of
+// leaving the room lease occupied indefinitely.
+const claudeProcessExitListeners = new WeakMap<
+  AbortSignal,
+  Set<(exit: ClaudeProcessExit) => void>
+>();
+
+function watchClaudeProcessExit(signal: AbortSignal): {
+  exited: Promise<ClaudeProcessExit>;
+  dispose: () => void;
+} {
+  let listener: ((exit: ClaudeProcessExit) => void) | undefined;
+  const exited = new Promise<ClaudeProcessExit>((resolve) => {
+    listener = resolve;
+    const listeners = claudeProcessExitListeners.get(signal) ?? new Set();
+    listeners.add(listener);
+    claudeProcessExitListeners.set(signal, listeners);
+  });
+  return {
+    exited,
+    dispose: () => {
+      if (!listener) return;
+      const listeners = claudeProcessExitListeners.get(signal);
+      listeners?.delete(listener);
+      if (listeners?.size === 0) claudeProcessExitListeners.delete(signal);
+      listener = undefined;
+    },
+  };
+}
+
+function notifyClaudeProcessExit(signal: AbortSignal, exit: ClaudeProcessExit): void {
+  const listeners = claudeProcessExitListeners.get(signal);
+  if (!listeners) return;
+  claudeProcessExitListeners.delete(signal);
+  for (const listener of listeners) listener(exit);
+}
+
 function signalProcessTree(pid: number, signal: NodeJS.Signals): boolean {
   // Negative pid = "signal every process in this process group". Falls back
   // to single-pid signaling if the group call fails (e.g. on platforms where
@@ -285,6 +327,7 @@ export function spawnClaudeCodeProcessWithTreeKill(
     clearKillTimer();
     options.signal.removeEventListener("abort", onAbort);
     logger.debug({ pid: child.pid, code, signal }, "Claude Code process exited");
+    notifyClaudeProcessExit(options.signal, { code, signal });
   });
 
   // Consume the child's 'error' event. Without a listener, a spawn-level error
@@ -304,6 +347,7 @@ export function spawnClaudeCodeProcessWithTreeKill(
       },
       "Claude Code process error event",
     );
+    notifyClaudeProcessExit(options.signal, { code: null, signal: null });
   });
 
   return {
@@ -380,6 +424,22 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
   // spawns); the `settings` flag layer below covers it a second time.
   cleanEnv.CLAUDE_CODE_DISABLE_WORKFLOWS = "1";
 
+  // Use a private signal for the SDK. A premature CLI exit must wake its
+  // reader, but must not look like a user-initiated abort to the turn runner.
+  const sdkAbortController = new AbortController();
+  const onCallerAbort = () => sdkAbortController.abort();
+  if (opts.abortController?.signal.aborted) sdkAbortController.abort();
+  else opts.abortController?.signal.addEventListener("abort", onCallerAbort, { once: true });
+  const processExitWatch = watchClaudeProcessExit(sdkAbortController.signal);
+  let unexpectedProcessExit: ClaudeProcessExit | undefined;
+  void processExitWatch.exited.then((exit) => {
+    // An exit caused by an explicit stop/supersede is expected. Its caller
+    // signal is the authoritative distinction from a CLI crash.
+    if (opts.abortController?.signal.aborted) return;
+    unexpectedProcessExit = exit;
+    sdkAbortController.abort();
+  });
+
   const queryOptions: Options = {
     ...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
     spawnClaudeCodeProcess: spawnClaudeCodeProcessWithTreeKill,
@@ -390,7 +450,7 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
     env: cleanEnv,
     mcpServers: hostedMcpServers(opts) as Options["mcpServers"],
     ...(claudeBuiltInTools(opts) ? { tools: claudeBuiltInTools(opts) } : {}),
-    abortController: opts.abortController,
+    abortController: sdkAbortController,
     // `AskUserQuestion` is Claude Code's built-in clarification tool, but it
     // expects the SDK CLI to render a TUI prompt and read stdin for the
     // answer — neither exists in this headless Telegram bridge. Without
@@ -746,12 +806,34 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
         }
       }
     }
+    if (unexpectedProcessExit) {
+      const detail = unexpectedProcessExit.signal
+        ? `signal ${unexpectedProcessExit.signal}`
+        : unexpectedProcessExit.code === null
+          ? "before it could start"
+          : `exit code ${unexpectedProcessExit.code}`;
+      logger.error({ detail }, "claudeProvider: CLI exited before terminal SDK event");
+      yield { type: "error", content: `Claude CLI exited unexpectedly (${detail}).` };
+    }
   } catch (e) {
     // Abort = user moved on; don't surface as an error message. The handler
     // catches the abort signal separately via abortReason, so swallowing
     // here matches both maestro and codex behavior.
+    if (unexpectedProcessExit) {
+      const detail = unexpectedProcessExit.signal
+        ? `signal ${unexpectedProcessExit.signal}`
+        : unexpectedProcessExit.code === null
+          ? "before it could start"
+          : `exit code ${unexpectedProcessExit.code}`;
+      logger.error({ err: e, detail }, "claudeProvider: CLI exited before terminal SDK event");
+      yield { type: "error", content: `Claude CLI exited unexpectedly (${detail}).` };
+      return;
+    }
     if (isAbortError(e) || opts.abortController?.signal.aborted) return;
     logger.error({ err: e }, "claudeProvider: SDK iteration failed");
     yield { type: "error", content: errMsg(e) };
+  } finally {
+    processExitWatch.dispose();
+    opts.abortController?.signal.removeEventListener("abort", onCallerAbort);
   }
 }
