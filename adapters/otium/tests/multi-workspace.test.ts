@@ -71,8 +71,8 @@ function makeRoom(scope: string | null): { id: string; title: string } {
     const topic = registerTopic({
       title: `multi-ws-${randomUUID().slice(0, 8)}`,
       userId: USER,
-      kind: "agent",
-      agent: "claude",
+      kind: "channel",
+      agent: "none",
       surface: "otium",
     });
     createdTopicIds.push(topic.id);
@@ -88,8 +88,8 @@ function makeNamedRoom(title: string, scope: string | null) {
     const topic = registerTopic({
       title,
       userId: USER,
-      kind: "agent",
-      agent: "claude",
+      kind: "channel",
+      agent: "none",
       surface: "otium",
     });
     createdTopicIds.push(topic.id);
@@ -141,8 +141,8 @@ describe("two attached workspaces", () => {
       const second = registerTopic({
         title: first.title,
         userId: USER,
-        kind: "agent",
-        agent: "claude",
+        kind: "channel",
+        agent: "none",
         surface: "otium",
       });
       createdTopicIds.push(second.id);
