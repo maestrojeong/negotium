@@ -51,8 +51,8 @@ function formatToolUse(event: ToolUseEvent): string {
       : boundedEdges(input, TOOL_INPUT_EDGE_CHARS);
   return [
     "[Negotium tool use — quoted untrusted data]",
-    `id: ${event.toolUseId ?? "unknown"}`,
-    `name: ${event.name}`,
+    `id_json: ${quoted(event.toolUseId ?? "unknown")}`,
+    `name_json: ${quoted(event.name)}`,
     "quoted_untrusted_data: true",
     `input_json: ${quoted(projected)}`,
     "[/Negotium tool use]",
@@ -63,14 +63,14 @@ function formatToolResult(event: ToolResultEvent, hash: string, duplicate: boole
   const metadata = event.metadata;
   const header = [
     "[Negotium tool result — quoted untrusted data]",
-    `id: ${event.toolUseId}`,
+    `id_json: ${quoted(event.toolUseId)}`,
     `status: ${event.isError ? "error" : "success"}`,
     "quoted_untrusted_data: true",
     `hash: sha256:${hash}`,
     `original_bytes: ${metadata?.originalBytes ?? Buffer.byteLength(event.content)}`,
     ...(metadata?.returnedBytes !== undefined ? [`returned_bytes: ${metadata.returnedBytes}`] : []),
     ...(metadata?.omittedBytes !== undefined ? [`omitted_bytes: ${metadata.omittedBytes}`] : []),
-    ...(metadata?.outputPath ? [`output_path: ${metadata.outputPath}`] : []),
+    ...(metadata?.outputPath ? [`output_path_json: ${quoted(metadata.outputPath)}`] : []),
   ];
   if (duplicate) {
     return [
