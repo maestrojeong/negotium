@@ -3,8 +3,8 @@
 // Namespaces preserve each legacy module's exact surface, including names that
 // collide across stores (notably forum.getTopicByName and apiTopics.getTopicByName).
 export * as activityLog from "#storage/activity-log";
-// Direct exports keep common replacements concise. The forum collision is
-// exposed as getForumTopicByName; its original name remains under `forum`.
+// Direct exports keep common replacements concise. The legacy forum store
+// remains available only under `forum`.
 export * from "#storage/activity-log";
 export * as apiMessages from "#storage/api-messages";
 export * from "#storage/api-messages";
@@ -22,43 +22,8 @@ export * as conversations from "#storage/conversations";
 export * from "#storage/conversations";
 export * as decisions from "#storage/decisions";
 export * from "#storage/decisions";
-export type {
-  ForumTopicInfo,
-  TopicRow,
-  UserForumConfig,
-  UserRow,
-} from "#storage/forum/index";
+/** @deprecated Pre-canonical Telegram/forum compatibility namespace. */
 export * as forum from "#storage/forum/index";
-export {
-  addTopic,
-  clearDmSessionId,
-  clearSessionForTopic,
-  findUserByThread,
-  flushSessionCache,
-  getAllTopics,
-  getAllUserIds,
-  getCommunicateThreadId,
-  getDmSessionId,
-  getLastShownConfig,
-  getSessionForTopic,
-  getTopicAgent,
-  getTopicByName as getForumTopicByName,
-  getTopicDescription,
-  getTopicMcpConfig,
-  getTopicNames,
-  getUserConfig,
-  removeTopic,
-  renameTopic,
-  setDmSessionId,
-  setLastShownConfig,
-  setSessionForTopic,
-  setTopicAgent,
-  setTopicDescription,
-  setTopicForkOrigin,
-  setTopicMcpEnabled,
-  setTopicMcpExtra,
-  updateTopicThreadId,
-} from "#storage/forum/index";
 export * as runtimeProcessLeases from "#storage/runtime-process-leases";
 export * from "#storage/runtime-process-leases";
 export * as sessionAsks from "#storage/session-asks";
@@ -81,8 +46,8 @@ export * as topicArchive from "#storage/topic-archive";
 export * from "#storage/topic-archive";
 export * as topicArchiveState from "#storage/topic-archive-state";
 export * from "#storage/topic-archive-state";
+/** @deprecated Pre-canonical topic-name settings compatibility namespace. */
 export * as topicSettings from "#storage/topic-settings";
-export * from "#storage/topic-settings";
 export * as topicTranscript from "#storage/topic-transcript";
 export * from "#storage/topic-transcript";
 export * as wiki from "#storage/wiki";

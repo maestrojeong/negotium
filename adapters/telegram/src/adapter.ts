@@ -9,7 +9,7 @@
  *
  * The adapter owns exactly the channel glue:
  *   - (chatId, forum thread) → negotium topic mapping (a chat/thread shows
- *     one topic; a topic may fan out to several chats/threads), persisted in
+ *     one topic; group-scoped topics have one materialized thread), persisted in
  *     SQLite so restarts keep routing established threads,
  *   - inbound text/media → whitelist check → slash commands (/new /topics
  *     /agent /fork /spawn /del /del! /abort /vault) → attachment download into the
@@ -46,6 +46,7 @@ import {
   ensurePersonalGeneral,
   errMsg,
   extractFileTagPaths,
+  findTopicTitleConflict,
   getTopic,
   getTopicByNameForUser,
   heartbeatRuntimeEventConsumer,
@@ -63,6 +64,7 @@ import {
   resolveDeliveryAck,
   resolveUploadedFilePathByFileId,
   runtimeBus,
+  setTopicSurfaceScope,
   setTopicSurfaces,
   startAiTurn,
   stripFileTags,
@@ -79,6 +81,17 @@ import { createTelegramCommandRouter } from "@/commands";
  * lives there too.
  */
 const SURFACE_BACKFILL_FLAG = "surface_backfill_20260808";
+const GROUP_SCOPE_BACKFILL_FLAG = "telegram_group_scope_backfill_20260829";
+
+function telegramGroupScope(chatId: number): string {
+  return `tg:${chatId}`;
+}
+
+function telegramGroupIdFromScope(scope: string | null | undefined): number | null {
+  if (!scope?.startsWith("tg:")) return null;
+  const chatId = Number(scope.slice(3));
+  return Number.isSafeInteger(chatId) ? chatId : null;
+}
 
 import { type OutboxEntry, openMappingStore, type PersistedMapping } from "@/mapping-store";
 import { createTelegramMediaIntake } from "@/media-intake";
@@ -140,10 +153,9 @@ export interface TelegramAdapterOptions {
   /** Topic title for a chat/thread; default `tg-{chatId}` / `tg-{chatId}-{threadId}`. */
   topicTitleFor?: (chatId: number, threadId?: number) => string;
   /**
-   * FORUM MODE: id of a forum supergroup. Runtime-created topics materialize
-   * as forum threads there via `client.createForumTopic`, and their bus
-   * messages are delivered into the thread. Requires the client's forum
-   * surface; without it the adapter logs a warning and behaves like DM mode.
+   * Optional operator-configured initial forum. Additional groups can
+   * auto-connect at runtime; each gets its own canonical namespace and General
+   * manager. Requires the client's forum surface.
    */
   forumChatId?: number;
   /** Mapping-db path override (tests); default `${DATA_DIR}/adapter-telegram.db`. */
@@ -278,20 +290,50 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   const dispatchTurn = opts.startTurn ?? startAiTurn;
   const store = openMappingStore(opts.mappingDbPath);
   const restoredForumChatId = store.loadForumChatId();
-  const initialForumChatId = forumChatId ?? restoredForumChatId;
-  let forumChat = initialForumChatId ?? 0;
-  let forumMode = initialForumChatId !== undefined && typeof client.createForumTopic === "function";
-  // A configured override is operator-authorized. A restored auto-connected
-  // group is re-verified asynchronously before materializing new threads.
-  let forumManageTopicsAvailable = forumMode && forumChatId !== undefined;
-  if (forumChatId !== undefined) store.saveForumChatId(forumChatId);
-  if (initialForumChatId !== undefined && !forumMode) {
+  if (forumChatId !== undefined) {
+    store.saveGroup({ chatId: forumChatId });
+    store.saveForumChatId(forumChatId);
+  }
+  interface ForumGroupState {
+    chatId: number;
+    manageTopicsAvailable: boolean;
+    configured: boolean;
+    permissionRevision: number;
+  }
+  const forumGroups = new Map<number, ForumGroupState>();
+  for (const group of store.loadGroups()) {
+    forumGroups.set(group.chatId, {
+      chatId: group.chatId,
+      manageTopicsAvailable: group.chatId === forumChatId,
+      configured: group.chatId === forumChatId,
+      permissionRevision: 0,
+    });
+  }
+  if (restoredForumChatId !== undefined && !forumGroups.has(restoredForumChatId)) {
+    forumGroups.set(restoredForumChatId, {
+      chatId: restoredForumChatId,
+      manageTopicsAvailable: false,
+      configured: false,
+      permissionRevision: 0,
+    });
+  }
+  if (forumGroups.size > 0 && typeof client.createForumTopic !== "function") {
     logger.warn(
-      { forumChatId: initialForumChatId },
-      "telegram adapter: forumChatId set but client lacks createForumTopic — forum mode disabled",
+      { forumChatIds: [...forumGroups.keys()] },
+      "telegram adapter: forum groups configured but client lacks createForumTopic",
     );
   }
   const personalGeneral = ensurePersonalGeneral(userId, "telegram");
+  const groupGenerals = new Map<number, TopicDto>();
+  const generalForGroup = (chatId: number): TopicDto => {
+    const existing = groupGenerals.get(chatId);
+    if (existing) return existing;
+    const general = ensurePersonalGeneral(userId, "telegram", {
+      surfaceScope: telegramGroupScope(chatId),
+    });
+    groupGenerals.set(chatId, general);
+    return general;
+  };
 
   // ── mapping state ───────────────────────────────────────────────────
   // Two indexes over the same ChatMapping objects. byKey is 1:1 (a chat or
@@ -488,6 +530,27 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     { persist = true } = {},
   ): ChatMapping {
     const key = mappingKey(chatId, threadId);
+    if (forumGroups.has(chatId)) {
+      const topic = getTopic(topicId);
+      const expectedScope = telegramGroupScope(chatId);
+      if (
+        !topic ||
+        topic.surface !== "telegram" ||
+        (topic.surfaceScope ?? null) !== expectedScope
+      ) {
+        throw new Error(
+          `refusing to bind Telegram group ${chatId} to topic ${topicId} outside ${expectedScope}`,
+        );
+      }
+      for (const existing of [...(byTopic.get(topicId) ?? [])]) {
+        if (existing.chatId !== chatId || mappingKey(existing.chatId, existing.threadId) === key) {
+          continue;
+        }
+        detachFromTopic(existing);
+        byKey.delete(mappingKey(existing.chatId, existing.threadId));
+        if (persist) store.deleteByChat(existing.chatId, existing.threadId);
+      }
+    }
     const prev = byKey.get(key);
     if (prev) {
       if (prev.topicId === topicId) return prev;
@@ -563,7 +626,12 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
 
   function loadExistingTopic(chatId: number, topicId: string, threadId?: number): boolean {
     const topic = getTopic(topicId);
-    if (!topic?.participants.some((participant) => participant.userId === userId)) {
+    const expectedScope = forumGroups.has(chatId) ? telegramGroupScope(chatId) : null;
+    if (
+      !topic?.participants.some((participant) => participant.userId === userId) ||
+      topic.surface !== "telegram" ||
+      (topic.surfaceScope ?? null) !== expectedScope
+    ) {
       return false;
     }
     bindMapping(chatId, threadId, topic.id);
@@ -580,10 +648,14 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     // delete it from the terminal picker. Telegram makes its own instead.
     const mappedIds = [
       ...new Set(
-        store
-          .load()
-          .map((mapping) => mapping.topicId)
-          .filter((topicId) => getTopic(topicId)?.kind !== "manager"),
+        store.load().flatMap((mapping) => {
+          const topic = getTopic(mapping.topicId);
+          return topic &&
+            topic.kind !== "manager" &&
+            topic.participants.some((participant) => participant.userId === userId)
+            ? [topic.id]
+            : [];
+        }),
       ),
     ];
     const moved = setTopicSurfaces(mappedIds, "telegram");
@@ -596,14 +668,100 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     }
   }
 
+  // Promote the former single-forum mapping into the canonical namespace.
+  // DM bindings remain unscoped. A legacy topic mapped into more than one
+  // forum is intentionally left untouched: assigning either group would make
+  // the other binding cross-scope, and silently cloning conversation/session
+  // state is not a safe migration.
+  if (!store.isFlagSet(GROUP_SCOPE_BACKFILL_FLAG)) {
+    const groupIds = new Set(forumGroups.keys());
+    const groupsByTopic = new Map<string, Set<number>>();
+    for (const mapping of store.load()) {
+      if (!groupIds.has(mapping.chatId)) continue;
+      const groups = groupsByTopic.get(mapping.topicId) ?? new Set<number>();
+      groups.add(mapping.chatId);
+      groupsByTopic.set(mapping.topicId, groups);
+    }
+    let filed = 0;
+    for (const [topicId, groups] of groupsByTopic) {
+      if (groups.size !== 1) {
+        logger.warn(
+          { topicId, groupIds: [...groups] },
+          "telegram adapter: legacy topic spans multiple groups; scope migration skipped",
+        );
+        continue;
+      }
+      const topic = getTopic(topicId);
+      if (
+        !topic ||
+        topic.kind === "manager" ||
+        topic.surface !== "telegram" ||
+        !topic.participants.some((participant) => participant.userId === userId)
+      ) {
+        continue;
+      }
+      const [chatId] = groups;
+      if (chatId !== undefined) {
+        const targetScope = telegramGroupScope(chatId);
+        const currentScope = topic.surfaceScope ?? null;
+        if (currentScope !== null && currentScope !== targetScope) {
+          logger.warn(
+            { topicId, currentScope, targetScope },
+            "telegram adapter: legacy mapping conflicts with an existing topic namespace",
+          );
+          continue;
+        }
+        const titleConflict = findTopicTitleConflict(topic.title, topic.kind ?? "agent", {
+          excludeTopicId: topic.id,
+          surface: "telegram",
+          surfaceScope: targetScope,
+        });
+        if (titleConflict) {
+          logger.warn(
+            { topicId, conflictTopicId: titleConflict.id, targetScope },
+            "telegram adapter: legacy topic title conflicts in target namespace",
+          );
+          continue;
+        }
+        filed += Number(setTopicSurfaceScope(topicId, "telegram", targetScope));
+      }
+    }
+    store.setFlag(GROUP_SCOPE_BACKFILL_FLAG);
+    if (filed > 0) {
+      logger.info({ filed }, "telegram adapter: filed legacy topics into group namespaces");
+    }
+  }
+
   // Restore persisted routing so a restart keeps delivering into existing
   // chats/threads instead of materializing duplicates. Prune mappings whose
   // runtime topic disappeared while this adapter was offline; otherwise a
   // deleted topic leaves an orphan Telegram thread forever.
   for (const persisted of store.load()) {
     const topic = getTopic(persisted.topicId);
-    if (topic?.participants.some((participant) => participant.userId === userId)) {
+    const expectedScope = forumGroups.has(persisted.chatId)
+      ? telegramGroupScope(persisted.chatId)
+      : null;
+    if (
+      topic?.participants.some((participant) => participant.userId === userId) &&
+      topic.surface === "telegram" &&
+      (topic.surfaceScope ?? null) === expectedScope
+    ) {
       bindMapping(persisted.chatId, persisted.threadId, persisted.topicId, { persist: false });
+      continue;
+    }
+    if (topic) {
+      store.deleteByChat(persisted.chatId, persisted.threadId);
+      logger.warn(
+        {
+          chatId: persisted.chatId,
+          threadId: persisted.threadId,
+          topicId: persisted.topicId,
+          topicSurface: topic.surface,
+          topicSurfaceScope: topic.surfaceScope ?? null,
+          expectedScope,
+        },
+        "telegram adapter: quarantined mapping outside its topic namespace",
+      );
       continue;
     }
     cleanupPersistedMapping(persisted, "telegram adapter: stale forum thread cleanup failed");
@@ -641,10 +799,17 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   }
 
   /** Reuse a topic by name if this node already has it, else create one. */
-  function getOrCreateTopic(title: string, agent?: AgentKind): TopicDto {
+  function getOrCreateTopic(chatId: number, title: string, agent?: AgentKind): TopicDto {
+    const surfaceScope = forumGroups.has(chatId) ? telegramGroupScope(chatId) : null;
     return (
-      getTopicByNameForUser(title, userId, { surface: "telegram" }) ??
-      registerTopicLocal({ title, userId, kind: "agent", ...(agent ? { agent } : {}) })
+      getTopicByNameForUser(title, userId, { surface: "telegram", surfaceScope }) ??
+      registerTopicLocal({
+        title,
+        userId,
+        kind: "agent",
+        surfaceScope,
+        ...(agent ? { agent } : {}),
+      })
     );
   }
 
@@ -655,7 +820,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       if (topic) return topic;
       unbindTopic(cached.topicId); // topic vanished underneath the mapping
     }
-    const topic = getOrCreateTopic(titleFor(chatId, threadId), opts.defaultAgent);
+    const topic = getOrCreateTopic(chatId, titleFor(chatId, threadId), opts.defaultAgent);
     bindMapping(chatId, threadId, topic.id);
     return topic;
   }
@@ -1138,7 +1303,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
    *  re-attempting creation on every message. Persisted so restarts keep the
    *  fallback instead of dropping messages or re-failing creation. */
   const materializeTombstones = new Map<string, string>();
-  if (forumMode) {
+  if (forumGroups.size > 0) {
     for (const t of store.loadTombstones()) materializeTombstones.set(t.topicId, t.title);
   }
 
@@ -1147,7 +1312,10 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     title: string,
     payload: OutboundPayload,
   ): Promise<void> {
-    return deliverToTargets(topicId, [{ chatId: forumChat, topicId }], {
+    const topic = getTopic(topicId);
+    const chatId = telegramGroupIdFromScope(topic?.surfaceScope);
+    if (chatId === null) return Promise.resolve();
+    return deliverToTargets(topicId, [{ chatId, topicId }], {
       text: payload.text ? `[${title}] ${payload.text}` : "",
       files: payload.files,
       runtimeMessageId: payload.runtimeMessageId,
@@ -1167,7 +1335,16 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
 
   function materializeTopic(topic: TopicDto): boolean {
     if (
-      !forumManageTopicsAvailable ||
+      topic.surface !== "telegram" ||
+      !topic.participants?.some((participant) => participant.userId === userId)
+    ) {
+      return false;
+    }
+    const materializationChat = telegramGroupIdFromScope(topic.surfaceScope);
+    if (materializationChat === null) return false;
+    const group = forumGroups.get(materializationChat);
+    if (
+      !group?.manageTopicsAvailable ||
       suppressMaterialize > 0 ||
       byTopic.has(topic.id) ||
       pendingByTopic.has(topic.id) ||
@@ -1177,22 +1354,18 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       return false;
     }
     if (!isTopicVisible(topic)) return false;
-    // Only rooms the adapter's (single) negotium user can see.
-    if (!topic.participants?.some((p) => p.userId === userId)) return false;
     // Only rooms that live on THIS surface (S-6). The bootstrap caller already
     // filters with `listTopics({ surface: "telegram" })`, but the `topic-created`
     // bus subscription hands over whatever was just created — so making a topic
     // in the Terminal spawned a Telegram forum room for it. The check belongs
     // here rather than at the four call sites: guarding the callers is exactly
     // the pattern that let this one through while the others looked correct.
-    if (topic.surface !== "telegram") return false;
-    const materializationChat = forumChat;
     const pending: PendingMaterialization = { buffer: [], cancelled: false };
     pendingByTopic.set(topic.id, pending);
     void (async () => {
       let created: { message_thread_id: number };
       try {
-        // forumMode implies createForumTopic exists (checked at start).
+        // Connected forum groups require the createForumTopic capability.
         created = await client.createForumTopic!(
           materializationChat,
           topic.title.slice(0, FORUM_TOPIC_NAME_MAX),
@@ -1204,8 +1377,8 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
         if (stopped || pending.cancelled) return;
         const errorInfo = telegramErrorInfo(err);
         if (isManageTopicsPermissionError(errorInfo)) {
-          const permissionWasAvailable = forumManageTopicsAvailable;
-          forumManageTopicsAvailable = false;
+          const permissionWasAvailable = group.manageTopicsAvailable;
+          group.manageTopicsAvailable = false;
           permissionBlockedTopics.set(topic.id, topic.title);
           logger.warn(
             { err, topicId: topic.id, title: topic.title },
@@ -1213,7 +1386,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
           );
           if (permissionWasAvailable) {
             reply(
-              forumChat,
+              materializationChat,
               undefined,
               'Forum topic creation is paused. Enable the bot administrator permission "Manage Topics"; pending topics will be retried automatically.',
             );
@@ -1327,8 +1500,10 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     }
     const topic = getTopic(topicId);
     if (!topic) return false;
-    if (forumMode) {
-      if (!forumManageTopicsAvailable || permissionBlockedTopics.has(topicId)) {
+    const groupId = telegramGroupIdFromScope(topic.surfaceScope);
+    const group = groupId === null ? undefined : forumGroups.get(groupId);
+    if (group) {
+      if (!group.manageTopicsAvailable || permissionBlockedTopics.has(topicId)) {
         void enqueueSend(topicId, () => deliverFallback(topicId, topic.title, payload)).then(
           payload.onSettled,
         );
@@ -1510,9 +1685,15 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       .catch((err) => logger.warn({ err, chatId }, "telegram adapter: onboarding guide failed"));
   }
 
-  function materializeVisibleTopics(): void {
-    if (!forumMode || !forumManageTopicsAvailable) return;
-    for (const topic of listTopics({ surface: "telegram" })) {
+  function materializeVisibleTopics(chatId: number): void {
+    const group = forumGroups.get(chatId);
+    if (!group?.manageTopicsAvailable) return;
+    const topics = listTopics({
+      surface: "telegram",
+      surfaceScope: telegramGroupScope(chatId),
+    });
+    for (const topic of topics) {
+      if (topic.kind === "manager") continue;
       if (
         isTopicVisible(topic) &&
         topic.participants.some((participant) => participant.userId === userId)
@@ -1522,15 +1703,25 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     }
   }
 
-  function restoreForumTopicCreation({ retryPermanent = false } = {}): void {
-    forumManageTopicsAvailable = true;
-    permissionBlockedTopics.clear();
+  function restoreForumTopicCreation(chatId: number, { retryPermanent = false } = {}): void {
+    const group = forumGroups.get(chatId);
+    if (!group) return;
+    group.manageTopicsAvailable = true;
+    for (const topicId of [...permissionBlockedTopics.keys()]) {
+      if (telegramGroupIdFromScope(getTopic(topicId)?.surfaceScope) === chatId) {
+        permissionBlockedTopics.delete(topicId);
+      }
+    }
     if (retryPermanent) {
-      materializeTombstones.clear();
-      store.clearTombstones();
+      for (const topicId of [...materializeTombstones.keys()]) {
+        if (telegramGroupIdFromScope(getTopic(topicId)?.surfaceScope) === chatId) {
+          materializeTombstones.delete(topicId);
+          store.deleteTombstone(topicId);
+        }
+      }
     }
     reconcileStaleMappings();
-    materializeVisibleTopics();
+    materializeVisibleTopics(chatId);
   }
 
   async function notifyOwnerDms(text: string): Promise<void> {
@@ -1538,9 +1729,10 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   }
 
   async function disconnectForum(chatId: number): Promise<boolean> {
-    if (!forumMode || forumChat !== chatId) return false;
+    if (!forumGroups.has(chatId)) return false;
 
     for (const [topicId, pending] of pendingByTopic) {
+      if (telegramGroupIdFromScope(getTopic(topicId)?.surfaceScope) !== chatId) continue;
       pending.cancelled = true;
       if (pendingByTopic.get(topicId) === pending) pendingByTopic.delete(topicId);
     }
@@ -1551,14 +1743,22 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       if (target.chatId === chatId) targetByQueryId.delete(queryId);
     }
 
-    permissionBlockedTopics.clear();
-    materializeTombstones.clear();
-    store.clearTombstones();
+    for (const topicId of [...permissionBlockedTopics.keys()]) {
+      if (telegramGroupIdFromScope(getTopic(topicId)?.surfaceScope) === chatId) {
+        permissionBlockedTopics.delete(topicId);
+      }
+    }
+    for (const topicId of [...materializeTombstones.keys()]) {
+      if (telegramGroupIdFromScope(getTopic(topicId)?.surfaceScope) === chatId) {
+        materializeTombstones.delete(topicId);
+        store.deleteTombstone(topicId);
+      }
+    }
     store.outboxDeleteByChat(chatId);
-    store.clearForumChatId();
-    forumMode = false;
-    forumManageTopicsAvailable = false;
-    forumChat = 0;
+    store.deleteGroup(chatId);
+    if (store.loadForumChatId() === chatId) store.clearForumChatId();
+    forumGroups.delete(chatId);
+    groupGenerals.delete(chatId);
 
     await notifyOwnerDms(
       "The Telegram forum was disconnected because the bot left or was removed. Your Negotium topics were preserved; promote the bot in a forum group to reconnect.",
@@ -1580,20 +1780,14 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       );
       return false;
     }
-    if (forumMode && forumChat !== chat.id) {
-      reply(
-        ownerTelegramId,
-        undefined,
-        `A different forum group (${forumChat}) is already connected to this Negotium node.`,
-      );
-      return false;
-    }
     const hasManageTopics = canManageTopics(botMember);
-    if (forumMode && forumChat === chat.id) {
-      const recovered = hasManageTopics && !forumManageTopicsAvailable;
-      const lostPermission = !hasManageTopics && forumManageTopicsAvailable;
+    const existingGroup = forumGroups.get(chat.id);
+    if (existingGroup) {
+      existingGroup.permissionRevision += 1;
+      const recovered = hasManageTopics && !existingGroup.manageTopicsAvailable;
+      const lostPermission = !hasManageTopics && existingGroup.manageTopicsAvailable;
       if (hasManageTopics) {
-        restoreForumTopicCreation({ retryPermanent: recovered });
+        restoreForumTopicCreation(chat.id, { retryPermanent: recovered });
         if (recovered) {
           await Promise.allSettled([
             client.sendMessage(
@@ -1606,7 +1800,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
           ]);
         }
       } else {
-        forumManageTopicsAvailable = false;
+        existingGroup.manageTopicsAvailable = false;
         if (lostPermission) {
           await notifyOwnerDms(
             `Manage Topics permission was removed from “${chat.title?.trim() || chat.id}”. Existing topics are preserved; restore the permission to resume topic creation.`,
@@ -1616,19 +1810,24 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       return true;
     }
 
-    forumChat = chat.id;
-    forumMode = true;
-    forumManageTopicsAvailable = hasManageTopics;
-    permissionBlockedTopics.clear();
-    materializeTombstones.clear();
-    store.clearTombstones();
-    store.saveForumChatId(chat.id);
-    bindMapping(chat.id, undefined, personalGeneral.id);
+    forumGroups.set(chat.id, {
+      chatId: chat.id,
+      manageTopicsAvailable: hasManageTopics,
+      configured: chat.id === forumChatId,
+      permissionRevision: 1,
+    });
+    store.saveGroup({
+      chatId: chat.id,
+      title: chat.title?.trim(),
+      ownerTelegramUserId: ownerTelegramId,
+    });
+    if (store.loadForumChatId() === undefined) store.saveForumChatId(chat.id);
+    bindMapping(chat.id, undefined, generalForGroup(chat.id).id);
     ownerDmChatIds.add(ownerTelegramId);
 
     // Existing agent rooms become forum topics just like rooms created after
     // connection. General is already mapped above and therefore skipped.
-    materializeVisibleTopics();
+    materializeVisibleTopics(chat.id);
 
     const title = chat.title?.trim() || String(chat.id);
     const permissionWarning = hasManageTopics
@@ -1666,8 +1865,8 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     ) {
       return false;
     }
-    if (forumMode && msg.chat.id !== forumChat) return false;
-    if (forumMode && forumManageTopicsAvailable) return true;
+    const connected = forumGroups.get(msg.chat.id);
+    if (connected?.manageTopicsAvailable) return true;
     if (typeof client.getMe !== "function" || typeof client.getChatMember !== "function") {
       return false;
     }
@@ -1681,7 +1880,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       ]);
       if (!isChatAdmin(botMember) || !isChatAdmin(senderMember)) return false;
       await linkForumAndAnnounce(senderId, msg.chat, botMember);
-      return forumMode && forumChat === msg.chat.id;
+      return forumGroups.has(msg.chat.id);
     } catch (err) {
       logger.debug(
         { err, groupId: msg.chat.id, senderId },
@@ -1692,34 +1891,52 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   }
 
   async function verifyInitialForumPermissions(): Promise<void> {
-    if (!forumMode) return;
-    if (forumChatId !== undefined) return;
+    // Snapshot before the first await. Groups connected by live updates while
+    // identity resolution is in flight have already been authoritatively
+    // checked by linkForumAndAnnounce and must not be downgraded by this
+    // startup-only recovery pass.
+    const initialGroups = [...forumGroups.values()];
+    if (initialGroups.length === 0) return;
     if (typeof client.getMe !== "function" || typeof client.getChatMember !== "function") {
       // Embedded legacy clients cannot expose membership state. Preserve the
       // previous configured-forum behavior instead of disabling the adapter.
-      forumManageTopicsAvailable = true;
+      for (const group of initialGroups) {
+        if (forumGroups.get(group.chatId) === group) group.manageTopicsAvailable = true;
+      }
       return;
     }
-    try {
-      const bot = await resolveBotIdentity();
-      if (!bot || stopped || !forumMode) return;
-      const member = await client.getChatMember(forumChat, bot.id);
-      if (member.status === "left" || member.status === "kicked") {
-        await disconnectForum(forumChat);
-        return;
+    const bot = await resolveBotIdentity();
+    if (!bot || stopped) return;
+    for (const group of initialGroups) {
+      if (forumGroups.get(group.chatId) !== group) continue;
+      // A configured group is an operator-owned capability. Preserve the
+      // historical embedded-client behavior and do not override it with a
+      // best-effort membership probe at startup.
+      if (group.configured) continue;
+      try {
+        const permissionRevision = group.permissionRevision;
+        const member = await client.getChatMember(group.chatId, bot.id);
+        if (
+          forumGroups.get(group.chatId) !== group ||
+          group.permissionRevision !== permissionRevision
+        ) {
+          continue;
+        }
+        if (member.status === "left" || member.status === "kicked") {
+          await disconnectForum(group.chatId);
+          continue;
+        }
+        if (canManageTopics(member)) {
+          restoreForumTopicCreation(group.chatId, { retryPermanent: !group.configured });
+        } else {
+          group.manageTopicsAvailable = false;
+        }
+      } catch (err) {
+        logger.warn(
+          { err, forumChatId: group.chatId },
+          "telegram adapter: initial forum permission check failed",
+        );
       }
-      if (canManageTopics(member)) {
-        const restoredAutoConnection =
-          forumChatId === undefined && restoredForumChatId !== undefined;
-        restoreForumTopicCreation({ retryPermanent: restoredAutoConnection });
-      } else {
-        forumManageTopicsAvailable = false;
-      }
-    } catch (err) {
-      logger.warn(
-        { err, forumChatId: forumChat },
-        "telegram adapter: initial forum permission check failed",
-      );
     }
   }
 
@@ -1782,7 +1999,8 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   const handleCommand = createTelegramCommandRouter({
     userId,
     defaultAgent: opts.defaultAgent,
-    forum: forumMode ? { enabled: true, chatId: forumChat } : undefined,
+    surfaceScopeFor: (chatId) => (forumGroups.has(chatId) ? telegramGroupScope(chatId) : null),
+    isForumGeneral: (chatId, threadId) => forumGroups.has(chatId) && threadId === undefined,
     resolveBotUsername: async () => (await resolveBotIdentity())?.username,
     isVaultOwner,
     reply,
@@ -1812,8 +2030,10 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     const firstPrivateContact = privateDm && !byKey.has(mappingKey(chatId));
 
     if (privateDm) ownerDmChatIds.add(chatId);
-    if (privateDm || (forumMode && chatId === forumChat && threadId === undefined)) {
+    if (privateDm) {
       bindMapping(chatId, threadId, personalGeneral.id);
+    } else if (forumGroups.has(chatId) && threadId === undefined) {
+      bindMapping(chatId, threadId, generalForGroup(chatId).id);
     }
     if (firstPrivateContact && text !== "/start") {
       void sendOnboardingGuide(chatId);
@@ -1854,8 +2074,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     if (!isAllowed(msg.from?.id)) return;
 
     if (msg.chat.type === "supergroup" && msg.chat.is_forum) {
-      if (forumMode && msg.chat.id !== forumChat) return;
-      if (!forumMode || !forumManageTopicsAvailable) {
+      if (!forumGroups.get(msg.chat.id)?.manageTopicsAvailable) {
         void tryAutoConnectFromMessage(msg).then((connected) => {
           if (connected && !stopped) handleIncomingMessage(msg);
         });
@@ -1868,20 +2087,17 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   client.on("my_chat_member", (update: TelegramMyChatMemberUpdate) => {
     if (stopped || update.chat.type !== "supergroup" || !update.chat.is_forum) return;
     const status = update.new_chat_member?.status;
-    if ((status === "left" || status === "kicked") && forumChat === update.chat.id) {
+    if ((status === "left" || status === "kicked") && forumGroups.has(update.chat.id)) {
       void disconnectForum(update.chat.id).catch((err) =>
         logger.warn({ err, groupId: update.chat.id }, "telegram adapter: forum disconnect failed"),
       );
       return;
     }
-    if (
-      forumMode &&
-      forumChat === update.chat.id &&
-      status !== "administrator" &&
-      status !== "creator"
-    ) {
-      const permissionWasAvailable = forumManageTopicsAvailable;
-      forumManageTopicsAvailable = false;
+    if (forumGroups.has(update.chat.id) && status !== "administrator" && status !== "creator") {
+      const group = forumGroups.get(update.chat.id)!;
+      group.permissionRevision += 1;
+      const permissionWasAvailable = group.manageTopicsAvailable;
+      group.manageTopicsAvailable = false;
       if (permissionWasAvailable) {
         void notifyOwnerDms(
           'The bot no longer has forum administrator access. Existing topics are preserved; restore administrator + "Manage Topics" to resume topic creation.',
@@ -1892,7 +2108,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     if (
       (status !== "administrator" && status !== "creator") ||
       update.from?.id === undefined ||
-      (!isAllowed(update.from.id) && (!forumMode || forumChat !== update.chat.id))
+      (!isAllowed(update.from.id) && !forumGroups.has(update.chat.id))
     ) {
       return;
     }
@@ -2006,7 +2222,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   // ── outbound: RuntimeBus → Telegram ─────────────────────────────────
   const unsubscribe = runtimeBus().subscribe((event) => {
     if (stopped) return;
-    if (event.type === "topic-created" && forumMode) {
+    if (event.type === "topic-created") {
       materializeTopic(event.payload as TopicDto);
       return;
     }
@@ -2064,12 +2280,12 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   const runtimeEventPollTimer = setInterval(pollRuntimeEvents, 100);
   runtimeEventPollTimer.unref?.();
 
-  if (forumMode) {
-    // The configured forum's General topic is always the control surface.
-    // Reconcile after subscribing so topics created while the adapter was
-    // offline (or between startup reads) are materialized without an event gap.
-    bindMapping(forumChat, undefined, personalGeneral.id);
-    materializeVisibleTopics();
+  for (const group of forumGroups.values()) {
+    // Every connected forum owns an independent General manager and topic
+    // namespace. Reconcile after subscribing so offline creations are not
+    // missed between the startup snapshot and live events.
+    bindMapping(group.chatId, undefined, generalForGroup(group.chatId).id);
+    materializeVisibleTopics(group.chatId);
   }
 
   return {

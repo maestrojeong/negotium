@@ -18,6 +18,7 @@ import {
 } from "#agents/mcp-tools/spawn-subagent";
 import { getRegistryOperations } from "#agents/registry";
 import { WsHub } from "#bus";
+import { asTurnId, asTurnSlotKey, type TurnSlotKey } from "#identifiers";
 import { ensureBgBash } from "#platform/background-bash/manager";
 import { FROM_AUTO_CONTINUE } from "#platform/constants";
 import { logger } from "#platform/logger";
@@ -1031,8 +1032,9 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   const askReplySources = params.askReplySources;
   const sessionRetried = params._sessionRetried === true;
   const emptyResponseRetried = params._emptyResponseRetried === true;
-  const queryId = params._queryId ?? randomUUID();
-  const roomId = turnConcurrency === "isolated" ? isolatedTurnRoomId(topicId, queryId) : topicId;
+  const queryId = asTurnId(params._queryId ?? randomUUID());
+  const roomId: TurnSlotKey =
+    turnConcurrency === "isolated" ? isolatedTurnRoomId(topicId, queryId) : asTurnSlotKey(topicId);
   const currentRuntimeEpoch = getRuntimeTopicEpoch(topic.id);
   const runtimeEpoch = params._runtimeEpoch ?? currentRuntimeEpoch;
   if (params._runtimeEpoch !== undefined && params._runtimeEpoch !== currentRuntimeEpoch) {

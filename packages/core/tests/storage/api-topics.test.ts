@@ -12,6 +12,7 @@ import {
   listTopics,
   normalizeTopicState,
   setTopicSessionId,
+  setTopicSurfaceScope,
   upsertTopic,
 } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
@@ -365,11 +366,14 @@ describe("api topic storage", () => {
     expect(getTopic(topic.id)?.surfaceScope).toBe("ws_alpha");
   });
 
-  test("only the otium surface carries a workspace", () => {
-    const local = { ...makeTopic(), surface: "terminal" as const, surfaceScope: "ws_alpha" };
+  test("an explicit namespace is preserved on every surface", () => {
+    const local = { ...makeTopic(), surface: "telegram" as const, surfaceScope: "tg:123" };
     createdTopicIds.push(local.id);
     upsertTopic(local);
-    expect(getTopic(local.id)?.surfaceScope).toBeNull();
+    expect(getTopic(local.id)?.surfaceScope).toBe("tg:123");
+    expect(setTopicSurfaceScope(local.id, "telegram", "tg:123")).toBe(false);
+    expect(setTopicSurfaceScope(local.id, "telegram", "tg:456")).toBe(true);
+    expect(getTopic(local.id)?.surfaceScope).toBe("tg:456");
   });
 
   test("manager rooms stay manager/always while preserving their chosen agent", () => {

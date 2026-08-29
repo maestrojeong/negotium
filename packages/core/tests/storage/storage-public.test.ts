@@ -11,13 +11,12 @@ describe("public storage facade", () => {
     expect(storage.resetStorageHost).toBeFunction();
     expect(storage.db).toBeDefined();
     expect(storage.getTopic).toBeFunction();
-    expect(storage.getForumTopicByName).toBeFunction();
     expect(storage.replaceConversationStrict).toBeFunction();
     expect(storage.resolveTopicBrief).toBeFunction();
     expect(storage.deletePendingAsksForTopic).toBeFunction();
     expect(storage.tokenStatsFileId).toBeFunction();
     expect(storage.apiTopics.getTopicByName).toBe(storage.getTopicByName);
-    expect(storage.forum.getTopicByName).toBe(storage.getForumTopicByName);
+    expect(storage.forum.getTopicByName).toBeFunction();
     expect(storage.sessionAsks.createPendingAsk).toBe(storage.createPendingAsk);
   });
 

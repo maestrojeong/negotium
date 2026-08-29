@@ -80,7 +80,8 @@ release process.
 
 ## Release checklist
 
-1. Update both public manifests, private workspace manifests, and `NEGOTIUM_VERSION` together.
+1. Update both public manifests and `NEGOTIUM_VERSION` together. Private workspace versions are
+   source-boundary metadata and do not participate in the public lockstep release.
 2. Refresh `bun.lock`.
 3. Run check, test, dry-run, and smoke validation.
 4. Commit and push the release.

@@ -1,3 +1,5 @@
+import { asTurnSlotKey, type TurnSlotKey } from "#identifiers";
+
 export interface RuntimeTurnLeaseLike {
   topicId: string;
   queryId: string;
@@ -41,8 +43,8 @@ export type RoomQueryDecision<TControl, TLease extends RuntimeTurnLeaseLike> =
 const ISOLATED_TURN_ROOM_MARKER = "::isolated-turn::";
 
 /** Build a private scheduling key for a forked turn that may run beside its topic. */
-export function isolatedTurnRoomId(topicId: string, queryId: string): string {
-  return `${topicId}${ISOLATED_TURN_ROOM_MARKER}${queryId}`;
+export function isolatedTurnRoomId(topicId: string, queryId: string): TurnSlotKey {
+  return asTurnSlotKey(`${topicId}${ISOLATED_TURN_ROOM_MARKER}${queryId}`);
 }
 
 export function isIsolatedTurnRoomId(roomId: string): boolean {

@@ -31,9 +31,9 @@ export function ensurePersonalGeneral(
   opts: { surfaceScope?: string | null } = {},
 ): TopicDto {
   const scope = normalizeTopicSurface(surface ?? defaultTopicSurface());
-  // One General per user *per workspace*. A manager room is exempt from title
-  // conflicts precisely because several may share the name, and two workspaces
-  // sharing one private room would merge two customers' transcripts.
+  // One General per user *per surface namespace*. Otium namespaces by
+  // workspace and Telegram by forum group; sharing one manager across either
+  // boundary would merge unrelated transcripts and provider sessions.
   const surfaceScope =
     opts.surfaceScope !== undefined
       ? normalizeSurfaceScope(opts.surfaceScope)

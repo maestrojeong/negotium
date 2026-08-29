@@ -847,17 +847,16 @@ function normalizedTitle(title: string): string {
 /**
  * The workspace a written row belongs to.
  *
- * Only the `otium` surface has more than one instance, so terminal and telegram
- * are always null — writing this process's Otium scope onto a terminal room
- * would partition the terminal namespace for no reason. An explicit
- * `surfaceScope` in the DTO wins so a hub can file a room it already knows the
- * workspace of; otherwise the room joins whatever workspace this process is
- * attached to, which is null until the scope resolves (M-3).
+ * `surfaceScope` partitions one surface into independent namespaces. Otium
+ * uses a workspace scope and Telegram uses a forum-group scope. Terminal is
+ * normally unscoped. An explicit value always wins; only Otium has a
+ * process-level default because its workspace attachment is host state.
  */
 function surfaceScopeForWrite(t: TopicDto): string | null {
-  if (normalizeTopicSurface(t.surface ?? defaultTopicSurface()) !== "otium") return null;
   if (t.surfaceScope !== undefined) return normalizeSurfaceScope(t.surfaceScope);
-  return defaultSurfaceScope();
+  return normalizeTopicSurface(t.surface ?? defaultTopicSurface()) === "otium"
+    ? defaultSurfaceScope()
+    : null;
 }
 
 export function upsertTopic(t: TopicDto): void {
@@ -1067,10 +1066,10 @@ export function getTopicByNameAndKind(title: string, kind: TopicKind): TopicDto 
 }
 
 /**
- * Titles are unique **per surface instance**, not per node: `otium` may exist
- * once on the terminal, once on telegram, and once in *each* attached Otium
- * workspace (M-1). Two workspaces are two namespaces that never see each other,
- * so a name taken in one says nothing about the other.
+ * Titles are unique **per surface namespace**, not per node: the same title may
+ * exist on terminal, in multiple Telegram groups, and in each attached Otium
+ * workspace. Independent namespaces never see each other, so a name taken in
+ * one says nothing about another.
  */
 export function findTopicTitleConflict(
   title: string,
@@ -1126,6 +1125,27 @@ export function setTopicSurfaces(topicIds: readonly string[], surface: TopicSurf
     }
   })();
   return changed;
+}
+
+/**
+ * File an existing topic into one surface namespace without changing its id.
+ * Adapter-owned migrations use this when their local mapping store is the only
+ * authority capable of deriving the namespace (for example Telegram chat id).
+ */
+export function setTopicSurfaceScope(
+  topicId: string,
+  surface: TopicSurface,
+  surfaceScope: string | null,
+): boolean {
+  const normalizedSurface = normalizeTopicSurface(surface);
+  const normalizedScope = normalizeSurfaceScope(surfaceScope);
+  const result = db
+    .query(
+      `UPDATE api_topics SET surface = ?, surface_scope = ?
+       WHERE id = ? AND (surface IS NOT ? OR surface_scope IS NOT ?)`,
+    )
+    .run(normalizedSurface, normalizedScope, topicId, normalizedSurface, normalizedScope);
+  return Number(result.changes ?? 0) > 0;
 }
 
 /**

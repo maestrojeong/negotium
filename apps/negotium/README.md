@@ -319,7 +319,6 @@ SQLite shim surface (`query`/`prepare`/`exec`/`run`/`transaction`) through
 typed facade returned as `db`.
 
 The facade exposes both direct functions and collision-safe module namespaces such as
-`apiTopics.getTopicByName` and `forum.getTopicByName`; the direct forum alias is
-`getForumTopicByName`. Pending session asks use bounded `v3-<sha256>` filenames and migrate live v2
-and legacy records on access. Unsafe or oversized user IDs and token-stat IDs are stored under
-stable SHA-256 components.
+`apiTopics.getTopicByName` and the deprecated `forum.getTopicByName` namespace. Pending session
+asks use bounded `v3-<sha256>` filenames and migrate live v2 and legacy records on access. Unsafe
+or oversized user IDs and token-stat IDs are stored under stable SHA-256 components.

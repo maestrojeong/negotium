@@ -7,7 +7,6 @@ export type {
   EffortLevel,
   PeerRuntimeBridgeContext,
   QueryState,
-  SessionContext,
   TaskSnapshot,
   TokenUsage,
   UnifiedEvent,

@@ -1,14 +1,3 @@
-/**
- * Common context carried through the attachment/prompt-build pipeline.
- * Used by buildPromptFromMessage and related helpers.
- */
-export interface SessionContext {
-  userId: number;
-  topicName?: string;
-  userDir?: string;
-  sessionType?: "dm" | "forum" | "ephemeral" | "manager" | "cron";
-}
-
 export interface TokenUsage {
   /** Aggregate billable input across every model call made during this turn. */
   inputTokens: number;

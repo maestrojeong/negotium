@@ -54,10 +54,27 @@ afterAll(() => {
 });
 
 describe("forum mode", () => {
+  test("an unscoped Telegram topic is not adopted by the only forum group", async () => {
+    const title = room("unscoped-dm");
+    const topic = registerTopic({ title, userId: USER, surface: "telegram" });
+    runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "must stay unscoped"));
+    await Bun.sleep(30);
+    expect(fake.forumCalls.some((call) => call.name === title)).toBe(false);
+    expect(fake.calls.some((call) => call.text.includes("must stay unscoped"))).toBe(false);
+    expect(
+      getTopicByNameForUser(title, USER, { surface: "telegram", surfaceScope: null })?.id,
+    ).toBe(topic.id);
+  });
+
   test("startup reconciles topics created while the adapter was offline", async () => {
     const user = `tg-startup-reconcile-${RUN}`;
     const title = room("offline-created");
-    const topic = registerTopic({ title, userId: user, surface: "telegram" });
+    const topic = registerTopic({
+      title,
+      userId: user,
+      surface: "telegram",
+      surfaceScope: `tg:${FORUM_CHAT + 70}`,
+    });
     const client = new FakeTelegramClient();
     const handle = startTelegramAdapter({
       startTurn: () => null,
@@ -116,7 +133,12 @@ describe("forum mode", () => {
       forumChatId: chatId,
       mappingDbPath: dbPath,
     });
-    const topic = registerTopic({ title: room("delete-retry"), userId: user, surface: "telegram" });
+    const topic = registerTopic({
+      title: room("delete-retry"),
+      userId: user,
+      surface: "telegram",
+      surfaceScope: `tg:${chatId}`,
+    });
     await waitFor(() => first.forumCalls.some((call) => call.name === topic.title));
     const mapped = openMappingStore(dbPath);
     const threadId = mapped.load().find((mapping) => mapping.topicId === topic.id)?.threadId;
@@ -164,7 +186,13 @@ describe("forum mode", () => {
 
   test("runtime topic-created materializes a forum thread, persists the mapping, and routes messages into it", async () => {
     const title = room("spawned");
-    const topic = registerTopic({ title, userId: USER, agent: "codex", surface: "telegram" });
+    const topic = registerTopic({
+      title,
+      userId: USER,
+      agent: "codex",
+      surface: "telegram",
+      surfaceScope: `tg:${FORUM_CHAT}`,
+    });
     await waitFor(() => fake.forumCalls.some((c) => c.name === title));
     expect(fake.forumCalls.find((c) => c.name === title)?.chatId).toBe(FORUM_CHAT);
 
@@ -209,6 +237,7 @@ describe("forum mode", () => {
       userId: USER,
       agent: "codex",
       surface: "telegram",
+      surfaceScope: `tg:${FORUM_CHAT}`,
     });
     await waitFor(() => fake.forumCalls.some((c) => c.name === telegramTitle));
 
@@ -241,7 +270,12 @@ describe("forum mode", () => {
     fake.createMode = "manual";
     try {
       const title = room("buffered");
-      const topic = registerTopic({ title, userId: USER, surface: "telegram" });
+      const topic = registerTopic({
+        title,
+        userId: USER,
+        surface: "telegram",
+        surfaceScope: `tg:${FORUM_CHAT}`,
+      });
       await waitFor(() => fake.forumCalls.some((c) => c.name === title));
       runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "first"));
       runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "second"));
@@ -264,7 +298,12 @@ describe("forum mode", () => {
     fake.createMode = "reject";
     try {
       const title = room("no-rights");
-      const topic = registerTopic({ title, userId: USER, surface: "telegram" });
+      const topic = registerTopic({
+        title,
+        userId: USER,
+        surface: "telegram",
+        surfaceScope: `tg:${FORUM_CHAT}`,
+      });
       await waitFor(() => fake.forumCalls.some((c) => c.name === title));
       runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "m1"));
       await waitFor(() => fake.calls.some((c) => c.text === `[${title}] m1`));
@@ -292,7 +331,12 @@ describe("forum mode", () => {
 
   test("topic-deleted deletes the forum thread and drops the mapping", async () => {
     const title = room("doomed");
-    const topic = registerTopic({ title, userId: USER, surface: "telegram" });
+    const topic = registerTopic({
+      title,
+      userId: USER,
+      surface: "telegram",
+      surfaceScope: `tg:${FORUM_CHAT}`,
+    });
     await waitFor(() => {
       const check = openMappingStore(DB_PATH);
       const found = check.load().some((m) => m.topicId === topic.id);
@@ -314,7 +358,12 @@ describe("forum mode", () => {
 
   test("topics of other negotium users are not materialized", async () => {
     const title = room("foreign");
-    registerTopic({ title, userId: "someone-else", surface: "telegram" });
+    registerTopic({
+      title,
+      userId: "someone-else",
+      surface: "telegram",
+      surfaceScope: `tg:${FORUM_CHAT}`,
+    });
     await Bun.sleep(20);
     expect(fake.forumCalls.some((c) => c.name === title)).toBe(false);
   });
@@ -331,7 +380,12 @@ describe("forum mode", () => {
       mappingDbPath: dbPath,
     });
     const title = room("survives");
-    const topic = registerTopic({ title, userId: RESTART_USER, surface: "telegram" });
+    const topic = registerTopic({
+      title,
+      userId: RESTART_USER,
+      surface: "telegram",
+      surfaceScope: `tg:${FORUM_CHAT + 1}`,
+    });
     runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "before restart"));
     await waitFor(() => fakeA.calls.some((c) => c.text === "before restart"));
     const threadId = fakeA.calls.find((c) => c.text === "before restart")?.opts

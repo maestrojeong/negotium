@@ -25,8 +25,4 @@ export {
   type QueryStateStoreOptions,
   writeQueryState,
 } from "./state";
-export {
-  AbortReason,
-  type HandleAgentQueryOutcome,
-  type HandleAgentQueryParams,
-} from "./types";
+export { AbortReason } from "./types";

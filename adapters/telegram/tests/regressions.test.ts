@@ -49,11 +49,17 @@ describe("forum mode: unmapped live topics (finding 2)", () => {
     const FORUM = freshChat();
     const title = room("lazy");
     // Created BEFORE the adapter exists — its topic-created broadcast is missed.
-    const topic = registerTopic({ title, userId: USER, surface: "telegram" });
+    const topic = registerTopic({
+      title,
+      userId: USER,
+      surface: "telegram",
+      surfaceScope: `tg:${FORUM}`,
+    });
     const foreign = registerTopic({
       title: room("lazy-foreign"),
       userId: "someone-else",
       surface: "telegram",
+      surfaceScope: `tg:${FORUM}`,
     });
 
     const fake = new FakeTelegramClient();
@@ -99,7 +105,12 @@ describe("forum mode: unmapped live topics (finding 2)", () => {
       forumChatId: FORUM,
       mappingDbPath: dbPath,
     });
-    const topic = registerTopic({ title, userId: USER, surface: "telegram" });
+    const topic = registerTopic({
+      title,
+      userId: USER,
+      surface: "telegram",
+      surfaceScope: `tg:${FORUM}`,
+    });
     runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "m1"));
     await waitFor(() => fakeA.calls.some((c) => c.text === `[${title}] m1`));
     adapterA.stop();
@@ -224,7 +235,12 @@ describe("in-flight createForumTopic races (findings 4 & 5)", () => {
       forumChatId: FORUM,
       mappingDbPath: dbPath,
     });
-    const topic = registerTopic({ title: room("stop-race"), userId: USER, surface: "telegram" });
+    const topic = registerTopic({
+      title: room("stop-race"),
+      userId: USER,
+      surface: "telegram",
+      surfaceScope: `tg:${FORUM}`,
+    });
     await waitFor(() => fake.forumCalls.length === 1);
     runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "buffered then stopped"));
 
@@ -242,6 +258,7 @@ describe("in-flight createForumTopic races (findings 4 & 5)", () => {
 
   test("stop() while the pending creation is about to FAIL does not write a tombstone", async () => {
     const USER = `stopfail-user-${RUN}`;
+    const FORUM = freshChat();
     const dbPath = freshDb();
     const fake = new FakeTelegramClient();
     fake.createMode = "manual";
@@ -249,10 +266,15 @@ describe("in-flight createForumTopic races (findings 4 & 5)", () => {
       startTurn: () => null,
       client: fake,
       userId: USER,
-      forumChatId: freshChat(),
+      forumChatId: FORUM,
       mappingDbPath: dbPath,
     });
-    registerTopic({ title: room("stop-fail"), userId: USER, surface: "telegram" });
+    registerTopic({
+      title: room("stop-fail"),
+      userId: USER,
+      surface: "telegram",
+      surfaceScope: `tg:${FORUM}`,
+    });
     await waitFor(() => fake.forumCalls.length === 1);
     adapter.stop(); // store now closed; a tombstone write would throw
     fake.rejectPendingCreates(new Error("400 Bad Request: not enough rights"));
@@ -277,7 +299,12 @@ describe("in-flight createForumTopic races (findings 4 & 5)", () => {
     });
     try {
       const expectedThreadId = fake.nextThreadId;
-      const topic = registerTopic({ title: room("del-race"), userId: USER, surface: "telegram" });
+      const topic = registerTopic({
+        title: room("del-race"),
+        userId: USER,
+        surface: "telegram",
+        surfaceScope: `tg:${FORUM}`,
+      });
       await waitFor(() => fake.forumCalls.length === 1);
       runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "into the void"));
 
@@ -311,7 +338,12 @@ describe("in-flight createForumTopic races (findings 4 & 5)", () => {
       mappingDbPath: dbPath,
     });
     const expectedThreadId = fake.nextThreadId;
-    const topic = registerTopic({ title: room("orphan-retry"), userId: USER, surface: "telegram" });
+    const topic = registerTopic({
+      title: room("orphan-retry"),
+      userId: USER,
+      surface: "telegram",
+      surfaceScope: `tg:${FORUM}`,
+    });
     await waitFor(() => fake.forumCalls.length === 1);
     await topicService.delete({ topicId: topic.id, userId: USER, skipArchive: true });
     fake.resolvePendingCreates();
@@ -441,17 +473,23 @@ describe("deliver() error classification (finding 7)", () => {
 describe("forum topic title cap (finding 8)", () => {
   test("createForumTopic names are truncated to 128 chars", async () => {
     const USER = `longtitle-user-${RUN}`;
+    const FORUM = freshChat();
     const fake = new FakeTelegramClient();
     const adapter = startTelegramAdapter({
       startTurn: () => null,
       client: fake,
       userId: USER,
-      forumChatId: freshChat(),
+      forumChatId: FORUM,
       mappingDbPath: freshDb(),
     });
     try {
       const title = `${room("long")}-${"x".repeat(200)}`;
-      registerTopic({ title, userId: USER, surface: "telegram" });
+      registerTopic({
+        title,
+        userId: USER,
+        surface: "telegram",
+        surfaceScope: `tg:${FORUM}`,
+      });
       await waitFor(() => fake.forumCalls.length === 1);
       expect(fake.forumCalls[0]?.name).toBe(title.slice(0, 128));
       expect(fake.forumCalls[0]?.name.length).toBe(128);

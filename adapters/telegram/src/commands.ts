@@ -21,14 +21,15 @@ import { extractCommandArg } from "@/telegram-api";
 export interface TelegramCommandContext {
   userId: string;
   defaultAgent?: AgentKind;
-  forum?: { enabled: boolean; chatId: number };
+  surfaceScopeFor: (chatId: number) => string | null;
+  isForumGeneral: (chatId: number, threadId?: number) => boolean;
   resolveBotUsername: () => Promise<string | undefined>;
   isVaultOwner: (telegramUserId?: number) => boolean;
   reply: (chatId: number, threadId: number | undefined, text: string) => void;
   sendOnboardingGuide: (chatId: number, threadId?: number) => Promise<void>;
   currentTopicId: (chatId: number, threadId?: number) => string | undefined;
   titleFor: (chatId: number, threadId?: number) => string;
-  getOrCreateTopic: (title: string, agent: AgentKind) => TopicDto;
+  getOrCreateTopic: (chatId: number, title: string, agent: AgentKind) => TopicDto;
   bindMapping: (chatId: number, threadId: number | undefined, topicId: string) => void;
   registerTopic: (options: RegisterTopicOptions) => TopicDto;
   loadTopic: (chatId: number, topicId: string, threadId?: number) => boolean;
@@ -59,11 +60,18 @@ export type TelegramCommandRouter = (
  * The id path needs its own check: `getTopic` takes a raw id and knows nothing
  * about surfaces, so a pasted id would bypass the name lookup entirely.
  */
-function resolveTelegramTopicArg(argument: string, userId: string): TopicDto | null {
-  const byName = getTopicByNameForUser(argument, userId, { surface: "telegram" });
+function resolveTelegramTopicArg(
+  argument: string,
+  userId: string,
+  surfaceScope: string | null,
+): TopicDto | null {
+  const byName = getTopicByNameForUser(argument, userId, {
+    surface: "telegram",
+    surfaceScope,
+  });
   if (byName) return byName;
   const byId = getTopic(argument);
-  return byId?.surface === "telegram" ? byId : null;
+  return byId?.surface === "telegram" && (byId.surfaceScope ?? null) === surfaceScope ? byId : null;
 }
 
 export function createTelegramCommandRouter(
@@ -110,6 +118,7 @@ export function createTelegramCommandRouter(
         }
         try {
           const topic = context.getOrCreateTopic(
+            chatId,
             `${context.titleFor(chatId, threadId)}-${argument}`,
             argument,
           );
@@ -121,7 +130,10 @@ export function createTelegramCommandRouter(
         return;
       }
       case "/topics": {
-        const topics = listTopics({ surface: "telegram" }).filter(
+        const topics = listTopics({
+          surface: "telegram",
+          surfaceScope: context.surfaceScopeFor(chatId),
+        }).filter(
           (topic) =>
             isTopicVisible(topic) && topic.participants.some((person) => person.userId === userId),
         );
@@ -164,12 +176,10 @@ export function createTelegramCommandRouter(
             // Both branches below create a telegram room; only the mapping
             // differs (forum General lets the materializer bind the thread).
             surface: "telegram",
+            surfaceScope: context.surfaceScopeFor(chatId),
             ...(context.defaultAgent ? { agent: context.defaultAgent } : {}),
           };
-          const fromForumGeneral =
-            context.forum?.enabled === true &&
-            chatId === context.forum.chatId &&
-            threadId === undefined;
+          const fromForumGeneral = context.isForumGeneral(chatId, threadId);
           const topic = fromForumGeneral
             ? topicService.create(createOptions)
             : context.registerTopic(createOptions);
@@ -193,7 +203,11 @@ export function createTelegramCommandRouter(
           reply(chatId, threadId, "usage: /load <topic>");
           return;
         }
-        const candidate = resolveTelegramTopicArg(argument, userId);
+        const candidate = resolveTelegramTopicArg(
+          argument,
+          userId,
+          context.surfaceScopeFor(chatId),
+        );
         const topic = candidate && isTopicVisible(candidate) ? candidate : null;
         if (!topic || !loadTopic(chatId, topic.id, threadId)) {
           reply(chatId, threadId, `no visible topic matching "${argument}"`);
@@ -250,7 +264,7 @@ export function createTelegramCommandRouter(
         const force = command === "/del!";
         const topicId = currentTopicId(chatId, threadId);
         const topic = argument
-          ? resolveTelegramTopicArg(argument, userId)
+          ? resolveTelegramTopicArg(argument, userId, context.surfaceScopeFor(chatId))
           : topicId
             ? getTopic(topicId)
             : null;

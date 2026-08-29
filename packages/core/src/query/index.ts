@@ -20,5 +20,4 @@ export {
   takeDeferredInject,
   wsAbortReason,
 } from "./active-rooms";
-export type { HandleAgentQueryOutcome, HandleAgentQueryParams } from "./types";
 export { AbortReason } from "./types";

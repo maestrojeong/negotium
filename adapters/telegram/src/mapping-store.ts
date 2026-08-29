@@ -35,6 +35,12 @@ export interface PersistedTombstone {
   title: string;
 }
 
+export interface PersistedTelegramGroup {
+  chatId: number;
+  title?: string;
+  ownerTelegramUserId?: number;
+}
+
 export interface PersistedRuntimeEvent {
   seq: number;
   event: RuntimeBusEvent;
@@ -75,6 +81,9 @@ export interface TelegramMappingStore {
   loadForumChatId(): number | undefined;
   saveForumChatId(chatId: number): void;
   clearForumChatId(): void;
+  loadGroups(): PersistedTelegramGroup[];
+  saveGroup(group: PersistedTelegramGroup): void;
+  deleteGroup(chatId: number): void;
   /** One-shot migration flags (e.g. the surface backfill). */
   isFlagSet(key: string): boolean;
   setFlag(key: string): void;
@@ -213,6 +222,14 @@ function createTables(db: Database): void {
     )`,
   );
   db.run(
+    `CREATE TABLE IF NOT EXISTS telegram_groups (
+      chat_id INTEGER PRIMARY KEY,
+      title TEXT,
+      owner_telegram_user_id INTEGER,
+      created_at TEXT NOT NULL
+    )`,
+  );
+  db.run(
     `CREATE TABLE IF NOT EXISTS runtime_inbox (
       seq INTEGER PRIMARY KEY,
       runtime_message_id TEXT,
@@ -257,6 +274,19 @@ export function openMappingStore(path?: string): TelegramMappingStore {
   const db = new Database(dbPath);
   migrateLegacySchema(db);
   createTables(db);
+  const legacyForum = db.query("SELECT value FROM settings WHERE key = 'forum_chat_id'").get() as {
+    value: string;
+  } | null;
+  if (legacyForum) {
+    const chatId = Number.parseInt(legacyForum.value, 10);
+    if (Number.isSafeInteger(chatId)) {
+      db.run(
+        `INSERT OR IGNORE INTO telegram_groups (chat_id, created_at)
+         VALUES (?, ?)`,
+        [chatId, new Date().toISOString()],
+      );
+    }
+  }
   migrateOutboxSchema(db);
   migrateRuntimeInboxSchema(db);
   return {
@@ -317,6 +347,45 @@ export function openMappingStore(path?: string): TelegramMappingStore {
     },
     clearForumChatId(): void {
       db.run("DELETE FROM settings WHERE key = 'forum_chat_id'");
+    },
+    loadGroups(): PersistedTelegramGroup[] {
+      const rows = db
+        .query(
+          "SELECT chat_id, title, owner_telegram_user_id FROM telegram_groups ORDER BY created_at",
+        )
+        .all() as Array<{
+        chat_id: number;
+        title: string | null;
+        owner_telegram_user_id: number | null;
+      }>;
+      return rows.map((row) => ({
+        chatId: row.chat_id,
+        ...(row.title ? { title: row.title } : {}),
+        ...(row.owner_telegram_user_id !== null
+          ? { ownerTelegramUserId: row.owner_telegram_user_id }
+          : {}),
+      }));
+    },
+    saveGroup(group: PersistedTelegramGroup): void {
+      db.run(
+        `INSERT INTO telegram_groups (chat_id, title, owner_telegram_user_id, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(chat_id) DO UPDATE SET
+           title = COALESCE(excluded.title, telegram_groups.title),
+           owner_telegram_user_id = COALESCE(
+             excluded.owner_telegram_user_id,
+             telegram_groups.owner_telegram_user_id
+           )`,
+        [
+          group.chatId,
+          group.title ?? null,
+          group.ownerTelegramUserId ?? null,
+          new Date().toISOString(),
+        ],
+      );
+    },
+    deleteGroup(chatId: number): void {
+      db.run("DELETE FROM telegram_groups WHERE chat_id = ?", [chatId]);
     },
     isFlagSet(key: string): boolean {
       return db.query("SELECT 1 FROM settings WHERE key = ?").get(key) !== null;

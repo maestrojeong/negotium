@@ -97,6 +97,17 @@ export {
 export type { RuntimeBus, RuntimeBusEvent, RuntimeBusListener, TopicDeletedMeta } from "#bus";
 export { runtimeBus, setRuntimeBus, WsHub } from "#bus";
 export type {
+  FileId,
+  Identifier,
+  MessageId,
+  ProviderSessionId,
+  RequestId,
+  TopicId,
+  TurnId,
+  TurnSlotKey,
+  UserId,
+} from "#identifiers";
+export type {
   PeerRuntimeAskUserRequest,
   PeerRuntimeBridge,
   PeerRuntimeFileRequest,
@@ -312,6 +323,7 @@ export {
   setDefaultSurfaceScope,
   setSurfaceScopeRequired,
   setTopicSessionId,
+  setTopicSurfaceScope,
   setTopicSurfaces,
   stampUnscopedOtiumTopics,
   upsertTopic,

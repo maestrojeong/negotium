@@ -72,6 +72,8 @@ Visibility and surface are independent fields:
 
 - `visibility: visible | hidden` controls whether a topic appears in pickers.
 - `surface: terminal | telegram | otium` is a permanent property of a topic, set once at creation.
+  `surfaceScope` partitions a surface into independent namespaces: Telegram uses `tg:<chatId>` and
+  Otium uses its stable workspace scope.
   There is no "share this topic with Otium" operation and no `accessMode` field; each adapter only
   ever lists topics whose `surface` matches its own, filtered in the store rather than in the
   adapter. See [Surface-scoped sessions](./SURFACE-SESSION-SEPARATION.md) for the full design and
@@ -125,9 +127,11 @@ recovery and development path.
 
 ## Telegram
 
-Telegram owns durable chat/thread-to-topic mappings. `/load` attaches the current location to an
-existing topic; `/unload` removes only that mapping. Forum topic materialization must be idempotent
-when duplicate `topic-created` events arrive.
+Telegram owns durable group metadata and chat/thread-to-topic mappings. One bot may connect to
+multiple forum groups. Every group has an independent topic namespace and `General` manager;
+same-named topics in two groups are separate canonical topics. `/load` resolves only inside the
+current group, and `/unload` removes only that mapping. Forum topic materialization must be
+idempotent when duplicate `topic-created` events arrive.
 
 Private messages use the same personal `General` manager topic visible in Terminal. A response to a
 Telegram-origin turn returns only to its origin. A response started elsewhere has no Telegram origin

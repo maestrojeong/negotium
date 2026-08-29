@@ -750,7 +750,6 @@ import type {
 } from "negotium/outbox";
 import type { RuntimeEnvironment, StdioLogger } from "negotium/platform-runtime";
 import type {
-  HandleAgentQueryOutcome,
   QueryStateStoreOptions,
   RoomQueryRegistryHost,
 } from "negotium/query-runtime";
@@ -985,10 +984,8 @@ const queryHost: RoomQueryRegistryHost<
 if (typeof queryRuntime.createRoomQueryRegistry !== "function" || !queryHost.instanceId) {
   throw new Error("packed query-runtime factory export is invalid");
 }
-const queryOutcome: HandleAgentQueryOutcome = "ran";
 const runtimeAgent: AgentKind = "codex";
 if (
-  queryOutcome !== "ran" ||
   runtimeAgent !== "codex" ||
   typeof runtimeHelpers.connectStdio !== "function" ||
   !runtimeHelpers.EFFORT_VALUES.includes("xhigh")
@@ -1167,7 +1164,6 @@ try {
     .query("SELECT name FROM sqlite_master WHERE type='table' AND name='api_topics'")
     .get() as { name?: string } | null;
   if (table?.name !== "api_topics") throw new Error("packed storage schema was not initialized");
-  storage.flushSessionCache();
   storageDatabase.query("SELECT 1").get();
 } finally {
   restoreStorageHost();
