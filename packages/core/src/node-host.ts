@@ -109,7 +109,11 @@ export {
 } from "#topics/derive";
 export { ensurePersonalGeneral } from "#topics/personal-general";
 export { compactTopicSession } from "#topics/session";
-export { TopicUpdateConflictError, updateTopicSettings } from "#topics/update";
+export {
+  TopicUpdateConflictError,
+  updateManagerTopicRuntimeConfig,
+  updateTopicSettings,
+} from "#topics/update";
 export type { AgentKind, EffortLevel } from "#types";
 export type { AiMode, AttachmentDto, TopicDto, TopicSurface } from "#types/api";
 export { NEGOTIUM_VERSION } from "#version";

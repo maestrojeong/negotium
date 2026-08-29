@@ -14,15 +14,17 @@ import { resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
 import { WsHub } from "#bus";
 import { RESERVED_TOPIC_NAMES } from "#platform/constants";
-import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
+import { getApiTopicConfig, setApiTopicConfig, type TopicConfig } from "#storage/api-topic-config";
 import {
   findTopicTitleConflict,
   getTopic,
   normalizeAiMode,
   normalizeTopicKind,
   normalizeTopicState,
+  setApiTopicAgent,
   upsertTopic,
 } from "#storage/api-topics";
+import { db } from "#storage/forum-db";
 import { TopicValidationError } from "#topics/create";
 import { type AgentKind, type EffortLevel, isAgentKind } from "#types";
 import type { AiMode, TopicDto } from "#types/api";
@@ -40,6 +42,69 @@ export interface UpdateTopicSettingsOptions {
   defaultModel?: string;
   defaultEffort?: string;
   aiMode?: AiMode;
+}
+
+export interface UpdateManagerTopicRuntimeConfigOptions {
+  topicId: string;
+  agent: AgentKind;
+  config: TopicConfig;
+}
+
+/**
+ * Atomically update the execution settings of a system-managed General room.
+ * Its identity fields remain protected by updateTopicSettings; only the
+ * canonical agent/defaults and per-topic override move together here.
+ */
+export function updateManagerTopicRuntimeConfig(
+  opts: UpdateManagerTopicRuntimeConfigOptions,
+): TopicDto {
+  const current = getTopic(opts.topicId);
+  if (!current) throw new TopicValidationError("Topic not found");
+  if (current.kind !== "manager") {
+    throw new TopicValidationError("Runtime config agent updates are manager-only");
+  }
+  if (!isAgentKind(opts.agent)) throw new TopicValidationError(`Unknown agent '${opts.agent}'`);
+
+  const registry = getRegistry(opts.agent);
+  if (
+    opts.config.model &&
+    resolveModelForAgent(opts.agent, opts.config.model, registry) !== opts.config.model
+  ) {
+    throw new TopicValidationError(`Invalid model for agent ${opts.agent}`);
+  }
+  if (opts.config.effort && !registry.validateEffort(opts.config.effort)) {
+    throw new TopicValidationError(`Invalid effort for agent ${opts.agent}`);
+  }
+
+  const defaultModel = resolveModelForAgent(
+    opts.agent,
+    opts.config.model ?? (opts.agent === current.agent ? current.defaultModel : undefined),
+    registry,
+  );
+  const requestedEffort =
+    opts.config.effort ?? (opts.agent === current.agent ? current.defaultEffort : undefined);
+  const defaultEffort =
+    requestedEffort && registry.validateEffort(requestedEffort)
+      ? requestedEffort
+      : (registry.defaultEffort ?? "medium");
+
+  db.transaction(() => {
+    setApiTopicAgent(current.id, opts.agent, {
+      model: defaultModel,
+      effort: defaultEffort,
+    });
+    setApiTopicConfig(current.id, opts.config);
+  })();
+
+  WsHub.get().broadcastTopicUpdated(current.id);
+  return (
+    getTopic(current.id) ?? {
+      ...current,
+      agent: opts.agent,
+      defaultModel,
+      defaultEffort,
+    }
+  );
 }
 
 /** A title that is already taken by another room on the same surface. */

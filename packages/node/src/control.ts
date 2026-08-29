@@ -67,6 +67,7 @@ import {
   TopicValidationError,
   topicService,
   updateApiMessageText,
+  updateManagerTopicRuntimeConfig,
   updateTopicSettings,
   upsertTopic,
   WsHub,
@@ -1499,6 +1500,19 @@ export function createNodeControlHandler(
           const topicId = decodeURIComponent(runtimeTopicConfigMatch[1]);
           const topic = getTopic(topicId);
           if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
+          let requestedAgent: AgentKind | undefined;
+          if ("agent" in body) {
+            if (topic.kind !== "manager") {
+              return jsonError(400, "Config endpoint agent updates are manager-only");
+            }
+            if (
+              typeof body.agent !== "string" ||
+              !["claude", "codex", "maestro"].includes(body.agent)
+            ) {
+              return jsonError(400, "Invalid agent");
+            }
+            requestedAgent = body.agent as AgentKind;
+          }
           const next: TopicConfig = { ...(getApiTopicConfig(topicId) ?? {}) };
           for (const key of ["model", "effort"] as const) {
             if (!(key in body)) continue;
@@ -1527,11 +1541,25 @@ export function createNodeControlHandler(
             else if (value === true) next[key] = true;
             else return jsonError(400, `${key} must be a boolean or null`);
           }
-          setApiTopicConfig(topicId, next);
+          let updatedTopic = topic;
+          try {
+            if (requestedAgent) {
+              updatedTopic = updateManagerTopicRuntimeConfig({
+                topicId,
+                agent: requestedAgent,
+                config: next,
+              });
+            } else {
+              setApiTopicConfig(topicId, next);
+            }
+          } catch (err) {
+            if (err instanceof TopicValidationError) return jsonError(400, err.message);
+            throw err;
+          }
           return Response.json({
             ok: true,
             v: NODE_RUNTIME_CONTRACT_VERSION,
-            topic,
+            topic: updatedTopic,
             config: getApiTopicConfig(topicId) ?? {},
           });
         }

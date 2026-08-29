@@ -18,6 +18,7 @@ import {
   NODE_CONTROL_TOKEN,
   registerTopic,
   releaseRuntimeTurnLease,
+  resolveTopicTurnExecution,
   runtimeBus,
   setTopicSessionId,
   upsertTopic,
@@ -326,6 +327,47 @@ test("runtime gateway reads and writes canonical per-topic config", async () => 
   expect(await read?.json()).toMatchObject({
     topic: { id: topic.id },
     config: { model: "kimi-k2.5", effort: "high", mcp: ["browser"], modelLocked: true },
+  });
+});
+
+test("runtime gateway atomically switches a manager topic agent and model", async () => {
+  const managerUser = `manager-config-${randomUUID()}`;
+  const ensured = await handler(
+    runtimeRequest("/manager-topic", {
+      method: "POST",
+      body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, userId: managerUser }),
+    }),
+  );
+  const ensuredBody = (await ensured?.json()) as { topic?: TopicDto };
+  const topic = ensuredBody.topic;
+  if (!topic) throw new Error("manager topic was not created");
+  const path = `/topics/${encodeURIComponent(topic.id)}/config`;
+
+  const updated = await handler(
+    runtimeRequest(path, {
+      method: "PATCH",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        agent: "claude",
+        model: "sonnet",
+        modelLocked: true,
+      }),
+    }),
+  );
+  expect(updated?.status).toBe(200);
+  expect(await updated?.json()).toMatchObject({
+    topic: { id: topic.id, kind: "manager", agent: "claude" },
+    config: { model: "sonnet", modelLocked: true },
+  });
+
+  const read = await handler(runtimeRequest(path));
+  expect(await read?.json()).toMatchObject({
+    topic: { id: topic.id, kind: "manager", agent: "claude" },
+    config: { model: "sonnet", modelLocked: true },
+  });
+  expect(resolveTopicTurnExecution(getTopic(topic.id) as TopicDto)).toMatchObject({
+    agent: "claude",
+    model: "sonnet",
   });
 });
 
@@ -690,7 +732,7 @@ test("unfiltered runtime events expose only the Otium surface", async () => {
   for (let reads = 0; reads < 4 && !received.includes(otium.id); reads += 1) {
     const next = await Promise.race([
       reader.read(),
-      new Promise<ReadableStreamReadResult<Uint8Array>>((_, reject) =>
+      new Promise<Awaited<ReturnType<typeof reader.read>>>((_, reject) =>
         setTimeout(() => reject(new Error("timed out waiting for Otium event")), 1_000),
       ),
     ]);

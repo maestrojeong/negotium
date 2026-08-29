@@ -395,8 +395,15 @@ export type {
   RestartTopicSessionResult,
 } from "#topics/session";
 export { compactTopicSession, restartTopicSession } from "#topics/session";
-export type { UpdateTopicSettingsOptions } from "#topics/update";
-export { TopicUpdateConflictError, updateTopicSettings } from "#topics/update";
+export type {
+  UpdateManagerTopicRuntimeConfigOptions,
+  UpdateTopicSettingsOptions,
+} from "#topics/update";
+export {
+  TopicUpdateConflictError,
+  updateManagerTopicRuntimeConfig,
+  updateTopicSettings,
+} from "#topics/update";
 export * from "#types";
 // ── Types ───────────────────────────────────────────────────────────
 export { EFFORT_VALUES } from "#types";
