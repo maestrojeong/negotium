@@ -15,6 +15,7 @@ instead of copying the explanation.
 | [Feature review](./FEATURE-REVIEW.md) | Review order, acceptance questions, source areas, and regression coverage |
 | [Wiki search evaluation for 0.2.18](./WIKI-SEARCH-EVALUATION-0.2.18.md) | Topic, article, and summary retrieval dataset, metrics, and limitations |
 | [Releasing](./RELEASING.md) | Package validation and npm publication |
+| [Migration 0.9.0](./MIGRATION-0.9.0.md) | Idempotent Terminal/Telegram ingress and visualization reference titles |
 | [Migration 0.8.0](./MIGRATION-0.8.0.md) | Telegram multi-group namespaces, identifier vocabulary, and legacy API cleanup |
 | [Migration 0.4.0](./MIGRATION-0.4.0.md) | Codex Vault hooks and removal of credential execution MCP tools |
 | [Migration 0.2.19](./MIGRATION-0.2.19.md) | The single wiki write tool, the summary catalog, and scan-free retrieval |
