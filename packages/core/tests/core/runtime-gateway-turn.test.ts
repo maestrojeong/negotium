@@ -232,11 +232,13 @@ test("runtime gateway backfills a legacy null payload_hash row so later replays 
       actorUserId: "actor-alice",
       actorLabel: "Alice",
       vaultUserId: "vault-a",
+      sourceAdapter: "telegram",
       text: "legacy gateway turn",
       clientMessageId,
       requestId,
     });
     expect(firstReplay.deduplicated).toBe(true);
+    expect(firstReplay.message.sourceAdapter).toBe("runtime-gateway");
     expect(findRuntimeGatewaySubmission(clientMessageId, requestId)?.payloadHash).toBeDefined();
 
     // A later replay with the same author/text/ids but a different Vault

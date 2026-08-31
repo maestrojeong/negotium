@@ -1,3 +1,5 @@
+import type { MessageDto } from "#types/api";
+
 export const RUNTIME_GATEWAY_VERSION = 1 as const;
 export const RUNTIME_GATEWAY_CONTROL_PATH = "/api/v1/control/runtime/v1";
 
@@ -30,6 +32,8 @@ export interface RuntimeGatewayTurnInput {
   actorUserId?: string;
   actorLabel?: string;
   vaultUserId?: string;
+  /** Adapter provenance recorded on the canonical message. */
+  sourceAdapter?: string;
   text: string;
   clientMessageId: string;
   requestId?: string;
@@ -52,6 +56,8 @@ export interface RuntimeGatewayTurnAcknowledgement {
   clientMessageId: string;
   topicId: string;
   messageId: string;
+  /** Canonical persisted message when the Node supports inline ACK materialization. */
+  message?: MessageDto;
   cursor: number;
 }
 
@@ -199,6 +205,18 @@ function validHealth(value: unknown): value is RuntimeGatewayHealth {
   );
 }
 
+function validAcknowledgedMessage(value: unknown): value is MessageDto {
+  const message = record(value);
+  return Boolean(
+    message &&
+      typeof message.id === "string" &&
+      typeof message.topicId === "string" &&
+      typeof message.authorId === "string" &&
+      typeof message.text === "string" &&
+      typeof message.createdAt === "string",
+  );
+}
+
 function validTurnAck(value: unknown): value is RuntimeGatewayTurnAcknowledgement {
   const body = record(value);
   return Boolean(
@@ -210,6 +228,7 @@ function validTurnAck(value: unknown): value is RuntimeGatewayTurnAcknowledgemen
       typeof body.clientMessageId === "string" &&
       typeof body.topicId === "string" &&
       typeof body.messageId === "string" &&
+      (body.message === undefined || validAcknowledgedMessage(body.message)) &&
       typeof body.cursor === "number",
   );
 }

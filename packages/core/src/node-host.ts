@@ -22,6 +22,13 @@ export {
 } from "#application/vault-command";
 export type { RuntimeBusEvent, TopicDeletedMeta } from "#bus";
 export { runtimeBus, WsHub } from "#bus";
+export {
+  asClientMessageId,
+  asMessageId,
+  asRequestId,
+  asTopicId,
+  asUserId,
+} from "#identifiers";
 export { setRuntimeMcpPort } from "#mcp/runtime-spec";
 export { killAllBgBash } from "#platform/background-bash/manager";
 export {

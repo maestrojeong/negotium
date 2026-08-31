@@ -66,6 +66,10 @@ For commands and recovery options, see the root [README](../README.md) and the r
 
 Adapters never create provider-specific copies of canonical tasks or topic history.
 
+External room and message ids remain adapter-local and resolve to canonical Node ids at ingress.
+The ownership and lifetime rules for `topicId`, `clientMessageId`, `requestId`, `queryId`, and
+`surfaceScope` are defined in [Identifier boundaries](./IDENTIFIERS.md).
+
 ## Topic visibility and surface
 
 Visibility and surface are independent fields:
@@ -122,8 +126,10 @@ Terminal reads visible topics through the node control API and requires no chann
 reducer should be deterministic from a storage snapshot plus ordered runtime events. It must preserve
 Unicode width, alternate-screen restoration, resize behavior, scrolling, and blocking-choice input.
 
-The default client uses authenticated REST and cursor-based SSE. `--embedded` exists only as a
-recovery and development path.
+The default client uses authenticated REST and cursor-based SSE. Composer submissions use the
+idempotent Runtime Gateway turn contract; topic management, Vault, usage, and picker state remain on
+the Terminal control surface. `--embedded` calls the same durable application boundary in process
+and exists only as a recovery and development path.
 
 ## Telegram
 

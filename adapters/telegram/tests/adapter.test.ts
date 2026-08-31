@@ -7,6 +7,7 @@ import {
   getAllMessagesForTopic,
   getTopicByNameForUser,
   getTopicSessionId,
+  listApiMessages,
   type MessageDto,
   runtimeBus,
   setTopicSessionId,
@@ -18,6 +19,7 @@ import {
 } from "@negotium/core";
 import type { TelegramAdapterHandle } from "@/index";
 import { startTelegramAdapter } from "@/index";
+import { getRuntimeUserTurnRequest } from "../../../packages/core/src/storage/runtime-turn-requests";
 import { FakeTelegramClient, waitFor } from "./fake-client";
 
 const USER = "tg-tester";
@@ -89,7 +91,13 @@ afterAll(() => {
 describe("inbound", () => {
   test("can submit the turn through a canonical remote Node boundary", async () => {
     const remoteFake = new FakeTelegramClient();
-    const submitted: Array<{ topicId: string; text: string; sourceAdapter: string }> = [];
+    const submitted: Array<{
+      topicId: string;
+      text: string;
+      sourceAdapter: string;
+      clientMessageId: string;
+      actorLabel?: string;
+    }> = [];
     const aborted: string[] = [];
     const remoteAdapter = startTelegramAdapter({
       client: remoteFake,
@@ -102,6 +110,8 @@ describe("inbound", () => {
           topicId: input.topic.id,
           text: input.text,
           sourceAdapter: input.sourceAdapter,
+          clientMessageId: input.clientMessageId,
+          actorLabel: input.actorLabel,
         });
         return { queryId: "remote-query" };
       },
@@ -113,14 +123,158 @@ describe("inbound", () => {
     });
     const chatId = chat(19);
     try {
-      remoteFake.emit({ chat: { id: chatId }, from: { id: ALLOWED_TG_ID }, text: "remote turn" });
+      remoteFake.emit({
+        message_id: 77,
+        chat: { id: chatId },
+        from: { id: ALLOWED_TG_ID, username: "owner" },
+        text: "remote turn",
+      });
       await waitFor(() => submitted.length === 1);
-      expect(submitted[0]).toMatchObject({ text: "remote turn", sourceAdapter: "telegram" });
+      expect(submitted[0]).toMatchObject({
+        text: "remote turn",
+        sourceAdapter: "telegram",
+        clientMessageId: `telegram:${chatId}:main:message:77`,
+        actorLabel: "@owner",
+      });
       remoteFake.emit({ chat: { id: chatId }, from: { id: ALLOWED_TG_ID }, text: "/abort" });
       await waitFor(() => aborted.length === 1);
       expect(aborted).toEqual([submitted[0]!.topicId]);
     } finally {
       await remoteAdapter.stop();
+    }
+  });
+
+  test("split album batches use their first Bot message id while exact redelivery reuses it", async () => {
+    const albumFake = new FakeTelegramClient();
+    Object.defineProperty(albumFake, "getFileLink", { value: undefined });
+    const submitted: string[] = [];
+    const albumAdapter = startTelegramAdapter({
+      client: albumFake,
+      userId: `${USER}-album`,
+      submitTurn: async (input) => {
+        submitted.push(input.clientMessageId);
+        return { queryId: input.clientMessageId };
+      },
+      mediaGroup: { debounceMs: 5, maxWaitMs: 15 },
+      mappingDbPath: join(TMP, "album-identity-mappings.db"),
+    });
+    const chatId = chat(20);
+    const emitAlbumPart = (messageId: number, caption: string): void =>
+      albumFake.emit({
+        message_id: messageId,
+        chat: { id: chatId },
+        from: { id: ALLOWED_TG_ID },
+        media_group_id: "album-stable",
+        caption,
+        photo: [{ file_id: `photo-${messageId}` }],
+      });
+
+    try {
+      emitAlbumPart(102, "second");
+      emitAlbumPart(101, "first");
+      await waitFor(() => submitted.length === 1);
+      expect(submitted[0]).toBe(`telegram:${chatId}:main:album:album-stable:101`);
+
+      // This is a genuinely later batch from the same Telegram album. It must
+      // not collide with the payload already accepted for the first batch.
+      emitAlbumPart(103, "late");
+      await waitFor(() => submitted.length === 2);
+      expect(submitted[1]).toBe(`telegram:${chatId}:main:album:album-stable:103`);
+
+      // An exact redelivery has the same lowest Bot message id and therefore
+      // reuses the original key even when arrival order changes.
+      emitAlbumPart(101, "first");
+      emitAlbumPart(102, "second");
+      await waitFor(() => submitted.length === 3);
+      expect(submitted[2]).toBe(submitted[0]);
+    } finally {
+      await albumAdapter.stop();
+    }
+  });
+
+  test("default embedded Telegram ingress preserves Bot identity in the durable queue", async () => {
+    const embeddedFake = new FakeTelegramClient();
+    const embeddedUser = `${USER}-embedded`;
+    const embeddedAdapter = startTelegramAdapter({
+      client: embeddedFake,
+      userId: embeddedUser,
+      mappingDbPath: join(TMP, "embedded-identity-mappings.db"),
+    });
+    const chatId = chat(21);
+    const clientMessageId = `telegram:${chatId}:main:message:211`;
+
+    try {
+      embeddedFake.emit({
+        message_id: 211,
+        chat: { id: chatId },
+        from: { id: ALLOWED_TG_ID, username: "embedded-owner" },
+        text: "embedded identity",
+      });
+      await waitFor(() => {
+        const topic = getTopicByNameForUser(`tg-${chatId}`, embeddedUser, { scope: "all" });
+        return Boolean(
+          topic &&
+            listApiMessages(topic.id, { limit: 20 }).page.some(
+              (message) => message.sourceMessageId === clientMessageId,
+            ),
+        );
+      });
+      const topic = getTopicByNameForUser(`tg-${chatId}`, embeddedUser, { scope: "all" })!;
+      expect(getRuntimeUserTurnRequest(topic.id)?.requestId).toBe(clientMessageId);
+    } finally {
+      await embeddedAdapter.stop();
+    }
+  });
+
+  test("registers the origin chat before a remote Gateway acknowledgement arrives", async () => {
+    const routingFake = new FakeTelegramClient();
+    let submittedClientMessageId = "";
+    let settleSubmission!: (value: { queryId: string }) => void;
+    const pendingSubmission = new Promise<{ queryId: string }>((resolve) => {
+      settleSubmission = resolve;
+    });
+    const routingAdapter = startTelegramAdapter({
+      client: routingFake,
+      userId: `${USER}-routing`,
+      submitTurn: async (input) => {
+        submittedClientMessageId = input.clientMessageId;
+        return pendingSubmission;
+      },
+      mappingDbPath: join(TMP, "pre-ack-routing-mappings.db"),
+    });
+    const originChat = chat(22);
+    const otherChat = chat(23);
+
+    try {
+      routingFake.emit({
+        chat: { id: originChat },
+        from: { id: ALLOWED_TG_ID },
+        text: `/new ${room("pre-ack-routing")}`,
+      });
+      await waitFor(() => routingFake.callsFor(originChat).length > 0);
+      const topic = getTopicByNameForUser(room("pre-ack-routing"), `${USER}-routing`, {
+        scope: "all",
+      })!;
+      expect(routingAdapter.loadTopic(otherChat, topic.id)).toBe(true);
+      const beforeOrigin = routingFake.callsFor(originChat).length;
+      const beforeOther = routingFake.callsFor(otherChat).length;
+
+      routingFake.emit({
+        message_id: 221,
+        chat: { id: originChat },
+        from: { id: ALLOWED_TG_ID },
+        text: "route before ack",
+      });
+      await waitFor(() => submittedClientMessageId.length > 0);
+      runtimeBus().broadcastMessage(
+        topic.id,
+        aiMessage(topic.id, "early answer", { queryId: submittedClientMessageId }),
+      );
+      await waitFor(() => routingFake.callsFor(originChat).length > beforeOrigin);
+      expect(routingFake.callsFor(otherChat)).toHaveLength(beforeOther);
+      settleSubmission({ queryId: submittedClientMessageId });
+    } finally {
+      await routingAdapter.stop();
     }
   });
 
@@ -454,15 +608,27 @@ describe("outbound", () => {
   });
 
   test("skips tool-kind messages and echoes originating from Telegram", async () => {
-    const topic = getTopicByNameForUser(room("outbound-room"), USER, { scope: "all" })!;
-    const before = fake.callsFor(chat(7)).length;
+    const echoChat = chat(24);
+    const topic = await mapChatToFreshTopic(echoChat, room("echo-room"));
+    const before = fake.callsFor(echoChat).length;
     runtimeBus().broadcastMessage(topic.id, aiMessage(topic.id, "tool noise", { kind: "tool" }));
     runtimeBus().broadcastMessage(
       topic.id,
       aiMessage(topic.id, "echo", { authorId: USER, sourceAdapter: "telegram" }),
     );
-    await Bun.sleep(30);
-    expect(fake.callsFor(chat(7))).toHaveLength(before);
+    runtimeBus().broadcastMessage(
+      topic.id,
+      aiMessage(topic.id, "old-node echo", {
+        authorId: USER,
+        sourceAdapter: "runtime-gateway",
+        sourceMessageId: "telegram:old-node:message:1",
+      }),
+    );
+    // Message delivery is driven by the adapter's 100 ms durable SQLite tail,
+    // not the synchronous RuntimeBus callback. Wait beyond one full poll so an
+    // unsuppressed mixed-version echo cannot make this test falsely green.
+    await Bun.sleep(250);
+    expect(fake.callsFor(echoChat)).toHaveLength(before);
   });
 
   test("shows tool calls in one temporary message and deletes it when the turn ends", async () => {

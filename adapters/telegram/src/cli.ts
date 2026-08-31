@@ -12,6 +12,12 @@ import {
   waitForRequiredRuntimeProcessLease,
 } from "@negotium/core";
 import {
+  RuntimeGatewayClient,
+  RuntimeGatewayError,
+  type RuntimeGatewayFetch,
+  type RuntimeGatewayTurnAcknowledgement,
+} from "@negotium/core/runtime-gateway";
+import {
   inspectNodeDaemon,
   NODE_CONTROL_BASE_PATH,
   nodeFileStore,
@@ -28,6 +34,47 @@ import {
 export interface TelegramEnvironmentHandle extends NegotiumAdapterHandle<"telegram"> {
   readonly adapter: TelegramAdapterHandle;
   readonly bot: TelegramBot;
+}
+
+type TelegramSubmitTurnInput = Parameters<NonNullable<TelegramAdapterOptions["submitTurn"]>>[0];
+
+/** Canonical Telegram ingress shared by the CLI and its HTTP contract test. */
+export async function submitTelegramTurnToNode(
+  node: Pick<import("@negotium/node").NodeDaemonConnection, "baseUrl" | "token">,
+  input: TelegramSubmitTurnInput,
+  fetchRequest?: RuntimeGatewayFetch,
+): Promise<{ queryId: string }> {
+  const gateway = new RuntimeGatewayClient({
+    baseUrl: node.baseUrl,
+    token: node.token,
+    ...(fetchRequest ? { fetch: fetchRequest } : {}),
+  });
+  const turn = {
+    topicId: input.topic.id,
+    userId: input.userId,
+    ...(input.actorLabel ? { actorLabel: input.actorLabel } : {}),
+    sourceAdapter: input.sourceAdapter,
+    text: input.text,
+    clientMessageId: input.clientMessageId,
+    requestId: input.clientMessageId,
+    visualTools: input.visualTools,
+    fileDeliveryTools: input.fileDeliveryTools,
+  };
+  let acknowledgement: RuntimeGatewayTurnAcknowledgement;
+  try {
+    acknowledgement = await gateway.submitTurn(turn);
+  } catch (error) {
+    const retryable =
+      error instanceof RuntimeGatewayError &&
+      (error.kind === "transport" ||
+        error.kind === "timeout" ||
+        (error.kind === "http" && (error.status ?? 0) >= 500));
+    if (!retryable) throw error;
+    acknowledgement = await gateway.submitTurn(turn);
+  }
+  // Durable Gateway turns execute with queryId === requestId, so the adapter
+  // can preserve its per-origin-chat response routing from the 202 ACK.
+  return { queryId: acknowledgement.requestId };
 }
 
 /** Share the canonical node's filesystem-backed upload resolver in this adapter process. */
@@ -146,26 +193,7 @@ export async function runTelegramCli(args = process.argv.slice(2)): Promise<void
       },
       submitTurn: async (input) => {
         const node = await waitForNodeDaemon(1_500);
-        const response = await fetch(
-          `${node.baseUrl}${NODE_CONTROL_BASE_PATH}/topics/${encodeURIComponent(input.topic.id)}/messages`,
-          {
-            method: "POST",
-            headers: {
-              authorization: `Bearer ${NODE_CONTROL_TOKEN}`,
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({
-              userId: input.userId,
-              text: input.text,
-              sourceAdapter: input.sourceAdapter,
-              visualTools: input.visualTools,
-              fileDeliveryTools: input.fileDeliveryTools,
-            }),
-          },
-        );
-        const body = (await response.json()) as { error?: string; queryId?: string };
-        if (!response.ok) throw new Error(body.error ?? `node returned HTTP ${response.status}`);
-        return { queryId: body.queryId };
+        return submitTelegramTurnToNode(node, input);
       },
     });
   } catch (error) {

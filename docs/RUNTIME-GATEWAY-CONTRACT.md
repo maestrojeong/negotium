@@ -1,8 +1,10 @@
 # Runtime Gateway Contract v1
 
-Negotium exposes an authenticated, loopback-only contract for an Otium Hub Gateway at
-`/api/v1/control/runtime/v1`. It is an ingress and reconciliation boundary over the canonical
-topic/message store, RuntimeBus event log, and durable turn worker. It is not a public API.
+Negotium exposes an authenticated, loopback-only contract for short-lived hosts and adapter
+sidecars at `/api/v1/control/runtime/v1`. Terminal and Telegram use it locally for idempotent turn
+ingress; the Otium adapter can forward a reviewed subset over its peer-authenticated relay. It is an
+ingress and reconciliation boundary over the canonical topic/message store, RuntimeBus event log,
+and durable turn worker. It is not a public API.
 
 The node binds `127.0.0.1`; callers must send `Authorization: Bearer <node-control-token>`. The
 token is state-directory local and mode `0600`. This is a strong host capability, not an end-user
@@ -14,7 +16,7 @@ the canonical topic.
 ## Endpoints
 
 - `GET /health` returns `{ ok, v: 1, capabilities, cursor }` for capability negotiation.
-- `POST /turns` accepts `{ v: 1, topicId, userId, actorUserId?, actorLabel?, vaultUserId?, text, clientMessageId, requestId?, allowAutoContinue?, visualTools?, fileDeliveryTools? }`.
+- `POST /turns` accepts `{ v: 1, topicId, userId, actorUserId?, actorLabel?, vaultUserId?, sourceAdapter?, text, clientMessageId, requestId?, allowAutoContinue?, visualTools?, fileDeliveryTools? }`.
   `userId` is the canonical execution principal. A trusted gateway may preserve the authenticated
   human author separately in `actorUserId`/`actorLabel` and select the topic owner's credential
   namespace with `vaultUserId`.
@@ -31,7 +33,9 @@ the canonical topic.
   same room offers different tools depending on which host ran the turn.
   It returns `202` only after the canonical user message, durable turn request, acknowledgement event,
   and message event have been committed in one SQLite transaction. `cursor` is the exact sequence of
-  that turn's `turn_accepted` event.
+  that turn's `turn_accepted` event. Current nodes also include the canonical `message` in the
+  acknowledgement so short-lived clients can render it immediately; clients remain compatible with
+  older v1 nodes by reconstructing it from `messageId` and the submitted text.
   Repeating the same `clientMessageId` and `requestId` returns the original acknowledgement with
   `deduplicated: true` with the same message id and cursor; reusing either identifier for another
   turn returns `409`. Messages accepted while a topic turn is active request immediate steering;

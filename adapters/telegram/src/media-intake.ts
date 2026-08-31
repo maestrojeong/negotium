@@ -17,7 +17,13 @@ export interface TelegramMediaIntakeOptions {
   isStopped: () => boolean;
   mappingKey: (chatId: number, threadId?: number) => string;
   resolveTopic: (chatId: number, threadId?: number) => TopicDto;
-  runTurn: (topic: TopicDto, prompt: string, chatId: number, threadId: number | undefined) => void;
+  runTurn: (
+    topic: TopicDto,
+    prompt: string,
+    chatId: number,
+    threadId: number | undefined,
+    sourceMessage?: TelegramIncomingMessage,
+  ) => void;
   reply: (chatId: number, threadId: number | undefined, text: string) => void;
   transcribe: (filePath: string) => Promise<string | null>;
   transcriptionAvailable: () => boolean;
@@ -130,7 +136,7 @@ export function createTelegramMediaIntake(
         { chatId },
         "telegram adapter: media message but client lacks getFileLink — caption only",
       );
-      if (caption) runTurn(topic, caption, chatId, threadId);
+      if (caption) runTurn(topic, caption, chatId, threadId, msg);
       else reply(chatId, threadId, "this bot cannot download attachments");
       return;
     }
@@ -161,7 +167,7 @@ export function createTelegramMediaIntake(
 
     const userText = voiceText ? (caption ? `${voiceText}\n\n${caption}` : voiceText) : caption;
     if (!userText && promptLines.length === 0) return;
-    runTurn(topic, composeAttachmentPrompt(userText, promptLines), chatId, threadId);
+    runTurn(topic, composeAttachmentPrompt(userText, promptLines), chatId, threadId, msg);
   }
 
   function flushGroup(key: string): void {
@@ -214,6 +220,12 @@ export function createTelegramMediaIntake(
 
   async function handleGroupFlush(entry: MediaGroupEntry): Promise<void> {
     const { messages, chatId, threadId } = entry;
+    const sourceMessage =
+      messages.reduce<TelegramIncomingMessage | undefined>((earliest, message) => {
+        if (!Number.isSafeInteger(message.message_id)) return earliest;
+        if (!earliest || !Number.isSafeInteger(earliest.message_id)) return message;
+        return message.message_id! < earliest.message_id! ? message : earliest;
+      }, undefined) ?? messages[0];
     const topic = resolveTopic(chatId, threadId);
     const captions = messages
       .map((message) => (message.text ?? message.caption ?? "").trim())
@@ -224,7 +236,7 @@ export function createTelegramMediaIntake(
         { chatId },
         "telegram adapter: media group but client lacks getFileLink — captions only",
       );
-      if (captions.length > 0) runTurn(topic, captions.join("\n"), chatId, threadId);
+      if (captions.length > 0) runTurn(topic, captions.join("\n"), chatId, threadId, sourceMessage);
       else reply(chatId, threadId, "this bot cannot download attachments");
       return;
     }
@@ -244,7 +256,7 @@ export function createTelegramMediaIntake(
     if (isStopped()) return;
     const userText = captions.join("\n");
     if (!userText && promptLines.length === 0) return;
-    runTurn(topic, composeAttachmentPrompt(userText, promptLines), chatId, threadId);
+    runTurn(topic, composeAttachmentPrompt(userText, promptLines), chatId, threadId, sourceMessage);
   }
 
   function stop(): void {

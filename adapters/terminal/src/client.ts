@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   type AgentKind,
   type BackgroundSessionDto,
@@ -19,13 +20,19 @@ import {
   runtimeBus,
   type SaveVaultEntryResult,
   saveVaultEntry,
-  submitUserMessage,
+  submitRuntimeGatewayTurn,
   switchTopicEffort,
   switchTopicModel,
   type TopicDto,
   topicService,
   type VaultEntry,
 } from "@negotium/core";
+import {
+  RuntimeGatewayClient,
+  RuntimeGatewayError,
+  type RuntimeGatewayTurnAcknowledgement,
+  type RuntimeGatewayTurnInput,
+} from "@negotium/core/runtime-gateway";
 import {
   getTopicStats,
   readDecisions,
@@ -47,6 +54,33 @@ export const MESSAGE_HISTORY_PAGE_SIZE = 50;
 export const INITIAL_MESSAGE_HISTORY_PAGE_COUNT = 3;
 export const INITIAL_MESSAGE_HISTORY_LIMIT =
   MESSAGE_HISTORY_PAGE_SIZE * INITIAL_MESSAGE_HISTORY_PAGE_COUNT;
+
+function terminalClientMessageId(): string {
+  return `terminal:${randomUUID()}`;
+}
+
+function retryableGatewaySubmission(error: unknown): boolean {
+  return (
+    error instanceof RuntimeGatewayError &&
+    (error.kind === "transport" ||
+      error.kind === "timeout" ||
+      (error.kind === "http" && (error.status ?? 0) >= 500))
+  );
+}
+
+async function submitTerminalGatewayTurn(
+  gateway: RuntimeGatewayClient,
+  input: RuntimeGatewayTurnInput,
+): Promise<RuntimeGatewayTurnAcknowledgement> {
+  try {
+    return await gateway.submitTurn(input);
+  } catch (error) {
+    if (!retryableGatewaySubmission(error)) throw error;
+    // The first request may have committed before its ACK was lost. Retry once
+    // with the exact same identity tuple so the Node returns the original ACK.
+    return gateway.submitTurn(input);
+  }
+}
 
 export interface MessageHistoryPage {
   messages: MessageDto[];
@@ -258,11 +292,14 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
   }
 
   sendMessage(topic: TopicDto, text: string): MessageDto {
-    return submitUserMessage({
+    const clientMessageId = terminalClientMessageId();
+    return submitRuntimeGatewayTurn({
       topic,
       userId: this.#userId,
       text,
       sourceAdapter: "terminal",
+      clientMessageId,
+      requestId: clientMessageId,
       visualTools: false,
       fileDeliveryTools: false,
     }).message;
@@ -351,6 +388,7 @@ export class RemoteNegotiumClient implements NegotiumClient {
   readonly #userId: string;
   readonly #baseUrl: string;
   readonly #token: string;
+  readonly #gateway: RuntimeGatewayClient;
   #onEvent: ((event: RuntimeBusEvent) => void) | null = null;
   #eventAbort: AbortController | null = null;
   #eventTask: Promise<void> | null = null;
@@ -363,6 +401,7 @@ export class RemoteNegotiumClient implements NegotiumClient {
       throw new Error("Remote node control requires HTTPS or loopback HTTP");
     }
     this.#token = options.token;
+    this.#gateway = new RuntimeGatewayClient({ baseUrl: this.#baseUrl, token: this.#token });
   }
 
   async start(onEvent: (event: RuntimeBusEvent) => void): Promise<void> {
@@ -526,11 +565,28 @@ export class RemoteNegotiumClient implements NegotiumClient {
   }
 
   async sendMessage(topic: TopicDto, text: string): Promise<MessageDto> {
-    const result = await this.#request(`/topics/${encodeURIComponent(topic.id)}/messages`, {
-      method: "POST",
-      body: JSON.stringify({ userId: this.#userId, text }),
+    const clientMessageId = terminalClientMessageId();
+    const acknowledgement = await submitTerminalGatewayTurn(this.#gateway, {
+      topicId: topic.id,
+      userId: this.#userId,
+      sourceAdapter: "terminal",
+      text,
+      clientMessageId,
+      requestId: clientMessageId,
+      visualTools: false,
+      fileDeliveryTools: false,
     });
-    return result.message as MessageDto;
+    return (
+      acknowledgement.message ?? {
+        id: acknowledgement.messageId,
+        topicId: topic.id,
+        authorId: this.#userId,
+        sourceAdapter: "terminal",
+        sourceMessageId: clientMessageId,
+        text,
+        createdAt: new Date().toISOString(),
+      }
+    );
   }
 
   async answerQuestion(

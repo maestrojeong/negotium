@@ -89,6 +89,8 @@ export interface TelegramMyChatMemberUpdate {
 /** The subset of Telegram's `Message` update the adapter reads.
  *  Media shapes mirror node-telegram-bot-api's `Message` fields. */
 export interface TelegramIncomingMessage {
+  /** Stable Bot API message id, unique within one chat. */
+  message_id?: number;
   chat: TelegramChat;
   from?: TelegramUser;
   text?: string;

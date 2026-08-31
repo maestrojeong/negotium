@@ -97,6 +97,7 @@ export {
 export type { RuntimeBus, RuntimeBusEvent, RuntimeBusListener, TopicDeletedMeta } from "#bus";
 export { runtimeBus, setRuntimeBus, WsHub } from "#bus";
 export type {
+  ClientMessageId,
   FileId,
   Identifier,
   MessageId,
@@ -106,6 +107,15 @@ export type {
   TurnId,
   TurnSlotKey,
   UserId,
+} from "#identifiers";
+export {
+  asClientMessageId,
+  asMessageId,
+  asRequestId,
+  asTopicId,
+  asTurnId,
+  asTurnSlotKey,
+  asUserId,
 } from "#identifiers";
 export type {
   PeerRuntimeAskUserRequest,

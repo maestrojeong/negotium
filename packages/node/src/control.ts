@@ -13,6 +13,11 @@ import {
   type AgentKind,
   type AiMode,
   appendApiMessage,
+  asClientMessageId,
+  asMessageId,
+  asRequestId,
+  asTopicId,
+  asUserId,
   type compactTopicSession,
   deleteVaultEntry,
   earliestRuntimeEventSeq,
@@ -779,33 +784,41 @@ export function createNodeControlHandler(
         if (req.method === "POST" && runtimePath === "/turns") {
           const body = await bodyRecord(req);
           if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
-          const topicId = requiredText(body.topicId, "topicId");
+          const topicId = asTopicId(requiredText(body.topicId, "topicId"));
           // Running a turn is the strongest thing a hub can do to a room, so it
           // gets the same workspace check as reading one (M-8).
           const turnTopic = getTopic(topicId);
           if (turnTopic && !topicInRequestScope(req, turnTopic)) {
             return jsonError(404, "Topic not found");
           }
-          const userId = requiredText(body.userId, "userId");
+          const userId = asUserId(requiredText(body.userId, "userId"));
           const actorUserId =
             body.actorUserId === undefined
               ? undefined
-              : requiredText(body.actorUserId, "actorUserId");
+              : asUserId(requiredText(body.actorUserId, "actorUserId"));
           const actorLabel =
             body.actorLabel === undefined ? undefined : requiredText(body.actorLabel, "actorLabel");
           const vaultUserId =
             body.vaultUserId === undefined
               ? undefined
-              : requiredText(body.vaultUserId, "vaultUserId");
+              : asUserId(requiredText(body.vaultUserId, "vaultUserId"));
+          const sourceAdapter =
+            body.sourceAdapter === undefined
+              ? undefined
+              : requiredText(body.sourceAdapter, "sourceAdapter");
           if (typeof body.text !== "string") throw new ControlRequestError("text is required");
           const text = body.text;
-          const clientMessageId = requiredText(body.clientMessageId, "clientMessageId");
+          const clientMessageId = asClientMessageId(
+            requiredText(body.clientMessageId, "clientMessageId"),
+          );
           const requestId =
-            body.requestId === undefined ? undefined : requiredText(body.requestId, "requestId");
+            body.requestId === undefined
+              ? undefined
+              : asRequestId(requiredText(body.requestId, "requestId"));
           const threadRootId =
             body.threadRootId === undefined
               ? undefined
-              : requiredText(body.threadRootId, "threadRootId");
+              : asMessageId(requiredText(body.threadRootId, "threadRootId"));
           const attachments =
             body.attachments === undefined
               ? []
@@ -845,6 +858,7 @@ export function createNodeControlHandler(
             actorUserId,
             actorLabel,
             vaultUserId,
+            sourceAdapter,
             text,
             clientMessageId,
             requestId,
@@ -872,6 +886,7 @@ export function createNodeControlHandler(
               clientMessageId: submission.clientMessageId,
               topicId: submission.topicId,
               messageId: submission.messageId,
+              message: submission.message,
               cursor: submission.ackCursor,
             },
             { status: 202 },

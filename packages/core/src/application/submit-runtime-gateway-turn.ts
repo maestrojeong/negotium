@@ -25,6 +25,8 @@ export interface SubmitRuntimeGatewayTurnParams {
   actorLabel?: string;
   /** Topic owner's credential namespace. */
   vaultUserId?: string;
+  /** Adapter provenance recorded on the canonical message. */
+  sourceAdapter?: string;
   text: string;
   clientMessageId: string;
   requestId?: string;
@@ -66,6 +68,7 @@ function duplicateResult(
   actorUserId: string,
   payloadHash: string,
 ): SubmitRuntimeGatewayTurnResult {
+  const sourceAdapter = params.sourceAdapter?.trim() || "runtime-gateway";
   const message =
     getApiMessage(submission.topicId, submission.messageId) ??
     (params.silent
@@ -74,7 +77,7 @@ function duplicateResult(
           topicId: params.topic.id,
           authorId: actorUserId,
           authorName: params.actorLabel,
-          sourceAdapter: "runtime-gateway",
+          sourceAdapter,
           sourceMessageId: params.clientMessageId,
           text: params.text,
           createdAt: submission.createdAt,
@@ -144,10 +147,10 @@ function gatewayPayloadHash(
         // would answer in the wrong place.
         params.threadRootId ?? null,
         params.attachments ?? [],
-        // `visualTools`/`fileDeliveryTools` are deliberately absent. They are a
-        // property of the calling adapter, not of the message, so they are the
-        // same for every turn a given host sends. Hashing them would only turn
-        // an adapter upgrade into a 409 for keys that were already in flight.
+        // `sourceAdapter`/`visualTools`/`fileDeliveryTools` are deliberately
+        // absent. They are properties of the calling adapter, not the message,
+        // and predate this field in persisted payload hashes. Hashing them would
+        // turn an adapter upgrade into a 409 for keys already in flight.
       ]),
     )
     .digest("hex");
@@ -177,6 +180,7 @@ export function submitRuntimeGatewayTurn(
 ): SubmitRuntimeGatewayTurnResult {
   const requestId = params.requestId ?? params.clientMessageId;
   const actorUserId = params.actorUserId ?? params.userId;
+  const sourceAdapter = params.sourceAdapter?.trim() || "runtime-gateway";
   const respond = params.respond ?? true;
   const payloadHash = gatewayPayloadHash(params, requestId, actorUserId);
   const existing = findRuntimeGatewaySubmission(params.clientMessageId, requestId);
@@ -202,7 +206,7 @@ export function submitRuntimeGatewayTurn(
     topicId: params.topic.id,
     authorId: actorUserId,
     authorName: params.actorLabel,
-    sourceAdapter: "runtime-gateway",
+    sourceAdapter,
     sourceMessageId: params.clientMessageId,
     text: params.text,
     ...(attachments?.length

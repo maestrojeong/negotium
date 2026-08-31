@@ -36,6 +36,7 @@
  * inject a fake client and never touch the network).
  */
 
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { basename, extname } from "node:path";
 import type { NegotiumAdapterHandle } from "@negotium/adapter-sdk";
@@ -66,13 +67,15 @@ import {
   runtimeBus,
   setTopicSurfaceScope,
   setTopicSurfaces,
-  startAiTurn,
+  type startAiTurn,
   stripFileTags,
+  submitRuntimeGatewayTurn,
   submitUserMessage,
   type TopicDto,
   topicService,
   transcribeAudio,
 } from "@negotium/core";
+import { RuntimeGatewayError } from "@negotium/core/runtime-gateway";
 import { createTelegramCommandRouter } from "@/commands";
 
 /**
@@ -91,6 +94,27 @@ function telegramGroupIdFromScope(scope: string | null | undefined): number | nu
   if (!scope?.startsWith("tg:")) return null;
   const chatId = Number(scope.slice(3));
   return Number.isSafeInteger(chatId) ? chatId : null;
+}
+
+function telegramClientMessageId(
+  msg: TelegramIncomingMessage | undefined,
+  chatId: number,
+  threadId: number | undefined,
+): string {
+  const messageId = msg?.message_id;
+  const source = msg?.media_group_id
+    ? Number.isSafeInteger(messageId)
+      ? `album:${msg.media_group_id}:${messageId}`
+      : `album:${msg.media_group_id}:legacy:${randomUUID()}`
+    : Number.isSafeInteger(messageId)
+      ? `message:${messageId}`
+      : `legacy:${randomUUID()}`;
+  return `telegram:${chatId}:${threadId ?? "main"}:${source}`;
+}
+
+function telegramActorLabel(msg: TelegramIncomingMessage | undefined): string | undefined {
+  const username = msg?.from?.username?.trim().replace(/^@/, "");
+  return username ? `@${username}` : undefined;
 }
 
 import { type OutboxEntry, openMappingStore, type PersistedMapping } from "@/mapping-store";
@@ -143,6 +167,8 @@ export interface TelegramAdapterOptions {
   submitTurn?: (input: {
     topic: TopicDto;
     userId: string;
+    clientMessageId: string;
+    actorLabel?: string;
     text: string;
     sourceAdapter: "telegram";
     visualTools: false;
@@ -287,7 +313,6 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
   const sendTimeoutMs = opts.sendTimeoutMs ?? DEFAULT_SEND_TIMEOUT_MS;
   const typingHeartbeatMs = Math.max(250, opts.typingHeartbeatMs ?? 4_000);
   const footerEnabled = opts.footer === true;
-  const dispatchTurn = opts.startTurn ?? startAiTurn;
   const store = openMappingStore(opts.mappingDbPath);
   const restoredForumChatId = store.loadForumChatId();
   if (forumChatId !== undefined) {
@@ -1948,6 +1973,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     prompt: string,
     chatId: number,
     threadId: number | undefined,
+    sourceMessage?: TelegramIncomingMessage,
   ): void {
     const target: ChatMapping = {
       topicId: topic.id,
@@ -1957,31 +1983,75 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     const rememberTarget = (queryId: string): void => {
       targetByQueryId.set(queryId, target);
     };
+    const actorLabel = telegramActorLabel(sourceMessage);
     const input = {
       topic,
       userId,
+      clientMessageId: telegramClientMessageId(sourceMessage, chatId, threadId),
+      ...(actorLabel ? { actorLabel } : {}),
       text: prompt,
       sourceAdapter: "telegram" as const,
       visualTools: false as const,
       fileDeliveryTools: true as const,
     };
+    const provisionalQueryId = input.clientMessageId;
+    rememberTarget(provisionalQueryId);
+    const adoptQueryId = (queryId: string | undefined): void => {
+      if (!queryId) return;
+      if (queryId !== provisionalQueryId && targetByQueryId.get(provisionalQueryId) === target) {
+        targetByQueryId.delete(provisionalQueryId);
+      }
+      rememberTarget(queryId);
+    };
+    const removeProvisionalTarget = (): void => {
+      if (targetByQueryId.get(provisionalQueryId) === target) {
+        targetByQueryId.delete(provisionalQueryId);
+      }
+    };
     if (opts.submitTurn) {
       void opts
         .submitTurn(input)
         .then(({ queryId }) => {
-          if (queryId) rememberTarget(queryId);
+          adoptQueryId(queryId ?? provisionalQueryId);
         })
         .catch((error) => {
+          const mayHaveCommitted =
+            error instanceof RuntimeGatewayError &&
+            (error.kind === "transport" ||
+              error.kind === "timeout" ||
+              (error.kind === "http" && (error.status ?? 0) >= 500));
+          if (mayHaveCommitted) {
+            // A committed turn can still emit after both ACK attempts were lost.
+            // Keep origin routing long enough for its terminal event to clean it.
+            const timer = setTimeout(removeProvisionalTarget, 60 * 60_000);
+            timer.unref?.();
+          } else {
+            removeProvisionalTarget();
+          }
           logger.error({ err: error, topicId: topic.id }, "telegram adapter: remote turn failed");
         });
       return;
     }
-    const { queryId } = submitUserMessage({
-      ...input,
-      onDispatched: rememberTarget,
-      startTurn: dispatchTurn,
-    });
-    if (queryId) rememberTarget(queryId);
+    if (opts.startTurn) {
+      const { queryId } = submitUserMessage({
+        ...input,
+        onDispatched: adoptQueryId,
+        startTurn: opts.startTurn,
+      });
+      if (queryId) adoptQueryId(queryId);
+      else removeProvisionalTarget();
+      return;
+    }
+    try {
+      const submission = submitRuntimeGatewayTurn({
+        ...input,
+        requestId: input.clientMessageId,
+      });
+      adoptQueryId(submission.requestId);
+    } catch (error) {
+      removeProvisionalTarget();
+      throw error;
+    }
   }
 
   const mediaIntake = createTelegramMediaIntake({
@@ -2063,7 +2133,7 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
     }
     if (!text) return;
     mediaIntake.enqueue(chatId, threadId, () =>
-      runTurn(resolveMapping(chatId, threadId), text, chatId, threadId),
+      runTurn(resolveMapping(chatId, threadId), text, chatId, threadId, msg),
     );
   }
 
@@ -2119,7 +2189,10 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
 
   async function deliverPersistedRuntimeMessage(event: RuntimeBusEvent): Promise<boolean> {
     const msg = event.payload as MessageDto;
-    if (msg.authorId === userId && msg.sourceAdapter === "telegram") return true;
+    const isTelegramOrigin =
+      msg.sourceAdapter === "telegram" ||
+      (msg.sourceAdapter === "runtime-gateway" && msg.sourceMessageId?.startsWith("telegram:"));
+    if (msg.authorId === userId && isTelegramOrigin) return true;
     if (msg.kind === "tool") return true;
     const hasAttachments = Boolean(msg.attachments && msg.attachments.length > 0);
     if (!msg.text && !hasAttachments) return true;
