@@ -4,11 +4,13 @@ const VISUALIZE_PREFIX = "\ue200visualize\ue202";
 const VISUALIZE_SUFFIX = "\ue201";
 const MAX_VISUALIZATION_REFERENCE_LENGTH = 8_192;
 const MAX_VISUALIZATION_PATH_LENGTH = 4_096;
+const MAX_VISUALIZATION_TITLE_LENGTH = 200;
 
 export interface VisualizationReference {
   path: string;
   name: string;
   mode?: "wide";
+  title?: string;
 }
 
 function hasControlCharacter(value: string): boolean {
@@ -51,17 +53,31 @@ export function parseVisualizationReference(value: string): VisualizationReferen
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   const keys = Object.keys(parsed);
-  if (keys.length < 1 || keys.length > 2 || keys.some((key) => key !== "path" && key !== "mode")) {
+  if (
+    keys.length < 1 ||
+    keys.length > 3 ||
+    keys.some((key) => key !== "path" && key !== "mode" && key !== "title")
+  ) {
     return null;
   }
-  const candidate = parsed as { path?: unknown; mode?: unknown };
+  const candidate = parsed as { path?: unknown; mode?: unknown; title?: unknown };
   if (typeof candidate.path !== "string" || !isSupportedVisualizationPath(candidate.path)) {
     return null;
   }
   if (candidate.mode !== undefined && candidate.mode !== "wide") return null;
+  if (
+    candidate.title !== undefined &&
+    (typeof candidate.title !== "string" ||
+      candidate.title.length === 0 ||
+      candidate.title.length > MAX_VISUALIZATION_TITLE_LENGTH ||
+      hasControlCharacter(candidate.title))
+  ) {
+    return null;
+  }
   return {
     path: candidate.path,
     name: basename(candidate.path) || candidate.path,
     ...(candidate.mode === "wide" ? { mode: "wide" as const } : {}),
+    ...(typeof candidate.title === "string" ? { title: candidate.title } : {}),
   };
 }

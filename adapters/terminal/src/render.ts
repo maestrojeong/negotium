@@ -828,8 +828,9 @@ function renderMarkdown(value: string, width: number): UiLine[] {
     if (visualization) {
       flushTable();
       const mode = visualization.mode ? ` · ${visualization.mode}` : "";
+      const label = visualization.title ?? visualization.name;
       result.push(
-        line(`  ◇ visualization${mode} · ${visualization.name}`, {
+        line(`  ◇ visualization${mode} · ${label}`, {
           fg: theme.cyan,
           bg: theme.surfaceRaised,
           bold: true,
