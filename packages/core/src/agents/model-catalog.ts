@@ -33,6 +33,12 @@ export const MODEL_OWNER: Record<string, AgentKind> = {
   "kimi-k3": "maestro",
   "kimi-code": "maestro",
   "kimi-k2.7-code": "maestro",
+  glm: "maestro",
+  "glm-pro": "maestro",
+  "glm-flash": "maestro",
+  "glm-5.3": "maestro",
+  "glm-5.2": "maestro",
+  "glm-5.3-flash": "maestro",
 };
 
 export interface SelectableModel {
@@ -64,6 +70,8 @@ export interface SelectableModel {
  * - https://api-docs.deepseek.com/quick_start/pricing
  * - https://platform.kimi.ai/docs/pricing/chat-k3
  * - https://platform.kimi.ai/docs/pricing/chat-k27-code
+ * GLM prices are approximate published rates and may change independently of
+ * this catalog.
  * Community token counts are deliberately labelled estimates because providers
  * meter cached input, fresh input, output, reasoning, speed, and model choice
  * differently and may change server-side weights without publishing a token cap.
@@ -170,6 +178,42 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
       "No subscription token cap; pay per token. Always uses thinking and supports a 256K context window.",
   },
   {
+    model: "glm-5.3",
+    agent: "maestro",
+    description: "Coding-focused GLM flagship with Opus-tier benchmark performance.",
+    intelligenceTier: "opus",
+    routingSummary:
+      "coding-focused flagship route; 1M context; competitive with Opus-tier coding benchmarks at a fraction of the cost",
+    accessCost: "Zhipu AI pay-as-you-go API; no monthly subscription required",
+    marginalTokenCost: "Approximate GLM API rate: $1.40/M input, $4.40/M output",
+    estimatedUsage:
+      "No subscription token cap; pay per token. Always uses thinking and supports a 1M-token context window; text-only input.",
+  },
+  {
+    model: "glm-5.2",
+    agent: "maestro",
+    description: "Previous-generation GLM flagship for cost-efficient everyday work.",
+    intelligenceTier: "sonnet",
+    routingSummary:
+      "previous-gen flagship; 1M context; cost-efficient everyday work, cheaper than glm-5.3",
+    accessCost: "Zhipu AI pay-as-you-go API; no monthly subscription required",
+    marginalTokenCost: "Approximate GLM API rate: $0.95/M input, $3/M output",
+    estimatedUsage:
+      "No subscription token cap; pay per token. Always uses thinking and supports a 1M-token context window; text-only input.",
+  },
+  {
+    model: "glm-5.3-flash",
+    agent: "maestro",
+    description: "Low-cost multimodal GLM route with native image input.",
+    intelligenceTier: "sonnet",
+    routingSummary:
+      "cheapest GLM route; 1M context; the only GLM model with native vision/multimodal support",
+    accessCost: "Zhipu AI pay-as-you-go API; no monthly subscription required",
+    marginalTokenCost: "Approximate GLM API rate: $0.15/M input, $0.50/M output",
+    estimatedUsage:
+      "No subscription token cap; pay per token. Always uses thinking, supports a 1M-token context window, and accepts native image input.",
+  },
+  {
     model: "deepseek-pro",
     agent: "maestro",
     description: "API-priced Sonnet-level route for cost-efficient everyday work.",
@@ -200,6 +244,9 @@ const SELECTABLE_MODEL_ALIASES: Readonly<Record<string, string>> = {
   kimi: "kimi-k3",
   "kimi-pro": "kimi-k3",
   "kimi-code": "kimi-k2.7-code",
+  glm: "glm-5.3",
+  "glm-pro": "glm-5.3",
+  "glm-flash": "glm-5.3-flash",
 };
 
 /** Normalize supported user-facing aliases before validation or persistence. */
@@ -222,6 +269,7 @@ export function modelOwner(model: string): AgentKind | undefined {
   if (model.startsWith("claude-")) return "claude";
   if (model.startsWith("deepseek-")) return "maestro";
   if (model.startsWith("kimi-")) return "maestro";
+  if (model.startsWith("glm-")) return "maestro";
   if (model.startsWith("gpt-")) return "codex";
   return MODEL_OWNER[model];
 }

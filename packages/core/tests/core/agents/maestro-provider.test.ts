@@ -124,11 +124,16 @@ describe("maestroProvider host tool policy", () => {
     const userId = `maestro-provider-keys-${randomUUID()}`;
     vaultSet(userId, "DEEPSEEK_API_KEY", "  deepseek-key  ");
     vaultSet(userId, "MOONSHOT_API_KEY", "    ");
+    vaultSet(userId, "GLM_API_KEY", "  glm-key  ");
     try {
-      expect(resolveMaestroApiKeyOverrides(userId)).toEqual({ deepseek: "deepseek-key" });
+      expect(resolveMaestroApiKeyOverrides(userId)).toEqual({
+        deepseek: "deepseek-key",
+        glm: "glm-key",
+      });
     } finally {
       vaultDel(userId, "DEEPSEEK_API_KEY");
       vaultDel(userId, "MOONSHOT_API_KEY");
+      vaultDel(userId, "GLM_API_KEY");
     }
   });
 });

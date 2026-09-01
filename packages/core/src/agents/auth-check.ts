@@ -10,8 +10,8 @@
  *   - claude: `ANTHROPIC_API_KEY` env, else macOS keychain entry
  *     `Claude Code-credentials`, else `~/.claude/.credentials.json`
  *   - maestro: `DEEPSEEK_API_KEY`/Vault `DEEPSEEK_API_KEY` for DeepSeek
- *     models, or `MOONSHOT_API_KEY`/Vault `MOONSHOT_API_KEY` for Kimi
- *     models
+ *     models, `MOONSHOT_API_KEY`/Vault `MOONSHOT_API_KEY` for Kimi models,
+ *     or `GLM_API_KEY`/Vault `GLM_API_KEY` for GLM models
  *
  * Maestro credentials resolve per-user when `userId` is supplied: each
  * topic owner's own Vault entry (`/vault set DEEPSEEK_API_KEY …`) is tried
@@ -60,7 +60,7 @@ const defaultAgentAuthHost: AgentAuthHost = {
 /** True when `key` is available via the user's Vault entry or process env. */
 function hasMaestroCredential(
   host: AgentAuthHost,
-  key: "DEEPSEEK_API_KEY" | "MOONSHOT_API_KEY",
+  key: "DEEPSEEK_API_KEY" | "MOONSHOT_API_KEY" | "GLM_API_KEY",
   userId: string | undefined,
 ): boolean {
   if (userId && host.getVaultValue(userId, key)?.trim()) return true;
@@ -106,14 +106,15 @@ export function checkAgentAuth(
     case "maestro": {
       if (
         hasMaestroCredential(host, "DEEPSEEK_API_KEY", userId) ||
-        hasMaestroCredential(host, "MOONSHOT_API_KEY", userId)
+        hasMaestroCredential(host, "MOONSHOT_API_KEY", userId) ||
+        hasMaestroCredential(host, "GLM_API_KEY", userId)
       ) {
         return { ok: true };
       }
       return {
         ok: false,
         error:
-          "maestro is not authenticated (set DEEPSEEK_API_KEY or MOONSHOT_API_KEY via /vault set, or as an env var)",
+          "maestro is not authenticated (set DEEPSEEK_API_KEY, MOONSHOT_API_KEY, or GLM_API_KEY via /vault set, or as an env var)",
       };
     }
   }
@@ -141,6 +142,14 @@ export function checkAgentModelAuth(
       : {
           ok: false,
           error: `maestro is not authenticated for model '${model}' (set DEEPSEEK_API_KEY via /vault set, or as an env var)`,
+        };
+  }
+  if (model.startsWith("glm")) {
+    return hasMaestroCredential(host, "GLM_API_KEY", userId)
+      ? { ok: true }
+      : {
+          ok: false,
+          error: `maestro is not authenticated for model '${model}' (set GLM_API_KEY via /vault set, or as an env var)`,
         };
   }
   return checkAgentAuth(agent, host, userId);

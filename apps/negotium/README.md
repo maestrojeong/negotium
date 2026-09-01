@@ -21,7 +21,7 @@ negotium -v
 ```
 
 Authenticate Claude with `claude`, Codex with `codex login`, or Maestro with
-`DEEPSEEK_API_KEY` for DeepSeek or `MOONSHOT_API_KEY` for Kimi. See the
+`DEEPSEEK_API_KEY` for DeepSeek, `MOONSHOT_API_KEY` for Kimi, or `GLM_API_KEY` for GLM. See the
 [main repository](https://github.com/maestrojeong/negotium) for configuration, security guidance,
 and architecture.
 

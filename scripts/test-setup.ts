@@ -29,6 +29,8 @@ process.env.CODEX_HOME = codexHome;
 process.env.NEGOTIUM_CODEX_AUTH_FILE = codexAuthFile;
 
 delete process.env.DEEPSEEK_API_KEY;
+delete process.env.MOONSHOT_API_KEY;
+delete process.env.GLM_API_KEY;
 delete process.env.GEMINI_API_KEY;
 delete process.env.ANTHROPIC_API_KEY;
 delete process.env.OPENAI_API_KEY;

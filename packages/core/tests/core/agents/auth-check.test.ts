@@ -44,6 +44,9 @@ describe("checkAgentAuth host boundary", () => {
     expect(checkAgentAuth("maestro", host({ environment: { MOONSHOT_API_KEY: "key" } }))).toEqual({
       ok: true,
     });
+    expect(checkAgentAuth("maestro", host({ environment: { GLM_API_KEY: "key" } }))).toEqual({
+      ok: true,
+    });
   });
 
   test("falls back to the credentials file on macOS when the keychain entry is missing", () => {
@@ -78,9 +81,16 @@ describe("checkAgentAuth host boundary", () => {
   test("checks the credential for the selected Maestro model", () => {
     const deepSeekOnly = host({ environment: { DEEPSEEK_API_KEY: "deepseek" } });
     const moonshotOnly = host({ environment: { MOONSHOT_API_KEY: "moonshot" } });
+    const glmOnly = host({ environment: { GLM_API_KEY: "glm" } });
 
     expect(checkAgentModelAuth("maestro", "deepseek-pro", deepSeekOnly)).toEqual({ ok: true });
     expect(checkAgentModelAuth("maestro", "kimi-k3", moonshotOnly)).toEqual({ ok: true });
+    expect(checkAgentModelAuth("maestro", "glm-5.3", glmOnly)).toEqual({ ok: true });
+    expect(checkAgentModelAuth("maestro", "glm-5.3-flash", moonshotOnly)).toEqual({
+      ok: false,
+      error:
+        "maestro is not authenticated for model 'glm-5.3-flash' (set GLM_API_KEY via /vault set, or as an env var)",
+    });
     expect(checkAgentModelAuth("maestro", "kimi-k2.7-code", deepSeekOnly)).toEqual({
       ok: false,
       error:

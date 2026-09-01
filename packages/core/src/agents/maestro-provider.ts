@@ -53,7 +53,7 @@
 
 import "#platform/maestro-bootstrap-env";
 import { resolve } from "node:path";
-import type { HookRegistration, McpResolver } from "maestro-agent-sdk";
+import type { HookRegistration, McpResolver, ProviderApiKeyOverrides } from "maestro-agent-sdk";
 import { maestroProvider as sdkMaestroProvider, setMcpResolver } from "maestro-agent-sdk";
 import { deepMapStrings } from "#agents/deep-map";
 import {
@@ -143,24 +143,24 @@ function providerOwnedToolRedirect(): string {
 }
 
 /**
- * Resolve per-user DeepSeek/Kimi credentials from Vault before falling back
- * to the process-wide `DEEPSEEK_API_KEY` / `MOONSHOT_API_KEY` env vars (see
+ * Resolve per-user DeepSeek/Kimi/GLM credentials from Vault before falling back
+ * to the process-wide `DEEPSEEK_API_KEY` / `MOONSHOT_API_KEY` / `GLM_API_KEY` env vars (see
  * `maestro-agent-sdk`'s `AgentQueryOptions.apiKeyOverrides`).
  *
  * Passed explicitly per call rather than written into `process.env` — this
  * process serves every topic/user concurrently, so mutating the shared env
  * would let one user's Maestro call race another's key onto the wire.
  */
-export function resolveMaestroApiKeyOverrides(
-  userId: string,
-): { deepseek?: string; moonshot?: string } | undefined {
+export function resolveMaestroApiKeyOverrides(userId: string): ProviderApiKeyOverrides | undefined {
   if (!userId) return undefined;
   const deepseek = vaultGetValue(userId, "DEEPSEEK_API_KEY")?.trim();
   const moonshot = vaultGetValue(userId, "MOONSHOT_API_KEY")?.trim();
-  if (!deepseek && !moonshot) return undefined;
+  const glm = vaultGetValue(userId, "GLM_API_KEY")?.trim();
+  if (!deepseek && !moonshot && !glm) return undefined;
   return {
     ...(deepseek ? { deepseek } : {}),
     ...(moonshot ? { moonshot } : {}),
+    ...(glm ? { glm } : {}),
   };
 }
 

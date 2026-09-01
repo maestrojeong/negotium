@@ -15,6 +15,8 @@ delete process.env.GATEWAY_MODEL;
 // Guarantee no real agent/provider API is reachable: turns started by the
 // adapter under test must fail fast instead of spending tokens.
 delete process.env.DEEPSEEK_API_KEY;
+delete process.env.MOONSHOT_API_KEY;
+delete process.env.GLM_API_KEY;
 delete process.env.GEMINI_API_KEY;
 delete process.env.ANTHROPIC_API_KEY;
 delete process.env.OPENAI_API_KEY;

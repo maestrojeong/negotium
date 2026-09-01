@@ -143,6 +143,23 @@ describe("self-config core", () => {
     }
   });
 
+  test("set_model persists GLM aliases as canonical model ids", () => {
+    const previousGlm = process.env.GLM_API_KEY;
+    process.env.GLM_API_KEY = "test-glm-key";
+    try {
+      const topicId = seedTopic("maestro");
+
+      const result = setSelfConfigModel({ topicId, userId: USER }, "glm-pro");
+
+      expect(result.isError).toBeUndefined();
+      expect(result.text).toContain("'glm-5.3'");
+      expect(getApiTopicConfig(topicId)?.model).toBe("glm-5.3");
+    } finally {
+      if (previousGlm === undefined) delete process.env.GLM_API_KEY;
+      else process.env.GLM_API_KEY = previousGlm;
+    }
+  });
+
   test("set_effort validates against the current agent", () => {
     const topicId = seedTopic("codex");
 

@@ -124,7 +124,7 @@ Choose one or more:
 |---|---|
 | Claude | Run `claude` and finish login, or set `ANTHROPIC_API_KEY` |
 | Codex | Run `codex login` |
-| Maestro | Set `DEEPSEEK_API_KEY` or `MOONSHOT_API_KEY` |
+| Maestro | Set `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY`, or `GLM_API_KEY` |
 
 Environment variables can be exported in your shell or placed in a `.env` in
 the directory where you run Negotium. Bun loads that file automatically.

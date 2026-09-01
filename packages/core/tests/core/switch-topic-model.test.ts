@@ -54,6 +54,9 @@ describe("topic model picker", () => {
       "sonnet",
       "kimi-k3",
       "kimi-k2.7-code",
+      "glm-5.3",
+      "glm-5.2",
+      "glm-5.3-flash",
       "deepseek-pro",
       "deepseek-flash",
     ]);
@@ -72,6 +75,12 @@ describe("topic model picker", () => {
     expect(selectableModel("kimi-code")?.model).toBe("kimi-k2.7-code");
     expect(selectableModel("kimi-k3")?.intelligenceTier).toBe("fable");
     expect(selectableModel("kimi-k2.7-code")?.intelligenceTier).toBe("opus");
+    expect(selectableModel("glm")?.model).toBe("glm-5.3");
+    expect(selectableModel("glm-pro")?.model).toBe("glm-5.3");
+    expect(selectableModel("glm-flash")?.model).toBe("glm-5.3-flash");
+    expect(selectableModel("glm-5.3")?.intelligenceTier).toBe("opus");
+    expect(selectableModel("glm-5.2")?.intelligenceTier).toBe("sonnet");
+    expect(selectableModel("glm-5.3-flash")?.estimatedUsage).toContain("native image input");
     expect(selectableModel("gpt-5.5")).toBeUndefined();
     expect(selectableModel("deepseek-flash")?.marginalTokenCost).toContain("$0.14/M");
   });
@@ -134,6 +143,26 @@ describe("topic model picker", () => {
       else process.env.DEEPSEEK_API_KEY = previousDeepSeek;
       if (previousMoonshot === undefined) delete process.env.MOONSHOT_API_KEY;
       else process.env.MOONSHOT_API_KEY = previousMoonshot;
+    }
+  });
+
+  test("canonicalizes a GLM alias and requires GLM authentication", () => {
+    const previousGlm = process.env.GLM_API_KEY;
+    process.env.GLM_API_KEY = "test-glm-key";
+    try {
+      const topicId = seedTopic("maestro");
+      setTopicSessionId(topicId, "existing-glm-session", {
+        reason: "test",
+        agent: "maestro",
+      });
+      const result = switchTopicModel({ topicId, userId: USER, model: "glm-flash" });
+
+      expect(result).toMatchObject({ ok: true, model: "glm-5.3-flash" });
+      expect(getApiTopicConfig(topicId)?.model).toBe("glm-5.3-flash");
+      expect(getTopicSessionId(topicId)).toBe("existing-glm-session");
+    } finally {
+      if (previousGlm === undefined) delete process.env.GLM_API_KEY;
+      else process.env.GLM_API_KEY = previousGlm;
     }
   });
 });

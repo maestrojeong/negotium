@@ -247,6 +247,8 @@ test("Maestro model selection opens the matching provider key form", () => {
   expect(maestroVaultKeyForModel("kimi-k3")).toBe("MOONSHOT_API_KEY");
   expect(maestroVaultKeyForModel("kimi-k2.7-code")).toBe("MOONSHOT_API_KEY");
   expect(maestroVaultKeyForModel("deepseek-pro")).toBe("DEEPSEEK_API_KEY");
+  expect(maestroVaultKeyForModel("glm-5.3")).toBe("GLM_API_KEY");
+  expect(maestroVaultKeyForModel("glm-5.3-flash")).toBe("GLM_API_KEY");
   expect(maestroVaultKeyForModel("gpt-5.6-sol")).toBeNull();
 });
 

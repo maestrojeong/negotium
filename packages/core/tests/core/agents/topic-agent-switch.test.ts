@@ -56,6 +56,7 @@ writeFileSync(CODEX_AUTH_FILE, "{}");
 const PREV_AUTH_ENV: Record<string, string | undefined> = {
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
   DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
+  GLM_API_KEY: process.env.GLM_API_KEY,
   NEGOTIUM_CODEX_AUTH_FILE: process.env.NEGOTIUM_CODEX_AUTH_FILE,
 };
 

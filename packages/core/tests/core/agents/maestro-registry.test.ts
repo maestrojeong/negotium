@@ -22,6 +22,16 @@ describe("maestroRegistry model policy", () => {
     }
   });
 
+  test("accepts GLM models and expands their aliases", () => {
+    for (const model of ["glm", "glm-pro", "glm-flash", "glm-5.3", "glm-5.2", "glm-5.3-flash"]) {
+      expect(maestroRegistry.validateModel(model)).toBe(true);
+    }
+    expect(maestroRegistry.expandModelAlias("glm")).toBe("glm-5.3");
+    expect(maestroRegistry.expandModelAlias("glm-pro")).toBe("glm-5.3");
+    expect(maestroRegistry.expandModelAlias("glm-flash")).toBe("glm-5.3-flash");
+    expect(maestroRegistry.expandModelAlias("glm-5.2")).toBe("glm-5.2");
+  });
+
   test("accepts DeepSeek Flash (the current model) and rejects the bare, versionless alias", () => {
     // "deepseek-flash" was disabled in 0.1.25 because DeepSeek had retired its
     // old flash model at the time. DeepSeek-V4-Flash-0731 (released

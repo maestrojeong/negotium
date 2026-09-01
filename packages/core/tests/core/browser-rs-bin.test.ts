@@ -20,26 +20,26 @@ afterEach(() => {
 
 describe("Browser.rs executable resolution", () => {
   test("keeps the tested Browser.rs release pinned", () => {
-    expect(BROWSER_RS_VERSION).toBe("v0.1.23");
-    expect(BROWSER_RS_MIN_SECURE_VERSION).toBe("0.1.15");
+    expect(BROWSER_RS_VERSION).toBe("v0.2.1");
+    expect(BROWSER_RS_MIN_SECURE_VERSION).toBe("0.2.1");
   });
 
   test("accepts only an executable explicit override", () => {
     const dir = mkdtempSync(join(tmpdir(), "negotium-browser-rs-bin-"));
     temporaryDirs.push(dir);
     const binary = resolve(dir, "browser-rs");
-    writeFileSync(binary, "#!/bin/sh\necho 'browser-rs 0.1.15'\n");
+    writeFileSync(binary, "#!/bin/sh\necho 'browser-rs 0.2.1'\n");
 
     expect(resolveBrowserRsBin(binary)).toBeUndefined();
     chmodSync(binary, 0o755);
     expect(resolveBrowserRsBin(binary)).toBe(binary);
   });
 
-  test("fails closed for a pre-capability Browser.rs release", () => {
+  test("fails closed for a pre-strict Browser.rs release", () => {
     const dir = mkdtempSync(join(tmpdir(), "negotium-browser-rs-old-bin-"));
     temporaryDirs.push(dir);
     const binary = resolve(dir, "browser-rs");
-    writeFileSync(binary, "#!/bin/sh\necho 'browser-rs 0.1.13'\n");
+    writeFileSync(binary, "#!/bin/sh\necho 'browser-rs 0.2.0'\n");
     chmodSync(binary, 0o755);
 
     expect(resolveBrowserRsBin(binary)).toBeUndefined();

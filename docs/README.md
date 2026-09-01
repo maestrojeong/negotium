@@ -15,6 +15,7 @@ instead of copying the explanation.
 | [Feature review](./FEATURE-REVIEW.md) | Review order, acceptance questions, source areas, and regression coverage |
 | [Wiki search evaluation for 0.2.18](./WIKI-SEARCH-EVALUATION-0.2.18.md) | Topic, article, and summary retrieval dataset, metrics, and limitations |
 | [Releasing](./RELEASING.md) | Package validation and npm publication |
+| [Migration 0.10.1](./MIGRATION-0.10.1.md) | GLM model support and Browser.rs v0.2.1 |
 | [Migration 0.10.0](./MIGRATION-0.10.0.md) | Agent SDK dependency upgrade (Claude, Anthropic, Codex) |
 | [Migration 0.9.0](./MIGRATION-0.9.0.md) | Idempotent Terminal/Telegram ingress and visualization reference titles |
 | [Migration 0.8.0](./MIGRATION-0.8.0.md) | Telegram multi-group namespaces, identifier vocabulary, and legacy API cleanup |

@@ -120,6 +120,11 @@ const TOKEN_PRICES: Record<string, TokenPrices> = {
   "claude:sonnet": { input: 2, cacheWrite: 2.5, cacheRead: 0.2, output: 10 },
   "maestro:kimi-k3": { input: 3, cacheRead: 0.3, output: 15 },
   "maestro:kimi-k2.7-code": { input: 0.95, cacheRead: 0.19, output: 4 },
+  // Approximate published GLM rates; no separate cache-read rate is published,
+  // so cache reads conservatively use the ordinary input price.
+  "maestro:glm-5.3": { input: 1.4, cacheRead: 1.4, output: 4.4 },
+  "maestro:glm-5.2": { input: 0.95, cacheRead: 0.95, output: 3 },
+  "maestro:glm-5.3-flash": { input: 0.15, cacheRead: 0.15, output: 0.5 },
   "maestro:deepseek-pro": { input: 0.435, cacheRead: 0.003625, output: 0.87 },
   "maestro:deepseek-flash": { input: 0.14, cacheRead: 0.0028, output: 0.28 },
 };

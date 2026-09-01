@@ -423,9 +423,10 @@ export function selectableEfforts(topic: TopicDto | null) {
 
 export function maestroVaultKeyForModel(
   model: string,
-): "DEEPSEEK_API_KEY" | "MOONSHOT_API_KEY" | null {
+): "DEEPSEEK_API_KEY" | "MOONSHOT_API_KEY" | "GLM_API_KEY" | null {
   if (model.startsWith("kimi")) return "MOONSHOT_API_KEY";
   if (model.startsWith("deepseek")) return "DEEPSEEK_API_KEY";
+  if (model.startsWith("glm")) return "GLM_API_KEY";
   return null;
 }
 
