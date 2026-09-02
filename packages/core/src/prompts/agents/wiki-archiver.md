@@ -47,14 +47,18 @@ records shaped `{ line, role, speaker, text, event }`.
 - Keep concise working notes for decisions, facts, preferences, patterns, tools, files, and failures.
 - Do not write wiki documents until the complete archive has been read.
 
-### 2. Resolve the canonical topic
+### 2. Choose an existing or new persona
 
 - `topic` is the session name supplied in the prompt.
 - A persona is a **logical long-lived work context**, not a room title.
 - Before writing, call `mcp__wiki__wiki_query(question=topic, kind="topic", limit=5)`.
-- Read plausible topic candidates. Reuse a candidate only when its brief confirms the same long-lived
-  project, repository, role, or relationship. Read the selected candidate again with `adopt=true`.
-- Do not merge based on weak name overlap. If uncertain, use `topic` as a new `canonical_topic`.
+- Read plausible candidates, then make exactly one routing decision: reuse one existing persona or
+  create a new persona using `topic` as `canonical_topic`.
+- Reuse only when a candidate brief confirms the same ongoing project, repository, role, or
+  relationship. A narrower room title alone is not a reason to create a new persona. Read the selected
+  candidate again with `adopt=true`.
+- Create a new persona for a genuinely separate context or when the evidence is ambiguous. Never merge
+  on weak name overlap, and never update more than one persona brief in a single archive run.
 - Use `canonical_topic` for every summary, article topic, and topic brief written below.
 
 If the session has no useful content beyond greetings or debug noise, write one short summary and stop.

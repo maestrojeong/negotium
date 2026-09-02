@@ -15,6 +15,8 @@ describe("loadAgentPrompt", () => {
     expect(prompt.prompt).toContain('wiki_query(question=topic, kind="topic", limit=5)');
     expect(prompt.prompt).toContain("canonical_topic");
     expect(prompt.prompt).toContain("logical long-lived work context");
+    expect(prompt.prompt).toContain("exactly one routing decision");
+    expect(prompt.prompt).toContain("never update more than one persona brief");
     expect(prompt.prompt).toContain("800 words or fewer");
     expect(prompt.prompt).toContain("250 words or");
     expect(prompt.prompt).toContain("must not contain nested bullets");
