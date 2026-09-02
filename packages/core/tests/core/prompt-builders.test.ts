@@ -14,6 +14,10 @@ describe("loadAgentPrompt", () => {
     expect(prompt.name).toBe("wiki-archiver");
     expect(prompt.prompt).toContain('wiki_query(question=topic, kind="topic", limit=5)');
     expect(prompt.prompt).toContain("canonical_topic");
+    expect(prompt.prompt).toContain("logical long-lived work context");
+    expect(prompt.prompt).toContain("800 words or fewer");
+    expect(prompt.prompt).toContain("250 words or");
+    expect(prompt.prompt).toContain("must not contain nested bullets");
     expect(prompt.type).toBe("programmatic");
     expect(prompt.model).toBe("deepseek-pro");
     expect(prompt.prompt).toContain("wiki");
@@ -92,6 +96,40 @@ describe("session system prompt builders", () => {
       "Computer Use: if unavailable, check `get_mcp_config` for optional `cua-rs`; MCP changes apply next session.",
     );
     expect(prompt.replaceAll("{{KEY}}", "")).not.toContain("{{");
+  });
+
+  test("adds only the matching product-surface profile", () => {
+    const build = (surface: "terminal" | "telegram" | "otium") =>
+      buildTopicSystemPrompt({
+        aiLabel: "Otium",
+        topicTitle: "Surface test",
+        workspaceCwd: "/tmp/surface-test",
+        agentKind: "codex",
+        surface,
+      });
+
+    const terminal = build("terminal");
+    expect(terminal).toContain("Every AI turn executes on the Negotium Node");
+    expect(terminal).toContain("## Environment: Negotium CLI");
+    expect(terminal).toContain("## Environment: Terminal");
+    expect(terminal).not.toContain("## Environment: Telegram");
+    expect(terminal).not.toContain("## Environment: Otium");
+
+    const telegram = build("telegram");
+    expect(telegram).toContain("Every AI turn executes on the Negotium Node");
+    expect(telegram).not.toContain("## Environment: Negotium CLI");
+    expect(telegram).toContain("## Environment: Telegram");
+    expect(telegram).toContain("group, or forum topic");
+    expect(telegram).not.toContain("## Environment: Terminal");
+    expect(telegram).not.toContain("## Environment: Otium");
+
+    const otium = build("otium");
+    expect(otium).toContain("Every AI turn executes on the Negotium Node");
+    expect(otium).not.toContain("## Environment: Negotium CLI");
+    expect(otium).toContain("## Environment: Otium");
+    expect(otium).toContain("`surfaceScope`");
+    expect(otium).not.toContain("## Environment: Terminal");
+    expect(otium).not.toContain("## Environment: Telegram");
   });
 
   test("omits schedule_self guidance when the host disables it", () => {
@@ -204,11 +242,13 @@ describe("session system prompt builders", () => {
       topicTitle: "General",
       workspaceCwd: "/otium/workspace/topics/general",
       agentKind: "codex",
+      surface: "otium",
       visualTools: true,
       fileDeliveryTools: true,
     });
 
     expect(prompt).toContain("## Manager Role");
+    expect(prompt).toContain("## Environment: Otium");
     expect(prompt).toContain("runtime MCP tools");
     expect(prompt).toContain("`register_topic`");
     expect(prompt).toContain("`restart_topic`");
@@ -334,11 +374,13 @@ describe("session system prompt builders", () => {
       topicTitle: "Design",
       workspaceCwd: "/otium/workspace/topics/channel-design",
       agentKind: "claude",
+      surface: "telegram",
       visualTools: true,
       fileDeliveryTools: true,
     });
 
     expect(prompt).toContain('Your name is "Otium"');
+    expect(prompt).toContain("## Environment: Telegram");
     expect(prompt).toContain('"@Otium"');
     expect(prompt).toContain("person in the room");
     expect(prompt).toContain("answer the current mention naturally");

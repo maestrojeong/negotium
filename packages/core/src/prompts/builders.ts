@@ -13,10 +13,15 @@ import {
 } from "#platform/config";
 import { logger } from "#platform/logger";
 import type { AgentKind, EffortLevel } from "#types";
-import type { SubagentReportMode } from "#types/api";
+import type { SubagentReportMode, TopicSurface } from "#types/api";
 
 const PROMPTS_DIR = resolve(PROJECT_ROOT, "src/prompts");
 const SESSIONS_DIR = resolve(PROMPTS_DIR, "sessions");
+const SURFACE_PROFILE_FILES: Record<TopicSurface, string> = {
+  terminal: "surfaces/terminal.md",
+  telegram: "surfaces/telegram.md",
+  otium: "surfaces/otium.md",
+};
 
 function loadPrompt(filename: string, dir = SESSIONS_DIR): string {
   const raw = readFileSync(resolve(dir, filename), "utf-8");
@@ -199,6 +204,8 @@ export interface SessionSystemPromptOpts {
   topicTitle: string;
   workspaceCwd: string;
   agentKind: AgentKind;
+  /** Product surface through which this turn entered the Node runtime. */
+  surface?: TopicSurface;
   /** Resolved model actually used for this turn. */
   currentModel?: string;
   /** Resolved effort actually used for this turn; absent means provider default/off. */
@@ -239,7 +246,7 @@ export interface PromptExtraSection {
 }
 
 export interface PromptTemplateRequest {
-  kind: "topic-system" | "channel-system" | "manager-system" | "visual-design";
+  kind: "topic-system" | "channel-system" | "manager-system" | "surface-profile" | "visual-design";
   filename: string;
   fallback: string;
 }
@@ -489,9 +496,10 @@ export function createPromptBuilders(host: PromptBuilderHost = {}): PromptBuilde
   }
   sections.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
 
-  const templateCache = new Map<PromptTemplateRequest["kind"], string>();
+  const templateCache = new Map<string, string>();
   const template = (request: PromptTemplateRequest): string => {
-    const cached = templateCache.get(request.kind);
+    const cacheKey = `${request.kind}:${request.filename}`;
+    const cached = templateCache.get(cacheKey);
     if (cached !== undefined) return cached;
     const loaded = loadTemplate?.(request);
     const value =
@@ -502,8 +510,10 @@ export function createPromptBuilders(host: PromptBuilderHost = {}): PromptBuilde
           ? channelSystemPromptTemplate()
           : request.kind === "manager-system"
             ? managerSystemPromptTemplate()
-            : visualDesignGuide());
-    templateCache.set(request.kind, value);
+            : request.kind === "surface-profile"
+              ? loadSessionPrompt(request.filename, request.fallback)
+              : visualDesignGuide());
+    templateCache.set(cacheKey, value);
     return value;
   };
 
@@ -531,8 +541,22 @@ export function createPromptBuilders(host: PromptBuilderHost = {}): PromptBuilde
       UPLOADS_DIR: uploadsDir,
       RESPONSE_LANGUAGE: resolveOutputLanguage(),
     };
+    const environmentProfileFiles = [
+      ...(opts.surface === "terminal" ? ["surfaces/cli.md"] : []),
+      ...(opts.surface ? [SURFACE_PROFILE_FILES[opts.surface]] : []),
+    ];
+    const environmentProfiles = environmentProfileFiles.map((filename) =>
+      template({
+        kind: "surface-profile",
+        filename,
+        fallback: "",
+      }),
+    );
+    const basePrompt = [sessionTemplate, ...environmentProfiles]
+      .filter((part) => part.trim())
+      .join("\n\n");
     let prompt =
-      replaceVars(sessionTemplate, templateVars) +
+      replaceVars(basePrompt, templateVars) +
       buildRuntimeToolSection(
         {
           agentKind: opts.agentKind,

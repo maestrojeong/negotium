@@ -1433,6 +1433,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     topicTitle: topic.title,
     workspaceCwd,
     agentKind,
+    surface: topicRecord?.surface ?? topic.surface,
     currentModel: resolvedModel,
     currentEffort: resolvedEffort,
     description: topic.description,
