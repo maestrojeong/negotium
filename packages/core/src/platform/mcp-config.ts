@@ -242,6 +242,8 @@ export interface RuntimeMcpBuildContext {
   visualTools?: boolean;
   fileDeliveryTools?: boolean;
   silent?: boolean;
+  /** Thread this turn answers inside; forwarded to the runtime MCP context. */
+  threadRootId?: string;
   peerBridge?: PeerRuntimeBridgeContext;
 }
 
@@ -379,6 +381,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
       autoContinue,
       visualTools,
       fileDeliveryTools,
+      threadRootId,
       peerBridge,
     }) {
       if (!topicId || !agent) return null;
@@ -394,6 +397,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
         autoContinue,
         visualTools,
         fileDeliveryTools,
+        ...(threadRootId ? { threadRootId } : {}),
         peerBridge,
       });
     },
@@ -872,6 +876,7 @@ export function getForumMcpServers(opts: {
   autoContinue?: boolean;
   visualTools?: boolean;
   fileDeliveryTools?: boolean;
+  threadRootId?: string;
   depth?: number;
   enabled?: string[] | null;
   extra?: Record<string, unknown>;
@@ -901,6 +906,7 @@ export function getForumMcpServers(opts: {
     autoContinue,
     visualTools,
     fileDeliveryTools,
+    threadRootId,
     peerBridge,
   } = opts;
 
@@ -934,6 +940,7 @@ export function getForumMcpServers(opts: {
       autoContinue,
       visualTools,
       fileDeliveryTools,
+      threadRootId,
       silent,
       peerBridge,
     },
@@ -1056,6 +1063,7 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
     autoContinue: opts.autoContinue,
     visualTools: opts.visualTools,
     fileDeliveryTools: opts.fileDeliveryTools,
+    threadRootId: opts.threadRootId,
     depth: opts.depth,
     enabled: opts.mcpEnabled,
     extra: opts.mcpExtra,

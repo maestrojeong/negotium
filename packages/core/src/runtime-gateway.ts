@@ -39,6 +39,8 @@ export interface RuntimeGatewayTurnInput {
   requestId?: string;
   allowAutoContinue?: boolean;
   threadRootId?: string;
+  /** Inline quote-reply target. Mutually exclusive with `threadRootId`. */
+  parentId?: string;
   respond?: boolean;
   /** Run without adding the injected prompt or output to the visible transcript. */
   silent?: boolean;

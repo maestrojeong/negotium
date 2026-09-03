@@ -40,8 +40,18 @@ export { abortRoom, getRoomQuery } from "#query/active-rooms";
 export { sessionInboxPath } from "#query/session-inbox-path";
 export { prepareDeliveryAck } from "#runtime/delivery-ack";
 export { storeLocalFileAsUpload } from "#runtime/file-hooks";
+export {
+  renderThreadForModel,
+  renderTopicThreadList,
+  THREAD_READ_DEFAULT_LIMIT,
+  THREAD_READ_MAX_LIMIT,
+} from "#runtime/thread-read";
 export { isSensitivePath } from "#security/sensitive-path";
-export { appendApiMessage } from "#storage/api-messages";
+export {
+  appendApiMessage,
+  findThreadRootsByPrefix,
+  listTopicThreadRoots,
+} from "#storage/api-messages";
 export { getApiTopicConfig } from "#storage/api-topic-config";
 export { defaultTopicSurface, getTopic, getTopicByNameForUser } from "#storage/api-topics";
 export { enqueueSessionInbox } from "#storage/session-inbox";

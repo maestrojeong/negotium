@@ -34,6 +34,7 @@ import {
   dispatchPeerRuntimeSpawn,
   errorResult,
   FROM_AUTO_CONTINUE,
+  findThreadRootsByPrefix,
   getApiTopicConfig,
   getTopic,
   type HostedMcpSurface,
@@ -45,12 +46,16 @@ import {
   RUNTIME_MCP_BASE_PATH,
   RUNTIME_MCP_KEY,
   type RuntimeMcpContext,
+  renderThreadForModel,
+  renderTopicThreadList,
   resolveHostedMcpToken,
   resolveRuntimeMcpToken,
   type SelfConfigContext,
   sessionInboxPath,
   showPngTool,
   storeLocalFileAsUpload,
+  THREAD_READ_DEFAULT_LIMIT,
+  THREAD_READ_MAX_LIMIT,
   textResult,
   visualToolDefinitions,
   WsHub,
@@ -310,6 +315,7 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
       queryId: ctx.queryId,
       agent: ctx.agent,
       model: ctx.model,
+      ...(ctx.threadRootId ? { threadRootId: ctx.threadRootId } : {}),
     });
     const askHandler = ctx.peerBridge
       ? async (input: Record<string, unknown>) => {
@@ -423,9 +429,105 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
     );
   }
 
+  registerThreadTools(server, ctx);
   registerNodeTools(server, ctx);
 
   return server;
+}
+
+/**
+ * Reading a thread back, for the case the prompt's thread tag cannot cover.
+ *
+ * Earlier replies in a thread were already sent to this session, so they are
+ * above in the context and are not re-sent on every turn. What survives a
+ * `/compact` or a session reset is the tag alone, and that is when a model
+ * needs to fetch the text behind it.
+ *
+ * Scoped to `ctx.topicId` with no topic argument on purpose: reading another
+ * room is `session-comm`'s job, and it has a permission model for it.
+ */
+function registerThreadTools(server: McpServer, ctx: RuntimeMcpContext): void {
+  if (!ctx.topicId) return;
+  const topicId = ctx.topicId;
+
+  server.tool(
+    "thread_read",
+    "Read one thread of this room in full, oldest message first. Call it with no arguments to get the thread the current message was sent in — useful when a message is tagged (in thread #id) but the conversation behind that tag is no longer in your context.",
+    {
+      thread_id: z
+        .string()
+        .optional()
+        .describe(
+          "Thread tag (#a3f1c8) or full root message id. Omit to read the thread this turn is answering in.",
+        ),
+      limit: z
+        .number()
+        .int()
+        .optional()
+        .describe(
+          `Most recent replies to include (default ${THREAD_READ_DEFAULT_LIMIT}, max ${THREAD_READ_MAX_LIMIT}).`,
+        ),
+    },
+    async ({ thread_id, limit }) => {
+      const requested = thread_id?.trim();
+      if (!requested && !ctx.threadRootId) {
+        return errorResult(
+          "Error: this turn is not inside a thread. Pass thread_id, or call thread_list to see this room's threads.",
+        );
+      }
+      let rootId = ctx.threadRootId ?? "";
+      if (requested) {
+        const resolved = resolveThreadRootId(topicId, requested);
+        if (resolved.kind === "ambiguous") {
+          return errorResult(
+            `Error: '${requested}' matches ${resolved.matches.length} threads in this room (${resolved.matches
+              .slice(0, 5)
+              .join(", ")}). Pass the full root message id.`,
+          );
+        }
+        rootId = resolved.rootId;
+      }
+      const rendered = renderThreadForModel(topicId, rootId, limit ?? THREAD_READ_DEFAULT_LIMIT);
+      if (!rendered) {
+        return errorResult(
+          `Error: no thread '${requested ?? rootId}' in this room. Call thread_list to see which threads exist.`,
+        );
+      }
+      return textResult(rendered);
+    },
+  );
+
+  server.tool(
+    "thread_list",
+    "List the threads in this room with their tag, reply count and root message, most recently active first. Use it to find a thread the user refers to by subject rather than by tag.",
+    {
+      limit: z.number().int().optional().describe("Threads to list (default 20)."),
+    },
+    async ({ limit }) => textResult(renderTopicThreadList(topicId, limit ?? 20)),
+  );
+}
+
+/**
+ * Accept the short tag the model sees in transcripts as well as a full id.
+ *
+ * `threadTag` is a prefix of the root id, so a bare tag is resolved by prefix.
+ * Six hex characters is 24 bits, which collides inside a long-lived room, and
+ * picking one silently would answer about the wrong conversation — so an
+ * ambiguous prefix is reported rather than guessed. An exact id always wins,
+ * because a caller that supplied the whole id has said which thread it means.
+ */
+function resolveThreadRootId(
+  topicId: string,
+  requested: string,
+): { kind: "resolved"; rootId: string } | { kind: "ambiguous"; matches: string[] } {
+  const bare = requested.replace(/^#/, "");
+  const matches = findThreadRootsByPrefix(topicId, bare);
+  const exact = matches.find((rootId) => rootId === requested || rootId === bare);
+  if (exact) return { kind: "resolved", rootId: exact };
+  if (matches.length > 1) return { kind: "ambiguous", matches };
+  // No match falls through to the requested value: `renderThreadForModel` then
+  // reports "no such thread", which is the same answer with a better message.
+  return { kind: "resolved", rootId: matches[0] ?? requested };
 }
 
 function jsonRpcError(status: number, code: number, message: string): Response {

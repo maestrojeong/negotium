@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { resolveAttachmentByFileId } from "#runtime/file-hooks";
+import { describeQuotedAuthor } from "#runtime/thread-context";
+import type { UserTurnReplyContext } from "#runtime/user-turn-envelope";
 import { appendApiMessage, getApiMessage } from "#storage/api-messages";
 import { getTopicSessionId } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
@@ -44,6 +46,17 @@ export interface SubmitRuntimeGatewayTurnParams {
   silent?: boolean;
   /** Answer inside this thread instead of the room's main flow (S-13). */
   threadRootId?: string;
+  /**
+   * Inline quote-reply target — a pointer at one earlier message from the
+   * room's main flow.
+   *
+   * Deliberately not folded into `threadRootId`. The canonical schema keeps the
+   * two apart (`api-messages.ts`: `parent_id` is the quote, `thread_root_id` is
+   * thread membership) and the difference is observable: `listApiMessages`
+   * excludes anything carrying a thread root, so treating a quote as a thread
+   * reply would delete it from the channel it was posted in.
+   */
+  parentId?: string;
   /** Host-uploaded file ids already staged in this node's file store. */
   attachments?: string[];
   /**
@@ -146,6 +159,9 @@ function gatewayPayloadHash(
         // and in a thread are different turns, and replaying one as the other
         // would answer in the wrong place.
         params.threadRootId ?? null,
+        // Same reasoning as the thread root: which message this quotes is part
+        // of what the turn says, so a replay that changes it is a new turn.
+        params.parentId ?? null,
         params.attachments ?? [],
         // `sourceAdapter`/`visualTools`/`fileDeliveryTools` are deliberately
         // absent. They are properties of the calling adapter, not the message,
@@ -196,6 +212,21 @@ export function submitRuntimeGatewayTurn(
     fileDeliveryTools: params.fileDeliveryTools === true,
   });
 
+  // Name the thread for the model. The quote is read from this node's own
+  // store rather than accepted from the host: the host is trusted to say
+  // *which* message is being answered, not to say what it contained.
+  const quotedId = params.threadRootId ?? params.parentId;
+  const quoted = quotedId ? getApiMessage(params.topic.id, quotedId) : undefined;
+  const quotedFields =
+    quoted && !quoted.deleted
+      ? { label: describeQuotedAuthor(quoted), text: quoted.text }
+      : undefined;
+  const replyTo: UserTurnReplyContext | undefined = params.threadRootId
+    ? { kind: "thread", rootId: params.threadRootId, ...quotedFields }
+    : params.parentId
+      ? { kind: "quote", ...quotedFields }
+      : undefined;
+
   const createdAt = new Date().toISOString();
   const attachments = params.attachments?.map(resolveAttachmentByFileId);
   if (attachments?.some((attachment) => !attachment)) {
@@ -213,6 +244,7 @@ export function submitRuntimeGatewayTurn(
       ? { attachments: attachments as NonNullable<MessageDto["attachments"]> }
       : {}),
     ...(params.threadRootId ? { threadRootId: params.threadRootId } : {}),
+    ...(params.parentId ? { parentId: params.parentId } : {}),
     createdAt,
   };
   const submission: RuntimeGatewaySubmission = {
@@ -244,6 +276,7 @@ export function submitRuntimeGatewayTurn(
               actorUserId,
               ...(params.actorLabel ? { actorLabel: params.actorLabel } : {}),
               ...(params.attachments?.length ? { attachments: params.attachments } : {}),
+              ...(replyTo ? { replyTo } : {}),
             },
           ],
           allowAutoContinue: params.allowAutoContinue ?? true,

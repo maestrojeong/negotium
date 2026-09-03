@@ -44,6 +44,15 @@ export interface RuntimeMcpContext {
   visualTools?: boolean;
   /** Capability minted by the adapter. File-delivery tools are absent unless true. */
   fileDeliveryTools?: boolean;
+  /**
+   * Thread this turn is answering inside, when it is answering in one.
+   *
+   * The runtime MCP is built per turn from a signed token, so unlike the
+   * session — which spans the whole topic — this context can carry a value
+   * that changes from one turn to the next. That is what lets `thread_read`
+   * default to "the thread I am in" with no argument.
+   */
+  threadRootId?: string;
   peerBridge?: PeerRuntimeBridgeContext;
 }
 
