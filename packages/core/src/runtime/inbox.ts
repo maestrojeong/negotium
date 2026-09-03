@@ -287,6 +287,7 @@ export function notifyCallerTopic(
   targetLabel: string,
   message: string,
   label = `Reply from ${targetLabel}`,
+  threadRootId?: string,
 ): void {
   const msg: MessageDto = {
     id: randomUUID(),
@@ -299,6 +300,7 @@ export function notifyCallerTopic(
       label,
       message,
     },
+    ...(threadRootId ? { threadRootId } : {}),
     createdAt: new Date().toISOString(),
   };
   appendApiMessage(msg, { notify: false });
@@ -311,6 +313,8 @@ function persistVisibleAskMessage(args: {
   targetLabel: string;
   requestId: string;
   message: string;
+  /** Thread the ask was raised from, so the question card stays beside it. */
+  threadRootId?: string;
 }): void {
   const msg: MessageDto = {
     id: `ask-${args.requestId}-sent`,
@@ -323,6 +327,10 @@ function persistVisibleAskMessage(args: {
       label: `Ask to ${args.targetLabel}`,
       message: args.message,
     },
+    // The outgoing question belongs where it was asked. Its answer is already
+    // placed there; leaving the question in the channel splits one exchange
+    // across two conversations.
+    ...(args.threadRootId ? { threadRootId: args.threadRootId } : {}),
     createdAt: new Date().toISOString(),
   };
   try {
@@ -351,7 +359,13 @@ async function notifyAskDrop(
     return;
   }
   try {
-    notifyCallerTopic(callerTopic.id, targetLabel, message, `Error from ${targetLabel}`);
+    notifyCallerTopic(
+      callerTopic.id,
+      targetLabel,
+      message,
+      `Error from ${targetLabel}`,
+      entry.fromThreadRootId,
+    );
   } catch (err) {
     logger.warn(
       { err, from: entry.from, to: targetLabel, requestId: entry.requestId },
@@ -1036,6 +1050,7 @@ async function handleAskEntry(
       targetLabel,
       requestId,
       message: entry.message,
+      ...(entry.fromThreadRootId ? { threadRootId: entry.fromThreadRootId } : {}),
     });
   }
 

@@ -82,6 +82,35 @@ afterEach(() => {
   topicIds.clear();
 });
 
+test("a caller notice raised from a thread is placed in that thread", () => {
+  const topicId = newTopicId();
+  notifyCallerTopic(topicId, "target-room", "boom", "Error from target-room", "root-xyz");
+
+  const row = db
+    .query<{ id: string }, [string]>(
+      "SELECT id FROM api_messages WHERE topic_id = ? ORDER BY rowid DESC LIMIT 1",
+    )
+    .get(topicId);
+  // The answer is already placed in the thread; a notice left in the channel
+  // splits one exchange across two conversations.
+  expect(getApiMessage(topicId, row?.id ?? "")).toMatchObject({
+    kind: "tell",
+    threadRootId: "root-xyz",
+  });
+});
+
+test("a caller notice with no thread stays in the channel", () => {
+  const topicId = newTopicId();
+  notifyCallerTopic(topicId, "target-room", "plain");
+
+  const row = db
+    .query<{ id: string }, [string]>(
+      "SELECT id FROM api_messages WHERE topic_id = ? ORDER BY rowid DESC LIMIT 1",
+    )
+    .get(topicId);
+  expect(getApiMessage(topicId, row?.id ?? "")?.threadRootId).toBeUndefined();
+});
+
 test("ask_session replies persist explicit TellCard metadata", () => {
   const topicId = newTopicId();
   notifyCallerTopic(topicId, "target-room", "reference result");
