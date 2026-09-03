@@ -295,3 +295,62 @@ describe("DeferredInjectBatcher", () => {
     expect(q.size(TOPIC)).toBe(59);
   });
 });
+
+describe("thread-bound ask replies", () => {
+  test("two threads' ask replies do not merge into one turn", () => {
+    queue.enqueue(
+      TOPIC,
+      inject({
+        threadRootId: "root-a",
+        prompt: "reply A",
+        askReplySources: [{ from: "topic-x", requestId: "r-a" }],
+      }),
+    );
+    queue.enqueue(
+      TOPIC,
+      inject({
+        threadRootId: "root-b",
+        prompt: "reply B",
+        askReplySources: [{ from: "topic-y", requestId: "r-b" }],
+      }),
+    );
+
+    // A merged turn would have two possible homes and no correct answer, so
+    // the batch stops at the thread boundary — the same rule user turns use.
+    const first = queue.dequeueAll(TOPIC);
+    expect(first?.threadRootId).toBe("root-a");
+    expect(first?.prompt).toBe("reply A");
+    const second = queue.dequeueAll(TOPIC);
+    expect(second?.threadRootId).toBe("root-b");
+    expect(second?.prompt).toBe("reply B");
+  });
+
+  test("a channel ask reply does not fold into a thread's", () => {
+    queue.enqueue(
+      TOPIC,
+      inject({ threadRootId: "root-a", prompt: "in thread", askReplySources: [{ from: "x" }] }),
+    );
+    queue.enqueue(TOPIC, inject({ prompt: "in channel", askReplySources: [{ from: "y" }] }));
+
+    expect(queue.dequeueAll(TOPIC)?.prompt).toBe("in thread");
+    const channel = queue.dequeueAll(TOPIC);
+    expect(channel?.prompt).toBe("in channel");
+    expect(channel?.threadRootId).toBeUndefined();
+  });
+
+  test("replies from different topics in the SAME thread still merge", () => {
+    queue.enqueue(
+      TOPIC,
+      inject({ threadRootId: "root-a", prompt: "from x", askReplySources: [{ from: "x" }] }),
+    );
+    queue.enqueue(
+      TOPIC,
+      inject({ threadRootId: "root-a", prompt: "from y", askReplySources: [{ from: "y" }] }),
+    );
+
+    const merged = queue.dequeueAll(TOPIC);
+    expect(merged?.prompt).toBe("from x\n\nfrom y");
+    // The merged turn keeps the thread it belongs to.
+    expect(merged?.threadRootId).toBe("root-a");
+  });
+});

@@ -5,6 +5,8 @@ export interface SessionCommContext {
   userId: string;
   currentTopic: string;
   currentTopicId?: string;
+  /** Thread the calling turn is answering inside, when it is answering in one. */
+  currentThreadRootId?: string;
   /** Present for a subagent room; outbound ask_session is not exposed. */
   subagentParentTopicId?: string;
   peerHostQueryId?: string;
@@ -43,6 +45,7 @@ export function parseSessionCommContext(
     userId: value(args, "user-id") ?? defaults.userId,
     currentTopic: value(args, "topic") ?? "",
     currentTopicId: value(args, "topic-id") || undefined,
+    currentThreadRootId: value(args, "thread-root-id") || undefined,
     subagentParentTopicId: value(args, "subagent-parent-topic-id") || undefined,
     peerHostQueryId: value(args, "peer-host-query-id") || undefined,
     cronSessionId: value(args, "cron-session-id") || undefined,

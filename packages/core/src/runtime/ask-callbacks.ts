@@ -44,6 +44,8 @@ export interface AskPending {
   requestId: string;
   contextId?: string;
   callerTopicId: string;
+  /** Thread of the caller's room to answer in, when the ask came from one. */
+  callerThreadRootId?: string;
   callerUserId: string;
   targetQueryId: string;
   createdAt: number;

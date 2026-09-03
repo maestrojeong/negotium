@@ -72,6 +72,14 @@ type SessionInboxEntry =
       from: string;
       fromTitle?: string;
       fromTopicId?: string;
+      /**
+       * Thread in the *caller's* room that this ask was raised from.
+       *
+       * Optional and additive, like `contextId`/`fromDepth` beside it: entries
+       * written before this field are replayed unchanged and simply answer in
+       * the channel, which is the old behaviour.
+       */
+      fromThreadRootId?: string;
       message: string;
       contextId?: string;
       fromDepth?: number;
@@ -1234,6 +1242,7 @@ async function handleAskEntry(
           requestId,
           contextId: entry.contextId,
           callerTopicId,
+          ...(entry.fromThreadRootId ? { callerThreadRootId: entry.fromThreadRootId } : {}),
           callerUserId: String(scope.userId),
           targetQueryId: queryId,
           createdAt: Date.now(),
