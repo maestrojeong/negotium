@@ -69,6 +69,14 @@ export interface HostedMcpContext {
   model?: string;
   depth?: number;
   silent?: boolean;
+  /**
+   * Thread the calling turn is answering inside.
+   *
+   * Present on the hosted surface as well as the stdio one: `session-comm` is
+   * served both ways, and the hosted path — the default — carries its context
+   * in a signed per-turn token rather than in argv.
+   */
+  threadRootId?: string;
   peerBridge?: PeerRuntimeBridgeContext;
 }
 
@@ -283,6 +291,10 @@ function hostedMcpCacheIdentity(surface: HostedMcpSurface, ctx: HostedMcpContext
         depth: ctx.depth ?? 0,
         silent: ctx.silent ?? false,
         agent: ctx.agent,
+        // Part of the identity, not a detail: a server cached for a channel
+        // turn would otherwise be reused for a thread turn and record the ask
+        // against the wrong conversation.
+        threadRootId: ctx.threadRootId ?? null,
         peerBridge: ctx.peerBridge ?? null,
       };
       break;

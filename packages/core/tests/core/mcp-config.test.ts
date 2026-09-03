@@ -722,3 +722,30 @@ describe("mcp-config: cua-rs", () => {
     }
   });
 });
+
+test("a threaded turn's session-comm carries its thread on the hosted surface", () => {
+  const base = {
+    userId: "local",
+    session: "nav-debug",
+    topicId: "topic-1",
+    agent: "claude" as const,
+    prompt: "hi",
+    queryId: "q1",
+  };
+  const specOf = (opts: Record<string, unknown>) =>
+    (getMcpServersForQuery(opts as never) as Record<string, { url?: string }>)["session-comm"];
+
+  const channel = specOf(base);
+  const thread = specOf({ ...base, threadRootId: "root-abc" });
+
+  // The hosted surface carries context in a signed token, not in argv. A fix
+  // applied only to the stdio branch leaves these two specs identical, which is
+  // exactly how the first attempt shipped without taking effect.
+  expect(thread?.url).not.toBe(channel?.url);
+
+  const token = new URL(thread?.url ?? "http://x/").searchParams.get("token") ?? "";
+  const payload = JSON.parse(
+    Buffer.from(token.split(".")[0] ?? "", "base64url").toString("utf8"),
+  ) as { ctx?: { threadRootId?: string } };
+  expect(payload.ctx?.threadRootId).toBe("root-abc");
+});
