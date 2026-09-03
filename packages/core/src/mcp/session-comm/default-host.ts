@@ -331,6 +331,9 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
             from: from.key,
             fromTitle: from.title,
             ...(from.topicId ? { fromTopicId: from.topicId } : {}),
+            ...(context.currentThreadRootId
+              ? { fromThreadRootId: context.currentThreadRootId }
+              : {}),
             message,
             fromDepth: context.depth,
             timestamp: new Date().toISOString(),

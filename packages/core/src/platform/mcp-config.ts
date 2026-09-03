@@ -481,6 +481,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
         agent,
         depth = 0,
         silent,
+        threadRootId,
         peerBridge,
       } = ctx;
       const effectiveAgent = agent ?? FALLBACK_AGENT;
@@ -496,6 +497,10 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
         `--agent=${effectiveAgent}`,
         ...(cronSessionId ? [`--cron-session-id=${cronSessionId}`] : []),
         ...(silent ? ["--reply-only=true"] : []),
+        // Turn-scoped, like `--peer-host-query-id`: this config is rebuilt for
+        // every turn, so an `ask_session` raised inside a thread can record
+        // where its answer belongs.
+        ...(threadRootId ? [`--thread-root-id=${threadRootId}`] : []),
         ...(peerBridge ? [`--peer-host-query-id=${peerBridge.hostQueryId}`] : []),
       ];
       return buildBuiltinMcpServer("session-comm", ctx, () =>

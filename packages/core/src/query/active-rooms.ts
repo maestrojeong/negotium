@@ -47,6 +47,8 @@ export interface DeferredInject {
   prompt: string;
   /** Inject source — the topic name/id this inject came from (never "user"). */
   origin: string;
+  /** Thread of this topic to answer in, e.g. an ask raised from a thread. */
+  threadRootId?: string;
   sourceNode?: string;
   /** Inter-session request id for dedup. */
   requestId?: string;
@@ -314,6 +316,7 @@ export class InterSessionQueue {
         : !isAskReplyInject(e) &&
           e.origin === base.origin &&
           (e.silent ?? false) === (base.silent ?? false)) &&
+      (e.threadRootId ?? null) === (base.threadRootId ?? null) &&
       (e.onDispatched !== undefined) === (base.onDispatched !== undefined) &&
       (e.agentOverride ?? null) === (base.agentOverride ?? null) &&
       (e.modelOverride ?? null) === (base.modelOverride ?? null) &&

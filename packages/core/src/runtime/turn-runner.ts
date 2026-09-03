@@ -194,6 +194,7 @@ function appendAskReplyMessage(
   body: string,
   kind: "reply" | "error",
   agentType?: AgentKind | null,
+  threadRootId?: string,
 ): MessageDto {
   const message: MessageDto = {
     id: randomUUID(),
@@ -207,6 +208,7 @@ function appendAskReplyMessage(
       message: body,
     },
     ...(agentType ? { agentType } : {}),
+    ...(threadRootId ? { threadRootId } : {}),
     createdAt: new Date().toISOString(),
   };
   appendApiMessage(message, { notify: false });
@@ -361,6 +363,7 @@ function redispatchInject(inject: DeferredInject): void {
     depth: inject.depth,
     silent: inject.silent,
     contextId: inject.contextId,
+    ...(inject.threadRootId ? { threadRootId: inject.threadRootId } : {}),
     agentOverride: inject.agentOverride,
     modelOverride: inject.modelOverride,
     effortOverride: inject.effortOverride,
@@ -441,6 +444,7 @@ export async function deliverAskCallbackToCaller(
     requestId: string;
     contextId?: string;
     callerTopicId: string;
+    callerThreadRootId?: string;
     callerUserId: string;
   },
   sourceLabel: string,
@@ -459,7 +463,15 @@ export async function deliverAskCallbackToCaller(
 
   if (!callerTopic?.agent) {
     try {
-      appendAskReplyMessage(pending.callerTopicId, prompt, sourceLabel, body, kind);
+      appendAskReplyMessage(
+        pending.callerTopicId,
+        prompt,
+        sourceLabel,
+        body,
+        kind,
+        undefined,
+        pending.callerThreadRootId,
+      );
       await clearPendingAskFile(pending);
       return true;
     } catch (err) {
@@ -474,6 +486,7 @@ export async function deliverAskCallbackToCaller(
   const queued = askReplyInjectBatcher.enqueue({
     topicId: pending.callerTopicId,
     userId: pending.callerUserId,
+    ...(pending.callerThreadRootId ? { threadRootId: pending.callerThreadRootId } : {}),
     prompt,
     origin: sourceLabel,
     requestId: pending.requestId,
@@ -506,6 +519,7 @@ export async function deliverAskCallbackToCaller(
       body,
       kind,
       callerTopic.agent,
+      pending.callerThreadRootId,
     );
     await markPendingAskFile(pending, "queued_for_caller");
     return true;
@@ -522,7 +536,15 @@ export async function deliverAskCallbackToCaller(
     { requestId: pending.requestId, callerTopicId: pending.callerTopicId, source: sourceLabel },
     "sessions: ask callback could not enter caller batch; appending direct fallback",
   );
-  appendAskReplyMessage(pending.callerTopicId, prompt, sourceLabel, body, kind, callerTopic.agent);
+  appendAskReplyMessage(
+    pending.callerTopicId,
+    prompt,
+    sourceLabel,
+    body,
+    kind,
+    callerTopic.agent,
+    pending.callerThreadRootId,
+  );
   await clearPendingAskFile(pending);
   return true;
 }
