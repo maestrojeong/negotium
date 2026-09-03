@@ -95,6 +95,7 @@ function buildBuiltinMcpServer(
     ...(ctx.queryId ? { queryId: ctx.queryId } : {}),
     ...(ctx.wikiTopicId ? { wikiTopicId: ctx.wikiTopicId } : {}),
     ...(ctx.subagentParentTopicId ? { subagentParentTopicId: ctx.subagentParentTopicId } : {}),
+    ...(ctx.threadRootId ? { threadRootId: ctx.threadRootId } : {}),
     cwd: ctx.cwd ?? (ctx.topicId ? resolveTopicWorkspaceDir(ctx.topicId) : process.cwd()),
     agent,
     ...(ctx.model ? { model: ctx.model } : {}),

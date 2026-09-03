@@ -81,6 +81,7 @@ export async function buildHostedSurfaceServer(
           userId: context.userId,
           currentTopic: context.topicTitle,
           currentTopicId: context.topicId,
+          currentThreadRootId: context.threadRootId,
           subagentParentTopicId: context.subagentParentTopicId,
           peerHostQueryId: context.peerBridge?.hostQueryId,
           depth: context.depth ?? 0,
