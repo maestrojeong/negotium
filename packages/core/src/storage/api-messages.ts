@@ -522,6 +522,90 @@ export function listThreadMessages(
 }
 
 /**
+ * The root message and its replies as raw rows, oldest first.
+ *
+ * Row-shaped rather than DTO-shaped because the caller renders them with
+ * `formatChannelTranscriptLine`, so a thread read to the model looks exactly
+ * like the channel transcript it may appear next to.
+ */
+export function listThreadMessageRows(
+  topicId: string,
+  rootId: string,
+  limit = 200,
+): { root: ApiMessageRow | null; replies: ApiMessageRow[] } {
+  const root =
+    (db
+      .query("SELECT *, rowid AS rowid FROM api_messages WHERE topic_id = ? AND id = ?")
+      .get(topicId, rootId) as ApiMessageRow | null) ?? null;
+  // Newest-first with a LIMIT, then reversed: when a thread is longer than the
+  // budget the recent end is the part worth keeping.
+  const rows = db
+    .query(
+      `SELECT *, rowid AS rowid FROM api_messages
+       WHERE topic_id = ? AND thread_root_id = ? AND deleted = 0
+       ORDER BY rowid DESC
+       LIMIT ?`,
+    )
+    .all(topicId, rootId, Math.max(1, limit)) as ApiMessageRow[];
+  return { root, replies: rows.reverse() };
+}
+
+/** Total undeleted replies in a thread, for reporting what a read left out. */
+export function countThreadReplies(topicId: string, rootId: string): number {
+  const row = db
+    .query(
+      `SELECT COUNT(*) AS n FROM api_messages
+       WHERE topic_id = ? AND thread_root_id = ? AND deleted = 0`,
+    )
+    .get(topicId, rootId) as { n: number } | null;
+  return Number(row?.n ?? 0);
+}
+
+/**
+ * Thread roots in a topic whose id starts with `prefix`, ignoring separators.
+ *
+ * Resolved in SQL over the whole topic rather than over a page of recent
+ * threads: the short tag a model reads in a transcript may belong to a thread
+ * that has not been touched in months, and a capped scan reports that thread as
+ * nonexistent. Returns every match so the caller can refuse an ambiguous
+ * prefix instead of guessing a room's newest thread.
+ */
+export function findThreadRootsByPrefix(topicId: string, prefix: string): string[] {
+  const bare = prefix.replace(/[^0-9A-Za-z]/g, "");
+  if (!bare) return [];
+  const rows = db
+    .query(
+      `SELECT DISTINCT thread_root_id AS rootId FROM api_messages
+       WHERE topic_id = ? AND thread_root_id IS NOT NULL AND deleted = 0`,
+    )
+    .all(topicId) as { rootId: string }[];
+  return rows
+    .filter((row) => row.rootId.replace(/[^0-9A-Za-z]/g, "").startsWith(bare))
+    .map((row) => row.rootId);
+}
+
+/** Threads in a topic that have at least one reply, most recently active first. */
+export function listTopicThreadRoots(
+  topicId: string,
+  limit = 20,
+): { rootId: string; replyCount: number; lastReplyAt: string }[] {
+  return db
+    .query(
+      `SELECT thread_root_id AS rootId, COUNT(*) AS replyCount, MAX(created_at) AS lastReplyAt
+       FROM api_messages
+       WHERE topic_id = ? AND thread_root_id IS NOT NULL AND deleted = 0
+       GROUP BY thread_root_id
+       ORDER BY lastReplyAt DESC
+       LIMIT ?`,
+    )
+    .all(topicId, Math.max(1, limit)) as {
+    rootId: string;
+    replyCount: number;
+    lastReplyAt: string;
+  }[];
+}
+
+/**
  * Find the newest same-user/same-text message that is recent enough to be the
  * message just posted before a follow-up `/ai` call. This is a compatibility
  * fallback for clients that persist attachments through `/messages` but do not

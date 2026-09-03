@@ -42,6 +42,15 @@ export interface AskUserToolContext {
   queryId?: string;
   agent: AgentKind;
   model?: string;
+  /**
+   * Thread this turn is answering inside.
+   *
+   * An ask card is blocking UI: it only advances when a person clicks it. A
+   * card raised by a thread turn that lands in the channel instead reads as a
+   * thread that stalled for no visible reason, so the card has to be placed
+   * where the question was asked.
+   */
+  threadRootId?: string;
 }
 
 export type AnswerAskUserQuestionResult =
@@ -287,6 +296,9 @@ export function createAskUserRuntime(host: AskUserRuntimeHost): AskUserRuntime {
       authorId: userId,
       text: label,
       parentId: messageId,
+      // Follow the card rather than the caller: whoever clicks the button is
+      // answering where the card is, and the answer belongs beside it.
+      ...(existing.threadRootId ? { threadRootId: existing.threadRootId } : {}),
       createdAt: now(),
     };
     try {
@@ -338,6 +350,7 @@ export function createAskUserRuntime(host: AskUserRuntimeHost): AskUserRuntime {
       model: ctx.model ?? cfg?.model ?? "unknown",
       kind: "ask_user_question",
       askUserQuestion: { question, choices },
+      ...(ctx.threadRootId ? { threadRootId: ctx.threadRootId } : {}),
       createdAt: now(),
     };
     host.messaging.persistence.appendMessage(message);

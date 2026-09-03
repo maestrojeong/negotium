@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { renderUserTurnBatch } from "#runtime/user-turn-envelope";
 import { db } from "#storage/forum-db";
 import {
+  getRuntimeUserTurnRequest,
   mergeRuntimeUserTurnRequest,
   type RuntimeUserTurnRequest,
 } from "#storage/runtime-turn-requests";
@@ -105,4 +107,50 @@ describe("pending turn requests never merge across threads", () => {
     expect(pending).toHaveLength(1);
     expect(pending[0]?.userMessages.map((m) => m.prompt)).toEqual(["one", "two"]);
   });
+});
+
+test("a malformed stored replyTo is rejected instead of crashing the renderer", () => {
+  const topicId = `topic-${randomUUID()}`;
+  topics.push(topicId);
+  const requestId = `req-${randomUUID()}`;
+  mergeRuntimeUserTurnRequest({
+    topicId,
+    userId: "local",
+    userMessages: [{ prompt: "hello" }],
+    allowAutoContinue: true,
+    requestId,
+    topicEpoch: 0,
+    execution: { conversationPrompts: ["hello"], loggedUserMessageCount: 0 },
+  });
+  // Durable JSON outlives the code that wrote it. `label: 7` would reach
+  // `label.trim()` in the prompt renderer and throw mid-turn.
+  db.query("UPDATE runtime_user_turn_requests SET user_messages_json = ? WHERE request_id = ?").run(
+    JSON.stringify([{ prompt: "hello", replyTo: { kind: "thread", label: 7 } }]),
+    requestId,
+  );
+
+  // Read through the production path, not the raw JSON: the point is that the
+  // validator refuses the row and falls back to the plain prompt.
+  const request = getRuntimeUserTurnRequest(topicId);
+  expect(request?.userMessages).toEqual([{ prompt: "hello" }]);
+  expect(() => renderUserTurnBatch(request?.userMessages ?? [])).not.toThrow();
+});
+
+test("a well-formed stored replyTo round-trips", () => {
+  const topicId = `topic-${randomUUID()}`;
+  topics.push(topicId);
+  const replyTo = { kind: "thread" as const, rootId: "root-1", label: "AI", text: "루트" };
+  mergeRuntimeUserTurnRequest({
+    topicId,
+    userId: "local",
+    userMessages: [{ prompt: "답장", replyTo }],
+    allowAutoContinue: true,
+    requestId: `req-${randomUUID()}`,
+    topicEpoch: 0,
+    execution: { conversationPrompts: ["답장"], loggedUserMessageCount: 0 },
+  });
+
+  const request = getRuntimeUserTurnRequest(topicId);
+  expect(request?.userMessages[0].replyTo).toEqual(replyTo);
+  expect(renderUserTurnBatch(request?.userMessages ?? [])).toContain("[In thread #root1 on @AI]");
 });

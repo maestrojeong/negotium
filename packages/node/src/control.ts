@@ -586,6 +586,15 @@ export function createNodeControlHandler(
               // signal is a failed click that looks identical to the bug this
               // route fixes.
               "canonical-ask-answer",
+              // Reply context on turn submit: `threadRootId` places the turn
+              // and its answer inside a thread, `parentId` records an inline
+              // quote. A host cannot otherwise tell this node from one that
+              // predates both fields and ignores them — the older node accepts
+              // the request either way, answering a thread reply in the channel
+              // and dropping a quote. Without the flag the honest options are
+              // to hide the reply affordance everywhere or to show it and
+              // sometimes lose the answer.
+              "turn-submit-reply-context",
             ],
             cursor: latestRuntimeEventSeq(),
           });
@@ -819,6 +828,10 @@ export function createNodeControlHandler(
             body.threadRootId === undefined
               ? undefined
               : asMessageId(requiredText(body.threadRootId, "threadRootId"));
+          const parentId =
+            body.parentId === undefined
+              ? undefined
+              : asMessageId(requiredText(body.parentId, "parentId"));
           const attachments =
             body.attachments === undefined
               ? []
@@ -852,6 +865,21 @@ export function createNodeControlHandler(
               return jsonError(400, "threadRootId does not identify a thread root in this topic");
             }
           }
+          if (threadRootId && parentId) {
+            // A message is either a thread reply or a channel quote. Accepting
+            // both would place one message in two conversations, and the quote
+            // would then be invisible in the channel it claims to be in.
+            return jsonError(400, "threadRootId and parentId are mutually exclusive");
+          }
+          if (parentId) {
+            // Unlike a thread root, the quoted message may itself be a reply —
+            // quoting is a pointer, not membership. It must still be a real,
+            // undeleted message of this room.
+            const parent = getApiMessage(topicId, parentId);
+            if (!parent || parent.deleted) {
+              return jsonError(400, "parentId does not identify a message in this topic");
+            }
+          }
           const submission = submitRuntimeGatewayTurn({
             topic,
             userId,
@@ -875,6 +903,7 @@ export function createNodeControlHandler(
             fileDeliveryTools: body.fileDeliveryTools === true,
             ...(attachments.length ? { attachments } : {}),
             ...(threadRootId ? { threadRootId } : {}),
+            ...(parentId ? { parentId } : {}),
           });
           return Response.json(
             {

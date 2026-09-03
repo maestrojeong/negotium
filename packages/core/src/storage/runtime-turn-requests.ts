@@ -168,6 +168,27 @@ registerStorageSchemaInitializer((database) =>
   ensureRuntimeUserTurnRequestsSchema(database as unknown as StorageDatabase),
 );
 
+/**
+ * Reject a stored envelope whose reply context is not the shape the renderer
+ * assumes.
+ *
+ * These rows are written by typed callers, but they are durable JSON that
+ * outlives the code that wrote them, and the renderer calls `label.trim()`. A
+ * validator that claims to check the envelope has to actually cover its fields,
+ * or a hand-edited or downgraded row crashes the turn instead of degrading.
+ */
+function isValidReplyContext(value: UserTurnEnvelope["replyTo"]): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object") return false;
+  const optionalText = (field: unknown) => field === undefined || typeof field === "string";
+  return (
+    (value.kind === "thread" || value.kind === "quote") &&
+    optionalText(value.rootId) &&
+    optionalText(value.label) &&
+    optionalText(value.text)
+  );
+}
+
 function rowToRequest(row: RuntimeUserTurnRequestRow): RuntimeUserTurnRequest {
   let attachments: string[] | undefined;
   if (row.attachments_json) {
@@ -200,7 +221,8 @@ function rowToRequest(row: RuntimeUserTurnRequestRow): RuntimeUserTurnRequest {
             ((item as UserTurnEnvelope).actorUserId === undefined ||
               typeof (item as UserTurnEnvelope).actorUserId === "string") &&
             ((item as UserTurnEnvelope).actorLabel === undefined ||
-              typeof (item as UserTurnEnvelope).actorLabel === "string"),
+              typeof (item as UserTurnEnvelope).actorLabel === "string") &&
+            isValidReplyContext((item as UserTurnEnvelope).replyTo),
         )
       ) {
         userMessages = parsed as UserTurnEnvelope[];
@@ -348,6 +370,11 @@ export function mergeRuntimeUserTurnRequest(input: {
           candidate?.prompt === message.prompt &&
           candidate.actorUserId === message.actorUserId &&
           candidate.actorLabel === message.actorLabel &&
+          // The reply context is part of the rendered prompt, so two envelopes
+          // that differ only there are different submissions. Comparing without
+          // it would treat a thread reply as already included in the batch and
+          // silently drop it.
+          JSON.stringify(candidate.replyTo ?? null) === JSON.stringify(message.replyTo ?? null) &&
           JSON.stringify(candidate.attachments ?? []) === JSON.stringify(message.attachments ?? [])
         );
       });

@@ -208,6 +208,11 @@ export interface AgentQueryOptions {
   visualTools?: boolean;
   /** Expose adapter-backed file-delivery tools for this turn. Default-deny. */
   fileDeliveryTools?: boolean;
+  /**
+   * Thread this turn answers inside, so the turn's runtime MCP can default
+   * `thread_read` to it. Turn-scoped, unlike the session, which is per topic.
+   */
+  threadRootId?: string;
   abortController?: AbortController;
   model?: string;
   /** Provider-side hard budget when the selected SDK supports one. */

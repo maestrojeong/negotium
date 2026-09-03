@@ -148,6 +148,14 @@ changes the row the turn runner actually reads, and `respond: false` on `POST /t
 (`turn-submit-silent`) so a room with the AI off or set to mention-only still records its
 messages canonically without queueing an answer.
 
+0.12.0 adds reply context on `POST /turns` (`turn-submit-reply-context`): `threadRootId` so a reply
+made in a thread is answered in that thread, and `parentId` so an inline quote keeps its place in the
+channel. The two are mutually exclusive, because a thread root is membership — the canonical channel
+listing excludes rows that carry one — while a quote is only a pointer. This capability is checked for
+a reason the others are not: a node that predates it accepts the submission and answers in the
+channel, so the failure is not an error the host can catch but a reply that lands where nobody is
+looking. A host must therefore feature-detect and refuse, rather than submit and hope.
+
 The same release closes the turn/session half of the gap: `POST runtime/v1/topics/:id/abort`
 (`canonical-topic-abort`), `.../session/reset` (`canonical-session-reset`) and
 `.../session/compact` (`canonical-session-compact`). A host that starts a turn must be able to

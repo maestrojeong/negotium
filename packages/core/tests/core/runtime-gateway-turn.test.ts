@@ -6,7 +6,8 @@ import {
 } from "#application/submit-runtime-gateway-turn";
 import { topicService } from "#application/topic-service";
 import { fileHooks, setFileHooks } from "#runtime/file-hooks";
-import { appendApiMessage, getApiMessage } from "#storage/api-messages";
+import { renderUserTurnBatch } from "#runtime/user-turn-envelope";
+import { appendApiMessage, getApiMessage, listApiMessages } from "#storage/api-messages";
 import { deleteTopic, getTopic, setTopicSessionId } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
 import { listRuntimeEventsAfter } from "#storage/runtime-events";
@@ -18,6 +19,7 @@ import {
   cancelRuntimeUserTurnRequests,
   getRuntimeUserTurnRequest,
 } from "#storage/runtime-turn-requests";
+import type { MessageDto } from "#types/api";
 
 test("runtime gateway snapshots the pre-turn provider session for durable handoff", () => {
   const userId = `gateway-session-${randomUUID()}`;
@@ -493,6 +495,101 @@ test("runtime gateway keeps a silent programmatic turn out of the canonical tran
     db.query("DELETE FROM runtime_gateway_submissions WHERE topic_id = ?").run(topic.id);
     db.query("DELETE FROM runtime_events WHERE topic_id = ?").run(topic.id);
     db.query("DELETE FROM api_messages WHERE topic_id = ?").run(topic.id);
+    deleteTopic(topic.id);
+  }
+});
+
+test("a quoted reply keeps its channel placement while a thread reply leaves it", () => {
+  const userId = `gateway-quote-${randomUUID()}`;
+  const topic = topicService.create({
+    title: `Gateway quote ${randomUUID()}`,
+    userId,
+    agent: "codex",
+  });
+  try {
+    const freshTopic = getTopic(topic.id);
+    if (!freshTopic) throw new Error("topic was not created");
+    const quoted: MessageDto = {
+      id: randomUUID(),
+      topicId: topic.id,
+      authorId: "ai",
+      agentType: "claude",
+      text: "배포 스크립트 권한 문제로 실패했습니다.",
+      createdAt: new Date().toISOString(),
+    };
+    appendApiMessage(quoted, { notify: false });
+
+    const quote = submitRuntimeGatewayTurn({
+      topic: freshTopic,
+      userId,
+      text: "이 로그 원인 좀 봐줘",
+      clientMessageId: randomUUID(),
+      parentId: quoted.id,
+    });
+    // A quote is a pointer, not thread membership: it must stay in the channel
+    // listing, which excludes anything carrying a thread root.
+    expect(quote.message.parentId).toBe(quoted.id);
+    expect(quote.message.threadRootId).toBeUndefined();
+    expect(listApiMessages(topic.id).page.map((message) => message.id)).toContain(quote.message.id);
+    const quotePrompt = renderUserTurnBatch(
+      getRuntimeUserTurnRequest(topic.id)?.userMessages ?? [],
+    );
+    expect(quotePrompt).toContain("[Replying to @AI (claude)]");
+    expect(quotePrompt).toContain("> 배포 스크립트 권한 문제로 실패했습니다.");
+    expect(quotePrompt).not.toContain("In thread");
+    cancelRuntimeUserTurnRequests(topic.id);
+
+    const reply = submitRuntimeGatewayTurn({
+      topic: freshTopic,
+      userId,
+      text: "권한만 고치면 되나?",
+      clientMessageId: randomUUID(),
+      threadRootId: quoted.id,
+    });
+    expect(reply.message.threadRootId).toBe(quoted.id);
+    expect(listApiMessages(topic.id).page.map((message) => message.id)).not.toContain(
+      reply.message.id,
+    );
+    expect(renderUserTurnBatch(getRuntimeUserTurnRequest(topic.id)?.userMessages ?? [])).toContain(
+      "[In thread #",
+    );
+  } finally {
+    cancelRuntimeUserTurnRequests(topic.id);
+    deleteTopic(topic.id);
+  }
+});
+
+test("the same key with a different quote target is a different turn", () => {
+  const userId = `gateway-quote-hash-${randomUUID()}`;
+  const topic = topicService.create({
+    title: `Gateway quote hash ${randomUUID()}`,
+    userId,
+    agent: "codex",
+  });
+  try {
+    const freshTopic = getTopic(topic.id);
+    if (!freshTopic) throw new Error("topic was not created");
+    const clientMessageId = randomUUID();
+    submitRuntimeGatewayTurn({
+      topic: freshTopic,
+      userId,
+      text: "같은 텍스트",
+      clientMessageId,
+      parentId: "parent-a",
+    });
+    // Replaying one key with another quote target would otherwise reuse the ACK
+    // and attach the answer to the wrong message.
+    expect(() =>
+      submitRuntimeGatewayTurn({
+        topic: freshTopic,
+        userId,
+        text: "같은 텍스트",
+        clientMessageId,
+        parentId: "parent-b",
+      }),
+    ).toThrow(RuntimeGatewayIdempotencyConflictError);
+  } finally {
+    cancelRuntimeUserTurnRequests(topic.id);
     deleteTopic(topic.id);
   }
 });

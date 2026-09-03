@@ -161,12 +161,13 @@ const askReplyInjectBatcher = new DeferredInjectBatcher({
   dispatch: (inject) => redispatchInject(inject),
 });
 
-function appendSystemMessage(topicId: string, text: string): MessageDto {
+function appendSystemMessage(topicId: string, text: string, threadRootId?: string): MessageDto {
   const message: MessageDto = {
     id: randomUUID(),
     topicId,
     authorId: "system",
     text,
+    ...(threadRootId ? { threadRootId } : {}),
     createdAt: new Date().toISOString(),
   };
   appendApiMessage(message, { notify: false });
@@ -1699,6 +1700,9 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         autoContinue: allowAutoContinue && !silent,
         visualTools,
         fileDeliveryTools,
+        // Turn-scoped, so the runtime MCP this turn connects to can answer
+        // "which thread am I in" without the model having to know the id.
+        ...(threadRootId ? { threadRootId } : {}),
         peerBridge,
       });
     } finally {
@@ -1894,6 +1898,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           appendSystemMessage(
             topicId,
             "여기까지 완료했어요. 비용 예산 한도에 도달해 작업을 멈췄습니다.",
+            threadRootId,
           );
           WsHub.get().broadcastDone(
             topicId,
@@ -1930,6 +1935,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           appendSystemMessage(
             topicId,
             `${classifyAgentError(outcome.error, agentKind)}\n\n다른 등록된 모델을 쓰려면 /model <model>로 바꾼 뒤 다시 보내세요.`,
+            threadRootId,
           );
           WsHub.get().broadcastError(topicId, queryId, outcome.error);
           WsHub.get().broadcastTopicNotice(topicId, "error", "응답 실패");
