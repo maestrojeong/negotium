@@ -15,6 +15,7 @@ instead of copying the explanation.
 | [Feature review](./FEATURE-REVIEW.md) | Review order, acceptance questions, source areas, and regression coverage |
 | [Wiki search evaluation for 0.2.18](./WIKI-SEARCH-EVALUATION-0.2.18.md) | Topic, article, and summary retrieval dataset, metrics, and limitations |
 | [Releasing](./RELEASING.md) | Package validation and npm publication |
+| [Migration 0.12.3](./MIGRATION-0.12.3.md) | Place the outgoing `Ask to …` card in its thread |
 | [Migration 0.12.2](./MIGRATION-0.12.2.md) | Deliver 0.12.1's thread context on the hosted MCP surface, not just stdio |
 | [Migration 0.12.1](./MIGRATION-0.12.1.md) | Cross-topic `ask_session` replies answer in the thread they were asked from |
 | [Migration 0.12.0](./MIGRATION-0.12.0.md) | Thread-aware turn prompts, quote-vs-thread placement, and the `thread_read` / `thread_list` tools |
