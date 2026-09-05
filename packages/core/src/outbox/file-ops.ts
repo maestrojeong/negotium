@@ -115,7 +115,6 @@ export function drainOutboxFile(
     return null;
   }
 
-  // Read lines
   try {
     const lines = host().readJsonlLines(processingPath);
     return { lines, processingPath };

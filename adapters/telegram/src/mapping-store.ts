@@ -246,9 +246,7 @@ function migrateOutboxSchema(db: Database): void {
   }
   try {
     db.run("ALTER TABLE outbox ADD COLUMN footer TEXT");
-  } catch {
-    // Column already exists.
-  }
+  } catch {}
   db.run(
     "CREATE INDEX IF NOT EXISTS idx_telegram_outbox_runtime_message ON outbox(runtime_message_id)",
   );

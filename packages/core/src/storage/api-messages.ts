@@ -53,51 +53,33 @@ function initializeApiMessagesSchema(): void {
   } catch {}
   try {
     db.exec("ALTER TABLE api_messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0");
-  } catch {
-    // Column already exists.
-  }
+  } catch {}
   try {
     db.exec("ALTER TABLE api_messages ADD COLUMN edited_at TEXT");
-  } catch {
-    // Column already exists.
-  }
+  } catch {}
   try {
     db.exec("ALTER TABLE api_messages ADD COLUMN reactions TEXT");
-  } catch {
-    // Column already exists.
-  }
+  } catch {}
   try {
     db.exec("ALTER TABLE api_messages ADD COLUMN kind TEXT");
-  } catch {
-    // Column already exists.
-  }
+  } catch {}
   try {
     db.exec("ALTER TABLE api_messages ADD COLUMN ask_user_question TEXT");
-  } catch {
-    // Column already exists.
-  }
+  } catch {}
   try {
     db.exec("ALTER TABLE api_messages ADD COLUMN tell_card TEXT");
-  } catch {
-    // Column already exists.
-  }
+  } catch {}
   try {
     db.exec("ALTER TABLE api_messages ADD COLUMN mentions TEXT");
-  } catch {
-    // Column already exists.
-  }
+  } catch {}
   try {
     // Slack-style threads: a reply carries the ROOT message id (flat, no nesting).
     // Distinct from parent_id (which is a Telegram-style inline quote-reply).
     db.exec("ALTER TABLE api_messages ADD COLUMN thread_root_id TEXT");
-  } catch {
-    // Column already exists.
-  }
+  } catch {}
   try {
     db.exec("ALTER TABLE api_messages ADD COLUMN subagent_card TEXT");
-  } catch {
-    // Column already exists.
-  }
+  } catch {}
   // Index on topic_id; SQLite appends the implicit rowid to every index entry,
   // so `WHERE topic_id=? AND rowid>? ORDER BY rowid` stays index-driven.
   db.exec("CREATE INDEX IF NOT EXISTS idx_api_messages_topic ON api_messages(topic_id)");

@@ -693,7 +693,6 @@ function renderTable(rows: string[][], width: number): UiLine[] {
   const visibleHeader = headerRow ? visibleRow(headerRow) : null;
   const visibleBodyRows = bodyRows.map(visibleRow);
 
-  // Initial column widths from content.
   const contentWidths = Array.from({ length: colCount }, () => 1);
   for (const row of [...(visibleHeader ? [visibleHeader] : []), ...visibleBodyRows]) {
     for (let index = 0; index < colCount; index += 1) {
@@ -707,7 +706,6 @@ function renderTable(rows: string[][], width: number): UiLine[] {
   const totalPadding = colCount * 3 + 1; // "│ " + " │" per col + final "│"
   const idealWidth = totalContent + totalPadding;
 
-  // Shrink columns to fit when necessary.
   const colWidths = [...contentWidths];
   if (idealWidth > maxTableWidth) {
     const availableContent = Math.max(colCount, maxTableWidth - totalPadding);
@@ -749,7 +747,6 @@ function renderTable(rows: string[][], width: number): UiLine[] {
       }
       return fit(cleaned, colWidth); // left
     }
-    // Truncate with ellipsis.
     return `${sliceWidth(cleaned, colWidth - 1)}…`;
   }
 
@@ -760,10 +757,8 @@ function renderTable(rows: string[][], width: number): UiLine[] {
   const border = (left: string, middle: string, right: string): string =>
     `  ${left}${colWidths.map((columnWidth) => "─".repeat(columnWidth + 2)).join(middle)}${right}`;
 
-  // Top border.
   result.push(line(border("┌", "┬", "┐"), { fg: borderColor }));
 
-  // Header row.
   if (visibleHeader) {
     result.push(
       line(
@@ -775,11 +770,9 @@ function renderTable(rows: string[][], width: number): UiLine[] {
         { fg: theme.accent, bold: true },
       ),
     );
-    // Header separator.
     result.push(line(border("├", "┼", "┤"), { fg: borderColor }));
   }
 
-  // Body rows.
   for (const row of visibleBodyRows) {
     result.push(
       line(
@@ -793,7 +786,6 @@ function renderTable(rows: string[][], width: number): UiLine[] {
     );
   }
 
-  // Bottom border.
   result.push(line(border("└", "┴", "┘"), { fg: borderColor }));
 
   return result;

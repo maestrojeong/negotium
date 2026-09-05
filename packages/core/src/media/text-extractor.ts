@@ -89,22 +89,18 @@ export interface ExtractionResult {
 export async function extractText(filePath: string): Promise<ExtractionResult> {
   const ext = extname(filePath).toLowerCase();
 
-  // Text files — direct read
   if (TEXT_EXTENSIONS.has(ext)) {
     return extractFromTextFile(filePath);
   }
 
-  // PDF — pdftotext
   if (ext === ".pdf") {
     return extractFromPdf(filePath);
   }
 
-  // Images — OCR
   if (IMAGE_EXTENSIONS.has(ext)) {
     return extractFromImage(filePath);
   }
 
-  // Audio/Video — whisper
   if (
     [
       ".mp3",
@@ -269,7 +265,6 @@ async function extractFromAudio(
   try {
     mkdirSync(tmpDir, { recursive: true });
 
-    // Convert to mp3 first
     const mp3Path = join(tmpDir, "audio.mp3");
     await execFileAsync(
       opts.ffmpegBin ?? FFMPEG_BIN,

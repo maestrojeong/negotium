@@ -1304,7 +1304,6 @@ function wikiLastConversation(args: Record<string, unknown>): CallToolResult {
           .reverse()
       : [];
     if (files.length === 0) {
-      // Try flat archive
       files = existsSync(runtime().archiveDir)
         ? readdirSync(runtime().archiveDir)
             .filter((f) => f.startsWith(name) && f.endsWith(".jsonl"))
@@ -1318,7 +1317,6 @@ function wikiLastConversation(args: Record<string, unknown>): CallToolResult {
       };
     }
 
-    // Read most recent archive file
     const actualPath = files[0].includes("/")
       ? files[0]
       : resolve(

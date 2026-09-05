@@ -147,40 +147,28 @@ function initializeApiTopicsSchema(): void {
     // Migrate for spawn/fork tracking (R1).
     try {
       db.exec("ALTER TABLE api_topics ADD COLUMN parent_topic_id TEXT");
-    } catch {
-      // Column already exists.
-    }
+    } catch {}
     try {
       db.exec("ALTER TABLE api_topics ADD COLUMN is_fork INTEGER NOT NULL DEFAULT 0");
-    } catch {
-      // Column already exists.
-    }
+    } catch {}
 
     // Migrate for agent-spawned subagent worker rooms.
     try {
       db.exec("ALTER TABLE api_topics ADD COLUMN is_subagent INTEGER NOT NULL DEFAULT 0");
-    } catch {
-      // Column already exists.
-    }
+    } catch {}
 
     // Migrate for session persistence.
     try {
       db.exec("ALTER TABLE api_topics ADD COLUMN session_id TEXT");
-    } catch {
-      // Column already exists.
-    }
+    } catch {}
 
     try {
       db.exec("ALTER TABLE api_topics ADD COLUMN kind TEXT NOT NULL DEFAULT 'channel'");
-    } catch {
-      // Column already exists.
-    }
+    } catch {}
 
     try {
       db.exec("ALTER TABLE api_topics ADD COLUMN ai_mode TEXT");
-    } catch {
-      // Column already exists.
-    }
+    } catch {}
 
     db.exec(`
   CREATE TABLE IF NOT EXISTS api_schema_migrations (
