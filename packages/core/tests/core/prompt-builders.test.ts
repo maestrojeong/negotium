@@ -67,7 +67,8 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain("`ask_session`");
     expect(prompt).toContain("mcp__runtime__set_model");
     expect(prompt).toContain("agent=`claude`, model=`opus`, effort=`high`");
-    expect(prompt).toContain("codex / `gpt-5.6-sol` [Fable-level]");
+    expect(prompt).toContain("codex / `gpt-6-astra` [Fable-level]");
+    expect(prompt).toContain("codex / `gpt-5.6-sol` [Opus-level]");
     expect(prompt).toContain("maestro / `deepseek-pro` [Sonnet-level]");
     expect(prompt).toContain("maestro / `deepseek-flash` [Sonnet-level]");
     expect(prompt).toContain("maestro / `kimi-k3` [Fable-level]");

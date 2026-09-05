@@ -729,16 +729,22 @@ describe("terminal renderer", () => {
         { ...topic(), defaultModel: "gpt-5.6-luna", effectiveModel: "gpt-5.6-luna" },
       ]),
       overlay: "models" as const,
-      modelPickerIndex: 0,
+      modelPickerIndex: 1,
     };
 
     const output = stripAnsi(renderApp(state, 120, 30));
     expect(output).toContain("Models");
     expect(output).toContain("gpt-5.6-luna (current)");
-    const selected = output.split("\n").find((line) => line.includes("gpt-5.6-sol"));
+    const selected = output
+      .split("\n")
+      .find(
+        (line) =>
+          line.trimStart().startsWith("gpt-5.6-sol") ||
+          line.trimStart().startsWith("› gpt-5.6-sol"),
+      );
     expect(selected).toContain("› gpt-5.6-sol");
     expect(selected).toContain(
-      "Highest-capability Codex route for the hardest agentic coding work.",
+      "High-capability Codex route for demanding agentic coding work; demoted below gpt-6-astra.",
     );
     expect(selected).not.toContain("codex");
     expect(output).toContain("Default Claude route for capable, efficient everyday work.");
@@ -750,7 +756,7 @@ describe("terminal renderer", () => {
     const state = {
       ...setTopics(createInitialState("local"), [topic()]),
       overlay: "models" as const,
-      modelPickerIndex: 11,
+      modelPickerIndex: 12,
     };
 
     const output = stripAnsi(renderApp(state, 80, 14));
