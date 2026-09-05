@@ -21,6 +21,7 @@ export const MODEL_OWNER: Record<string, AgentKind> = {
   opus: "claude",
   haiku: "claude",
   fable: "claude",
+  "gpt-6-astra": "codex",
   "gpt-5.6-luna": "codex",
   "gpt-5.6-terra": "codex",
   "gpt-5.6-sol": "codex",
@@ -62,11 +63,15 @@ export interface SelectableModel {
 
 /**
  * Pricing and quota observations were checked on 2026-07-19, DeepSeek pricing
- * re-checked 2026-08-04 for the new deepseek-v4-flash model.
+ * re-checked 2026-08-04 for the new deepseek-v4-flash model, and Codex/Claude
+ * flagship pricing re-checked 2026-09-05 for the gpt-6-astra and
+ * claude-fable-5-1 releases (2026-09-03 / 2026-09-01 respectively).
  * Official references:
  * - https://learn.chatgpt.com/docs/pricing
  * - https://help.openai.com/en/articles/20001106
+ * - https://developers.openai.com/api/docs/models/gpt-6-astra
  * - https://support.claude.com/en/articles/11049741-what-is-the-max-plan
+ * - https://www.anthropic.com/claude-fable-and-mythos-5-1
  * - https://api-docs.deepseek.com/quick_start/pricing
  * - https://platform.kimi.ai/docs/pricing/chat-k3
  * - https://platform.kimi.ai/docs/pricing/chat-k27-code
@@ -76,9 +81,9 @@ export interface SelectableModel {
  * meter cached input, fresh input, output, reasoning, speed, and model choice
  * differently and may change server-side weights without publishing a token cap.
  */
-export const MODEL_COST_RESEARCHED_AT = "2026-08-04";
+export const MODEL_COST_RESEARCHED_AT = "2026-09-05";
 export const MODEL_COST_ROUTING_SUMMARY =
-  "Cost basis (2026-08-04): Codex Pro 20x and Claude Max 20x are each $200/month; Maestro models are pay-per-token. DeepSeek Flash is cheapest.";
+  "Cost basis (2026-09-05): Codex Pro 20x and Claude Max 20x are each $200/month; Maestro models are pay-per-token. DeepSeek Flash is cheapest. gpt-6-astra and Claude Fable 5.1 are the newest flagships, both priced at $10/M input / $50/M output.";
 
 const CODEX_PRO_20X_COST = "ChatGPT Pro 20x subscription: $200/month";
 const CODEX_COMMUNITY_WEEKLY =
@@ -94,11 +99,26 @@ const CLAUDE_COMMUNITY_SESSION =
  */
 export const SELECTABLE_MODELS: readonly SelectableModel[] = [
   {
+    model: "gpt-6-astra",
+    agent: "codex",
+    description:
+      "Newest OpenAI flagship; replaces gpt-5.6-sol as Codex's highest-capability route.",
+    intelligenceTier: "fable",
+    routingSummary:
+      "flagship reasoning; 2x sol's input/cache cost and 1.67x its output cost; matches Fable 5.1 pricing",
+    accessCost: CODEX_PRO_20X_COST,
+    marginalTokenCost:
+      "Codex credits (OpenAI API rate): $10/M uncached input, $1/M cached input, $12.50/M cache write, $50/M output",
+    estimatedUsage: `Released 2026-09-03; became Codex CLI's bundled default in v0.153.4 (2026-09-05). Local message-count/quota-weight ranges not yet published as of the last catalog check — expect a quota weight above gpt-5.6-sol given the higher per-token cost. ${CODEX_COMMUNITY_WEEKLY}`,
+  },
+  {
     model: "gpt-5.6-sol",
     agent: "codex",
-    description: "Highest-capability Codex route for the hardest agentic coding work.",
-    intelligenceTier: "fable",
-    routingSummary: "hardest coding work; 5x Codex quota cost",
+    description:
+      "High-capability Codex route for demanding agentic coding work; demoted below gpt-6-astra.",
+    intelligenceTier: "opus",
+    routingSummary:
+      "demanding coding work; 5x Codex quota cost; now second-tier behind gpt-6-astra",
     accessCost: CODEX_PRO_20X_COST,
     marginalTokenCost: "Codex credits: $5/M uncached input, $0.50/M cached input, $30/M output",
     estimatedUsage: `Official Pro 20x range: 300–1,800 local messages per 5 hours; quota weight 5x Luna. ${CODEX_COMMUNITY_WEEKLY}`,
@@ -126,12 +146,13 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
   {
     model: "fable",
     agent: "claude",
-    description: "Highest-capability Claude route for the hardest and longest-running tasks.",
+    description:
+      "Highest-capability Claude route (Fable 5.1) for the hardest and longest-running tasks.",
     intelligenceTier: "fable",
     routingSummary: "hardest long-running work; highest Claude cost; explicit request only",
     accessCost: CLAUDE_MAX_20X_COST,
     marginalTokenCost:
-      "Claude API/extra usage: $10/M input, $12.50/M cache write, $1/M cache read, $50/M output",
+      "Claude API/extra usage: $10/M input, $12.50/M cache write, $0.25/M cache read (cut from $1/M in Fable 5.1, 2026-09-01), $50/M output",
     estimatedUsage: `${CLAUDE_COMMUNITY_SESSION}; Fable drains weighted quota fastest, so use only on explicit user request. No stable per-model token cap is published.`,
   },
   {

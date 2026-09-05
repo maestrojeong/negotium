@@ -41,11 +41,11 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@negotium/core": "workspace:*",
-    "zod": "^4.3.6"
+    "zod": "4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^20",
-    "bun-types": "^1.3.11",
+    "@types/node": "^26.4.1",
+    "bun-types": "^1.4.2",
     "typescript": "^5"
   },
   "imports": {

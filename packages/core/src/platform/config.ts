@@ -467,7 +467,7 @@ export const FILE_TAG_REGEX = /\[FILE:(\/[^\]]+)\]/gi;
 export const MODEL_SONNET = "claude-sonnet-5";
 export const MODEL_OPUS = "claude-opus-5";
 export const MODEL_HAIKU = "claude-haiku-4-5-20251001";
-export const MODEL_FABLE = "claude-fable-5"; // Mythos-class, announced 2026-06-09
+export const MODEL_FABLE = "claude-fable-5-1"; // Mythos-class, Fable 5.1 announced 2026-09-01 (was claude-fable-5)
 
 // DeepSeek V4 (released 2026-04-24). API is OpenAI-compatible at
 // https://api.deepseek.com/v1/chat/completions; thinking mode is enabled via
