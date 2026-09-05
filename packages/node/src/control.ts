@@ -1170,7 +1170,7 @@ export function createNodeControlHandler(
           if (body.memoryKey !== undefined && typeof body.memoryKey !== "string") {
             return jsonError(400, "memoryKey must be a string");
           }
-          const topic = topicService.create({
+          const created = topicService.createDetailed({
             title,
             userId,
             kind,
@@ -1192,8 +1192,14 @@ export function createNodeControlHandler(
             // created topic echoes the resolved agent/model/effort back.
             ...(typeof body.memoryKey === "string" ? { memoryKey: body.memoryKey } : {}),
           });
+          const topic = created.topic;
           return Response.json(
-            { ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, topic },
+            {
+              ok: true,
+              v: NODE_RUNTIME_CONTRACT_VERSION,
+              topic,
+              defaultsSource: created.defaultsSource,
+            },
             { status: 201 },
           );
         }

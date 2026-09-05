@@ -68,10 +68,36 @@ export interface RegisterTopicOptions {
 }
 
 /**
+ * Where the room's agent/model/effort came from.
+ *
+ * - `explicit`: the caller named at least one of them.
+ * - `assigned`: they came from the archiver's assignment for `memoryKey`.
+ * - `fallback`: the node's own defaults.
+ *
+ * Reported rather than inferred because `assigned` and `fallback` can produce
+ * the same triple, and a host debugging "why is this room on that model" needs
+ * to tell "the assignment said so" from "there was no assignment".
+ */
+export type TopicDefaultsSource = "explicit" | "assigned" | "fallback";
+
+export interface RegisterTopicResult {
+  topic: TopicDto;
+  defaultsSource: TopicDefaultsSource;
+}
+
+/**
  * Create a topic owned by `userId`. Throws {@link TopicValidationError} on
  * invalid input (reserved/conflicting title, bad agent/model combination).
  */
 export function registerTopic(opts: RegisterTopicOptions): TopicDto {
+  return registerTopicDetailed(opts).topic;
+}
+
+/**
+ * As {@link registerTopic}, and also reports which layer decided the room's
+ * execution defaults.
+ */
+export function registerTopicDetailed(opts: RegisterTopicOptions): RegisterTopicResult {
   const title = opts.title?.trim();
   if (!title) throw new TopicValidationError("title is required");
   if (RESERVED_TOPIC_NAMES.has(title.toLowerCase())) {
@@ -184,5 +210,12 @@ export function registerTopic(opts: RegisterTopicOptions): TopicDto {
     },
     "topic registered",
   );
-  return topic;
+  return {
+    topic,
+    defaultsSource: assigned
+      ? "assigned"
+      : opts.agent !== undefined || opts.model || opts.effort
+        ? "explicit"
+        : "fallback",
+  };
 }

@@ -5,7 +5,12 @@ import { getTopic } from "#storage/api-topics";
 import { getRuntimeTurnLease } from "#storage/runtime-leases";
 import { beginRuntimeTopicMaintenance } from "#storage/runtime-topic-state";
 import { cancelRuntimeUserTurnRequestsBeforeEpoch } from "#storage/runtime-turn-requests";
-import { type RegisterTopicOptions, registerTopic } from "#topics/create";
+import {
+  type RegisterTopicOptions,
+  type RegisterTopicResult,
+  registerTopic,
+  registerTopicDetailed,
+} from "#topics/create";
 import { createDerivedTopic } from "#topics/derive";
 import { type DeleteTopicCascadeOptions, deleteTopicCascade } from "#topics/lifecycle";
 import {
@@ -73,6 +78,11 @@ export interface DeriveUserTopicParams {
 export const topicService = {
   create(options: RegisterTopicOptions): TopicDto {
     return registerTopic(options);
+  },
+
+  /** As {@link topicService.create}, plus which layer chose the room's defaults. */
+  createDetailed(options: RegisterTopicOptions): RegisterTopicResult {
+    return registerTopicDetailed(options);
   },
 
   derive(params: DeriveUserTopicParams): Promise<TopicDto | null> {

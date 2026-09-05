@@ -80,6 +80,12 @@ cannot reassign itself.
 field and answers `201`, so a dropped assignment looks exactly like a successful create. The response
 topic echoes the resolved `agent`, `defaultModel`, `defaultEffort`, and `memoryKey`.
 
+The response also carries `defaultsSource: "explicit" | "assigned" | "fallback"` beside `topic`
+(`defaults_source` in `register_topic`'s text, `registerTopicDetailed` / `topicService.createDetailed`
+in-process). It is reported rather than inferred because `assigned` and `fallback` can produce the
+same triple: a host debugging "why is this room on that model" needs to tell "the assignment said so"
+from "there was no assignment".
+
 The MCP `register_topic` tool takes the same value as `memory_key`.
 
 Forks and spawned rooms inherit the parent room's stored `defaultModel` / `defaultEffort`, which

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { assignTopicDefaults } from "#agents/topic-defaults";
 import { deleteTopic } from "#storage/api-topics";
 import { deleteTopicDefaultAssignment } from "#storage/topic-default-assignments";
-import { registerTopic } from "#topics/create";
+import { registerTopic, registerTopicDetailed } from "#topics/create";
 
 const USER = "create-memory-defaults-user";
 const createdTopicIds: string[] = [];
@@ -99,4 +99,42 @@ test("an unassigned persona is recorded without changing the node defaults", () 
   expect(topic.agent).toBe(plain.agent);
   expect(topic.defaultModel).toBe(plain.defaultModel);
   expect(topic.defaultEffort).toBe(plain.defaultEffort);
+});
+
+test("defaultsSource names the layer that actually chose the defaults", () => {
+  const memoryKey = assign("opus", "high");
+
+  const assigned = registerTopicDetailed({
+    title: `Source assigned ${randomUUID()}`,
+    userId: USER,
+    memoryKey,
+  });
+  const explicit = registerTopicDetailed({
+    title: `Source explicit ${randomUUID()}`,
+    userId: USER,
+    memoryKey,
+    // Naming a model without an agent has always been validated against the
+    // node's default agent, so this stays a maestro model.
+    model: "deepseek-pro",
+  });
+  const fallback = registerTopicDetailed({
+    title: `Source fallback ${randomUUID()}`,
+    userId: USER,
+  });
+  createdTopicIds.push(assigned.topic.id, explicit.topic.id, fallback.topic.id);
+
+  expect(assigned.defaultsSource).toBe("assigned");
+  expect(explicit.defaultsSource).toBe("explicit");
+  expect(fallback.defaultsSource).toBe("fallback");
+});
+
+test("a persona with no assignment reports fallback, not assigned", () => {
+  const result = registerTopicDetailed({
+    title: `Source unassigned ${randomUUID()}`,
+    userId: USER,
+    memoryKey: `create-defaults ${randomUUID()}`,
+  });
+  createdTopicIds.push(result.topic.id);
+
+  expect(result.defaultsSource).toBe("fallback");
 });

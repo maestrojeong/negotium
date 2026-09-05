@@ -55,7 +55,13 @@ export {
 export { getApiTopicConfig } from "#storage/api-topic-config";
 export { defaultTopicSurface, getTopic, getTopicByNameForUser } from "#storage/api-topics";
 export { enqueueSessionInbox } from "#storage/session-inbox";
-export { registerTopic, TopicValidationError } from "#topics/create";
+export {
+  type RegisterTopicResult,
+  registerTopic,
+  registerTopicDetailed,
+  type TopicDefaultsSource,
+  TopicValidationError,
+} from "#topics/create";
 export {
   getTopics,
   isParticipant,
