@@ -9,6 +9,7 @@ instead of copying the explanation.
 | [Adapters](./ADAPTERS.md) | Adapter lifecycle, channel mappings, topic access, and transcript projection |
 | [Identifier boundaries](./IDENTIFIERS.md) | Canonical Node ids, adapter-local references, correlation ids, and ownership invariants |
 | [Terminal usage](./TERMINAL-USAGE.md) | Keyboard shortcuts, chat commands, and the live subagent graph |
+| [Memory-assigned defaults](./MEMORY-ASSIGNED-DEFAULTS.md) | Archiver-chosen model/effort per memory persona, the create contract's `memoryKey`, and self-config capability filtering |
 | [Otium coupling](./OTIUM-COUPLING.md) | The versioned protocol between an Otium hub and a Negotium worker |
 | [Runtime Gateway contract](./RUNTIME-GATEWAY-CONTRACT.md) | Private idempotent ingress for local hosts and the peer-forwarded Otium subset |
 | [Otium enrollment and sharing](./OTIUM-ENROLLMENT-AND-SHARING.md) | Node invitation, enrollment security, topic-sharing product model, UX, and delivery plan |

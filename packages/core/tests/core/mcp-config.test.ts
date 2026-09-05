@@ -531,6 +531,19 @@ describe("mcp-config: playwright transport selection per agent", () => {
     expect(wiki.topicId).toBe("child-topic-123");
   });
 
+  test("wiki carries the archived memory persona even with no room to attach it to", () => {
+    const servers = getForumMcpServers({
+      userId,
+      session: "__archiver_deleted-topic",
+      wikiMemoryKey: "Deleted Persona",
+      agent: "codex",
+      enabled: ["wiki"],
+    });
+    const wiki = hostedContext(servers.wiki, "wiki");
+    expect(wiki.wikiMemoryKey).toBe("Deleted Persona");
+    expect(wiki.topicId).toBeUndefined();
+  });
+
   test("wiki falls back to session when no REST topic id is available", () => {
     const servers = getForumMcpServers({
       userId,

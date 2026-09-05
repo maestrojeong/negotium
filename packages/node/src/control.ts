@@ -567,6 +567,11 @@ export function createNodeControlHandler(
               "canonical-topic-list",
               "canonical-topic-create",
               "canonical-topic-create-config",
+              // Feature-detectable because ignoring `memoryKey` is silent: an
+              // older node creates the room on its own defaults and answers
+              // 201, so the host cannot tell the persona's assigned model was
+              // dropped from a successful create.
+              "canonical-topic-create-memory-key",
               "canonical-topic-config",
               "canonical-topic-derive",
               "canonical-manager-topic",
@@ -1162,6 +1167,9 @@ export function createNodeControlHandler(
           ) {
             return jsonError(400, "Invalid effort");
           }
+          if (body.memoryKey !== undefined && typeof body.memoryKey !== "string") {
+            return jsonError(400, "memoryKey must be a string");
+          }
           const topic = topicService.create({
             title,
             userId,
@@ -1179,6 +1187,10 @@ export function createNodeControlHandler(
             ...(typeof body.effort === "string"
               ? { effort: body.effort as "low" | "medium" | "high" | "xhigh" | "max" }
               : {}),
+            // Naming the persona and omitting agent/model/effort is how a caller
+            // asks the node to apply whatever the archiver assigned to it. The
+            // created topic echoes the resolved agent/model/effort back.
+            ...(typeof body.memoryKey === "string" ? { memoryKey: body.memoryKey } : {}),
           });
           return Response.json(
             { ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, topic },

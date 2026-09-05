@@ -202,6 +202,12 @@ export interface AgentQueryOptions {
   /** Optional wiki-memory topic id. Derived topics use their root origin here
    *  while other per-topic MCP servers keep `topicId` bound to the live room. */
   wikiTopicId?: string;
+  /**
+   * Memory persona this turn archives. Set only by the wiki archiver; it is
+   * what scopes `assign_topic_defaults` and it works even when the room whose
+   * memory is being written no longer exists.
+   */
+  wikiMemoryKey?: string;
   /** Whether self-config MCP may enqueue an automatic continue turn after set_* changes. */
   autoContinue?: boolean;
   /** Expose Otium-only visual panel tools for this turn. Default-deny. */

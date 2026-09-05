@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
+import { resolveAssignedTopicDefaults } from "#agents/topic-defaults";
 import { WsHub } from "#bus";
 import { FALLBACK_AGENT, resolveTopicWorkspaceDir } from "#platform/config";
 import { RESERVED_TOPIC_NAMES } from "#platform/constants";
@@ -58,6 +59,12 @@ export interface RegisterTopicOptions {
    * unset means "the workspace this process is attached to".
    */
   surfaceScope?: string | null;
+  /**
+   * Wiki memory persona this room continues. When the caller names one and
+   * leaves agent/model/effort unset, the room opens on whatever defaults the
+   * archiver last assigned to that persona.
+   */
+  memoryKey?: string;
 }
 
 /**
@@ -110,9 +117,20 @@ export function registerTopic(opts: RegisterTopicOptions): TopicDto {
       ? undefined
       : ((rawAgent as AgentKind | undefined) ?? DEFAULT_AGENT_ROOM_AGENT);
 
+  // A caller that names a model, effort, or agent has made the decision itself;
+  // an assignment may only fill defaults nobody asked about, so existing
+  // callers keep their exact behaviour.
+  const memoryKey = opts.memoryKey?.trim() || undefined;
+  const assigned =
+    // Channel rooms are deliberately AI-less unless the caller says otherwise,
+    // so an assignment must never be what gives one an agent.
+    memoryKey && requestedKind === "agent" && rawAgent === undefined && !opts.model && !opts.effort
+      ? resolveAssignedTopicDefaults(memoryKey)
+      : null;
+
   const { kind, aiMode, agent } = normalizeTopicState({
     kind: requestedKind,
-    agent: requestedAgent,
+    agent: assigned?.agent ?? requestedAgent,
   });
 
   // Derive per-mode model/effort defaults from the chosen agent's registry.
@@ -123,8 +141,12 @@ export function registerTopic(opts: RegisterTopicOptions): TopicDto {
   if (agent && opts.effort && !registry.validateEffort(opts.effort)) {
     throw new TopicValidationError(`effort '${opts.effort}' is not valid for agent '${agent}'`);
   }
-  const defaultModel = resolveModelForAgent(agent ?? "maestro", opts.model, registry);
-  const defaultEffort = opts.effort ?? registry.defaultEffort;
+  const defaultModel = resolveModelForAgent(
+    agent ?? "maestro",
+    assigned?.model ?? opts.model,
+    registry,
+  );
+  const defaultEffort = assigned?.effort ?? opts.effort ?? registry.defaultEffort;
 
   const now = new Date().toISOString();
   const topic: TopicDto = {
@@ -136,6 +158,7 @@ export function registerTopic(opts: RegisterTopicOptions): TopicDto {
     defaultModel,
     defaultEffort: defaultEffort ?? "medium",
     aiMode,
+    ...(memoryKey ? { memoryKey } : {}),
     participants: [{ userId: opts.userId, role: "owner" }],
     surface,
     surfaceScope,
@@ -150,6 +173,16 @@ export function registerTopic(opts: RegisterTopicOptions): TopicDto {
     logger.warn({ err, topicId: topic.id }, "registerTopic: workspace dir create failed");
   }
   WsHub.get().broadcastTopicCreated(topic);
-  logger.info({ topicId: topic.id, title, kind, agent }, "topic registered");
+  logger.info(
+    {
+      topicId: topic.id,
+      title,
+      kind,
+      agent,
+      ...(memoryKey ? { memoryKey } : {}),
+      ...(assigned ? { assignedDefaults: `${assigned.model}/${assigned.effort}` } : {}),
+    },
+    "topic registered",
+  );
   return topic;
 }

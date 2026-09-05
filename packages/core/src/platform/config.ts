@@ -15,7 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseRuntimePort, readEnvText, safeRuntimePathSegment } from "#platform/config-helpers";
 import { logger } from "#platform/logger";
-import { type AgentKind, isAgentKind } from "#types";
+import { type AgentKind, EFFORT_VALUES, type EffortLevel, isAgentKind } from "#types";
 
 export function envText(envKey: string): string | undefined {
   return readEnvText(process.env, envKey);
@@ -495,6 +495,19 @@ function resolveModelEnv(envKey: string, agentConst: AgentKind): string | undefi
 
 export const SESSION_MODEL = resolveModelEnv("SESSION_MODEL", SESSION_AGENT);
 export const GATEWAY_MODEL = resolveModelEnv("GATEWAY_MODEL", GATEWAY_AGENT);
+
+/**
+ * Effort used when a caller (or an archiver assignment) names a model but no
+ * effort. Deliberately one fixed node-wide value instead of each agent's
+ * registry default: a model-derived agent switch would otherwise move effort —
+ * and therefore cost — without anyone asking for it.
+ */
+export const DEFAULT_TOPIC_EFFORT: EffortLevel = ((): EffortLevel => {
+  const raw = envText("NEGOTIUM_DEFAULT_EFFORT")?.toLowerCase();
+  return raw && (EFFORT_VALUES as readonly string[]).includes(raw)
+    ? (raw as EffortLevel)
+    : "medium";
+})();
 
 /** Resolve the effective display/default model for a topic (session context).
  *  Applies the session model override only when that role owns the agent;

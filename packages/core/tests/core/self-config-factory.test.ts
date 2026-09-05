@@ -119,6 +119,54 @@ describe("self-config host factory", () => {
     ]);
   });
 
+  test("a capability filter drops whole groups while keeping the rest", () => {
+    const state = createHost({
+      derivedTopics: {
+        create: async () => TOPIC,
+        link: (topicId) => `topic:${topicId}`,
+        isTitleConflict: () => false,
+        isForkCompactionError: () => false,
+      },
+    });
+    const runtime = createSelfConfigRuntime({
+      host: state.host,
+      capabilities: { exclude: ["model", "agent", "effort"] },
+    });
+
+    const names = runtime
+      .createToolDefinitions({ topicId: TOPIC.id, userId: "host-user" })
+      .map((candidate) => candidate.name);
+
+    expect(names).toEqual(["spawn_topic", "fork_topic"]);
+    expect(runtime.capabilities).toEqual({ exclude: ["model", "agent", "effort"] });
+  });
+
+  test("a capability filter can drop only the mutating half of a group", () => {
+    const runtime = createSelfConfigRuntime({
+      host: createHost().host,
+      capabilities: { exclude: ["set_model", "set_agent", "set_effort"] },
+    });
+
+    const names = runtime
+      .createToolDefinitions({ topicId: TOPIC.id, userId: "host-user" })
+      .map((candidate) => candidate.name);
+
+    expect(names).toEqual(["get_model", "get_agent", "get_effort"]);
+  });
+
+  test("include narrows the surface and exclude still wins inside it", () => {
+    const runtime = createSelfConfigRuntime({
+      host: createHost().host,
+      capabilities: { include: ["model", "effort"], exclude: ["set_effort"] },
+    });
+
+    const names = runtime
+      .createToolDefinitions({ topicId: TOPIC.id, userId: "host-user" })
+      .map((candidate) => candidate.name);
+
+    expect(names).toEqual(["set_model", "get_model", "get_effort"]);
+  });
+
   test("derived-topic policy and MCP limit share the same product config", async () => {
     let deriveCalls = 0;
     const state = createHost({
