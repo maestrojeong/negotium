@@ -85,7 +85,7 @@
     },
     "apps/negotium": {
       "name": "negotium",
-      "version": "0.12.3",
+      "version": "0.13.1",
       "bin": {
         "negotium": "dist/main.js",
       },
@@ -111,7 +111,7 @@
     },
     "packages/adapter-sdk": {
       "name": "@negotium/adapter-sdk",
-      "version": "0.12.3",
+      "version": "0.13.1",
       "devDependencies": {
         "@types/node": "^26.4.1",
         "bun-types": "^1.4.2",
