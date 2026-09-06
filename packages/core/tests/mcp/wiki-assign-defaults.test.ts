@@ -123,6 +123,69 @@ describe("assign_topic_defaults", () => {
     await client.close();
   });
 
+  test("a reused server does not carry one run's persona into the next run", async () => {
+    const { calls, sink } = recordingSink();
+    // One server, two logical archive runs — what Maestro's process-lifetime
+    // MCP cache actually does to the archiver.
+    const client = await connect(
+      createWikiMcpServer(
+        { userId: "user", surface: "wiki", memoryKey: "room-persona" },
+        { wikiRoot: wikiRoot(), assignTopicDefaults: sink },
+      ),
+    );
+
+    await client.callTool({
+      name: "wiki_write",
+      arguments: {
+        kind: "topic",
+        topic: "Other Persona",
+        content: "# Other Persona\n\nbrief body",
+        description: "brief for the other persona",
+      },
+    });
+    // Run 2 starts: its summary write is the run boundary, and it assigns
+    // before writing any brief of its own.
+    await client.callTool({
+      name: "wiki_write",
+      arguments: {
+        kind: "summary",
+        topic: "room-persona",
+        content: "# room-persona\n\nsecond run",
+        description: "second run summary",
+      },
+    });
+    await client.callTool({ name: "assign_topic_defaults", arguments: { model: "opus" } });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.memoryKey).toBe("room-persona");
+    await client.close();
+  });
+
+  test("a successful assignment is consumed, not left in scope", async () => {
+    const { calls, sink } = recordingSink();
+    const client = await connect(
+      createWikiMcpServer(
+        { userId: "user", surface: "wiki", memoryKey: "room-persona" },
+        { wikiRoot: wikiRoot(), assignTopicDefaults: sink },
+      ),
+    );
+
+    await client.callTool({
+      name: "wiki_write",
+      arguments: {
+        kind: "topic",
+        topic: "Routed Persona",
+        content: "# Routed Persona\n\nbrief body",
+        description: "brief for the routed persona",
+      },
+    });
+    await client.callTool({ name: "assign_topic_defaults", arguments: { model: "opus" } });
+    await client.callTool({ name: "assign_topic_defaults", arguments: { model: "sonnet" } });
+
+    expect(calls.map((call) => call.memoryKey)).toEqual(["Routed-Persona", "room-persona"]);
+    await client.close();
+  });
+
   test("reports a rejected model as an error instead of pretending it stuck", async () => {
     const { sink } = recordingSink();
     const client = await connect(

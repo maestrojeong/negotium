@@ -50,12 +50,20 @@ caller-supplied agent/model/effort   (an explicit decision — always wins)
 ```
 
 An assignment applies only when the caller named **none** of agent, model, or effort — naming any one
-of them is a decision the node must not overrule. It also never applies to a `channel` room, since a
-channel is deliberately AI-less unless the caller asks otherwise.
+of them is a decision the node must not overrule, and that is tested by *presence*, so `model: ""`
+counts as named and keeps its old fall-through to the node's model default. An assignment also never
+applies to a `channel` room, since a channel is deliberately AI-less unless the caller asks
+otherwise.
 
 `DEFAULT_TOPIC_EFFORT` is one fixed node-wide value (`medium`, override with
 `NEGOTIUM_DEFAULT_EFFORT`) rather than each agent's registry default: a model-derived agent switch
-would otherwise move effort, and therefore cost, without anyone asking.
+would otherwise move effort, and therefore cost, without anyone asking. This is the fallback for
+*every* room, not only assigned ones — the registry defaults disagree (Claude `high`, Maestro
+`medium`, Codex none), so a room's cost would otherwise depend on which backend the node happens to
+default to. The registry default is used only when the fixed value is invalid for that agent.
+
+**Behaviour change**: a room created on Claude without an explicit effort now starts at `medium`
+instead of the Claude registry's `high`. Set `NEGOTIUM_DEFAULT_EFFORT=high` to keep the old value.
 
 ## The tool
 
@@ -65,6 +73,12 @@ persona and the host wired an assignment sink — in practice, only archiver tur
 adopted this run), falling back to the persona named on the command line. An archiver that reuses an
 existing persona instead of the room's title therefore assigns to the persona it chose, not to the
 room name.
+
+The routed persona is scoped to one archive run by two resets: writing the run's session summary
+clears it (every run writes exactly one, before any brief), and a successful assignment consumes it.
+Both are needed because a hosted wiki server can outlive a run — Maestro, which the archiver runs on,
+caches it for the whole process under a key that is only user + topic + persona — so without them an
+earlier run's routing decision would still be the next run's fallback.
 
 There is no rate limit. The prompt (`wiki-archiver.md`, step 6) states that the default action is not
 to call it and names what does and does not count as evidence. `reason` and `updated_at` are the audit

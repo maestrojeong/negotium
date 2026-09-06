@@ -11,7 +11,7 @@ import { resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
 import { resolveAssignedTopicDefaults } from "#agents/topic-defaults";
 import { WsHub } from "#bus";
-import { FALLBACK_AGENT, resolveTopicWorkspaceDir } from "#platform/config";
+import { DEFAULT_TOPIC_EFFORT, FALLBACK_AGENT, resolveTopicWorkspaceDir } from "#platform/config";
 import { RESERVED_TOPIC_NAMES } from "#platform/constants";
 import { logger } from "#platform/logger";
 import {
@@ -147,10 +147,15 @@ export function registerTopicDetailed(opts: RegisterTopicOptions): RegisterTopic
   // an assignment may only fill defaults nobody asked about, so existing
   // callers keep their exact behaviour.
   const memoryKey = opts.memoryKey?.trim() || undefined;
+  // Presence, not truthiness: `model: ""` is still the caller having named the
+  // field, and it used to fall through to the node's model fallback. Treating
+  // it as absent would let an assignment overrule an explicit input.
+  const callerChoseExecution =
+    rawAgent !== undefined || opts.model !== undefined || opts.effort !== undefined;
   const assigned =
     // Channel rooms are deliberately AI-less unless the caller says otherwise,
     // so an assignment must never be what gives one an agent.
-    memoryKey && requestedKind === "agent" && rawAgent === undefined && !opts.model && !opts.effort
+    memoryKey && requestedKind === "agent" && !callerChoseExecution
       ? resolveAssignedTopicDefaults(memoryKey)
       : null;
 
@@ -172,7 +177,15 @@ export function registerTopicDetailed(opts: RegisterTopicOptions): RegisterTopic
     assigned?.model ?? opts.model,
     registry,
   );
-  const defaultEffort = assigned?.effort ?? opts.effort ?? registry.defaultEffort;
+  // The node-wide fixed effort, not the agent registry's own default: the
+  // registry value differs per backend (Claude "high", Maestro "medium", Codex
+  // none), so a room's cost would depend on which backend the node happens to
+  // default to. Falls back to the registry only when the fixed value is not
+  // valid for this agent.
+  const nodeDefaultEffort = registry.validateEffort(DEFAULT_TOPIC_EFFORT)
+    ? DEFAULT_TOPIC_EFFORT
+    : registry.defaultEffort;
+  const defaultEffort = assigned?.effort ?? opts.effort ?? nodeDefaultEffort;
 
   const now = new Date().toISOString();
   const topic: TopicDto = {
@@ -212,10 +225,6 @@ export function registerTopicDetailed(opts: RegisterTopicOptions): RegisterTopic
   );
   return {
     topic,
-    defaultsSource: assigned
-      ? "assigned"
-      : opts.agent !== undefined || opts.model || opts.effort
-        ? "explicit"
-        : "fallback",
+    defaultsSource: assigned ? "assigned" : callerChoseExecution ? "explicit" : "fallback",
   };
 }

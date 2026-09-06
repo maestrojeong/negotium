@@ -1,6 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { getRegistry } from "#agents/registry";
 import { assignTopicDefaults } from "#agents/topic-defaults";
+import { DEFAULT_TOPIC_EFFORT } from "#platform/config";
 import { deleteTopic } from "#storage/api-topics";
 import { deleteTopicDefaultAssignment } from "#storage/topic-default-assignments";
 import { registerTopic, registerTopicDetailed } from "#topics/create";
@@ -137,4 +139,33 @@ test("a persona with no assignment reports fallback, not assigned", () => {
   createdTopicIds.push(result.topic.id);
 
   expect(result.defaultsSource).toBe("fallback");
+});
+
+test("the node's fixed effort applies whichever backend the node defaults to", () => {
+  const topic = create({ title: `Node effort ${randomUUID()}`, userId: USER });
+
+  expect(topic.defaultEffort).toBe(DEFAULT_TOPIC_EFFORT);
+});
+
+test("a claude room does not inherit that registry's more expensive default effort", () => {
+  const topic = create({ title: `Claude effort ${randomUUID()}`, userId: USER, agent: "claude" });
+
+  expect(getRegistry("claude").defaultEffort).toBe("high");
+  expect(topic.defaultEffort).toBe(DEFAULT_TOPIC_EFFORT);
+});
+
+test("an empty model is the caller having decided, not an opening for an assignment", () => {
+  const memoryKey = assign("opus", "high");
+
+  const result = registerTopicDetailed({
+    title: `Empty model ${randomUUID()}`,
+    userId: USER,
+    memoryKey,
+    model: "",
+  });
+  createdTopicIds.push(result.topic.id);
+
+  expect(result.defaultsSource).toBe("explicit");
+  expect(result.topic.agent).not.toBe("claude");
+  expect(result.topic.defaultModel).not.toBe("opus");
 });

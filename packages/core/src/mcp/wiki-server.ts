@@ -1706,6 +1706,13 @@ function wikiWrite(args: Record<string, unknown>): CallToolResult {
 
   if (rawKind === "summary") {
     const dateStr = rawDate ?? today;
+    // Start-of-run marker. A hosted wiki server can outlive one archive run —
+    // Maestro caches it for the whole process under a key that is only
+    // user+topic+persona — so a persona routed by an earlier run would
+    // otherwise still be in scope for the next one. Every run writes exactly
+    // one summary before touching a brief, so clearing here scopes the routed
+    // persona to this run.
+    runtime().routedMemoryKey = undefined;
     const written = writeSummaryDocument(topic, content, dateStr);
     const link = indexRowOrPartialWrite("summary", {
       kind: "summary",
@@ -2083,6 +2090,9 @@ function assignTopicDefaults(args: Record<string, unknown>): CallToolResult {
       isError: true,
     };
   }
+  // One assignment per routed persona: consuming it here means a cached server
+  // cannot carry this run's routing decision into the next run's fallback.
+  runtime().routedMemoryKey = undefined;
   return {
     content: [
       {
