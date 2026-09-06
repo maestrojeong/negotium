@@ -16,6 +16,7 @@ instead of copying the explanation.
 | [Feature review](./FEATURE-REVIEW.md) | Review order, acceptance questions, source areas, and regression coverage |
 | [Wiki search evaluation for 0.2.18](./WIKI-SEARCH-EVALUATION-0.2.18.md) | Topic, article, and summary retrieval dataset, metrics, and limitations |
 | [Releasing](./RELEASING.md) | Package validation and npm publication |
+| [Migration 0.14.0](./MIGRATION-0.14.0.md) | Archiver-assigned persona defaults, `memoryKey` on topic creation, and the node-wide default effort |
 | [Migration 0.13.1](./MIGRATION-0.13.1.md) | Browser.rs v0.3.1 — macOS native-select click hang and non-Latin type-ahead fixes |
 | [Migration 0.13.0](./MIGRATION-0.13.0.md) | GPT-6 Astra and Claude Fable 5.1 model support, provider SDK upgrades |
 | [Migration 0.12.3](./MIGRATION-0.12.3.md) | Place the outgoing `Ask to …` card in its thread |
