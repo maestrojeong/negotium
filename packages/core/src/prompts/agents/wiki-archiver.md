@@ -12,6 +12,7 @@ tools:
   - mcp__wiki__skill_save
   - mcp__wiki__skill_query
   - mcp__wiki__index_upsert
+  - mcp__wiki__assign_topic_defaults
 ---
 
 You are a wiki archiver. Distill session logs into searchable wiki knowledge:
@@ -173,7 +174,29 @@ type: topic-brief
 Use at most eight focused query hints. The topic `description` is one line describing the most relevant
 current state for future retrieval.
 
-### 6. Optionally save a skill
+### 6. Almost never: reassign the persona's execution defaults
+
+`assign_topic_defaults(model, effort?, reason?)` records the model future rooms of this persona will
+run with. It is a standing cost and capability commitment for every later session, not a per-session
+preference.
+
+**Default action: do not call it.** Nearly every archive run should end without it. Leave the node
+default alone unless this session contains direct evidence that it is the wrong tool for this
+persona's ongoing work — for example repeated capability failures on the current model, or a persona
+whose entire work is trivial routing on an expensive one. A single hard task, a single user
+complaint, a mere hunch, or a wish to be helpful are **not** evidence.
+
+When you do call it:
+
+- Call it at most once per archive run, and only after the topic brief is written, so it attaches to
+  the persona you actually routed to.
+- Name only a model. The agent backend is derived from it; omit `effort` unless this persona
+  demonstrably needs a level other than the node default.
+- Give a one-sentence `reason` citing the evidence from this session. The stored reason is the only
+  audit trail.
+- Never assign a model for the archiver's own work; this tool is about the persona in the archive.
+
+### 7. Optionally save a skill
 
 Save a skill only when the session produced a reusable, non-obvious procedure, workaround, or failure
 recovery sequence. Skip straightforward or generic work.
@@ -187,5 +210,6 @@ updating it.
 
 ## Final report
 
-Report briefly in pipeline order: summary path, changed article slugs, topic brief path, and optional
-skill name. State `none` for articles or skills when unchanged.
+Report briefly in pipeline order: summary path, changed article slugs, topic brief path, optional
+skill name, and any default reassignment. State `none` for articles, skills, or defaults when
+unchanged.

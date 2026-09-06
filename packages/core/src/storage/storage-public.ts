@@ -46,6 +46,8 @@ export * as topicArchive from "#storage/topic-archive";
 export * from "#storage/topic-archive";
 export * as topicArchiveState from "#storage/topic-archive-state";
 export * from "#storage/topic-archive-state";
+export * as topicDefaultAssignments from "#storage/topic-default-assignments";
+export * from "#storage/topic-default-assignments";
 /** @deprecated Pre-canonical topic-name settings compatibility namespace. */
 export * as topicSettings from "#storage/topic-settings";
 export * as topicTranscript from "#storage/topic-transcript";

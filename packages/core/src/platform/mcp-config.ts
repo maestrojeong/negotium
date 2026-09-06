@@ -94,6 +94,7 @@ function buildBuiltinMcpServer(
     ...(ctx.topicId ? { topicId: ctx.topicId } : {}),
     ...(ctx.queryId ? { queryId: ctx.queryId } : {}),
     ...(ctx.wikiTopicId ? { wikiTopicId: ctx.wikiTopicId } : {}),
+    ...(ctx.wikiMemoryKey ? { wikiMemoryKey: ctx.wikiMemoryKey } : {}),
     ...(ctx.subagentParentTopicId ? { subagentParentTopicId: ctx.subagentParentTopicId } : {}),
     ...(ctx.threadRootId ? { threadRootId: ctx.threadRootId } : {}),
     cwd: ctx.cwd ?? (ctx.topicId ? resolveTopicWorkspaceDir(ctx.topicId) : process.cwd()),
@@ -231,6 +232,8 @@ export interface RuntimeMcpBuildContext {
   queryId?: string;
   /** Topic id whose wiki memory should be read/written. */
   wikiTopicId?: string;
+  /** Memory persona being archived; gates the archiver-only wiki assign tool. */
+  wikiMemoryKey?: string;
   agent?: AgentKind;
   cwd?: string;
   model?: string;
@@ -517,7 +520,8 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   wiki: {
     ...commonRuntimeMcpPolicy("wiki"),
     build(ctx) {
-      const { userId, session, topicId, queryId, wikiTopicId, agent, peerBridge } = ctx;
+      const { userId, session, topicId, queryId, wikiTopicId, wikiMemoryKey, agent, peerBridge } =
+        ctx;
       if (peerBridge) {
         if (!topicId || !queryId) return null;
         const env = canonicalMcpBridgeEnv({
@@ -538,6 +542,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
       const resolvedWikiTopicId =
         wikiTopicId ?? topicId ?? (session !== "dm" ? session : undefined);
       if (resolvedWikiTopicId) args.push(`--topic-id=${resolvedWikiTopicId}`);
+      if (wikiMemoryKey) args.push(`--memory-key=${wikiMemoryKey}`);
       args.push("--surface=wiki");
       return buildBuiltinMcpServer("wiki", { ...ctx, wikiTopicId: resolvedWikiTopicId }, () =>
         buildStdioMcpServer(agent, WIKI_SERVER, args),
@@ -872,6 +877,7 @@ export function getForumMcpServers(opts: {
   subagentParentTopicId?: string;
   queryId?: string;
   wikiTopicId?: string;
+  wikiMemoryKey?: string;
   agent: AgentKind;
   cwd?: string;
   model?: string;
@@ -898,6 +904,7 @@ export function getForumMcpServers(opts: {
     subagentParentTopicId,
     queryId,
     wikiTopicId,
+    wikiMemoryKey,
     agent,
     cwd,
     model,
@@ -935,6 +942,7 @@ export function getForumMcpServers(opts: {
       subagentParentTopicId,
       queryId,
       wikiTopicId,
+      wikiMemoryKey,
       agent,
       cwd,
       model,
@@ -1059,6 +1067,7 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
     subagentParentTopicId: opts.subagentParentTopicId,
     queryId: opts.queryId,
     wikiTopicId: opts.wikiTopicId,
+    wikiMemoryKey: opts.wikiMemoryKey,
     agent: opts.agent,
     cwd: opts.cwd,
     model: opts.model,

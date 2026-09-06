@@ -390,9 +390,13 @@ export {
   vaultListWithValues,
   vaultSet,
 } from "#storage/vault";
-export type { RegisterTopicOptions } from "#topics/create";
+export type {
+  RegisterTopicOptions,
+  RegisterTopicResult,
+  TopicDefaultsSource,
+} from "#topics/create";
 // ── Topics ──────────────────────────────────────────────────────────
-export { registerTopic, TopicValidationError } from "#topics/create";
+export { registerTopic, registerTopicDetailed, TopicValidationError } from "#topics/create";
 export {
   createDerivedTopic,
   getTopics,

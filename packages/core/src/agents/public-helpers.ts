@@ -59,8 +59,12 @@ export {
   type PublishHtmlContext,
 } from "#agents/mcp-tools/publish-html";
 export {
+  applySelfConfigCapabilityFilter,
   createSelfConfigRuntime,
   createSelfConfigToolDefinitionsForCore,
+  SELF_CONFIG_CAPABILITIES,
+  type SelfConfigCapability,
+  type SelfConfigCapabilityFilter,
   type SelfConfigRuntime,
   type SelfConfigRuntimeOptions,
 } from "#agents/mcp-tools/self-config";
@@ -138,3 +142,11 @@ export {
   type TopicLogMaintenance,
   type TopicLogMaintenanceHost,
 } from "#agents/topic-cleanup";
+export {
+  type AssignedTopicDefaults,
+  type AssignTopicDefaultsInput,
+  type AssignTopicDefaultsResult,
+  assignTopicDefaults,
+  resolveAssignedTopicDefaults,
+  validateAssignedDefaults,
+} from "#agents/topic-defaults";

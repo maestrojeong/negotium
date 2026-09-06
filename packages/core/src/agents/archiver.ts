@@ -325,6 +325,10 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
             session: `__archiver_${safeTopic}`,
             sessionType: "forum",
             topicId,
+            // The persona key, not the room: an archiver run for a room that is
+            // being deleted still has to be able to record defaults for the
+            // memory that survives it.
+            wikiMemoryKey: topicTitle,
             abortController: new AbortController(),
             model,
             mcpEnabled: ["wiki"],

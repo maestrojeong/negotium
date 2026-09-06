@@ -9,12 +9,14 @@ instead of copying the explanation.
 | [Adapters](./ADAPTERS.md) | Adapter lifecycle, channel mappings, topic access, and transcript projection |
 | [Identifier boundaries](./IDENTIFIERS.md) | Canonical Node ids, adapter-local references, correlation ids, and ownership invariants |
 | [Terminal usage](./TERMINAL-USAGE.md) | Keyboard shortcuts, chat commands, and the live subagent graph |
+| [Memory-assigned defaults](./MEMORY-ASSIGNED-DEFAULTS.md) | Archiver-chosen model/effort per memory persona, the create contract's `memoryKey`, and self-config capability filtering |
 | [Otium coupling](./OTIUM-COUPLING.md) | The versioned protocol between an Otium hub and a Negotium worker |
 | [Runtime Gateway contract](./RUNTIME-GATEWAY-CONTRACT.md) | Private idempotent ingress for local hosts and the peer-forwarded Otium subset |
 | [Otium enrollment and sharing](./OTIUM-ENROLLMENT-AND-SHARING.md) | Node invitation, enrollment security, topic-sharing product model, UX, and delivery plan |
 | [Feature review](./FEATURE-REVIEW.md) | Review order, acceptance questions, source areas, and regression coverage |
 | [Wiki search evaluation for 0.2.18](./WIKI-SEARCH-EVALUATION-0.2.18.md) | Topic, article, and summary retrieval dataset, metrics, and limitations |
 | [Releasing](./RELEASING.md) | Package validation and npm publication |
+| [Migration 0.14.0](./MIGRATION-0.14.0.md) | Archiver-assigned persona defaults, `memoryKey` on topic creation, and the node-wide default effort |
 | [Migration 0.13.1](./MIGRATION-0.13.1.md) | Browser.rs v0.3.1 — macOS native-select click hang and non-Latin type-ahead fixes |
 | [Migration 0.13.0](./MIGRATION-0.13.0.md) | GPT-6 Astra and Claude Fable 5.1 model support, provider SDK upgrades |
 | [Migration 0.12.3](./MIGRATION-0.12.3.md) | Place the outgoing `Ask to …` card in its thread |

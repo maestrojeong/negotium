@@ -26,7 +26,7 @@ import {
   logger,
   NODE_LOCAL_USER_ID,
   type RuntimeMcpContext,
-  registerTopic,
+  registerTopicDetailed,
   restartTopicSession,
   sessionInboxPath,
   TopicArchiveRequiredError,
@@ -163,10 +163,16 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
       model: z.string().optional().describe("Model override, must be valid for the agent."),
       effort: z.enum(EFFORT_VALUES).optional().describe("Reasoning effort override for the room."),
       description: z.string().optional().describe("Short description of the topic's purpose."),
+      memory_key: z
+        .string()
+        .optional()
+        .describe(
+          "Wiki memory persona the room continues. With no agent/model/effort given, the room opens on the defaults last assigned to that persona.",
+        ),
     },
-    async ({ title, agent, model, effort, description }) => {
+    async ({ title, agent, model, effort, description, memory_key }) => {
       try {
-        const topic = registerTopic({
+        const { topic, defaultsSource } = registerTopicDetailed({
           title,
           userId: ctx.userId,
           surface: callerSurface(ctx),
@@ -174,6 +180,7 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
           model,
           effort: effort as EffortLevel | undefined,
           description,
+          memoryKey: memory_key,
         });
         return textResult(
           [
@@ -182,6 +189,9 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
             `title: ${topic.title}`,
             `agent: ${topic.agent ?? "none"}`,
             `model: ${topic.defaultModel}`,
+            `effort: ${topic.defaultEffort}`,
+            ...(topic.memoryKey ? [`memory_key: ${topic.memoryKey}`] : []),
+            `defaults_source: ${defaultsSource}`,
           ].join("\n"),
         );
       } catch (err) {

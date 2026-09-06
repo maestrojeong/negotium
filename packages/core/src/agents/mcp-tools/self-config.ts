@@ -15,18 +15,73 @@ import { type AgentKind, EFFORT_VALUES, type EffortLevel, SUPPORTED_AGENTS } fro
 export type { SelfConfigContext };
 export { SELF_CONFIG_MCP_KEY };
 
+/**
+ * Tool groups a host may keep or drop. Products differ in which of these are
+ * meaningful: a product that decides model/effort automatically (or from an
+ * admin surface) has no use for the setters, but still needs the scheduling and
+ * derived-topic tools that this same factory produces.
+ */
+export const SELF_CONFIG_CAPABILITIES = {
+  model: ["get_model", "set_model"],
+  agent: ["get_agent", "set_agent"],
+  effort: ["get_effort", "set_effort"],
+  schedules: ["schedule_self", "get_self_schedule", "update_self_schedule", "cancel_self_schedule"],
+  "derived-topics": ["spawn_topic", "fork_topic"],
+} as const satisfies Record<string, readonly string[]>;
+
+export type SelfConfigCapability = keyof typeof SELF_CONFIG_CAPABILITIES;
+
+/**
+ * Group names and exact tool names are both accepted, so a host can drop a
+ * whole capability (`"effort"`) or only its mutating half (`"set_effort"`).
+ * `exclude` wins over `include`. Omitting the filter keeps every tool the host
+ * supports, which is the pre-filter behaviour.
+ */
+export interface SelfConfigCapabilityFilter {
+  include?: readonly string[];
+  exclude?: readonly string[];
+}
+
+function expandCapabilitySelectors(selectors: readonly string[]): Set<string> {
+  const names = new Set<string>();
+  for (const selector of selectors) {
+    const group = SELF_CONFIG_CAPABILITIES[selector as SelfConfigCapability];
+    if (group) {
+      for (const name of group) names.add(name);
+      continue;
+    }
+    names.add(selector);
+  }
+  return names;
+}
+
+export function applySelfConfigCapabilityFilter(
+  tools: SharedMcpTool[],
+  filter?: SelfConfigCapabilityFilter,
+): SharedMcpTool[] {
+  if (!filter?.include && !filter?.exclude) return tools;
+  const included = filter.include ? expandCapabilitySelectors(filter.include) : undefined;
+  const excluded = filter.exclude ? expandCapabilitySelectors(filter.exclude) : undefined;
+  return tools.filter(
+    (tool) => (!included || included.has(tool.name)) && !(excluded?.has(tool.name) ?? false),
+  );
+}
+
 const AGENT_VALUES = SUPPORTED_AGENTS as readonly AgentKind[];
 export const SELF_CONFIG_DERIVED_TOPIC_LIMIT = 5;
 
 export interface SelfConfigRuntime {
   readonly core: SelfConfigCore;
   readonly mcpKey: string;
+  readonly capabilities?: SelfConfigCapabilityFilter;
   createToolDefinitions(ctx: SelfConfigContext | (() => SelfConfigContext)): SharedMcpTool[];
 }
 
 export interface SelfConfigRuntimeOptions {
   host: SelfConfigHost;
   product?: Partial<SelfConfigProductConfig>;
+  /** Which tool groups this product exposes. Omitted means "all of them". */
+  capabilities?: SelfConfigCapabilityFilter;
 }
 
 function mcpResult(result: SelfConfigResult) {
@@ -49,7 +104,9 @@ export function createSelfConfigRuntime(options: SelfConfigRuntimeOptions): Self
   const runtime: SelfConfigRuntime = {
     core,
     mcpKey: core.product.mcpKey,
-    createToolDefinitions: (ctx) => createSelfConfigToolDefinitionsForCore(core, ctx),
+    ...(options.capabilities ? { capabilities: options.capabilities } : {}),
+    createToolDefinitions: (ctx) =>
+      createSelfConfigToolDefinitionsForCore(core, ctx, options.capabilities),
   };
   return Object.freeze(runtime);
 }
@@ -57,6 +114,7 @@ export function createSelfConfigRuntime(options: SelfConfigRuntimeOptions): Self
 export function createSelfConfigToolDefinitionsForCore(
   core: SelfConfigCore,
   ctx: SelfConfigContext | (() => SelfConfigContext),
+  capabilities?: SelfConfigCapabilityFilter,
 ): SharedMcpTool[] {
   const getCtx = contextGetter(ctx);
   let derivedCount = 0;
@@ -284,11 +342,12 @@ export function createSelfConfigToolDefinitionsForCore(
     });
   }
 
-  return tools;
+  return applySelfConfigCapabilityFilter(tools, capabilities);
 }
 
 export function createSelfConfigToolDefinitions(
   ctx: SelfConfigContext | (() => SelfConfigContext),
+  capabilities?: SelfConfigCapabilityFilter,
 ): SharedMcpTool[] {
-  return createSelfConfigToolDefinitionsForCore(defaultSelfConfigCore, ctx);
+  return createSelfConfigToolDefinitionsForCore(defaultSelfConfigCore, ctx, capabilities);
 }

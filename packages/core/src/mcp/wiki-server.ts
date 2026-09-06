@@ -65,6 +65,16 @@ export interface WikiMcpHost {
     },
   ): void;
   adoptTopicMemory?(topicId: string, userId: string, memoryKey: string): boolean;
+  /**
+   * Persist archiver-chosen execution defaults for a memory persona. Present
+   * only for archiver turns; returns null when the model is not honourable.
+   */
+  assignTopicDefaults?(input: {
+    memoryKey: string;
+    model: string;
+    effort?: string;
+    reason?: string;
+  }): { agent: string; model: string; effort: string; assignCount: number } | null;
 }
 
 export interface WikiMcpContext {
@@ -73,6 +83,11 @@ export interface WikiMcpContext {
   currentTopicId?: string;
   topicId?: string;
   surface?: WikiSurface;
+  /**
+   * Memory persona this turn is archiving. Set only for archiver turns, and
+   * the sole gate for `assign_topic_defaults`.
+   */
+  memoryKey?: string;
 }
 
 interface WikiMemoryTopic {
@@ -105,6 +120,15 @@ export function resolveAccessibleWikiTopicBrief(
 interface WikiRuntime extends Required<Pick<WikiMcpContext, "userId" | "surface">> {
   currentTopicId?: string;
   topicId?: string;
+  /** Memory persona passed on the command line (archiver turns only). */
+  memoryKey?: string;
+  /**
+   * Persona the archiver actually routed this run to — the brief it wrote or
+   * adopted. It can differ from `memoryKey` because the archiver is free to
+   * reuse an existing persona instead of the room's own title, and the
+   * assignment must follow that routing decision, not the room name.
+   */
+  routedMemoryKey?: string;
   host: WikiMcpHost;
   wikiDir: string;
   skillsDir: string;
@@ -126,11 +150,13 @@ function parseArgv(): {
   userId: string;
   currentTopicId?: string;
   topicId?: string;
+  memoryKey?: string;
   surface: WikiSurface;
 } {
   let userId = "local";
   let currentTopicId: string | undefined;
   let topicId: string | undefined;
+  let memoryKey: string | undefined;
   let surface: WikiSurface = "all";
 
   for (let i = 2; i < argv.length; i++) {
@@ -139,11 +165,12 @@ function parseArgv(): {
     else if (a.startsWith("--current-topic-id=")) {
       currentTopicId = a.slice("--current-topic-id=".length);
     } else if (a.startsWith("--topic-id=")) topicId = a.slice("--topic-id=".length);
+    else if (a.startsWith("--memory-key=")) memoryKey = a.slice("--memory-key=".length);
     else if (a === "--surface=wiki") surface = "wiki";
     else if (a === "--surface=skills") surface = "skills";
   }
 
-  return { userId, currentTopicId, topicId, surface };
+  return { userId, currentTopicId, topicId, memoryKey, surface };
 }
 
 // --- Helpers ---------------------------------------------------------------
@@ -1232,6 +1259,9 @@ function wikiRead(args: Record<string, unknown>): CallToolResult {
 
     const currentTopicId = runtime().currentTopicId;
     const memoryKey = wikiSummarySlug(rawKey.replace(/^topic\//, "").replace(/\.md$/i, ""));
+    // Adopting is the archiver's persona routing decision, so record it even
+    // when this turn has no room to attach the memory to (deleted-topic runs).
+    runtime().routedMemoryKey = memoryKey;
     if (
       !currentTopicId ||
       !runtime().host.adoptTopicMemory?.(currentTopicId, runtime().userId, memoryKey)
@@ -1676,6 +1706,13 @@ function wikiWrite(args: Record<string, unknown>): CallToolResult {
 
   if (rawKind === "summary") {
     const dateStr = rawDate ?? today;
+    // Start-of-run marker. A hosted wiki server can outlive one archive run —
+    // Maestro caches it for the whole process under a key that is only
+    // user+topic+persona — so a persona routed by an earlier run would
+    // otherwise still be in scope for the next one. Every run writes exactly
+    // one summary before touching a brief, so clearing here scopes the routed
+    // persona to this run.
+    runtime().routedMemoryKey = undefined;
     const written = writeSummaryDocument(topic, content, dateStr);
     const link = indexRowOrPartialWrite("summary", {
       kind: "summary",
@@ -1699,6 +1736,7 @@ function wikiWrite(args: Record<string, unknown>): CallToolResult {
   }
 
   const written = writeTopicDocument(topic, content);
+  runtime().routedMemoryKey = written.slug;
   const link = indexRowOrPartialWrite("topic", {
     kind: "topic",
     slug: written.slug,
@@ -2003,6 +2041,68 @@ function indexUpsert(args: Record<string, unknown>): CallToolResult {
   return { content: [{ type: "text", text: `Index updated: ${link}` }] };
 }
 
+/**
+ * Persist the model/effort the archiver judges right for the persona it just
+ * wrote. Keyed by the routed memory key rather than the room, so the value
+ * survives the room's deletion and is picked up by whatever room next opens on
+ * that persona.
+ */
+function assignTopicDefaults(args: Record<string, unknown>): CallToolResult {
+  const host = runtime().host;
+  if (!host.assignTopicDefaults) {
+    return {
+      content: [{ type: "text", text: "assign_topic_defaults is not available in this context." }],
+      isError: true,
+    };
+  }
+  const memoryKey = runtime().routedMemoryKey ?? runtime().memoryKey;
+  if (!memoryKey) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: "No memory persona is in scope yet. Write or adopt the topic brief first.",
+        },
+      ],
+      isError: true,
+    };
+  }
+  const model = safeExt(args, ["model"], "").trim();
+  if (!model) {
+    return { content: [{ type: "text", text: "model is required." }], isError: true };
+  }
+  const effort = safeExt<string | undefined>(args, ["effort"], undefined);
+  const reason = safeExt<string | undefined>(args, ["reason"], undefined);
+  const assigned = host.assignTopicDefaults({
+    memoryKey,
+    model,
+    ...(effort ? { effort } : {}),
+    ...(reason ? { reason } : {}),
+  });
+  if (!assigned) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Rejected: '${model}' is not a model this node can run. Leave the defaults alone.`,
+        },
+      ],
+      isError: true,
+    };
+  }
+  // One assignment per routed persona: consuming it here means a cached server
+  // cannot carry this run's routing decision into the next run's fallback.
+  runtime().routedMemoryKey = undefined;
+  return {
+    content: [
+      {
+        type: "text",
+        text: `Assigned defaults for topic memory '${memoryKey}': ${assigned.agent} / ${assigned.model} (effort ${assigned.effort}). Assignment #${assigned.assignCount}.`,
+      },
+    ],
+  };
+}
+
 // --- MCP Tool definitions -------------------------------------------------
 
 const WIKI_TOOLS: Tool[] = [
@@ -2195,6 +2295,35 @@ const SKILL_TOOLS: Tool[] = [
   },
 ];
 
+/**
+ * Archiver-only tool. Not part of WIKI_TOOLS: it is appended solely when the
+ * host wired an assignment sink and the turn names a memory persona.
+ */
+const ASSIGN_TOPIC_DEFAULTS_TOOL: Tool = {
+  name: "assign_topic_defaults",
+  description:
+    "Record the model (and optional effort) that future rooms of the memory persona you just wrote should run with. Use this only when the evidence in this session makes the current default clearly wrong for this persona's ongoing work — otherwise do not call it at all. Call it at most once per archive run, after the topic brief is written. The agent backend is derived from the model.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      model: {
+        type: "string",
+        description: "Model id from the catalog; the agent backend is derived from it.",
+      },
+      effort: {
+        type: "string",
+        enum: ["low", "medium", "high", "xhigh", "max"],
+        description: "Reasoning effort; omit to use the node's fixed default.",
+      },
+      reason: {
+        type: "string",
+        description: "One sentence on why this persona needs it. Stored as the audit trail.",
+      },
+    },
+    required: ["model"],
+  },
+};
+
 // --- Server ----------------------------------------------------------------
 
 export function createWikiMcpServer(context: WikiMcpContext, host: WikiMcpHost): Server {
@@ -2204,6 +2333,7 @@ export function createWikiMcpServer(context: WikiMcpContext, host: WikiMcpHost):
     userId: context.userId,
     currentTopicId: context.currentTopicId ?? context.topicId,
     topicId: context.topicId,
+    ...(context.memoryKey ? { memoryKey: context.memoryKey } : {}),
     surface,
     host,
     wikiDir,
@@ -2213,12 +2343,16 @@ export function createWikiMcpServer(context: WikiMcpContext, host: WikiMcpHost):
     articlesDir: resolve(wikiDir, "articles"),
     archiveDir: resolve(wikiDir, "archive"),
   };
-  const tools =
+  const baseTools =
     surface === "wiki"
       ? WIKI_TOOLS
       : surface === "skills"
         ? SKILL_TOOLS
         : [...WIKI_TOOLS, ...SKILL_TOOLS];
+  const tools =
+    surface !== "skills" && context.memoryKey && host.assignTopicDefaults
+      ? [...baseTools, ASSIGN_TOPIC_DEFAULTS_TOOL]
+      : baseTools;
   for (const directory of [
     current.skillsDir,
     current.topicsDir,
@@ -2252,6 +2386,7 @@ export function createWikiMcpServer(context: WikiMcpContext, host: WikiMcpHost):
         wiki_write: wikiWrite,
         wiki_reindex: wikiReindex,
         index_upsert: indexUpsert,
+        assign_topic_defaults: assignTopicDefaults,
       };
       const handler = tools.some((tool) => tool.name === name) ? handlers[name] : undefined;
       return handler
@@ -2267,6 +2402,16 @@ export function createWikiMcpServer(context: WikiMcpContext, host: WikiMcpHost):
 async function main() {
   const context = parseArgv();
   let bridge: Partial<WikiMcpHost> = {};
+  // The assignment sink is keyed by memory persona, so it must come up even for
+  // an archiver run whose room is already gone (no --topic-id).
+  if (context.memoryKey) {
+    try {
+      const defaults = await import("#agents/topic-defaults");
+      bridge.assignTopicDefaults = defaults.assignTopicDefaults;
+    } catch {
+      // No DB on this node — the tool stays unregistered rather than lying.
+    }
+  }
   if (context.topicId) {
     try {
       const [briefs, topics, topicLifecycle] = await Promise.all([
@@ -2275,6 +2420,7 @@ async function main() {
         import("#topics/derive"),
       ]);
       bridge = {
+        ...bridge,
         getTopicBrief: briefs.getTopicBrief,
         canReadTopicMemory: (selection, userId) => {
           const normalized = selection
