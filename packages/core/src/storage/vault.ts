@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { VAULT_MASTER_KEY } from "#platform/config";
 import { Database } from "#storage/sqlite";
 import { resolveStorageDataDir } from "#storage/storage-host";
-import { decryptVaultValue, encryptVaultValue } from "#storage/vault-crypto";
+import { decryptVaultValue, encryptVaultValue, isEncryptedVaultValue } from "#storage/vault-crypto";
 
 export type VaultDatabase = Pick<InstanceType<typeof Database>, "exec" | "prepare">;
 
@@ -11,6 +11,8 @@ export interface VaultStorageOptions {
   database?: VaultDatabase;
   dataDir?: string;
   masterKey?: string;
+  /** Prior keys rows may still be encrypted under; migrated onto `masterKey`. */
+  legacyMasterKeys?: readonly string[];
 }
 
 let vaultDb: VaultDatabase | undefined;
@@ -84,6 +86,61 @@ function activeVaultDatabase(): VaultDatabase {
   return vaultDb;
 }
 
+/** Re-encrypts rows only readable under `legacyKeys` onto `targetKey`, atomically. */
+function migrateLegacyMasterKeys(
+  database: VaultDatabase,
+  targetKey: string,
+  legacyKeys: readonly string[],
+): void {
+  if (legacyKeys.length === 0) return;
+  const rows = database.prepare("SELECT user_id, key, value FROM vault").all() as {
+    user_id: string;
+    key: string;
+    value: string;
+  }[];
+
+  const rewrites: { userId: string; key: string; newValue: string }[] = [];
+  for (const row of rows) {
+    if (!isEncryptedVaultValue(row.value)) continue; // plaintext rows are handled by decryptRow()
+    try {
+      decryptVaultValue(row.user_id, row.key, row.value, targetKey);
+      continue; // already readable under the target key
+    } catch {
+      // fall through to legacy recovery below
+    }
+    let recovered: string | undefined;
+    for (const legacyKey of legacyKeys) {
+      try {
+        recovered = decryptVaultValue(row.user_id, row.key, row.value, legacyKey).value;
+        break;
+      } catch {
+        // try the next legacy key
+      }
+    }
+    if (recovered === undefined) {
+      throw new Error(
+        `vault migration: row "${row.key}" cannot be authenticated with the target master key or any legacy key`,
+      );
+    }
+    rewrites.push({
+      userId: row.user_id,
+      key: row.key,
+      newValue: encryptVaultValue(row.user_id, row.key, recovered, targetKey),
+    });
+  }
+  if (rewrites.length === 0) return;
+
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const update = database.prepare("UPDATE vault SET value = ? WHERE user_id = ? AND key = ?");
+    for (const rewrite of rewrites) update.run(rewrite.newValue, rewrite.userId, rewrite.key);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 /** Configure process-wide vault storage during embedding-host bootstrap. */
 export function configureVaultStorage(options: VaultStorageOptions): () => void {
   if (options.database && options.dataDir) {
@@ -94,8 +151,12 @@ export function configureVaultStorage(options: VaultStorageOptions): () => void 
   const configuredDb =
     options.database ?? openVaultDatabase(options.dataDir ?? resolveStorageDataDir());
   if (options.database) initializeVaultDatabase(configuredDb);
+  const targetKey = options.masterKey ?? VAULT_MASTER_KEY;
+  if (options.legacyMasterKeys && options.legacyMasterKeys.length > 0) {
+    migrateLegacyMasterKeys(configuredDb, targetKey, options.legacyMasterKeys);
+  }
   vaultDb = configuredDb;
-  vaultMasterKey = options.masterKey ?? VAULT_MASTER_KEY;
+  vaultMasterKey = targetKey;
   let disposed = false;
   return () => {
     if (disposed) return;

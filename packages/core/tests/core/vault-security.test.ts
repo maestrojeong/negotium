@@ -30,6 +30,63 @@ afterEach(() => {
 });
 
 describe("Vault secret boundary", () => {
+  test("migrates rows onto a new owner key", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "negotium-vault-migrate-"));
+    try {
+      const restoreOld = configureVaultStorage({ dataDir, masterKey: "old-owner-secret" });
+      vaultSet("migrate-user", "OLD_TOKEN", "old-secret");
+      restoreOld();
+
+      const restoreNew = configureVaultStorage({
+        dataDir,
+        masterKey: "new-owner-secret",
+        legacyMasterKeys: ["old-owner-secret"],
+      });
+      expect(vaultGetValue("migrate-user", "OLD_TOKEN")).toBe("old-secret");
+      vaultSet("migrate-user", "SECOND_TOKEN", "second-secret");
+      restoreNew();
+
+      // Re-running the same migration is idempotent: no legacy rows remain to touch.
+      const restoreAgain = configureVaultStorage({
+        dataDir,
+        masterKey: "new-owner-secret",
+        legacyMasterKeys: ["old-owner-secret"],
+      });
+      expect(vaultGetValue("migrate-user", "OLD_TOKEN")).toBe("old-secret");
+      expect(vaultGetValue("migrate-user", "SECOND_TOKEN")).toBe("second-secret");
+      restoreAgain();
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a row no candidate key can authenticate", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "negotium-vault-migrate-fail-"));
+    try {
+      const restoreOld = configureVaultStorage({ dataDir, masterKey: "unrelated-owner-secret" });
+      vaultSet("migrate-fail-user", "STUCK_TOKEN", "stuck-secret");
+      restoreOld();
+
+      expect(() =>
+        configureVaultStorage({
+          dataDir,
+          masterKey: "new-owner-secret",
+          legacyMasterKeys: ["some-other-secret"],
+        }),
+      ).toThrow();
+
+      // Migration failed before publishing the new key, so the original key still works.
+      const restoreOriginal = configureVaultStorage({
+        dataDir,
+        masterKey: "unrelated-owner-secret",
+      });
+      expect(vaultGetValue("migrate-fail-user", "STUCK_TOKEN")).toBe("stuck-secret");
+      restoreOriginal();
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   test("supports an embedding host data directory and master key", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "negotium-vault-host-"));
     const restore = configureVaultStorage({
