@@ -25,6 +25,26 @@ export function matchesSpawnedBrowserHealth(health: unknown, expectedSpawnNonce:
   );
 }
 
+/**
+ * Detect the one failure Browser.rs cannot report through the transport: the
+ * server is up and answers MCP `initialize`, but the CDP socket to Chrome is
+ * gone. Every browser tool fails against that state while a transport probe
+ * still reports healthy, which is what made it survive across turns.
+ *
+ * Only `launched && !connected` is a fault. A freshly spawned server reports
+ * `launched:false` until the first navigation, and `busy:true` means a tool
+ * call currently holds the browser lock — both are healthy. Servers older than
+ * browser-rs 0.3.2 omit the field entirely and are treated as healthy, so this
+ * never regresses a pinned older engine.
+ */
+export function browserCdpIsLost(health: unknown): boolean {
+  if (!health || typeof health !== "object") return false;
+  const browser = (health as Record<string, unknown>).browser;
+  if (!browser || typeof browser !== "object") return false;
+  const candidate = browser as Record<string, unknown>;
+  return candidate.launched === true && candidate.connected === false;
+}
+
 /** Select an idle instance while excluding active borrowers and lifecycle work. */
 export function selectIdleEvictionKey(
   candidates: Iterable<[string, { lastUsedAt: number }]>,

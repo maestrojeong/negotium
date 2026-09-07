@@ -7,6 +7,7 @@ import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import "#storage/api-topics";
 import { isPortInUse, reserveAvailableLoopbackPort } from "#platform/playwright/browser-processes";
 import {
+  browserCdpIsLost,
   browserProcessMatchesExpectedProfile,
   configurePlaywrightManagerHost,
   drainPlaywrightManager,
@@ -602,5 +603,33 @@ describe("drainPlaywrightManager", () => {
     await drainPlaywrightManager();
 
     expect(() => resetPlaywrightManagerHost()).not.toThrow();
+  });
+});
+
+describe("browser CDP liveness", () => {
+  it("treats a launched browser with a dead transport as lost", () => {
+    expect(browserCdpIsLost({ ok: true, browser: { launched: true, connected: false } })).toBe(
+      true,
+    );
+  });
+
+  it("does not fault a server that has not opened a browser yet", () => {
+    // Every freshly spawned engine reports this until the first navigation.
+    expect(browserCdpIsLost({ ok: true, browser: { launched: false, connected: false } })).toBe(
+      false,
+    );
+  });
+
+  it("does not fault a browser busy inside a tool call", () => {
+    expect(
+      browserCdpIsLost({ ok: true, browser: { launched: true, connected: true, busy: true } }),
+    ).toBe(false);
+  });
+
+  it("treats engines that predate the field as healthy", () => {
+    // browser-rs < 0.3.2 omits `browser` entirely.
+    expect(browserCdpIsLost({ ok: true, name: "negotium-browser-gateway" })).toBe(false);
+    expect(browserCdpIsLost(null)).toBe(false);
+    expect(browserCdpIsLost("nonsense")).toBe(false);
   });
 });

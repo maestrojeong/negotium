@@ -48,6 +48,7 @@ import {
   normalizeBrowserProfileName,
 } from "#storage/browser-profiles";
 import {
+  browserCdpIsLost,
   isLiveOwnedChildProcess,
   matchesSpawnedBrowserHealth,
   selectIdleEvictionKey,
@@ -109,6 +110,7 @@ export {
 } from "#platform/playwright/browser-processes";
 export { probePlaywrightMcpTransports } from "#platform/playwright/transport-probe";
 export {
+  browserCdpIsLost,
   browserProcessMatchesExpectedProfile,
   extractUserDataDirArg,
   isLiveOwnedChildProcess,
@@ -957,7 +959,10 @@ export async function ensurePlaywright(userId: string, topic?: string): Promise<
     assertInstanceOwner(instanceKey, ownerId);
 
     if (existing && !existing.process.killed && existing.process.exitCode === null) {
-      if (await probePlaywrightMcpTransports(existing.port, existing.capability)) {
+      if (
+        (await probePlaywrightMcpTransports(existing.port, existing.capability)) &&
+        !(await browserTransportLost(existing.port))
+      ) {
         existing.lastUsedAt = Date.now();
         return existing.port;
       }
@@ -1026,7 +1031,10 @@ export async function ensureBrowserProfile(ownerId: string, rawProfile: string):
     }
 
     if (existing && !existing.process.killed && existing.process.exitCode === null) {
-      if (await probePlaywrightMcpTransports(existing.port, existing.capability)) {
+      if (
+        (await probePlaywrightMcpTransports(existing.port, existing.capability)) &&
+        !(await browserTransportLost(existing.port))
+      ) {
         existing.lastUsedAt = Date.now();
         return existing.port;
       }
@@ -1088,6 +1096,29 @@ export async function closeBrowserOwnerTabs(
  * Poll until the SSE server responds, or timeout.
  * Returns true if the server is healthy, false on timeout.
  */
+/**
+ * Ask the engine whether Chrome is still attached.
+ *
+ * Deliberately fails open: a refused, slow, or malformed `/health` says
+ * nothing about CDP, and treating that as a fault would kill instances for
+ * unrelated reasons. Returns true only when the engine positively reports a
+ * launched browser with a dead transport.
+ */
+async function browserTransportLost(port: number): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: AbortSignal.timeout(1000),
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      return false;
+    }
+    return browserCdpIsLost(await response.json());
+  } catch {
+    return false;
+  }
+}
+
 async function waitForServer(
   port: number,
   expectedSpawnNonce: string,
