@@ -26,6 +26,7 @@ import {
 } from "#storage/self-schedules";
 import { createPendingAsk, listPendingAsksForCaller } from "#storage/session-asks";
 import { getTopicArchiveState, setTopicArchiveState } from "#storage/topic-archive-state";
+import { getTopicHostMcpGrant, recordTopicHostMcpGrant } from "#storage/topic-host-mcp-grants";
 import type { TopicDto } from "#types/api";
 
 let archiveShouldFail = false;
@@ -136,6 +137,9 @@ describe("deleteTopicCascade archive policy", () => {
 
   test("deletes after archive succeeds", async () => {
     const topic = makeTopic("topic-delete-test", "Delete Test Topic");
+    recordTopicHostMcpGrant(topic.id, {
+      "host-test": { type: "http", url: "http://127.0.0.1:4200/mcp" },
+    });
 
     await deleteTopicCascade(topic, "owner-user");
 
@@ -150,6 +154,7 @@ describe("deleteTopicCascade archive policy", () => {
       },
     ]);
     expect(getTopic(topic.id)).toBeNull();
+    expect(getTopicHostMcpGrant(topic.id)).toBeNull();
   });
 
   test("preserves a raw archive with five exchanges without launching the memory archiver", async () => {

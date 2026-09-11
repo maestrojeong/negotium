@@ -236,11 +236,17 @@ export function toCodexMcpServers(
     if (typeof s.url === "string" && s.type !== "sse") {
       out[codexName] = withCodexMcpServerOverrides(name, {
         url: s.url,
-        ...(s.http_headers && typeof s.http_headers === "object"
-          ? { http_headers: s.http_headers as Record<string, string> }
+        ...((s.http_headers && typeof s.http_headers === "object") ||
+        (s.headers && typeof s.headers === "object")
+          ? {
+              http_headers: (s.http_headers ?? s.headers) as Record<string, string>,
+            }
           : {}),
         ...(s.env_http_headers && typeof s.env_http_headers === "object"
           ? { env_http_headers: s.env_http_headers as Record<string, string> }
+          : {}),
+        ...(typeof s.timeout === "number"
+          ? { tool_timeout_sec: Math.max(1, Math.ceil(s.timeout / 1000)) }
           : {}),
       });
     }

@@ -39,6 +39,7 @@ import {
   CODEX_BROWSER_CAPABILITY_ENV,
 } from "#platform/playwright/mcp-transport";
 import { getRegisteredCronSession } from "#runtime/cron-sessions";
+import type { HostMcpServerSpec } from "#runtime-gateway";
 import type { AgentKind, AgentQueryOptions, PeerRuntimeBridgeContext } from "#types";
 
 export type { RuntimeMcpScope } from "#platform/mcp-catalog-policy";
@@ -758,6 +759,24 @@ export function getNodeMcpServers(): readonly NodeMcpEntry[] {
   return nodeMcpEntries;
 }
 
+/** Prevent host grants from replacing node-owned MCP servers. */
+export function isReservedRuntimeMcpServerName(name: string): boolean {
+  return Object.hasOwn(MCP_CATALOG, name) || nodeMcpEntries.some((entry) => entry.key === name);
+}
+
+function mergeHostMcpServers(
+  base: Record<string, unknown>,
+  hostMcpServers: Record<string, HostMcpServerSpec> | undefined,
+): Record<string, unknown> {
+  if (!hostMcpServers) return base;
+  for (const name of Object.keys(hostMcpServers)) {
+    if (Object.hasOwn(base, name) || isReservedRuntimeMcpServerName(name)) {
+      throw new Error(`host MCP server name conflicts with node catalog: ${name}`);
+    }
+  }
+  return { ...base, ...hostMcpServers };
+}
+
 function buildNodeMcpSpecs(
   agent: AgentKind | undefined,
   filter: (name: string) => boolean,
@@ -1041,22 +1060,25 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
     });
   }
   if (opts.sessionType === "manager") {
-    return getManagerMcpServers({
-      userId: opts.userId || "local",
-      session: opts.session,
-      topicId: opts.topicId,
-      queryId: opts.queryId,
-      wikiTopicId: opts.wikiTopicId,
-      agent: opts.agent,
-      cwd: opts.cwd,
-      model: opts.model,
-      currentUserPrompt: opts.prompt,
-      playwrightPort: opts.playwrightPort,
-      playwrightCapability: opts.playwrightCapability,
-      autoContinue: opts.autoContinue,
-      visualTools: opts.visualTools,
-      fileDeliveryTools: opts.fileDeliveryTools,
-    });
+    return mergeHostMcpServers(
+      getManagerMcpServers({
+        userId: opts.userId || "local",
+        session: opts.session,
+        topicId: opts.topicId,
+        queryId: opts.queryId,
+        wikiTopicId: opts.wikiTopicId,
+        agent: opts.agent,
+        cwd: opts.cwd,
+        model: opts.model,
+        currentUserPrompt: opts.prompt,
+        playwrightPort: opts.playwrightPort,
+        playwrightCapability: opts.playwrightCapability,
+        autoContinue: opts.autoContinue,
+        visualTools: opts.visualTools,
+        fileDeliveryTools: opts.fileDeliveryTools,
+      }),
+      opts.hostMcpServers,
+    );
   }
   return getForumMcpServers({
     userId: opts.userId || "local",

@@ -32,6 +32,7 @@ import {
   getTopicStats,
   getVisibleTopics,
   isParticipant,
+  isReservedRuntimeMcpServerName,
   latestRuntimeEventSeq,
   listApiMessages,
   listBackgroundSessionsForUser,
@@ -79,6 +80,7 @@ import {
   writeDecisionGraphSvg,
 } from "@negotium/core/node-host";
 import {
+  parseHostMcpServers,
   RUNTIME_GATEWAY_CONTROL_PATH,
   RUNTIME_GATEWAY_VERSION,
 } from "@negotium/core/runtime-gateway";
@@ -557,6 +559,8 @@ export function createNodeControlHandler(
             aiName: getGlobalAiName(),
             capabilities: [
               "turn-submit-idempotent",
+              // Hosts must detect support before relying on this optional v1 field.
+              "host-mcp-turn-injection",
               "turn-events-sse-resume",
               "canonical-topic-read",
               "canonical-message-read",
@@ -837,6 +841,23 @@ export function createNodeControlHandler(
             body.parentId === undefined
               ? undefined
               : asMessageId(requiredText(body.parentId, "parentId"));
+          let hostMcpServers: ReturnType<typeof parseHostMcpServers>;
+          try {
+            hostMcpServers = parseHostMcpServers(body.hostMcpServers);
+          } catch (error) {
+            throw new ControlRequestError(
+              error instanceof Error ? error.message : "invalid hostMcpServers",
+            );
+          }
+          const conflictingHostMcpName = Object.keys(hostMcpServers ?? {}).find(
+            isReservedRuntimeMcpServerName,
+          );
+          if (conflictingHostMcpName) {
+            return jsonError(
+              400,
+              `host MCP server name conflicts with node catalog: ${conflictingHostMcpName}`,
+            );
+          }
           const attachments =
             body.attachments === undefined
               ? []
@@ -853,6 +874,9 @@ export function createNodeControlHandler(
           if (!topic) return jsonError(404, "Topic not found");
           if (!topic.participants.some((participant) => participant.userId === userId)) {
             return jsonError(404, "Topic not found");
+          }
+          if (hostMcpServers !== undefined && topic.kind !== "manager") {
+            return jsonError(400, "hostMcpServers is only allowed for manager topics");
           }
           if (
             attachments.some(
@@ -906,6 +930,7 @@ export function createNodeControlHandler(
             // not be handed tools whose output it would silently drop.
             visualTools: body.visualTools === true,
             fileDeliveryTools: body.fileDeliveryTools === true,
+            hostMcpServers,
             ...(attachments.length ? { attachments } : {}),
             ...(threadRootId ? { threadRootId } : {}),
             ...(parentId ? { parentId } : {}),

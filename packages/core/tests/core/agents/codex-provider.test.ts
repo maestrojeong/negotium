@@ -792,4 +792,20 @@ describe("codexProvider MCP config", () => {
       env_http_headers: { "X-Browser-Capability": "NEGOTIUM_BROWSER_CAPABILITY" },
     });
   });
+
+  test("translates gateway HTTP headers and millisecond timeout for Codex", () => {
+    const servers = toCodexMcpServers({
+      "topic-admin": {
+        type: "http",
+        url: "http://127.0.0.1:4200/mcp",
+        headers: { authorization: "Bearer test" },
+        timeout: 30_500,
+      },
+    });
+    expect(servers["topic-admin"]).toMatchObject({
+      url: "http://127.0.0.1:4200/mcp",
+      http_headers: { authorization: "Bearer test" },
+      tool_timeout_sec: 31,
+    });
+  });
 });

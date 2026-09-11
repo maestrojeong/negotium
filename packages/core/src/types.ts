@@ -1,3 +1,5 @@
+import type { HostMcpServerSpec } from "#runtime-gateway";
+
 export interface TokenUsage {
   /** Aggregate billable input across every model call made during this turn. */
   inputTokens: number;
@@ -214,6 +216,8 @@ export interface AgentQueryOptions {
   visualTools?: boolean;
   /** Expose adapter-backed file-delivery tools for this turn. Default-deny. */
   fileDeliveryTools?: boolean;
+  /** Validated host MCPs resolved from durable manager-room grants at execution time. */
+  hostMcpServers?: Record<string, HostMcpServerSpec>;
   /**
    * Thread this turn answers inside, so the turn's runtime MCP can default
    * `thread_read` to it. Turn-scoped, unlike the session, which is per topic.

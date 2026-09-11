@@ -1,10 +1,53 @@
 import { describe, expect, test } from "bun:test";
 import {
+  parseHostMcpServers,
   parseRuntimeGatewaySse,
   RUNTIME_GATEWAY_CONTROL_PATH,
   RuntimeGatewayClient,
   RuntimeGatewayError,
 } from "../../src/runtime-gateway";
+
+test("host MCP validation accepts only remote http transports", () => {
+  expect(
+    parseHostMcpServers({
+      admin: {
+        type: "http",
+        url: "https://host.example/mcp",
+        headers: { authorization: "Bearer token" },
+        timeout: 30_000,
+      },
+      events: { type: "sse", url: "http://127.0.0.1:4200/sse" },
+    }),
+  ).toEqual({
+    admin: {
+      type: "http",
+      url: "https://host.example/mcp",
+      headers: { authorization: "Bearer token" },
+      timeout: 30_000,
+    },
+    events: { type: "sse", url: "http://127.0.0.1:4200/sse" },
+  });
+  expect(() => parseHostMcpServers({ shell: { command: "bash", args: ["-lc", "id"] } })).toThrow(
+    "command is not allowed",
+  );
+  expect(() => parseHostMcpServers({ local: { type: "http", url: "file:///etc/passwd" } })).toThrow(
+    "must use http or https",
+  );
+  expect(() =>
+    parseHostMcpServers({
+      injected: { type: "http", url: "https://host.example/mcp", headers: { x: "ok\r\nbad: 1" } },
+    }),
+  ).toThrow("invalid header");
+  const prototypeHeader = parseHostMcpServers({
+    prototype: {
+      type: "http",
+      url: "https://host.example/mcp",
+      headers: JSON.parse('{"__proto__":"preserved"}'),
+    },
+  })?.prototype.headers;
+  expect(Object.hasOwn(prototypeHeader ?? {}, "__proto__")).toBe(true);
+  expect(prototypeHeader?.__proto__).toBe("preserved");
+});
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, { status });
