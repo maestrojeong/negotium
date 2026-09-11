@@ -51,6 +51,7 @@ import { deletePendingAsksForTopic } from "#storage/session-asks";
 import { deleteTopicStats } from "#storage/token-stats";
 import { archiveConversationEvents, archiveTopicMessages } from "#storage/topic-archive";
 import { deleteTopicArchiveState } from "#storage/topic-archive-state";
+import { deleteTopicHostMcpGrant } from "#storage/topic-host-mcp-grants";
 import { deleteTopicToolCapabilities } from "#storage/topic-tool-capabilities";
 import type { TopicDto } from "#types/api";
 
@@ -338,6 +339,7 @@ async function deleteTopicCascadeImpl(
     }
 
     deleteTopicVisuals(topicId);
+    deleteTopicHostMcpGrant(topicId);
     deleteTopicToolCapabilities(topicId);
     deleteTopicArchiveState(topicId);
     deleteMessagesForTopic(topicId);

@@ -24,6 +24,90 @@ export interface RuntimeGatewayHealth {
   cursor: number;
 }
 
+/** Remote-only MCP transport a gateway host may grant to a manager topic. */
+export interface HostMcpServerSpec {
+  type: "sse" | "http";
+  url: string;
+  headers?: Record<string, string>;
+  timeout?: number;
+}
+
+const HOST_MCP_SERVER_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const HOST_MCP_SERVER_KEYS = new Set(["type", "url", "headers", "timeout"]);
+const HTTP_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+/** Keep host grants remote-only so a gateway caller cannot spawn node processes. */
+export function parseHostMcpServers(value: unknown): Record<string, HostMcpServerSpec> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("hostMcpServers must be an object");
+  }
+  const parsedEntries: Array<[string, HostMcpServerSpec]> = [];
+  for (const [name, raw] of Object.entries(value)) {
+    if (!HOST_MCP_SERVER_NAME.test(name)) {
+      throw new TypeError(`invalid host MCP server name: ${name}`);
+    }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new TypeError(`hostMcpServers.${name} must be an object`);
+    }
+    const spec = raw as Record<string, unknown>;
+    const unsupported = Object.keys(spec).find((key) => !HOST_MCP_SERVER_KEYS.has(key));
+    if (unsupported) {
+      throw new TypeError(`hostMcpServers.${name}.${unsupported} is not allowed`);
+    }
+    if (spec.type !== "sse" && spec.type !== "http") {
+      throw new TypeError(`hostMcpServers.${name}.type must be sse or http`);
+    }
+    if (typeof spec.url !== "string") {
+      throw new TypeError(`hostMcpServers.${name}.url must be a string`);
+    }
+    let url: URL;
+    try {
+      url = new URL(spec.url);
+    } catch {
+      throw new TypeError(`hostMcpServers.${name}.url must be a valid URL`);
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new TypeError(`hostMcpServers.${name}.url must use http or https`);
+    }
+    let headers: Record<string, string> | undefined;
+    if (spec.headers !== undefined) {
+      if (!spec.headers || typeof spec.headers !== "object" || Array.isArray(spec.headers)) {
+        throw new TypeError(`hostMcpServers.${name}.headers must be an object`);
+      }
+      const headerEntries: Array<[string, string]> = [];
+      for (const [key, headerValue] of Object.entries(spec.headers)) {
+        if (!HTTP_HEADER_NAME.test(key) || typeof headerValue !== "string") {
+          throw new TypeError(`hostMcpServers.${name}.headers must contain string values`);
+        }
+        try {
+          new Headers([[key, headerValue]]);
+        } catch {
+          throw new TypeError(`hostMcpServers.${name}.headers contains an invalid header`);
+        }
+        headerEntries.push([key, headerValue]);
+      }
+      headers = Object.fromEntries(headerEntries);
+    }
+    if (
+      spec.timeout !== undefined &&
+      (typeof spec.timeout !== "number" || !Number.isFinite(spec.timeout) || spec.timeout <= 0)
+    ) {
+      throw new TypeError(`hostMcpServers.${name}.timeout must be a positive number`);
+    }
+    parsedEntries.push([
+      name,
+      {
+        type: spec.type,
+        url: url.toString(),
+        ...(headers ? { headers } : {}),
+        ...(spec.timeout !== undefined ? { timeout: spec.timeout } : {}),
+      },
+    ]);
+  }
+  return Object.fromEntries(parsedEntries);
+}
+
 export interface RuntimeGatewayTurnInput {
   topicId: string;
   /** Canonical principal on the execution node. */
@@ -47,6 +131,8 @@ export interface RuntimeGatewayTurnInput {
   attachments?: string[];
   visualTools?: boolean;
   fileDeliveryTools?: boolean;
+  /** Host-owned remote MCP servers granted to this manager topic. */
+  hostMcpServers?: Record<string, HostMcpServerSpec>;
 }
 
 export interface RuntimeGatewayTurnAcknowledgement {

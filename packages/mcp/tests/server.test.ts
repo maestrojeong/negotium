@@ -183,6 +183,37 @@ describe("negotium MCP endpoint", () => {
     }
   });
 
+  test("keeps host MCP credentials out of config-change auto-continue entries", async () => {
+    const autoClient = new Client({ name: "negotium-auto-continue-test", version: "1.0.0" });
+    const token = issueRuntimeMcpToken({
+      ...ctx,
+      autoContinue: true,
+    });
+    const url = new URL(
+      `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+    );
+
+    try {
+      await autoClient.connect(new StreamableHTTPClientTransport(url));
+      const result = await autoClient.callTool({
+        name: "set_effort",
+        arguments: { effort: "high" },
+      });
+      expect(result.isError).toBeFalsy();
+      const entries = readFileSync(sessionInboxPath(USER_ID, mainTopic.id), "utf-8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(entries.at(-1)).toMatchObject({
+        type: "tell",
+        from: "auto-continue",
+      });
+      expect(entries.at(-1)).not.toHaveProperty("hostMcpServers");
+    } finally {
+      await autoClient.close();
+    }
+  });
+
   test("does not expose ask_user_question in a subagent room", async () => {
     const child = registerTopic({
       title: `ask-disabled-subagent-${randomUUID()}`,

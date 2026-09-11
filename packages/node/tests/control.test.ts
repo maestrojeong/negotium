@@ -97,6 +97,7 @@ test("runtime gateway health negotiates the v1 capability set", async () => {
     v: NODE_RUNTIME_CONTRACT_VERSION,
     capabilities: expect.arrayContaining([
       "turn-submit-idempotent",
+      "host-mcp-turn-injection",
       "turn-events-sse-resume",
       "canonical-topic-read",
       "canonical-message-read",
@@ -145,10 +146,57 @@ test("runtime gateway ensures one private manager topic per external user", asyn
         text: "manage my workspace",
         clientMessageId: `manager-${randomUUID()}`,
         allowAutoContinue: false,
+        respond: false,
+        hostMcpServers: {
+          "topic-admin": { type: "http", url: "http://127.0.0.1:4200/mcp?token=durable" },
+        },
       }),
     }),
   );
   expect(turn?.status).toBe(202);
+  const managerTopicId = firstBody.topic?.id ?? "";
+  const storedGrant = () =>
+    db
+      .query<{ servers_json: string }, [string]>(
+        "SELECT servers_json FROM api_topic_host_mcp_grants WHERE topic_id = ?",
+      )
+      .get(managerTopicId);
+  expect(JSON.parse(storedGrant()?.servers_json ?? "null")).toEqual({
+    "topic-admin": { type: "http", url: "http://127.0.0.1:4200/mcp?token=durable" },
+  });
+
+  const omitted = await handler(
+    runtimeRequest("/turns", {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        topicId: managerTopicId,
+        userId: managerUser,
+        text: "keep the grant",
+        clientMessageId: `manager-${randomUUID()}`,
+        respond: false,
+      }),
+    }),
+  );
+  expect(omitted?.status).toBe(202);
+  expect(storedGrant()).toBeDefined();
+
+  const revoked = await handler(
+    runtimeRequest("/turns", {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        topicId: managerTopicId,
+        userId: managerUser,
+        text: "revoke the grant",
+        clientMessageId: `manager-${randomUUID()}`,
+        respond: false,
+        hostMcpServers: {},
+      }),
+    }),
+  );
+  expect(revoked?.status).toBe(202);
+  expect(storedGrant()).toBeNull();
 });
 
 test("runtime gateway keeps Cron execution and actor ownership separate", async () => {
@@ -930,6 +978,12 @@ test("runtime gateway accepts durably, deduplicates client messages, and streams
   // The handler has no turn worker. A 202 therefore proves acknowledgement is
   // not delayed on agent placement or execution.
   expect(getApiMessage(topic.id, acceptedBody.messageId)?.text).toBe("durable before execution");
+  const execution = db
+    .query<{ execution_json: string }, [string]>(
+      "SELECT execution_json FROM runtime_user_turn_requests WHERE topic_id = ?",
+    )
+    .get(topic.id);
+  expect(JSON.parse(execution?.execution_json ?? "null")).not.toHaveProperty("hostMcpServers");
   expect(acceptedBody.cursor).toBeGreaterThan(cursor);
 
   const duplicate = await handler(
@@ -994,6 +1048,45 @@ test("runtime gateway accepts durably, deduplicates client messages, and streams
   expect(await terminalMessages?.json()).toMatchObject({
     messages: [{ id: acceptedBody.messageId, text: "durable before execution" }],
   });
+});
+
+test("runtime gateway rejects host MCP process specs and node-owned names", async () => {
+  const gatewayUser = `runtime-host-mcp-${randomUUID()}`;
+  const topic = registerTopic({
+    title: `Gateway host MCP ${randomUUID()}`,
+    userId: gatewayUser,
+    agent: "codex",
+  });
+  const submit = (hostMcpServers: unknown) =>
+    handler(
+      runtimeRequest("/turns", {
+        method: "POST",
+        body: JSON.stringify({
+          v: NODE_RUNTIME_CONTRACT_VERSION,
+          topicId: topic.id,
+          userId: gatewayUser,
+          text: "must reject",
+          clientMessageId: randomUUID(),
+          hostMcpServers,
+        }),
+      }),
+    );
+
+  const command = await submit({ shell: { command: "bash", args: ["-lc", "id"] } });
+  expect(command?.status).toBe(400);
+  expect(await command?.json()).toMatchObject({ error: expect.stringContaining("command") });
+
+  const collision = await submit({
+    runtime: { type: "http", url: "http://127.0.0.1:4200/mcp" },
+  });
+  expect(collision?.status).toBe(400);
+  expect(await collision?.json()).toMatchObject({ error: expect.stringContaining("conflicts") });
+
+  const managerOnly = await submit({
+    "topic-admin": { type: "http", url: "http://127.0.0.1:4200/mcp" },
+  });
+  expect(managerOnly?.status).toBe(400);
+  expect(await managerOnly?.json()).toMatchObject({ error: expect.stringContaining("manager") });
 });
 
 test("runtime gateway returns a canonical thread when addressed by its root or a reply", async () => {

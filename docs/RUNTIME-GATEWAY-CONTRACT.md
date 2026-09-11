@@ -16,7 +16,7 @@ the canonical topic.
 ## Endpoints
 
 - `GET /health` returns `{ ok, v: 1, capabilities, cursor }` for capability negotiation.
-- `POST /turns` accepts `{ v: 1, topicId, userId, actorUserId?, actorLabel?, vaultUserId?, sourceAdapter?, text, clientMessageId, requestId?, allowAutoContinue?, visualTools?, fileDeliveryTools? }`.
+- `POST /turns` accepts `{ v: 1, topicId, userId, actorUserId?, actorLabel?, vaultUserId?, sourceAdapter?, text, clientMessageId, requestId?, allowAutoContinue?, visualTools?, fileDeliveryTools?, hostMcpServers? }`.
   `userId` is the canonical execution principal. A trusted gateway may preserve the authenticated
   human author separately in `actorUserId`/`actorLabel` and select the topic owner's credential
   namespace with `vaultUserId`.
@@ -31,6 +31,13 @@ the canonical topic.
   configuration. A node without one grants the visual tools and omits the publish tools, logging a
   warning when it does. Configure the backend on every node behind a gateway that has one, or the
   same room offers different tools depending on which host ran the turn.
+  `hostMcpServers` grants remote `{ type: "sse" | "http", url, headers?, timeout? }` MCP servers
+  to manager-topic turns. The field is optional and omission preserves the existing topic grant;
+  `{}` revokes it. Non-manager topics, process transports, non-HTTP(S) URLs, unknown spec keys, and
+  names owned by the node are rejected. Nodes advertise `host-mcp-turn-injection` before a host may
+  rely on the field. Credentials stay in the dedicated `api_topic_host_mcp_grants` table and are
+  resolved only into normal manager executions, never cron, forum, subagent, signed runtime context,
+  or durable turn payloads. Codex supports the `http` transport; its provider ignores SSE entries.
   It returns `202` only after the canonical user message, durable turn request, acknowledgement event,
   and message event have been committed in one SQLite transaction. `cursor` is the exact sequence of
   that turn's `turn_accepted` event. Current nodes also include the canonical `message` in the

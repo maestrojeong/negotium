@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isReservedRuntimeMcpServerName } from "#platform/mcp-config";
 import { resolveAttachmentByFileId } from "#runtime/file-hooks";
 import { describeQuotedAuthor } from "#runtime/thread-context";
 import type { UserTurnReplyContext } from "#runtime/user-turn-envelope";
+import { type HostMcpServerSpec, parseHostMcpServers } from "#runtime-gateway";
 import { appendApiMessage, getApiMessage } from "#storage/api-messages";
 import { getTopicSessionId } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
@@ -15,6 +17,7 @@ import {
 import { requestRuntimeTurnAbort } from "#storage/runtime-leases";
 import { getRuntimeTopicEpoch } from "#storage/runtime-topic-state";
 import { mergeRuntimeUserTurnRequest } from "#storage/runtime-turn-requests";
+import { recordTopicHostMcpGrant } from "#storage/topic-host-mcp-grants";
 import { recordTopicToolCapabilities } from "#storage/topic-tool-capabilities";
 import type { MessageDto, TopicDto } from "#types/api";
 
@@ -67,6 +70,8 @@ export interface SubmitRuntimeGatewayTurnParams {
   visualTools?: boolean;
   /** Capability minted by the calling adapter. Default-deny, like `visualTools`. */
   fileDeliveryTools?: boolean;
+  /** Host-owned remote MCP servers granted to this manager topic. */
+  hostMcpServers?: Record<string, HostMcpServerSpec>;
 }
 
 export interface SubmitRuntimeGatewayTurnResult extends RuntimeGatewaySubmission {
@@ -163,8 +168,7 @@ function gatewayPayloadHash(
         // of what the turn says, so a replay that changes it is a new turn.
         params.parentId ?? null,
         params.attachments ?? [],
-        // `sourceAdapter`/`visualTools`/`fileDeliveryTools` are deliberately
-        // absent. They are properties of the calling adapter, not the message,
+        // Adapter capabilities are deliberately absent. They are properties of the caller, not the message,
         // and predate this field in persisted payload hashes. Hashing them would
         // turn an adapter upgrade into a 409 for keys already in flight.
       ]),
@@ -194,6 +198,18 @@ export class RuntimeGatewayIdempotencyConflictError extends Error {
 export function submitRuntimeGatewayTurn(
   params: SubmitRuntimeGatewayTurnParams,
 ): SubmitRuntimeGatewayTurnResult {
+  const hostMcpServers = parseHostMcpServers(params.hostMcpServers);
+  if (hostMcpServers !== undefined && params.topic.kind !== "manager") {
+    throw new TypeError("hostMcpServers is only allowed for manager topics");
+  }
+  const conflictingHostMcpName = Object.keys(hostMcpServers ?? {}).find(
+    isReservedRuntimeMcpServerName,
+  );
+  if (conflictingHostMcpName) {
+    throw new TypeError(
+      `host MCP server name conflicts with node catalog: ${conflictingHostMcpName}`,
+    );
+  }
   const requestId = params.requestId ?? params.clientMessageId;
   const actorUserId = params.actorUserId ?? params.userId;
   const sourceAdapter = params.sourceAdapter?.trim() || "runtime-gateway";
@@ -299,6 +315,9 @@ export function submitRuntimeGatewayTurn(
             ...(params.threadRootId ? { threadRootId: params.threadRootId } : {}),
           },
         });
+      }
+      if (hostMcpServers !== undefined) {
+        recordTopicHostMcpGrant(params.topic.id, hostMcpServers);
       }
       const acceptedEvent = appendRuntimeEvent("runtime-gateway-ingress", {
         type: "ai-status",

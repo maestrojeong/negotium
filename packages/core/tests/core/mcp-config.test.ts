@@ -447,6 +447,55 @@ describe("mcp-config: playwright transport selection per agent", () => {
     expect(hostedContext(servers.task, "task").topicId).toBe("general");
   });
 
+  test("merges host-owned MCPs without allowing node catalog collisions", () => {
+    const hostMcpServers = {
+      "topic-admin": {
+        type: "http" as const,
+        url: "http://127.0.0.1:4200/mcp/admin/topic-admin/mcp?token=test",
+      },
+    };
+    const servers = getMcpServersForQuery({
+      agent: "codex",
+      prompt: "manage topics",
+      systemPrompt: "",
+      cwd: "/tmp",
+      userId,
+      sessionType: "manager",
+      session: "General",
+      topicId: "general-host-mcp",
+      hostMcpServers,
+    });
+    expect(servers["topic-admin"]).toEqual(hostMcpServers["topic-admin"]);
+    expect(
+      getMcpServersForQuery({
+        agent: "codex",
+        prompt: "ordinary room",
+        systemPrompt: "",
+        cwd: "/tmp",
+        userId,
+        sessionType: "forum",
+        session: "room",
+        topicId: "forum-host-mcp",
+        hostMcpServers,
+      })["topic-admin"],
+    ).toBeUndefined();
+    expect(() =>
+      getMcpServersForQuery({
+        agent: "codex",
+        prompt: "replace runtime",
+        systemPrompt: "",
+        cwd: "/tmp",
+        userId,
+        sessionType: "manager",
+        session: "General",
+        topicId: "general-host-mcp",
+        hostMcpServers: {
+          runtime: { type: "http", url: "http://127.0.0.1:4200/mcp" },
+        },
+      }),
+    ).toThrow("conflicts with node catalog: runtime");
+  });
+
   test("runtime-managed tools stay active outside the optional whitelist", () => {
     const servers = getForumMcpServers({
       userId,

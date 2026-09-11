@@ -103,6 +103,7 @@ import {
   releaseRuntimeUserTurnClaim,
 } from "#storage/runtime-turn-requests";
 import type { PendingAskUserId } from "#storage/session-asks";
+import { getTopicHostMcpGrant } from "#storage/topic-host-mcp-grants";
 import { getTopicToolCapabilities } from "#storage/topic-tool-capabilities";
 import { getSharedWikiDir } from "#storage/wiki";
 import {
@@ -737,6 +738,16 @@ export function resolveTurnToolCapabilities(
   };
 }
 
+/** Require both room kind and execution scope so cron/ephemeral turns cannot inherit the grant. */
+export function resolveTurnHostMcpServers(
+  topic: Pick<TopicDto, "id" | "kind">,
+  sessionType?: "dm" | "forum" | "ephemeral" | "manager" | "cron",
+) {
+  const effectiveSessionType = sessionType ?? (topic.kind === "manager" ? "manager" : "forum");
+  if (topic.kind !== "manager" || effectiveSessionType !== "manager") return undefined;
+  return getTopicHostMcpGrant(topic.id) ?? undefined;
+}
+
 export interface StartAiTurnParams extends AiTurnExecutionOptions {
   topic: AiTurnTopic;
   userId: string;
@@ -1047,6 +1058,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   const sessionName = params.sessionName ?? topic.title;
   const sessionType = params.sessionType;
   const { visualTools, fileDeliveryTools } = resolveTurnToolCapabilities(topicId, params);
+  const hostMcpServers = resolveTurnHostMcpServers(topic, sessionType);
   const onSessionId = params.onSessionId;
   const onSessionReset = params.onSessionReset;
   const bridgeSessionFromHistory = params.bridgeSessionFromHistory === true;
@@ -1722,6 +1734,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         autoContinue: allowAutoContinue && !silent,
         visualTools,
         fileDeliveryTools,
+        hostMcpServers,
         // Turn-scoped, so the runtime MCP this turn connects to can answer
         // "which thread am I in" without the model having to know the id.
         ...(threadRootId ? { threadRootId } : {}),
