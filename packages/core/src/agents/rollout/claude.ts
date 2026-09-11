@@ -15,8 +15,9 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   assertUuidLike,
   type ChatPair,
@@ -29,35 +30,86 @@ import { parseJsonlText, writeJsonlFile } from "#platform/jsonl";
 import { logger } from "#platform/logger";
 import type { ConversationEntry } from "#storage/conversations";
 
-interface ClaudeAttachments {
-  deferredToolsDelta: Record<string, unknown>;
-  skillListing: Record<string, unknown>;
-}
-
-let _attachmentsCache: ClaudeAttachments | null = null;
-function loadClaudeAttachments(): ClaudeAttachments {
+/**
+ * The per-turn attachment chain captured from a real Claude rollout, in the
+ * order the SDK emits it.
+ *
+ * Held as a list keyed on `attachment.type` rather than fixed indices: the
+ * chain is the SDK's own format and it grows between releases — current
+ * sessions also emit `deferred_tools_record`, `mcp_instructions_delta`,
+ * `session_context` and `auto_mode` that this capture predates. Positional
+ * slots mislabel entries the moment that order changes.
+ */
+let _attachmentsCache: Record<string, unknown>[] | null = null;
+function loadClaudeAttachments(): Record<string, unknown>[] {
   if (_attachmentsCache) return _attachmentsCache;
   const raw = readFileSync(join(FIXTURES_DIR, "claude-attachments.jsonl"), "utf8");
-  const lines = parseJsonlText<Record<string, unknown>>(raw);
-  if (lines.length < 2) {
-    throw new Error(
-      `loadClaudeAttachments: expected >=2 entries in claude-attachments.jsonl, got ${lines.length}`,
-    );
+  const entries = parseJsonlText<Record<string, unknown>>(raw);
+  const types = entries.map(
+    (entry) => (entry.attachment as Record<string, unknown> | undefined)?.type,
+  );
+  for (const wanted of ["deferred_tools_delta", "skill_listing"]) {
+    if (!types.includes(wanted)) {
+      throw new Error(
+        `loadClaudeAttachments: claude-attachments.jsonl is missing ${wanted} (found ${types.join(", ")})`,
+      );
+    }
   }
-  _attachmentsCache = {
-    deferredToolsDelta: lines[0],
-    skillListing: lines[1],
-  };
+  _attachmentsCache = entries;
   return _attachmentsCache;
 }
 
 /**
- * Version strings stamped onto synthetic rollouts so they look indistinguishable
- * from a live SDK session. These do not affect resume behavior — the SDKs do
- * not gate on them — but keeping them current avoids confusion in observability
- * tooling that scans rollout files.
+ * Version stamped onto synthetic rollouts so they look indistinguishable from a
+ * live SDK session.
+ *
+ * Read from the installed SDK rather than hardcoded. A pinned constant is a
+ * value nobody remembers to bump: this one said 2.1.126 against an installed
+ * 2.1.261, and it was still being written into live session files. The SDK
+ * ships the Claude Code version it drives in `manifest.json` — that is the
+ * number these entries are supposed to mirror, and it cannot drift.
+ *
+ * The SDKs do not gate resume on it, so a lookup failure falls back rather
+ * than failing the switch.
  */
-const CLAUDE_SDK_VERSION = "2.1.126";
+const CLAUDE_FALLBACK_VERSION = "2.1.261";
+
+let _sdkVersion: string | null = null;
+
+/**
+ * Resolved through the package entry point and joined to `manifest.json`
+ * rather than imported as a subpath: the package ships the file but does not
+ * list it in `exports`, so `require("...sdk/manifest.json")` throws. That
+ * failure is easy to miss when the fallback happens to match the installed
+ * version — hence `claudeSdkVersionSource`, which the tests assert on.
+ */
+function readSdkManifestVersion(): string | null {
+  try {
+    const entry = createRequire(import.meta.url).resolve("@anthropic-ai/claude-agent-sdk");
+    const manifest = JSON.parse(readFileSync(join(dirname(entry), "manifest.json"), "utf8")) as {
+      version?: unknown;
+    };
+    return typeof manifest.version === "string" && manifest.version ? manifest.version : null;
+  } catch (e) {
+    logger.warn({ err: e }, "claudeSdkVersion: manifest lookup failed, using fallback");
+    return null;
+  }
+}
+
+function claudeSdkVersion(): string {
+  if (_sdkVersion) return _sdkVersion;
+  _sdkVersion = readSdkManifestVersion() ?? CLAUDE_FALLBACK_VERSION;
+  return _sdkVersion;
+}
+
+/** Exported so tests can tell a real lookup from the fallback. */
+export function claudeSdkVersionSource(): { version: string; source: "manifest" | "fallback" } {
+  const fromManifest = readSdkManifestVersion();
+  return fromManifest
+    ? { version: fromManifest, source: "manifest" }
+    : { version: CLAUDE_FALLBACK_VERSION, source: "fallback" };
+}
+
 const CLAUDE_DEFAULT_MODEL = "claude-sonnet-5";
 const CLAUDE_DEFAULT_GIT_BRANCH = "HEAD";
 
@@ -126,9 +178,9 @@ export function writeClaudeRollout(opts: ClaudeRolloutOptions): ClaudeRolloutRes
 
   // Per-turn attachment chain captured from a real Claude rollout. claude SDK
   // emits `deferred_tools_delta` followed by `skill_listing` immediately after
-  // every user message, building a parentUuid chain user → att1 → att2 →
-  // assistant. PoC-7d preserved this shape; replaying it keeps the resumed
-  // session indistinguishable from a native one.
+  // every user message, building a parentUuid chain user → att… → assistant.
+  // PoC-7d preserved this shape; replaying it keeps the resumed session
+  // indistinguishable from a native one.
   const attachments = loadClaudeAttachments();
 
   for (const pair of pairs) {
@@ -146,33 +198,32 @@ export function writeClaudeRollout(opts: ClaudeRolloutOptions): ClaudeRolloutRes
       entrypoint: "sdk-ts",
       cwd: cwdReal,
       sessionId,
-      version: CLAUDE_SDK_VERSION,
+      version: claudeSdkVersion(),
       gitBranch: CLAUDE_DEFAULT_GIT_BRANCH,
     });
 
-    // Attachment 1: deferred_tools_delta — chain from user.
-    const att1Uuid = randomUUID();
-    const att1 = clone(attachments.deferredToolsDelta);
-    (att1 as Record<string, unknown>).parentUuid = userUuid;
-    (att1 as Record<string, unknown>).uuid = att1Uuid;
-    (att1 as Record<string, unknown>).timestamp = ts();
-    (att1 as Record<string, unknown>).sessionId = sessionId;
-    (att1 as Record<string, unknown>).cwd = cwdReal;
-    lines.push(att1);
-
-    // Attachment 2: skill_listing — chain from att1.
-    const att2Uuid = randomUUID();
-    const att2 = clone(attachments.skillListing);
-    (att2 as Record<string, unknown>).parentUuid = att1Uuid;
-    (att2 as Record<string, unknown>).uuid = att2Uuid;
-    (att2 as Record<string, unknown>).timestamp = ts();
-    (att2 as Record<string, unknown>).sessionId = sessionId;
-    (att2 as Record<string, unknown>).cwd = cwdReal;
-    lines.push(att2);
+    // Replay the captured attachment chain in fixture order, rebuilding the
+    // parentUuid links: user -> att[0] -> att[1] -> ... -> assistant.
+    let chainParent = userUuid;
+    for (const attachment of attachments) {
+      const attUuid = randomUUID();
+      const entry = clone(attachment) as Record<string, unknown>;
+      entry.parentUuid = chainParent;
+      entry.uuid = attUuid;
+      entry.timestamp = ts();
+      entry.sessionId = sessionId;
+      entry.cwd = cwdReal;
+      // Stamp the version too. Leaving the capture's own value in place put two
+      // different versions in one synthetic file — the messages said one thing
+      // and the attachments another, and neither matched the installed SDK.
+      entry.version = claudeSdkVersion();
+      lines.push(entry);
+      chainParent = attUuid;
+    }
 
     const assistantUuid = randomUUID();
     lines.push({
-      parentUuid: att2Uuid,
+      parentUuid: chainParent,
       isSidechain: false,
       message: {
         model: opts.model ?? CLAUDE_DEFAULT_MODEL,
@@ -205,7 +256,7 @@ export function writeClaudeRollout(opts: ClaudeRolloutOptions): ClaudeRolloutRes
       entrypoint: "sdk-ts",
       cwd: cwdReal,
       sessionId,
-      version: CLAUDE_SDK_VERSION,
+      version: claudeSdkVersion(),
       gitBranch: CLAUDE_DEFAULT_GIT_BRANCH,
     });
     lastUuid = assistantUuid;

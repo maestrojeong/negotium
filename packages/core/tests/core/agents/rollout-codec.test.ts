@@ -209,6 +209,57 @@ describe("writeClaudeRollout", () => {
     expect(assistant?.message?.model).toBe("claude-fable-5");
   });
 
+  test("stamps one version everywhere, taken from the installed SDK", async () => {
+    // The version used to be a hardcoded 2.1.126 on the messages and whatever
+    // the capture held on the attachments, against an installed 2.1.261. Live
+    // session files ended up carrying both.
+    const { claudeSdkVersionSource, writeClaudeRollout } = await import("#agents/rollout/claude");
+    const installed = claudeSdkVersionSource();
+    // Not just "equals the constant": the obvious subpath require throws
+    // because the SDK does not export manifest.json, and that failure hides
+    // whenever the fallback happens to match. Assert the real source.
+    expect(installed.source).toBe("manifest");
+
+    const result = writeClaudeRollout({
+      cwd: TMP_CWD,
+      pairs: [{ userText: "ping", assistantText: "pong" }],
+    });
+    writtenPaths.push(result.rolloutPath);
+    const lines = readFileSync(result.rolloutPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+
+    const versions = new Set(
+      lines.filter((l) => l.version !== undefined).map((l) => String(l.version)),
+    );
+    expect(versions.size).toBe(1);
+    expect([...versions][0]).toBe(installed.version);
+    // Attachments carry it too — they were the half that drifted.
+    expect(lines.find((l) => l.type === "attachment")?.version).toBe(installed.version);
+  });
+
+  test("links the attachment chain from user through to assistant", async () => {
+    // Replayed from the fixture rather than two named slots, so a fixture with
+    // a different number of attachments must still link up.
+    const { writeClaudeRollout } = await import("#agents/rollout/claude");
+    const result = writeClaudeRollout({
+      cwd: TMP_CWD,
+      pairs: [{ userText: "ping", assistantText: "pong" }],
+    });
+    writtenPaths.push(result.rolloutPath);
+    const lines = readFileSync(result.rolloutPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+
+    const byUuid = new Map(lines.filter((l) => l.uuid).map((l) => [l.uuid, l]));
+    expect(lines.filter((l) => l.parentUuid && !byUuid.has(l.parentUuid))).toEqual([]);
+    expect(lines.find((l) => l.type === "assistant")?.parentUuid).toBe(
+      lines.filter((l) => l.type === "attachment").at(-1)?.uuid,
+    );
+  });
+
   test("rejects cwds outside the workspace roots", async () => {
     const { writeClaudeRollout } = await import("#agents/rollout/claude");
     expect(() => writeClaudeRollout({ cwd: "/etc/passwd-traversal", pairs: [] })).toThrow(
