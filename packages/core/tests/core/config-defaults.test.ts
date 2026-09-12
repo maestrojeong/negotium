@@ -6,8 +6,11 @@ import { claudeRegistry } from "#agents/claude-registry";
 import { codexRegistry } from "#agents/codex-registry";
 import { maestroRegistry } from "#agents/maestro-registry";
 import {
+  canonicalModelId,
+  modelOwner,
   resolveCompactionExecution,
   resolveDefaultModel,
+  resolveModelForAgent,
   resolveWorkerModel,
 } from "#agents/model-catalog";
 import {
@@ -56,6 +59,29 @@ function resolveDefaultModelWithEnv(
   return new TextDecoder().decode(child.stdout);
 }
 
+function resolveWorkerModelWithEnv(
+  agent: "claude" | "codex" | "maestro",
+  requested: string | undefined,
+  env: Record<string, string | undefined>,
+): string {
+  const modelCatalogPath = resolve(import.meta.dir, "../../src/agents/model-catalog.ts");
+  const registryPath = resolve(import.meta.dir, "../../src/agents/registry.ts");
+  const child = Bun.spawnSync({
+    cmd: [
+      process.execPath,
+      "-e",
+      `const { resolveWorkerModel } = await import(${JSON.stringify(modelCatalogPath)});
+       const { getRegistry } = await import(${JSON.stringify(registryPath)});
+       process.stdout.write(resolveWorkerModel(${JSON.stringify(agent)}, ${JSON.stringify(requested)}, getRegistry(${JSON.stringify(agent)})));`,
+    ],
+    env: { ...process.env, ...env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(child.exitCode, new TextDecoder().decode(child.stderr)).toBe(0);
+  return new TextDecoder().decode(child.stdout);
+}
+
 describe("role default models", () => {
   test("pins compact workers to the intended model and medium effort", () => {
     expect(resolveCompactionExecution("claude", claudeRegistry)).toEqual({
@@ -86,6 +112,47 @@ describe("role default models", () => {
     // A model that is genuinely valid for the resolved agent still passes
     // through untouched.
     expect(resolveWorkerModel("claude", "opus", claudeRegistry)).toBe("opus");
+  });
+
+  test("resolveWorkerModel ignores FALLBACK_MODEL — the operator's interactive default must not override the worker policy", () => {
+    // resolveModelForAgent/resolveDefaultModel apply FALLBACK_MODEL whenever
+    // `agent` matches FALLBACK_AGENT; resolveWorkerModel must not inherit
+    // that, or an operator's global model preference silently overrides the
+    // dedicated per-agent worker default (claude->sonnet / codex->terra /
+    // maestro->deepseek-pro) this function exists to guarantee.
+    expect(
+      resolveWorkerModelWithEnv("claude", "deepseek-pro", {
+        FALLBACK_AGENT: "claude",
+        FALLBACK_MODEL: "opus",
+      }),
+    ).toBe("sonnet");
+    expect(
+      resolveWorkerModelWithEnv("codex", "deepseek-pro", {
+        FALLBACK_AGENT: "codex",
+        FALLBACK_MODEL: "gpt-5.6-luna",
+      }),
+    ).toBe("gpt-5.6-terra");
+  });
+
+  test("model ownership checks are case-insensitive, so a differently-cased foreign model can't slip past Codex's permissive validateModel", () => {
+    // Codex's own validateModel accepts any non-empty string (OpenAI ships
+    // new ids frequently), so modelOwner is the ONLY thing that can catch a
+    // foreign model reaching it — a case mismatch here used to make
+    // "DeepSeek-Pro" invisible to modelOwner (case-sensitive startsWith
+    // and an exact-match MODEL_OWNER lookup), letting it through unrejected.
+    expect(modelOwner("DeepSeek-Pro")).toBe("maestro");
+    expect(modelOwner("GPT-6-ASTRA")).toBe("codex");
+    expect(modelOwner("Sonnet")).toBe("claude");
+    expect(canonicalModelId("SONNET")).toBe("sonnet");
+    expect(canonicalModelId("DeepSeek-Pro")).toBe("deepseek-pro");
+
+    expect(resolveModelForAgent("codex", "DeepSeek-Pro", codexRegistry)).toBe(
+      codexRegistry.defaultModel,
+    );
+    expect(resolveModelForAgent("codex", "SONNET", codexRegistry)).toBe(codexRegistry.defaultModel);
+    expect(resolveWorkerModelWithEnv("codex", "DeepSeek-Pro", { FALLBACK_AGENT: "codex" })).toBe(
+      "gpt-5.6-terra",
+    );
   });
 
   test("maps the Claude opus alias to Opus 5", () => {

@@ -257,10 +257,24 @@ const SELECTABLE_MODEL_ALIASES: Readonly<Record<string, string>> = {
   "glm-flash": "glm-5.3-flash",
 };
 
+// Maps every known model id's lowercase spelling back to its canonical
+// (already-lowercase) form. Every ownership check below (`modelOwner`,
+// `MODEL_OWNER`, and each registry's own `validateModel`) is exact-match on
+// lowercase strings, so a differently-cased but otherwise real id (e.g. an
+// env var or a raw cron `model` column written as "DeepSeek-Pro") must be
+// folded to canonical casing here — otherwise it silently fails every
+// ownership check and, for Codex specifically (whose `validateModel` accepts
+// any non-empty string), reaches the provider unrejected despite belonging
+// to a different agent.
+const CANONICAL_MODEL_CASING: Readonly<Record<string, string>> = Object.fromEntries(
+  SELECTABLE_MODELS.map((candidate) => [candidate.model.toLowerCase(), candidate.model]),
+);
+
 /** Normalize supported user-facing aliases before validation or persistence. */
 export function canonicalModelId(value: string): string {
   const trimmed = value.trim();
-  return SELECTABLE_MODEL_ALIASES[trimmed.toLowerCase()] ?? trimmed;
+  const lower = trimmed.toLowerCase();
+  return SELECTABLE_MODEL_ALIASES[lower] ?? CANONICAL_MODEL_CASING[lower] ?? trimmed;
 }
 
 export function formatSelectableModel(candidate: SelectableModel): string {
@@ -274,12 +288,18 @@ export function selectableModel(value: string): SelectableModel | undefined {
 }
 
 export function modelOwner(model: string): AgentKind | undefined {
-  if (model.startsWith("claude-")) return "claude";
-  if (model.startsWith("deepseek-")) return "maestro";
-  if (model.startsWith("kimi-")) return "maestro";
-  if (model.startsWith("glm-")) return "maestro";
-  if (model.startsWith("gpt-")) return "codex";
-  return MODEL_OWNER[model];
+  // Case-fold before every check: callers pass raw env vars / DB columns /
+  // MCP tool arguments, none of which are guaranteed lowercase, and a miss
+  // here means "no owner" — silently skipping the cross-agent rejection
+  // `resolveModelForAgent` depends on (Codex's own `validateModel` accepts
+  // any non-empty string, so it can't catch a foreign model on its own).
+  const lower = model.toLowerCase();
+  if (lower.startsWith("claude-")) return "claude";
+  if (lower.startsWith("deepseek-")) return "maestro";
+  if (lower.startsWith("kimi-")) return "maestro";
+  if (lower.startsWith("glm-")) return "maestro";
+  if (lower.startsWith("gpt-")) return "codex";
+  return MODEL_OWNER[lower];
 }
 
 /** Apply a valid FALLBACK_MODEL only to the configured fallback agent. */
@@ -337,16 +357,23 @@ export function resolveWorkerDefaultModel(
  * ordinary (interactive) default — e.g. a prompt's frontmatter hardcoding a
  * model for one agent (`deepseek-pro`) must not silently reach a different
  * agent (`claude`) it was never valid for.
+ *
+ * Deliberately does NOT go through `resolveModelForAgent`/`resolveDefaultModel`:
+ * those apply the operator's node-wide `FALLBACK_MODEL` when `agent` matches
+ * `FALLBACK_AGENT`, which would let an interactive-turn preference silently
+ * override the worker-specific default this function exists to guarantee.
  */
 export function resolveWorkerModel(
   agent: AgentKind,
   requested: string | undefined,
   registry: { validateModel(s: string): boolean; defaultModel: string },
 ): string {
-  return resolveModelForAgent(agent, requested, {
-    ...registry,
-    defaultModel: resolveWorkerDefaultModel(agent, registry),
-  });
+  const workerDefault = resolveWorkerDefaultModel(agent, registry);
+  if (!requested) return workerDefault;
+  const candidate = canonicalModelId(requested);
+  const owner = modelOwner(candidate);
+  if (owner && owner !== agent) return workerDefault; // cross-agent stale
+  return registry.validateModel(candidate) ? candidate : workerDefault;
 }
 
 /** Fixed execution policy for bounded context-compaction workers. */
