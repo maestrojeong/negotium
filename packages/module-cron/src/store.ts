@@ -6,6 +6,7 @@ import {
   FALLBACK_AGENT,
   getRegistry,
   getTopic,
+  isAgentKind,
   modelOwner,
 } from "@negotium/core/cron-host";
 import { computeNextCronRun, normalizeCronTimezone, parseCronExpression } from "#schedule";
@@ -18,6 +19,9 @@ function validateCronAgentConfig(
   model: string | undefined,
   effort: EffortLevel | undefined,
 ): void {
+  if (agent !== undefined && !isAgentKind(agent)) {
+    throw new Error(`agent '${agent}' is not a recognized agent kind`);
+  }
   if (!model && !effort) return;
   const topic = getTopic(topicId);
   const effectiveAgent = agent ?? (topic?.agent as AgentKind | undefined) ?? FALLBACK_AGENT;

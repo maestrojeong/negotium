@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { db, type TopicDto, upsertTopic } from "@negotium/core";
+import { type AgentKind, db, type TopicDto, upsertTopic } from "@negotium/core";
 import { updateCronJobWithContextReset } from "../src/context";
 import { CronScheduler } from "../src/scheduler";
 import {
@@ -334,6 +334,28 @@ describe("cron store", () => {
     jobIds.push(job.id);
     expect(job.agent).toBe("maestro");
     expect(job.model).toBe("deepseek-pro");
+  });
+
+  test("rejects an unrecognized agent string even with no model or effort set", () => {
+    const topic = createTopic();
+    expect(() =>
+      createCronJob({
+        name: `job-${randomUUID()}`,
+        ownerUserId: topic.participants[0]!.userId,
+        topicId: topic.id,
+        script: "some-script.py",
+        schedule: "0 9 * * *",
+        agent: "bogus-agent" as AgentKind,
+      }),
+    ).toThrow(/not a recognized agent kind/);
+  });
+
+  test("rejects patching to an unrecognized agent string even with no model or effort set", () => {
+    const topic = createTopic();
+    const job = createJob(topic);
+    expect(() => updateCronJob(job.id, { agent: "bogus-agent" as AgentKind })).toThrow(
+      /not a recognized agent kind/,
+    );
   });
 
   test("re-validates against a newly patched agent, not the job's original one", () => {

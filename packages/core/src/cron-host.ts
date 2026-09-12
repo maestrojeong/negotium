@@ -25,8 +25,9 @@ export { getTopic } from "#storage/api-topics";
 export { db } from "#storage/forum-db";
 export { listRuntimeTurnLeases } from "#storage/runtime-leases";
 export { isParticipant } from "#topics/derive";
-export type {
-  AgentKind,
-  EffortLevel,
+export {
+  type AgentKind,
+  type EffortLevel,
+  isAgentKind,
 } from "#types";
 export type { BackgroundSessionDto, MessageDto } from "#types/api";
