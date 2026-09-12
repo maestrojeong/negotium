@@ -1,3 +1,4 @@
+import { resolveFallbackAgent } from "#platform/config-helpers";
 import { errMsg } from "#platform/error";
 import { logger } from "#platform/logger";
 import { db } from "#storage/forum-db";
@@ -40,6 +41,12 @@ export type UserRow = {
 };
 
 function initializeForumSchema(): void {
+  // SQLite column defaults must be fixed literals, not runtime expressions —
+  // interpolate the node's actual default agent once here rather than
+  // hardcoding "claude" (which only matched FALLBACK_AGENT's own old
+  // default). Only takes effect for a row inserted without naming `agent`
+  // explicitly; every real insert path names it.
+  const fallbackAgent = resolveFallbackAgent();
   db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -55,7 +62,7 @@ function initializeForumSchema(): void {
     created_at TEXT NOT NULL,
     description TEXT,
     fork_origin TEXT,
-    agent TEXT NOT NULL DEFAULT 'claude',
+    agent TEXT NOT NULL DEFAULT '${fallbackAgent}',
     mcp_enabled TEXT,
     mcp_extra TEXT,
     last_shown_model TEXT,
@@ -141,7 +148,7 @@ function initializeForumSchema(): void {
   function normalizeStoredAgent(value: unknown): AgentKind {
     if (isAgentKind(value)) return value;
     if (value === "hermes" || value === "alpha") return "maestro";
-    return "claude";
+    return fallbackAgent;
   }
 
   function rebuildTopicsTableIfNeeded(): void {
@@ -181,7 +188,7 @@ function initializeForumSchema(): void {
           created_at TEXT NOT NULL,
           description TEXT,
           fork_origin TEXT,
-          agent TEXT NOT NULL DEFAULT 'claude',
+          agent TEXT NOT NULL DEFAULT '${fallbackAgent}',
           mcp_enabled TEXT,
           mcp_extra TEXT,
           last_shown_model TEXT,
@@ -210,7 +217,7 @@ function initializeForumSchema(): void {
             String(pick(row, "created_at", fallbackCreatedAt)),
             sqlValue(descriptionFor(row)),
             sqlValue(pick(row, "fork_origin", null)),
-            normalizeStoredAgent(pick(row, "agent", "claude")),
+            normalizeStoredAgent(pick(row, "agent", fallbackAgent)),
             sqlValue(pick(row, "mcp_enabled", null)),
             sqlValue(pick(row, "mcp_extra", null)),
             sqlValue(pick(row, "last_shown_model", null)),
@@ -239,7 +246,7 @@ function initializeForumSchema(): void {
 
   tryMigrate("ALTER TABLE topics ADD COLUMN fork_origin TEXT", "duplicate column");
   tryMigrate(
-    "ALTER TABLE topics ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",
+    `ALTER TABLE topics ADD COLUMN agent TEXT NOT NULL DEFAULT '${fallbackAgent}'`,
     "duplicate column",
   );
   tryMigrate("ALTER TABLE topics ADD COLUMN mcp_enabled TEXT", "duplicate column");
