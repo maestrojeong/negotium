@@ -304,8 +304,8 @@ describe("inbound", () => {
     inbound(chat(1), "hello negotium");
     const topic = getTopicByNameForUser(`tg-${chat(1)}`, USER, { scope: "all" });
     expect(topic).not.toBeNull();
-    // defaultAgent unset → registerTopic's agent-room default (maestro).
-    expect(topic?.agent).toBe("maestro");
+    // defaultAgent unset → registerTopic's agent-room default (FALLBACK_AGENT).
+    expect(topic?.agent).toBe("claude");
     const rows = getAllMessagesForTopic(topic!.id);
     const userRow = rows.find((r) => r.author_id === USER);
     expect(userRow?.text).toBe("hello negotium");
@@ -551,10 +551,10 @@ describe("commands", () => {
     });
     inbound(chat(3), "/topics");
     await waitFor(() =>
-      fake.callsFor(chat(3)).some((c) => c.text.includes(`- ${room("my-room")} (maestro)`)),
+      fake.callsFor(chat(3)).some((c) => c.text.includes(`- ${room("my-room")} (claude)`)),
     );
     const listing = fake.callsFor(chat(3)).at(-1)!.text;
-    expect(listing).toContain(`- tg-${chat(1)} (maestro)`);
+    expect(listing).toContain(`- tg-${chat(1)} (claude)`);
     expect(listing).not.toContain(room("hidden-otium-mirror"));
 
     inbound(chat(31), `/load ${hiddenId}`);

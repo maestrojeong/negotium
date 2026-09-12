@@ -7,7 +7,8 @@ import { claudeRegistry } from "#agents/claude-registry";
 import { codexRegistry } from "#agents/codex-registry";
 import type { AgentRegistry } from "#agents/contracts";
 import { maestroRegistry } from "#agents/maestro-registry";
-import { ACTIVE_QUERY_STALE_MS, resolveDefaultModel, USERS_LOG_DIR } from "#platform/config";
+import { resolveDefaultModel } from "#agents/model-catalog";
+import { ACTIVE_QUERY_STALE_MS, USERS_LOG_DIR } from "#platform/config";
 import { errMsg } from "#platform/error";
 import { readJsonFile } from "#platform/jsonl";
 import type { AgentKind, QueryState } from "#types";
@@ -253,7 +254,7 @@ async function checkMaestro(
 }
 
 function getDefaultModel(registry: AgentRegistry): string {
-  return resolveDefaultModel(registry.kind, registry.defaultModel);
+  return resolveDefaultModel(registry.kind, registry);
 }
 
 const AGENTS: { kind: AgentKind; registry: AgentRegistry; checker: CheckerFn }[] = [

@@ -104,7 +104,7 @@ function freshUserId(): number {
 function seedTopic(userId: number, topicName: string, agent: AgentKind = "claude"): void {
   repo.addTopic(userId, topicName, 100 + (userId % 1000), undefined, undefined);
   // These tests exercise explicit switch directions; keep the seed independent
-  // from whatever SESSION_AGENT the process is configured with.
+  // from whatever FALLBACK_AGENT the process is configured with.
   db.query("UPDATE topics SET agent = ? WHERE user_id = ? AND name = ?").run(
     agent,
     String(userId),

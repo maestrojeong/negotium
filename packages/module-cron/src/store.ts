@@ -1,7 +1,38 @@
 import { randomUUID } from "node:crypto";
-import { type AgentKind, db as defaultDb, type EffortLevel } from "@negotium/core/cron-host";
+import {
+  type AgentKind,
+  db as defaultDb,
+  type EffortLevel,
+  FALLBACK_AGENT,
+  getRegistry,
+  getTopic,
+  modelOwner,
+} from "@negotium/core/cron-host";
 import { computeNextCronRun, normalizeCronTimezone, parseCronExpression } from "#schedule";
 import { validateCronScriptName } from "#scripts";
+
+/** Validate persisted overrides against the agent that will execute the job. */
+function validateCronAgentConfig(
+  topicId: string,
+  agent: AgentKind | undefined,
+  model: string | undefined,
+  effort: EffortLevel | undefined,
+): void {
+  if (!model && !effort) return;
+  const topic = getTopic(topicId);
+  const effectiveAgent = agent ?? (topic?.agent as AgentKind | undefined) ?? FALLBACK_AGENT;
+  const registry = getRegistry(effectiveAgent);
+  if (model) {
+    // Codex accepts future IDs, so modelOwner must separately reject cross-agent models.
+    const owner = modelOwner(model);
+    if ((owner && owner !== effectiveAgent) || !registry.validateModel(model)) {
+      throw new Error(`model '${model}' is not valid for agent '${effectiveAgent}'`);
+    }
+  }
+  if (effort && !registry.validateEffort(effort)) {
+    throw new Error(`effort '${effort}' is not valid for agent '${effectiveAgent}'`);
+  }
+}
 
 export type CronRunStatus =
   | "pending"
@@ -441,6 +472,7 @@ export function createCronJob(input: {
   parseCronExpression(input.schedule);
   const timezone = input.timezone ? normalizeCronTimezone(input.timezone) : undefined;
   if (input.timezone && !timezone) throw new Error(`invalid timezone: ${input.timezone}`);
+  validateCronAgentConfig(input.topicId, input.agent, input.model, input.effort);
   const now = input.now ?? new Date();
   const nowIso = now.toISOString();
   const job: CronJobRecord = {
@@ -611,6 +643,10 @@ export function updateCronJob(
         "all cron jobs in one topic must share one owner",
     );
   }
+  const nextAgent = patch.agent !== undefined ? (patch.agent ?? undefined) : job.agent;
+  const nextModel = patch.model !== undefined ? patch.model?.trim() || undefined : job.model;
+  const nextEffort = patch.effort !== undefined ? (patch.effort ?? undefined) : job.effort;
+  validateCronAgentConfig(nextTopicId, nextAgent, nextModel, nextEffort);
 
   const enabled = patch.enabled ?? job.enabled;
   const scheduleChanged = nextSchedule !== job.schedule || nextTimezone !== job.timezone;

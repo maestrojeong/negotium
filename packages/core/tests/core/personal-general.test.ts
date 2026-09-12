@@ -34,15 +34,12 @@ describe("personal General", () => {
       title: "General",
       description: PERSONAL_GENERAL_DESCRIPTION,
       kind: "manager",
-      agent: "maestro",
+      agent: "claude",
       aiMode: "always",
       participants: [{ userId: firstUserId, role: "owner" }],
     });
     expect(second.participants).toEqual([{ userId: secondUserId, role: "owner" }]);
-    expect(getApiTopicConfig(first.id)).toMatchObject({
-      model: "deepseek-pro",
-      modelLocked: true,
-    });
+    expect(getApiTopicConfig(first.id)?.modelLocked).toBeFalsy();
   });
 
   test("updates only the retired misleading default description", () => {

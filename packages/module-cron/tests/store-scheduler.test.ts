@@ -291,6 +291,65 @@ describe("cron store", () => {
     expect(countCronRuns(job.id)).toBe(1);
     expect(getLastCronRun(job.id)).toMatchObject({ status: "failed", exitCode: 9 });
   });
+
+  test("rejects a model that is not valid for the effective agent on create", () => {
+    const topic = createTopic(); // agent: claude
+    expect(() =>
+      createCronJob({
+        name: `job-${randomUUID()}`,
+        ownerUserId: topic.participants[0]!.userId,
+        topicId: topic.id,
+        script: "some-script.py",
+        schedule: "0 9 * * *",
+        model: "deepseek-pro", // a maestro model, invalid for claude
+      }),
+    ).toThrow(/not valid for agent 'claude'/);
+  });
+
+  test("rejects an unsupported model even when its prefix matches the agent", () => {
+    const topic = createTopic();
+    expect(() =>
+      createCronJob({
+        name: `job-${randomUUID()}`,
+        ownerUserId: topic.participants[0]!.userId,
+        topicId: topic.id,
+        script: "some-script.py",
+        schedule: "0 9 * * *",
+        model: "claude-not-a-real-model",
+      }),
+    ).toThrow(/not valid for agent 'claude'/);
+  });
+
+  test("accepts a model valid for an explicit agent override even if it differs from the topic's", () => {
+    const topic = createTopic(); // agent: claude
+    const job = createCronJob({
+      name: `job-${randomUUID()}`,
+      ownerUserId: topic.participants[0]!.userId,
+      topicId: topic.id,
+      script: "some-script.py",
+      schedule: "0 9 * * *",
+      agent: "maestro",
+      model: "deepseek-pro",
+    });
+    jobIds.push(job.id);
+    expect(job.agent).toBe("maestro");
+    expect(job.model).toBe("deepseek-pro");
+  });
+
+  test("re-validates against a newly patched agent, not the job's original one", () => {
+    const topic = createTopic(); // agent: claude
+    const job = createCronJob({
+      name: `job-${randomUUID()}`,
+      ownerUserId: topic.participants[0]!.userId,
+      topicId: topic.id,
+      script: "some-script.py",
+      schedule: "0 9 * * *",
+      agent: "claude",
+      model: "sonnet",
+    });
+    jobIds.push(job.id);
+    expect(() => updateCronJob(job.id, { agent: "codex" })).toThrow(/not valid for agent 'codex'/);
+  });
 });
 
 describe("cron scheduler", () => {

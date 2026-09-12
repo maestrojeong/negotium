@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { runAgent } from "#agents/index";
 import { summarizeDisplayText } from "#agents/tool-format";
 import { WsHub } from "#bus";
-import { resolveOutputLanguage, WORKSPACE_DIR } from "#platform/config";
+import { FALLBACK_AGENT, resolveOutputLanguage, WORKSPACE_DIR } from "#platform/config";
 import { logger } from "#platform/logger";
 import { type AgentDef, loadAgentPrompt } from "#prompts/builders";
 import { COMPLETED_BACKGROUND_SESSION_RETENTION_MS } from "#runtime/background-session-policy";
@@ -87,7 +87,7 @@ export interface RunArchiverTurnParams {
    * fallback completion text differ ("deleted" vs. "snapshotted").
    */
   mode?: "deleted-topic" | "active-topic";
-  /** Override the archiver agent backend (default: maestro). */
+  /** Override the archiver agent backend (default: FALLBACK_AGENT). */
   agent?: AgentKind;
   /** Override the archiver model (default: the prompt's frontmatter model). */
   model?: string;
@@ -232,10 +232,8 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
 
     const wikiDir = host.storage.getWikiDir();
     const safeTopic = host.config.sanitizeTopicName(topicTitle);
-    // Keep the established Claude default for archive quality and compatibility.
-    // Every provider now receives the same host-resolved wiki MCP; callers may
-    // override both agent and model as a matching pair when desired.
-    const agent: AgentKind = params.agent ?? "claude";
+    // All providers receive the same host-resolved wiki MCP.
+    const agent: AgentKind = params.agent ?? FALLBACK_AGENT;
     const model = params.model;
 
     const outputLanguage = resolveMemoryLanguage();

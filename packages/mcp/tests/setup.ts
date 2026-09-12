@@ -10,8 +10,6 @@ process.env.NODE_ENV = "test";
 delete process.env.DEFAULT_AGENT;
 delete process.env.DEFAULT_MODEL;
 delete process.env.FALLBACK_MODEL;
-delete process.env.SESSION_MODEL;
-delete process.env.GATEWAY_MODEL;
 process.env.SESSIONS_DB_PATH = join(testRoot, "test.db");
 process.env.NEGOTIUM_STATE_DIR = join(testRoot, "state");
 process.env.NEGOTIUM_DATA_DIR = join(testRoot, "data");

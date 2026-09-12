@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { resolveDefaultModel } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
-import { resolveDefaultModel } from "#platform/config";
+import { FALLBACK_AGENT } from "#platform/config";
 import { GENERAL_TOPIC_ID } from "#platform/constants";
 import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
 import {
@@ -47,20 +48,21 @@ export function ensurePersonalGeneral(
       upsertTopic(existing);
     }
     if (!getApiTopicConfig(existing.id)) {
-      setApiTopicConfig(existing.id, { model: "deepseek-pro", modelLocked: true });
+      setApiTopicConfig(existing.id, {});
     }
     return existing;
   }
 
+  // Leave the model unlocked so node-wide default changes can take effect.
   const now = new Date().toISOString();
-  const registry = getRegistry("maestro");
+  const registry = getRegistry(FALLBACK_AGENT);
   const topic: TopicDto = {
     id: randomUUID(),
     title: "General",
     description: PERSONAL_GENERAL_DESCRIPTION,
     kind: "manager",
-    agent: "maestro",
-    defaultModel: resolveDefaultModel("maestro", registry.defaultModel),
+    agent: FALLBACK_AGENT,
+    defaultModel: resolveDefaultModel(FALLBACK_AGENT, registry),
     defaultEffort: registry.defaultEffort ?? "medium",
     aiMode: "always",
     aiMention: false,
@@ -71,7 +73,7 @@ export function ensurePersonalGeneral(
     lastMessageAt: now,
   };
   upsertTopic(topic);
-  setApiTopicConfig(topic.id, { model: "deepseek-pro", modelLocked: true });
+  setApiTopicConfig(topic.id, {});
   return topic;
 }
 

@@ -476,25 +476,13 @@ export const MODEL_FABLE = "claude-fable-5-1"; // Mythos-class, Fable 5.1 announ
 export const MODEL_DEEPSEEK_V4_PRO = "deepseek-v4-pro";
 export const MODEL_DEEPSEEK_V4_FLASH = "deepseek-v4-flash";
 
-// Agent + model defaults split by session role. FALLBACK_* is the shared base;
-// SESSION_* overrides topic + ephemeral; GATEWAY_* overrides dm + manager.
-// DEFAULT_* is accepted as a legacy alias during the env migration window.
+// Single agent + model default for the whole node. DEFAULT_* remains a legacy alias.
 export const FALLBACK_AGENT: AgentKind = resolveAgentEnv(
   "FALLBACK_AGENT",
-  "maestro",
+  "claude",
   "DEFAULT_AGENT",
 );
-export const SESSION_AGENT: AgentKind = resolveAgentEnv("SESSION_AGENT", FALLBACK_AGENT);
-export const GATEWAY_AGENT: AgentKind = resolveAgentEnv("GATEWAY_AGENT", FALLBACK_AGENT);
-
 export const FALLBACK_MODEL = envText("FALLBACK_MODEL") ?? envText("DEFAULT_MODEL");
-
-function resolveModelEnv(envKey: string, agentConst: AgentKind): string | undefined {
-  return envText(envKey) ?? (agentConst === FALLBACK_AGENT ? FALLBACK_MODEL : undefined);
-}
-
-export const SESSION_MODEL = resolveModelEnv("SESSION_MODEL", SESSION_AGENT);
-export const GATEWAY_MODEL = resolveModelEnv("GATEWAY_MODEL", GATEWAY_AGENT);
 
 /**
  * Effort used when a caller (or an archiver assignment) names a model but no
@@ -508,13 +496,6 @@ export const DEFAULT_TOPIC_EFFORT: EffortLevel = ((): EffortLevel => {
     ? (raw as EffortLevel)
     : "medium";
 })();
-
-/** Resolve the effective display/default model for a topic (session context).
- *  Applies the session model override only when that role owns the agent;
- *  otherwise each registry's native default stays authoritative. */
-export function resolveDefaultModel(agent: string, registryDefaultModel: string): string {
-  return agent === SESSION_AGENT && SESSION_MODEL ? SESSION_MODEL : registryDefaultModel;
-}
 
 // ── External tool binaries + media pipeline env ───────────────────
 // (src/media/* 에서 사용. 미설정 시 fallback 의미는 기존 그대로:

@@ -33,6 +33,7 @@ export { setRuntimeMcpPort } from "#mcp/runtime-spec";
 export { killAllBgBash } from "#platform/background-bash/manager";
 export {
   DATA_DIR,
+  FALLBACK_AGENT,
   NEGOTIUM_PORT,
   NODE_CONTROL_TOKEN,
   NODE_ID,

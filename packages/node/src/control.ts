@@ -23,6 +23,7 @@ import {
   earliestRuntimeEventSeq,
   ensurePersonalGeneral,
   executeVaultCommand,
+  FALLBACK_AGENT,
   getApiMessage,
   getApiTopicConfig,
   getGlobalAiName,
@@ -1588,7 +1589,16 @@ export function createNodeControlHandler(
           const topic = getTopic(topicId);
           if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
           let requestedAgent: AgentKind | undefined;
-          if ("agent" in body) {
+          const resetAgentToDefault = body.resetAgentToDefault === true;
+          if (resetAgentToDefault && "agent" in body) {
+            return jsonError(400, "agent and resetAgentToDefault are mutually exclusive");
+          }
+          if (resetAgentToDefault) {
+            if (topic.kind !== "manager") {
+              return jsonError(400, "Config endpoint agent updates are manager-only");
+            }
+            requestedAgent = FALLBACK_AGENT;
+          } else if ("agent" in body) {
             if (topic.kind !== "manager") {
               return jsonError(400, "Config endpoint agent updates are manager-only");
             }
@@ -1601,6 +1611,14 @@ export function createNodeControlHandler(
             requestedAgent = body.agent as AgentKind;
           }
           const next: TopicConfig = { ...(getApiTopicConfig(topicId) ?? {}) };
+          if (resetAgentToDefault) {
+            // Clear stale overrides before validating explicit fields against the new agent.
+            delete next.model;
+            delete next.effort;
+            delete next.agentLocked;
+            delete next.modelLocked;
+            delete next.effortLocked;
+          }
           for (const key of ["model", "effort"] as const) {
             if (!(key in body)) continue;
             const value = body[key];

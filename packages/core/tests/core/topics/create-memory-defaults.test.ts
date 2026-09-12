@@ -115,9 +115,8 @@ test("defaultsSource names the layer that actually chose the defaults", () => {
     title: `Source explicit ${randomUUID()}`,
     userId: USER,
     memoryKey,
-    // Naming a model without an agent has always been validated against the
-    // node's default agent, so this stays a maestro model.
-    model: "deepseek-pro",
+    // A model without an agent is validated against FALLBACK_AGENT.
+    model: "sonnet",
   });
   const fallback = registerTopicDetailed({
     title: `Source fallback ${randomUUID()}`,
@@ -166,6 +165,6 @@ test("an empty model is the caller having decided, not an opening for an assignm
   createdTopicIds.push(result.topic.id);
 
   expect(result.defaultsSource).toBe("explicit");
-  expect(result.topic.agent).not.toBe("claude");
+  // An explicit empty model must still suppress the memory assignment.
   expect(result.topic.defaultModel).not.toBe("opus");
 });

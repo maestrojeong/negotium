@@ -130,7 +130,7 @@ test("runtime gateway ensures one private manager topic per external user", asyn
   expect(firstBody.topic).toMatchObject({
     title: "General",
     kind: "manager",
-    agent: "maestro",
+    agent: "claude",
     participants: [{ userId: managerUser, role: "owner" }],
     surface: "otium",
   });
@@ -417,6 +417,84 @@ test("runtime gateway atomically switches a manager topic agent and model", asyn
     agent: "claude",
     model: "sonnet",
   });
+});
+
+test("runtime gateway resets a manager topic to the node's own FALLBACK_AGENT without the caller naming one", async () => {
+  const managerUser = `manager-reset-${randomUUID()}`;
+  const ensured = await handler(
+    runtimeRequest("/manager-topic", {
+      method: "POST",
+      body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, userId: managerUser }),
+    }),
+  );
+  const ensuredBody = (await ensured?.json()) as { topic?: TopicDto };
+  const topic = ensuredBody.topic;
+  if (!topic) throw new Error("manager topic was not created");
+  const path = `/topics/${encodeURIComponent(topic.id)}/config`;
+
+  await handler(
+    runtimeRequest(path, {
+      method: "PATCH",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        agent: "codex",
+        model: "gpt-5.6-luna",
+        effort: "xhigh",
+        agentLocked: true,
+        modelLocked: true,
+        effortLocked: true,
+      }),
+    }),
+  );
+
+  const reset = await handler(
+    runtimeRequest(path, {
+      method: "PATCH",
+      body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, resetAgentToDefault: true }),
+    }),
+  );
+  expect(reset?.status).toBe(200);
+  const resetBody = (await reset?.json()) as { topic: TopicDto; config: unknown };
+  expect(resetBody.topic).toMatchObject({ id: topic.id, kind: "manager", agent: "claude" });
+  expect(resetBody.config).toEqual({});
+});
+
+test("runtime gateway rejects conflicting explicit and default agent updates", async () => {
+  const managerUser = `manager-reset-conflict-${randomUUID()}`;
+  const ensured = await handler(
+    runtimeRequest("/manager-topic", {
+      method: "POST",
+      body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, userId: managerUser }),
+    }),
+  );
+  const ensuredBody = (await ensured?.json()) as { topic?: TopicDto };
+  if (!ensuredBody.topic) throw new Error("manager topic was not created");
+
+  const response = await handler(
+    runtimeRequest(`/topics/${encodeURIComponent(ensuredBody.topic.id)}/config`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        agent: "codex",
+        resetAgentToDefault: true,
+      }),
+    }),
+  );
+  expect(response?.status).toBe(400);
+});
+
+test("runtime gateway rejects resetAgentToDefault on a non-manager topic", async () => {
+  const owner = `runtime-reset-reject-${randomUUID()}`;
+  const topic = registerTopic({ title: `Not a manager ${randomUUID()}`, userId: owner });
+  const path = `/topics/${encodeURIComponent(topic.id)}/config`;
+
+  const response = await handler(
+    runtimeRequest(path, {
+      method: "PATCH",
+      body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, resetAgentToDefault: true }),
+    }),
+  );
+  expect(response?.status).toBe(400);
 });
 
 /**

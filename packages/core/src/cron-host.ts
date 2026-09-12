@@ -1,6 +1,8 @@
+export { modelOwner } from "#agents/model-catalog";
+export { getRegistry } from "#agents/registry";
 export { purgeTopicLogs, rotateTopicLogs } from "#agents/topic-cleanup";
 export { type RuntimeBus, runtimeBus } from "#bus";
-export { resolveTopicWorkspaceDir, WORKSPACE_DIR } from "#platform/config";
+export { FALLBACK_AGENT, resolveTopicWorkspaceDir, WORKSPACE_DIR } from "#platform/config";
 export { logger } from "#platform/logger";
 export { buildStdioMcpServer, registerRuntimeMcpServer } from "#platform/mcp-config";
 export type { NegotiumNodeModule } from "#platform/modules";

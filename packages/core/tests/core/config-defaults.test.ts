@@ -1,32 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { claudeRegistry } from "#agents/claude-registry";
 import { codexRegistry } from "#agents/codex-registry";
 import { maestroRegistry } from "#agents/maestro-registry";
-import { resolveCompactionExecution } from "#agents/model-catalog";
+import { resolveCompactionExecution, resolveDefaultModel } from "#agents/model-catalog";
 import {
   codexAuthFilePath,
   FALLBACK_MODEL,
-  GATEWAY_MODEL,
   MODEL_OPUS,
-  resolveDefaultModel,
-  SESSION_MODEL,
   TSX_BIN,
   TSX_LOADER,
 } from "#platform/config";
 
-const MODEL_ENV_KEYS = [
-  "DEFAULT_AGENT",
-  "DEFAULT_MODEL",
-  "FALLBACK_AGENT",
-  "FALLBACK_MODEL",
-  "SESSION_AGENT",
-  "SESSION_MODEL",
-  "GATEWAY_AGENT",
-  "GATEWAY_MODEL",
-];
+const MODEL_ENV_KEYS = ["DEFAULT_AGENT", "DEFAULT_MODEL", "FALLBACK_AGENT", "FALLBACK_MODEL"];
 
 function snapshotEnv(keys: string[]): Record<string, string | undefined> {
   return Object.fromEntries(keys.map((key) => [key, process.env[key]]));
@@ -40,6 +28,28 @@ function restoreEnv(snapshot: Record<string, string | undefined>) {
       process.env[key] = value;
     }
   }
+}
+
+function resolveDefaultModelWithEnv(
+  agent: "claude" | "codex" | "maestro",
+  env: Record<string, string | undefined>,
+): string {
+  const modelCatalogPath = resolve(import.meta.dir, "../../src/agents/model-catalog.ts");
+  const registryPath = resolve(import.meta.dir, "../../src/agents/registry.ts");
+  const child = Bun.spawnSync({
+    cmd: [
+      process.execPath,
+      "-e",
+      `const { resolveDefaultModel } = await import(${JSON.stringify(modelCatalogPath)});
+       const { getRegistry } = await import(${JSON.stringify(registryPath)});
+       process.stdout.write(resolveDefaultModel(${JSON.stringify(agent)}, getRegistry(${JSON.stringify(agent)})));`,
+    ],
+    env: { ...process.env, ...env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(child.exitCode, new TextDecoder().decode(child.stderr)).toBe(0);
+  return new TextDecoder().decode(child.stdout);
 }
 
 describe("role default models", () => {
@@ -70,20 +80,57 @@ describe("role default models", () => {
 
   test("unset model env leaves registry defaults authoritative", () => {
     expect(FALLBACK_MODEL).toBeUndefined();
-    expect(SESSION_MODEL).toBeUndefined();
-    expect(GATEWAY_MODEL).toBeUndefined();
-    expect(resolveDefaultModel("claude", "sonnet")).toBe("sonnet");
+    expect(resolveDefaultModel("claude", claudeRegistry)).toBe("sonnet");
   });
 
-  test("legacy DEFAULT_* env aliases feed role model defaults", async () => {
+  test("rejects a cross-agent fallback model", () => {
+    expect(
+      resolveDefaultModelWithEnv("codex", {
+        FALLBACK_AGENT: "codex",
+        FALLBACK_MODEL: "sonnet",
+      }),
+    ).toBe(codexRegistry.defaultModel);
+  });
+
+  test("rejects an invalid model for the fallback agent", () => {
+    expect(
+      resolveDefaultModelWithEnv("claude", {
+        FALLBACK_AGENT: "claude",
+        FALLBACK_MODEL: "not-a-claude-model",
+      }),
+    ).toBe(claudeRegistry.defaultModel);
+  });
+
+  test("honors a valid model for the fallback agent", () => {
+    expect(
+      resolveDefaultModelWithEnv("claude", {
+        FALLBACK_AGENT: "claude",
+        FALLBACK_MODEL: "opus",
+      }),
+    ).toBe("opus");
+  });
+
+  test("unset agent env defaults the whole node to claude", async () => {
+    const snapshot = snapshotEnv(MODEL_ENV_KEYS);
+    try {
+      delete process.env.FALLBACK_AGENT;
+      delete process.env.DEFAULT_AGENT;
+
+      const config = await import(
+        `../../src/platform/config.ts?agent-default-${Date.now()}-${Math.random()}`
+      );
+
+      expect(config.FALLBACK_AGENT).toBe("claude");
+    } finally {
+      restoreEnv(snapshot);
+    }
+  });
+
+  test("legacy DEFAULT_* env aliases feed the node-wide model default", async () => {
     const snapshot = snapshotEnv(MODEL_ENV_KEYS);
     try {
       delete process.env.FALLBACK_AGENT;
       delete process.env.FALLBACK_MODEL;
-      delete process.env.SESSION_AGENT;
-      delete process.env.SESSION_MODEL;
-      delete process.env.GATEWAY_AGENT;
-      delete process.env.GATEWAY_MODEL;
       process.env.DEFAULT_AGENT = "codex";
       process.env.DEFAULT_MODEL = "gpt-env";
 
@@ -93,12 +140,14 @@ describe("role default models", () => {
 
       expect(config.FALLBACK_AGENT).toBe("codex");
       expect(config.FALLBACK_MODEL).toBe("gpt-env");
-      expect(config.SESSION_AGENT).toBe("codex");
-      expect(config.SESSION_MODEL).toBe("gpt-env");
-      expect(config.GATEWAY_AGENT).toBe("codex");
-      expect(config.GATEWAY_MODEL).toBe("gpt-env");
-      expect(config.resolveDefaultModel("codex", "gpt-5.6-luna")).toBe("gpt-env");
-      expect(config.resolveDefaultModel("claude", "sonnet")).toBe("sonnet");
+      expect(
+        resolveDefaultModelWithEnv("codex", {
+          FALLBACK_AGENT: "",
+          FALLBACK_MODEL: "",
+          DEFAULT_AGENT: "codex",
+          DEFAULT_MODEL: "gpt-env",
+        }),
+      ).toBe("gpt-env");
     } finally {
       restoreEnv(snapshot);
     }
