@@ -10,9 +10,9 @@ describe("daemon import boundaries", () => {
     const source = read("packages/core/src/agents/index.ts");
     expect(source).not.toMatch(/^import .*#agents\/(?:claude|codex|maestro)-provider/m);
     expect(source).not.toMatch(/^import .*maestro-agent-sdk/m);
-    expect(source).toContain('await import("#agents/claude-provider")');
-    expect(source).toContain('await import("#agents/codex-provider")');
-    expect(source).toContain('await import("#agents/maestro-provider")');
+    expect(source).toContain('import("#agents/claude-provider")');
+    expect(source).toContain('import("#agents/codex-provider")');
+    expect(source).toContain('import("#agents/maestro-provider")');
   });
 
   test("registry metadata does not load the Maestro SDK", () => {

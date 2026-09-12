@@ -11,6 +11,12 @@ import type { AgentKind, AgentQueryOptions, UnifiedEvent } from "#types";
 
 export { isAgentKind, SUPPORTED_AGENTS } from "#types";
 
+// Memoized so concurrent first calls await one shared import instead of each
+// racing a separate `import()` (was causing a TDZ ReferenceError on the loser).
+let claudeProviderImport: Promise<typeof import("#agents/claude-provider")> | undefined;
+let codexProviderImport: Promise<typeof import("#agents/codex-provider")> | undefined;
+let maestroProviderImport: Promise<typeof import("#agents/maestro-provider")> | undefined;
+
 /**
  * Dispatch only — no recording. Used by code paths that already record
  * elsewhere or by callers that explicitly want a side-effect-free stream
@@ -19,17 +25,20 @@ export { isAgentKind, SUPPORTED_AGENTS } from "#types";
 async function* dispatchAgent(opts: AgentQueryOptions): AsyncGenerator<UnifiedEvent> {
   switch (opts.agent) {
     case "claude": {
-      const { claudeProvider } = await import("#agents/claude-provider");
+      claudeProviderImport ??= import("#agents/claude-provider");
+      const { claudeProvider } = await claudeProviderImport;
       yield* claudeProvider(opts);
       return;
     }
     case "codex": {
-      const { codexProvider } = await import("#agents/codex-provider");
+      codexProviderImport ??= import("#agents/codex-provider");
+      const { codexProvider } = await codexProviderImport;
       yield* codexProvider(opts);
       return;
     }
     case "maestro": {
-      const { maestroProvider } = await import("#agents/maestro-provider");
+      maestroProviderImport ??= import("#agents/maestro-provider");
+      const { maestroProvider } = await maestroProviderImport;
       yield* maestroProvider(opts);
       return;
     }
