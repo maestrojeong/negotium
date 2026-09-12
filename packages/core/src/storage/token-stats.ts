@@ -125,7 +125,11 @@ const TOKEN_PRICES: Record<string, TokenPrices> = {
   // Approximate published GLM rates; no separate cache-read rate is published,
   // so cache reads conservatively use the ordinary input price.
   "maestro:glm-5.3": { input: 1.4, cacheRead: 1.4, output: 4.4 },
-  "maestro:glm-5.2": { input: 0.95, cacheRead: 0.95, output: 3 },
+  // glm-5.2 removed from the selectable catalog (2026-09-12): confirmed priced
+  // identically to glm-5.3, so it no longer needs a separate route. Rate kept
+  // here (corrected to match reality) only so historical query records still
+  // logged under "glm-5.2" can be cost-estimated.
+  "maestro:glm-5.2": { input: 1.4, cacheRead: 1.4, output: 4.4 },
   "maestro:glm-5.3-flash": { input: 0.15, cacheRead: 0.15, output: 0.5 },
   "maestro:deepseek-pro": { input: 0.435, cacheRead: 0.003625, output: 0.87 },
   "maestro:deepseek-flash": { input: 0.14, cacheRead: 0.0028, output: 0.28 },

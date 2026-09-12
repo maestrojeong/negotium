@@ -56,7 +56,6 @@ describe("topic model picker", () => {
       "kimi-k3",
       "kimi-k2.7-code",
       "glm-5.3",
-      "glm-5.2",
       "glm-5.3-flash",
       "deepseek-pro",
       "deepseek-flash",
@@ -81,7 +80,8 @@ describe("topic model picker", () => {
     expect(selectableModel("glm-pro")?.model).toBe("glm-5.3");
     expect(selectableModel("glm-flash")?.model).toBe("glm-5.3-flash");
     expect(selectableModel("glm-5.3")?.intelligenceTier).toBe("opus");
-    expect(selectableModel("glm-5.2")?.intelligenceTier).toBe("sonnet");
+    // Removed from the catalog: priced identically to glm-5.3, no alias kept.
+    expect(selectableModel("glm-5.2")).toBeUndefined();
     expect(selectableModel("glm-5.3-flash")?.estimatedUsage).toContain("native image input");
     expect(selectableModel("gpt-5.5")).toBeUndefined();
     expect(selectableModel("deepseek-flash")?.marginalTokenCost).toContain("$0.14/M");

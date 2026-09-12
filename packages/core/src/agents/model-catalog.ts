@@ -1,4 +1,4 @@
-import { resolveDefaultModel } from "#platform/config";
+import { FALLBACK_AGENT, FALLBACK_MODEL } from "#platform/config";
 import type { AgentKind, EffortLevel } from "#types";
 
 /**
@@ -38,7 +38,6 @@ export const MODEL_OWNER: Record<string, AgentKind> = {
   "glm-pro": "maestro",
   "glm-flash": "maestro",
   "glm-5.3": "maestro",
-  "glm-5.2": "maestro",
   "glm-5.3-flash": "maestro",
 };
 
@@ -211,18 +210,6 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
       "No subscription token cap; pay per token. Always uses thinking and supports a 1M-token context window; text-only input.",
   },
   {
-    model: "glm-5.2",
-    agent: "maestro",
-    description: "Previous-generation GLM flagship for cost-efficient everyday work.",
-    intelligenceTier: "sonnet",
-    routingSummary:
-      "previous-gen flagship; 1M context; cost-efficient everyday work, cheaper than glm-5.3",
-    accessCost: "Zhipu AI pay-as-you-go API; no monthly subscription required",
-    marginalTokenCost: "Approximate GLM API rate: $0.95/M input, $3/M output",
-    estimatedUsage:
-      "No subscription token cap; pay per token. Always uses thinking and supports a 1M-token context window; text-only input.",
-  },
-  {
     model: "glm-5.3-flash",
     agent: "maestro",
     description: "Low-cost multimodal GLM route with native image input.",
@@ -295,6 +282,20 @@ export function modelOwner(model: string): AgentKind | undefined {
   return MODEL_OWNER[model];
 }
 
+/** Apply a valid FALLBACK_MODEL only to the configured fallback agent. */
+export function resolveDefaultModel(
+  agent: AgentKind,
+  registry: { validateModel(s: string): boolean; defaultModel: string },
+): string {
+  if (agent !== FALLBACK_AGENT || !FALLBACK_MODEL) return registry.defaultModel;
+  const candidate = canonicalModelId(FALLBACK_MODEL);
+  const owner = modelOwner(candidate);
+  if ((owner && owner !== agent) || !registry.validateModel(candidate)) {
+    return registry.defaultModel;
+  }
+  return candidate;
+}
+
 /**
  * Resolve the model to run for `agent`, given the requested value from the
  * priority chain (per-message slash > topic-config override > topic default).
@@ -306,7 +307,7 @@ export function resolveModelForAgent(
   requested: string | undefined,
   registry: { validateModel(s: string): boolean; defaultModel: string },
 ): string {
-  const defaultModel = resolveDefaultModel(agent, registry.defaultModel);
+  const defaultModel = resolveDefaultModel(agent, registry);
   if (!requested) return defaultModel;
   const candidate = canonicalModelId(requested);
   const owner = modelOwner(candidate);

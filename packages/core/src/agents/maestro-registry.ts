@@ -20,7 +20,6 @@ const ALIAS_MAP: Record<string, string> = {
   glm: "glm-5.3",
   "glm-pro": "glm-5.3",
   "glm-flash": "glm-5.3-flash",
-  "glm-5.2": "glm-5.2",
 };
 const VALID_MODELS = new Set([...Object.keys(ALIAS_MAP), ...Object.values(ALIAS_MAP)]);
 const VALID_EFFORTS = new Set(MAESTRO_EFFORT_VALUES);

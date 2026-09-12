@@ -77,9 +77,6 @@ describe("session system prompt builders", () => {
       "maestro / `glm-5.3` [Opus-level]: coding-focused flagship route; 1M context; competitive with Opus-tier coding benchmarks at a fraction of the cost",
     );
     expect(prompt).toContain(
-      "maestro / `glm-5.2` [Sonnet-level]: previous-gen flagship; 1M context; cost-efficient everyday work, cheaper than glm-5.3",
-    );
-    expect(prompt).toContain(
       "maestro / `glm-5.3-flash` [Sonnet-level]: cheapest GLM route; 1M context; the only GLM model with native vision/multimodal support",
     );
     expect(prompt).toContain("Codex Pro 20x and Claude Max 20x are each $200/month");

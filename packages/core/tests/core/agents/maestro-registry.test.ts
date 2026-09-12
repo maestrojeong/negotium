@@ -23,13 +23,16 @@ describe("maestroRegistry model policy", () => {
   });
 
   test("accepts GLM models and expands their aliases", () => {
-    for (const model of ["glm", "glm-pro", "glm-flash", "glm-5.3", "glm-5.2", "glm-5.3-flash"]) {
+    for (const model of ["glm", "glm-pro", "glm-flash", "glm-5.3", "glm-5.3-flash"]) {
       expect(maestroRegistry.validateModel(model)).toBe(true);
     }
     expect(maestroRegistry.expandModelAlias("glm")).toBe("glm-5.3");
     expect(maestroRegistry.expandModelAlias("glm-pro")).toBe("glm-5.3");
     expect(maestroRegistry.expandModelAlias("glm-flash")).toBe("glm-5.3-flash");
-    expect(maestroRegistry.expandModelAlias("glm-5.2")).toBe("glm-5.2");
+  });
+
+  test("removed glm-5.2 (priced identically to glm-5.3) no longer validates", () => {
+    expect(maestroRegistry.validateModel("glm-5.2")).toBe(false);
   });
 
   test("accepts DeepSeek Flash (the current model) and rejects the bare, versionless alias", () => {

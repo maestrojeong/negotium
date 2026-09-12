@@ -756,7 +756,7 @@ describe("terminal renderer", () => {
     const state = {
       ...setTopics(createInitialState("local"), [topic()]),
       overlay: "models" as const,
-      modelPickerIndex: 12,
+      modelPickerIndex: 11,
     };
 
     const output = stripAnsi(renderApp(state, 80, 14));
