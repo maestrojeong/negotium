@@ -6,16 +6,17 @@ import { getRegistryOperations } from "#agents/registry";
 import { encodeClaudeCwd } from "#agents/rollout/claude";
 import { resolveTaskEventScope, withTaskSnapshots } from "#agents/task-events";
 import { logger } from "#platform/logger";
+import { memoizeImport } from "#platform/memoize-import";
 import { appendConversationEvent, readConversation } from "#storage/conversations";
 import type { AgentKind, AgentQueryOptions, UnifiedEvent } from "#types";
 
 export { isAgentKind, SUPPORTED_AGENTS } from "#types";
 
-// Memoized so concurrent first calls await one shared import instead of each
-// racing a separate `import()` (was causing a TDZ ReferenceError on the loser).
-let claudeProviderImport: Promise<typeof import("#agents/claude-provider")> | undefined;
-let codexProviderImport: Promise<typeof import("#agents/codex-provider")> | undefined;
-let maestroProviderImport: Promise<typeof import("#agents/maestro-provider")> | undefined;
+// See memoizeImport's doc comment: this closes a TDZ race where concurrent
+// first dispatches to the same provider each raced their own `import()`.
+const loadClaudeProvider = memoizeImport(() => import("#agents/claude-provider"));
+const loadCodexProvider = memoizeImport(() => import("#agents/codex-provider"));
+const loadMaestroProvider = memoizeImport(() => import("#agents/maestro-provider"));
 
 /**
  * Dispatch only — no recording. Used by code paths that already record
@@ -25,20 +26,17 @@ let maestroProviderImport: Promise<typeof import("#agents/maestro-provider")> | 
 async function* dispatchAgent(opts: AgentQueryOptions): AsyncGenerator<UnifiedEvent> {
   switch (opts.agent) {
     case "claude": {
-      claudeProviderImport ??= import("#agents/claude-provider");
-      const { claudeProvider } = await claudeProviderImport;
+      const { claudeProvider } = await loadClaudeProvider();
       yield* claudeProvider(opts);
       return;
     }
     case "codex": {
-      codexProviderImport ??= import("#agents/codex-provider");
-      const { codexProvider } = await codexProviderImport;
+      const { codexProvider } = await loadCodexProvider();
       yield* codexProvider(opts);
       return;
     }
     case "maestro": {
-      maestroProviderImport ??= import("#agents/maestro-provider");
-      const { maestroProvider } = await maestroProviderImport;
+      const { maestroProvider } = await loadMaestroProvider();
       yield* maestroProvider(opts);
       return;
     }
