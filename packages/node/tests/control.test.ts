@@ -459,6 +459,47 @@ test("runtime gateway resets a manager topic to the node's own FALLBACK_AGENT wi
   expect(resetBody.config).toEqual({});
 });
 
+test("runtime gateway reset drops a custom default even when the topic is already on the fallback agent", async () => {
+  const managerUser = `manager-reset-same-agent-${randomUUID()}`;
+  const ensured = await handler(
+    runtimeRequest("/manager-topic", {
+      method: "POST",
+      body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, userId: managerUser }),
+    }),
+  );
+  const ensuredBody = (await ensured?.json()) as { topic?: TopicDto };
+  const topic = ensuredBody.topic;
+  if (!topic) throw new Error("manager topic was not created");
+  expect(topic.agent).toBe("claude");
+  const path = `/topics/${encodeURIComponent(topic.id)}/config`;
+
+  // Customize the model while re-affirming the same agent — reset must still
+  // drop it back to the registry default, not silently keep it because "the
+  // requested agent already matches the topic's current agent".
+  await handler(
+    runtimeRequest(path, {
+      method: "PATCH",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        agent: "claude",
+        model: "opus",
+        modelLocked: true,
+      }),
+    }),
+  );
+
+  const reset = await handler(
+    runtimeRequest(path, {
+      method: "PATCH",
+      body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, resetAgentToDefault: true }),
+    }),
+  );
+  expect(reset?.status).toBe(200);
+  const resetBody = (await reset?.json()) as { topic: TopicDto; config: unknown };
+  expect(resetBody.topic).toMatchObject({ id: topic.id, agent: "claude", defaultModel: "sonnet" });
+  expect(resetBody.config).toEqual({});
+});
+
 test("runtime gateway rejects conflicting explicit and default agent updates", async () => {
   const managerUser = `manager-reset-conflict-${randomUUID()}`;
   const ensured = await handler(

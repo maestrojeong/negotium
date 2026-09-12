@@ -1653,6 +1653,7 @@ export function createNodeControlHandler(
                 topicId,
                 agent: requestedAgent,
                 config: next,
+                resetDefaults: resetAgentToDefault,
               });
             } else {
               setApiTopicConfig(topicId, next);

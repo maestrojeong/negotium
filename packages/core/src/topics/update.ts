@@ -13,6 +13,7 @@
 import { resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
 import { WsHub } from "#bus";
+import { resolveFallbackAgent } from "#platform/config-helpers";
 import { RESERVED_TOPIC_NAMES } from "#platform/constants";
 import { getApiTopicConfig, setApiTopicConfig, type TopicConfig } from "#storage/api-topic-config";
 import {
@@ -48,6 +49,14 @@ export interface UpdateManagerTopicRuntimeConfigOptions {
   topicId: string;
   agent: AgentKind;
   config: TopicConfig;
+  /**
+   * When true, never carry over `current.defaultModel`/`current.defaultEffort`
+   * even if `agent` matches the topic's current agent — used by an explicit
+   * reset-to-default request, where staying on the same agent must still
+   * drop a custom default back to the registry's own default instead of a
+   * same-agent branch silently preserving it.
+   */
+  resetDefaults?: boolean;
 }
 
 /**
@@ -76,13 +85,14 @@ export function updateManagerTopicRuntimeConfig(
     throw new TopicValidationError(`Invalid effort for agent ${opts.agent}`);
   }
 
+  const preserveCurrentDefaults = !opts.resetDefaults && opts.agent === current.agent;
   const defaultModel = resolveModelForAgent(
     opts.agent,
-    opts.config.model ?? (opts.agent === current.agent ? current.defaultModel : undefined),
+    opts.config.model ?? (preserveCurrentDefaults ? current.defaultModel : undefined),
     registry,
   );
   const requestedEffort =
-    opts.config.effort ?? (opts.agent === current.agent ? current.defaultEffort : undefined);
+    opts.config.effort ?? (preserveCurrentDefaults ? current.defaultEffort : undefined);
   const defaultEffort =
     requestedEffort && registry.validateEffort(requestedEffort)
       ? requestedEffort
@@ -177,7 +187,7 @@ export function updateTopicSettings(opts: UpdateTopicSettingsOptions): TopicDto 
     }
   }
 
-  const registry = getRegistry(agent ?? "maestro");
+  const registry = getRegistry(agent ?? resolveFallbackAgent());
   if (opts.defaultModel !== undefined) {
     if (!agent) throw new TopicValidationError("This topic has no AI model");
     if (!registry.validateModel(opts.defaultModel)) {
@@ -199,7 +209,7 @@ export function updateTopicSettings(opts: UpdateTopicSettingsOptions): TopicDto 
   // one, so `resolveModelForAgent` falls back rather than persisting a token the
   // registry will reject on the next turn.
   const defaultModel = resolveModelForAgent(
-    agent ?? "maestro",
+    agent ?? resolveFallbackAgent(),
     opts.defaultModel ?? (agent === current.agent ? current.defaultModel : undefined),
     registry,
   );
