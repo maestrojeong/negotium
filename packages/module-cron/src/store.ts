@@ -7,6 +7,7 @@ import {
   getRegistry,
   getTopic,
   isAgentKind,
+  logger,
   modelOwner,
 } from "@negotium/core/cron-host";
 import { computeNextCronRun, normalizeCronTimezone, parseCronExpression } from "#schedule";
@@ -353,12 +354,39 @@ export function ensureCronSchema(): void {
   if (legacySessions.length > 0) {
     db.query("UPDATE negotium_cron_jobs SET session_id = NULL WHERE session_id IS NOT NULL").run();
   }
+
+  // Repair rows an older build's validation bypass could have persisted
+  // (validateCronAgentConfig used to skip the agent check entirely when
+  // neither model nor effort was set). Clearing back to NULL makes the job
+  // inherit its topic's current agent again instead of failing dispatch.
+  const invalidAgentRows = db
+    .query(
+      "SELECT id, agent FROM negotium_cron_jobs WHERE agent IS NOT NULL AND agent NOT IN ('claude','codex','maestro')",
+    )
+    .all() as { id: string; agent: string }[];
+  if (invalidAgentRows.length > 0) {
+    db.query(
+      "UPDATE negotium_cron_jobs SET agent = NULL WHERE agent IS NOT NULL AND agent NOT IN ('claude','codex','maestro')",
+    ).run();
+    logger.warn(
+      {
+        jobIds: invalidAgentRows.map((row) => row.id),
+        invalidAgents: invalidAgentRows.map((row) => row.agent),
+      },
+      "cron: cleared unrecognized agent values persisted by an older build; jobs now inherit their topic's agent",
+    );
+  }
+
   schemaReady = true;
 }
 
 function toJob(row: JobRow): CronJobRecord {
-  const topicAgent = row.agent
-    ? row.agent
+  // Defense in depth: ensureCronSchema() repairs unrecognized values already
+  // on disk, but treat any raw write that bypassed both as absent rather
+  // than forwarding a bogus agent string to the scheduler.
+  const rowAgent = row.agent && isAgentKind(row.agent) ? row.agent : undefined;
+  const topicAgent = rowAgent
+    ? rowAgent
     : (
         db.query("SELECT agent FROM api_topics WHERE id = ?").get(row.topic_id) as
           | { agent: string | null }
@@ -383,7 +411,7 @@ function toJob(row: JobRow): CronJobRecord {
     schedule: row.schedule,
     timezone: row.timezone ?? undefined,
     enabled: row.enabled !== 0,
-    agent: (row.agent as AgentKind | null) ?? undefined,
+    agent: rowAgent,
     model: row.model ?? undefined,
     effort: (row.effort as EffortLevel | null) ?? undefined,
     sessionId: topicSession?.session_id,

@@ -5,8 +5,10 @@ import { updateCronJobWithContextReset } from "../src/context";
 import { CronScheduler } from "../src/scheduler";
 import {
   claimCronRuns,
+  configureCronDatabase,
   countCronRuns,
   createCronJob,
+  ensureCronSchema,
   finalizeOrphanedCronRuns,
   finishCronRun,
   getCronJob,
@@ -371,6 +373,32 @@ describe("cron store", () => {
     });
     jobIds.push(job.id);
     expect(() => updateCronJob(job.id, { agent: "codex" })).toThrow(/not valid for agent 'codex'/);
+  });
+
+  test("repairs an unrecognized agent value an older build persisted, on next schema init", () => {
+    const topic = createTopic(); // agent: claude
+    const job = createJob(topic);
+    // Simulate a row written before validateCronAgentConfig covered the bare
+    // `agent` field — a raw write bypasses the store's own validation
+    // entirely, the same way the old create/update bug did.
+    db.query("UPDATE negotium_cron_jobs SET agent = ? WHERE id = ?").run("bogus-agent", job.id);
+    const rawAgent = () =>
+      (
+        db.query("SELECT agent FROM negotium_cron_jobs WHERE id = ?").get(job.id) as {
+          agent: string | null;
+        }
+      ).agent;
+    expect(rawAgent()).toBe("bogus-agent");
+    // toJob() also defends against reading it back before the repair runs.
+    expect(getCronJob(job.id)?.agent).toBeUndefined();
+
+    // Force ensureCronSchema()'s one-time init (and its repair pass) to run
+    // again against the same database.
+    configureCronDatabase(db);
+    ensureCronSchema();
+
+    expect(rawAgent()).toBeNull();
+    expect(getCronJob(job.id)?.agent).toBeUndefined();
   });
 });
 
