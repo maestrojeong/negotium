@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { runAgent } from "#agents/index";
+import { resolveWorkerModel } from "#agents/model-catalog";
+import { getRegistry } from "#agents/registry";
 import { summarizeDisplayText } from "#agents/tool-format";
 import { WsHub } from "#bus";
 import { FALLBACK_AGENT, resolveOutputLanguage, WORKSPACE_DIR } from "#platform/config";
@@ -234,7 +236,10 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
     const safeTopic = host.config.sanitizeTopicName(topicTitle);
     // All providers receive the same host-resolved wiki MCP.
     const agent: AgentKind = params.agent ?? FALLBACK_AGENT;
-    const model = params.model;
+    // The prompt's frontmatter model (deepseek-pro) was written for a
+    // maestro-default node; resolve it against whichever agent actually runs
+    // so a claude/codex node doesn't hand its provider a foreign model id.
+    const model = resolveWorkerModel(agent, params.model ?? definition.model, getRegistry(agent));
 
     const outputLanguage = resolveMemoryLanguage();
     // Both a deleted topic and an idle/session-reset snapshot roll into the
@@ -281,7 +286,7 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
       status: "Starting",
       active: true,
       agent,
-      model: model ?? definition.model,
+      model,
       prompt,
       promptTitle: "Prompt",
       steps: [

@@ -5,7 +5,11 @@ import { join, resolve } from "node:path";
 import { claudeRegistry } from "#agents/claude-registry";
 import { codexRegistry } from "#agents/codex-registry";
 import { maestroRegistry } from "#agents/maestro-registry";
-import { resolveCompactionExecution, resolveDefaultModel } from "#agents/model-catalog";
+import {
+  resolveCompactionExecution,
+  resolveDefaultModel,
+  resolveWorkerModel,
+} from "#agents/model-catalog";
 import {
   codexAuthFilePath,
   FALLBACK_MODEL,
@@ -66,6 +70,22 @@ describe("role default models", () => {
       model: "deepseek-v4-pro",
       effort: "medium",
     });
+  });
+
+  test("resolveWorkerModel falls back to the agent's own default instead of a foreign model id", () => {
+    // A prompt's frontmatter model is written for whichever agent the node
+    // defaulted to at the time — a maestro-era "deepseek-pro" must not reach
+    // a claude/codex node's provider verbatim (was displaying "claude ·
+    // deepseek-pro" and silently landing on the SDK's own default).
+    expect(resolveWorkerModel("claude", "deepseek-pro", claudeRegistry)).toBe("sonnet");
+    expect(resolveWorkerModel("codex", "deepseek-pro", codexRegistry)).toBe("gpt-5.6-terra");
+    expect(resolveWorkerModel("maestro", "deepseek-pro", maestroRegistry)).toBe("deepseek-pro");
+    // An unrecognized model string for the resolved agent falls back the
+    // same way as a cross-agent one.
+    expect(resolveWorkerModel("claude", "not-a-real-model", claudeRegistry)).toBe("sonnet");
+    // A model that is genuinely valid for the resolved agent still passes
+    // through untouched.
+    expect(resolveWorkerModel("claude", "opus", claudeRegistry)).toBe("opus");
   });
 
   test("maps the Claude opus alias to Opus 5", () => {

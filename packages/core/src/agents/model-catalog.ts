@@ -315,6 +315,40 @@ export function resolveModelForAgent(
   return registry.validateModel(candidate) ? candidate : defaultModel;
 }
 
+/**
+ * Default model for unattended background workers (compaction, memory
+ * archiving, and similar fixed-purpose programmatic turns) — Codex prefers
+ * the stronger `gpt-5.6-terra` here over its cheap interactive default
+ * (`gpt-5.6-luna`), since nothing is waiting on the response in real time.
+ * Claude and Maestro keep their normal registry defaults (`sonnet` /
+ * `deepseek-pro`).
+ */
+export function resolveWorkerDefaultModel(
+  agent: AgentKind,
+  registry: { defaultModel: string },
+): string {
+  return agent === "codex" ? "gpt-5.6-terra" : registry.defaultModel;
+}
+
+/**
+ * Resolve the model for a background worker the same way `resolveModelForAgent`
+ * does for user-facing turns, except an empty/invalid/cross-agent request
+ * falls back to `resolveWorkerDefaultModel` instead of the registry's
+ * ordinary (interactive) default — e.g. a prompt's frontmatter hardcoding a
+ * model for one agent (`deepseek-pro`) must not silently reach a different
+ * agent (`claude`) it was never valid for.
+ */
+export function resolveWorkerModel(
+  agent: AgentKind,
+  requested: string | undefined,
+  registry: { validateModel(s: string): boolean; defaultModel: string },
+): string {
+  return resolveModelForAgent(agent, requested, {
+    ...registry,
+    defaultModel: resolveWorkerDefaultModel(agent, registry),
+  });
+}
+
 /** Fixed execution policy for bounded context-compaction workers. */
 export function resolveCompactionExecution(
   agent: AgentKind,
@@ -326,8 +360,9 @@ export function resolveCompactionExecution(
     validateEffort(s: string): boolean;
   },
 ): { model: string; effort?: EffortLevel } {
-  const requestedModel = agent === "codex" ? "gpt-5.6-terra" : registry.defaultModel;
-  const model = registry.expandModelAlias(resolveModelForAgent(agent, requestedModel, registry));
+  const model = registry.expandModelAlias(
+    resolveWorkerModel(agent, resolveWorkerDefaultModel(agent, registry), registry),
+  );
   const effort = registry.validateEffort("medium") ? "medium" : registry.defaultEffort;
   return { model, ...(effort ? { effort } : {}) };
 }

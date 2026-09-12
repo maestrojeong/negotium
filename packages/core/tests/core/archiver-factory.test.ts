@@ -192,7 +192,10 @@ describe("archiver runtime factory", () => {
     expect(sessions[0]).toMatchObject({
       active: false,
       agent: "claude",
-      model: "host-model",
+      // "host-model" (this fixture's frontmatter stand-in) isn't a real
+      // Claude model, so it resolves to Claude's own default instead of
+      // being handed to the provider verbatim.
+      model: "sonnet",
       output: "saved memory",
       status: "Completed",
     });
