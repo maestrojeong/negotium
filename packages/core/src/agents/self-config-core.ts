@@ -4,6 +4,7 @@ import { modelOwner, resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
 import { WsHub } from "#bus";
 import { resolveTopicWorkspaceDir } from "#platform/config";
+import { resolveFallbackAgent } from "#platform/config-helpers";
 import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
 import { getTopic } from "#storage/api-topics";
 import {
@@ -304,7 +305,7 @@ export function createSelfConfigCore(
   }
 
   function currentAgent(topic: SelfConfigTopic): AgentKind {
-    return topic.agent ?? "maestro";
+    return topic.agent ?? resolveFallbackAgent();
   }
 
   function setModel(ctx: SelfConfigContext, model: string): SelfConfigResult {

@@ -165,7 +165,7 @@ export function registerTopicDetailed(opts: RegisterTopicOptions): RegisterTopic
   });
 
   // Derive per-mode model/effort defaults from the chosen agent's registry.
-  const registry = getRegistry(agent ?? "maestro");
+  const registry = getRegistry(agent ?? FALLBACK_AGENT);
   if (agent && opts.model && !registry.validateModel(opts.model)) {
     throw new TopicValidationError(`model '${opts.model}' is not valid for agent '${agent}'`);
   }
@@ -173,7 +173,7 @@ export function registerTopicDetailed(opts: RegisterTopicOptions): RegisterTopic
     throw new TopicValidationError(`effort '${opts.effort}' is not valid for agent '${agent}'`);
   }
   const defaultModel = resolveModelForAgent(
-    agent ?? "maestro",
+    agent ?? FALLBACK_AGENT,
     assigned?.model ?? opts.model,
     registry,
   );

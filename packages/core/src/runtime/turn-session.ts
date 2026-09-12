@@ -1,5 +1,6 @@
 import { resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
+import { resolveFallbackAgent } from "#platform/config-helpers";
 import { getTopicConfig } from "#runtime/topic-config";
 import { getTopicSessionId } from "#storage/api-topics";
 import type { AgentKind, EffortLevel } from "#types";
@@ -35,7 +36,7 @@ export function resolveTopicTurnExecution(
   overrides: TopicTurnExecutionOverrides = {},
 ): ResolvedTopicTurnExecution {
   const config = getTopicConfig(topic.id);
-  const agent = (overrides.agentOverride ?? topic.agent ?? "maestro") as AgentKind;
+  const agent = (overrides.agentOverride ?? topic.agent ?? resolveFallbackAgent()) as AgentKind;
   const registry = getRegistry(agent);
   const usesTopicDefaults = !overrides.agentOverride || overrides.agentOverride === topic.agent;
   const model = resolveModelForAgent(

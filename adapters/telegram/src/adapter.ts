@@ -159,7 +159,7 @@ export interface TelegramAdapterOptions {
    * Vault commands are disabled when the allowlist is empty.
    */
   vaultOwnerTelegramUserId?: string;
-  /** Agent for auto-created topics; unset = registerTopic's default (maestro). */
+  /** Agent for auto-created topics; unset = registerTopic's default (FALLBACK_AGENT). */
   defaultAgent?: "claude" | "codex" | "maestro";
   /** Turn dispatcher override for remote hosts and deterministic tests. */
   startTurn?: typeof startAiTurn;

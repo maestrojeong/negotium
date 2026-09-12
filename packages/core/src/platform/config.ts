@@ -13,17 +13,17 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseRuntimePort, readEnvText, safeRuntimePathSegment } from "#platform/config-helpers";
+import {
+  parseRuntimePort,
+  readEnvText,
+  resolveFallbackAgent,
+  safeRuntimePathSegment,
+} from "#platform/config-helpers";
 import { logger } from "#platform/logger";
-import { type AgentKind, EFFORT_VALUES, type EffortLevel, isAgentKind } from "#types";
+import { type AgentKind, EFFORT_VALUES, type EffortLevel } from "#types";
 
 export function envText(envKey: string): string | undefined {
   return readEnvText(process.env, envKey);
-}
-
-function resolveAgentEnv(envKey: string, fallback: AgentKind, legacyEnvKey?: string): AgentKind {
-  const value = envText(envKey) ?? (legacyEnvKey ? envText(legacyEnvKey) : undefined);
-  return isAgentKind(value) ? value : fallback;
 }
 
 const HOME = homedir();
@@ -477,11 +477,7 @@ export const MODEL_DEEPSEEK_V4_PRO = "deepseek-v4-pro";
 export const MODEL_DEEPSEEK_V4_FLASH = "deepseek-v4-flash";
 
 // Single agent + model default for the whole node. DEFAULT_* remains a legacy alias.
-export const FALLBACK_AGENT: AgentKind = resolveAgentEnv(
-  "FALLBACK_AGENT",
-  "claude",
-  "DEFAULT_AGENT",
-);
+export const FALLBACK_AGENT: AgentKind = resolveFallbackAgent(process.env);
 export const FALLBACK_MODEL = envText("FALLBACK_MODEL") ?? envText("DEFAULT_MODEL");
 
 /**

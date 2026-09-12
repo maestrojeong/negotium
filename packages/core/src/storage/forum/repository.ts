@@ -1,3 +1,4 @@
+import { resolveFallbackAgent } from "#platform/config-helpers";
 import { type AgentKind, isAgentKind } from "#types";
 import {
   db,
@@ -8,15 +9,6 @@ import {
   type UserForumConfig,
   type UserRow,
 } from "./schema";
-
-// Mirrors #platform/config's FALLBACK_AGENT resolution (FALLBACK_AGENT env,
-// legacy DEFAULT_AGENT, else "claude") without statically importing that
-// module — config.ts eagerly creates every node data directory on import, and
-// this storage layer must stay importable without that side effect.
-function fallbackAgent(): AgentKind {
-  const value = process.env.FALLBACK_AGENT?.trim() || process.env.DEFAULT_AGENT?.trim();
-  return isAgentKind(value) ? value : "claude";
-}
 
 export function getUserConfig(userId: number): UserForumConfig | null {
   const user = db.query<UserRow, string>("SELECT * FROM users WHERE id = ?").get(String(userId));
@@ -154,7 +146,7 @@ export function addTopic(
     messageThreadId,
     sessionId ?? null,
     createdAt ?? new Date().toISOString(),
-    fallbackAgent(),
+    resolveFallbackAgent(),
   );
   return true;
 }

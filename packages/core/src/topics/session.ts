@@ -16,6 +16,7 @@ import { type ChatPair, extractChatPairs } from "#agents/rollout/shared";
 import { cleanupTopicRolloutsFromEntries, purgeTopicLogs } from "#agents/topic-cleanup";
 import { WsHub } from "#bus";
 import { COMPACTION_LOG_SERVER, resolveTopicWorkspaceDir } from "#platform/config";
+import { resolveFallbackAgent } from "#platform/config-helpers";
 import { delay } from "#platform/delay";
 import { logger } from "#platform/logger";
 import { buildStdioMcpServer } from "#platform/mcp-config";
@@ -882,7 +883,7 @@ export async function compactTopicSession(
     }
     cancelIdleCompactForTopic(topicId);
 
-    const agent = (topic.agent ?? "maestro") as AgentKind;
+    const agent = (topic.agent ?? resolveFallbackAgent()) as AgentKind;
     const registry = getRegistry(agent);
     const config = getApiTopicConfig(topicId);
     const model = resolveModelForAgent(agent, config?.model ?? topic.defaultModel, registry);

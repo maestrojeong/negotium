@@ -1,5 +1,6 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { resolveFallbackAgent } from "#platform/config-helpers";
 import { logger } from "#platform/logger";
 import { sanitizeTopicName } from "#security/sanitize";
 import { type ApiMessageRow, getAllMessagesForTopic } from "#storage/api-messages";
@@ -118,7 +119,7 @@ export function migrateLegacyCompactedConversations(): ConversationMigrationResu
   const result: ConversationMigrationResult = { migrated: 0, skipped: 0, restoredEntries: 0 };
 
   for (const topic of listTopics()) {
-    const fallbackAgent = topic.agent ?? "maestro";
+    const fallbackAgent = topic.agent ?? resolveFallbackAgent();
     for (const participant of topic.participants) {
       const userId = participant.userId;
       const rawPath = getConversationPath(userId, topic.title);

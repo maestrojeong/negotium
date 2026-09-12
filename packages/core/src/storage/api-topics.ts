@@ -1,5 +1,6 @@
 // Persistent topic store backed by shared SQLite.
 
+import { resolveFallbackAgent } from "#platform/config-helpers";
 import { GENERAL_TOPIC_ID } from "#platform/constants";
 import { logger } from "#platform/logger";
 import { db } from "#storage/forum-db";
@@ -14,8 +15,6 @@ import type {
   TopicSurface,
   TopicVisibility,
 } from "#types/api";
-
-const DEFAULT_AGENT_ROOM_AGENT: AgentKind = "maestro";
 
 /**
  * Surface used when a caller does not name one — and the value every existing
@@ -797,7 +796,7 @@ export function normalizeTopicState(input: {
     return {
       kind: "manager",
       aiMode: "always",
-      agent: input.agent ?? DEFAULT_AGENT_ROOM_AGENT,
+      agent: input.agent ?? resolveFallbackAgent(),
     };
   }
 
@@ -816,7 +815,7 @@ export function normalizeTopicState(input: {
     return {
       kind: "agent",
       aiMode: "always",
-      agent: input.agent ?? DEFAULT_AGENT_ROOM_AGENT,
+      agent: input.agent ?? resolveFallbackAgent(),
     };
   }
 
