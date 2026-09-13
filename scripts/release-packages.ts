@@ -669,6 +669,7 @@ async function smokePackedInstall(packages: ReleasePackage[]): Promise<void> {
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const client = new Client({ name: "packed-cron-smoke", version: "1.0.0" });
 const env = Object.fromEntries(
@@ -678,7 +679,13 @@ const env = Object.fromEntries(
 );
 env.NEGOTIUM_STATE_DIR = resolve("cron-smoke-state");
 env.TSX_TSCONFIG_PATH = resolve("node_modules/negotium/dist/runtime/tsconfig.json");
-const tsxLoader = createRequire(resolve("node_modules/negotium/package.json")).resolve("tsx");
+// node --import takes a module specifier, not a path. A Windows absolute
+// path parses as the scheme "c:", which the ESM loader rejects outright
+// (ERR_UNSUPPORTED_ESM_URL_SCHEME), so the cron server never starts and the
+// smoke sees only "Connection closed". A file:// URL is accepted everywhere.
+const tsxLoader = pathToFileURL(
+  createRequire(resolve("node_modules/negotium/package.json")).resolve("tsx"),
+).href;
 const transport = new StdioClientTransport({
   command: "node",
   args: [

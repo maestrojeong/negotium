@@ -5,7 +5,7 @@
   "description": "Install the Negotium multi-agent runtime and CLI with one package",
   "license": "Apache-2.0",
   "bin": {
-    "negotium": "dist/main.js"
+    "negotium": "bin/negotium.mjs"
   },
   "exports": {
     "./hosted-agent": {
@@ -115,6 +115,7 @@
     }
   },
   "files": [
+    "bin",
     "dist",
     "install-browser-rs.mjs",
     "install-bash-rs.mjs",
