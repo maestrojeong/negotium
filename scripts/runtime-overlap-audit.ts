@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { readdir, readFile } from "node:fs/promises";
-import { relative, resolve } from "node:path";
+import { relative, resolve, sep } from "node:path";
 
 export interface RuntimeOverlapPair {
   sourcePath: string;
@@ -29,7 +29,13 @@ async function listTypeScriptFiles(root: string, current = root): Promise<string
   for (const entry of await readdir(current, { withFileTypes: true })) {
     const path = resolve(current, entry.name);
     if (entry.isDirectory()) files.push(...(await listTypeScriptFiles(root, path)));
-    else if (entry.isFile() && entry.name.endsWith(".ts")) files.push(relative(root, path));
+    // Report "/"-separated keys on every host: these are matched against the
+    // ALIASES table above and printed in the report, so letting the Windows
+    // separator through would break both the lookup and the output's stability
+    // across platforms. Identity on POSIX, where `sep` is already "/".
+    else if (entry.isFile() && entry.name.endsWith(".ts")) {
+      files.push(relative(root, path).split(sep).join("/"));
+    }
   }
   return files;
 }

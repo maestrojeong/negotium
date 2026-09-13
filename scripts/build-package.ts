@@ -2,7 +2,7 @@
 
 import { existsSync } from "node:fs";
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
 
 const entrypoints = process.argv.slice(2).map((entry) => resolve(entry));
 if (entrypoints.length === 0) {
@@ -11,7 +11,7 @@ if (entrypoints.length === 0) {
 
 const outdir = resolve("dist");
 const sourceRoot = resolve("src");
-if (outdir === resolve("/") || !outdir.endsWith("/dist")) {
+if (outdir === resolve("/") || basename(outdir) !== "dist") {
   throw new Error(`refusing to clean unexpected output directory: ${outdir}`);
 }
 await rm(outdir, { recursive: true, force: true });
