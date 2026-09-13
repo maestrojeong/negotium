@@ -3,9 +3,14 @@
 The one-command installer for the complete Negotium multi-agent node. The package includes the CLI,
 runtime, MCP services, Cron module, and first-party Terminal, Telegram, and Otium adapters.
 
-Requires Bun 1.2.15 or newer on macOS or Linux, plus credentials for Claude, Codex, or Maestro.
-Linux hosts without `DISPLAY` or `WAYLAND_DISPLAY` also require Xvfb (`xvfb-run`) for browser
-tools.
+Requires Bun 1.2.15 or newer on macOS, Linux, or Windows, plus credentials for Claude, Codex, or
+Maestro. Linux hosts without `DISPLAY` or `WAYLAND_DISPLAY` also require Xvfb (`xvfb-run`) for
+browser tools. Windows hosts must use the Claude or Maestro backend — Codex turns fail closed
+because its SDK spawns the Vault hook wrapper without a shell, which no `.cmd` wrapper survives.
+
+The installed command runs on Bun, so keep Bun on `PATH` after installing; npm only writes a
+launcher that hands the bundle to it. If npm prints `install-scripts` warnings rather than
+downloading the Browser.rs and Bash.rs helpers, re-run with `--allow-scripts=negotium`.
 
 ```bash
 npm install --global negotium
