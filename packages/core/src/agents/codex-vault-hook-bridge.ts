@@ -10,6 +10,7 @@ import { codexCliScriptPath } from "#agents/codex-native-multi-agent";
 import { deepMapStrings } from "#agents/deep-map";
 import { referencesHostedSecretStorage, substituteHostedSecrets } from "#agents/execution-host";
 import { shouldSubstituteVaultToolInput } from "#agents/vault-tool-policy";
+import { ipcEndpoint, restrictIpcEndpoint } from "#platform/ipc";
 
 const MAX_HOOK_REQUEST_BYTES = 1024 * 1024;
 const SENSITIVE_STORAGE_DENIAL = "Runtime secret storage access is not permitted";
@@ -102,10 +103,38 @@ export interface CodexVaultHookBridge {
   close(): Promise<void>;
 }
 
+/**
+ * Why this bridge has no Windows implementation yet.
+ *
+ * The hook only runs if codex is invoked with `--dangerously-bypass-hook-trust`
+ * — an argv-only flag with no config-file or environment equivalent — and the
+ * SDK builds its own argv, so the flag can only be injected by a wrapper
+ * standing in for the codex executable. On POSIX that wrapper is the
+ * `#!/bin/sh` script below. Windows cannot use one: `@openai/codex-sdk` spawns
+ * `codexPathOverride` through `child_process.spawn` with no `shell` option, and
+ * Node refuses to spawn a `.cmd`/`.bat` that way (EINVAL), so only a real
+ * executable would do.
+ *
+ * Failing here rather than handing back an unspawnable wrapper keeps the
+ * security posture identical to macOS: `codexProvider` treats a bridge failure
+ * as fatal for the turn, so a Codex turn never runs with the Vault
+ * substitution and sensitive-storage denial silently absent. The alternative —
+ * dropping the wrapper and letting the turn proceed — would leave those two
+ * protections off while everything downstream assumed they were on.
+ */
+const WINDOWS_BRIDGE_UNSUPPORTED =
+  "Codex Vault hooks are not available on Windows: the hook-trust bypass can only be passed " +
+  "through a wrapper executable, and the Codex SDK spawns the override without a shell, so a " +
+  ".cmd wrapper cannot run. Use the Claude or Maestro backend on this host.";
+
 export async function createCodexVaultHookBridge(userId: string): Promise<CodexVaultHookBridge> {
+  if (process.platform === "win32") throw new Error(WINDOWS_BRIDGE_UNSUPPORTED);
   const root = await mkdtemp(join(tmpdir(), "negotium-codex-vault-"));
   await chmod(root, 0o700);
-  const socketPath = join(root, "hook.sock");
+  // Windows listens on a named pipe instead; the digest in `ipcEndpoint` is
+  // taken over this whole path, so the per-bridge mkdtemp above still supplies
+  // the uniqueness that the constant basename does not.
+  const socketPath = ipcEndpoint(join(root, "hook.sock"));
   const wrapperPath = join(root, "codex-with-hooks");
   const token = randomBytes(32).toString("hex");
   const connections = new Set<Socket>();
@@ -157,7 +186,7 @@ export async function createCodexVaultHookBridge(userId: string): Promise<CodexV
         resolveListen();
       });
     });
-    await chmod(socketPath, 0o600);
+    restrictIpcEndpoint(socketPath);
     await writeFile(wrapperPath, privateCodexWrapper(codexCliScriptPath(), socketPath, token), {
       mode: 0o700,
     });
