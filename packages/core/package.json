@@ -43,6 +43,7 @@
     "./mcp-runtime-host": "./src/mcp-runtime-host.ts",
     "./config": "./src/config-public.ts",
     "./sqlite": "./src/storage/sqlite.ts",
+    "./media": "./src/media/text-extractor.ts",
     "./peer-session-bridge-ipc": "./src/mcp/session-comm/bridge-ipc-config.ts",
     "./canonical-mcp-bridge": "./src/mcp/canonical-bridge-config.ts",
     "./conversation-migration": "./src/storage/conversation-migration.ts",
