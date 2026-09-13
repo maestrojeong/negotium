@@ -168,7 +168,11 @@ describe("production enrollment client", () => {
   test("keeps retry state at 0600 when claim transport fails", async () => {
     const invite = { v: 2 as const, central: "http://127.0.0.1:1", token: "nei_retry" };
     await expect(claimEnrollment(invite)).rejects.toThrow();
-    expect(statSync(pendingEnrollmentPath()).mode & 0o777).toBe(0o600);
+    // See join.test.ts: POSIX mode bits are not the access control Windows
+    // applies, so this assertion only means something on a POSIX host.
+    if (process.platform !== "win32") {
+      expect(statSync(pendingEnrollmentPath()).mode & 0o777).toBe(0o600);
+    }
   });
 
   test("keeps retry material when join persistence fails, then resumes idempotently", async () => {

@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { extractChatPairs } from "#agents/rollout/shared";
 import { WORKSPACE_DIR } from "#platform/config";
 import type { ConversationEntry } from "#storage/conversations";
@@ -232,11 +232,13 @@ describe("writeClaudeRollout", () => {
       writtenPaths.push(result.rolloutPath);
       // The underscore-bearing cwd MUST encode with `-`s in the rollout path —
       // otherwise the SDK silently misses our synthetic file at resume time.
-      const encoded = result.rolloutPath.split("/.claude/projects/")[1]?.split("/")[0];
+      // Split with the path API rather than on "/": the rollout path carries
+      // the host separator, so a literal "/" walk found nothing on Windows.
+      const encoded = relative(join(homedir(), ".claude", "projects"), dirname(result.rolloutPath));
       expect(encoded).toBeDefined();
       expect(encoded).not.toContain("_");
       // Trailing component is the cwd basename with `_` flattened to `-`.
-      const expectedTail = userDirWithUnderscore.split("/").pop()!.replaceAll("_", "-");
+      const expectedTail = basename(userDirWithUnderscore).replaceAll("_", "-");
       expect(encoded!.endsWith(expectedTail)).toBe(true);
     } finally {
       rmSync(userDirWithUnderscore, { recursive: true, force: true });
@@ -703,7 +705,10 @@ describe("writeCodexRollout", () => {
         JSON.stringify(item.payload?.content).includes("<environment_context>"),
     );
     const environmentText = JSON.stringify(environment?.payload?.content ?? []);
-    expect(environmentText).toContain(TMP_CWD);
+    // The haystack is JSON, so a Windows cwd appears with its separators
+    // escaped (`C:\\Users\\…`). Escape the needle the same way; on POSIX there
+    // is nothing to escape and this is the plain path.
+    expect(environmentText).toContain(JSON.stringify(TMP_CWD).slice(1, -1));
     expect(environmentText).toContain(turn?.payload?.current_date);
     expect(environmentText).toContain(turn?.payload?.timezone);
   });

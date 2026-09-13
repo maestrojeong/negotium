@@ -1,11 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const SERVER = fileURLToPath(new URL("../src/mcp-server.ts", import.meta.url));
 const ROOT_TSCONFIG = fileURLToPath(new URL("../../../tsconfig.base.json", import.meta.url));
+
+/**
+ * What the production spawn passes to `node --import` (see `TSX_LOADER` in
+ * `#platform/config`). It has to be a module specifier: a bare Windows path is
+ * rejected as a URL with scheme `c:`, so resolve it to a `file://` URL there.
+ */
+const TSX_IMPORT_SPECIFIER = (() => {
+  const resolved = createRequire(import.meta.url).resolve("tsx");
+  return process.platform === "win32" ? pathToFileURL(resolved).href : resolved;
+})();
 
 function testEnv(): Record<string, string> {
   return Object.fromEntries(
@@ -69,12 +79,7 @@ describe("cron MCP server", () => {
     env.TSX_TSCONFIG_PATH = ROOT_TSCONFIG;
     const transport = new StdioClientTransport({
       command: "node",
-      args: [
-        "--import",
-        createRequire(import.meta.url).resolve("tsx"),
-        SERVER,
-        "--user-id=cron-tools-node-test",
-      ],
+      args: ["--import", TSX_IMPORT_SPECIFIER, SERVER, "--user-id=cron-tools-node-test"],
       env,
       stderr: "pipe",
     });

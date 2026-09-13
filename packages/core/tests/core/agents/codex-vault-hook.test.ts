@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import {
   createCodexVaultHookBridge,
   evaluateCodexVaultPreToolUse,
@@ -56,48 +57,74 @@ describe("Codex Vault PreToolUse hook", () => {
     });
   });
 
-  test("uses the configured execution host through the private hook bridge", async () => {
-    const disposeHost = configureAgentExecutionHost({
-      substituteVaultSecrets: (_userId, value) => value.replaceAll("{{TOKEN}}", "host-secret"),
-      referencesRuntimeSecretStorage: (value) => JSON.stringify(value).includes("vault.db"),
-    });
-    const bridge = await createCodexVaultHookBridge("user-1");
-    try {
-      const command = bridge.hooks.PreToolUse[0]?.hooks[0]?.command;
-      if (!command) throw new Error("hook command was not configured");
-      expect(command).not.toContain(bridge.environment.NEGOTIUM_CODEX_VAULT_HOOK_SOCKET);
-      expect(command).not.toContain(bridge.environment.NEGOTIUM_CODEX_VAULT_HOOK_TOKEN);
-      const wrapper = await Bun.file(bridge.codexPathOverride).text();
-      expect(wrapper).toContain("exec --dangerously-bypass-hook-trust");
-      expect(wrapper).toContain("export NEGOTIUM_CODEX_VAULT_HOOK_SOCKET=");
-      expect(wrapper).toContain("export NEGOTIUM_CODEX_VAULT_HOOK_TOKEN=");
-      const child = spawn("/bin/sh", ["-c", command], {
-        stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env, ...bridge.environment },
+  /**
+   * This case asserts on the bridge's `#!/bin/sh` wrapper and runs the hook
+   * command through `/bin/sh -c`. The wrapper is still POSIX-only — porting it
+   * to Windows needs a `.cmd` equivalent that reproduces its `exec` argument
+   * handling, which has not been done — so on a host without `/bin/sh` there is
+   * nothing here to exercise yet. Skipping is not hiding a Windows regression;
+   * it is marking work that has not landed.
+   */
+  test.skipIf(!existsSync("/bin/sh"))(
+    "uses the configured execution host through the private hook bridge",
+    async () => {
+      const disposeHost = configureAgentExecutionHost({
+        substituteVaultSecrets: (_userId, value) => value.replaceAll("{{TOKEN}}", "host-secret"),
+        referencesRuntimeSecretStorage: (value) => JSON.stringify(value).includes("vault.db"),
       });
-      child.stdin.end(
-        JSON.stringify({
-          hook_event_name: "PreToolUse",
-          tool_name: "Bash",
-          tool_input: { command: "use {{TOKEN}}" },
-        }),
+      const bridge = await createCodexVaultHookBridge("user-1");
+      try {
+        const command = bridge.hooks.PreToolUse[0]?.hooks[0]?.command;
+        if (!command) throw new Error("hook command was not configured");
+        expect(command).not.toContain(bridge.environment.NEGOTIUM_CODEX_VAULT_HOOK_SOCKET);
+        expect(command).not.toContain(bridge.environment.NEGOTIUM_CODEX_VAULT_HOOK_TOKEN);
+        const wrapper = await Bun.file(bridge.codexPathOverride).text();
+        expect(wrapper).toContain("exec --dangerously-bypass-hook-trust");
+        expect(wrapper).toContain("export NEGOTIUM_CODEX_VAULT_HOOK_SOCKET=");
+        expect(wrapper).toContain("export NEGOTIUM_CODEX_VAULT_HOOK_TOKEN=");
+        const child = spawn("/bin/sh", ["-c", command], {
+          stdio: ["pipe", "pipe", "pipe"],
+          env: { ...process.env, ...bridge.environment },
+        });
+        child.stdin.end(
+          JSON.stringify({
+            hook_event_name: "PreToolUse",
+            tool_name: "Bash",
+            tool_input: { command: "use {{TOKEN}}" },
+          }),
+        );
+        const output = await new Response(child.stdout).text();
+        const stderr = await new Response(child.stderr).text();
+        const exitCode = await new Promise<number | null>((resolve) =>
+          child.once("exit", (code) => resolve(code)),
+        );
+        expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+        expect(JSON.parse(output)).toEqual({
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "allow",
+            updatedInput: { command: "use host-secret" },
+          },
+        });
+      } finally {
+        await bridge.close();
+        disposeHost();
+      }
+    },
+  );
+
+  /**
+   * The bridge must fail closed on Windows rather than hand back a wrapper the
+   * Codex SDK cannot spawn. `codexProvider` turns a bridge failure into a fatal
+   * turn error, which is what keeps Vault substitution and the
+   * sensitive-storage denial from being silently absent there.
+   */
+  test.skipIf(process.platform !== "win32")(
+    "refuses to build a bridge on Windows instead of returning an unspawnable wrapper",
+    async () => {
+      await expect(createCodexVaultHookBridge("user-1")).rejects.toThrow(
+        /not available on Windows/,
       );
-      const output = await new Response(child.stdout).text();
-      const stderr = await new Response(child.stderr).text();
-      const exitCode = await new Promise<number | null>((resolve) =>
-        child.once("exit", (code) => resolve(code)),
-      );
-      expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
-      expect(JSON.parse(output)).toEqual({
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse",
-          permissionDecision: "allow",
-          updatedInput: { command: "use host-secret" },
-        },
-      });
-    } finally {
-      await bridge.close();
-      disposeHost();
-    }
-  });
+    },
+  );
 });

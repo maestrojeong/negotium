@@ -7,6 +7,25 @@ import { BUNDLED_CODEX_VERSION } from "#agents/codex-native-multi-agent";
 import { browserOwnerCapability } from "#platform/playwright/capability";
 import type { AgentQueryOptions } from "#types";
 
+/**
+ * Creating a symlink on Windows requires Developer Mode or elevation and fails
+ * with EPERM otherwise. Probe instead of naming the platform, so the case still
+ * runs on a Windows host that permits it.
+ */
+const canSymlink = (() => {
+  const probe = mkdtempSync(join(tmpdir(), "negotium-codex-symlink-probe-"));
+  try {
+    mkdirSync(join(probe, "target"));
+    symlinkSync(join(probe, "target"), join(probe, "link"));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+})();
+const withSymlinks = test.skipIf(!canSymlink);
+
 // `codexProvider` does an up-front `existsSync(codexAuthPath)` check
 // (codex-provider.ts:248) so a missing auth file returns an early error
 // event instead of waiting for the SDK to surface an opaque OAuth
@@ -139,7 +158,18 @@ function opts(overrides: Partial<AgentQueryOptions> = {}): AgentQueryOptions {
   };
 }
 
-describe("codexProvider stale rollout recovery", () => {
+/**
+ * Every case here drives a full `codexProvider` turn, which begins by standing
+ * up the Codex Vault hook bridge. That bridge has no Windows implementation —
+ * the hook-trust bypass is argv-only and the SDK spawns its executable override
+ * without a shell, so no wrapper script can carry it (see
+ * `codex-vault-hook-bridge.ts`) — and it deliberately fails closed rather than
+ * letting a turn run with Vault substitution silently absent. So the Codex
+ * backend as a whole is unavailable on Windows, and these turns have nothing to
+ * exercise there. The logic itself is platform-neutral and stays covered on the
+ * hosts where Codex runs.
+ */
+describe.skipIf(process.platform === "win32")("codexProvider stale rollout recovery", () => {
   beforeEach(() => {
     restoreExecutionHost = configureAgentExecutionHost({
       getMcpServersForQuery: () => ({}),
@@ -465,7 +495,7 @@ describe("codexProvider stale rollout recovery", () => {
     }
   });
 
-  test("canonicalizes symlinked file paths before filesystem fallback", async () => {
+  withSymlinks("canonicalizes symlinked file paths before filesystem fallback", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "negotium-codex-symlink-root-"));
     const linkParent = mkdtempSync(join(tmpdir(), "negotium-codex-symlink-link-"));
     const linkedCwd = join(linkParent, "workspace");
@@ -733,7 +763,9 @@ describe("codexProvider stale rollout recovery", () => {
   });
 });
 
-describe("codexProvider MCP config", () => {
+// Also drives a full turn through the Vault hook bridge — see the note on
+// "codexProvider stale rollout recovery" above.
+describe.skipIf(process.platform === "win32")("codexProvider MCP config", () => {
   test("passes the browser capability only through the Codex child environment", async () => {
     const events = [];
     for await (const event of codexProvider(

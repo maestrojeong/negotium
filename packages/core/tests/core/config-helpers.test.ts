@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { resolve, sep } from "node:path";
 import {
   parseRuntimePort,
   readEnvText,
@@ -26,7 +27,9 @@ describe("runtime config helpers", () => {
         fallbackRoot: "/tmp",
         fallbackName: "state",
       }),
-    ).toEndWith("/custom");
+      // `resolve` hands back the host separator, so anchor on the component
+      // rather than on a "/"-joined suffix.
+    ).toEndWith(`${sep}custom`);
     expect(
       resolveRuntimeStateDir({
         env: {},
@@ -34,6 +37,7 @@ describe("runtime config helpers", () => {
         fallbackRoot: "/tmp",
         fallbackName: "state",
       }),
-    ).toBe("/tmp/state");
+      // Resolved against the host root, so `/tmp` picks up a drive on Windows.
+    ).toBe(resolve("/tmp", "state"));
   });
 });

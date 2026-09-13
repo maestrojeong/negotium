@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { claudeRegistry } from "#agents/claude-registry";
 import { codexRegistry } from "#agents/codex-registry";
 import { maestroRegistry } from "#agents/maestro-registry";
@@ -162,7 +163,11 @@ describe("role default models", () => {
 
   test("tsx executable resolves across hoisted workspace installs", () => {
     expect(existsSync(TSX_BIN)).toBe(true);
-    expect(existsSync(TSX_LOADER)).toBe(true);
+    // `TSX_LOADER` is what gets handed to `node --import`, which takes a module
+    // specifier — a plain path on POSIX, a `file://` URL on Windows. Convert
+    // before stat'ing it; this is the identity on POSIX.
+    const loaderPath = TSX_LOADER.startsWith("file:") ? fileURLToPath(TSX_LOADER) : TSX_LOADER;
+    expect(existsSync(loaderPath)).toBe(true);
   });
 
   test("unset model env leaves registry defaults authoritative", () => {

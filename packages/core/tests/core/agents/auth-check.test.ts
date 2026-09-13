@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import { type AgentAuthHost, checkAgentAuth, checkAgentModelAuth } from "#agents/auth-check";
+
+// `checkAgentAuth` builds this with `path.join`, so it carries the host
+// separator. Build the fixture the same way rather than writing the POSIX form
+// literally, which no longer matched what the code probed for on Windows.
+const CLAUDE_CREDENTIALS_PATH = join("/host/home", ".claude", ".credentials.json");
 
 function host(overrides: Partial<AgentAuthHost> = {}): AgentAuthHost {
   return {
@@ -59,7 +65,7 @@ describe("checkAgentAuth host boundary", () => {
           operatingSystem: () => "darwin",
           hasMacOsCredential: () => false,
           homeDirectory: () => "/host/home",
-          exists: (path) => path === "/host/home/.claude/.credentials.json",
+          exists: (path) => path === CLAUDE_CREDENTIALS_PATH,
         }),
       ),
     ).toEqual({ ok: true });
@@ -73,8 +79,7 @@ describe("checkAgentAuth host boundary", () => {
       ),
     ).toEqual({
       ok: false,
-      error:
-        "claude is not logged in (no macOS keychain entry 'Claude Code-credentials' and no credentials at /host/home/.claude/.credentials.json). Run `claude` and complete login first",
+      error: `claude is not logged in (no macOS keychain entry 'Claude Code-credentials' and no credentials at ${CLAUDE_CREDENTIALS_PATH}). Run \`claude\` and complete login first`,
     });
   });
 

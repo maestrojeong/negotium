@@ -1,8 +1,37 @@
 import { describe, expect, it } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { resolveHeadedPlaywrightSpawn } from "#platform/playwright/headed-launch";
+
+/**
+ * The PATH search below tells candidates apart by their execute bit, staged
+ * with `chmod`. Windows has no execute bit — `chmod` does not clear X_OK there,
+ * so both candidates look runnable and the case cannot express what it is
+ * checking. Probe the host rather than naming a platform.
+ */
+const honoursExecuteBit = (() => {
+  const probe = mkdtempSync(join(tmpdir(), "negotium-execbit-probe-"));
+  try {
+    const file = join(probe, "not-executable");
+    writeFileSync(file, "");
+    chmodSync(file, 0o644);
+    accessSync(file, constants.X_OK);
+    return false;
+  } catch {
+    return true;
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+})();
 
 describe("resolveHeadedPlaywrightSpawn", () => {
   const command = "/usr/bin/node";
@@ -68,36 +97,39 @@ describe("resolveHeadedPlaywrightSpawn", () => {
     ).toThrow("requires DISPLAY/WAYLAND_DISPLAY or xvfb-run");
   });
 
-  it("searches PATH for an executable xvfb-run and skips non-executable candidates", () => {
-    const root = mkdtempSync(join(tmpdir(), "negotium-xvfb-path-"));
-    const blockedDir = join(root, "blocked");
-    const executableDir = join(root, "executable");
-    mkdirSync(blockedDir);
-    mkdirSync(executableDir);
-    const blocked = join(blockedDir, "xvfb-run");
-    const executable = join(executableDir, "xvfb-run");
-    writeFileSync(blocked, "#!/bin/sh\n");
-    writeFileSync(executable, "#!/bin/sh\n");
-    chmodSync(blocked, 0o644);
-    chmodSync(executable, 0o755);
+  it.skipIf(!honoursExecuteBit)(
+    "searches PATH for an executable xvfb-run and skips non-executable candidates",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "negotium-xvfb-path-"));
+      const blockedDir = join(root, "blocked");
+      const executableDir = join(root, "executable");
+      mkdirSync(blockedDir);
+      mkdirSync(executableDir);
+      const blocked = join(blockedDir, "xvfb-run");
+      const executable = join(executableDir, "xvfb-run");
+      writeFileSync(blocked, "#!/bin/sh\n");
+      writeFileSync(executable, "#!/bin/sh\n");
+      chmodSync(blocked, 0o644);
+      chmodSync(executable, 0o755);
 
-    try {
-      expect(
-        resolveHeadedPlaywrightSpawn(command, args, {
-          platform: "linux",
-          environment: {
-            DISPLAY: " ",
-            WAYLAND_DISPLAY: "\t",
-            PATH: [blockedDir, executableDir].join(delimiter),
-          },
-        }),
-      ).toEqual({
-        command: executable,
-        args: ["-a", "-s", "-screen 0 1440x1000x24", command, ...args],
-        virtualDisplay: true,
-      });
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+      try {
+        expect(
+          resolveHeadedPlaywrightSpawn(command, args, {
+            platform: "linux",
+            environment: {
+              DISPLAY: " ",
+              WAYLAND_DISPLAY: "\t",
+              PATH: [blockedDir, executableDir].join(delimiter),
+            },
+          }),
+        ).toEqual({
+          command: executable,
+          args: ["-a", "-s", "-screen 0 1440x1000x24", command, ...args],
+          virtualDisplay: true,
+        });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 });
