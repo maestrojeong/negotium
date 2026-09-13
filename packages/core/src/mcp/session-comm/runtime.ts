@@ -22,7 +22,7 @@ import {
   SESSION_WORKSPACE_DIR,
 } from "#platform/config";
 import { readJsonFile } from "#platform/jsonl";
-import { Database } from "#storage/sqlite";
+import { closeDatabase, Database } from "#storage/sqlite";
 import { configuredStorageDatabase, ensureStorageSchemas } from "#storage/storage-host";
 import type { AgentKind } from "#types";
 // NOTE: import from "#types" — NOT "@/agents". The agents barrel re-exports
@@ -92,7 +92,7 @@ export function withDb<T>(
     if (opts?.write) db.exec("PRAGMA journal_mode = WAL");
     return fn(db);
   } finally {
-    db.close();
+    closeDatabase(db);
   }
 }
 

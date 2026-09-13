@@ -135,7 +135,10 @@ export function withJoinCredentialLock<T>(operation: () => T): T {
       mkdirSync(lockPath, { mode: 0o700 });
       created = true;
       writeFileSync(ownerPath, `${JSON.stringify(owner)}\n`, { mode: 0o600 });
-      const ownerFd = openSync(ownerPath, "r");
+      // "r+" rather than "r": Windows refuses fsync on a read-only handle
+      // (EPERM), while POSIX accepts either. The file was just created here,
+      // so opening it for write is always permitted.
+      const ownerFd = openSync(ownerPath, "r+");
       try {
         fsyncSync(ownerFd);
       } finally {
@@ -257,12 +260,28 @@ export function isJoinPersisted(join: OtiumJoin): boolean {
   }
 }
 
+/**
+ * Flush a directory entry, where the platform supports it.
+ *
+ * Opening a directory and fsyncing it is a POSIX durability idiom with no
+ * Windows equivalent — there the open itself fails (EPERM/EISDIR). The file
+ * fsync plus the atomic link/rename above is the integrity boundary that
+ * matters; this only hardens the directory entry, so a platform that refuses
+ * it is not an error.
+ */
 function fsyncPath(target: string): void {
-  const fd = openSync(target, "r");
+  let fd: number | undefined;
   try {
+    fd = openSync(target, "r");
     fsyncSync(fd);
+  } catch {
+    // Best-effort: see above.
   } finally {
-    closeSync(fd);
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {}
+    }
   }
 }
 
