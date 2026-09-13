@@ -2,7 +2,7 @@
 
 import { existsSync, statSync } from "node:fs";
 import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
 const packageRoot = resolve(root, "apps/negotium");
@@ -86,6 +86,19 @@ const packageImportRoots = [
   resolve(root, "packages/module-cron/src"),
 ];
 
+/**
+ * Whether `path` is `sourceRoot` itself or lives under it.
+ *
+ * A `startsWith(`${sourceRoot}/`)` test only holds where "/" is the separator.
+ * On Windows both sides carry backslashes, so every importer missed its root
+ * and the bundler rejected the first `#…` specifier it saw. `relative` speaks
+ * the host separator, so the same comparison works on either platform.
+ */
+function isUnder(path: string, sourceRoot: string): boolean {
+  const rel = relative(sourceRoot, path);
+  return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
+}
+
 function resolveTypeScriptSource(requested: string): string {
   for (const candidate of [requested, `${requested}.ts`, resolve(requested, "index.ts")]) {
     if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
@@ -94,17 +107,13 @@ function resolveTypeScriptSource(requested: string): string {
 }
 
 function resolveLocalAlias(specifier: string, importer: string): string {
-  const sourceRoot = localSourceRoots.find(
-    (candidate) => importer === candidate || importer.startsWith(`${candidate}/`),
-  );
+  const sourceRoot = localSourceRoots.find((candidate) => isUnder(importer, candidate));
   if (!sourceRoot) throw new Error(`cannot resolve ${specifier} from ${importer}`);
   return resolveTypeScriptSource(resolve(sourceRoot, specifier.slice(2)));
 }
 
 function resolvePackageImport(specifier: string, importer: string): string {
-  const sourceRoot = packageImportRoots.find(
-    (candidate) => importer === candidate || importer.startsWith(`${candidate}/`),
-  );
+  const sourceRoot = packageImportRoots.find((candidate) => isUnder(importer, candidate));
   if (!sourceRoot) throw new Error(`cannot resolve ${specifier} from ${importer}`);
   return resolveTypeScriptSource(resolve(sourceRoot, specifier.slice(1)));
 }
