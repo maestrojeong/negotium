@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
+import { toDisplayPath } from "#platform/paths";
 
 // --- Sensitive path blacklist ---
 
@@ -23,10 +24,16 @@ const SENSITIVE_PATH_PATTERNS = [
 
 export function isSensitivePath(filePath: string): boolean {
   const normalized = resolve(filePath);
-  if (SENSITIVE_PATH_PATTERNS.some((p) => p.test(normalized))) return true;
+  // Every pattern above anchors on "/". `resolve` returns the host separator,
+  // so on Windows each one silently stopped matching and the whole blacklist
+  // became inert. Compare against a "/"-separated rendering instead; on POSIX
+  // `toDisplayPath` is the identity, so matching there is unchanged.
+  if (SENSITIVE_PATH_PATTERNS.some((p) => p.test(toDisplayPath(normalized)))) return true;
   try {
     const real = realpathSync(normalized);
-    if (real !== normalized) return SENSITIVE_PATH_PATTERNS.some((p) => p.test(real));
+    if (real !== normalized) {
+      return SENSITIVE_PATH_PATTERNS.some((p) => p.test(toDisplayPath(real)));
+    }
   } catch {
     // File doesn't exist — no symlink concern
   }

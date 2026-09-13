@@ -1,0 +1,20 @@
+# Keep the working tree LF on every platform.
+#
+# Biome is configured with `lineEnding: "lf"` (biome.json), so a Windows
+# checkout made under git's default `core.autocrlf=true` fails `bun run lint`
+# on every tracked file — the contents are correct, only the line endings are
+# not. Declaring the repository text-normalized makes the checkout LF
+# regardless of the contributor's local autocrlf setting, and is a no-op on
+# macOS and Linux, which already check out LF.
+* text=auto eol=lf
+
+# Binary assets must never be line-ending normalized.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.woff binary
+*.woff2 binary

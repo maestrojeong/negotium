@@ -34,6 +34,30 @@ import { assertSecureCentralUrl, assertSecureRelayUrl } from "@/secure-transport
 
 const INFO = Buffer.from("otium-node-enrollment-v1", "utf8");
 
+/**
+ * Flush a directory entry, where the platform supports it.
+ *
+ * Opening a directory to fsync it is a POSIX idiom Windows has no equivalent
+ * for — the open itself fails there. The preceding file fsync plus the atomic
+ * link/rename is the integrity boundary; hardening the directory entry on top
+ * is best-effort, so a platform that refuses it must not fail the write.
+ */
+function fsyncDirectoryBestEffort(directory: string): void {
+  let fd: number | undefined;
+  try {
+    fd = openSync(directory, "r");
+    fsyncSync(fd);
+  } catch {
+    // Best-effort: see above.
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {}
+    }
+  }
+}
+
 export interface EnrollmentInvite {
   v: 2;
   central: string;
@@ -149,12 +173,7 @@ function loadOrCreatePending(invite: EnrollmentInvite, nodeName?: string): Pendi
     linkSync(temporaryPath, path);
     unlinkSync(temporaryPath);
     chmodSync(path, 0o600);
-    const directoryFd = openSync(dirname(path), "r");
-    try {
-      fsyncSync(directoryFd);
-    } finally {
-      closeSync(directoryFd);
-    }
+    fsyncDirectoryBestEffort(dirname(path));
   } catch (error) {
     if (fd !== undefined) closeSync(fd);
     if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
@@ -182,12 +201,7 @@ function replacePendingEnrollment(pending: PendingEnrollment): void {
     closeSync(fd);
     fd = undefined;
     renameSync(temporaryPath, path);
-    const directoryFd = openSync(directory, "r");
-    try {
-      fsyncSync(directoryFd);
-    } finally {
-      closeSync(directoryFd);
-    }
+    fsyncDirectoryBestEffort(directory);
   } catch (error) {
     if (fd !== undefined) closeSync(fd);
     if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
@@ -331,12 +345,7 @@ export function commitEnrollment(join: OtiumJoin, options: SaveJoinOptions = {})
     // The same lock protects save→verification→pending deletion from a
     // concurrent explicit replacement through saveJoin().
     unlinkSync(pendingPath);
-    const directoryFd = openSync(dirname(pendingPath), "r");
-    try {
-      fsyncSync(directoryFd);
-    } finally {
-      closeSync(directoryFd);
-    }
+    fsyncDirectoryBestEffort(dirname(pendingPath));
     return path;
   });
 }

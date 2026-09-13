@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
   createTasks,
   deleteTasks,
@@ -20,7 +21,8 @@ describe("task store paths", () => {
 
   test("sanitizes scope keys into the flat canonical-user task directory", () => {
     const path = getTaskFilePath("user-1", "Topic / A");
-    expect(path.endsWith("/tasks/Topic___A.json")).toBe(true);
+    // Built with `path.join`, so the suffix carries the host separator.
+    expect(path.endsWith(join("tasks", "Topic___A.json"))).toBe(true);
   });
 
   test("ignores user id path components retained for wire compatibility", () => {

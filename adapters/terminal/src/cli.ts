@@ -48,6 +48,11 @@ async function spawnNodeDaemon(port: number): Promise<void> {
     stdin: "ignore",
     stdout: "ignore",
     stderr: Bun.file(daemonLogPath),
+    // `detached` gives the daemon its own console on Windows, which surfaces as
+    // a window flashing over whatever the user is doing every time the node is
+    // auto-started. The daemon writes to a log file, so it has no use for one.
+    // Ignored on POSIX.
+    windowsHide: true,
   });
   child.unref();
 }

@@ -125,6 +125,8 @@ const forkCodexThread = createCodexAppServerForker({
     return spawn(process.execPath, [codexCliScriptPath(), "app-server", "--stdio"], {
       env: { ...process.env, CODEX_HOME: hostedCodexHomePath() },
       stdio: ["pipe", "pipe", "pipe"],
+      // Background stdio server — no console window on Windows. Ignored on POSIX.
+      windowsHide: true,
     });
   },
   findRolloutPath: latestCodexRolloutPath,

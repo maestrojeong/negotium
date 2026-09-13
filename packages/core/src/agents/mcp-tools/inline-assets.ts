@@ -59,8 +59,18 @@ export interface InlineReport {
 }
 
 /** Remote URL, data/blob URI, protocol-relative URL, or bare fragment. */
+/** `C:\assets\chart.png` / `C:/assets/chart.png` — a Windows absolute path. */
+const WINDOWS_DRIVE_PATH = /^[a-z]:[\\/]/i;
+
 function isNonLocal(ref: string): boolean {
-  return /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(ref.trim());
+  const trimmed = ref.trim();
+  // A Windows absolute path opens with a drive letter and a colon, which the
+  // scheme test below reads as a URL scheme — so such a reference was never
+  // inlined there, and the raw local path was emitted into the HTML instead.
+  // Only exempt it on the platform where the spelling means a path, leaving
+  // POSIX's treatment of a one-letter scheme untouched.
+  if (process.platform === "win32" && WINDOWS_DRIVE_PATH.test(trimmed)) return false;
+  return /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(trimmed);
 }
 
 /** `./chart.png?v=2#frag` → `./chart.png` */

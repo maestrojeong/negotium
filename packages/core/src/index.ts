@@ -231,6 +231,7 @@ export {
   runNodeRequestHandlers,
   unregisterNodeRequestHandler,
 } from "#platform/node-plugins";
+export { isInsideDir, toDisplayPath } from "#platform/paths";
 export {
   killAllPlaywright,
   reapPlaywrightOrphans as reapOrphanBrowsers,

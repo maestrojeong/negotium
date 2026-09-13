@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { isAbsolute, join, relative, sep } from "node:path";
 import {
   activeAtToken,
   completePathToken,
@@ -28,6 +28,17 @@ writeFileSync(join(root, "src", "readme.md"), "");
 writeFileSync(join(root, "nested", "alphabet", "marker.txt"), "");
 
 afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+// A completed token is rendered by `toToken`, which shortens anything under the
+// home directory to `~/…`. On macOS and Linux the system temp dir sits outside
+// home so `root` comes back verbatim; on Windows `tmpdir()` is under
+// `%USERPROFILE%`, so the shortened form is the correct output. Derive the
+// expected rendering instead of assuming either host's layout.
+const displayRoot = (() => {
+  const rel = relative(homedir(), root);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return root;
+  return `~/${rel.split(sep).join("/")}`;
+})();
 
 describe("activeAtToken", () => {
   test("detects a trailing @token at line start or after whitespace", () => {
@@ -133,11 +144,11 @@ describe("completePathToken", () => {
     const dir = result?.items.find((item) => item.isDir);
     expect(dir).toBeDefined();
     const completed = completePathToken(token, token.length, dir!);
-    expect(completed?.line).toBe(`${root}/alpha/`);
-    expect(completed?.col).toBe(`${root}/alpha/`.length);
+    expect(completed?.line).toBe(`${displayRoot}/alpha/`);
+    expect(completed?.col).toBe(`${displayRoot}/alpha/`.length);
 
     const drilling = completePathToken(token, token.length, dir!, { keepTrigger: true });
-    expect(drilling?.line).toBe(`@${root}/alpha/`);
+    expect(drilling?.line).toBe(`@${displayRoot}/alpha/`);
   });
 
   test("replaces the whole token when completing from inside it", () => {
@@ -149,7 +160,7 @@ describe("completePathToken", () => {
     expect(dir).toBeDefined();
     const completed = completePathToken(line, col, dir!, { keepTrigger: true });
     // The trailing "pha" must not survive as `@${root}/alpha/pha`.
-    expect(completed?.line).toBe(`@${root}/alpha/`);
+    expect(completed?.line).toBe(`@${displayRoot}/alpha/`);
   });
 
   test("keeps surrounding text intact when completing mid-line", () => {
@@ -161,7 +172,7 @@ describe("completePathToken", () => {
     const result = pathSuggestions(dirToken, dirToken.length);
     const beta = result?.items.find((item) => item.label === "beta/");
     const completed = completePathToken(line, col, beta!);
-    expect(completed?.line).toBe(`see ${root}/beta/${suffix}`);
+    expect(completed?.line).toBe(`see ${displayRoot}/beta/${suffix}`);
   });
 
   test("preserves punctuation after the active path fragment", () => {
@@ -170,7 +181,7 @@ describe("completePathToken", () => {
     const result = pathSuggestions(`@${root}/be`, `@${root}/be`.length);
     const beta = result?.items.find((item) => item.label === "beta/");
     const completed = completePathToken(line, col, beta!, { keepTrigger: true });
-    expect(completed?.line).toBe(`see @${root}/beta/, thanks`);
+    expect(completed?.line).toBe(`see @${displayRoot}/beta/, thanks`);
   });
 
   describe("stripResolvedPathTriggers", () => {

@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { VAULT_MASTER_KEY } from "#platform/config";
-import { Database } from "#storage/sqlite";
+import { closeDatabase, Database } from "#storage/sqlite";
 import { resolveStorageDataDir } from "#storage/storage-host";
 import { decryptVaultValue, encryptVaultValue, isEncryptedVaultValue } from "#storage/vault-crypto";
 
@@ -150,10 +150,21 @@ export function configureVaultStorage(options: VaultStorageOptions): () => void 
   const previousMasterKey = vaultMasterKey;
   const configuredDb =
     options.database ?? openVaultDatabase(options.dataDir ?? resolveStorageDataDir());
-  if (options.database) initializeVaultDatabase(configuredDb);
   const targetKey = options.masterKey ?? VAULT_MASTER_KEY;
-  if (options.legacyMasterKeys && options.legacyMasterKeys.length > 0) {
-    migrateLegacyMasterKeys(configuredDb, targetKey, options.legacyMasterKeys);
+  try {
+    if (options.database) initializeVaultDatabase(configuredDb);
+    if (options.legacyMasterKeys && options.legacyMasterKeys.length > 0) {
+      migrateLegacyMasterKeys(configuredDb, targetKey, options.legacyMasterKeys);
+    }
+  } catch (error) {
+    // A failed migration must not leak the connection this call opened: there
+    // is no dispose to hand back, so nothing else can ever close it. Only a
+    // database we opened ourselves is ours to close — an injected one is
+    // borrowed.
+    if (!options.database) {
+      closeDatabase(configuredDb as VaultDatabase & { close(throwOnError?: boolean): void });
+    }
+    throw error;
   }
   vaultDb = configuredDb;
   vaultMasterKey = targetKey;
@@ -162,7 +173,7 @@ export function configureVaultStorage(options: VaultStorageOptions): () => void 
     if (disposed) return;
     disposed = true;
     if (!options.database && "close" in configuredDb) {
-      (configuredDb as VaultDatabase & { close(): void }).close();
+      closeDatabase(configuredDb as VaultDatabase & { close(throwOnError?: boolean): void });
     }
     vaultDb = previousDb;
     vaultMasterKey = previousMasterKey;

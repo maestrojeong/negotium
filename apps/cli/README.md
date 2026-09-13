@@ -2,7 +2,9 @@
 
 Installable CLI for Negotium and its Terminal, Telegram, and Otium adapters.
 
-Requires Bun 1.2.15 or newer on macOS or Linux, plus credentials for Claude, Codex, or Maestro.
+Requires Bun 1.2.15 or newer on macOS, Linux, or Windows, plus credentials for Claude, Codex, or
+Maestro. The installed command runs on Bun, so keep Bun on `PATH`. Windows hosts must use the
+Claude or Maestro backend; Codex turns fail closed there.
 
 ```bash
 npm install --global @negotium/cli

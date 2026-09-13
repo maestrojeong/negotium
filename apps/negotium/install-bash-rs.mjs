@@ -5,23 +5,27 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { arch, homedir, platform } from "node:os";
 import { resolve } from "node:path";
 
-const VERSION = "v0.1.7";
+const VERSION = "v0.1.10";
 const RELEASE_BASE = `https://github.com/maestrojeong/bash-rs-mcp/releases/download/${VERSION}`;
 const TARGETS = {
   "darwin-arm64": {
     asset: "bash-rs-macos-arm64",
-    sha256: "e022996e43abdf7cd9ee4f3be7589c7f640234a300c6674c9324fe566559bc16",
+    sha256: "7cb88480af5ec5ac9d3d82aebb83cf652e3c9d01f448a374d8c98c8b20459f37",
   },
   "linux-x64": {
     asset: "bash-rs-linux-x64",
-    sha256: "7683948a77ab8dfffb732e3c019998e6510a443e504daf626b92754fe9f7857d",
+    sha256: "3fb17619f15ea9ea3778c090fe1f2abea363c51a2b0750e4bd0bc72430adefe1",
   },
   // Linux on arm64 is what an Apple Silicon machine runs containers as, and
   // what the cheaper cloud instances are. Until v0.1.6 published this asset,
   // background_bash was simply absent on those hosts.
   "linux-arm64": {
     asset: "bash-rs-linux-arm64",
-    sha256: "1a631a4fff1d9ea9fadc37bf0e81eefb8e401e266bf6b8266bb4734f24af2c79",
+    sha256: "5f9a4e985c45b5af55c50427194d9680f875ddf2f95fc66ddb6cfff20f52af36",
+  },
+  "win32-x64": {
+    asset: "bash-rs-windows-x64.exe",
+    sha256: "233902374581fcec3d010664b520a1cb8ade15b73aef064ddf1bbdac34b26aa5",
   },
 };
 
@@ -43,7 +47,9 @@ async function install() {
     ? resolve(process.env.NEGOTIUM_STATE_DIR.trim())
     : resolve(homedir(), ".negotium");
   const installDir = resolve(stateDir, "binaries", "bash-rs", VERSION);
-  const destination = resolve(installDir, "bash-rs");
+  // Windows decides executability by extension, so the binary has to land as
+  // `bash-rs.exe` — `resolveBashRsBin` looks for exactly that name.
+  const destination = resolve(installDir, `bash-rs${platform() === "win32" ? ".exe" : ""}`);
   await mkdir(installDir, { recursive: true });
 
   try {

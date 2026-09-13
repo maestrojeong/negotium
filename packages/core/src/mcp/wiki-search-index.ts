@@ -1,5 +1,5 @@
 import { chmodSync, existsSync, readFileSync, unlinkSync } from "node:fs";
-import { Database } from "#storage/sqlite";
+import { closeDatabase, Database } from "#storage/sqlite";
 
 const SEARCH_INDEX_SCHEMA_VERSION = 3;
 
@@ -124,13 +124,13 @@ export class WikiSearchIndex {
       ensureSchema(this.#database);
       chmodSync(path, 0o600);
     } catch (error) {
-      this.#database.close();
+      closeDatabase(this.#database);
       throw error;
     }
   }
 
   close(): void {
-    this.#database.close();
+    closeDatabase(this.#database);
   }
 
   /**

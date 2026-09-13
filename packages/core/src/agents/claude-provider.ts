@@ -288,6 +288,10 @@ export function spawnClaudeCodeProcessWithTreeKill(
     detached: true,
     env: options.env as NodeJS.ProcessEnv,
     stdio: ["pipe", "pipe", "inherit"],
+    // Windows gives every console child its own window unless told otherwise,
+    // so without this each turn blinks a black box over whatever the user is
+    // looking at. Ignored on POSIX.
+    windowsHide: true,
   });
   if (!child.stdin || !child.stdout) {
     child.kill("SIGKILL");

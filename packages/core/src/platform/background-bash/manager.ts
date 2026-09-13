@@ -167,6 +167,9 @@ export function createBackgroundBashManager(
     const process = spawnImpl(bashRsBin, [String(port)], {
       stdio: "ignore",
       detached: false,
+      // Long-lived background server — no console window on Windows. Ignored
+      // on POSIX.
+      windowsHide: true,
       env: {
         ...(options.env ?? globalThis.process.env),
         NEGOTIUM_BG_BASH_CAPABILITY: runtimeCapability,

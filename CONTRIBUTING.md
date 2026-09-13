@@ -9,7 +9,13 @@ Requirements:
 
 - Bun 1.2.15 or newer
 - Node.js 20 or newer when testing Codex stdio MCP tools
-- macOS or Linux
+- macOS, Linux, or Windows
+
+Platform-specific code belongs behind a `process.platform` check, and POSIX
+behavior must stay exactly as it was — a Windows fix that changes what macOS or
+Linux does is not a fix. Prefer `node:path` helpers (`relative`, `isAbsolute`,
+`basename`) over comparing separators by hand: a `startsWith` test anchored on a
+literal `/` silently fails on a backslash path.
 
 ```bash
 git clone git@github.com:maestrojeong/negotium.git

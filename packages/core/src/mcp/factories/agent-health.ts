@@ -55,6 +55,8 @@ function spawnCapture(
       env: env ?? process.env,
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
+      // No console window for a health probe. Ignored on POSIX.
+      windowsHide: true,
     });
     let settled = false;
     let stdout = "";

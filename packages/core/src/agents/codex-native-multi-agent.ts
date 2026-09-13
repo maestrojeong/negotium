@@ -107,6 +107,8 @@ async function bootstrapCodexModelCache(codexHome: string, cachePath: string): P
   const child = spawn(process.execPath, [codexCliScriptPath(), "app-server", "--stdio"], {
     env: { ...process.env, CODEX_HOME: codexHome },
     stdio: ["pipe", "pipe", "pipe"],
+    // Background stdio server — no console window on Windows. Ignored on POSIX.
+    windowsHide: true,
   });
 
   await new Promise<void>((resolve, reject) => {

@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { Database } from "#storage/sqlite";
+import { closeDatabase, Database } from "#storage/sqlite";
 import type { StorageDatabase, StorageHostConfig } from "#storage/storage-contract";
 
 export type {
@@ -161,7 +161,7 @@ function defaultDatabase(): InternalStorageDatabase {
   const path = defaultSessionsDatabasePath();
   const state = storageState();
   if (state.fallbackDatabase && state.fallbackDatabasePath === path) return state.fallbackDatabase;
-  if (state.fallbackDatabase) state.fallbackDatabase.close();
+  if (state.fallbackDatabase) closeDatabase(state.fallbackDatabase);
   mkdirSync(dirname(path), { recursive: true });
   state.fallbackDatabase = new Database(path, { create: true }) as unknown as OwnedStorageDatabase;
   state.fallbackDatabasePath = path;
@@ -274,7 +274,7 @@ export function resetStorageHost(): void {
 export function closeStorageDatabase(): void {
   const state = storageState();
   if (!state.fallbackDatabase) return;
-  state.fallbackDatabase.close();
+  closeDatabase(state.fallbackDatabase);
   state.fallbackDatabase = null;
   state.fallbackDatabasePath = null;
 }

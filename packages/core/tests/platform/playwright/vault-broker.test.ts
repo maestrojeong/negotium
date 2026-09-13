@@ -3,11 +3,12 @@ import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isNamedPipe } from "#platform/ipc";
 import {
   type BrowserVaultBrokerHandle,
   createBrowserVaultBroker,
 } from "#platform/playwright/vault-broker";
-import { Database } from "#storage/sqlite";
+import { closeDatabase, Database } from "#storage/sqlite";
 import { configureVaultStorage, vaultDel, vaultSet } from "#storage/vault";
 import { encryptVaultValue } from "#storage/vault-crypto";
 
@@ -59,7 +60,14 @@ async function setup(
 describe("browser Vault substitution", () => {
   test("uses a private socket and rejects a bad token", async () => {
     const { broker } = await setup("broker-auth-user");
-    expect(statSync(broker.socketPath).mode & 0o777).toBe(0o600);
+    if (isNamedPipe(broker.socketPath)) {
+      // A Windows named pipe is not a filesystem object, so there are no mode
+      // bits to assert. The token check exercised below is what carries the
+      // access boundary there.
+      expect(broker.socketPath).toStartWith("\\\\.\\pipe\\");
+    } else {
+      expect(statSync(broker.socketPath).mode & 0o777).toBe(0o600);
+    }
     const result = await new Promise<Record<string, unknown>>((resolveResponse) => {
       const socket = connect(broker.socketPath);
       socket.setEncoding("utf8");
@@ -88,7 +96,10 @@ describe("browser Vault substitution", () => {
         userId,
         "DAMAGED",
       );
-    database.close();
+    // Not `database.close()`: the UPDATE above leaves a prepared statement
+    // holding the file open, which blocks this test's temp-dir cleanup on
+    // Windows (see closeDatabase).
+    closeDatabase(database);
     const transformed = await request(broker, {
       id: 1,
       op: "transform_input",

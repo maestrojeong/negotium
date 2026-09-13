@@ -17,6 +17,16 @@ import { renderTurnFooter } from "#runtime/footer";
 
 const TMP = mkdtempSync(join(tmpdir(), "negotium-channel-media-"));
 
+/**
+ * The transcription cases below stand up a fake CLI as a `#!/bin/sh` script and
+ * drive it with `/bin/sh` and `/usr/bin/true`. None of that exists on Windows —
+ * there is no shebang support and no such binaries — so the fixture, not the
+ * code under test, is what cannot run there. Probe for the interpreters instead
+ * of naming a platform.
+ */
+const hasPosixShellFixtures = existsSync("/bin/sh") && existsSync("/usr/bin/true");
+const withPosixShell = test.skipIf(!hasPosixShellFixtures);
+
 describe("[FILE:] tag helpers", () => {
   test("extractFileTagPaths returns deduped absolute paths in order", () => {
     const text =
@@ -80,13 +90,15 @@ describe("transcribeAudio", () => {
     expect(text).toBeNull();
   });
 
-  test("runs the wrapper and returns its transcript (token-free fake wrapper)", async () => {
-    // Fake "python wrapper": a shell script that writes audio.txt into
-    // --output-dir, mimicking faster-whisper-wrapper.py's contract.
-    const wrapper = join(TMP, "fake-whisper.sh");
-    writeFileSync(
-      wrapper,
-      `#!/bin/sh
+  withPosixShell(
+    "runs the wrapper and returns its transcript (token-free fake wrapper)",
+    async () => {
+      // Fake "python wrapper": a shell script that writes audio.txt into
+      // --output-dir, mimicking faster-whisper-wrapper.py's contract.
+      const wrapper = join(TMP, "fake-whisper.sh");
+      writeFileSync(
+        wrapper,
+        `#!/bin/sh
 out=""
 prev=""
 for a in "$@"; do
@@ -95,19 +107,20 @@ for a in "$@"; do
 done
 printf 'fake transcript' > "$out/audio.txt"
 `,
-    );
-    chmodSync(wrapper, 0o755);
-    const voicePath = join(TMP, "voice.ogg");
-    writeFileSync(voicePath, "not really audio");
+      );
+      chmodSync(wrapper, 0o755);
+      const voicePath = join(TMP, "voice.ogg");
+      writeFileSync(voicePath, "not really audio");
 
-    const opts = {
-      ffmpegBin: "/usr/bin/true", // conversion step becomes a no-op
-      pythonBin: "/bin/sh",
-      wrapperPath: wrapper,
-    };
-    expect(isTranscriptionConfigured(opts)).toBe(true);
-    expect(await transcribeAudio(voicePath, opts)).toBe("fake transcript");
-  });
+      const opts = {
+        ffmpegBin: "/usr/bin/true", // conversion step becomes a no-op
+        pythonBin: "/bin/sh",
+        wrapperPath: wrapper,
+      };
+      expect(isTranscriptionConfigured(opts)).toBe(true);
+      expect(await transcribeAudio(voicePath, opts)).toBe("fake transcript");
+    },
+  );
 
   test("mlx-whisper's default model is a full HF repo id, never the faster-whisper alias", () => {
     // Regression test: WHISPER_MODEL_MLX used to fall back to WHISPER_MODEL
@@ -120,15 +133,17 @@ printf 'fake transcript' > "$out/audio.txt"
     expect(WHISPER_MODEL_MLX).toContain("/");
   });
 
-  test("mlx-whisper backend: not configured without MLX_WHISPER_BIN, then runs like faster-whisper", async () => {
-    // Same fake CLI as the faster-whisper case — mlx_whisper accepts the
-    // identical `INPUT --model M --language L --output-dir D --output-format
-    // txt` shape (see clawgram's transcribe.ts), so extractFromAudio only
-    // swaps which binary it invokes.
-    const mlxBin = join(TMP, "fake-mlx-whisper.sh");
-    writeFileSync(
-      mlxBin,
-      `#!/bin/sh
+  withPosixShell(
+    "mlx-whisper backend: not configured without MLX_WHISPER_BIN, then runs like faster-whisper",
+    async () => {
+      // Same fake CLI as the faster-whisper case — mlx_whisper accepts the
+      // identical `INPUT --model M --language L --output-dir D --output-format
+      // txt` shape (see clawgram's transcribe.ts), so extractFromAudio only
+      // swaps which binary it invokes.
+      const mlxBin = join(TMP, "fake-mlx-whisper.sh");
+      writeFileSync(
+        mlxBin,
+        `#!/bin/sh
 out=""
 prev=""
 for a in "$@"; do
@@ -137,23 +152,24 @@ for a in "$@"; do
 done
 printf 'fake mlx transcript' > "$out/audio.txt"
 `,
-    );
-    chmodSync(mlxBin, 0o755);
-    const voicePath = join(TMP, "voice-mlx.ogg");
-    writeFileSync(voicePath, "not really audio");
+      );
+      chmodSync(mlxBin, 0o755);
+      const voicePath = join(TMP, "voice-mlx.ogg");
+      writeFileSync(voicePath, "not really audio");
 
-    expect(isTranscriptionConfigured({ backend: "mlx-whisper", ffmpegBin: "/usr/bin/true" })).toBe(
-      false,
-    );
+      expect(
+        isTranscriptionConfigured({ backend: "mlx-whisper", ffmpegBin: "/usr/bin/true" }),
+      ).toBe(false);
 
-    const opts = {
-      backend: "mlx-whisper" as const,
-      ffmpegBin: "/usr/bin/true",
-      mlxWhisperBin: mlxBin,
-    };
-    expect(isTranscriptionConfigured(opts)).toBe(true);
-    expect(await transcribeAudio(voicePath, opts)).toBe("fake mlx transcript");
-  });
+      const opts = {
+        backend: "mlx-whisper" as const,
+        ffmpegBin: "/usr/bin/true",
+        mlxWhisperBin: mlxBin,
+      };
+      expect(isTranscriptionConfigured(opts)).toBe(true);
+      expect(await transcribeAudio(voicePath, opts)).toBe("fake mlx transcript");
+    },
+  );
 });
 
 describe("renderTurnFooter", () => {

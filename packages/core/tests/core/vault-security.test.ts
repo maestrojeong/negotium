@@ -8,7 +8,7 @@ import {
   shouldSubstituteVaultToolInput,
 } from "#agents/vault-tool-policy";
 import { DATA_DIR } from "#platform/config";
-import { Database } from "#storage/sqlite";
+import { closeDatabase, Database } from "#storage/sqlite";
 import {
   configureVaultStorage,
   redactVaultSecrets,
@@ -109,7 +109,7 @@ describe("Vault secret boundary", () => {
           decryptVaultValue("embedded-user", "HOST_TOKEN", row.value, "host-owned-test-key").value,
         ).toBe("embedded-secret");
       } finally {
-        database.close();
+        closeDatabase(database);
       }
     } finally {
       restore();

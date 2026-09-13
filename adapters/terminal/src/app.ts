@@ -766,10 +766,13 @@ export class TerminalApp {
     const frame = this.#selection
       ? highlightScreenSelection(baseFrame, this.#selection)
       : baseFrame;
-    const patch = this.#screen.update(frame, rows);
-    // Terminal emulators anchor IME preedit text to the hardware cursor.
-    const cursor = rendered.cursor ? placeTerminalCursor(rendered.cursor) : "";
-    if (patch || cursor) process.stdout.write(`${patch}${cursor}`);
+    // Terminal emulators anchor IME preedit text to the hardware cursor. The
+    // placement goes through the renderer so it lands inside the synchronized
+    // block with the patch, rather than as a second write the terminal can be
+    // caught between.
+    const patch = this.#screen.update(frame, rows, rendered.cursor);
+    const cursorOnly = patch || !rendered.cursor ? "" : placeTerminalCursor(rendered.cursor);
+    if (patch || cursorOnly) process.stdout.write(`${patch}${cursorOnly}`);
   }
 
   async #toggleSubagentGraph(): Promise<void> {

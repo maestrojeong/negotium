@@ -5,16 +5,20 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { arch, homedir, platform } from "node:os";
 import { resolve } from "node:path";
 
-const VERSION = "v0.4.0";
+const VERSION = "v0.4.5";
 const RELEASE_BASE = `https://github.com/maestrojeong/browser-rs-mcp/releases/download/${VERSION}`;
 const TARGETS = {
   "darwin-arm64": {
     asset: "browser-rs-macos-arm64",
-    sha256: "8d7917926676bfbef60a86199e3f25e7daf54b5954e5b06a07e386d0f57eaa23",
+    sha256: "b43a3e48c48fcb14e2d56008347b2258b82c6f8eaa62286a87c0f896ebf38110",
   },
   "linux-x64": {
     asset: "browser-rs-linux-x64",
-    sha256: "c89002a3848f49fc7a2c346ff40184338e5173c8141fb37e6f0cf90db8067af8",
+    sha256: "29d8fef25c967e47543ce2933392700a9ef0466cff052959531fa51ceeec58ff",
+  },
+  "win32-x64": {
+    asset: "browser-rs-windows-x64.exe",
+    sha256: "bd473b06aa20aebda3de98a6106e5e1f2667ebb62bd67334f4261ad3767ed373",
   },
 };
 
@@ -36,7 +40,9 @@ async function install() {
     ? resolve(process.env.NEGOTIUM_STATE_DIR.trim())
     : resolve(homedir(), ".negotium");
   const installDir = resolve(stateDir, "binaries", "browser-rs", VERSION);
-  const destination = resolve(installDir, "browser-rs");
+  // Windows decides executability by extension, so the binary has to land as
+  // `browser-rs.exe` — `resolveBrowserRsBin` looks for exactly that name.
+  const destination = resolve(installDir, `browser-rs${platform() === "win32" ? ".exe" : ""}`);
   await mkdir(installDir, { recursive: true });
 
   try {

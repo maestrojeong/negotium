@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import {
   type ArchiverHost,
   type ArchiverStorageHost,
@@ -105,14 +106,19 @@ function runAndSettle(
 
 describe("archiver runtime factory", () => {
   test("finds only the current topic's newly numbered summary", () => {
+    // `findSummaryFile` composes with `path.join`, so the fake's keys have to
+    // carry the host separator too — a "/"-joined literal matched nothing on
+    // Windows and the lookup fell through to null.
+    const summariesDir = join("/wiki", "summaries");
+    const summary = (name: string) => join(summariesDir, name);
     const modified = new Map([
-      ["/wiki/summaries/2026-07-29-other-topic.md", 300],
-      ["/wiki/summaries/2026-07-29-Factory-Test~2.md", 200],
-      ["/wiki/summaries/2026-07-29-Factory-Test.md", 50],
+      [summary("2026-07-29-other-topic.md"), 300],
+      [summary("2026-07-29-Factory-Test~2.md"), 200],
+      [summary("2026-07-29-Factory-Test.md"), 50],
     ]);
     const storage = {
       getWikiDir: () => "/wiki",
-      fileExists: (path: string) => path === "/wiki/summaries",
+      fileExists: (path: string) => path === summariesDir,
       listDirectory: () => [
         "2026-07-29-other-topic.md",
         "2026-07-29-Factory-Test~2.md",
@@ -122,7 +128,7 @@ describe("archiver runtime factory", () => {
     } as unknown as ArchiverStorageHost;
 
     expect(findSummaryFile(storage, "Factory Test", "2026-07-29", 100, "topic-id")).toBe(
-      "/wiki/summaries/2026-07-29-Factory-Test~2.md",
+      summary("2026-07-29-Factory-Test~2.md"),
     );
   });
 

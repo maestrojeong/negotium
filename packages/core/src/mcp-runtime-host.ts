@@ -36,6 +36,7 @@ export { errMsg } from "#platform/error";
 export { appendJsonlEntry } from "#platform/jsonl";
 export { logger } from "#platform/logger";
 export { OPTIONAL_FORUM_MCP_SERVERS, REQUIRED_FORUM_MCP_SERVERS } from "#platform/mcp-config";
+export { isInsideDir } from "#platform/paths";
 export { abortRoom, getRoomQuery } from "#query/active-rooms";
 export { sessionInboxPath } from "#query/session-inbox-path";
 export { prepareDeliveryAck } from "#runtime/delivery-ack";

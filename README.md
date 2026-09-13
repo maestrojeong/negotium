@@ -105,7 +105,7 @@ Four pieces ship with Negotium rather than being bolted on:
 Requirements:
 
 - [Bun](https://bun.sh/) 1.2.15 or newer
-- macOS or Linux
+- macOS, Linux, or Windows
 - Node.js 20+ when using Codex's stdio MCP tools
 - Credentials for at least one supported agent
 
@@ -114,7 +114,23 @@ npm install --global negotium
 negotium init
 ```
 
+The installed `negotium` command runs on Bun, so Bun has to stay on `PATH`
+after the install — npm only writes a launcher that hands the bundle to it.
+
+If npm reports `install-scripts` warnings instead of downloading the Browser.rs
+and Bash.rs helpers, its install-script blocking is on; re-run the install with
+`--allow-scripts=negotium`. Without those helpers the browser and background
+shell tools are unavailable.
+
 On a headless Linux machine, browser tools also need `xvfb-run`.
+
+On Windows, use the Claude or Maestro backend. Codex turns fail closed there:
+Negotium passes Codex the Vault hook-trust bypass through a wrapper executable,
+and the Codex SDK spawns that override without a shell, so the `.cmd` wrapper
+Windows would need cannot run. Rather than proceed with Vault secret
+substitution and sensitive-path denial silently off, the turn stops with an
+explanatory error. PowerShell is the supported shell; the command also works
+from `cmd.exe`, while Git Bash needs the `.cmd` suffix spelled out.
 
 ### 2. Connect an agent
 

@@ -393,6 +393,8 @@ class CodexFilePreviewTracker {
         encoding: "utf8",
         maxBuffer: CODEX_DIFF_FILE_LIMIT * 4,
         stdio: ["ignore", "pipe", "ignore"],
+        // Runs per diff read; no console window for it. Ignored on POSIX.
+        windowsHide: true,
       });
     } catch {
       return undefined;

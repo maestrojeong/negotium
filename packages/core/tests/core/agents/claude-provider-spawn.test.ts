@@ -37,7 +37,23 @@ async function waitDead(pid: number, timeoutMs = 4000): Promise<boolean> {
   return false;
 }
 
-describe("spawnClaudeCodeProcessWithTreeKill", () => {
+/**
+ * The suite spawns a real `bash -c '(sleep 60) & wait'` tree and polls it with
+ * `kill -0`, i.e. it needs POSIX process groups and a POSIX shell. Windows has
+ * neither — the tree-kill path there goes through `taskkill` instead — so the
+ * mechanism under test is absent rather than broken. Probe for it, and skip the
+ * suite when the host cannot express it.
+ */
+const supportsProcessGroupSignals = (() => {
+  try {
+    execSync("kill -0 $$", { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+describe.skipIf(!supportsProcessGroupSignals)("spawnClaudeCodeProcessWithTreeKill", () => {
   test("aborting reaps grandchild processes via process group signal", async () => {
     const ac = new AbortController();
     // Spawn `bash` that backgrounds a long sleep and then waits for it.
@@ -113,11 +129,7 @@ describe("spawnClaudeCodeProcessWithTreeKill", () => {
   });
 });
 
-// Sanity helper: ensure `kill -0` semantics as we expect on this machine.
-// (No-op on success; throws if the kernel diverges, which would invalidate
-// the assertions above.)
-try {
-  execSync("kill -0 $$");
-} catch {
-  throw new Error("Test environment does not support `kill -0` — skipping spawn tree tests");
-}
+// The `kill -0` sanity check that used to live here now runs as
+// `supportsProcessGroupSignals` above, where it can gate the suite instead of
+// throwing after it — the message said "skipping" but the throw took the whole
+// file down on any host without a POSIX shell.

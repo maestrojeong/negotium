@@ -1,8 +1,8 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ipcEndpoint, restrictIpcEndpoint } from "#platform/ipc";
 import { redactVaultSecrets, vaultGetValue, vaultSubstituteDetailed } from "#storage/vault-public";
 
 const MAX_REQUEST_BYTES = 16 * 1024 * 1024;
@@ -133,9 +133,13 @@ function authorized(actual: unknown, expected: string): boolean {
 
 export async function createBrowserVaultBroker(userId: string): Promise<BrowserVaultBrokerHandle> {
   const token = randomBytes(32).toString("hex");
-  const socketPath = join(
-    process.platform === "win32" ? tmpdir() : "/tmp",
-    `negotium-browser-vault-${process.pid}-${randomBytes(8).toString("hex")}.sock`,
+  // On Windows this becomes a named pipe rather than a file under tmpdir; the
+  // 32-byte token below is the access boundary there (see #platform/ipc).
+  const socketPath = ipcEndpoint(
+    join(
+      process.platform === "win32" ? tmpdir() : "/tmp",
+      `negotium-browser-vault-${process.pid}-${randomBytes(8).toString("hex")}.sock`,
+    ),
   );
   const retainedForms = new Map<string, string>();
   const leases = new Map<string, { boundary?: RedactionBoundary; createdAt: number }>();
@@ -239,7 +243,7 @@ export async function createBrowserVaultBroker(userId: string): Promise<BrowserV
     server.once("error", reject);
     server.listen(socketPath, resolveListen);
   });
-  chmodSync(socketPath, 0o600);
+  restrictIpcEndpoint(socketPath);
   let closed = false;
 
   return {

@@ -86,6 +86,9 @@ async function spawnCanonicalNode(): Promise<void> {
     stdin: "ignore",
     stdout: "ignore",
     stderr: Bun.file(daemonLogPath),
+    // See adapters/terminal/src/cli.ts: `detached` opens a console window on
+    // Windows, and the daemon logs to a file anyway. Ignored on POSIX.
+    windowsHide: true,
   });
   child.unref();
 }

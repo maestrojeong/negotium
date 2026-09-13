@@ -1,1 +1,1 @@
-export { Database } from "@negotium/core/sqlite";
+export { closeDatabase, Database } from "@negotium/core/sqlite";

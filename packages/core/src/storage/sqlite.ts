@@ -127,3 +127,28 @@ if (isBun) {
 }
 
 export { Database };
+
+/**
+ * Close a database and release its underlying file handle.
+ *
+ * `bun:sqlite`'s no-argument `close()` does not finalize prepared statements
+ * that are still reachable, so the file stays open. POSIX hides this — the
+ * path can be unlinked while a handle remains — but Windows refuses to delete
+ * or rename the file at all (`EBUSY`), which is how the leak surfaces. Passing
+ * `true` finalizes eagerly and drops the handle.
+ *
+ * The node shim's `close()` ignores the argument, so one call covers both
+ * backends; the fallback only matters for a backend that rejects the extra
+ * parameter outright.
+ */
+export function closeDatabase(database: { close(throwOnError?: boolean): void }): void {
+  try {
+    database.close(true);
+  } catch {
+    try {
+      database.close();
+    } catch {
+      // Already closed: nothing left to release.
+    }
+  }
+}

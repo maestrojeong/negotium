@@ -143,3 +143,31 @@ test("keeps the autowrap guard inside the synchronized block", () => {
   expect(output.indexOf("\u001b[?7l")).toBeGreaterThan(output.indexOf(BEGIN_SYNCHRONIZED_UPDATE));
   expect(output.indexOf("\u001b[?7h")).toBeLessThan(output.indexOf(END_SYNCHRONIZED_UPDATE));
 });
+
+test("places the caret inside the synchronized block, never at home", () => {
+  // Ending the block on the home move and placing the caret afterwards hands
+  // the terminal a complete frame whose caret sits at 1;1 — a resting state
+  // synchronized output cannot hide, which is what made it strobe there.
+  const renderer = new TerminalScreenRenderer();
+  const output = renderer.update("one\ntwo", 2, { x: 4, y: 2 });
+  const placement = placeTerminalCursor({ x: 4, y: 2 });
+
+  expect(output).toEndWith(`${placement}${END_SYNCHRONIZED_UPDATE}`);
+  expect(output).not.toContain(`[H${END_SYNCHRONIZED_UPDATE}`);
+});
+
+test("does not toggle cursor visibility per frame", () => {
+  // DECTCEM off/on restarts the terminal's blink phase, so doing it on every
+  // frame makes the caret stutter while typing.
+  const renderer = new TerminalScreenRenderer();
+  const output = renderer.update("one\ntwo", 2, { x: 4, y: 2 });
+
+  expect(output).not.toContain("[?25l");
+});
+
+test("falls back to the home move when a frame renders no caret", () => {
+  const renderer = new TerminalScreenRenderer();
+  const output = renderer.update("one\ntwo", 2);
+
+  expect(output).toEndWith(`\u001b[H${END_SYNCHRONIZED_UPDATE}`);
+});

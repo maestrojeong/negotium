@@ -88,7 +88,12 @@ describe("saveJoin / loadJoin", () => {
     const join = { v: 1, central: "http://127.0.0.1:4600", cellId: "cell_a", secret: "rcs_b" };
     const path = saveJoin(join);
     expect(path).toBe(joinFilePath());
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX mode bits — `chmod` there is a near no-op and the
+    // reported mode is not the ACL that actually governs the file, so asserting
+    // 0600 would be checking a number the platform does not honour either way.
+    if (process.platform !== "win32") {
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    }
     expect(loadJoin()).toEqual(join);
   });
 

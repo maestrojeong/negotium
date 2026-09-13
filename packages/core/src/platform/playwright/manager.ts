@@ -181,30 +181,65 @@ export function legacyBrowserProfileName(topic: string): string {
   return `legacy_${createHash("sha256").update(topic).digest("hex").slice(0, 12)}`;
 }
 
+/** Passed through on every host. */
+const CHILD_ENVIRONMENT_KEYS = [
+  "HOME",
+  "PATH",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "DISPLAY",
+  "WAYLAND_DISPLAY",
+  "XAUTHORITY",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "XDG_RUNTIME_DIR",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_DATA_HOME",
+  "AB_CHROME",
+  "AB_CONNECT",
+  "RUST_LOG",
+  "RUST_BACKTRACE",
+];
+
+/**
+ * Windows equivalents of what the list above carries on POSIX.
+ *
+ * The allowlist is deliberately narrow, but on Windows it used to name nothing
+ * the platform actually needs: `SystemRoot` is required by winsock, so a child
+ * without it often cannot open a socket at all, and Chrome is located through
+ * the `ProgramFiles*` / `LOCALAPPDATA` roots — without them Browser.rs reports
+ * "chrome executable not found" on a machine where Chrome is plainly installed.
+ * `USERPROFILE` is the `HOME` of this platform, and `ComSpec`/`PATHEXT` are
+ * what make command resolution work.
+ */
+const WINDOWS_CHILD_ENVIRONMENT_KEYS = [
+  "SystemRoot",
+  "windir",
+  "SystemDrive",
+  "ProgramFiles",
+  "ProgramFiles(x86)",
+  "ProgramW6432",
+  "ProgramData",
+  "LOCALAPPDATA",
+  "APPDATA",
+  "USERPROFILE",
+  "ComSpec",
+  "PATHEXT",
+  "NUMBER_OF_PROCESSORS",
+  "PROCESSOR_ARCHITECTURE",
+];
+
 function defaultChildEnvironment(context: PlaywrightChildEnvironmentContext): NodeJS.ProcessEnv {
   const childEnvironment: NodeJS.ProcessEnv = {};
-  for (const key of [
-    "HOME",
-    "PATH",
-    "TMPDIR",
-    "TMP",
-    "TEMP",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "DISPLAY",
-    "WAYLAND_DISPLAY",
-    "XAUTHORITY",
-    "DBUS_SESSION_BUS_ADDRESS",
-    "XDG_RUNTIME_DIR",
-    "XDG_CONFIG_HOME",
-    "XDG_CACHE_HOME",
-    "XDG_DATA_HOME",
-    "AB_CHROME",
-    "AB_CONNECT",
-    "RUST_LOG",
-    "RUST_BACKTRACE",
-  ]) {
+  const keys =
+    process.platform === "win32"
+      ? [...CHILD_ENVIRONMENT_KEYS, ...WINDOWS_CHILD_ENVIRONMENT_KEYS]
+      : CHILD_ENVIRONMENT_KEYS;
+  for (const key of keys) {
     if (context.environment[key] !== undefined) childEnvironment[key] = context.environment[key];
   }
   return childEnvironment;
@@ -805,6 +840,9 @@ async function spawnPlaywright(
       stdio: ["ignore", "ignore", "pipe"],
       detached: false,
       env: childEnv,
+      // The managed browser server is long-lived background plumbing; without
+      // this Windows opens a console window for it. Ignored on POSIX.
+      windowsHide: true,
     });
   } catch (err) {
     await vaultBroker.close();
