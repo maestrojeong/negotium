@@ -7,6 +7,9 @@ function execText(command: string, args: string[]): string {
     return execFileSync(command, args, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
+      // Process bookkeeping, not something to flash a console for. Ignored on
+      // POSIX.
+      windowsHide: true,
     }).trim();
   } catch {
     return "";
