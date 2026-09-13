@@ -102,7 +102,6 @@ export {
   showImageTool,
   showMermaidTool,
   showPngTool,
-  showVideoTool,
   snapshotCodexChildren,
   summarizeDisplayText,
   summarizeShellCommand,
