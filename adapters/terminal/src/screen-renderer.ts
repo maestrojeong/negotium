@@ -11,17 +11,6 @@ const ENABLE_AUTOWRAP = `${ESC}?7h`;
 export const BEGIN_SYNCHRONIZED_UPDATE = `${ESC}?2026h`;
 export const END_SYNCHRONIZED_UPDATE = `${ESC}?2026l`;
 
-/**
- * DECTCEM off. A patch walks the cursor across every row it rewrites and then
- * parks it at home, which synchronized output normally hides — but a terminal
- * without DECSET 2026 (the legacy Windows console among them) ignores the
- * begin/end pair and shows each of those moves, so the caret strobes at the
- * top-left for the length of every frame. Hiding it for the patch costs
- * nothing where 2026 works; `placeTerminalCursor` turns it back on, and a
- * frame that renders no cursor wants it hidden anyway.
- */
-const HIDE_CURSOR = `${ESC}?25l`;
-
 export function placeTerminalCursor(cursor: { x: number; y: number }): string {
   const x = Math.max(1, Math.trunc(cursor.x));
   const y = Math.max(1, Math.trunc(cursor.y));
@@ -49,7 +38,13 @@ export class TerminalScreenRenderer {
     this.#invalidated = true;
   }
 
-  update(frame: string, terminalRows?: number): string {
+  /**
+   * `cursor` is where the caret belongs once the patch has been applied.
+   * Placing it here rather than in a separate write keeps it inside the
+   * synchronized block, and lets the patch tell whether it ever moved the
+   * caret off that row — the only case that needs DECTCEM toggling.
+   */
+  update(frame: string, terminalRows?: number, cursor?: { x: number; y: number } | null): string {
     const lines = frame.split("\n");
     const previous = this.#previousLines;
     const redrawAll = this.#invalidated;
@@ -78,10 +73,21 @@ export class TerminalScreenRenderer {
     }
 
     // Wrap the whole patch so the terminal never presents a partially drawn
-    // frame. The trailing home move keeps the pending-autowrap guard above from
-    // leaking, and stays inside the synchronized block.
+    // frame, and finish by putting the caret where it belongs — inside the
+    // block, not after it.
+    //
+    // Ending the block on the home move and placing the caret in a separate
+    // write is what made it strobe at the top-left: the terminal was handed a
+    // complete, atomic frame whose caret sat at 1;1, drew it, and only then
+    // received the move. That is a resting state, not a transient one, so
+    // synchronized output could not hide it. Nothing needs to toggle DECTCEM
+    // for this — and toggling per frame would restart the terminal's blink
+    // phase, which reads as a stutter while typing.
+    //
+    // The move still doubles as the pending-autowrap guard the final row needs.
     if (output) {
-      output = `${BEGIN_SYNCHRONIZED_UPDATE}${HIDE_CURSOR}${output}${ESC}H${END_SYNCHRONIZED_UPDATE}`;
+      const tail = cursor ? placeTerminalCursor(cursor) : `${ESC}H`;
+      output = `${BEGIN_SYNCHRONIZED_UPDATE}${output}${tail}${END_SYNCHRONIZED_UPDATE}`;
     }
     this.#previousLines = lines;
     this.#invalidated = false;
