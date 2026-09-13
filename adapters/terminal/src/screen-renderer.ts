@@ -11,6 +11,17 @@ const ENABLE_AUTOWRAP = `${ESC}?7h`;
 export const BEGIN_SYNCHRONIZED_UPDATE = `${ESC}?2026h`;
 export const END_SYNCHRONIZED_UPDATE = `${ESC}?2026l`;
 
+/**
+ * DECTCEM off. A patch walks the cursor across every row it rewrites and then
+ * parks it at home, which synchronized output normally hides — but a terminal
+ * without DECSET 2026 (the legacy Windows console among them) ignores the
+ * begin/end pair and shows each of those moves, so the caret strobes at the
+ * top-left for the length of every frame. Hiding it for the patch costs
+ * nothing where 2026 works; `placeTerminalCursor` turns it back on, and a
+ * frame that renders no cursor wants it hidden anyway.
+ */
+const HIDE_CURSOR = `${ESC}?25l`;
+
 export function placeTerminalCursor(cursor: { x: number; y: number }): string {
   const x = Math.max(1, Math.trunc(cursor.x));
   const y = Math.max(1, Math.trunc(cursor.y));
@@ -69,7 +80,9 @@ export class TerminalScreenRenderer {
     // Wrap the whole patch so the terminal never presents a partially drawn
     // frame. The trailing home move keeps the pending-autowrap guard above from
     // leaking, and stays inside the synchronized block.
-    if (output) output = `${BEGIN_SYNCHRONIZED_UPDATE}${output}${ESC}H${END_SYNCHRONIZED_UPDATE}`;
+    if (output) {
+      output = `${BEGIN_SYNCHRONIZED_UPDATE}${HIDE_CURSOR}${output}${ESC}H${END_SYNCHRONIZED_UPDATE}`;
+    }
     this.#previousLines = lines;
     this.#invalidated = false;
     return output;
