@@ -12,7 +12,7 @@ import {
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   parseRuntimePort,
   readEnvText,
@@ -50,13 +50,32 @@ function resolveProjectRoot(): string {
 export const PROJECT_ROOT = resolveProjectRoot();
 
 /** Resolve a dependency executable from either a package-local or hoisted install. */
+/**
+ * Names a package-manager shim can carry in `node_modules/.bin`.
+ *
+ * POSIX gets one extension-less executable. Windows has no execute bit, so the
+ * installer writes an extension instead — bun produces `<name>.exe` plus a
+ * `<name>.bunx` stub, npm a `.cmd`/`.ps1` pair — and probing only the bare name
+ * finds nothing, leaving the resolved path pointing at a file that does not
+ * exist.
+ */
+function dependencyBinNames(name: string): string[] {
+  if (process.platform !== "win32") return [name];
+  return [name, `${name}.exe`, `${name}.cmd`, `${name}.bat`, `${name}.bunx`];
+}
+
 function resolveDependencyBin(name: string): string {
   let dir = PROJECT_ROOT;
   while (true) {
-    const candidate = resolve(dir, "node_modules", ".bin", name);
-    if (existsSync(candidate)) return candidate;
+    const binDir = resolve(dir, "node_modules", ".bin");
+    for (const candidate of dependencyBinNames(name)) {
+      const path = resolve(binDir, candidate);
+      if (existsSync(path)) return path;
+    }
     const parent = dirname(dir);
-    if (parent === dir) return candidate;
+    // Exhausted: hand back the canonical spelling so the failure names the
+    // path that was expected.
+    if (parent === dir) return resolve(binDir, name);
     dir = parent;
   }
 }
@@ -107,8 +126,18 @@ export function resolveOutputLanguage(): string {
   return raw && raw.length > 0 ? raw : DEFAULT_OUTPUT_LANGUAGE;
 }
 
+/**
+ * Suffix the managed Rust helpers carry on this platform.
+ *
+ * The installers write the binary under its plain name, which on Windows is
+ * not executable — the release asset is `browser-rs.exe` and the resolver has
+ * to look for exactly that. Empty everywhere else, so POSIX paths are
+ * unchanged.
+ */
+export const BINARY_EXTENSION = process.platform === "win32" ? ".exe" : "";
+
 /** Browser.rs release tested with this Negotium version. */
-export const BROWSER_RS_VERSION = "v0.4.0";
+export const BROWSER_RS_VERSION = "v0.4.2";
 /** Require the authenticated listener and the current Browser.rs tool contract. */
 export const BROWSER_RS_MIN_SECURE_VERSION = "0.2.1";
 
@@ -141,6 +170,10 @@ function browserRsMeetsMinimumVersion(candidate: string): boolean {
       encoding: "utf8",
       timeout: BROWSER_RS_VERSION_PROBE_TIMEOUT_MS,
       stdio: ["ignore", "pipe", "ignore"],
+      // This module is imported by every CLI invocation, so on Windows the
+      // probe blinked a console window each time `negotium` was run. Ignored
+      // on POSIX.
+      windowsHide: true,
     }).trim();
     const match = output.match(/^browser-rs (\d+)\.(\d+)\.(\d+)$/);
     if (!match) return false;
@@ -165,7 +198,7 @@ export function resolveBrowserRsBin(envValue?: string): string | undefined {
   }
   const candidate = override
     ? resolve(override)
-    : resolve(BINARIES_DIR, "browser-rs", BROWSER_RS_VERSION, "browser-rs");
+    : resolve(BINARIES_DIR, "browser-rs", BROWSER_RS_VERSION, `browser-rs${BINARY_EXTENSION}`);
   try {
     accessSync(candidate, constants.X_OK);
     return browserRsMeetsMinimumVersion(candidate) ? candidate : undefined;
@@ -189,7 +222,7 @@ export const SNIPPETS_API_URL = (
 export const BROWSER_RS_BIN = resolveBrowserRsBin(envText("NEGOTIUM_BROWSER_RS_BIN"));
 
 /** bash-rs release tested with this Negotium version — see apps/negotium/install-bash-rs.mjs. */
-export const BASH_RS_VERSION = "v0.1.7";
+export const BASH_RS_VERSION = "v0.1.10";
 
 /**
  * Resolve the bash-rs binary the same way `resolveBrowserRsBin` resolves
@@ -204,7 +237,7 @@ export function resolveBashRsBin(envValue?: string): string | undefined {
   const override = envValue?.trim();
   const candidate = override
     ? resolve(override)
-    : resolve(BINARIES_DIR, "bash-rs", BASH_RS_VERSION, "bash-rs");
+    : resolve(BINARIES_DIR, "bash-rs", BASH_RS_VERSION, `bash-rs${BINARY_EXTENSION}`);
   try {
     accessSync(candidate, constants.X_OK);
     return candidate;
@@ -219,7 +252,10 @@ export const BASH_RS_BIN = resolveBashRsBin(envText("NEGOTIUM_BASH_RS_BIN"));
 export function resolveBrowserMcpBin(envValue?: string): string {
   const override = envValue?.trim();
   if (override) return resolve(override);
-  return BROWSER_RS_BIN ?? resolve(BINARIES_DIR, "browser-rs", BROWSER_RS_VERSION, "browser-rs");
+  return (
+    BROWSER_RS_BIN ??
+    resolve(BINARIES_DIR, "browser-rs", BROWSER_RS_VERSION, `browser-rs${BINARY_EXTENSION}`)
+  );
 }
 
 export const PLAYWRIGHT_MCP_BIN = resolveBrowserMcpBin(envText("NEGOTIUM_BROWSER_MCP_BIN"));
@@ -279,8 +315,20 @@ export function resolveBrowserProxy(): BrowserProxyConfig | null {
 // explicitly via env. Requires package.json `"type": "module"` so the servers'
 // top-level `await` loads as ESM under node.
 export const TSX_BIN = resolveDependencyBin("tsx");
-/** In-process tsx loader used by Node MCP entrypoints (avoids the tsx CLI child process). */
-export const TSX_LOADER = createRequire(import.meta.url).resolve("tsx");
+/**
+ * In-process tsx loader used by Node MCP entrypoints (avoids the tsx CLI child
+ * process).
+ *
+ * `node --import` takes a module specifier, not a filesystem path. A POSIX
+ * absolute path happens to be a valid one; a Windows `C:\…` is not — Node reads
+ * the drive letter as a URL scheme and refuses it with
+ * ERR_UNSUPPORTED_ESM_URL_SCHEME, which took out every tsx-hosted MCP server
+ * (the Codex tool surface) at spawn. Hand it a `file://` URL there, and leave
+ * the POSIX value exactly as it was.
+ */
+const TSX_LOADER_PATH = createRequire(import.meta.url).resolve("tsx");
+export const TSX_LOADER =
+  process.platform === "win32" ? pathToFileURL(TSX_LOADER_PATH).href : TSX_LOADER_PATH;
 export const TSCONFIG_PATH = resolve(PROJECT_ROOT, "tsconfig.json");
 
 export const SESSION_COMM_SERVER = resolve(PROJECT_ROOT, "src/mcp/session-comm/server.ts");
@@ -458,10 +506,22 @@ export function getCleanEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-export const FILE_EXTENSIONS_REGEX =
-  /(?:\/[^\s"'<>|*?[\]]+\.(?:png|jpg|jpeg|gif|webp|svg|pdf|csv|xlsx|xls|json|txt|md|html|zip|py|js|ts|tsx|jsx|css|xml|yaml|yml|docx|pptx))/gi;
+/**
+ * How an absolute path can start.
+ *
+ * A POSIX root (`/`) is not the only form once the runtime also runs on
+ * Windows, where the same tag carries `C:\…` or a `\\server\share` UNC path.
+ * Anchoring on `/` alone silently dropped every Windows attachment: the tag
+ * stayed in the visible text and no file was ever sent.
+ */
+const ABSOLUTE_PATH_PREFIX = String.raw`(?:[A-Za-z]:[\\/]|\\\\|\/)`;
 
-export const FILE_TAG_REGEX = /\[FILE:(\/[^\]]+)\]/gi;
+export const FILE_EXTENSIONS_REGEX = new RegExp(
+  `(?:${ABSOLUTE_PATH_PREFIX}[^\\s"'<>|*?[\\]]+\\.(?:png|jpg|jpeg|gif|webp|svg|pdf|csv|xlsx|xls|json|txt|md|html|zip|py|js|ts|tsx|jsx|css|xml|yaml|yml|docx|pptx))`,
+  "gi",
+);
+
+export const FILE_TAG_REGEX = new RegExp(`\\[FILE:(${ABSOLUTE_PATH_PREFIX}[^\\]]+)\\]`, "gi");
 
 // Canonical Claude model IDs — update here when Anthropic releases new versions
 export const MODEL_SONNET = "claude-sonnet-5";
