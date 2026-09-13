@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { isInsideDir } from "#platform/paths";
 import { workspaceCwdFor } from "#runtime/attachments";
 import {
   isUploadFileId,
@@ -77,12 +78,14 @@ export function topicAllowsVisualFileId(topicId: string, fileId: string): boolea
 }
 
 export function isPathInside(baseDir: string, filePath: string): boolean {
-  const base = resolve(baseDir);
-  const normalized = resolve(filePath);
   try {
-    const realBase = realpathSync(base);
-    const real = realpathSync(normalized);
-    return real === realBase || real.startsWith(`${realBase}/`);
+    // Both ends must resolve: a visual is only ever served from a file already
+    // on disk, so a path that cannot be realpath'd is not inside anything. That
+    // is stricter than `isInsideDir` alone, which falls back to a lexical
+    // comparison for a path that does not exist yet.
+    const realBase = realpathSync(resolve(baseDir));
+    const real = realpathSync(resolve(filePath));
+    return isInsideDir(real, realBase);
   } catch {
     return false;
   }

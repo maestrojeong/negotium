@@ -14,7 +14,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { realpathSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { basename, extname, resolve } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -39,6 +39,7 @@ import {
   getTopic,
   type HostedMcpSurface,
   isHostedMcpSurface,
+  isInsideDir,
   isSensitivePath,
   logger,
   type MessageDto,
@@ -119,21 +120,14 @@ function requireTopicAccess(
 }
 
 function isPathInside(baseDir: string, filePath: string): boolean {
-  const cwd = resolve(baseDir);
-  const normalized = resolve(filePath);
-  try {
-    const realCwd = realpathSync(cwd);
-    const real = realpathSync(normalized);
-    return real === realCwd || real.startsWith(`${realCwd}/`);
-  } catch (err) {
-    // For a missing output, preserve the precise not-found error only when its
-    // lexical path is inside the workspace. Existing paths use realpath above
-    // so symlink escapes and platform aliases are handled correctly.
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return normalized === cwd || normalized.startsWith(`${cwd}/`);
-    }
-    return false;
-  }
+  // `isInsideDir` is this check: it resolves through realpath when the path
+  // exists — so symlink escapes and platform aliases such as macOS
+  // `/tmp` → `/private/tmp` are handled — and falls back to the lexical form
+  // for a missing output, preserving the precise not-found error for a path
+  // that would have been inside the workspace. It also compares with
+  // `path.relative` rather than a "/"-joined prefix, which is what made this
+  // reject every path on Windows.
+  return isInsideDir(filePath, baseDir);
 }
 
 function localFileInfo(ctx: RuntimeMcpContext, filePath: string) {

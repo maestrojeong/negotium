@@ -10,7 +10,7 @@
 import { execFile } from "node:child_process";
 import { type Dirent, existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 
 export interface PathSuggestion {
@@ -170,19 +170,33 @@ export function activeAtToken(
   return { start: col - frag.length - 1, frag };
 }
 
+/**
+ * Composer fragments are typed by hand, so both slashes have to be accepted on
+ * Windows. `\` stays a plain filename character on POSIX, where `sep` is "/".
+ */
+function endsWithSeparator(frag: string): boolean {
+  return frag.endsWith("/") || (sep === "\\" && frag.endsWith("\\"));
+}
+
+function isHomeRoot(frag: string): boolean {
+  return frag === "~/" || (sep === "\\" && frag === "~\\");
+}
+
 /** Resolve a fragment (text after `@`) to the directory to list + name prefix. */
 function resolveFragment(frag: string): { dir: string; prefix: string } {
   const home = homedir();
   let path: string;
   if (frag === "" || frag === "~") path = home;
-  else if (frag === "~/") path = home;
-  else if (frag.startsWith("~/")) path = join(home, frag.slice(2));
-  else if (frag.startsWith("/")) path = frag;
+  else if (isHomeRoot(frag)) path = home;
+  else if (frag.startsWith("~/") || frag.startsWith("~\\")) path = join(home, frag.slice(2));
+  // `isAbsolute` rather than a leading "/" so a Windows `C:\…` or `\\server\…`
+  // fragment is taken as-is instead of being joined under home.
+  else if (isAbsolute(frag)) path = frag;
   else path = join(home, frag); // bare `@name` → relative to home
 
   // A trailing slash means "list this directory"; otherwise the last segment
   // is a prefix to match within its parent.
-  if (frag.endsWith("/") || frag === "" || frag === "~") {
+  if (endsWithSeparator(frag) || frag === "" || frag === "~") {
     return { dir: path, prefix: "" };
   }
   return { dir: dirname(path), prefix: basename(path) };
@@ -193,7 +207,15 @@ function toToken(fullPath: string, isDir: boolean): string {
   const home = homedir();
   let shown = fullPath;
   if (fullPath === home) shown = "~";
-  else if (fullPath.startsWith(`${home}/`)) shown = `~/${fullPath.slice(home.length + 1)}`;
+  else {
+    // `relative` compares with the host separator, so paths under a Windows
+    // home shorten too; the token itself stays "/"-separated like every other
+    // path this module renders.
+    const rel = relative(home, fullPath);
+    if (rel && !rel.startsWith("..") && !isAbsolute(rel)) {
+      shown = `~/${rel.split(sep).join("/")}`;
+    }
+  }
   return `@${shown}${isDir ? "/" : ""}`;
 }
 
@@ -336,9 +358,11 @@ export function pathSuggestions(lineText: string, col: number): PathSuggestResul
 /** Resolve a fragment (text after `@`) to an absolute path, mirroring `resolveFragment`. */
 function fragmentToAbsolutePath(frag: string): string {
   const home = homedir();
-  if (frag === "~" || frag === "~/") return home;
-  if (frag.startsWith("~/")) return join(home, frag.slice(2));
-  if (frag.startsWith("/")) return frag;
+  if (frag === "~" || isHomeRoot(frag)) return home;
+  if (frag.startsWith("~/") || frag.startsWith("~\\")) return join(home, frag.slice(2));
+  // Same reason as `resolveFragment`: a Windows absolute path has no leading
+  // "/" and must not be re-rooted under home.
+  if (isAbsolute(frag)) return frag;
   return join(home, frag);
 }
 

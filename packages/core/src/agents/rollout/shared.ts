@@ -17,6 +17,7 @@ import {
   WORKSPACE_DIR,
 } from "#platform/config";
 import { logger } from "#platform/logger";
+import { isInsideDir } from "#platform/paths";
 import { renderUserPromptBatch } from "#runtime/user-turn-envelope";
 import type { ConversationEntry } from "#storage/conversations";
 import type { UnifiedEvent } from "#types";
@@ -100,7 +101,7 @@ function assertCwdInWorkspace(cwd: string): void {
   // Synthetic rollouts for spawn/fork must be written under the same root as
   // live topic turns or provider resume looks in a different cwd hash than the
   // one we generated.
-  const ok = trustedWorkspaceRoots.some((root) => abs === root || abs.startsWith(`${root}/`));
+  const ok = trustedWorkspaceRoots.some((root) => isInsideDir(abs, root));
   if (!ok) {
     throw new Error(`rollout: cwd outside trusted workspace roots: ${cwd} (resolved=${abs})`);
   }
