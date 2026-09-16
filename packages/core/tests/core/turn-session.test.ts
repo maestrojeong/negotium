@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { drainPlaywrightManager } from "#platform/playwright/manager";
 import {
   clearRoomQuery,
   getRoomQuery,
@@ -135,7 +136,7 @@ function seedTopic(): string {
   return id;
 }
 
-afterEach(() => {
+afterEach(async () => {
   for (const id of topicIds) {
     cancelRuntimeUserTurnRequests(id);
     deleteTopic(id);
@@ -143,6 +144,17 @@ afterEach(() => {
   for (const lease of leases) releaseRuntimeTurnLease(lease.topicId, lease.queryId, lease.ownerId);
   topicIds.clear();
   leases.length = 0;
+  // startAiTurn is fire-and-forget: it returns the queryId synchronously and
+  // pins the Playwright instance key while the background turn runs, unpinning
+  // in the turn promise's own `.finally`. A test that only asserts on the
+  // synchronous return (or on an early-thrown settlement) can finish before
+  // that background unpin lands, leaving a live pin in the module-private
+  // `pinnedInstances` map — which then wedges the *next* test file's own
+  // `configurePlaywrightManagerHost`/`resetPlaywrightManagerHost` shut with
+  // "cannot configure Playwright manager while browser instances are active"
+  // (see the `drainPlaywrightManager` docstring in manager.ts). Draining here
+  // clears any such leftover before the suite moves on.
+  await drainPlaywrightManager();
 });
 
 describe("turn session resolution", () => {
