@@ -392,10 +392,12 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
     }) {
       if (!topicId || !agent) return null;
       return buildRuntimeMcpSpec(agent, {
-        // Runtime tools act on behalf of the person who triggered this turn.
-        // `userId` may instead be a canonical node principal used only to
-        // authorize the gateway request (for example, an Otium topic owner).
-        userId: actorUserId ?? userId,
+        // Runtime tools mutate node-owned state, so authorization stays bound
+        // to the canonical execution principal. Keep the product-side human
+        // actor separately for attribution instead of replacing the identity
+        // that appears in this node's topic participant roster.
+        userId,
+        ...(actorUserId ? { actorUserId } : {}),
         topicId,
         topicTitle: session,
         queryId,

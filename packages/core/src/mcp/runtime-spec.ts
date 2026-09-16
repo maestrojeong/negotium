@@ -31,7 +31,10 @@ const TOKEN_TTL_MS = 4 * 60 * 60 * 1000;
 const CLAUDE_MCP_TOOL_TIMEOUT_MS = 600_000;
 
 export interface RuntimeMcpContext {
+  /** Canonical principal authorized against this node's topic roster. */
   userId: string;
+  /** Product-side human actor when it differs from the execution principal. */
+  actorUserId?: string;
   topicId: string;
   topicTitle: string;
   queryId?: string;
@@ -134,6 +137,7 @@ function isRuntimeMcpContext(value: unknown): value is RuntimeMcpContext {
     typeof ctx.cwd === "string" &&
     typeof ctx.agent === "string" &&
     isAgentKind(ctx.agent) &&
+    (ctx.actorUserId === undefined || typeof ctx.actorUserId === "string") &&
     (ctx.queryId === undefined || typeof ctx.queryId === "string") &&
     (ctx.model === undefined || typeof ctx.model === "string") &&
     (ctx.currentUserPrompt === undefined || typeof ctx.currentUserPrompt === "string") &&

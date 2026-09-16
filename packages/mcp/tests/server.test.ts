@@ -146,6 +146,42 @@ describe("negotium MCP endpoint", () => {
     expect(names).not.toContain("send_message");
   });
 
+  test("authorizes subagent creation with the node principal while preserving an external actor", async () => {
+    const suffix = randomUUID();
+    const ownerId = `mapped-owner-${suffix}`;
+    const actorUserId = `otium-hosted-${suffix}`;
+    const parent = registerTopic({
+      title: `mapped-parent-${suffix}`,
+      userId: ownerId,
+      agent: "claude",
+      surface: "otium",
+    });
+    const mappedCtx: RuntimeMcpContext = {
+      ...ctx,
+      userId: ownerId,
+      actorUserId,
+      topicId: parent.id,
+      topicTitle: parent.title,
+    };
+    const mappedClient = new Client({ name: "mapped-subagent-test", version: "1.0.0" });
+    const token = issueRuntimeMcpToken(mappedCtx);
+    const url = new URL(
+      `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+    );
+
+    try {
+      await mappedClient.connect(new StreamableHTTPClientTransport(url));
+      const result = await mappedClient.callTool({
+        name: "create_subagent",
+        arguments: { task: "verify mapped-room authorization", name: `mapped-child-${suffix}` },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(resultText(result)).toContain("Subagent prepared");
+    } finally {
+      await mappedClient.close();
+    }
+  });
+
   test("exposes visual tools only when the adapter grants the capability", async () => {
     const visualClient = new Client({ name: "negotium-visual-mcp-test", version: "1.0.0" });
     const token = issueRuntimeMcpToken({

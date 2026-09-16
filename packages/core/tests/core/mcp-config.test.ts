@@ -240,7 +240,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
     expect(hostedContext(claude.vault, "vault").userId).toBe(vaultUserId);
   });
 
-  test("runtime tools use the product actor instead of the execution principal", () => {
+  test("runtime tools preserve the execution principal separately from the product actor", () => {
     const servers = getForumMcpServers({
       userId: "node-topic-owner",
       actorUserId: "product-member",
@@ -251,7 +251,10 @@ describe("mcp-config: playwright transport selection per agent", () => {
       enabled: [],
     });
 
-    expect(runtimeContext(servers.runtime).userId).toBe("product-member");
+    expect(runtimeContext(servers.runtime)).toMatchObject({
+      userId: "node-topic-owner",
+      actorUserId: "product-member",
+    });
     expect(hostedContext(servers.vault, "vault").userId).toBe("vault-owner");
   });
 
