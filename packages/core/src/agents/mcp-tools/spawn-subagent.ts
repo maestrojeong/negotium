@@ -751,38 +751,54 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
         error: "Error: subagent management is only available in agent rooms.",
       } as const;
     }
+    // Subagents inherit the room's participants and roles verbatim (see
+    // createDerivedTopic), so anyone who legitimately belongs to `parent` —
+    // owner or member — belongs equally to every subagent spawned under it;
+    // requiring ctx.userId specifically to hold the "owner" role in each
+    // descendant would let the room owner manage subagents a non-owner
+    // member triggered while locking that same member out of the room they
+    // spawned. Gate the whole subtree on the *root's* owner staying the
+    // descendant's owner instead: that still excludes topics that merely
+    // happen to nest under `parent` without actually belonging to its
+    // subagent tree (e.g. a differently-owned room reparented here).
+    const rootOwnerId = parent.participants.find(
+      (participant) => participant.role === "owner",
+    )?.userId;
     return {
       ok: true,
       parent,
-      children: (() => {
-        const topics = host.storage.listTopics();
-        const byParent = new Map<string, typeof topics>();
-        for (const topic of topics) {
-          if (!topic.parentTopicId || !topic.isSubagent) continue;
-          const siblings = byParent.get(topic.parentTopicId) ?? [];
-          siblings.push(topic);
-          byParent.set(topic.parentTopicId, siblings);
-        }
-        const descendants: typeof topics = [];
-        const visited = new Set<string>([ctx.topicId]);
-        const visit = (parentId: string) => {
-          for (const child of byParent.get(parentId) ?? []) {
-            if (visited.has(child.id)) continue;
-            visited.add(child.id);
-            if (
-              !child.participants.some(
-                (participant) => participant.userId === ctx.userId && participant.role === "owner",
-              )
-            ) {
-              continue;
+      children: rootOwnerId
+        ? (() => {
+            const topics = host.storage.listTopics();
+            const byParent = new Map<string, typeof topics>();
+            for (const topic of topics) {
+              if (!topic.parentTopicId || !topic.isSubagent) continue;
+              const siblings = byParent.get(topic.parentTopicId) ?? [];
+              siblings.push(topic);
+              byParent.set(topic.parentTopicId, siblings);
             }
-            descendants.push(child);
-            visit(child.id);
-          }
-        };
-        visit(ctx.topicId);
-        return descendants;
-      })(),
+            const descendants: typeof topics = [];
+            const visited = new Set<string>([ctx.topicId]);
+            const visit = (parentId: string) => {
+              for (const child of byParent.get(parentId) ?? []) {
+                if (visited.has(child.id)) continue;
+                visited.add(child.id);
+                if (
+                  !child.participants.some(
+                    (participant) =>
+                      participant.userId === rootOwnerId && participant.role === "owner",
+                  )
+                ) {
+                  continue;
+                }
+                descendants.push(child);
+                visit(child.id);
+              }
+            };
+            visit(ctx.topicId);
+            return descendants;
+          })()
+        : [],
     } as const;
   }
 

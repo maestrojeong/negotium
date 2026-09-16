@@ -413,6 +413,55 @@ describe("subagent management tools", () => {
     );
   });
 
+  test("a non-owner member manages subagents spawned under a shared room", async () => {
+    // Subagents inherit the parent room's participants verbatim (owner stays
+    // owner regardless of who triggers the spawn). A non-owner member must
+    // still be able to manage — list, start, delete — subagents that hang
+    // off a room they legitimately belong to, including ones they personally
+    // triggered; otherwise they'd be locked out of resources they created.
+    const parent = makeTopic("owner-1", {
+      participants: [
+        { userId: "owner-1", role: "owner" },
+        { userId: "member-1", role: "member" },
+      ],
+    });
+    const mirrored = makeTopic("owner-1", {
+      title: `mirrored-${randomUUID()}`,
+      parentTopicId: parent.id,
+      isSubagent: true,
+      participants: [
+        { userId: "owner-1", role: "owner" },
+        { userId: "member-1", role: "member" },
+      ],
+    });
+    makeTopic("user-2", {
+      title: `foreign-${randomUUID()}`,
+      parentTopicId: parent.id,
+      isSubagent: true,
+      participants: [
+        { userId: "member-1", role: "member" },
+        { userId: "user-2", role: "owner" },
+      ],
+    });
+
+    const memberTools = createSubagentManagementToolDefinitions({
+      userId: "member-1",
+      topicId: parent.id,
+    });
+    const listTool = memberTools.find((tool) => tool.name === "list_subagents");
+    const result = await listTool?.handler({});
+    const payload = JSON.parse(result?.content[0]?.text ?? "{}") as {
+      subagents?: Array<{ topic_id: string }>;
+    };
+    // The mirrored subagent (same owner as parent) is manageable by the
+    // non-owner member; the foreign one (different owner) is still excluded.
+    expect(payload.subagents?.map((child) => child.topic_id)).toEqual([mirrored.id]);
+
+    const deleteTool = memberTools.find((tool) => tool.name === "delete_subagent");
+    const deleted = await deleteTool?.handler({ topic_id: mirrored.id });
+    expect(deleted?.isError).toBeUndefined();
+  });
+
   test("an ancestor can connect descendant subagents with tell grants", async () => {
     const parent = makeTopic("user-1");
     const source = makeTopic("user-1", {
