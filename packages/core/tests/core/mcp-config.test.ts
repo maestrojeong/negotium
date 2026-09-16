@@ -4,6 +4,7 @@ import {
   type HostedMcpContext,
   type HostedMcpSurface,
   resolveHostedMcpToken,
+  resolveRuntimeMcpToken,
 } from "#mcp/runtime-spec";
 import { TSX_LOADER } from "#platform/config";
 import {
@@ -43,6 +44,13 @@ describe("mcp-config: playwright transport selection per agent", () => {
     const url = new URL((spec as { url: string }).url);
     expect(url.pathname).toContain(`/mcp/runtime/${surface}/`);
     const ctx = resolveHostedMcpToken(url.searchParams.get("token"), surface);
+    expect(ctx).not.toBeNull();
+    return ctx!;
+  };
+
+  const runtimeContext = (spec: unknown) => {
+    const url = new URL((spec as { url: string }).url);
+    const ctx = resolveRuntimeMcpToken(url.searchParams.get("token"));
     expect(ctx).not.toBeNull();
     return ctx!;
   };
@@ -230,6 +238,21 @@ describe("mcp-config: playwright transport selection per agent", () => {
     expect(hostedContext(claude.vault, "vault").agent).toBe("claude");
     expect(hostedContext(codex.vault, "vault").userId).toBe(vaultUserId);
     expect(hostedContext(claude.vault, "vault").userId).toBe(vaultUserId);
+  });
+
+  test("runtime tools use the product actor instead of the execution principal", () => {
+    const servers = getForumMcpServers({
+      userId: "node-topic-owner",
+      actorUserId: "product-member",
+      vaultUserId: "vault-owner",
+      session: "shared-room",
+      topicId: "shared-topic",
+      agent: "codex",
+      enabled: [],
+    });
+
+    expect(runtimeContext(servers.runtime).userId).toBe("product-member");
+    expect(hostedContext(servers.vault, "vault").userId).toBe("vault-owner");
   });
 
   test("manager/codex omits heavyweight browser tools even with a port", () => {

@@ -376,6 +376,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
     ...commonRuntimeMcpPolicy("runtime"),
     build({
       userId,
+      actorUserId,
       session,
       topicId,
       queryId,
@@ -391,7 +392,10 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
     }) {
       if (!topicId || !agent) return null;
       return buildRuntimeMcpSpec(agent, {
-        userId,
+        // Runtime tools act on behalf of the person who triggered this turn.
+        // `userId` may instead be a canonical node principal used only to
+        // authorize the gateway request (for example, an Otium topic owner).
+        userId: actorUserId ?? userId,
         topicId,
         topicTitle: session,
         queryId,
