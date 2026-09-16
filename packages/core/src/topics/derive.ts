@@ -210,11 +210,15 @@ interface DerivedTopicOptions {
 /**
  * Shared helper for spawn (config-only copy) and fork (config+history copy).
  *
- * - fork (copyHistory=true): inherits ALL source participants, copies messages,
- *   creator becomes owner, and forks the source AI session when AI is enabled.
- * - spawn (copyHistory=false): config only, creator is sole owner, empty history.
- *   It still creates a fresh AI session when AI is enabled.
+ * - fork (copyHistory=true): the creator's own private copy — creator is the
+ *   sole owner (no other source participants carry over), copies messages,
+ *   and forks the source AI session when AI is enabled.
+ * - spawn (copyHistory=false): config only, creator is sole owner (no other
+ *   participants either), empty history. It still creates a fresh AI session
+ *   when AI is enabled.
  * - subagent (copyHistory=false + opts.subagent): agent-initiated worker room.
+ *   Inherits the source room's participants and roles verbatim — ownership
+ *   stays with the source room's owner no matter who triggered the spawn.
  *   Marked `isSubagent`, optionally overriding the child's agent/model.
  *
  * @param sourceTopicId - must exist and caller must be a participant
@@ -261,20 +265,21 @@ async function createDerivedTopicImpl(
       ? resolveModelForAgent(agent, subagent.model, getRegistry(agent))
       : undefined;
 
-  // Fork: inherit all source participants, creator becomes owner
-  // Spawn: creator is sole owner
-  // Subagent: inherit all source participants — everyone who can see the
-  // parent room sees the card there, so its "view room" target must be
-  // accessible to them too (single-topic GET rejects non-participants).
-  const participants: TopicDto["participants"] =
-    copyHistory || subagent
-      ? [
-          ...topic.participants
-            .filter((p) => p.userId !== userId)
-            .map((p) => ({ ...p, role: "member" as const })),
-          { userId, role: "owner" as const },
-        ]
-      : [{ userId, role: "owner" as const }];
+  // Fork: it's the creator's own private copy — creator is the sole owner,
+  // no other source participants carry over.
+  // Spawn: creator is sole owner, no other participants either.
+  // Subagent: inherit the source room's participants AND roles verbatim —
+  // everyone who can see the parent room sees the card there, so its "view
+  // room" target must be accessible to them too (single-topic GET rejects
+  // non-participants). Ownership must NOT shift to whichever participant's
+  // turn happened to trigger the spawn: the room owner stays the room owner
+  // regardless of who (owner or another member) asked the agent to spawn a
+  // subagent, otherwise the actual owner loses ownership of their own room's
+  // child and non-owner triggers end up "owning" a room they can't normally
+  // create.
+  const participants: TopicDto["participants"] = subagent
+    ? topic.participants.map((p) => ({ ...p }))
+    : [{ userId, role: "owner" as const }];
   const kind = topic.kind ?? inferTopicKind(topic);
   const surface = topic.surface ?? defaultTopicSurface();
   // A derived room joins its parent's workspace, not this process's current

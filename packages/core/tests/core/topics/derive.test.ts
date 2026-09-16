@@ -212,6 +212,55 @@ describe("createDerivedTopic", () => {
     }
   });
 
+  test("subagent ownership stays with the room owner regardless of who triggers it", async () => {
+    const sourceTopicId = randomUUID();
+    const sourceTitle = `ownership-source-${randomUUID()}`;
+    const childTitle = `ownership-child-${randomUUID()}`;
+    const ownerUserId = `ownership-owner-${randomUUID()}`;
+    const memberUserId = `ownership-member-${randomUUID()}`;
+    const now = new Date().toISOString();
+    let childId: string | undefined;
+
+    upsertTopic({
+      id: sourceTopicId,
+      title: sourceTitle,
+      kind: "agent",
+      agent: "claude",
+      defaultModel: "sonnet",
+      defaultEffort: "medium",
+      aiMode: "always",
+      participants: [
+        { userId: ownerUserId, role: "owner" },
+        { userId: memberUserId, role: "member" },
+      ],
+      createdAt: now,
+      lastMessageAt: now,
+    });
+
+    try {
+      // A non-owner participant triggers the subagent spawn — the new room
+      // must keep the parent's exact roster and roles (owner stays owner,
+      // the triggering member stays a member), not promote the triggering
+      // user to owner or drop anyone from the roster.
+      const child = await createDerivedTopic(sourceTopicId, memberUserId, false, {
+        name: childTitle,
+        subagent: { agent: "claude" },
+      });
+      expect(child).not.toBeNull();
+      childId = child?.id;
+      expect(child?.participants).toEqual([
+        { userId: ownerUserId, role: "owner" },
+        { userId: memberUserId, role: "member" },
+      ]);
+    } finally {
+      if (childId) {
+        deleteTopic(childId);
+        rmSync(resolveTopicWorkspaceDir(childId), { recursive: true, force: true });
+      }
+      deleteTopic(sourceTopicId);
+    }
+  });
+
   test("fork, spawn, and subagent children share the parent browser profile", async () => {
     const sourceTopicId = randomUUID();
     const sourceTitle = `profile-source-${randomUUID()}`;
