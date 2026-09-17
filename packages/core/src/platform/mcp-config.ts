@@ -202,8 +202,8 @@ export function consumePlaywrightUnavailable(userId: string, topic: string | und
  * Each entry declares which scopes it participates in (`dm`, `forum`, `fork`, `cron`)
  * and how to build its spawn config given a context. Public helpers
  * (`getDmMcpServers`, `getForumMcpServers`, `getForkMcpServers`) and the
- * derived `ALL_FORUM_MCP_SERVER_NAMES` / `REQUIRED_FORUM_MCP_SERVERS`
- * constants all read from this catalog, so adding a new MCP server is a
+ * derived forum-name views read from this catalog plus the node-assigned
+ * manifest overlay installed below. Adding a built-in MCP server remains a
  * one-line append here instead of touching three places.
  *
  * Conventions:
@@ -652,6 +652,12 @@ export function resolveCuaRsBinary(platform: NodeJS.Platform = process.platform)
 
 // --- Derived catalog views ---
 
+export type NodeMcpEntry =
+  | { key: string; kind: "http"; port: number }
+  | { key: string; kind: "stdio"; command: string; args?: string[]; env?: Record<string, string> };
+
+let nodeMcpEntries: NodeMcpEntry[] = [];
+
 /** All forum-eligible MCP server names, in display order. */
 const allForumMcpServerNames: string[] = [];
 export const ALL_FORUM_MCP_SERVER_NAMES: readonly string[] = allForumMcpServerNames;
@@ -666,9 +672,12 @@ export const OPTIONAL_FORUM_MCP_SERVERS: readonly string[] = optionalForumMcpSer
 
 function refreshForumCatalogViews(): void {
   const { all, required, optional } = classifyForumMcpServers(MCP_CATALOG);
-  allForumMcpServerNames.splice(0, allForumMcpServerNames.length, ...all);
+  const nodeNames = nodeMcpEntries.map((entry) => entry.key);
+  const allWithNodeEntries = [...new Set([...all, ...nodeNames])];
+  const optionalWithNodeEntries = [...new Set([...optional, ...nodeNames])];
+  allForumMcpServerNames.splice(0, allForumMcpServerNames.length, ...allWithNodeEntries);
   requiredForumMcpServers.splice(0, requiredForumMcpServers.length, ...required);
-  optionalForumMcpServers.splice(0, optionalForumMcpServers.length, ...optional);
+  optionalForumMcpServers.splice(0, optionalForumMcpServers.length, ...optionalWithNodeEntries);
 }
 
 refreshForumCatalogViews();
@@ -722,7 +731,8 @@ export function formatMcpStatus(config: {
   // whitelist mode: stored list may or may not include required servers
   // (old entries might have them; new entries won't). Either way, split
   // by required vs optional for display.
-  const optionalActive = config.enabled.filter((n) => !REQUIRED_FORUM_MCP_SERVERS.includes(n));
+  const availableOptional = new Set(OPTIONAL_FORUM_MCP_SERVERS);
+  const optionalActive = [...new Set(config.enabled)].filter((name) => availableOptional.has(name));
   const total = REQUIRED_FORUM_MCP_SERVERS.length + optionalActive.length + extraNames.length;
   return [
     `설정 방식: whitelist`,
@@ -746,12 +756,6 @@ export function formatMcpStatus(config: {
 // then ride every eligible scope's catalog, subject to the same per-topic
 // `enabled` whitelist as optional built-ins.
 
-export type NodeMcpEntry =
-  | { key: string; kind: "http"; port: number }
-  | { key: string; kind: "stdio"; command: string; args?: string[]; env?: Record<string, string> };
-
-let nodeMcpEntries: NodeMcpEntry[] = [];
-
 /** Install the node's assigned MCP servers. Last writer wins (host restart-safe). */
 export function setNodeMcpServers(entries: NodeMcpEntry[]): void {
   nodeMcpEntries = entries.filter((entry) => !(entry.key in MCP_CATALOG));
@@ -759,6 +763,7 @@ export function setNodeMcpServers(entries: NodeMcpEntry[]): void {
   if (dropped > 0) {
     logger.warn({ dropped }, "setNodeMcpServers: entries shadowing built-in catalog keys ignored");
   }
+  refreshForumCatalogViews();
 }
 
 export function getNodeMcpServers(): readonly NodeMcpEntry[] {

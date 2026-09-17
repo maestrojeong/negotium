@@ -3,7 +3,9 @@ import { randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import type { SessionCommContext } from "#mcp/session-comm/context";
 import { createDefaultSessionCommMcpHost } from "#mcp/session-comm/default-host";
+import { setNodeMcpServers } from "#platform/mcp-config";
 import { sessionInboxPath } from "#query/session-inbox-path";
+import { getApiTopicConfig } from "#storage/api-topic-config";
 import { deleteTopic, upsertTopic } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
 import { listPendingAsksForCaller } from "#storage/session-asks";
@@ -46,6 +48,7 @@ function context(topic: TopicDto): SessionCommContext {
 }
 
 afterEach(() => {
+  setNodeMcpServers([]);
   for (const path of inboxPaths.splice(0)) {
     if (existsSync(path)) unlinkSync(path);
   }
@@ -53,6 +56,19 @@ afterEach(() => {
 });
 
 describe("default session-comm MCP host", () => {
+  test("persists a node-assigned MCP in the topic whitelist", async () => {
+    const topic = makeTopic();
+    setNodeMcpServers([{ key: "linear", kind: "stdio", command: "linear-mcp" }]);
+
+    const result = await createDefaultSessionCommMcpHost().configureMcp(context(topic), [
+      "linear",
+      "wiki",
+    ]);
+
+    expect("isError" in result ? result.isError : false).not.toBe(true);
+    expect(getApiTopicConfig(topic.id)?.mcp).toEqual(["linear"]);
+  });
+
   test("writes tell_session messages to the target inbox", async () => {
     const source = makeTopic();
     const target = makeTopic();

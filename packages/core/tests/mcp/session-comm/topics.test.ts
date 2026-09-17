@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setNodeMcpServers } from "#platform/mcp-config";
 import { deleteApiTopicConfig, getApiTopicConfig } from "#storage/api-topic-config";
 import { deleteTopic, upsertTopic } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
@@ -47,6 +48,7 @@ function makeTopic(patch: Partial<TopicDto>): TopicDto {
 }
 
 afterEach(() => {
+  setNodeMcpServers([]);
   for (const id of createdTopicIds.splice(0)) {
     deleteApiTopicConfig(id);
     deleteTopic(id);
@@ -155,5 +157,20 @@ describe("session-comm topic listing", () => {
       `channel:${duplicate.title}`,
     );
     expect(getTopicsForUser()[`channel:${duplicate.title}`]?.topicId).toBe(duplicate.id);
+  });
+
+  test("legacy topic config accepts a node-assigned MCP", async () => {
+    const current = makeTopic({
+      id: currentTopicId,
+      title: "Current Room",
+      kind: "agent",
+    });
+    setNodeMcpServers([{ key: "linear", kind: "stdio", command: "linear-mcp" }]);
+    const { getMcpConfig, setMcpConfig } = await import("#mcp/session-comm/topic-config");
+
+    setMcpConfig(["linear", "wiki"]);
+
+    expect(getApiTopicConfig(current.id)?.mcp).toEqual(["linear"]);
+    expect(getMcpConfig().enabled).toEqual(["linear"]);
   });
 });

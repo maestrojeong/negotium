@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { getForumMcpServers, setNodeMcpServers } from "#platform/mcp-config";
+import {
+  ALL_FORUM_MCP_SERVER_NAMES,
+  formatMcpStatus,
+  getForumMcpServers,
+  OPTIONAL_FORUM_MCP_SERVERS,
+  setNodeMcpServers,
+} from "#platform/mcp-config";
 
 afterEach(() => setNodeMcpServers([]));
 
@@ -24,13 +30,28 @@ describe("node-assigned MCP servers (manifest wiring)", () => {
 
   test("per-topic enabled whitelist filters node MCPs like optional built-ins", () => {
     setNodeMcpServers([{ key: "browser2", kind: "http", port: 9155 }]);
-    const servers = getForumMcpServers({
+    expect(ALL_FORUM_MCP_SERVER_NAMES).toContain("browser2");
+    expect(OPTIONAL_FORUM_MCP_SERVERS).toContain("browser2");
+
+    const enabled = getForumMcpServers({
       userId: "u",
       session: "t",
       agent: "claude",
-      enabled: ["wiki"],
+      enabled: ["browser2"],
     });
-    expect(servers.browser2).toBeUndefined();
+    expect(enabled.browser2).toEqual({ type: "sse", url: "http://127.0.0.1:9155/sse" });
+
+    const disabled = getForumMcpServers({
+      userId: "u",
+      session: "t",
+      agent: "claude",
+      enabled: [],
+    });
+    expect(disabled.browser2).toBeUndefined();
+
+    setNodeMcpServers([]);
+    expect(ALL_FORUM_MCP_SERVER_NAMES).not.toContain("browser2");
+    expect(OPTIONAL_FORUM_MCP_SERVERS).not.toContain("browser2");
   });
 
   test("entries shadowing built-in catalog keys are ignored", () => {
@@ -41,5 +62,17 @@ describe("node-assigned MCP servers (manifest wiring)", () => {
       /^http:\/\/127\.0\.0\.1:\d+\/mcp\/runtime\/wiki\/sse\?token=/,
     );
     expect((servers.wiki as { url: string }).url).not.toContain(":9155/");
+    expect(ALL_FORUM_MCP_SERVER_NAMES.filter((name) => name === "wiki")).toHaveLength(1);
+    expect(OPTIONAL_FORUM_MCP_SERVERS).not.toContain("wiki");
+  });
+
+  test("status omits configured node MCPs that are no longer available", () => {
+    setNodeMcpServers([{ key: "browser2", kind: "http", port: 9155 }]);
+    expect(formatMcpStatus({ enabled: ["browser2"] }).join("\n")).toContain("browser2");
+
+    setNodeMcpServers([]);
+    const status = formatMcpStatus({ enabled: ["browser2"] }).join("\n");
+    expect(status).not.toContain("browser2");
+    expect(status).toContain("선택 서버 (whitelist, 0개): 없음");
   });
 });
