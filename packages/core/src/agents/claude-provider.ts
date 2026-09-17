@@ -55,9 +55,28 @@ const CLAUDE_DEFAULT_DISALLOWED_TOOLS = [
   "CronCreate",
   "CronList",
   "CronDelete",
+  // Claude Code's cloud Routines surface is another scheduler. Keep scheduled
+  // work in Negotium so it remains attached to the canonical topic and host.
+  "RemoteTrigger",
 ] as const;
 
-const CLAUDE_NATIVE_AGENT_TOOLS = ["Task", "Agent", "TaskOutput", "TaskStop"] as const;
+const CLAUDE_NATIVE_AGENT_TOOLS = [
+  "Task",
+  "Agent",
+  "TaskOutput",
+  "TaskStop",
+  // Claude Code 2.1.224 added cross-session discovery and messaging. Those
+  // sessions do not share Negotium's topic identity, authorization, inbox, or
+  // transcript, so allowing them alongside session-comm makes "send/tell"
+  // ambiguous and can route messages outside the canonical runtime.
+  "ListAgents",
+  "SendMessage",
+  // Older agent-team builds exposed explicit lifecycle tools. Keep the names
+  // denied for compatibility even though current builds launch named
+  // teammates through Agent.
+  "TeamCreate",
+  "TeamDelete",
+] as const;
 
 export function claudeBuiltInTools(
   opts: Pick<AgentQueryOptions, "toolPolicy">,

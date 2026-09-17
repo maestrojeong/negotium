@@ -13,7 +13,7 @@ describe("claudeProvider host tool policy", () => {
     expect(claudeBuiltInTools({})).toBeUndefined();
   });
 
-  test("disallows native task store and subagent tools by default", () => {
+  test("disallows provider-owned coordination and scheduling tools by default", () => {
     expect(buildClaudeDisallowedTools()).toEqual([
       "AskUserQuestion",
       "Workflow",
@@ -27,14 +27,19 @@ describe("claudeProvider host tool policy", () => {
       "CronCreate",
       "CronList",
       "CronDelete",
+      "RemoteTrigger",
       "Task",
       "Agent",
       "TaskOutput",
       "TaskStop",
+      "ListAgents",
+      "SendMessage",
+      "TeamCreate",
+      "TeamDelete",
     ]);
   });
 
-  test("keeps native subagents blocked even when callers add other policy entries", () => {
+  test("keeps native coordination blocked when callers add other policy entries", () => {
     expect(buildClaudeDisallowedTools(["Bash", "TaskCreate"])).toEqual([
       "AskUserQuestion",
       "Workflow",
@@ -48,10 +53,15 @@ describe("claudeProvider host tool policy", () => {
       "CronCreate",
       "CronList",
       "CronDelete",
+      "RemoteTrigger",
       "Task",
       "Agent",
       "TaskOutput",
       "TaskStop",
+      "ListAgents",
+      "SendMessage",
+      "TeamCreate",
+      "TeamDelete",
       "Bash",
     ]);
   });
