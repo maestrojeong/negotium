@@ -357,7 +357,7 @@ function buildRuntimeToolSection(
       ? `Do not use provider-native todo/task/subagent tools such as "TodoWrite", "Task", "Agent", "TaskCreate", "TaskUpdate", "TaskList", "TaskOutput", or "TaskStop"; they are disabled or not shared across agents.${canSpawnSubagents ? " For delegation, use the runtime spawn_subagent tool instead." : ""}`
       : agentKind === "maestro"
         ? `Do not use provider-native task-store tools such as "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput", or "TaskStop"; they are disabled or not shared across agents. Do not use the Maestro "Agent" sub-agent tool either; it is disabled.${canSpawnSubagents ? " Use the runtime spawn_subagent tool for delegation so work is visible in its own room and reporting follows report_mode." : " Delegation is unavailable in this room."}`
-        : 'Do not use provider-native todo/plan surfaces such as "todo_list" or "update_plan"; they are ignored or not shared across agents.';
+        : 'Do not use provider-native goal/todo/plan surfaces such as "create_goal", "get_goal", "update_goal", "todo_list", or "update_plan"; they are disabled, ignored, or not shared across agents.';
   const visualSection = visualTools
     ? [
         visualToolLine,

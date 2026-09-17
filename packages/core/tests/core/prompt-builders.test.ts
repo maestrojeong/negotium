@@ -112,6 +112,7 @@ describe("session system prompt builders", () => {
     expect(terminal).toContain("Every AI turn executes on the Negotium Node");
     expect(terminal).toContain("## Environment: Negotium CLI");
     expect(terminal).toContain("## Environment: Terminal");
+    expect(terminal).toContain('"create_goal", "get_goal", "update_goal"');
     expect(terminal).not.toContain("## Environment: Telegram");
     expect(terminal).not.toContain("## Environment: Otium");
 

@@ -729,16 +729,27 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
     codexPathOverride: vaultHook.codexPathOverride,
     ...(codexEnvironment ? { env: codexEnvironment } : {}),
     config: {
-      // Otium exposes delegation through runtime.spawn_subagent so child work
+      // Negotium exposes delegation through runtime.spawn_subagent so child work
       // gets its own room/card and its result is routed back to the parent.
       // Codex enables its provider-native collaboration tools from the user's
-      // global config by default; explicitly turn that feature off so tools
-      // such as spawn_agent/send_message cannot bypass Otium's orchestration
-      // and so subagent rooms cannot recursively fan out through Codex.
+      // global config by default; explicitly turn that feature off so v1 tools
+      // (spawn_agent/send_input/resume_agent/wait_agent/close_agent) and v2
+      // tools (spawn_agent/send_message/followup_task/wait_agent) cannot bypass
+      // Negotium's orchestration or recursively fan out from subagent rooms.
       // Codex model metadata can override these flags. The authoritative
       // catalog above sets multi_agent_version=disabled as the hard stop; keep
-      // all feature switches off as a second layer and for future CLI versions.
-      features: { hooks: true, multi_agent: false, multi_agent_v2: false, enable_fanout: false },
+      // all feature switches off as a second layer and use the documented
+      // agents.enabled setting as a third, version-independent layer.
+      agents: { enabled: false },
+      // Persisted goals own their own task state and automatic continuation,
+      // which conflicts with Negotium's shared task store and turn scheduler.
+      features: {
+        hooks: true,
+        goals: false,
+        multi_agent: false,
+        multi_agent_v2: false,
+        enable_fanout: false,
+      },
       hooks: vaultHook.hooks,
       model_catalog_json: codexModelCatalogPath,
       mcp_servers: codexMcpServers,
