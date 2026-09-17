@@ -8,7 +8,7 @@
  */
 
 import { existsSync, realpathSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 /**
  * Resolve for comparison, following symlinks when the path exists.
@@ -22,7 +22,21 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 function normalizeExistingOrResolved(filePath: string): string {
   const resolved = resolve(filePath);
   try {
-    return existsSync(resolved) ? realpathSync(resolved) : resolved;
+    if (existsSync(resolved)) return realpathSync(resolved);
+
+    // Resolve the nearest existing ancestor, then reattach the missing suffix.
+    // On macOS, for example, /tmp points at /private/tmp. Resolving only an
+    // existing parent but not its not-yet-created child makes a path inside the
+    // parent look like an escape because their lexical prefixes differ.
+    let ancestor = resolved;
+    for (;;) {
+      const parent = dirname(ancestor);
+      if (parent === ancestor) return resolved;
+      ancestor = parent;
+      if (existsSync(ancestor)) {
+        return resolve(realpathSync(ancestor), relative(ancestor, resolved));
+      }
+    }
   } catch {
     return resolved;
   }
