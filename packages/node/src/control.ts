@@ -158,10 +158,15 @@ export interface NodeDaemonStatus {
   error?: string;
 }
 
+export type NodeMcpReloadResult =
+  | { ok: true; active: string[]; failed: Array<{ key: string; error: string }> }
+  | { ok: false; error: string };
+
 interface ControlHandlerOptions {
   port: () => number;
   startedAt: string;
   requestShutdown: () => void;
+  reloadMcpManifest?: () => Promise<NodeMcpReloadResult>;
   startTurn?: typeof startAiTurn;
   compactSession?: typeof compactTopicSession;
 }
@@ -1805,6 +1810,12 @@ export function createNodeControlHandler(
         return Response.json({ ok: true });
       }
 
+      if (req.method === "POST" && path === "/mcp/reload") {
+        if (!options.reloadMcpManifest) return jsonError(503, "MCP runtime is not ready");
+        const result = await options.reloadMcpManifest();
+        return Response.json(result, { status: result.ok ? 200 : 409 });
+      }
+
       if (req.method === "GET" && path === "/session") {
         const userId = requiredText(url.searchParams.get("user"), "user");
         ensurePersonalGeneral(userId, requestedSurface(url));
@@ -2244,4 +2255,25 @@ export async function stopNodeDaemon(timeoutMs = 3_000): Promise<boolean> {
   );
   if (!response.ok) throw new Error(`node shutdown returned HTTP ${response.status}`);
   return true;
+}
+
+/** Reload the running node's MCP manifest, or return null when no node is live. */
+export async function reloadNodeMcpManifest(
+  timeoutMs = 60_000,
+): Promise<NodeMcpReloadResult | null> {
+  const status = await inspectNodeDaemon();
+  if (!status.running || !status.info) return null;
+  const response = await fetchWithTimeout(
+    `http://127.0.0.1:${status.info.port}${NODE_CONTROL_BASE_PATH}/mcp/reload`,
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${NODE_CONTROL_TOKEN}` },
+    },
+    timeoutMs,
+  );
+  const body = (await response.json()) as NodeMcpReloadResult;
+  if (typeof body?.ok !== "boolean") {
+    throw new Error(`node MCP reload returned malformed HTTP ${response.status} response`);
+  }
+  return body;
 }

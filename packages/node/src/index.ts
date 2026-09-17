@@ -19,6 +19,7 @@ import {
   abortAllRooms,
   acquireRuntimeProcessLease,
   DATA_DIR,
+  getNodeMcpServers,
   killAllBgBash,
   killAllPlaywright,
   killOwnedCodexTreesForShutdown,
@@ -57,6 +58,7 @@ import {
   createNodeControlHandler,
   NODE_CONTROL_PROTOCOL_VERSION,
   NODE_DAEMON_ROLE,
+  type NodeMcpReloadResult,
   removeNodeDaemonInfo,
   writeNodeDaemonInfo,
 } from "./control";
@@ -67,6 +69,7 @@ export type {
   NodeDaemonConnection,
   NodeDaemonInfo,
   NodeDaemonStatus,
+  NodeMcpReloadResult,
 } from "./control";
 export {
   inspectNodeDaemon,
@@ -76,6 +79,7 @@ export {
   NODE_RUNTIME_CONTRACT_BASE_PATH,
   NODE_RUNTIME_CONTRACT_VERSION,
   readNodeDaemonInfo,
+  reloadNodeMcpManifest,
   stopNodeDaemon,
   waitForNodeDaemon,
 } from "./control";
@@ -137,12 +141,37 @@ function readFixedNodePort(): number | undefined {
  * allocated) via mcp-host; stdio specs pass through as launch commands.
  * Best-effort per entry — one broken server must not block the node.
  */
-async function wireNodeMcps(host: McpHost, manifest: McpManifest): Promise<void> {
+export interface NodeMcpWireReport {
+  active: string[];
+  failed: Array<{ key: string; error: string }>;
+}
+
+export async function wireNodeMcps(
+  host: McpHost,
+  manifest: McpManifest,
+  opts: { reload?: boolean } = {},
+): Promise<NodeMcpWireReport> {
+  if (opts.reload) manifest.reload();
+  await host.reconcile();
+
   const entries: NodeMcpEntry[] = [];
+  const failed: NodeMcpWireReport["failed"] = [];
   for (const spec of manifest.list()) {
     if (!manifest.isEnabled(spec.key)) continue;
     try {
       if (spec.transport === "http") {
+        if (spec.scope === "instance") {
+          entries.push({
+            key: spec.key,
+            kind: "http-instance",
+            async ensurePort(instanceKey) {
+              const instance = await host.ensure(spec.key, instanceKey);
+              if (!instance.port) throw new Error("no port allocated");
+              return instance.port;
+            },
+          });
+          continue;
+        }
         const instance = await host.ensure(spec.key);
         if (!instance.port) throw new Error("no port allocated");
         entries.push({ key: spec.key, kind: "http", port: instance.port });
@@ -156,13 +185,16 @@ async function wireNodeMcps(host: McpHost, manifest: McpManifest): Promise<void>
         });
       }
     } catch (err) {
+      failed.push({ key: spec.key, error: err instanceof Error ? err.message : String(err) });
       logger.warn({ err, key: spec.key }, "node mcp: failed to bring up manifest server");
     }
   }
   setNodeMcpServers(entries);
-  if (entries.length > 0) {
-    logger.info({ keys: entries.map((e) => e.key) }, "node mcp: manifest servers installed");
+  const active = getNodeMcpServers().map((entry) => entry.key);
+  if (active.length > 0) {
+    logger.info({ keys: active }, "node mcp: manifest servers installed");
   }
+  return { active, failed };
 }
 
 const CUA_RS_MCP_KEY = "cua-rs";
@@ -323,11 +355,16 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   let requestStop = () => {
     void runShutdown("manual");
   };
+  let reloadMcpManifest = async (): Promise<NodeMcpReloadResult> => ({
+    ok: false,
+    error: "MCP runtime is not ready",
+  });
   let server: ReturnType<typeof Bun.serve>;
   const control = createNodeControlHandler({
     port: () => server?.port ?? 0,
     startedAt,
     requestShutdown: () => requestStop(),
+    reloadMcpManifest: () => reloadMcpManifest(),
   });
   try {
     server = Bun.serve({
@@ -410,10 +447,28 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
 
   // Node-assigned MCPs come up in the background — turns that start before
   // they're ready simply run without them for that turn.
-  const mcpHost = new McpHost();
+  // The host and reloader must share this exact in-memory manifest: reload()
+  // mutates it in place before reconcile/ensure read the new specs.
   const manifest = new McpManifest();
+  const mcpHost = new McpHost({ manifest });
   const stopSweeper = mcpHost.startSweeper();
   const cuaRsMcp = wireCuaRsMcp();
+  let mcpApplyTail: Promise<void> = Promise.resolve();
+  const applyNodeMcpManifest = (reload: boolean): Promise<NodeMcpReloadResult> => {
+    const operation = mcpApplyTail.then(async (): Promise<NodeMcpReloadResult> => {
+      try {
+        const report = await wireNodeMcps(mcpHost, manifest, { reload });
+        return { ok: true, ...report };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn({ err: error }, "node mcp: manifest reload failed");
+        return { ok: false, error: message };
+      }
+    });
+    mcpApplyTail = operation.then(() => undefined);
+    return operation;
+  };
+  reloadMcpManifest = () => applyNodeMcpManifest(true);
 
   let resolveCompleted!: () => void;
   const completed = new Promise<void>((resolve) => {
@@ -440,7 +495,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     void mcpHost.stopAll();
     throw error;
   }
-  void wireNodeMcps(mcpHost, manifest);
+  void applyNodeMcpManifest(false);
 
   // Priority convention (see core lifecycle.ts): 100 = graceful
   // network/queue closes, 50 = external-process reapers.
@@ -465,7 +520,9 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   onShutdown("ask-user-gate-owner", 119, stopAskUserQuestionGateOwner);
   onShutdown("node-modules", 110, () => modules.stop());
   onShutdown("node-mcp-host", 50, async () => {
+    reloadMcpManifest = async () => ({ ok: false, error: "MCP runtime is shutting down" });
     stopSweeper();
+    await mcpApplyTail;
     await mcpHost.stopAll();
   });
   onShutdown("cua-rs-mcp-host", 50, async () => {

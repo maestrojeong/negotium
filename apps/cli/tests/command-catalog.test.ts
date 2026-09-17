@@ -25,6 +25,7 @@ describe("CLI command catalog", () => {
     expect(help).toContain("Node:\n");
     expect(help).toContain("Workspace:\n");
     expect(help).toContain("serve [otium]");
+    expect(help).toContain("mcp list|add|remove|enable|disable|reload");
     expect(help).toContain("negotium -v | --version");
     expect(help).toContain("With no command, Negotium starts a Terminal client.");
     expect(help).not.toContain("start <terminal|telegram|otium>");

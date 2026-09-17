@@ -83,6 +83,24 @@ test("node control API rejects missing bearer authentication", async () => {
   expect(response?.status).toBe(401);
 });
 
+test("node control API reloads the MCP manifest through its authenticated callback", async () => {
+  let calls = 0;
+  const localHandler = createNodeControlHandler({
+    port: () => 43210,
+    startedAt: "2026-07-14T00:00:00.000Z",
+    requestShutdown() {},
+    async reloadMcpManifest() {
+      calls++;
+      return { ok: true, active: ["linear"], failed: [] };
+    },
+  });
+
+  const response = await localHandler(request("/mcp/reload", { method: "POST" }));
+  expect(response?.status).toBe(200);
+  expect(await response?.json()).toEqual({ ok: true, active: ["linear"], failed: [] });
+  expect(calls).toBe(1);
+});
+
 test("runtime gateway contract rejects missing bearer authentication", async () => {
   const response = await handler(
     new Request(`http://127.0.0.1:43210${NODE_RUNTIME_CONTRACT_BASE_PATH}/health`),

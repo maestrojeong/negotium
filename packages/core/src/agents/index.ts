@@ -6,6 +6,7 @@ import { getRegistryOperations } from "#agents/registry";
 import { encodeClaudeCwd } from "#agents/rollout/claude";
 import { resolveTaskEventScope, withTaskSnapshots } from "#agents/task-events";
 import { logger } from "#platform/logger";
+import { prepareNodeMcpServersForQuery } from "#platform/mcp-config";
 import { memoizeImport } from "#platform/memoize-import";
 import { appendConversationEvent, readConversation } from "#storage/conversations";
 import type { AgentKind, AgentQueryOptions, UnifiedEvent } from "#types";
@@ -202,6 +203,8 @@ export async function* runAgent(opts: AgentQueryOptions): AsyncGenerator<Unified
       return;
     }
   }
+
+  await prepareNodeMcpServersForQuery(dispatchOpts);
 
   const taskScope = resolveTaskEventScope(dispatchOpts);
   const stream = taskScope

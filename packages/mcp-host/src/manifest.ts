@@ -37,7 +37,19 @@ export class McpManifest {
 
   constructor(opts?: { file?: string }) {
     this.file = opts?.file ?? defaultManifestFile();
-    this.load();
+    this.reload();
+  }
+
+  /**
+   * Replace the in-memory view with the latest atomically-written file.
+   *
+   * Parsing and duplicate validation finish before the live map is touched, so
+   * a malformed external edit leaves the last known-good manifest usable.
+   */
+  reload(): void {
+    const next = this.read();
+    this.entries.clear();
+    for (const [key, entry] of next) this.entries.set(key, entry);
   }
 
   /** All specs, enabled or not, in insertion order. Returns defensive copies. */
@@ -80,8 +92,9 @@ export class McpManifest {
     return this.entries.get(key)?.enabled ?? false;
   }
 
-  private load(): void {
-    if (!existsSync(this.file)) return;
+  private read(): Map<string, ManifestEntry> {
+    const entries = new Map<string, ManifestEntry>();
+    if (!existsSync(this.file)) return entries;
     let parsed: z.infer<typeof manifestFileSchema>;
     try {
       parsed = manifestFileSchema.parse(JSON.parse(readFileSync(this.file, "utf8")));
@@ -91,11 +104,12 @@ export class McpManifest {
       );
     }
     for (const entry of parsed.servers) {
-      if (this.entries.has(entry.spec.key)) {
+      if (entries.has(entry.spec.key)) {
         throw new Error(`Duplicate MCP spec key in manifest ${this.file}: "${entry.spec.key}"`);
       }
-      this.entries.set(entry.spec.key, entry);
+      entries.set(entry.spec.key, entry);
     }
+    return entries;
   }
 
   private save(): void {

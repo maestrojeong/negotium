@@ -654,9 +654,18 @@ export function resolveCuaRsBinary(platform: NodeJS.Platform = process.platform)
 
 export type NodeMcpEntry =
   | { key: string; kind: "http"; port: number }
+  | {
+      key: string;
+      kind: "http-instance";
+      ensurePort: (instanceKey: string) => Promise<number>;
+    }
   | { key: string; kind: "stdio"; command: string; args?: string[]; env?: Record<string, string> };
 
 let nodeMcpEntries: NodeMcpEntry[] = [];
+const resolvedNodeMcpPorts = new WeakMap<
+  Extract<NodeMcpEntry, { kind: "http-instance" }>,
+  Map<string, number>
+>();
 
 /** All forum-eligible MCP server names, in display order. */
 const allForumMcpServerNames: string[] = [];
@@ -791,20 +800,81 @@ function mergeHostMcpServers(
 function buildNodeMcpSpecs(
   agent: AgentKind | undefined,
   filter: (name: string) => boolean,
+  ctx: Pick<RuntimeMcpBuildContext, "topicId" | "userId" | "session">,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const entry of nodeMcpEntries) {
     if (!filter(entry.key)) continue;
-    out[entry.key] =
-      entry.kind === "http"
-        ? longLivedHttpMcp(agent, entry.port)
-        : {
-            command: entry.command,
-            args: entry.args ?? [],
-            ...(entry.env ? { env: entry.env } : {}),
-          };
+    if (entry.kind === "http") {
+      out[entry.key] = longLivedHttpMcp(agent, entry.port);
+      continue;
+    }
+    if (entry.kind === "http-instance") {
+      const port = resolvedNodeMcpPorts.get(entry)?.get(nodeMcpInstanceKey(ctx));
+      if (port !== undefined) out[entry.key] = longLivedHttpMcp(agent, port);
+      continue;
+    }
+    out[entry.key] = {
+      command: entry.command,
+      args: entry.args ?? [],
+      ...(entry.env ? { env: entry.env } : {}),
+    };
   }
   return out;
+}
+
+function nodeMcpInstanceKey(
+  ctx: Pick<RuntimeMcpBuildContext, "topicId" | "userId" | "session">,
+): string {
+  return ctx.topicId ?? `user:${ctx.userId}:session:${ctx.session}`;
+}
+
+/**
+ * Lazily prepare per-topic HTTP manifest entries before a provider resolves
+ * its otherwise-synchronous MCP config. One failed custom server is omitted
+ * from that turn without taking down the rest of the runtime catalog.
+ */
+export async function prepareNodeMcpServersForQuery(opts: AgentQueryOptions): Promise<void> {
+  if (
+    opts.toolPolicy ||
+    opts.sessionType === "cron" ||
+    nodeMcpEntries.every((entry) => entry.kind !== "http-instance")
+  ) {
+    return;
+  }
+
+  const forum = !["dm", "ephemeral", "manager"].includes(opts.sessionType ?? "forum");
+  const enabled = opts.mcpEnabled ?? null;
+  const instanceKey = nodeMcpInstanceKey({
+    topicId: opts.topicId,
+    userId: opts.userId || "local",
+    session: opts.session || "default",
+  });
+
+  await Promise.all(
+    nodeMcpEntries.map(async (entry) => {
+      if (entry.kind !== "http-instance") return;
+      if (forum && enabled !== null && !enabled.includes(entry.key)) return;
+      let ports = resolvedNodeMcpPorts.get(entry);
+      if (!ports) {
+        ports = new Map();
+        resolvedNodeMcpPorts.set(entry, ports);
+      }
+      try {
+        const port = await entry.ensurePort(instanceKey);
+        if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+          throw new Error(`invalid port ${port}`);
+        }
+        ports.set(instanceKey, port);
+      } catch (err) {
+        ports.delete(instanceKey);
+        logger.warn(
+          { err, key: entry.key, instanceKey },
+          "node mcp: failed to prepare instance-scoped server",
+        );
+      }
+    }),
+  );
 }
 
 function buildScope(
@@ -826,7 +896,7 @@ function buildScope(
   // Node-assigned MCPs join every scope except cron (scheduled runs keep the
   // deliberately narrow built-in set).
   if (scope !== "cron") {
-    Object.assign(out, buildNodeMcpSpecs(ctx.agent, filter));
+    Object.assign(out, buildNodeMcpSpecs(ctx.agent, filter, ctx));
   }
   return out;
 }
@@ -834,13 +904,16 @@ function buildScope(
 /** DM session: catalog entries with `dm` scope, no whitelist. */
 export function getDmMcpServers(opts: {
   userId: string;
+  session?: string;
+  topicId?: string;
   agent?: AgentKind;
   playwrightPort?: number;
   playwrightCapability?: string;
 }) {
   return buildScope("dm", {
     userId: opts.userId,
-    session: "dm",
+    session: opts.session ?? "dm",
+    topicId: opts.topicId,
     agent: opts.agent,
     playwrightPort: opts.playwrightPort,
     playwrightCapability: opts.playwrightCapability,
@@ -1065,6 +1138,8 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
   if (opts.sessionType === "dm" || opts.sessionType === "ephemeral") {
     return getDmMcpServers({
       userId: opts.userId || "local",
+      session: opts.session,
+      topicId: opts.topicId,
       agent: opts.agent,
       playwrightPort: opts.playwrightPort,
       playwrightCapability: opts.playwrightCapability,

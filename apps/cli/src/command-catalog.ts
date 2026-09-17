@@ -36,7 +36,7 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   { name: "topics", usage: "topics", description: "list topics on this node", group: "Workspace" },
   {
     name: "mcp",
-    usage: "mcp list|add|remove|enable|disable",
+    usage: "mcp list|add|remove|enable|disable|reload",
     description: "manage the node MCP manifest",
     group: "Workspace",
   },

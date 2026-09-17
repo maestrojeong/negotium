@@ -100,6 +100,20 @@ describe("McpHost", () => {
     expect(host.listRunning()).toHaveLength(1);
   });
 
+  test("reconcile stops instances whose reloaded spec was disabled", async () => {
+    const file = join(dir, "data", "mcp-manifest.json");
+    manifest.add(httpSpec("web", 43725));
+    const running = await host.ensure("web");
+
+    const writer = new McpManifest({ file });
+    writer.setEnabled("web", false);
+    manifest.reload();
+    await host.reconcile();
+
+    expect(host.listRunning()).toEqual([]);
+    await expect(fetch(`http://127.0.0.1:${running.port}`)).rejects.toThrow();
+  });
+
   test("port allocation skips ports claimed by other port files", async () => {
     const base = 43730;
     mkdirSync(portsDir, { recursive: true });

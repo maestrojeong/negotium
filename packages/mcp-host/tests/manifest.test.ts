@@ -95,6 +95,25 @@ describe("McpManifest", () => {
     expect(c.list().map((s) => s.key)).toEqual(["web"]);
   });
 
+  test("reload observes external mutations and preserves state on invalid input", () => {
+    const file = tmpFile();
+    const live = new McpManifest({ file });
+    live.add(stdioSpec);
+
+    const writer = new McpManifest({ file });
+    writer.add(httpSpec);
+    writer.setEnabled("echo", false);
+
+    live.reload();
+    expect(live.list().map((spec) => spec.key)).toEqual(["echo", "web"]);
+    expect(live.isEnabled("echo")).toBe(false);
+
+    writeFileSync(file, "not json");
+    expect(() => live.reload()).toThrow(/Invalid MCP manifest/);
+    expect(live.list().map((spec) => spec.key)).toEqual(["echo", "web"]);
+    expect(live.isEnabled("echo")).toBe(false);
+  });
+
   test("throws on corrupt manifest file instead of clobbering it", () => {
     const file = tmpFile();
     const m = new McpManifest({ file });

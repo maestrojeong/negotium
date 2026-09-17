@@ -1,8 +1,27 @@
-/** `negotium mcp <list|add|remove|enable|disable>` — per-node MCP manifest. */
+/** `negotium mcp <list|add|remove|enable|disable|reload>` — per-node MCP manifest. */
 
 import { McpManifest, mcpServerSpecSchema } from "@negotium/mcp-host";
+import { reloadNodeMcpManifest } from "@negotium/node";
 
-export function mcpCommand(args: string[]): void {
+async function applyManifestToRunningNode(): Promise<void> {
+  const result = await reloadNodeMcpManifest();
+  if (result === null) {
+    console.log("node is not running; manifest changes apply on the next start");
+    return;
+  }
+  if (!result.ok) throw new Error(`live MCP reload failed: ${result.error}`);
+  console.log(
+    `reloaded running node (${result.active.length > 0 ? result.active.join(", ") : "no active custom servers"})`,
+  );
+  if (result.failed.length > 0) {
+    for (const failure of result.failed) {
+      console.error(`failed to start "${failure.key}": ${failure.error}`);
+    }
+    process.exitCode = 1;
+  }
+}
+
+export async function mcpCommand(args: string[]): Promise<void> {
   const manifest = new McpManifest();
   const [sub, ...rest] = args;
 
@@ -39,6 +58,7 @@ export function mcpCommand(args: string[]): void {
       const spec = mcpServerSpecSchema.parse(JSON.parse(raw));
       manifest.add(spec);
       console.log(`added "${spec.key}" to this node's manifest`);
+      await applyManifestToRunningNode();
       return;
     }
     case "remove": {
@@ -48,7 +68,9 @@ export function mcpCommand(args: string[]): void {
         process.exitCode = 1;
         return;
       }
-      console.log(manifest.remove(key) ? `removed "${key}"` : `no such key "${key}"`);
+      const removed = manifest.remove(key);
+      console.log(removed ? `removed "${key}"` : `no such key "${key}"`);
+      if (removed) await applyManifestToRunningNode();
       return;
     }
     case "enable":
@@ -61,10 +83,15 @@ export function mcpCommand(args: string[]): void {
       }
       manifest.setEnabled(key, sub === "enable");
       console.log(`${sub}d "${key}"`);
+      await applyManifestToRunningNode();
+      return;
+    }
+    case "reload": {
+      await applyManifestToRunningNode();
       return;
     }
     default:
-      console.error(`unknown subcommand "${sub}" — use list|add|remove|enable|disable`);
+      console.error(`unknown subcommand "${sub}" — use list|add|remove|enable|disable|reload`);
       process.exitCode = 1;
   }
 }

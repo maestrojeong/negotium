@@ -153,7 +153,14 @@ switch (command) {
   }
   case "mcp": {
     const { mcpCommand } = await import("@/commands/mcp");
-    mcpCommand(args);
+    try {
+      await mcpCommand(args);
+    } catch (error) {
+      process.stderr.write(
+        `negotium mcp: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      process.exitCode = 1;
+    }
     break;
   }
   case "vault": {

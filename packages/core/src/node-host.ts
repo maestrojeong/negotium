@@ -45,6 +45,7 @@ export { onShutdown, runShutdown } from "#platform/lifecycle";
 export { logger } from "#platform/logger";
 export type { NodeMcpEntry } from "#platform/mcp-config";
 export {
+  getNodeMcpServers,
   isReservedRuntimeMcpServerName,
   resolveCuaRsBinary,
   setCuaRsMcpPort,

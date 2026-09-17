@@ -4,6 +4,7 @@ import {
   formatMcpStatus,
   getForumMcpServers,
   OPTIONAL_FORUM_MCP_SERVERS,
+  prepareNodeMcpServersForQuery,
   setNodeMcpServers,
 } from "#platform/mcp-config";
 
@@ -74,5 +75,56 @@ describe("node-assigned MCP servers (manifest wiring)", () => {
     const status = formatMcpStatus({ enabled: ["browser2"] }).join("\n");
     expect(status).not.toContain("browser2");
     expect(status).toContain("선택 서버 (whitelist, 0개): 없음");
+  });
+
+  test("instance-scoped HTTP entries are prepared lazily per topic", async () => {
+    const ensured: string[] = [];
+    setNodeMcpServers([
+      {
+        key: "browser2",
+        kind: "http-instance",
+        async ensurePort(instanceKey) {
+          ensured.push(instanceKey);
+          return instanceKey === "topic-a" ? 9155 : 9156;
+        },
+      },
+    ]);
+
+    const query = (topicId: string, mcpEnabled: string[]) => ({
+      agent: "codex" as const,
+      prompt: "test",
+      cwd: "/tmp",
+      systemPrompt: "test",
+      userId: "u",
+      session: topicId,
+      sessionType: "forum" as const,
+      topicId,
+      mcpEnabled,
+    });
+
+    await prepareNodeMcpServersForQuery(query("topic-a", ["browser2"]));
+    expect(
+      getForumMcpServers({
+        userId: "u",
+        session: "topic-a",
+        topicId: "topic-a",
+        agent: "codex",
+        enabled: ["browser2"],
+      }).browser2,
+    ).toEqual({ url: "http://127.0.0.1:9155/mcp" });
+
+    await prepareNodeMcpServersForQuery(query("topic-b", ["browser2"]));
+    expect(
+      getForumMcpServers({
+        userId: "u",
+        session: "topic-b",
+        topicId: "topic-b",
+        agent: "claude",
+        enabled: ["browser2"],
+      }).browser2,
+    ).toEqual({ type: "sse", url: "http://127.0.0.1:9156/sse" });
+
+    await prepareNodeMcpServersForQuery(query("topic-c", []));
+    expect(ensured).toEqual(["topic-a", "topic-b"]);
   });
 });
