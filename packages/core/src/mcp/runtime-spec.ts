@@ -66,8 +66,6 @@ export interface HostedMcpContext {
   topicId?: string;
   queryId?: string;
   wikiTopicId?: string;
-  /** Memory persona being archived; gates the archiver-only wiki assign tool. */
-  wikiMemoryKey?: string;
   subagentParentTopicId?: string;
   cwd: string;
   agent: AgentKind;
@@ -168,7 +166,6 @@ function isHostedMcpContext(value: unknown): value is HostedMcpContext {
     (ctx.topicId === undefined || typeof ctx.topicId === "string") &&
     (ctx.queryId === undefined || typeof ctx.queryId === "string") &&
     (ctx.wikiTopicId === undefined || typeof ctx.wikiTopicId === "string") &&
-    (ctx.wikiMemoryKey === undefined || typeof ctx.wikiMemoryKey === "string") &&
     (ctx.subagentParentTopicId === undefined || typeof ctx.subagentParentTopicId === "string") &&
     (ctx.model === undefined || typeof ctx.model === "string") &&
     (ctx.depth === undefined || (Number.isInteger(ctx.depth) && ctx.depth >= 0)) &&
@@ -284,9 +281,6 @@ function hostedMcpCacheIdentity(surface: HostedMcpSurface, ctx: HostedMcpContext
       semanticContext = {
         userId: ctx.userId,
         topicId: ctx.wikiTopicId ?? ctx.topicId ?? null,
-        // Part of the identity: a server cached for a normal turn exposes no
-        // assign tool, so an archiver turn must not be handed that instance.
-        memoryKey: ctx.wikiMemoryKey ?? null,
       };
       break;
     case "vault":

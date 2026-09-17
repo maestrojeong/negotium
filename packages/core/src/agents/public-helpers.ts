@@ -142,11 +142,3 @@ export {
   type TopicLogMaintenance,
   type TopicLogMaintenanceHost,
 } from "#agents/topic-cleanup";
-export {
-  type AssignedTopicDefaults,
-  type AssignTopicDefaultsInput,
-  type AssignTopicDefaultsResult,
-  assignTopicDefaults,
-  resolveAssignedTopicDefaults,
-  validateAssignedDefaults,
-} from "#agents/topic-defaults";

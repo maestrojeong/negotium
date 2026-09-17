@@ -307,10 +307,16 @@ test("runtime gateway keeps Cron execution and actor ownership separate", async 
 test("runtime gateway topic create makes a shared canonical topic", async () => {
   const createUser = `topic-create-${randomUUID()}`;
   const title = `Created ${randomUUID()}`;
+  const memoryKey = `Persona ${randomUUID()}`;
   const response = await handler(
     runtimeRequest("/topics", {
       method: "POST",
-      body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, userId: createUser, title }),
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        userId: createUser,
+        title,
+        memoryKey,
+      }),
     }),
   );
   const body = (await response?.json()) as { v?: number; topic?: TopicDto };
@@ -318,6 +324,7 @@ test("runtime gateway topic create makes a shared canonical topic", async () => 
   expect(response?.status).toBe(201);
   expect(body.v).toBe(NODE_RUNTIME_CONTRACT_VERSION);
   expect(body.topic?.title).toBe(title);
+  expect(body.topic?.memoryKey).toBe(memoryKey);
   // Born on the otium surface: a host only asks for a topic when it is already
   // surfacing the room, so it must show up in the list without a second call.
   expect(body.topic?.surface).toBe("otium");

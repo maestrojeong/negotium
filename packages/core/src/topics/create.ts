@@ -9,7 +9,6 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
-import { resolveAssignedTopicDefaults } from "#agents/topic-defaults";
 import { WsHub } from "#bus";
 import { DEFAULT_TOPIC_EFFORT, FALLBACK_AGENT, resolveTopicWorkspaceDir } from "#platform/config";
 import { RESERVED_TOPIC_NAMES } from "#platform/constants";
@@ -44,7 +43,7 @@ export interface RegisterTopicOptions {
   userId: string;
   /** "agent" (AI room, default) or "channel" (human room, AI optional). */
   kind?: TopicDto["kind"];
-  /** AI backend for the room. Defaults to maestro for agent rooms. */
+  /** AI backend for the room. Defaults to the node fallback for agent rooms. */
   agent?: AgentKind | "none";
   model?: string;
   effort?: EffortLevel;
@@ -59,30 +58,8 @@ export interface RegisterTopicOptions {
    * unset means "the workspace this process is attached to".
    */
   surfaceScope?: string | null;
-  /**
-   * Wiki memory persona this room continues. When the caller names one and
-   * leaves agent/model/effort unset, the room opens on whatever defaults the
-   * archiver last assigned to that persona.
-   */
+  /** Wiki memory persona this room continues. */
   memoryKey?: string;
-}
-
-/**
- * Where the room's agent/model/effort came from.
- *
- * - `explicit`: the caller named at least one of them.
- * - `assigned`: they came from the archiver's assignment for `memoryKey`.
- * - `fallback`: the node's own defaults.
- *
- * Reported rather than inferred because `assigned` and `fallback` can produce
- * the same triple, and a host debugging "why is this room on that model" needs
- * to tell "the assignment said so" from "there was no assignment".
- */
-export type TopicDefaultsSource = "explicit" | "assigned" | "fallback";
-
-export interface RegisterTopicResult {
-  topic: TopicDto;
-  defaultsSource: TopicDefaultsSource;
 }
 
 /**
@@ -90,14 +67,6 @@ export interface RegisterTopicResult {
  * invalid input (reserved/conflicting title, bad agent/model combination).
  */
 export function registerTopic(opts: RegisterTopicOptions): TopicDto {
-  return registerTopicDetailed(opts).topic;
-}
-
-/**
- * As {@link registerTopic}, and also reports which layer decided the room's
- * execution defaults.
- */
-export function registerTopicDetailed(opts: RegisterTopicOptions): RegisterTopicResult {
   const title = opts.title?.trim();
   if (!title) throw new TopicValidationError("title is required");
   if (RESERVED_TOPIC_NAMES.has(title.toLowerCase())) {
@@ -143,25 +112,11 @@ export function registerTopicDetailed(opts: RegisterTopicOptions): RegisterTopic
       ? undefined
       : ((rawAgent as AgentKind | undefined) ?? DEFAULT_AGENT_ROOM_AGENT);
 
-  // A caller that names a model, effort, or agent has made the decision itself;
-  // an assignment may only fill defaults nobody asked about, so existing
-  // callers keep their exact behaviour.
   const memoryKey = opts.memoryKey?.trim() || undefined;
-  // Presence, not truthiness: `model: ""` is still the caller having named the
-  // field, and it used to fall through to the node's model fallback. Treating
-  // it as absent would let an assignment overrule an explicit input.
-  const callerChoseExecution =
-    rawAgent !== undefined || opts.model !== undefined || opts.effort !== undefined;
-  const assigned =
-    // Channel rooms are deliberately AI-less unless the caller says otherwise,
-    // so an assignment must never be what gives one an agent.
-    memoryKey && requestedKind === "agent" && !callerChoseExecution
-      ? resolveAssignedTopicDefaults(memoryKey)
-      : null;
 
   const { kind, aiMode, agent } = normalizeTopicState({
     kind: requestedKind,
-    agent: assigned?.agent ?? requestedAgent,
+    agent: requestedAgent,
   });
 
   // Derive per-mode model/effort defaults from the chosen agent's registry.
@@ -172,11 +127,7 @@ export function registerTopicDetailed(opts: RegisterTopicOptions): RegisterTopic
   if (agent && opts.effort && !registry.validateEffort(opts.effort)) {
     throw new TopicValidationError(`effort '${opts.effort}' is not valid for agent '${agent}'`);
   }
-  const defaultModel = resolveModelForAgent(
-    agent ?? FALLBACK_AGENT,
-    assigned?.model ?? opts.model,
-    registry,
-  );
+  const defaultModel = resolveModelForAgent(agent ?? FALLBACK_AGENT, opts.model, registry);
   // The node-wide fixed effort, not the agent registry's own default: the
   // registry value differs per backend (Claude "high", Maestro "medium", Codex
   // none), so a room's cost would depend on which backend the node happens to
@@ -185,7 +136,7 @@ export function registerTopicDetailed(opts: RegisterTopicOptions): RegisterTopic
   const nodeDefaultEffort = registry.validateEffort(DEFAULT_TOPIC_EFFORT)
     ? DEFAULT_TOPIC_EFFORT
     : registry.defaultEffort;
-  const defaultEffort = assigned?.effort ?? opts.effort ?? nodeDefaultEffort;
+  const defaultEffort = opts.effort ?? nodeDefaultEffort;
 
   const now = new Date().toISOString();
   const topic: TopicDto = {
@@ -219,12 +170,8 @@ export function registerTopicDetailed(opts: RegisterTopicOptions): RegisterTopic
       kind,
       agent,
       ...(memoryKey ? { memoryKey } : {}),
-      ...(assigned ? { assignedDefaults: `${assigned.model}/${assigned.effort}` } : {}),
     },
     "topic registered",
   );
-  return {
-    topic,
-    defaultsSource: assigned ? "assigned" : callerChoseExecution ? "explicit" : "fallback",
-  };
+  return topic;
 }

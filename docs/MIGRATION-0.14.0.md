@@ -1,8 +1,7 @@
 # Migration 0.14.0
 
-Negotium 0.14.0 lets the wiki archiver choose the model and effort a memory persona runs with, so a
-product can drop its model picker entirely. See
-[Memory-assigned defaults](./MEMORY-ASSIGNED-DEFAULTS.md) for the full design.
+Negotium 0.14.0 adds canonical memory identity to topic creation, standardizes the default topic
+effort, and lets embedding products filter self-configuration capabilities.
 
 ## Breaking behaviour change
 
@@ -18,33 +17,13 @@ unaffected; their `defaultEffort` is already stored.
 
 ## What's new
 
-### `assign_topic_defaults` on the wiki MCP
-
-Registered only for turns that name a memory persona and whose host wired an assignment sink — in
-practice only archiver turns. It stores a model (the agent is derived from it with `modelOwner`) plus
-an optional effort and reason, keyed by memory persona in the new `topic_default_assignments` table.
-
-The table is created automatically on first start; nothing to migrate. It is deliberately independent
-of `api_topic_brief`, so a persona's assignment survives the deletion of every room that used it.
-
-The archiver prompt states that not calling the tool is the default action. `reason`, `updated_at`
-and `assign_count` on the row are the audit trail; there is no separate log.
-
 ### `memoryKey` on topic creation
 
-`POST runtime/v1/topics` accepts an optional `memoryKey`. When it is given and the caller names
-**none** of agent, model, or effort, the room opens on that persona's assigned defaults; any explicit
-value still wins, and a `channel` room is never given an agent this way. A stored pairing that no
-longer validates is ignored in silence.
-
-New capability flag: **`canonical-topic-create-memory-key`**. Feature-detect it — a node that
-predates 0.14.0 accepts the body, ignores the field and still answers `201`, so a dropped assignment
-is indistinguishable from a successful create.
-
-The response now carries `defaultsSource: "explicit" | "assigned" | "fallback"` beside `topic`.
-In-process, use `registerTopicDetailed()` or `topicService.createDetailed()`; `registerTopic()` keeps
-returning a `TopicDto`. The MCP `register_topic` tool takes `memory_key` and prints
-`defaults_source`.
+`POST runtime/v1/topics` accepts an optional `memoryKey`, which identifies the wiki memory persona
+the room continues. It is persisted on the topic and echoed in the response, but does not choose or
+modify the room's agent, model, or effort. Callers must continue sending concrete execution settings
+when they do not want the node defaults. The MCP `register_topic` tool accepts the same value as
+`memory_key`.
 
 ### Self-config capability filter
 
@@ -63,9 +42,10 @@ Omitting the filter keeps every tool the host supports, so existing embedders ar
 
 ## Upgrade notes
 
-1. Reinstall the `negotium` package and restart the resident Node. The new table is created on
-   startup.
+1. Reinstall the `negotium` package and restart the resident Node.
 2. If you rely on Claude rooms defaulting to `high` effort, set `NEGOTIUM_DEFAULT_EFFORT=high`.
-3. Hosts that want persona-assigned defaults must check for
-   `canonical-topic-create-memory-key`, send `memoryKey`, and stop sending `agent`/`model`/`effort`
-   on automatic room creation.
+3. Hosts may send `memoryKey` to preserve persona identity, but must continue resolving and sending
+   concrete `agent`, `model`, and `effort` values as needed.
+4. Builds that briefly shipped the abandoned assignment prototype may optionally run
+   `DROP TABLE IF EXISTS topic_default_assignments` after deploying this version. No topic or Cron
+   columns need to be added or removed.

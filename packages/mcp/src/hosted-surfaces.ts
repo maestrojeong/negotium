@@ -104,14 +104,11 @@ export async function buildHostedSurfaceServer(
     }
     case "wiki":
     case "skills": {
-      const [{ createWikiMcpServer }, storage, { WORKSPACE_DIR }, agentHelpers] = await Promise.all(
-        [
-          import("@negotium/core/mcp-factories/wiki"),
-          import("@negotium/core/storage"),
-          import("@negotium/core/mcp-runtime-host"),
-          import("@negotium/core/agent-helpers"),
-        ],
-      );
+      const [{ createWikiMcpServer }, storage, { WORKSPACE_DIR }] = await Promise.all([
+        import("@negotium/core/mcp-factories/wiki"),
+        import("@negotium/core/storage"),
+        import("@negotium/core/mcp-runtime-host"),
+      ]);
       const topicId = context.wikiTopicId ?? context.topicId;
       const accessibleTopicBrief = (selection: string) => {
         const normalized = selection.trim().toLowerCase();
@@ -132,7 +129,6 @@ export async function buildHostedSurfaceServer(
         {
           userId: context.userId,
           ...(topicId ? { topicId } : {}),
-          ...(context.wikiMemoryKey ? { memoryKey: context.wikiMemoryKey } : {}),
           surface,
         },
         {
@@ -140,7 +136,6 @@ export async function buildHostedSurfaceServer(
           getTopicBrief: storage.getTopicBrief,
           resolveTopicBrief: accessibleTopicBrief,
           setTopicBrief: storage.setTopicBrief,
-          assignTopicDefaults: agentHelpers.assignTopicDefaults,
         },
       );
     }
