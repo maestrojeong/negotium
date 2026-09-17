@@ -33,6 +33,9 @@ const DELIBERATELY_LOCAL_ONLY = new Map<string, string>([
   // Stopping the node is host lifecycle: whoever owns the machine owns it, and
   // a remote hub killing a worker's daemon is not a room operation.
   ["POST /shutdown", "host lifecycle, belongs to the machine's operator"],
+  // Manifest assignment and child-process reconciliation are node-operator
+  // controls. A workspace host must not mutate another machine's MCP catalog.
+  ["POST /mcp/reload", "machine-owner-only MCP process lifecycle"],
   // Secrets are scoped to the machine's owner, never to a workspace that merely
   // runs turns on one of its rooms.
   ["POST /vault", "machine-owner-only secret storage"],
