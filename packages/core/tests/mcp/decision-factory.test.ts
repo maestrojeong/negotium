@@ -11,6 +11,43 @@ function textOf(result: Awaited<ReturnType<Client["callTool"]>>): string {
 }
 
 describe("decision MCP factory", () => {
+  test("redacts stored execution metadata for private product surfaces", async () => {
+    const decisions: StoredDecision[] = [
+      {
+        id: "1",
+        action: "Keep routing private",
+        reasoning: "Only product tiers are public",
+        agent: "claude",
+        model: "opus",
+        status: "accepted",
+        timestamp: 1,
+      },
+    ];
+    const server = createDecisionMcpServer(
+      {
+        userId: "user-1",
+        topic: "General",
+        topicId: "topic-1",
+        agent: "claude",
+        model: "opus",
+        exposeExecutionMetadata: false,
+      },
+      { readDecisions: () => decisions, writeDecisions: () => {} },
+    );
+    const client = new Client({ name: "decision-private-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const result = await client.callTool({ name: "decision_get", arguments: { id: "1" } });
+      expect(textOf(result)).not.toContain("claude");
+      expect(textOf(result)).not.toContain("opus");
+      expect(textOf(result)).toContain("Keep routing private");
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   test("records agent-owned decisions in the stable topic scope", async () => {
     let decisions: StoredDecision[] = [];
     const writes: Array<{ userId: string; scopeKey: string }> = [];

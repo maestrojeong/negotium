@@ -142,7 +142,7 @@ function canCurrentSubagentTell(targetTopicId: string): boolean {
 
 server.tool(
   "list_sessions",
-  "List all available Claude sessions (forum topics) for inter-session communication. Topics without an active session are still valid targets — ask_session / tell_session will wake them with a fresh session on first delivery.",
+  "List all available AI sessions (forum topics) for inter-session communication. Topics without an active session are still valid targets — ask_session / tell_session will wake them with a fresh session on first delivery.",
   {},
   async () => {
     const entries = listSessionTargetsForUser()

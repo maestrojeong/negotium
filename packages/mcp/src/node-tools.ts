@@ -142,70 +142,87 @@ function actingUserFor(ctx: RuntimeMcpContext, target: TopicDto): string {
   return owner;
 }
 
-function describeTopic(topic: TopicDto): string {
+function describeTopic(topic: TopicDto, hideExecutionDetails: boolean): string {
   const running = getRoomQuery(topic.id) ? "turn running" : "idle";
+  if (hideExecutionDetails) {
+    return `- "${topic.title}" (id: ${topic.id}, kind: ${topic.kind ?? "agent"}, ${running})`;
+  }
   const agent = topic.agent ? `agent: ${topic.agent}` : "no agent";
   return `- "${topic.title}" (id: ${topic.id}, kind: ${topic.kind ?? "agent"}, ${agent}, ${running})`;
 }
 
 export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): void {
-  server.tool(
-    "register_topic",
-    "Create a new topic (agent room) on this negotium node, owned by the calling user. " +
-      "Returns the new topic's id, title, agent, and model. Use the session-comm tell_session " +
-      "tool to hand the new topic work.",
-    {
-      title: z.string().describe("Unique title for the new topic."),
-      agent: z
-        .enum(["claude", "codex", "maestro"])
-        .optional()
-        .describe("AI backend for the room. Defaults to maestro."),
-      model: z.string().optional().describe("Model override, must be valid for the agent."),
-      effort: z.enum(EFFORT_VALUES).optional().describe("Reasoning effort override for the room."),
-      description: z.string().optional().describe("Short description of the topic's purpose."),
-      memory_key: z.string().optional().describe("Wiki memory persona the room continues."),
-    },
-    async ({ title, agent, model, effort, description, memory_key }) => {
-      try {
-        const topic = registerTopic({
-          title,
-          userId: ctx.userId,
-          surface: callerSurface(ctx),
-          agent,
-          model,
-          effort: effort as EffortLevel | undefined,
-          description,
-          memoryKey: memory_key,
-        });
-        return textResult(
-          [
-            `Topic registered.`,
-            `id: ${topic.id}`,
-            `title: ${topic.title}`,
-            `agent: ${topic.agent ?? "none"}`,
-            `model: ${topic.defaultModel}`,
-            `effort: ${topic.defaultEffort}`,
-            ...(topic.memoryKey ? [`memory_key: ${topic.memoryKey}`] : []),
-          ].join("\n"),
-        );
-      } catch (err) {
-        if (err instanceof TopicValidationError) return errorResult(`Error: ${err.message}`);
-        logger.error({ err, title }, "negotium MCP: register_topic failed");
-        return errorResult(`Error: failed to register topic: ${errMsg(err)}`);
-      }
-    },
-  );
+  const hideExecutionDetails = callerSurface(ctx) === "otium";
+  if (!hideExecutionDetails) {
+    server.tool(
+      "register_topic",
+      "Create a new topic (agent room) on this negotium node, owned by the calling user. " +
+        "Returns the new topic's id, title, agent, and model. Use the session-comm tell_session " +
+        "tool to hand the new topic work.",
+      {
+        title: z.string().describe("Unique title for the new topic."),
+        agent: z
+          .enum(["claude", "codex", "maestro"])
+          .optional()
+          .describe("AI backend for the room. Defaults to maestro."),
+        model: z.string().optional().describe("Model override, must be valid for the agent."),
+        effort: z
+          .enum(EFFORT_VALUES)
+          .optional()
+          .describe("Reasoning effort override for the room."),
+        description: z.string().optional().describe("Short description of the topic's purpose."),
+        memory_key: z.string().optional().describe("Wiki memory persona the room continues."),
+      },
+      async ({ title, agent, model, effort, description, memory_key }) => {
+        try {
+          const topic = registerTopic({
+            title,
+            userId: ctx.userId,
+            surface: callerSurface(ctx),
+            agent,
+            model,
+            effort: effort as EffortLevel | undefined,
+            description,
+            memoryKey: memory_key,
+          });
+          return textResult(
+            [
+              `Topic registered.`,
+              `id: ${topic.id}`,
+              `title: ${topic.title}`,
+              `agent: ${topic.agent ?? "none"}`,
+              `model: ${topic.defaultModel}`,
+              `effort: ${topic.defaultEffort}`,
+              ...(topic.memoryKey ? [`memory_key: ${topic.memoryKey}`] : []),
+            ].join("\n"),
+          );
+        } catch (err) {
+          if (err instanceof TopicValidationError) return errorResult(`Error: ${err.message}`);
+          logger.error({ err, title }, "negotium MCP: register_topic failed");
+          return errorResult(`Error: failed to register topic: ${errMsg(err)}`);
+        }
+      },
+    );
+  }
 
   server.tool(
     "list_topics",
-    "List the topics this turn can reach on this negotium node: title, id, kind, agent, and whether a turn is currently running.",
+    hideExecutionDetails
+      ? "List the topics this turn can reach: title, id, kind, and whether a turn is currently running."
+      : "List the topics this turn can reach on this negotium node: title, id, kind, agent, and whether a turn is currently running.",
     {},
     async () => {
       const topics = topicsForCaller(ctx);
       if (topics.length === 0) {
-        return textResult("No topics found. Use register_topic to create one.");
+        return textResult(
+          hideExecutionDetails
+            ? "No topics found. Use the host topic administration tools to create one."
+            : "No topics found. Use register_topic to create one.",
+        );
       }
-      return textResult(topics.map(describeTopic).join("\n"));
+      return textResult(
+        topics.map((topic) => describeTopic(topic, hideExecutionDetails)).join("\n"),
+      );
     },
   );
 

@@ -182,6 +182,56 @@ describe("negotium MCP endpoint", () => {
     }
   });
 
+  test("keeps provider identity and node-native configuration tools off Otium topics", async () => {
+    const suffix = randomUUID();
+    const topic = registerTopic({
+      title: `private-otium-${suffix}`,
+      userId: USER_ID,
+      agent: "claude",
+      surface: "otium",
+    });
+    const privateClient = new Client({ name: "otium-private-runtime-test", version: "1.0.0" });
+    const token = issueRuntimeMcpToken({
+      ...ctx,
+      topicId: topic.id,
+      topicTitle: topic.title,
+    });
+    const url = new URL(
+      `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+    );
+
+    try {
+      await privateClient.connect(new StreamableHTTPClientTransport(url));
+      const tools = (await privateClient.listTools()).tools;
+      const names = tools.map((tool) => tool.name);
+      for (const hidden of [
+        "get_model",
+        "set_model",
+        "get_agent",
+        "set_agent",
+        "get_effort",
+        "set_effort",
+        "register_topic",
+      ]) {
+        expect(names).not.toContain(hidden);
+      }
+      for (const toolName of ["spawn_subagent", "create_subagent"]) {
+        const tool = tools.find((candidate) => candidate.name === toolName);
+        const properties = (tool?.inputSchema as { properties?: Record<string, unknown> })
+          ?.properties;
+        expect(properties).toBeDefined();
+        expect(properties).not.toHaveProperty("agent");
+        expect(properties).not.toHaveProperty("model");
+      }
+      expect(names).toContain("list_topics");
+      const listed = await privateClient.callTool({ name: "list_topics", arguments: {} });
+      expect(resultText(listed)).not.toContain("agent:");
+      expect(resultText(listed)).not.toContain("claude");
+    } finally {
+      await privateClient.close();
+    }
+  });
+
   test("exposes visual tools only when the adapter grants the capability", async () => {
     const visualClient = new Client({ name: "negotium-visual-mcp-test", version: "1.0.0" });
     const token = issueRuntimeMcpToken({

@@ -275,6 +275,8 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
     }
   }
 
+  const topic = getTopic(ctx.topicId);
+  const isOtiumSurface = topic?.surface === "otium";
   const selfConfigCtx: SelfConfigContext = {
     topicId: ctx.topicId,
     userId: ctx.userId,
@@ -282,7 +284,10 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
     currentUserPrompt: ctx.currentUserPrompt,
     onConfigChanged: (field) => appendAutoContinue(ctx, field),
   };
-  for (const def of createSelfConfigToolDefinitions(selfConfigCtx)) {
+  for (const def of createSelfConfigToolDefinitions(
+    selfConfigCtx,
+    isOtiumSurface ? { exclude: ["model", "agent", "effort"] } : undefined,
+  )) {
     const handler = ctx.peerBridge
       ? async (input: Record<string, unknown>) => {
           const dispatched = dispatchPeerRuntimeSelfConfig({
@@ -301,7 +306,6 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
     server.tool(def.name, def.description, def.schema as any, handler as any);
   }
 
-  const topic = getTopic(ctx.topicId);
   if (!topic?.isSubagent) {
     const askUserTool = createAskUserToolDefinition({
       userId: ctx.userId,
@@ -340,13 +344,16 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
     ? peerBridge.canSpawnSubagents
     : canSpawnSubagentsFromTopic(ctx.topicId);
   if (canSpawnSubagents) {
-    const spawnTool = createSpawnSubagentToolDefinition({
-      userId: ctx.userId,
-      topicId: ctx.topicId,
-      queryId: ctx.queryId,
-      agent: ctx.agent,
-      model: ctx.model,
-    });
+    const spawnTool = createSpawnSubagentToolDefinition(
+      {
+        userId: ctx.userId,
+        topicId: ctx.topicId,
+        queryId: ctx.queryId,
+        agent: ctx.agent,
+        model: ctx.model,
+      },
+      { executionOverrides: !isOtiumSurface },
+    );
     const spawnHandler = peerBridge
       ? async (input: Record<string, unknown>) => {
           const dispatched = dispatchPeerRuntimeSpawn({
@@ -369,13 +376,16 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
       spawnHandler as any,
     );
     if (!peerBridge) {
-      const createTool = createPrepareSubagentToolDefinition({
-        userId: ctx.userId,
-        topicId: ctx.topicId,
-        queryId: ctx.queryId,
-        agent: ctx.agent,
-        model: ctx.model,
-      });
+      const createTool = createPrepareSubagentToolDefinition(
+        {
+          userId: ctx.userId,
+          topicId: ctx.topicId,
+          queryId: ctx.queryId,
+          agent: ctx.agent,
+          model: ctx.model,
+        },
+        { executionOverrides: !isOtiumSurface },
+      );
       server.tool(
         createTool.name,
         createTool.description,

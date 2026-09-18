@@ -131,6 +131,24 @@ describe("session system prompt builders", () => {
     expect(otium).toContain("`surfaceScope`");
     expect(otium).not.toContain("## Environment: Terminal");
     expect(otium).not.toContain("## Environment: Telegram");
+    expect(otium).not.toContain("## Topic Configuration (model / agent / effort)");
+    expect(otium).not.toContain("get_model");
+    expect(otium).not.toContain("gpt-5.6-sol");
+    expect(otium).not.toContain("deepseek-flash");
+
+    const otiumManager = buildManagerSystemPrompt({
+      aiLabel: "Otium",
+      topicTitle: "General",
+      workspaceCwd: "/tmp/otium-general",
+      agentKind: "claude",
+      currentModel: "opus",
+      currentEffort: "medium",
+      surface: "otium",
+    });
+    expect(otiumManager).toContain("Use only the public execution profiles");
+    expect(otiumManager).toContain("`list_nodes`, `check_node`, and `get_node_health`");
+    expect(otiumManager).not.toContain("Specify agent/model/effort");
+    expect(otiumManager).not.toContain("claude / `opus`");
   });
 
   test("omits schedule_self guidance when the host disables it", () => {
@@ -250,12 +268,9 @@ describe("session system prompt builders", () => {
 
     expect(prompt).toContain("## Manager Role");
     expect(prompt).toContain("## Environment: Otium");
-    expect(prompt).toContain("runtime MCP tools");
-    expect(prompt).toContain("`register_topic`");
-    expect(prompt).toContain("`restart_topic`");
-    expect(prompt).not.toContain("`create_topic`");
-    expect(prompt).not.toContain("`update_topic`");
-    expect(prompt).toContain("session-comm `tell_session`");
+    expect(prompt).toContain("host-provided topic administration tools");
+    expect(prompt).not.toContain("`register_topic`");
+    expect(prompt).not.toContain("Specify agent/model/effort");
     expect(prompt).toContain("`ask_session`");
     expect(prompt).not.toContain("send_message");
     expect(prompt).toContain("mcp__runtime");
@@ -264,7 +279,7 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain("schedule_self");
     expect(prompt).toContain("get_self_schedule");
     expect(prompt).toContain("mcp__task");
-    expect(prompt).toContain("mcp__runtime__set_model");
+    expect(prompt).not.toContain("mcp__runtime__set_model");
     expect(prompt).toContain("show_html");
     expect(prompt.replaceAll("{{KEY}}", "")).not.toContain("{{");
   });

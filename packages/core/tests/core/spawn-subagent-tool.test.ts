@@ -71,6 +71,23 @@ function toolFor(topicId: string, userId: string) {
   });
 }
 
+test("can hide provider execution overrides from a product tool surface", () => {
+  const topicId = `private-subagent-${randomUUID()}`;
+  const ctx = {
+    userId: "private-user",
+    topicId,
+    agent: "claude" as const,
+    model: "opus",
+  };
+  const spawn = createSpawnSubagentToolDefinition(ctx, { executionOverrides: false });
+  const prepare = createPrepareSubagentToolDefinition(ctx, { executionOverrides: false });
+
+  expect(Object.keys(spawn.schema)).not.toContain("agent");
+  expect(Object.keys(spawn.schema)).not.toContain("model");
+  expect(Object.keys(prepare.schema)).not.toContain("agent");
+  expect(Object.keys(prepare.schema)).not.toContain("model");
+});
+
 function makeInjectedLifecycleHost(parent: TopicDto) {
   const topics = new Map([[parent.id, parent]]);
   const messages = new Map<string, MessageDto>();

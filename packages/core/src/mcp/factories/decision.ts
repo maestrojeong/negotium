@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { errMsg } from "#platform/error";
+import { getTopic } from "#storage/api-topics";
 import {
   createDecisions,
   DECISION_STATUS_VALUES,
@@ -21,6 +22,8 @@ export interface DecisionMcpContext {
   topicId?: string;
   agent: AgentKind;
   model?: string;
+  /** False for product surfaces that keep provider routing private. */
+  exposeExecutionMetadata?: boolean;
 }
 
 export interface DecisionMcpHost {
@@ -41,6 +44,9 @@ export function createDecisionMcpServer(
   const requireContext = (): ReturnType<typeof mcpError> | null =>
     !context.userId || !scopeKey ? mcpError("Error: missing userId/topic context.") : null;
   const statusEnum = z.enum(DECISION_STATUS_VALUES);
+  const exposeExecutionMetadata =
+    context.exposeExecutionMetadata ??
+    (!context.topicId || getTopic(context.topicId)?.surface !== "otium");
 
   server.tool(
     "decision_create",
@@ -146,9 +152,11 @@ export function createDecisionMcpServer(
         const decision = host
           .readDecisions(context.userId, scopeKey)
           .find((item) => item.id === id);
-        return decision
-          ? mcpOk(JSON.stringify(decision, null, 2))
-          : mcpError(`Decision #${id} not found.`);
+        if (!decision) return mcpError(`Decision #${id} not found.`);
+        const visibleDecision = exposeExecutionMetadata
+          ? decision
+          : (({ agent: _agent, model: _model, ...visible }) => visible)(decision);
+        return mcpOk(JSON.stringify(visibleDecision, null, 2));
       } catch (error) {
         return mcpError(`decision_get failed: ${errMsg(error)}`);
       }

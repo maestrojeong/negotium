@@ -40,6 +40,7 @@ import {
 } from "#platform/playwright/mcp-transport";
 import { getRegisteredCronSession } from "#runtime/cron-sessions";
 import type { HostMcpServerSpec } from "#runtime-gateway";
+import { getTopic } from "#storage/api-topics";
 import type { AgentKind, AgentQueryOptions, PeerRuntimeBridgeContext } from "#types";
 
 export type { RuntimeMcpScope } from "#platform/mcp-catalog-policy";
@@ -1111,21 +1112,24 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
   }
   if (opts.sessionType === "cron") {
     if (!opts.topicId) throw new Error("getMcpServersForQuery: cron sessionType requires topicId");
-    return getCronMcpServers({
-      userId: opts.userId || "local",
-      session: opts.session || "cron",
-      topicId: opts.topicId,
-      queryId: opts.queryId,
-      wikiTopicId: opts.wikiTopicId,
-      agent: opts.agent,
-      cwd: opts.cwd,
-      model: opts.model,
-      currentUserPrompt: opts.prompt,
-      playwrightPort: opts.playwrightPort,
-      playwrightCapability: opts.playwrightCapability,
-      visualTools: opts.visualTools,
-      fileDeliveryTools: opts.fileDeliveryTools,
-    });
+    return hideProviderIntrospectionForOtium(
+      getCronMcpServers({
+        userId: opts.userId || "local",
+        session: opts.session || "cron",
+        topicId: opts.topicId,
+        queryId: opts.queryId,
+        wikiTopicId: opts.wikiTopicId,
+        agent: opts.agent,
+        cwd: opts.cwd,
+        model: opts.model,
+        currentUserPrompt: opts.prompt,
+        playwrightPort: opts.playwrightPort,
+        playwrightCapability: opts.playwrightCapability,
+        visualTools: opts.visualTools,
+        fileDeliveryTools: opts.fileDeliveryTools,
+      }),
+      opts.topicId,
+    );
   }
   if (opts.sessionType === "dm" || opts.sessionType === "ephemeral") {
     return getDmMcpServers({
@@ -1138,50 +1142,67 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
     });
   }
   if (opts.sessionType === "manager") {
-    return mergeHostMcpServers(
-      getManagerMcpServers({
-        userId: opts.userId || "local",
-        session: opts.session,
-        topicId: opts.topicId,
-        queryId: opts.queryId,
-        wikiTopicId: opts.wikiTopicId,
-        agent: opts.agent,
-        cwd: opts.cwd,
-        model: opts.model,
-        currentUserPrompt: opts.prompt,
-        playwrightPort: opts.playwrightPort,
-        playwrightCapability: opts.playwrightCapability,
-        autoContinue: opts.autoContinue,
-        visualTools: opts.visualTools,
-        fileDeliveryTools: opts.fileDeliveryTools,
-      }),
-      opts.hostMcpServers,
+    return hideProviderIntrospectionForOtium(
+      mergeHostMcpServers(
+        getManagerMcpServers({
+          userId: opts.userId || "local",
+          session: opts.session,
+          topicId: opts.topicId,
+          queryId: opts.queryId,
+          wikiTopicId: opts.wikiTopicId,
+          agent: opts.agent,
+          cwd: opts.cwd,
+          model: opts.model,
+          currentUserPrompt: opts.prompt,
+          playwrightPort: opts.playwrightPort,
+          playwrightCapability: opts.playwrightCapability,
+          autoContinue: opts.autoContinue,
+          visualTools: opts.visualTools,
+          fileDeliveryTools: opts.fileDeliveryTools,
+        }),
+        opts.hostMcpServers,
+      ),
+      opts.topicId,
     );
   }
-  return getForumMcpServers({
-    userId: opts.userId || "local",
-    actorUserId: opts.actorUserId,
-    vaultUserId: opts.vaultUserId,
-    session: opts.session || "default",
-    topicId: opts.topicId,
-    subagentParentTopicId: opts.subagentParentTopicId,
-    queryId: opts.queryId,
-    wikiTopicId: opts.wikiTopicId,
-    agent: opts.agent,
-    cwd: opts.cwd,
-    model: opts.model,
-    currentUserPrompt: opts.prompt,
-    playwrightPort: opts.playwrightPort,
-    playwrightCapability: opts.playwrightCapability,
-    bgBashPort: opts.bgBashPort,
-    autoContinue: opts.autoContinue,
-    visualTools: opts.visualTools,
-    fileDeliveryTools: opts.fileDeliveryTools,
-    threadRootId: opts.threadRootId,
-    depth: opts.depth,
-    enabled: opts.mcpEnabled,
-    extra: opts.mcpExtra,
-    silent: opts.silent,
-    peerBridge: opts.peerBridge,
-  });
+  return hideProviderIntrospectionForOtium(
+    getForumMcpServers({
+      userId: opts.userId || "local",
+      actorUserId: opts.actorUserId,
+      vaultUserId: opts.vaultUserId,
+      session: opts.session || "default",
+      topicId: opts.topicId,
+      subagentParentTopicId: opts.subagentParentTopicId,
+      queryId: opts.queryId,
+      wikiTopicId: opts.wikiTopicId,
+      agent: opts.agent,
+      cwd: opts.cwd,
+      model: opts.model,
+      currentUserPrompt: opts.prompt,
+      playwrightPort: opts.playwrightPort,
+      playwrightCapability: opts.playwrightCapability,
+      bgBashPort: opts.bgBashPort,
+      autoContinue: opts.autoContinue,
+      visualTools: opts.visualTools,
+      fileDeliveryTools: opts.fileDeliveryTools,
+      threadRootId: opts.threadRootId,
+      depth: opts.depth,
+      enabled: opts.mcpEnabled,
+      extra: opts.mcpExtra,
+      silent: opts.silent,
+      peerBridge: opts.peerBridge,
+    }),
+    opts.topicId,
+  );
+}
+
+function hideProviderIntrospectionForOtium(
+  servers: Record<string, unknown>,
+  topicId: string | undefined,
+): Record<string, unknown> {
+  if (!topicId || getTopic(topicId)?.surface !== "otium") return servers;
+  const filtered = { ...servers };
+  delete filtered["agent-health"];
+  delete filtered["token-stats"];
+  return filtered;
 }

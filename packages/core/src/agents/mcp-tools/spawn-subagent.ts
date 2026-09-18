@@ -55,6 +55,11 @@ export interface SpawnSubagentToolContext {
 
 export type SubagentToolContext = Pick<SpawnSubagentToolContext, "userId" | "topicId">;
 
+export interface SubagentToolDefinitionOptions {
+  /** Otium owns provider routing, so its public tools inherit execution and omit overrides. */
+  executionOverrides?: boolean;
+}
+
 export interface SubagentWatch {
   parentTopicId: string;
   childTopicId: string;
@@ -157,8 +162,14 @@ export interface SubagentLifecycle<
   sweepStaleSubagentCards(): void;
   subagentReportMode(childTopicId: string): SubagentReportMode;
   createSubagentManagementToolDefinitions(ctx: SubagentToolContext): SharedMcpTool[];
-  createSpawnSubagentToolDefinition(ctx: TContext): SharedMcpTool;
-  createPrepareSubagentToolDefinition(ctx: TContext): SharedMcpTool;
+  createSpawnSubagentToolDefinition(
+    ctx: TContext,
+    options?: SubagentToolDefinitionOptions,
+  ): SharedMcpTool;
+  createPrepareSubagentToolDefinition(
+    ctx: TContext,
+    options?: SubagentToolDefinitionOptions,
+  ): SharedMcpTool;
 }
 
 export function createSubagentLifecycle<TContext extends SpawnSubagentToolContext>(
@@ -982,7 +993,25 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
     ];
   }
 
-  function createSpawnSubagentToolDefinition(ctx: TContext): SharedMcpTool {
+  function createSpawnSubagentToolDefinition(
+    ctx: TContext,
+    options: SubagentToolDefinitionOptions = {},
+  ): SharedMcpTool {
+    const executionOverrideSchema =
+      options.executionOverrides === false
+        ? {}
+        : {
+            agent: z
+              .enum(["claude", "codex", "maestro"])
+              .optional()
+              .describe("Agent backend override. Defaults to this room's agent."),
+            model: z
+              .string()
+              .optional()
+              .describe(
+                `Best-fit model override from the system prompt catalog. Omit agent+model to inherit ${ctx.agent}/${ctx.model ?? "default"}; overriding agent without model uses that agent's default.`,
+              ),
+          };
     return {
       name: "spawn_subagent",
       description:
@@ -1000,16 +1029,7 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
           .string()
           .optional()
           .describe("Short name for the subagent room. Auto-generated when omitted."),
-        agent: z
-          .enum(["claude", "codex", "maestro"])
-          .optional()
-          .describe("Agent backend override. Defaults to this room's agent."),
-        model: z
-          .string()
-          .optional()
-          .describe(
-            `Best-fit model override from the system prompt catalog. Omit agent+model to inherit ${ctx.agent}/${ctx.model ?? "default"}; overriding agent without model uses that agent's default.`,
-          ),
+        ...executionOverrideSchema,
         memory_topic: z
           .string()
           .optional()
@@ -1029,7 +1049,10 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
     };
   }
 
-  function createPrepareSubagentToolDefinition(ctx: TContext): SharedMcpTool {
+  function createPrepareSubagentToolDefinition(
+    ctx: TContext,
+    options: SubagentToolDefinitionOptions = {},
+  ): SharedMcpTool {
     return {
       name: "create_subagent",
       description:
@@ -1038,8 +1061,12 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
       schema: {
         task: z.string().describe("Self-contained task brief for the subagent."),
         name: z.string().optional().describe("Short room name. Auto-generated when omitted."),
-        agent: z.enum(["claude", "codex", "maestro"]).optional(),
-        model: z.string().optional(),
+        ...(options.executionOverrides === false
+          ? {}
+          : {
+              agent: z.enum(["claude", "codex", "maestro"]).optional(),
+              model: z.string().optional(),
+            }),
         memory_topic: z
           .string()
           .optional()

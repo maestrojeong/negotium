@@ -272,6 +272,8 @@ export interface PromptBuilders {
 
 interface RuntimeToolSectionOpts {
   agentKind: AgentKind;
+  /** Product surfaces such as Otium own routing policy and must not expose provider details. */
+  hideExecutionDetails?: boolean;
   canSpawnSubagents?: boolean;
   canStageSubagents?: boolean;
   visualTools?: boolean;
@@ -294,6 +296,7 @@ function buildRuntimeToolSection(
 ): string {
   const {
     agentKind,
+    hideExecutionDetails = false,
     canSpawnSubagents = false,
     canStageSubagents = canSpawnSubagents,
     visualTools = false,
@@ -348,7 +351,9 @@ function buildRuntimeToolSection(
         "## Subagent Delegation",
         spawnSubagentToolLine,
         ...(canStageSubagents ? [lifecycleToolLine, subagentTopologyPolicyLine] : []),
-        "A subagent starts fresh but inherits this room's agent, model, and effective topic memory; include all required context, paths, and acceptance criteria in `task`.",
+        hideExecutionDetails
+          ? "A subagent starts fresh with this room's execution profile and effective topic memory; include all required context, paths, and acceptance criteria in `task`."
+          : "A subagent starts fresh but inherits this room's agent, model, and effective topic memory; include all required context, paths, and acceptance criteria in `task`.",
         "Subagents run asynchronously. Choose one result path: `auto` returns the final body to the direct parent; `tell` requires child `tell_session` to its recipient and does not auto-return the body; `status-only` returns lifecycle without content. Runtime length alone does not justify `status-only`. Do not wait or poll; continue or finish the turn.",
       ]
     : [];
@@ -356,7 +361,7 @@ function buildRuntimeToolSection(
     agentKind === "claude"
       ? `Do not use provider-native todo/task/subagent tools such as "TodoWrite", "Task", "Agent", "TaskCreate", "TaskUpdate", "TaskList", "TaskOutput", or "TaskStop"; they are disabled or not shared across agents.${canSpawnSubagents ? " For delegation, use the runtime spawn_subagent tool instead." : ""}`
       : agentKind === "maestro"
-        ? `Do not use provider-native task-store tools such as "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput", or "TaskStop"; they are disabled or not shared across agents. Do not use the Maestro "Agent" sub-agent tool either; it is disabled.${canSpawnSubagents ? " Use the runtime spawn_subagent tool for delegation so work is visible in its own room and reporting follows report_mode." : " Delegation is unavailable in this room."}`
+        ? `Do not use provider-native task-store tools such as "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput", or "TaskStop"; they are disabled or not shared across agents. Do not use the ${hideExecutionDetails ? "provider-native" : "Maestro"} "Agent" sub-agent tool either; it is disabled.${canSpawnSubagents ? " Use the runtime spawn_subagent tool for delegation so work is visible in its own room and reporting follows report_mode." : " Delegation is unavailable in this room."}`
         : 'Do not use provider-native goal/todo/plan surfaces such as "create_goal", "get_goal", "update_goal", "todo_list", or "update_plan"; they are disabled, ignored, or not shared across agents.';
   const visualSection = visualTools
     ? [
@@ -396,7 +401,9 @@ function buildRuntimeToolSection(
     "",
     "## Shared Tasks",
     taskToolLine,
-    "Use this shared task store for plans, progress, and checklist updates; it is visible across claude/codex/maestro turns.",
+    hideExecutionDetails
+      ? "Use this shared task store for plans, progress, and checklist updates; it is visible across all turns in this workspace."
+      : "Use this shared task store for plans, progress, and checklist updates; it is visible across claude/codex/maestro turns.",
     nativeTaskPolicyLine,
     "",
     "## Shared Decisions",
@@ -453,24 +460,25 @@ function buildRuntimeToolSection(
     "Agent guidance when the user explicitly asks to switch: `codex` for deepest reasoning and complex code/math; `claude` for tool-heavy MCP/file automation; `maestro` for inexpensive fast drafts and lighter experiments.",
   ];
 
+  const topicConfiguration = hideExecutionDetails
+    ? []
+    : [
+        ...extensions.render("before-topic-configuration"),
+        ...topicConfig,
+        ...extensions.render("after-topic-configuration"),
+      ];
+
   if (agentKind !== "claude") {
     return [
       ...shared,
-      ...extensions.render("before-topic-configuration"),
-      ...topicConfig,
-      ...extensions.render("after-topic-configuration"),
+      ...topicConfiguration,
       "",
       "## Runtime Tool Limits",
       "If file delivery or topic configuration tools are not present in your available tools for this session, do not claim you used them. Tell the user this session does not expose that in-chat tool action.",
     ].join("\n");
   }
 
-  return [
-    ...shared,
-    ...extensions.render("before-topic-configuration"),
-    ...topicConfig,
-    ...extensions.render("after-topic-configuration"),
-  ].join("\n");
+  return [...shared, ...topicConfiguration].join("\n");
 }
 
 export function createPromptBuilders(host: PromptBuilderHost = {}): PromptBuilders {
@@ -560,6 +568,7 @@ export function createPromptBuilders(host: PromptBuilderHost = {}): PromptBuilde
       buildRuntimeToolSection(
         {
           agentKind: opts.agentKind,
+          hideExecutionDetails: opts.surface === "otium",
           canSpawnSubagents: sessionKind === "channel" ? false : opts.canSpawnSubagents,
           canStageSubagents: sessionKind === "channel" ? false : opts.canStageSubagents,
           visualTools: opts.visualTools,
@@ -586,11 +595,19 @@ export function createPromptBuilders(host: PromptBuilderHost = {}): PromptBuilde
       // Substitute the same vars so a host manager template using placeholders
       // like {{RESPONSE_LANGUAGE}} never reaches the model unresolved.
       const managerTemplate = replaceVars(
-        template({
-          kind: "manager-system",
-          filename: "manager-system.md",
-          fallback: FALLBACK_MANAGER_SYSTEM_PROMPT_TEMPLATE,
-        }),
+        template(
+          opts.surface === "otium"
+            ? {
+                kind: "surface-profile",
+                filename: "surfaces/otium-manager.md",
+                fallback: FALLBACK_MANAGER_SYSTEM_PROMPT_TEMPLATE,
+              }
+            : {
+                kind: "manager-system",
+                filename: "manager-system.md",
+                fallback: FALLBACK_MANAGER_SYSTEM_PROMPT_TEMPLATE,
+              },
+        ),
         templateVars,
       );
       prompt += `\n\n${managerTemplate}`;

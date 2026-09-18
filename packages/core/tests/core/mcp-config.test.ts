@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { registerCanonicalMcpBridgeEnvProvider } from "#mcp/canonical-bridge-config";
 import {
   type HostedMcpContext,
@@ -23,6 +24,7 @@ import {
   resolveCuaRsBinary,
   setCuaRsMcpPort,
 } from "#platform/mcp-config";
+import { deleteTopic, upsertTopic } from "#storage/api-topics";
 
 /**
  * Playwright MCP transport selection.
@@ -471,6 +473,43 @@ describe("mcp-config: playwright transport selection per agent", () => {
     });
     expect(hostedContext(servers.wiki, "wiki").wikiTopicId).toBe("general");
     expect(hostedContext(servers.task, "task").topicId).toBe("general");
+  });
+
+  test("Otium topics omit provider health and usage introspection MCPs", () => {
+    const topicId = `otium-private-${randomUUID()}`;
+    const now = new Date().toISOString();
+    upsertTopic({
+      id: topicId,
+      title: topicId,
+      kind: "manager",
+      agent: "claude",
+      defaultModel: "sonnet",
+      defaultEffort: "medium",
+      aiMode: "always",
+      surface: "otium",
+      participants: [{ userId, role: "owner" }],
+      createdAt: now,
+      lastMessageAt: now,
+    });
+    try {
+      for (const sessionType of ["forum", "manager"] as const) {
+        const servers = getMcpServersForQuery({
+          agent: "claude",
+          prompt: "private product turn",
+          systemPrompt: "",
+          cwd: "/tmp",
+          userId,
+          sessionType,
+          session: "General",
+          topicId,
+        });
+        expect(servers["agent-health"]).toBeUndefined();
+        expect(servers["token-stats"]).toBeUndefined();
+        expect(servers.runtime).toBeDefined();
+      }
+    } finally {
+      deleteTopic(topicId);
+    }
   });
 
   test("merges host-owned MCPs without allowing node catalog collisions", () => {
