@@ -114,17 +114,26 @@ describe("Codex Vault PreToolUse hook", () => {
   );
 
   /**
-   * The bridge must fail closed on Windows rather than hand back a wrapper the
-   * Codex SDK cannot spawn. `codexProvider` turns a bridge failure into a fatal
-   * turn error, which is what keeps Vault substitution and the
-   * sensitive-storage denial from being silently absent there.
+   * On Windows the codex wrapper is a compiled exe (a `.cmd` cannot be spawned
+   * by the SDK), so the bridge must hand back an `.exe` next to its private
+   * config, with the capability in that file rather than the hook command.
    */
   test.skipIf(process.platform !== "win32")(
-    "refuses to build a bridge on Windows instead of returning an unspawnable wrapper",
+    "builds an exe wrapper and a private config on Windows",
     async () => {
-      await expect(createCodexVaultHookBridge("user-1")).rejects.toThrow(
-        /not available on Windows/,
-      );
+      const bridge = await createCodexVaultHookBridge("user-1");
+      try {
+        expect(bridge.codexPathOverride.endsWith(".exe")).toBe(true);
+        const cfgPath = bridge.codexPathOverride.replace(/\.exe$/, ".cfg");
+        const lines = (await Bun.file(cfgPath).text()).split("\n");
+        expect(lines).toHaveLength(4);
+        expect(lines[2]).toBe(bridge.environment.NEGOTIUM_CODEX_VAULT_HOOK_SOCKET);
+        expect(lines[3]).toBe(bridge.environment.NEGOTIUM_CODEX_VAULT_HOOK_TOKEN);
+        const command = bridge.hooks.PreToolUse[0]?.hooks[0]?.command ?? "";
+        expect(command).not.toContain(lines[3] ?? "");
+      } finally {
+        await bridge.close();
+      }
     },
   );
 });

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -111,7 +111,7 @@ async function bootstrapCodexModelCache(codexHome: string, cachePath: string): P
     windowsHide: true,
   });
 
-  await new Promise<void>((resolve, reject) => {
+  const refreshed = new Promise<void>((resolve, reject) => {
     let settled = false;
     let stdoutBuffer = "";
     let stderr = "";
@@ -192,6 +192,48 @@ async function bootstrapCodexModelCache(codexHome: string, cachePath: string): P
       },
     });
   });
+
+  try {
+    await refreshed;
+  } finally {
+    // `child.kill()` only signals. The caller deletes CODEX_HOME right after we
+    // return, and Windows cannot delete a directory the child still holds open
+    // (EBUSY), so wait for the process to actually exit first.
+    await waitForChildExit(child, CODEX_BOOTSTRAP_EXIT_WAIT_MS);
+  }
+}
+
+const CODEX_BOOTSTRAP_EXIT_WAIT_MS = 3_000;
+
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    timer.unref?.();
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+/**
+ * Remove the temporary CODEX_HOME. On Windows a just-exited child (or an
+ * antivirus scan of the files it wrote) can keep the directory busy for a
+ * moment, so retry, and never let cleanup of a throwaway directory fail a turn
+ * whose result was already read. POSIX keeps the original behaviour: unlinking
+ * open files works there, and a genuine failure still surfaces.
+ */
+function removeIsolatedCodexHome(dir: string): void {
+  if (process.platform !== "win32") {
+    rmSync(dir, { recursive: true, force: true });
+    return;
+  }
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch {
+    // Best effort: the OS temp cleaner will reclaim it.
+  }
 }
 
 async function bootstrapIsolatedCodexModelCache(
@@ -219,7 +261,7 @@ async function bootstrapIsolatedCodexModelCache(
     await bootstrap(isolatedHome, isolatedCachePath);
     return readCompatibleCodexModelCache(isolatedCachePath).contents;
   } finally {
-    rmSync(isolatedHome, { recursive: true, force: true });
+    removeIsolatedCodexHome(isolatedHome);
   }
 }
 

@@ -1,12 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import type { Socket } from "node:net";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { codexCliScriptPath } from "#agents/codex-native-multi-agent";
+import { ensureCodexWindowsWrapperExe } from "#agents/codex-windows-wrapper";
 import { deepMapStrings } from "#agents/deep-map";
 import { referencesHostedSecretStorage, substituteHostedSecrets } from "#agents/execution-host";
 import { shouldSubstituteVaultToolInput } from "#agents/vault-tool-policy";
@@ -104,38 +105,36 @@ export interface CodexVaultHookBridge {
 }
 
 /**
- * Why this bridge has no Windows implementation yet.
+ * Why the Windows wrapper is an `.exe`, not a script.
  *
  * The hook only runs if codex is invoked with `--dangerously-bypass-hook-trust`
- * — an argv-only flag with no config-file or environment equivalent — and the
+ * -- an argv-only flag with no config-file or environment equivalent -- and the
  * SDK builds its own argv, so the flag can only be injected by a wrapper
  * standing in for the codex executable. On POSIX that wrapper is the
- * `#!/bin/sh` script below. Windows cannot use one: `@openai/codex-sdk` spawns
- * `codexPathOverride` through `child_process.spawn` with no `shell` option, and
- * Node refuses to spawn a `.cmd`/`.bat` that way (EINVAL), so only a real
- * executable would do.
+ * `#!/bin/sh` script above. Windows cannot use a script: `@openai/codex-sdk`
+ * spawns `codexPathOverride` through `child_process.spawn` with no `shell`
+ * option, and Node refuses to spawn a `.cmd`/`.bat` that way (EINVAL). So on
+ * Windows the wrapper is a small compiled executable (see
+ * `codex-windows-wrapper.ts`) that reads a private per-bridge config file.
  *
- * Failing here rather than handing back an unspawnable wrapper keeps the
- * security posture identical to macOS: `codexProvider` treats a bridge failure
- * as fatal for the turn, so a Codex turn never runs with the Vault
- * substitution and sensitive-storage denial silently absent. The alternative —
- * dropping the wrapper and letting the turn proceed — would leave those two
- * protections off while everything downstream assumed they were on.
+ * A bridge failure is still fatal for the turn (`codexProvider`), so a Codex
+ * turn never runs with the Vault substitution and sensitive-storage denial
+ * silently absent.
  */
-const WINDOWS_BRIDGE_UNSUPPORTED =
-  "Codex Vault hooks are not available on Windows: the hook-trust bypass can only be passed " +
-  "through a wrapper executable, and the Codex SDK spawns the override without a shell, so a " +
-  ".cmd wrapper cannot run. Use the Claude or Maestro backend on this host.";
+const IS_WINDOWS = process.platform === "win32";
+
+function windowsQuote(value: string): string {
+  return `"${value.replaceAll('"', '\\"')}"`;
+}
 
 export async function createCodexVaultHookBridge(userId: string): Promise<CodexVaultHookBridge> {
-  if (process.platform === "win32") throw new Error(WINDOWS_BRIDGE_UNSUPPORTED);
   const root = await mkdtemp(join(tmpdir(), "negotium-codex-vault-"));
   await chmod(root, 0o700);
   // Windows listens on a named pipe instead; the digest in `ipcEndpoint` is
   // taken over this whole path, so the per-bridge mkdtemp above still supplies
   // the uniqueness that the constant basename does not.
   const socketPath = ipcEndpoint(join(root, "hook.sock"));
-  const wrapperPath = join(root, "codex-with-hooks");
+  const wrapperPath = join(root, IS_WINDOWS ? "codex-with-hooks.exe" : "codex-with-hooks");
   const token = randomBytes(32).toString("hex");
   const connections = new Set<Socket>();
   const server = createServer((socket) => {
@@ -187,14 +186,28 @@ export async function createCodexVaultHookBridge(userId: string): Promise<CodexV
       });
     });
     restrictIpcEndpoint(socketPath);
-    await writeFile(wrapperPath, privateCodexWrapper(codexCliScriptPath(), socketPath, token), {
-      mode: 0o700,
-    });
+    if (IS_WINDOWS) {
+      const { BINARIES_DIR } = await import("#platform/config");
+      const cached = await ensureCodexWindowsWrapperExe(join(BINARIES_DIR, "codex-hook-wrapper"));
+      await copyFile(cached, wrapperPath);
+      // Same private per-bridge dir as the POSIX wrapper; the exe reads this
+      // file (runtime, codex script, hook socket, hook token, one per line).
+      await writeFile(
+        join(root, "codex-with-hooks.cfg"),
+        [process.execPath, codexCliScriptPath(), socketPath, token].join("\n"),
+        { encoding: "utf8", mode: 0o600 },
+      );
+    } else {
+      await writeFile(wrapperPath, privateCodexWrapper(codexCliScriptPath(), socketPath, token), {
+        mode: 0o700,
+      });
+    }
 
     // Keep the capability out of the process list and reviewed hook command.
     // The private wrapper explicitly authorizes this runtime-owned hook for
     // headless Codex turns.
-    const command = [shellQuote(process.execPath), shellQuote(hookClientPath())].join(" ");
+    const quote = IS_WINDOWS ? windowsQuote : shellQuote;
+    const command = [quote(process.execPath), quote(hookClientPath())].join(" ");
     return {
       codexPathOverride: wrapperPath,
       environment: { [HOOK_SOCKET_ENV]: socketPath, [HOOK_TOKEN_ENV]: token },

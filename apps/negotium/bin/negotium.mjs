@@ -15,4 +15,8 @@
 // a plain statement, then a dynamic import, which is ordered.
 process.env.MAESTRO_SDK_SILENT_BOOTSTRAP ??= "1";
 
+// Same reason: must be registered before the bundle imports the Codex SDK.
+const { hideCodexSdkWindowOnWindows } = await import("./codex-sdk-window-hide.mjs");
+await hideCodexSdkWindowOnWindows();
+
 await import("../dist/main.js");
