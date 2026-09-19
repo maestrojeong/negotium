@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import {
   cloneProfileForChild,
   configurePlaywrightManagerHost,
+  drainPlaywrightManager,
   makeInstanceKey,
   resetPlaywrightManagerHost,
   resolveTopicProfileDir,
@@ -22,6 +23,14 @@ import {
   listBrowserProfiles,
   normalizeBrowserProfileName,
 } from "#storage/browser-profiles";
+
+// A fire-and-forget turn from an earlier test file can pin a browser instance
+// after that file's own cleanup ran, and `configurePlaywrightManagerHost`
+// refuses to run while anything is pinned. Drain right before each test so a
+// late pin from another file cannot fail these tests (seen only on CI timing).
+beforeEach(async () => {
+  await drainPlaywrightManager();
+});
 
 function createOwnedTopic(
   ownerId: string,
