@@ -52,3 +52,20 @@ Press `Ctrl-D` from a conversation to render the current topic's recorded decisi
 their directed `causedBy` links with Orchgraph. Use arrow keys or `h` / `j` / `k` / `l`
 to pan, `[` / `]` to change spacing, and `Esc` or `Ctrl-D` to close. Inside the topic
 picker, `Ctrl-D` keeps its existing meaning: delete the selected topic.
+
+## Colour
+
+The Terminal picks a colour depth (`truecolor`, `ansi256`, `ansi16`, `none`) from
+`COLORTERM`, `TERM`, and `TERM_PROGRAM`. Over ssh, `COLORTERM` is usually not
+forwarded, so a remote host may fall back to 256 colours. Save the depth once
+on that machine instead of exporting a variable every run:
+
+```sh
+echo truecolor > ~/.negotium/tui-color   # or ansi256 / ansi16 / none
+```
+
+Precedence, first match wins: `NEGOTIUM_TUI_COLOR` env, `NO_COLOR`,
+`FORCE_COLOR`, then the saved file, then auto-detection. The saved file never
+adds colour to a pipe or `TERM=dumb`, and it lives under `NEGOTIUM_STATE_DIR`
+when that is set. macOS Terminal.app is capped at 256 colours unless you save
+`truecolor` explicitly.

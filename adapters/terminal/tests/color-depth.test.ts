@@ -38,7 +38,11 @@ function sampleState() {
 }
 
 describe("detectColorDepth", () => {
-  const cases: [string, { env: NodeJS.ProcessEnv; isTty: boolean }, ColorDepth][] = [
+  const cases: [
+    string,
+    { env: NodeJS.ProcessEnv; isTty: boolean; savedDepth?: string | null },
+    ColorDepth,
+  ][] = [
     ["pipe with no hints", { env: {}, isTty: false }, "none"],
     ["bare tty", { env: {}, isTty: true }, "ansi16"],
     ["TERM=xterm-256color tty", { env: { TERM: "xterm-256color" }, isTty: true }, "ansi256"],
@@ -49,6 +53,49 @@ describe("detectColorDepth", () => {
     ],
     ["COLORTERM=24bit tty", { env: { COLORTERM: "24bit" }, isTty: true }, "truecolor"],
     ["TERM=xterm-direct tty", { env: { TERM: "xterm-direct" }, isTty: true }, "truecolor"],
+    [
+      "Apple_Terminal caps COLORTERM=truecolor at 256 colours",
+      {
+        env: { TERM: "xterm-256color", COLORTERM: "truecolor", TERM_PROGRAM: "Apple_Terminal" },
+        isTty: true,
+      },
+      "ansi256",
+    ],
+    [
+      "NEGOTIUM_TUI_COLOR overrides the Apple_Terminal cap",
+      { env: { NEGOTIUM_TUI_COLOR: "truecolor", TERM_PROGRAM: "Apple_Terminal" }, isTty: true },
+      "truecolor",
+    ],
+    [
+      "saved tui-color beats detection",
+      { env: { TERM: "xterm-256color" }, isTty: true, savedDepth: "truecolor\n" },
+      "truecolor",
+    ],
+    [
+      "saved tui-color beats the Apple_Terminal cap",
+      { env: { TERM_PROGRAM: "Apple_Terminal" }, isTty: true, savedDepth: "truecolor" },
+      "truecolor",
+    ],
+    [
+      "env override outranks saved tui-color",
+      { env: { NEGOTIUM_TUI_COLOR: "ansi16" }, isTty: true, savedDepth: "truecolor" },
+      "ansi16",
+    ],
+    [
+      "NO_COLOR outranks saved tui-color",
+      { env: { NO_COLOR: "1" }, isTty: true, savedDepth: "truecolor" },
+      "none",
+    ],
+    [
+      "saved tui-color never colours a pipe",
+      { env: {}, isTty: false, savedDepth: "truecolor" },
+      "none",
+    ],
+    [
+      "invalid saved tui-color falls through",
+      { env: { TERM: "xterm-256color" }, isTty: true, savedDepth: "rainbow" },
+      "ansi256",
+    ],
     ["TERM=dumb tty", { env: { TERM: "dumb" }, isTty: true }, "none"],
     [
       "TERM=dumb outranks COLORTERM",
@@ -95,7 +142,9 @@ describe("detectColorDepth", () => {
 
   for (const [name, probe, expected] of cases) {
     test(name, () => {
-      expect(detectColorDepth(probe)).toBe(expected);
+      // Default to no saved file so a developer's own ~/.negotium/tui-color
+      // cannot leak into the table.
+      expect(detectColorDepth({ savedDepth: null, ...probe })).toBe(expected);
     });
   }
 });

@@ -160,6 +160,10 @@ erase the topic or its history.
 For keyboard shortcuts, chat commands, and the live subagent graph, see
 [Terminal usage](./docs/TERMINAL-USAGE.md).
 
+Colours look different over ssh or in Terminal.app? Save a depth once with
+`echo truecolor > ~/.negotium/tui-color` (`truecolor`, `ansi256`, `ansi16`, or
+`none`); see [Colour](./docs/TERMINAL-USAGE.md#colour).
+
 ## Agent collaboration
 
 Agents receive a shared collaboration surface:

@@ -10,6 +10,10 @@
  * at module load). Runtime changes go through `setColorDepth`, which also
  * invalidates the message layout cache.
  */
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 export type ColorDepth = "none" | "ansi16" | "ansi256" | "truecolor";
 
 const DEPTHS: readonly ColorDepth[] = ["none", "ansi16", "ansi256", "truecolor"];
@@ -38,6 +42,26 @@ function forceColorDepth(raw: string | undefined): ColorDepth | null {
 export interface ColorDepthProbe {
   env?: NodeJS.ProcessEnv;
   isTty?: boolean;
+  /** Test seam: contents of the persisted setting, or null when absent. */
+  savedDepth?: string | null;
+}
+
+/**
+ * Persisted per-machine setting: `<state dir>/tui-color` holding one of
+ * `none|ansi16|ansi256|truecolor`. Lets an ssh host that never receives
+ * COLORTERM opt in once instead of exporting NEGOTIUM_TUI_COLOR every run.
+ */
+export function tuiColorFile(env: NodeJS.ProcessEnv = process.env): string {
+  const dir = env.NEGOTIUM_STATE_DIR?.trim() || join(homedir(), ".negotium");
+  return join(dir, "tui-color");
+}
+
+function readSavedDepth(env: NodeJS.ProcessEnv): string | null {
+  try {
+    return readFileSync(tuiColorFile(env), "utf-8");
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -51,6 +75,8 @@ export interface ColorDepthProbe {
  * | `TERM=dumb`                                  | `none`     |
  * | stdout is not a TTY (pipe / redirect)        | `none`     |
  * | `COLORTERM` matches `truecolor` or `24bit`   | `truecolor`|
+ * | `<state dir>/tui-color` file names a depth   | as named   |
+ * | `TERM_PROGRAM=Apple_Terminal`                | `ansi256`  |
  * | `TERM` contains `truecolor` or `direct`      | `truecolor`|
  * | `TERM` contains `256color`                   | `ansi256`  |
  * | otherwise (a TTY of unknown capability)      | `ansi16`   |
@@ -77,6 +103,14 @@ export function detectColorDepth(probe: ColorDepthProbe = {}): ColorDepth {
   const term = (env.TERM ?? "").toLowerCase();
   if (term === "dumb") return "none";
   if (!isTty) return "none";
+
+  const savedRaw = probe.savedDepth !== undefined ? probe.savedDepth : readSavedDepth(env);
+  const saved = asDepth(savedRaw ?? undefined);
+  if (saved) return saved;
+
+  // macOS Terminal.app has no 24-bit support: it approximates truecolor
+  // sequences badly even when a shell profile exports COLORTERM=truecolor.
+  if (env.TERM_PROGRAM === "Apple_Terminal") return "ansi256";
 
   const colorterm = (env.COLORTERM ?? "").toLowerCase();
   if (colorterm.includes("truecolor") || colorterm.includes("24bit")) return "truecolor";
