@@ -1,6 +1,7 @@
 import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { USERS_LOG_DIR } from "#platform/config";
+import { ACTIVE_QUERY_STALE_MS, USERS_LOG_DIR } from "#platform/config";
+import { readJsonFile } from "#platform/jsonl";
 import { logger } from "#platform/logger";
 import { sanitizeId } from "#security/sanitize";
 import type { QueryState } from "#types";
@@ -20,6 +21,13 @@ export interface QueryStateStoreOptions {
 export interface QueryStateStore {
   write(userId: QueryStateUserId, topicId: string, topicName: string, task?: string): void;
   clear(userId: QueryStateUserId, topicId: string, legacyTopicName?: string): void;
+  /**
+   * True when a live (non-stale) active-query state file exists for this
+   * user/topic pair. This reads the same on-disk marker `peek_session` /
+   * `list_active_queries` trust, independent of any in-process bookkeeping
+   * (turn leases, subagent watch maps) that does not survive a node restart.
+   */
+  hasActive(userId: QueryStateUserId, topicId: string): boolean;
 }
 
 export function createQueryStateStore(options: QueryStateStoreOptions): QueryStateStore {
@@ -72,6 +80,12 @@ export function createQueryStateStore(options: QueryStateStoreOptions): QuerySta
         }
       }
     },
+    hasActive(userId, topicId) {
+      const state = readJsonFile<QueryState>(queryStateFile(userId, topicId));
+      if (!state) return false;
+      const sinceMs = new Date(state.since).getTime();
+      return Date.now() - sinceMs <= ACTIVE_QUERY_STALE_MS;
+    },
   };
 }
 
@@ -95,4 +109,8 @@ export function clearQueryState(
   legacyTopicName?: string,
 ) {
   defaultQueryStateStore.clear(userId, topicId, legacyTopicName);
+}
+
+export function hasActiveQuery(userId: QueryStateUserId, topicId: string): boolean {
+  return defaultQueryStateStore.hasActive(userId, topicId);
 }

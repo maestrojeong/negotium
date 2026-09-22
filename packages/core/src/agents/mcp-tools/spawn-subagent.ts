@@ -11,6 +11,7 @@ import { z } from "zod";
 import { errorResult, type SharedMcpTool, textResult } from "#agents/mcp-tools/common";
 import { WsHub } from "#bus";
 import { logger } from "#platform/logger";
+import { hasActiveQuery } from "#query/state";
 import {
   appendApiMessage,
   getApiMessage,
@@ -172,6 +173,19 @@ export interface SubagentLifecycle<
   ): SharedMcpTool;
 }
 
+function activeQueryUserId(topic: TopicDto | null | undefined): string | undefined {
+  return topic?.participants.find((participant) => hasActiveQuery(participant.userId, topic.id))
+    ?.userId;
+}
+
+function persistedWatchUserId(topic: TopicDto | null | undefined): string | undefined {
+  return (
+    activeQueryUserId(topic) ??
+    topic?.participants.find((participant) => participant.role === "owner")?.userId ??
+    topic?.participants[0]?.userId
+  );
+}
+
 export function createSubagentLifecycle<TContext extends SpawnSubagentToolContext>(
   host: SubagentLifecycleHost<TContext>,
 ): SubagentLifecycle<TContext> {
@@ -328,9 +342,7 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
     queryId?: string,
   ): SubagentWatch | null {
     const child = host.storage.getTopic(card.subagentTopicId);
-    const userId =
-      child?.participants.find((participant) => participant.role === "owner")?.userId ??
-      child?.participants[0]?.userId;
+    const userId = persistedWatchUserId(child);
     if (!userId) return null;
     return {
       parentTopicId: message.topicId,
@@ -827,6 +839,13 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
           message.subagentCard?.subagentTopicId === childTopicId,
       )
       .at(-1)?.subagentCard;
+    if (!card || card.status === "failed") {
+      // The in-memory watch map (and the boot-time sweep that marks orphans
+      // failed) doesn't survive a restart. Before trusting a possibly-stale
+      // snapshot, reconcile against the same durable active-query marker
+      // peek_session / list_active_queries read for any child participant.
+      if (activeQueryUserId(host.storage.getTopic(childTopicId))) return "running";
+    }
     return card?.status ?? "unknown";
   }
 
@@ -1194,7 +1213,8 @@ const defaultSubagentLifecycleHost: SubagentLifecycleHost = {
     childExecutionIsRecoverable(childTopicId) {
       if (getRuntimeUserTurnRequest(childTopicId)) return true;
       const lease = getRuntimeTurnLease(childTopicId);
-      return Boolean(lease && processOwnerIsAlive(lease.ownerId));
+      if (lease && processOwnerIsAlive(lease.ownerId)) return true;
+      return Boolean(activeQueryUserId(getTopic(childTopicId)));
     },
   },
   config: {

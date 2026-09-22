@@ -3,8 +3,13 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { USERS_LOG_DIR } from "#platform/config";
-import { clearQueryState, createQueryStateStore, writeQueryState } from "#query/state";
+import { ACTIVE_QUERY_STALE_MS, USERS_LOG_DIR } from "#platform/config";
+import {
+  clearQueryState,
+  createQueryStateStore,
+  hasActiveQuery,
+  writeQueryState,
+} from "#query/state";
 import { sanitizeId } from "#security/sanitize";
 import type { QueryState } from "#types";
 
@@ -85,5 +90,22 @@ describe("active query state", () => {
     clearQueryState(userId, randomUUID(), "Legacy Room");
 
     expect(existsSync(legacyPath)).toBe(false);
+  });
+
+  test("hasActiveQuery rejects a stale marker", () => {
+    const userId = `query-state-${randomUUID()}`;
+    const topicId = randomUUID();
+    users.push(userId);
+    mkdirSync(stateDir(userId), { recursive: true });
+    writeFileSync(
+      statePath(userId, topicId),
+      JSON.stringify({
+        topicId,
+        topicName: "Stale Room",
+        since: new Date(Date.now() - ACTIVE_QUERY_STALE_MS - 1_000).toISOString(),
+      } satisfies QueryState),
+    );
+
+    expect(hasActiveQuery(userId, topicId)).toBe(false);
   });
 });

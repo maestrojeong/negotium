@@ -12,6 +12,7 @@ import {
   sweepStaleSubagentCards,
   takeSubagentWatch,
 } from "#agents/mcp-tools/spawn-subagent";
+import { clearQueryState, writeQueryState } from "#query/state";
 import {
   appendApiMessage,
   deleteMessagesForTopic,
@@ -430,6 +431,49 @@ describe("subagent management tools", () => {
     );
   });
 
+  test("list_subagents self-heals a stale failed card when the child is still genuinely running", async () => {
+    // Reproduces the real-world mismatch: a node restart wipes the in-memory
+    // watch map and (via sweepStaleSubagentCards) can leave a subagent card
+    // stuck reporting "failed" even though the child topic's turn is still
+    // actively executing. peek_session / list_active_queries trust the durable
+    // active-query marker file for this, and list_subagents should too.
+    const participants: TopicDto["participants"] = [
+      { userId: "owner-1", role: "owner" },
+      { userId: "member-1", role: "member" },
+    ];
+    const parent = makeTopic("owner-1", { participants });
+    const child = makeTopic("owner-1", {
+      title: `child-${randomUUID()}`,
+      parentTopicId: parent.id,
+      isSubagent: true,
+      participants,
+    });
+    makeCardMessage(parent.id, {
+      subagentTopicId: child.id,
+      name: "worker",
+      task: "long job",
+      status: "failed",
+      errorMessage: "server restarted while the subagent was running",
+    });
+
+    // The turn state belongs to the member who started it, not necessarily the
+    // inherited topic owner.
+    writeQueryState("member-1", child.id, child.title, "still working");
+    try {
+      const listTool = createSubagentManagementToolDefinitions({
+        userId: "member-1",
+        topicId: parent.id,
+      }).find((tool) => tool.name === "list_subagents");
+      const result = await listTool?.handler({});
+      const payload = JSON.parse(result?.content[0]?.text ?? "{}") as {
+        subagents?: Array<{ topic_id: string; status: string }>;
+      };
+      expect(payload.subagents?.find((c) => c.topic_id === child.id)?.status).toBe("running");
+    } finally {
+      clearQueryState("member-1", child.id, child.title);
+    }
+  });
+
   test("a non-owner member manages subagents spawned under a shared room", async () => {
     // Subagents inherit the parent room's participants verbatim (owner stays
     // owner regardless of who triggers the spawn). A non-owner member must
@@ -782,6 +826,35 @@ describe("subagent card storage", () => {
 
     expect(getApiMessage(topic.id, live.id)?.subagentCard?.status).toBe("running");
     expect(getApiMessage(topic.id, legacy.id)?.subagentCard?.status).toBe("running");
+  });
+
+  test("boot sweep preserves a running card with an active query owned by a member", () => {
+    const participants: TopicDto["participants"] = [
+      { userId: "owner-1", role: "owner" },
+      { userId: "member-1", role: "member" },
+    ];
+    const parent = makeTopic("owner-1", { participants });
+    const child = makeTopic("owner-1", {
+      parentTopicId: parent.id,
+      isSubagent: true,
+      participants,
+    });
+    const running = makeCardMessage(parent.id, {
+      subagentTopicId: child.id,
+      name: child.title,
+      task: "long job",
+      runtimeOwnerId: "2147483647-dead-runtime",
+      status: "running",
+      startedAt: new Date().toISOString(),
+    });
+
+    writeQueryState("member-1", child.id, child.title, "still working");
+    try {
+      sweepStaleSubagentCards();
+      expect(getApiMessage(parent.id, running.id)?.subagentCard?.status).toBe("running");
+    } finally {
+      clearQueryState("member-1", child.id, child.title);
+    }
   });
 
   test("recovers a persisted watch from the child turn lease after restart", () => {
