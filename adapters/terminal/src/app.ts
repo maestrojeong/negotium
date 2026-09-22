@@ -167,7 +167,14 @@ function canvasFill(depth: ColorDepth): string {
   }
 }
 
-export function altScreenSequences(env: NodeJS.ProcessEnv = process.env): {
+export function altScreenSequences(
+  env: NodeJS.ProcessEnv = process.env,
+  // Test seam mirroring `ColorDepthProbe.savedDepth`: leave undefined to read
+  // the real `<state dir>/tui-color` file (production behaviour), or pass
+  // `null` to test env-only detection without a machine's persisted setting
+  // leaking in.
+  savedDepth?: string | null,
+): {
   enter: string;
   exit: string;
   abortEnter: string;
@@ -181,7 +188,7 @@ export function altScreenSequences(env: NodeJS.ProcessEnv = process.env): {
   // canvas fill is emitted, so the terminal keeps its own theme — and the
   // matching OSC 111 restore is dropped too, since restoring a colour we never
   // set would clobber a background the user configured themselves.
-  const depth = detectColorDepth({ env, isTty: true });
+  const depth = detectColorDepth({ env, isTty: true, savedDepth });
   const colored = depth !== "none";
   const setBackground = colored ? "\u001b]11;#0a0b0f\u0007" : "";
   const fillCanvas = canvasFill(depth);

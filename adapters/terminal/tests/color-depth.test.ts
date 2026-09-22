@@ -246,8 +246,12 @@ describe("renderer colour depth", () => {
 });
 
 describe("alt-screen sequences", () => {
+  // `savedDepth: null` pins detection to the env passed in, the same test
+  // seam `detectColorDepth` exposes as `ColorDepthProbe.savedDepth` — without
+  // it, these tests read whatever `<state dir>/tui-color` happens to hold on
+  // the machine running them (e.g. a developer who opted into `truecolor`).
   test("repaints the terminal background only when colour is enabled", () => {
-    const colored = altScreenSequences({ COLORTERM: "truecolor" });
+    const colored = altScreenSequences({ COLORTERM: "truecolor" }, null);
     expect(colored.enter).toContain(`${ESC}]11;#0a0b0f`);
     expect(colored.enter).toContain(`${ESC}[48;2;10;11;15m`);
     expect(colored.exit).toContain(`${ESC}]111`);
@@ -256,9 +260,11 @@ describe("alt-screen sequences", () => {
   test("downshifts the canvas fill to the detected depth", () => {
     // The one paint outside the renderer used to be hard-coded 24-bit, so an
     // ansi16 terminal got a sequence it may ignore or misparse.
-    expect(altScreenSequences({ TERM: "xterm-256color" }).enter).toContain(`${ESC}[48;5;`);
-    expect(altScreenSequences({ TERM: "xterm-256color" }).enter).not.toContain(`${ESC}[48;2;`);
-    const ansi16 = altScreenSequences({ TERM: "xterm" }).enter;
+    expect(altScreenSequences({ TERM: "xterm-256color" }, null).enter).toContain(`${ESC}[48;5;`);
+    expect(altScreenSequences({ TERM: "xterm-256color" }, null).enter).not.toContain(
+      `${ESC}[48;2;`,
+    );
+    const ansi16 = altScreenSequences({ TERM: "xterm" }, null).enter;
     expect(ansi16).not.toContain(`${ESC}[48;5;`);
     expect(ansi16).not.toContain(`${ESC}[48;2;`);
     // theme.canvas is near-black, so the 16-colour downshift is plain black.
@@ -269,12 +275,12 @@ describe("alt-screen sequences", () => {
     // Render patches open with `CSI ?2026h`; an exit that never closes one can
     // leave the terminal buffering everything printed after the restore.
     for (const env of [{ COLORTERM: "truecolor" }, { NO_COLOR: "1" }, { TERM: "dumb" }]) {
-      expect(altScreenSequences(env).exit).toStartWith(`${ESC}[?2026l`);
+      expect(altScreenSequences(env, null).exit).toStartWith(`${ESC}[?2026l`);
     }
   });
 
   test("leaves the user's terminal theme untouched under NO_COLOR", () => {
-    const plain = altScreenSequences({ NO_COLOR: "1" });
+    const plain = altScreenSequences({ NO_COLOR: "1" }, null);
     expect(plain.enter).not.toContain(`${ESC}]11;`);
     expect(plain.enter).not.toContain(`${ESC}[48;2;`);
     // No OSC 111 either: restoring a background we never set would clobber one
