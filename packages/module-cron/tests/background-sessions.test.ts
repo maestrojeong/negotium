@@ -126,8 +126,10 @@ describe("Cron background sessions", () => {
     const { topic } = fixture();
 
     expect(listCronBackgroundSessions("someone-else")).toEqual([]);
-    expect(listCronBackgroundSessions("someone-else", true)).toEqual([
-      expect.objectContaining({ id: `cron:${topic.id}`, topicId: topic.id }),
-    ]);
+    // `allUsers` lists the whole shared DB, so jobs leaked by other test files
+    // running in the same process must not affect this assertion.
+    expect(
+      listCronBackgroundSessions("someone-else", true).filter((s) => s.topicId === topic.id),
+    ).toEqual([expect.objectContaining({ id: `cron:${topic.id}`, topicId: topic.id })]);
   });
 });
