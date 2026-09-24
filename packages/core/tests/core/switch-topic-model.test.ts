@@ -47,6 +47,8 @@ describe("topic model picker", () => {
   test("publishes the supported model choices and descriptions", () => {
     expect(SELECTABLE_MODELS.map(({ model }) => model)).toEqual([
       "gpt-6-astra",
+      "gpt-6-sol",
+      "gpt-6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
@@ -67,7 +69,7 @@ describe("topic model picker", () => {
     expect(selectableModel("sonnet")?.intelligenceTier).toBe("sonnet");
     expect(selectableModel("gpt-5.6-luna")?.accessCost).toContain("$200/month");
     expect(selectableModel("gpt-5.6-luna")?.marginalTokenCost).toContain("$1/M");
-    expect(selectableModel("opus")?.marginalTokenCost).toContain("$25/M output");
+    expect(selectableModel("opus")?.marginalTokenCost).toContain("$20/M output");
     expect(selectableModel("gpt-5.6-luna")?.estimatedUsage).toContain("1,000–5,600");
     expect(selectableModel("fable")?.estimatedUsage).toContain("explicit user request");
     expect(selectableModel("deepseek-pro")?.marginalTokenCost).toContain("$0.435/M");

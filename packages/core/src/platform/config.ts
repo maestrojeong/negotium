@@ -525,7 +525,7 @@ export const FILE_TAG_REGEX = new RegExp(`\\[FILE:(${ABSOLUTE_PATH_PREFIX}[^\\]]
 
 // Canonical Claude model IDs — update here when Anthropic releases new versions
 export const MODEL_SONNET = "claude-sonnet-5";
-export const MODEL_OPUS = "claude-opus-5";
+export const MODEL_OPUS = "claude-opus-5-5";
 export const MODEL_HAIKU = "claude-haiku-4-5-20251001";
 export const MODEL_FABLE = "claude-fable-5-1"; // Mythos-class, Fable 5.1 announced 2026-09-01 (was claude-fable-5)
 

@@ -729,7 +729,7 @@ describe("terminal renderer", () => {
         { ...topic(), defaultModel: "gpt-5.6-luna", effectiveModel: "gpt-5.6-luna" },
       ]),
       overlay: "models" as const,
-      modelPickerIndex: 1,
+      modelPickerIndex: 3,
     };
 
     const output = stripAnsi(renderApp(state, 120, 30));
@@ -756,7 +756,7 @@ describe("terminal renderer", () => {
     const state = {
       ...setTopics(createInitialState("local"), [topic()]),
       overlay: "models" as const,
-      modelPickerIndex: 11,
+      modelPickerIndex: 13,
     };
 
     const output = stripAnsi(renderApp(state, 80, 14));

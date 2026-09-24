@@ -157,8 +157,8 @@ describe("role default models", () => {
   });
 
   test("maps the Claude opus alias to Opus 5", () => {
-    expect(MODEL_OPUS).toBe("claude-opus-5");
-    expect(claudeRegistry.expandModelAlias("opus")).toBe("claude-opus-5");
+    expect(MODEL_OPUS).toBe("claude-opus-5-5");
+    expect(claudeRegistry.expandModelAlias("opus")).toBe("claude-opus-5-5");
   });
 
   test("tsx executable resolves across hoisted workspace installs", () => {

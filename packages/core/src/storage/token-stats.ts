@@ -113,12 +113,15 @@ type TokenPrices = {
 
 const TOKEN_PRICES: Record<string, TokenPrices> = {
   "codex:gpt-6-astra": { input: 10, cacheWrite: 12.5, cacheRead: 1, output: 50 },
+  "codex:gpt-6-sol": { input: 2, cacheRead: 0.2, output: 10 },
+  "codex:gpt-6-luna": { input: 0.1, cacheRead: 0.01, output: 0.5 },
   "codex:gpt-5.6-sol": { input: 5, cacheRead: 0.5, output: 30 },
   "codex:gpt-5.6-terra": { input: 2.5, cacheRead: 0.25, output: 15 },
   "codex:gpt-5.6-luna": { input: 1, cacheRead: 0.1, output: 6 },
   // Fable 5.1 (2026-09-01) cut cache-read pricing 75% from $1/M to $0.25/M.
   "claude:fable": { input: 10, cacheWrite: 12.5, cacheRead: 0.25, output: 50 },
-  "claude:opus": { input: 5, cacheWrite: 6.25, cacheRead: 0.5, output: 25 },
+  "claude:opus": { input: 4, cacheWrite: 5, cacheRead: 0.4, output: 20 },
+  "claude:claude-opus-5-5": { input: 4, cacheWrite: 5, cacheRead: 0.4, output: 20 },
   "claude:sonnet": { input: 2, cacheWrite: 2.5, cacheRead: 0.2, output: 10 },
   "maestro:kimi-k3": { input: 3, cacheRead: 0.3, output: 15 },
   "maestro:kimi-k2.7-code": { input: 0.95, cacheRead: 0.19, output: 4 },

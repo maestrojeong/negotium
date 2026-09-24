@@ -22,6 +22,8 @@ export const MODEL_OWNER: Record<string, AgentKind> = {
   haiku: "claude",
   fable: "claude",
   "gpt-6-astra": "codex",
+  "gpt-6-sol": "codex",
+  "gpt-6-luna": "codex",
   "gpt-5.6-luna": "codex",
   "gpt-5.6-terra": "codex",
   "gpt-5.6-sol": "codex",
@@ -111,6 +113,29 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
     estimatedUsage: `Released 2026-09-03; became Codex CLI's bundled default in v0.153.4 (2026-09-05). Local message-count/quota-weight ranges not yet published as of the last catalog check — expect a quota weight above gpt-5.6-sol given the higher per-token cost. ${CODEX_COMMUNITY_WEEKLY}`,
   },
   {
+    model: "gpt-6-sol",
+    agent: "codex",
+    description: "GPT-6 generation Sol route (2026-09-22) for demanding coding and agentic work.",
+    intelligenceTier: "opus",
+    routingSummary:
+      "demanding coding work; about half as many mistakes as gpt-5.6-sol at half the price",
+    accessCost: CODEX_PRO_20X_COST,
+    marginalTokenCost:
+      "Codex credits (OpenAI API rate): $2/M uncached input, $0.20/M cached input (assumed), $10/M output",
+    estimatedUsage: `Released 2026-09-22; local message-count/quota-weight ranges not yet published. ${CODEX_COMMUNITY_WEEKLY}`,
+  },
+  {
+    model: "gpt-6-luna",
+    agent: "codex",
+    description: "GPT-6 generation Luna route (2026-09-22): fast, high-volume, lowest cost.",
+    intelligenceTier: "sonnet",
+    routingSummary: "fast high-volume work; cheapest Codex route",
+    accessCost: CODEX_PRO_20X_COST,
+    marginalTokenCost:
+      "Codex credits (OpenAI API rate): $0.10/M uncached input, $0.01/M cached input (assumed), $0.50/M output",
+    estimatedUsage: `Released 2026-09-22; local message-count/quota-weight ranges not yet published. ${CODEX_COMMUNITY_WEEKLY}`,
+  },
+  {
     model: "gpt-5.6-sol",
     agent: "codex",
     description:
@@ -159,10 +184,10 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
     agent: "claude",
     description: "High-capability Claude route for complex reasoning and tool-heavy work.",
     intelligenceTier: "opus",
-    routingSummary: "complex reasoning and tool-heavy work; about 2.5x Sonnet marginal cost",
+    routingSummary: "complex reasoning and tool-heavy work; about 2x Sonnet marginal cost",
     accessCost: CLAUDE_MAX_20X_COST,
     marginalTokenCost:
-      "Claude API/extra usage: $5/M input, $6.25/M cache write, $0.50/M cache read, $25/M output",
+      "Claude API/extra usage (Opus 5.5, 2026-09-22): $4/M input, $5/M cache write (assumed), $0.40/M cache read (assumed), $20/M output",
     estimatedUsage: `${CLAUDE_COMMUNITY_SESSION}; Opus uses the shared all-model weekly pool more quickly than Sonnet. No stable per-model token cap is published.`,
   },
   {
