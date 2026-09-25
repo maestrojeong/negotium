@@ -1,3 +1,4 @@
+import { logger } from "#platform/logger";
 import { db } from "#storage/forum-db";
 import { RUNTIME_INSTANCE_ID } from "#storage/runtime-leases";
 import { registerStorageSchemaInitializer } from "#storage/storage-host";
@@ -202,12 +203,36 @@ export function acquireRuntimeProcessLease(
 
   let stopped = false;
   const heartbeatMs = options.heartbeatMs ?? PROCESS_LEASE_HEARTBEAT_MS;
-  const timer = setInterval(() => {
-    if (stopped) return;
-    if (heartbeatRuntimeProcessLease(normalizedRole, ownerId)) return;
+  let lastHeartbeatAt = now;
+  const lose = () => {
     stopped = true;
     clearInterval(timer);
-    options.onLost?.();
+    try {
+      options.onLost?.();
+    } catch (error) {
+      logger.error({ err: error, role: normalizedRole }, "process lease: onLost handler failed");
+    }
+  };
+  // A timer callback must never throw: an uncaught exception there kills a
+  // daemon (and hangs `bun test` on Bun 1.2.x). A failed heartbeat write (busy
+  // past the timeout, I/O error) is retried on the next tick; once no heartbeat
+  // has succeeded for `staleMs`, another process may legitimately have taken
+  // the role, so the lease is treated as lost.
+  const timer = setInterval(() => {
+    if (stopped) return;
+    let alive: boolean;
+    try {
+      alive = heartbeatRuntimeProcessLease(normalizedRole, ownerId);
+    } catch (error) {
+      logger.warn({ err: error, role: normalizedRole }, "process lease: heartbeat failed");
+      if (Date.now() - lastHeartbeatAt >= staleMs) lose();
+      return;
+    }
+    if (alive) {
+      lastHeartbeatAt = Date.now();
+      return;
+    }
+    lose();
   }, heartbeatMs);
   timer.unref?.();
 
