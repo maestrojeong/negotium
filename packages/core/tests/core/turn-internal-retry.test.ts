@@ -13,15 +13,25 @@
  *
  * So: no terminal event for an internal retry, and the queryId carries over.
  */
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { startAiTurn } from "#runtime/turn-runner";
 import { deleteTopic, upsertTopic } from "#storage/api-topics";
 import { listRecentRuntimeEventsForTopic } from "#storage/runtime-events";
 
+// bun's mock.module is process-global and outlives this file, so snapshot the
+// real module first and put it back afterwards. Without the restore, test files
+// that run later (the order differs between macOS and Linux CI) see a stubbed
+// mcp-config with no host-grant merging.
+const realMcpConfig = { ...(await import("#platform/mcp-config")) };
 mock.module("#platform/mcp-config", () => ({
+  ...realMcpConfig,
   getMcpServersForQuery: () => ({}),
 }));
+
+afterAll(() => {
+  mock.module("#platform/mcp-config", () => realMcpConfig);
+});
 
 const topicIds = new Set<string>();
 
