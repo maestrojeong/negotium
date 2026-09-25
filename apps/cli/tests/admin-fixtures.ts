@@ -1,33 +1,73 @@
 /**
- * Fixtures for the `negotium admin` tests: seeded topics on the preload's
- * temporary core DB, and a link-audit report generator that computes D2, D3,
+ * Fixtures for the `negotium admin` tests: seeded topics on a private
+ * temporary node DB (see {@link SESSIONS_DB}), and a link-audit report generator that computes D2, D3,
  * D6 and D7 from a node snapshot with the same row shapes as otium
  * `scripts/link-audit/checks.ts` (reportVersion 1).
  */
 
 import { Database } from "bun:sqlite";
+import { afterAll, beforeAll } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const sessionsDb = process.env.SESSIONS_DB_PATH ?? "";
-if (!sessionsDb.includes("negotium-root-test-") && !sessionsDb.startsWith(tmpdir())) {
-  // Only ever run against the preload's temporary database.
+const preloadDb = process.env.SESSIONS_DB_PATH ?? "";
+if (!preloadDb.includes("negotium-root-test-") && !preloadDb.startsWith(tmpdir())) {
+  // Only ever run under the preload's temporary state.
   throw new Error("admin tests must run from the repo root (preload sets a temp DB)");
+}
+
+export const work = mkdtempSync(join(tmpdir(), "negotium-admin-test-"));
+// Shared by every admin test file in this process: removed once, at exit.
+process.on("exit", () => rmSync(work, { recursive: true, force: true }));
+
+/**
+ * The admin tests' own node DB, not the preload's shared one.
+ *
+ * The in-process admin CLI reads its DB with `fs` (private copy,
+ * `dbFileListing`) while this process holds it open through core. POSIX
+ * `fcntl` locks are per process, so that `close(2)` drops this process's
+ * SQLite locks on the file; any other process that later opens and closes the
+ * same DB believes it is the last connection and deletes `-wal`/`-shm` under
+ * the open one — the "disk I/O error" / "database disk image is malformed"
+ * cascade (and hang) of CI run 36156534788 on Linux + Bun 1.2.15, when this
+ * was the preload DB every test file and its child processes share. No other
+ * process opens this file. (The real CLI copies before it ever loads core, and
+ * `createPrivateCopy` refuses a DB open in its own process; these in-process
+ * tests opt out through `allowLiveDbOpenInThisProcess`.)
+ */
+export const SESSIONS_DB = join(work, "node", "node.db");
+mkdirSync(join(work, "node"), { mode: 0o700 });
+
+/** Points core and `nodePaths()` at the admin DB; returns the restore. */
+export function useAdminNodeDb(): () => void {
+  const previous = process.env.SESSIONS_DB_PATH;
+  process.env.SESSIONS_DB_PATH = SESSIONS_DB;
+  return () => {
+    process.env.SESSIONS_DB_PATH = previous;
+  };
+}
+
+/** Every admin test file: `beforeAll`/`afterAll` around its tests. */
+export function adminNodeDbForThisFile(): void {
+  let restore: (() => void) | null = null;
+  beforeAll(() => {
+    restore = useAdminNodeDb();
+  });
+  afterAll(() => {
+    restore?.();
+  });
 }
 
 export const core = await import("@negotium/core");
 export const { NODE_ID } = await import("@negotium/core/node-host");
 
+const restoreAtImport = useAdminNodeDb();
 core.listTopics();
 core.recordTopicLinkNodeIdentity(NODE_ID);
 export const DB_EPOCH = core.topicLinkDbEpoch() as string;
-export const SESSIONS_DB = sessionsDb;
-
-export const work = mkdtempSync(join(tmpdir(), "negotium-admin-test-"));
-// Shared by every admin test file in this process: removed once, at exit.
-process.on("exit", () => rmSync(work, { recursive: true, force: true }));
+restoreAtImport();
 
 let clock = Date.parse("2026-01-01T00:00:00.000Z");
 function nextTime(): string {

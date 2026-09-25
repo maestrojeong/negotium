@@ -22,6 +22,7 @@ import {
 import { join } from "node:path";
 import {
   addMessage,
+  adminNodeDbForThisFile,
   core,
   freshScope,
   freshUser,
@@ -33,13 +34,15 @@ import {
   work,
 } from "./admin-fixtures";
 
+adminNodeDbForThisFile();
+
 const { runAdminCli, ADMIN_EXIT } = await import("@/commands/admin/index");
 const { nodePaths, topicWorkspaceDir, sessionInboxFiles, pendingAskDir } = await import(
   "@/commands/admin/paths"
 );
 const { loadCoreExclusive, openBackupReadOnly } = await import("@/commands/admin/apply-env");
 const { defaultFsSeam } = await import("@/commands/admin/safe-fs");
-const { ensureCronSchema } = await import("@negotium/module-cron");
+const { configureCronDatabase, ensureCronSchema } = await import("@negotium/module-cron");
 
 type Hooks = NonNullable<Parameters<typeof runAdminCli>[2]>;
 
@@ -66,7 +69,7 @@ async function run(args: string[], hooks: Hooks = {}): Promise<Run> {
         lines.push(`err:${l}`);
       },
     },
-    hooks,
+    { allowLiveDbOpenInThisProcess: true, ...hooks },
   );
   return { code, out: out.join("\n"), err: err.join("\n"), lines };
 }
@@ -304,7 +307,16 @@ describe("delete-manager: eligibility", () => {
   });
 
   test("children, claims, cron, turns, inbox, asks, uploads and workspace files all block", async () => {
-    ensureCronSchema();
+    // Cron tables in the admin DB, without leaving module-cron's process-wide
+    // "schema ready" flag set for the preload DB other test files use.
+    const restoreCronDb = configureCronDatabase(
+      core.db as unknown as Parameters<typeof configureCronDatabase>[0],
+    );
+    try {
+      ensureCronSchema();
+    } finally {
+      restoreCronDb();
+    }
     const now = new Date().toISOString();
     const cases: Array<[string, (pair: ReturnType<typeof duplicatePair>) => void]> = [
       [

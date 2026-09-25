@@ -12,6 +12,15 @@
  * and after the read; if anything moved (a writer or checkpoint ran), the copy
  * is discarded and retried, and after three attempts the command refuses. The
  * copy directory is removed on close and at process exit.
+ *
+ * The copying process must not itself hold the database open (through SQLite
+ * or otherwise): POSIX `fcntl` locks belong to the process, so the `close(2)`
+ * after our `read(2)` silently drops every SQLite lock this process holds on
+ * that file. Another process's last connection then believes it is alone,
+ * checkpoints and deletes `-wal`/`-shm` under the still-open connection, which
+ * later fails with "disk I/O error" / "database disk image is malformed" (seen
+ * on Linux + Bun 1.2.15). The CLI copies before it ever loads core; the copy
+ * refuses when an fd of this process already refers to the source.
  */
 
 import { Database } from "bun:sqlite";
@@ -22,6 +31,7 @@ import {
   existsSync,
   mkdtempSync,
   openSync,
+  readdirSync,
   readFileSync,
   rmSync,
   type Stats,
@@ -112,11 +122,43 @@ export interface PrivateCopyOptions {
   requireNoSidecars?: boolean;
   /** Test seam: runs between reading the sources and the "after" stat. */
   afterReadForTests?: () => void;
+  /**
+   * Test seam: in-process tests seed the DB through core first, on a DB no
+   * other process opens, so the lock drop is harmless there. Never from argv.
+   */
+  allowSourceOpenInThisProcessForTests?: boolean;
+}
+
+/**
+ * Whether an fd of this process refers to `target` (same dev/ino). Effective
+ * on Linux, where `/dev/fd` is `/proc/self/fd` and lists every fd; best-effort
+ * elsewhere (macOS lists only a few fds there), where it may miss one.
+ */
+export function isOpenInThisProcess(target: Stats): boolean {
+  let fds: string[];
+  try {
+    fds = readdirSync("/dev/fd");
+  } catch {
+    return false;
+  }
+  return fds.some((fd) => {
+    try {
+      const stat = statSync(`/dev/fd/${fd}`);
+      return stat.dev === target.dev && stat.ino === target.ino;
+    } catch {
+      return false;
+    }
+  });
 }
 
 export function createPrivateCopy(source: string, options: PrivateCopyOptions = {}): PrivateCopy {
   const main = statSync(source);
   if (!main.isFile()) refuse(`${source} is not a regular file`);
+  if (!options.allowSourceOpenInThisProcessForTests && isOpenInThisProcess(main)) {
+    refuse(
+      `${source} is already open in this process; copying it would drop this process's SQLite locks`,
+    );
+  }
   if (options.requireNoSidecars) {
     const present = ALL_SIDECARS.filter((suffix) => existsSync(source + suffix));
     if (present.length > 0) {

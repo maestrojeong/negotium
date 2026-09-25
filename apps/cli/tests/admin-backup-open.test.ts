@@ -9,11 +9,12 @@
 
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const { openBackupReadOnly } = await import("@/commands/admin/apply-env");
+const { createPrivateCopy, isOpenInThisProcess } = await import("@/commands/admin/private-copy");
 
 const BIG = 9007199254740993n; // 2^53 + 1
 
@@ -67,6 +68,33 @@ describe("admin backup: opened without SQLite URIs", () => {
     for (const name of readdirSync(srcDir).filter((n) => n.endsWith(".ts"))) {
       const text = readFileSync(join(srcDir, name), "utf8");
       expect({ name, uri: /new Database\(\s*`file:/.test(text) }).toEqual({ name, uri: false });
+    }
+  });
+});
+
+describe("admin private copy: never read a DB this process holds open", () => {
+  test("refuses while a connection in this process is open (its fcntl locks would be dropped)", () => {
+    // Regression (CI run 36156534788): reading the live DB with fs while this
+    // process held it open dropped its SQLite locks; another process's last
+    // connection then deleted -wal/-shm underneath it ("disk I/O error").
+    const dir = mkdtempSync(join(tmpdir(), "negotium-admin-copy-open-"));
+    const path = join(dir, "node.db");
+    const db = new Database(path);
+    db.exec("PRAGMA journal_mode = WAL; CREATE TABLE t (v INTEGER); INSERT INTO t VALUES (1)");
+    try {
+      if (process.platform === "linux") expect(isOpenInThisProcess(statSync(path))).toBe(true);
+      if (isOpenInThisProcess(statSync(path))) {
+        expect(() => createPrivateCopy(path)).toThrow(/already open in this process/);
+      }
+    } finally {
+      db.close();
+    }
+    expect(isOpenInThisProcess(statSync(path))).toBe(false);
+    const copy = createPrivateCopy(path);
+    try {
+      expect(copy.db.query("SELECT v FROM t").get()).toEqual({ v: 1 });
+    } finally {
+      copy.close();
     }
   });
 });

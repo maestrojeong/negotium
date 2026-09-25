@@ -50,6 +50,8 @@ export interface AdminHooks {
   faults?: ApplyFaults;
   now?: () => number;
   loadCore?: (dbPath: string) => Promise<CoreHandle>;
+  /** In-process tests hold the (private, test-only) node DB open through core. */
+  allowLiveDbOpenInThisProcess?: boolean;
 }
 
 const defaultIo: AdminIo = {
@@ -206,7 +208,9 @@ function openSession(parsed: ParsedArgs, hooks: AdminHooks): Session {
     }
   }
   const maxAgeMs = parseMaxAge(single(parsed, "max-report-age"));
-  const copy = createPrivateCopy(realpathOr(dbPath));
+  const copy = createPrivateCopy(realpathOr(dbPath), {
+    allowSourceOpenInThisProcessForTests: hooks.allowLiveDbOpenInThisProcess === true,
+  });
   let report: BoundReport | null = null;
   try {
     requireNodeSchema(copy.db, dbPath);

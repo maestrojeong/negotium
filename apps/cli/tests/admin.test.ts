@@ -1,7 +1,8 @@
 /**
  * `negotium admin` (PR12 v2). Every test runs on temp databases only: the
  * repo-root preload points core at a temp state dir, and "live" below means
- * that temp node DB (WAL, held open by core in this process).
+ * the admin tests' own temp node DB (WAL, held open by core in this process;
+ * see `SESSIONS_DB` in ./admin-fixtures).
  */
 
 import { Database } from "bun:sqlite";
@@ -10,6 +11,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+  adminNodeDbForThisFile,
   core,
   DB_EPOCH,
   freshScope,
@@ -22,6 +24,8 @@ import {
   SESSIONS_DB,
   seedTopic,
 } from "./admin-fixtures";
+
+adminNodeDbForThisFile();
 
 const { runAdminCli, ADMIN_EXIT } = await import("@/commands/admin/index");
 const { nodePaths, topicWorkspaceDir, sessionInboxFiles, pendingAskDir } = await import(
@@ -54,7 +58,7 @@ async function run(args: string[], hooks: Hooks = {}): Promise<Run> {
         lines.push(`err:${l}`);
       },
     },
-    hooks,
+    { allowLiveDbOpenInThisProcess: true, ...hooks },
   );
   return { code, out: out.join("\n"), err: err.join("\n"), lines };
 }
@@ -217,8 +221,13 @@ describe("admin: reports and dry-runs never change the live DB files", () => {
             },
             stdout: "pipe",
             stderr: "pipe",
+            // spawnSync blocks the event loop, so bun's per-test timeout
+            // cannot fire: bound the child itself.
+            timeout: 60_000,
+            killSignal: "SIGKILL",
           },
         );
+        expect(child.exitedDueToTimeout).toBeFalsy();
         expect(child.exitCode).toBe(0);
       }
       expect(dirListing(targetDir)).toEqual(before);
