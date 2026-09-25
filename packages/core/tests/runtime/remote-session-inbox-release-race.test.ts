@@ -247,29 +247,52 @@ describe("recovery never releases a claim a live retry completed meanwhile", () 
 });
 
 describe("releaseRemoteSessionInboxClaim is a compare-and-delete", () => {
-  test("only a processing claim with the expected digest (and lease, when given) is deleted", () => {
+  test("only the processing claim instance with the expected owner token, digest and lease is deleted", () => {
     const requestId = `cas-${randomUUID()}`;
     const args = { requestId, kind: "abort" as const, topicId: "t", payloadHash: "h1" };
     const now = Date.now();
     expect(claimRemoteSessionInbox({ ...args, now })).toBe("claimed");
+    const owner = getRemoteSessionInboxClaim(requestId)?.owner ?? null;
     const leaseUntil = getRemoteSessionInboxClaim(requestId)?.leaseUntil ?? 0;
-    // Another digest, or a lease someone has since re-taken: untouched.
-    expect(releaseRemoteSessionInboxClaim(requestId, { payloadHash: "h2" })).toBe(false);
+    expect(owner).toBeTruthy();
+    // Another holder's token (e.g. the one before a takeover): untouched.
     expect(
-      releaseRemoteSessionInboxClaim(requestId, { payloadHash: "h1", leaseUntil: leaseUntil - 1 }),
+      releaseRemoteSessionInboxClaim(requestId, { owner: "someone-else", payloadHash: "h1" }),
+    ).toBe(false);
+    expect(releaseRemoteSessionInboxClaim(requestId, { owner: null, payloadHash: "h1" })).toBe(
+      false,
+    );
+    // The right token but another digest, or a lease since re-taken: untouched.
+    expect(releaseRemoteSessionInboxClaim(requestId, { owner, payloadHash: "h2" })).toBe(false);
+    expect(
+      releaseRemoteSessionInboxClaim(requestId, {
+        owner,
+        payloadHash: "h1",
+        leaseUntil: leaseUntil - 1,
+      }),
+    ).toBe(false);
+    // Completion checks the digest too when given.
+    expect(
+      completeRemoteSessionInboxClaim(requestId, owner ?? "", now, { payloadHash: "h2" }),
     ).toBe(false);
     expect(getRemoteSessionInboxClaim(requestId)?.state).toBe("processing");
     // Completed: never deleted by a release.
-    expect(completeRemoteSessionInboxClaim(requestId)).toBe(true);
-    expect(releaseRemoteSessionInboxClaim(requestId, { payloadHash: "h1" })).toBe(false);
+    expect(
+      completeRemoteSessionInboxClaim(requestId, owner ?? "", now, { payloadHash: "h1" }),
+    ).toBe(true);
+    expect(releaseRemoteSessionInboxClaim(requestId, { owner, payloadHash: "h1" })).toBe(false);
     expect(getRemoteSessionInboxClaim(requestId)?.state).toBe("completed");
     // The matching processing claim is released.
     const other = `cas-ok-${randomUUID()}`;
     claimRemoteSessionInbox({ ...args, requestId: other, now });
-    const lease = getRemoteSessionInboxClaim(other)?.leaseUntil ?? 0;
-    expect(releaseRemoteSessionInboxClaim(other, { payloadHash: "h1", leaseUntil: lease })).toBe(
-      true,
-    );
+    const otherClaim = getRemoteSessionInboxClaim(other);
+    expect(
+      releaseRemoteSessionInboxClaim(other, {
+        owner: otherClaim?.owner ?? null,
+        payloadHash: "h1",
+        leaseUntil: otherClaim?.leaseUntil ?? 0,
+      }),
+    ).toBe(true);
     expect(getRemoteSessionInboxClaim(other)).toBeNull();
   });
 });

@@ -13,7 +13,7 @@ import { logger } from "#platform/logger";
 import { getTopic } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
 import {
-  claimRemoteSessionInbox,
+  claimRemoteSessionInboxOwned,
   completeRemoteSessionInboxClaim,
   deleteExpiredRemoteSessionAsk,
   deleteRemoteSessionAsk,
@@ -25,6 +25,7 @@ import {
   type RemoteSessionAskRecord,
   type RemoteSessionInboxClaimRecord,
   releaseRemoteSessionInboxClaim,
+  remoteSessionClaimOwnerIsDead,
   remoteSessionPayloadHash,
 } from "#storage/remote-session";
 import { enqueueSessionInbox } from "#storage/session-inbox";
@@ -495,7 +496,7 @@ export async function deliverRemoteSessionInbox(args: {
         : { type: "abort" as const, timestamp };
 
   const outcome = db.transaction((): RemoteSessionInboxOutcome => {
-    const claim = claimRemoteSessionInbox({
+    const { outcome: claim, owner } = claimRemoteSessionInboxOwned({
       requestId: delivery.requestId,
       kind: delivery.kind,
       topicId: topic.id,
@@ -522,8 +523,14 @@ export async function deliverRemoteSessionInbox(args: {
     }
     enqueueSessionInbox({ userId, topicId: topic.id, entry });
     // Same transaction as the enqueue: the claim is `completed` exactly when
-    // the entry is durable, never before.
-    completeRemoteSessionInboxClaim(delivery.requestId);
+    // the entry is durable, never before — and only by its owner; otherwise
+    // the enqueue rolls back with it.
+    if (
+      !owner ||
+      !completeRemoteSessionInboxClaim(delivery.requestId, owner, Date.now(), { payloadHash })
+    ) {
+      throw new RemoteSessionClaimOwnershipLost(delivery.requestId);
+    }
     return { ok: true, replayed: false };
   })();
   if (outcome.ok && !outcome.replayed) {
@@ -573,7 +580,7 @@ async function deliverAskReply(args: {
   }
   const refusal = askReplyPrincipalRefusal({ ask, topicId: topic.id, userId, actorUserId });
   if (refusal) return refusal;
-  const claim = claimRemoteSessionInbox({
+  const { outcome: claim, owner } = claimRemoteSessionInboxOwned({
     requestId: delivery.requestId,
     kind: delivery.kind,
     topicId: topic.id,
@@ -602,12 +609,12 @@ async function deliverAskReply(args: {
     ? askReplyPrincipalRefusal({ ask: held, topicId: topic.id, userId, actorUserId })
     : { ok: false as const, status: 404, error: "no pending remote ask with this requestId" };
   if (!held || heldRefusal || held.userId !== ask.userId) {
-    releaseRemoteSessionInboxClaim(delivery.requestId, { payloadHash });
+    releaseRemoteSessionInboxClaim(delivery.requestId, { owner: owner ?? null, payloadHash });
     return (
       heldRefusal ?? { ok: false, status: 404, error: "no pending remote ask with this requestId" }
     );
   }
-  return runAskReplyDelivery(held, delivery, payloadHash);
+  return runAskReplyDelivery(held, delivery, { owner: owner!, payloadHash });
 }
 
 /** An ask-reply for which no ask is pending: replay, conflict, in-progress or 404 — never a write. */
@@ -647,23 +654,41 @@ export function setRemoteSessionAskReplyDeliverer(next: AskReplyDeliverer | null
   askReplyDeliverer = next;
 }
 
+/** The claim changed hands mid-delivery: whatever this holder was writing is rolled back. */
+class RemoteSessionClaimOwnershipLost extends Error {
+  constructor(requestId: string) {
+    super(`remote session inbox claim ${requestId} is no longer held by this delivery`);
+    this.name = "RemoteSessionClaimOwnershipLost";
+  }
+}
+
 /**
- * Deliver and, in the same transaction as the room record, consume + complete.
- * `claimHash` is the digest of the `processing` claim the caller holds (under
- * the request lock); a failed delivery releases only that claim.
+ * Deliver and, in the same transaction as the room record, complete + consume.
+ * `claim` is the `processing` claim this delivery holds: its owner token and
+ * the digest it was taken under. The completion is a compare-and-set on both and runs FIRST inside the recording
+ * transaction: if another holder (a takeover after our lease ran out — maybe
+ * in another process, with the same payload digest) owns the claim now, it
+ * fails and the whole record rolls back, so the answer is never written twice
+ * and never written under someone else's claim. A failed delivery releases
+ * only this holder's claim instance.
  */
 async function runAskReplyDelivery(
   ask: RemoteSessionAskRecord,
   delivery: AskReplyDelivery,
-  claimHash: string,
+  claim: { owner: string; payloadHash: string },
 ): Promise<RemoteSessionInboxOutcome> {
+  const { owner, payloadHash } = claim;
   const deliverAskCallbackToCaller =
     askReplyDeliverer ?? (await import("#runtime/turn-runner")).deliverAskCallbackToCaller;
   let delivered = false;
   let recorded = false;
+  let ownershipLost = false;
   const onRecorded = () => {
+    if (!completeRemoteSessionInboxClaim(ask.requestId, owner, Date.now(), { payloadHash })) {
+      ownershipLost = true;
+      throw new RemoteSessionClaimOwnershipLost(ask.requestId);
+    }
     deleteRemoteSessionAsk(ask.requestId);
-    completeRemoteSessionInboxClaim(ask.requestId);
     recorded = true;
   };
   try {
@@ -697,7 +722,15 @@ async function runAskReplyDelivery(
     // recovery pass) runs the delivery again. A compare-and-delete: if the
     // answer did become durable, the claim is `completed` and survives, so the
     // retry after this 500 is a replay rather than a 404.
-    releaseRemoteSessionInboxClaim(ask.requestId, { payloadHash: claimHash });
+    if (
+      ownershipLost ||
+      releaseRemoteSessionInboxClaim(ask.requestId, { owner, payloadHash }) === false
+    ) {
+      logger.warn(
+        { requestId: ask.requestId, ownershipLost },
+        "session-comm: remote ask reply claim is held by another delivery; nothing recorded here",
+      );
+    }
     return { ok: false, status: 500, error: "reply could not be delivered to the caller" };
   }
   return { ok: true, replayed: false };
@@ -806,7 +839,9 @@ function recoveredAskReplyRefusal(
 /**
  * Re-run deliveries a previous process (or a hung one) left `processing`
  * past their lease. Called from the periodic maintenance pass, and at startup
- * with `includeLive` (a fresh process knows no lease is really held).
+ * with `includeLive`: a live lease is taken over then only when its holder
+ * process is provably dead ({@link remoteSessionClaimOwnerIsDead}) — during a
+ * rolling restart the previous process may still be delivering.
  *
  * Only an `ask-reply` is ever re-run, and only from a verified envelope
  * ({@link RemoteSessionInboxEnvelope}) whose digest matches the claim and
@@ -827,18 +862,23 @@ export async function recoverRemoteSessionInbox(
 ): Promise<number> {
   const requireActor = options.requireActor ?? remoteSessionRequireActor();
   let recovered = 0;
-  // Every release below runs under the request lock and is a
-  // compare-and-delete on exactly the claim read here (digest + lease): the
-  // list is read once, and a hub retry may take a stale claim over and
+  // Every release below is a compare-and-delete on exactly the claim
+  // instance read here (owner token + digest + lease): the list is read once, and a hub
+  // retry — in this process or another one — may take a stale claim over and
   // complete it while an earlier iteration awaits its delivery.
   const releaseAsRead = (claim: RemoteSessionInboxClaimRecord) =>
     withRequestLock(claim.requestId, async () =>
       releaseRemoteSessionInboxClaim(claim.requestId, {
+        owner: claim.owner,
         payloadHash: claim.payloadHash,
         leaseUntil: claim.leaseUntil,
       }),
     );
   for (const claim of listExpiredRemoteSessionInboxClaims(now, options)) {
+    // `includeLive` (startup) reaches a live lease only when its holder is
+    // provably dead; a live one may be a process still running next to us
+    // (rolling restart) and is left to its lease.
+    if (claim.leaseUntil > now && !remoteSessionClaimOwnerIsDead(claim.owner)) continue;
     if (claim.kind !== "ask-reply") {
       await releaseAsRead(claim);
       continue;
@@ -861,7 +901,7 @@ export async function recoverRemoteSessionInbox(
     const outcome = await withRequestLock(claim.requestId, async () => {
       // Re-take the lease under the lock; a concurrent hub retry may have
       // beaten us to it.
-      const retaken = claimRemoteSessionInbox({
+      const { outcome: retaken, owner } = claimRemoteSessionInboxOwned({
         requestId: claim.requestId,
         kind: claim.kind,
         topicId: claim.topicId,
@@ -870,10 +910,12 @@ export async function recoverRemoteSessionInbox(
         now,
         force: options.includeLive === true,
       });
-      if (retaken !== "claimed") return retaken;
+      if (retaken !== "claimed" || !owner) return retaken;
       const ask = getRemoteSessionAsk(claim.requestId);
       if (!ask) {
-        completeRemoteSessionInboxClaim(claim.requestId);
+        completeRemoteSessionInboxClaim(claim.requestId, owner, Date.now(), {
+          payloadHash: claim.payloadHash,
+        });
         return "completed-orphan";
       }
       const refusal = recoveredAskReplyRefusal(envelope, ask, claim.topicId, requireActor);
@@ -882,10 +924,13 @@ export async function recoverRemoteSessionInbox(
           { requestId: claim.requestId, callerTopicId: claim.topicId, reason: refusal },
           "session-comm: interrupted remote ask reply failed re-verification; dropping it",
         );
-        releaseRemoteSessionInboxClaim(claim.requestId, { payloadHash: claim.payloadHash });
+        releaseRemoteSessionInboxClaim(claim.requestId, { owner, payloadHash: claim.payloadHash });
         return "refused";
       }
-      const result = await runAskReplyDelivery(ask, delivery, claim.payloadHash);
+      const result = await runAskReplyDelivery(ask, delivery, {
+        owner,
+        payloadHash: claim.payloadHash,
+      });
       return result.ok ? "delivered" : "failed";
     });
     if (outcome === "delivered") recovered += 1;

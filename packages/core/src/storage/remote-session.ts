@@ -19,7 +19,7 @@
  *   answer waiting to be posted to the hub with its one-shot reply token,
  *   retried until the hub acknowledges it or the pending-ask TTL passes.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { db } from "#storage/forum-db";
 import { PENDING_ASK_TTL_MS, releasePendingAsk } from "#storage/session-asks";
 import { registerStorageSchemaInitializer } from "#storage/storage-host";
@@ -67,6 +67,9 @@ registerStorageSchemaInitializer((database) => {
     "ALTER TABLE remote_session_inbox_claims ADD COLUMN state TEXT NOT NULL DEFAULT 'completed'",
     "ALTER TABLE remote_session_inbox_claims ADD COLUMN lease_until INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE remote_session_inbox_claims ADD COLUMN payload_json TEXT",
+    // Opaque per-claim ownership token (see `claimRemoteSessionInboxOwned`).
+    // NULL only on claims written before it existed.
+    "ALTER TABLE remote_session_inbox_claims ADD COLUMN owner_token TEXT",
     // Outbound ask state (see `RemoteSessionAskDispatchState`). Rows that
     // predate the column may or may not have reached the hub: `dispatched`
     // (reconciled to `unknown`).
@@ -140,6 +143,7 @@ interface InboxClaimRow {
   state: RemoteSessionInboxClaimState;
   lease_until: number | bigint;
   payload_json: string | null;
+  owner_token: string | null;
   created_at: number | bigint;
 }
 
@@ -152,6 +156,47 @@ export interface RemoteSessionInboxClaimRecord {
   leaseUntil: number;
   payload: unknown;
   createdAt: number;
+  /** Who holds the claim right now (`null`: written before tokens existed). */
+  owner: string | null;
+}
+
+/** This process's incarnation; tells a reused pid apart from a live owner. */
+const CLAIM_PROCESS_INSTANCE = randomUUID();
+
+/**
+ * A fresh, unique claim-ownership token: `<pid>.<process instance>.<nonce>`.
+ * Every claim and every takeover mints a new one, so two holders of the same
+ * payload digest (a stalled process and the one that took its lease over,
+ * possibly in another process) never share an identity.
+ */
+function mintRemoteSessionClaimOwner(): string {
+  return `${process.pid}.${CLAIM_PROCESS_INSTANCE}.${randomUUID()}`;
+}
+
+/**
+ * `true` only when the process that holds `owner` is provably gone: our own
+ * pid under another incarnation (the pid was reused after a restart), or a
+ * pid the OS reports as nonexistent. A live process, a pid we may not signal,
+ * an unparseable or legacy (`null`) token are all "maybe alive".
+ */
+export function remoteSessionClaimOwnerIsDead(owner: string | null): boolean {
+  if (!owner) return false;
+  const [pidText, instance] = owner.split(".");
+  const pid = Number(pidText);
+  if (!Number.isSafeInteger(pid) || pid <= 0 || !instance) return false;
+  if (pid === process.pid) return instance !== CLAIM_PROCESS_INSTANCE;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+export interface RemoteSessionInboxClaimResult {
+  outcome: RemoteSessionInboxClaimOutcome;
+  /** Set exactly when `outcome` is `claimed`: the token release/complete must present. */
+  owner?: string;
 }
 
 /**
@@ -161,7 +206,7 @@ export interface RemoteSessionInboxClaimRecord {
  * answer is durably in the caller's room, or is released so the hub's retry
  * runs the delivery again.
  */
-export function claimRemoteSessionInbox(args: {
+export function claimRemoteSessionInboxOwned(args: {
   requestId: string;
   kind: RemoteSessionInboxKind;
   topicId: string;
@@ -170,7 +215,11 @@ export function claimRemoteSessionInbox(args: {
   payload?: unknown;
   now?: number;
   leaseMs?: number;
-  /** Take over even a live lease (a fresh process knows nobody holds one). */
+  /**
+   * Take over even a live lease — but only one whose owner process is
+   * provably dead ({@link remoteSessionClaimOwnerIsDead}); a live or unknown
+   * owner is still `in_progress`. Used by the startup recovery pass.
+   */
   force?: boolean;
   /**
    * The digest a node before the actor-bound hash would have stored for this
@@ -180,19 +229,30 @@ export function claimRemoteSessionInbox(args: {
    * already verified the principal of the delivery it is re-running.
    */
   legacyPayloadHash?: string;
-}): RemoteSessionInboxClaimOutcome {
+}): RemoteSessionInboxClaimResult {
   const now = args.now ?? Date.now();
   const leaseUntil = now + (args.leaseMs ?? REMOTE_SESSION_INBOX_CLAIM_LEASE_MS);
   const payloadJson = args.payload === undefined ? null : JSON.stringify(args.payload);
-  return db.transaction((): RemoteSessionInboxClaimOutcome => {
+  const owner = mintRemoteSessionClaimOwner();
+  return db.transaction((): RemoteSessionInboxClaimResult => {
     const inserted = db
       .query(
         `INSERT OR IGNORE INTO remote_session_inbox_claims
-           (request_id, kind, topic_id, payload_hash, created_at, state, lease_until, payload_json)
-         VALUES (?, ?, ?, ?, ?, 'processing', ?, ?)`,
+           (request_id, kind, topic_id, payload_hash, created_at, state, lease_until, payload_json,
+            owner_token)
+         VALUES (?, ?, ?, ?, ?, 'processing', ?, ?, ?)`,
       )
-      .run(args.requestId, args.kind, args.topicId, args.payloadHash, now, leaseUntil, payloadJson);
-    if (Number(inserted.changes ?? 0) === 1) return "claimed";
+      .run(
+        args.requestId,
+        args.kind,
+        args.topicId,
+        args.payloadHash,
+        now,
+        leaseUntil,
+        payloadJson,
+        owner,
+      );
+    if (Number(inserted.changes ?? 0) === 1) return { outcome: "claimed", owner };
     const existing = db
       .query<InboxClaimRow, [string]>(
         "SELECT * FROM remote_session_inbox_claims WHERE request_id = ?",
@@ -206,34 +266,61 @@ export function claimRemoteSessionInbox(args: {
       existing.topic_id !== args.topicId ||
       (existing.payload_hash !== args.payloadHash && !legacy)
     ) {
-      return "conflict";
+      return { outcome: "conflict" };
     }
-    if (existing.state === "completed") return "replay";
-    if (!args.force && Number(existing.lease_until) > now) return "in_progress";
-    // The previous holder died (or hung past its lease): take the claim over.
+    if (existing.state === "completed") return { outcome: "replay" };
+    const leaseLive = Number(existing.lease_until) > now;
+    if (leaseLive && !(args.force && remoteSessionClaimOwnerIsDead(existing.owner_token))) {
+      return { outcome: "in_progress" };
+    }
+    // The previous holder died (or hung past its lease): take the claim over
+    // under a NEW owner token, so the previous holder's late release or
+    // completion (same digest, maybe another process) no longer matches.
     // A legacy claim is re-bound to the actor-bound digest and envelope, so
     // recovery never meets it again in its unverifiable form.
-    db.query(
-      `UPDATE remote_session_inbox_claims
-       SET lease_until = ?, payload_json = COALESCE(?, payload_json), payload_hash = ?
-       WHERE request_id = ?`,
-    ).run(leaseUntil, payloadJson, args.payloadHash, args.requestId);
-    return "claimed";
+    const taken = db
+      .query(
+        `UPDATE remote_session_inbox_claims
+         SET lease_until = ?, payload_json = COALESCE(?, payload_json), payload_hash = ?,
+             owner_token = ?
+         WHERE request_id = ? AND state = 'processing' AND owner_token IS ?`,
+      )
+      .run(leaseUntil, payloadJson, args.payloadHash, owner, args.requestId, existing.owner_token);
+    return Number(taken.changes ?? 0) === 1
+      ? { outcome: "claimed", owner }
+      : { outcome: "in_progress" };
   })();
 }
 
-/** The delivery is durably recorded: replays may now be acknowledged. */
+/** {@link claimRemoteSessionInboxOwned} without the token (inspection and tests). */
+export function claimRemoteSessionInbox(
+  args: Parameters<typeof claimRemoteSessionInboxOwned>[0],
+): RemoteSessionInboxClaimOutcome {
+  return claimRemoteSessionInboxOwned(args).outcome;
+}
+
+/**
+ * The delivery is durably recorded: replays may now be acknowledged.
+ * Compare-and-set on (requestId, `processing`, owner token — and the payload
+ * digest when given): `false` means
+ * the caller no longer owns the claim (taken over, completed or released by
+ * someone else) and must not record anything — run it inside the recording
+ * transaction and abort that transaction on `false`.
+ */
 export function completeRemoteSessionInboxClaim(
   requestId: string,
+  owner: string,
   now: number = Date.now(),
+  expected: { payloadHash?: string } = {},
 ): boolean {
   const result = db
     .query(
       `UPDATE remote_session_inbox_claims
        SET state = 'completed', lease_until = ?, payload_json = NULL
-       WHERE request_id = ? AND state = 'processing'`,
+       WHERE request_id = ? AND state = 'processing' AND owner_token = ?
+         AND (? IS NULL OR payload_hash = ?)`,
     )
-    .run(now, requestId);
+    .run(now, requestId, owner, expected.payloadHash ?? null, expected.payloadHash ?? null);
   return Number(result.changes ?? 0) === 1;
 }
 
@@ -266,6 +353,7 @@ function toClaimRecord(row: InboxClaimRow & { request_id: string }): RemoteSessi
     leaseUntil: Number(row.lease_until),
     payload,
     createdAt: Number(row.created_at),
+    owner: row.owner_token ?? null,
   };
 }
 
@@ -287,24 +375,31 @@ export function listExpiredRemoteSessionInboxClaims(
 /**
  * Hand a `processing` claim back so the hub's retry runs the delivery again.
  *
- * A compare-and-delete: only the claim the caller holds — still
- * `processing`, still bound to `expected.payloadHash` and, when given, still
- * under the exact lease the caller read — is deleted. A claim a live delivery
- * has meanwhile completed (or taken over / re-bound) is never deleted: losing
- * a `completed` row would turn the hub's next retry into a 404 (an ask-reply
- * whose answer already landed) or a second enqueue (tell/ask/abort).
+ * A compare-and-delete on (requestId, `processing`, owner token, payload
+ * digest and — when given — the exact lease): only the claim instance the
+ * caller holds — or, for recovery, exactly the one it read — is deleted. A claim that was meanwhile completed, or taken over by
+ * another holder (even with the same payload digest, even in another
+ * process), carries a different state or token and is never deleted: losing
+ * it would turn the hub's next retry into a 404 (an ask-reply whose answer
+ * already landed) or a second enqueue (tell/ask/abort).
  */
 export function releaseRemoteSessionInboxClaim(
   requestId: string,
-  expected: { payloadHash: string; leaseUntil?: number },
+  expected: { owner: string | null; payloadHash: string; leaseUntil?: number },
 ): boolean {
   const result = db
     .query(
       `DELETE FROM remote_session_inbox_claims
-       WHERE request_id = ? AND state = 'processing' AND payload_hash = ?
+       WHERE request_id = ? AND state = 'processing' AND owner_token IS ? AND payload_hash = ?
          AND (? IS NULL OR lease_until = ?)`,
     )
-    .run(requestId, expected.payloadHash, expected.leaseUntil ?? null, expected.leaseUntil ?? null);
+    .run(
+      requestId,
+      expected.owner,
+      expected.payloadHash,
+      expected.leaseUntil ?? null,
+      expected.leaseUntil ?? null,
+    );
   return Number(result.changes ?? 0) === 1;
 }
 

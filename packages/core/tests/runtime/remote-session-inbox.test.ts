@@ -189,6 +189,7 @@ describe("remote ask-reply inbox state machine", () => {
     // Hand the other process's claim back so later passes do not adopt it.
     expect(
       releaseRemoteSessionInboxClaim(requestId, {
+        owner: getRemoteSessionInboxClaim(requestId)?.owner ?? null,
         payloadHash: remoteSessionPayloadHash(delivery),
       }),
     ).toBe(true);
@@ -228,12 +229,17 @@ describe("remote ask-reply inbox state machine", () => {
     expect(replies(topic.id)).toBe(1);
   });
 
-  test("a fresh process re-runs even a live-lease claim (startup) — exactly once", async () => {
+  test("a fresh process re-runs a live-lease claim of its dead predecessor (startup) — exactly once", async () => {
     const topic = callerRoom();
     const requestId = `ar-boot-${randomUUID()}`;
     askFor(topic, requestId);
     const delivery = replyDelivery(requestId);
     claimRemoteSessionInbox(verifiedClaim(topic, delivery));
+    // The holder is the previous incarnation of this pid: provably gone.
+    db.run("UPDATE remote_session_inbox_claims SET owner_token = ? WHERE request_id = ?", [
+      `${process.pid}.previous-incarnation.x`,
+      requestId,
+    ]);
     expect(await recoverRemoteSessionInbox(Date.now(), { includeLive: true })).toBe(1);
     expect(replies(topic.id)).toBe(1);
     expect(await recoverRemoteSessionInbox(Date.now(), { includeLive: true })).toBe(0);

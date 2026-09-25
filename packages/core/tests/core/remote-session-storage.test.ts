@@ -83,24 +83,35 @@ describe("remote_session_inbox_claims", () => {
         now: Date.now() + REMOTE_SESSION_INBOX_CLAIM_LEASE_MS + 1,
       }),
     ).toBe("claimed");
-    // A fresh process may force a takeover regardless of the lease.
+    // A forced (startup) takeover of a live lease needs a provably dead owner:
+    // this process holds it, so it stays in progress...
+    expect(claimRemoteSessionInbox({ ...args, force: true })).toBe("in_progress");
+    // ...until the owner is a previous incarnation of this pid (restarted).
+    db.run("UPDATE remote_session_inbox_claims SET owner_token = ? WHERE request_id = ?", [
+      `${process.pid}.previous-incarnation.x`,
+      requestId,
+    ]);
     expect(claimRemoteSessionInbox({ ...args, force: true })).toBe("claimed");
-    expect(completeRemoteSessionInboxClaim(requestId)).toBe(true);
-    expect(completeRemoteSessionInboxClaim(requestId)).toBe(false);
+    const owner = getRemoteSessionInboxClaim(requestId)?.owner ?? "";
+    expect(completeRemoteSessionInboxClaim(requestId, "not-the-owner")).toBe(false);
+    expect(completeRemoteSessionInboxClaim(requestId, owner)).toBe(true);
+    expect(completeRemoteSessionInboxClaim(requestId, owner)).toBe(false);
     expect(getRemoteSessionInboxClaim(requestId)?.state).toBe("completed");
     expect(claimRemoteSessionInbox(args)).toBe("replay");
     expect(claimRemoteSessionInbox({ ...args, force: true })).toBe("replay");
     // A completed claim is never released (compare-and-delete on `processing`).
-    expect(releaseRemoteSessionInboxClaim(requestId, { payloadHash: args.payloadHash })).toBe(
-      false,
-    );
+    expect(releaseRemoteSessionInboxClaim(requestId, { owner, payloadHash })).toBe(false);
     expect(getRemoteSessionInboxClaim(requestId)?.state).toBe("completed");
     const fresh = `${requestId}-fresh`;
     expect(claimRemoteSessionInbox({ ...args, requestId: fresh })).toBe("claimed");
-    expect(releaseRemoteSessionInboxClaim(fresh, { payloadHash: args.payloadHash })).toBe(true);
-    expect(releaseRemoteSessionInboxClaim(fresh, { payloadHash: args.payloadHash })).toBe(false);
+    const freshOwner = getRemoteSessionInboxClaim(fresh)?.owner ?? null;
+    expect(releaseRemoteSessionInboxClaim(fresh, { owner: freshOwner, payloadHash })).toBe(true);
+    expect(releaseRemoteSessionInboxClaim(fresh, { owner: freshOwner, payloadHash })).toBe(false);
     expect(claimRemoteSessionInbox({ ...args, requestId: fresh })).toBe("claimed");
-    releaseRemoteSessionInboxClaim(fresh, { payloadHash: args.payloadHash });
+    releaseRemoteSessionInboxClaim(fresh, {
+      payloadHash,
+      owner: getRemoteSessionInboxClaim(fresh)?.owner ?? null,
+    });
   });
 
   test("a processing claim keeps the delivery payload until completed", () => {
@@ -114,7 +125,7 @@ describe("remote_session_inbox_claims", () => {
       payload,
     });
     expect(getRemoteSessionInboxClaim(requestId)?.payload).toEqual(payload);
-    completeRemoteSessionInboxClaim(requestId);
+    completeRemoteSessionInboxClaim(requestId, getRemoteSessionInboxClaim(requestId)?.owner ?? "");
     expect(getRemoteSessionInboxClaim(requestId)?.payload).toBeNull();
   });
 
@@ -182,7 +193,11 @@ describe("remote_session_asks", () => {
       payloadHash: "h",
       now: base,
     });
-    completeRemoteSessionInboxClaim(claimId, base);
+    completeRemoteSessionInboxClaim(
+      claimId,
+      getRemoteSessionInboxClaim(claimId)?.owner ?? "",
+      base,
+    );
     recordRemoteSessionAsk({
       requestId: askId,
       callerTopicId: "caller",
