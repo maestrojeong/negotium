@@ -5,6 +5,9 @@ import { GENERAL_TOPIC_ID } from "#platform/constants";
 import { logger } from "#platform/logger";
 import { db } from "#storage/forum-db";
 import { registerStorageSchemaInitializer } from "#storage/storage-host";
+// Side effect: registers the claim/tombstone schema and the api_topics
+// tombstone triggers wherever topics can be written (topic-link PR7).
+import "#storage/topic-link-records";
 import type { AgentKind, EffortLevel } from "#types";
 import type {
   AiMode,
@@ -81,6 +84,44 @@ export function setSurfaceScopeRequired(required: boolean): void {
 
 export function isSurfaceScopeRequired(): boolean {
   return surfaceScopeRequired;
+}
+
+/**
+ * How many Otium workspaces the adapter currently has mounted, or null when no
+ * adapter ever reported (a node without the Otium adapter). Lets a loopback
+ * caller tell "one workspace, scope not resolved yet" apart from "no
+ * workspace at all" (topic-link design v2 §4.6, `GET /surface-scope`).
+ */
+let mountedSurfaceScopeCount: number | null = null;
+
+export function setMountedSurfaceScopeCount(count: number | null): void {
+  mountedSurfaceScopeCount = count === null ? null : Math.max(0, Math.floor(count));
+}
+
+export interface LocalSurfaceScopeStatus {
+  /** The workspace an unscoped (loopback) caller's otium rooms are filed under. */
+  surfaceScope: string | null;
+  /** False while the scope cannot be stated (several workspaces, or one not resolved yet). */
+  resolved: boolean;
+  /** True while several workspaces are mounted: a room must name one. */
+  scopeRequired: boolean;
+  /** Mounted Otium workspaces; 0 when no adapter reported. */
+  joinsMounted: number;
+}
+
+/** The scope a loopback (no scope header) gateway caller gets. */
+export function localSurfaceScopeStatus(): LocalSurfaceScopeStatus {
+  const joinsMounted = mountedSurfaceScopeCount ?? 0;
+  if (surfaceScopeRequired) {
+    return { surfaceScope: null, resolved: false, scopeRequired: true, joinsMounted };
+  }
+  const surfaceScope = defaultSurfaceScope();
+  return {
+    surfaceScope,
+    resolved: joinsMounted === 1 ? surfaceScope !== null : true,
+    scopeRequired: false,
+    joinsMounted,
+  };
 }
 
 function tableColumns(table: string): Set<string> {

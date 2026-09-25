@@ -384,12 +384,15 @@ export {
   grantSubagentTellTarget,
   isSurfaceScopeRequired,
   isTopicVisible,
+  type LocalSurfaceScopeStatus,
   listSubagentTellTargetIds,
   listTopics,
+  localSurfaceScopeStatus,
   normalizeSurfaceScope,
   normalizeTopicSurface,
   revokeSubagentTellTarget,
   setDefaultSurfaceScope,
+  setMountedSurfaceScopeCount,
   setSurfaceScopeRequired,
   setTopicSessionId,
   setTopicSurfaceScope,
@@ -453,6 +456,16 @@ export {
   type SessionInboxRow,
   type SessionInboxTopic,
 } from "#storage/session-inbox";
+export {
+  getTopicCreateClaim,
+  getTopicTombstone,
+  listTopicTombstonesAfter,
+  recordTopicLinkNodeIdentity,
+  type TopicCreateClaim,
+  type TopicTombstone,
+  topicLinkNodeIdentity,
+  topicLinkPayloadHash,
+} from "#storage/topic-link-records";
 export type { VaultEntry, VaultEntryWithValue } from "#storage/vault";
 export {
   normalizeVaultKey,

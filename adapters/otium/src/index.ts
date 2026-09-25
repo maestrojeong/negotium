@@ -19,6 +19,7 @@ import {
   registerRuntimeGatewayCapability,
   runtimeBus,
   setDefaultSurfaceScope,
+  setMountedSurfaceScopeCount,
   setSurfaceScopeRequired,
   stampUnscopedOtiumTopics,
 } from "@negotium/core";
@@ -196,6 +197,7 @@ function refreshDefaultSurfaceScope(): void {
   // With several attached there is no default to fall back on, so a room that
   // names no workspace is refused rather than filed where nobody can see it.
   setSurfaceScopeRequired(scopes.length > 1);
+  setMountedSurfaceScopeCount(scopes.length);
 }
 
 /**

@@ -250,6 +250,46 @@ The RuntimeBus log keeps a soft maximum of 100,000 events. Active durable consum
 highest sequence they have captured; pruning never crosses the minimum active cursor. Inactive
 consumers must reconcile canonical topic/message state if their cursor predates the retained log.
 
+## Topic link v2 (create claims, existence, tombstones, surface scope)
+
+Additive; advertised as `canonical-topic-create-claims`, `canonical-topic-existence`,
+`canonical-topic-tombstones` and `canonical-surface-scope`. A host sending none of the new fields
+sees the previous behaviour byte for byte.
+
+- **Create claims.** `POST /topics` and `POST /topics/:id/derive` accept optional `requestId` (1-200
+  chars) and `payloadHash`. The node keys a claim on `(caller principal, requestId)` and its own
+  sha256 of the canonical JSON (keys sorted at every depth, compact, `undefined` dropped) of the body
+  minus `requestId`/`payloadHash` — for derive, of `{ sourceTopicId: <path id>, ...body }`. The
+  principal is `loopback` (no `x-negotium-surface-scope`) or `scope:<value>`; it is never read from
+  the body. The claim is written in the topic's own SQLite transaction, before `topic-created` is
+  broadcast. Answers: first create `201 { topic, requestId, payloadHash, replayed: false }`; the same
+  key and hash again `201 … replayed: true` with the same topic; another hash `409
+  request_id_conflict`; an aborted key `409 request_aborted`; a claimed topic since deleted `410
+  claim_topic_gone`; a key still being processed `409 request_in_progress`. Topic DTOs from
+  `GET /topics` and `GET /topics/:id` carry `hostCreate: { requestId, op, createdAt }` for rooms the
+  same principal created.
+- **Claim recovery.** `GET /topic-claims/:requestId` → `{ state: "none" | "committed" | "aborted",
+  op?, topicId?, topicPresent? }` (always 200). `POST /topic-claims/:requestId/abort` deletes the
+  claimed room only while it holds no message written after creation (`409
+  claim_topic_has_messages` otherwise) and fences the id so a late create is refused; an abort for
+  an unknown id records the fence.
+- **Existence.** `GET /topics/:id/existence` → `{ nodeId, topicId, state: "present" | "gone" |
+  "unknown", shared?, deletedAt? }`. `gone` only when this store holds a deletion tombstone stamped
+  with the identity answering now and within the caller's scope; a topic the node simply does not
+  have is `unknown`, never `gone`.
+- **Tombstones.** SQLite triggers on `api_topics` write `api_topic_tombstones` (`deleted`, or
+  `unshared` when a room leaves the visible Otium surface) in the same statement as the change,
+  stamped with the node identity. `GET /topic-tombstones?after=&limit=` pages them by `seq`. The
+  `ready` event of `GET /events` and every `topic-deleted` payload carry `nodeId`.
+- **Surface scope.** `GET /surface-scope` → `{ nodeId, principal, surfaceScope, resolved,
+  scopeRequired, joinsMounted, linkGuard }`: the workspace this caller's rooms are filed under.
+- **Create guard.** `NEGOTIUM_OTIUM_LINK_V2` (default off) applies to the three gateway room creators.
+  `on`: callers declaring `x-otium-link-protocol: 2` get `409 scope_unresolved` when the scope is
+  not resolved (create and manager-topic) and `409 scope_mismatch` when an
+  `x-otium-link-expected-scope` header differs from it; callers without the header are unaffected.
+  `strict`: additionally `409 link_protocol_required` for callers without protocol 2. A replay of a
+  committed claim is answered before the guard.
+
 ## Known limitations
 
 - **Remote-session authority is the hub's, per call.** Unlike the assertion, the remote-session

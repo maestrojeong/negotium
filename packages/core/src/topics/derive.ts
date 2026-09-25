@@ -207,6 +207,13 @@ interface DerivedTopicOptions {
   derivedByUserId?: string;
   subagent?: { agent?: AgentKind; model?: string; memoryTopicId?: string };
   summarizeFork?: (request: CompactSummaryRequest) => Promise<string>;
+  /**
+   * Runs last inside the transaction that inserts the derived topic (after
+   * any copied history), before the topic is broadcast. A throw rolls the
+   * whole derive back. Used by the gateway to record a host create claim
+   * atomically with the topic (topic-link PR7).
+   */
+  withinCreateTransaction?: (topic: TopicDto) => void;
 }
 
 /**
@@ -516,6 +523,7 @@ async function createDerivedTopicImpl(
             sessionId,
           });
         }
+        opts?.withinCreateTransaction?.(derived);
         return derived;
       })
       .immediate();

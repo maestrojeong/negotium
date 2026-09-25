@@ -114,7 +114,12 @@ export {
   setApiTopicConfig,
   type TopicConfig,
 } from "#storage/api-topic-config";
-export { getTopic, upsertTopic } from "#storage/api-topics";
+export {
+  getTopic,
+  type LocalSurfaceScopeStatus,
+  localSurfaceScopeStatus,
+  upsertTopic,
+} from "#storage/api-topics";
 export { getGlobalAiName, setGlobalAiName } from "#storage/app-settings";
 export { readDecisions, writeDecisionGraphSvg } from "#storage/decisions";
 export {
@@ -135,6 +140,21 @@ export {
 } from "#storage/runtime-events";
 export { acquireRuntimeProcessLease } from "#storage/runtime-process-leases";
 export { getTopicStats } from "#storage/token-stats";
+export {
+  committedClaimsByTopic,
+  getTopicCreateClaim,
+  getTopicTombstone,
+  insertCommittedTopicCreateClaim,
+  listTopicTombstonesAfter,
+  markTopicCreateClaimAborted,
+  pruneTopicCreateClaims,
+  recordTopicLinkNodeIdentity,
+  type TopicCreateClaim,
+  type TopicTombstone,
+  topicHasMessagesAfterClaim,
+  topicLinkNodeIdentity,
+  topicLinkPayloadHash,
+} from "#storage/topic-link-records";
 export { TopicValidationError } from "#topics/create";
 export {
   getVisibleTopics,

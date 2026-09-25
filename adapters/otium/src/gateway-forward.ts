@@ -41,6 +41,11 @@ function allowedRuntimePath(path: string, method: string): boolean {
   if (method === "GET") {
     if (path === "/health" || path === "/events" || path === "/topics") return true;
     if (path === "/cron/scripts" || path === "/cron/jobs") return true;
+    // Topic-link v2 (PR7) reads. Each answers only within the caller's
+    // workspace scope, which this forward stamps below.
+    if (path === "/surface-scope" || path === "/topic-tombstones") return true;
+    if (/^\/topics\/[^/]+\/existence$/.test(path)) return true;
+    if (/^\/topic-claims\/[^/]+$/.test(path)) return true;
     if (/^\/topics\/[^/]+(\/messages|\/usage|\/config)?$/.test(path)) return true;
     if (/^\/topics\/[^/]+\/messages\/[^/]+\/thread$/.test(path)) return true;
     if (/^\/topics\/[^/]+\/files\/[^/]+$/.test(path)) return true;
@@ -60,6 +65,10 @@ function allowedRuntimePath(path: string, method: string): boolean {
     // Exact path, so `/topics/:id/...` creation-adjacent routes (derive, import)
     // are unaffected and stay loopback-only on their own terms.
     if (path === "/topics") return true;
+    // Saga recovery for a room this hub asked for (PR7): the claim is keyed on
+    // the stamped workspace scope, so a hub can only abort its own requests,
+    // and the node refuses to delete a room that already holds new messages.
+    if (/^\/topic-claims\/[^/]+\/abort$/.test(path)) return true;
     if (path === "/cron/jobs") return true;
     // Turn and session control on a room the hub already runs turns on (D-8).
     // Aborting is strictly narrower than starting: it can only stop work the

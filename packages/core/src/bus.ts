@@ -35,6 +35,12 @@ import type { MessageDto, TopicSurface } from "#types/api";
 export interface TopicDeletedMeta {
   surface?: TopicSurface;
   surfaceScope?: string | null;
+  /**
+   * Identity (`NODE_ID`) of the node that deleted the topic, so a host can bind
+   * the tombstone to the node its mapping was recorded against (topic-link
+   * design v2 §4.5). Absent on events written by older nodes.
+   */
+  nodeId?: string;
 }
 
 export interface RuntimeBusEvent {

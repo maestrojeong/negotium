@@ -17,7 +17,7 @@ import {
 import { type PurgeSessionRef, purgeTopicLogs } from "#agents/topic-cleanup";
 import { WsHub } from "#bus";
 import { killBgBash } from "#platform/background-bash/manager";
-import { resolveTopicWorkspaceDir } from "#platform/config";
+import { NODE_ID, resolveTopicWorkspaceDir } from "#platform/config";
 import { GENERAL_TOPIC_ID } from "#platform/constants";
 import { delay } from "#platform/delay";
 import { logger } from "#platform/logger";
@@ -52,6 +52,7 @@ import { deleteTopicStats } from "#storage/token-stats";
 import { archiveConversationEvents, archiveTopicMessages } from "#storage/topic-archive";
 import { deleteTopicArchiveState } from "#storage/topic-archive-state";
 import { deleteTopicHostMcpGrant } from "#storage/topic-host-mcp-grants";
+import { recordTopicLinkNodeIdentity } from "#storage/topic-link-records";
 import { deleteTopicToolCapabilities } from "#storage/topic-tool-capabilities";
 import type { TopicDto } from "#types/api";
 
@@ -346,6 +347,8 @@ async function deleteTopicCascadeImpl(
     deleteApiTopicConfig(topicId);
     deleteTopicBrief(topicId);
     const reparentedChildIds = reparentTopicChildren(topicId, topic.parentTopicId ?? null);
+    // The tombstone trigger stamps this identity in the same statement.
+    recordTopicLinkNodeIdentity(NODE_ID);
     const rowDeleted = deleteTopicDB(topicId, { allowManager: options.allowManager });
     if (!rowDeleted) {
       logger.warn({ topicId }, "deleteTopicCascade: topic row was not deleted");
@@ -360,6 +363,7 @@ async function deleteTopicCascadeImpl(
     WsHub.get().broadcastTopicDeleted(topicId, {
       surface: topic.surface,
       surfaceScope: topic.surfaceScope,
+      nodeId: NODE_ID,
     });
     for (const childId of reparentedChildIds) WsHub.get().broadcastTopicUpdated(childId);
   } finally {
