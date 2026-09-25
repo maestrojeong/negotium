@@ -59,6 +59,12 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     group: "Workspace",
   },
   {
+    name: "admin",
+    usage: "admin list-managers|owners-report|delete-manager|scope-repair",
+    description: "node DB maintenance (private-copy reports and dry-runs; see `admin help`)",
+    group: "Node",
+  },
+  {
     name: "terminal",
     usage: "terminal [--embedded|--connect=URL|--port=N]",
     description: "run a Terminal client for the canonical node",

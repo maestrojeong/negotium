@@ -178,6 +178,11 @@ switch (command) {
     await cronCommand(args);
     break;
   }
+  case "admin": {
+    const { runAdminCli } = await import("@/commands/admin/index");
+    process.exitCode = await runAdminCli(args);
+    break;
+  }
   case "terminal": {
     const { runTerminalCli } = await loadTerminalCli();
     await runTerminalCli(args);
