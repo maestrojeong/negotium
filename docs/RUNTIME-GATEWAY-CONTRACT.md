@@ -314,8 +314,9 @@ consumers must reconcile canonical topic/message state if their cursor predates 
 ## Topic link v2 (create claims, existence, tombstones, surface scope)
 
 Additive; advertised as `canonical-topic-create-claims`, `canonical-topic-existence`,
-`canonical-topic-tombstones` and `canonical-surface-scope`. A host sending none of the new fields
-sees the previous behaviour byte for byte.
+`canonical-topic-tombstones`, `canonical-surface-scope` and (revision 7)
+`canonical-topic-delete-conditional`. A host sending none of the new fields or headers sees the
+previous behaviour, except that the delete `2xx` below gains identity fields.
 
 - **Create claims.** `POST /topics` and `POST /topics/:id/derive` accept optional `requestId` (1-200
   chars) and `payloadHash`. The node keys a claim on `(caller principal, requestId)` and its own
@@ -371,6 +372,17 @@ sees the previous behaviour byte for byte.
   the existing room's id) when the target scope already holds a manager room with an owner in common
   with it, so no caller can give one owner two manager rooms in one workspace. The M-9 stamp uses the
   same check and keeps a `duplicate_manager` room pending like a title conflict.
+- **Identity-conditional delete (revision 7, `canonical-topic-delete-conditional`).**
+  `DELETE /topics/:id?user=` accepts `x-negotium-expected-node-id: <nodeId>`, the node identity the
+  host planned the delete against (its recorded `/health.nodeId`). The node checks it *before* it
+  looks the topic up: when it is not the identity this process answers as, or the store is stamped
+  with another identity, the answer is `409 { ok: false, v: 1, error, code:
+  "node_identity_mismatch", nodeId: <current>, dbEpoch, expectedNodeId }` and nothing is deleted
+  (also for an id this node does not have, so a misrouted delete learns nothing about it). A blank
+  value is `400 invalid_expected_node_id`. A `2xx` is `{ ok: true, v: 1, topicId, nodeId, dbEpoch }`,
+  so the host can verify which node and store performed the delete. Without the header (a host
+  older than revision 7) the delete proceeds as before and the node logs a warning; a host that
+  sees the capability should always send it. The Otium relay forwards the header verbatim.
 - **Existence.** `GET /topics/:id/existence` → `{ nodeId, topicId, state: "present" | "gone" |
   "unknown", shared?, deletedAt? }`. `gone` only when this store holds a deletion tombstone stamped
   with the identity answering now and within the caller's scope; a topic the node simply does not
