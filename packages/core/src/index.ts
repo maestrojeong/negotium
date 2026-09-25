@@ -64,6 +64,7 @@ export type {
 } from "#application/submit-runtime-gateway-turn";
 export {
   RuntimeGatewayIdempotencyConflictError,
+  RuntimeGatewayTopicUnavailableError,
   submitRuntimeGatewayTurn,
 } from "#application/submit-runtime-gateway-turn";
 export type {
@@ -384,17 +385,24 @@ export {
   grantSubagentTellTarget,
   isSurfaceScopeRequired,
   isTopicVisible,
+  type LocalSurfaceScopeStatus,
   listSubagentTellTargetIds,
   listTopics,
+  localSurfaceScopeStatus,
   normalizeSurfaceScope,
   normalizeTopicSurface,
+  retryPendingSurfaceScopeStamp,
   revokeSubagentTellTarget,
+  SURFACE_SCOPE_STAMP_RETRY_INTERVAL_MS,
+  type SurfaceScopeStampStatus,
   setDefaultSurfaceScope,
+  setMountedSurfaceScopeCount,
   setSurfaceScopeRequired,
   setTopicSessionId,
   setTopicSurfaceScope,
   setTopicSurfaces,
   stampUnscopedOtiumTopics,
+  surfaceScopeStampStatus,
   upsertTopic,
 } from "#storage/api-topics";
 export { DEFAULT_AI_NAME, getGlobalAiName, setGlobalAiName } from "#storage/app-settings";
@@ -453,6 +461,27 @@ export {
   type SessionInboxRow,
   type SessionInboxTopic,
 } from "#storage/session-inbox";
+export {
+  type AdminRepairOtiumTopicScopeInput,
+  type AdminRepairOtiumTopicScopeRefusal,
+  type AdminRepairOtiumTopicScopeResult,
+  adminRepairOtiumTopicScope,
+  getTopicCreateClaim,
+  getTopicTombstone,
+  isTopicClaimAbortFenced,
+  latestTopicScopeMove,
+  listTopicTombstonesAfter,
+  markTopicCreateClaimAborted,
+  OTIUM_TOPIC_SCOPE_IMMUTABLE_ERROR,
+  recordTopicLinkNodeIdentity,
+  TOPIC_CLAIM_ABORT_FENCE_ERROR,
+  type TopicCreateClaim,
+  type TopicTombstone,
+  topicLinkDbEpoch,
+  topicLinkNodeIdentity,
+  topicLinkPayloadHash,
+  topicTombstoneHighWater,
+} from "#storage/topic-link-records";
 export type { VaultEntry, VaultEntryWithValue } from "#storage/vault";
 export {
   normalizeVaultKey,
@@ -466,6 +495,11 @@ export {
   vaultListWithValues,
   vaultSet,
 } from "#storage/vault";
+export {
+  type AbortTopicCreateClaimOptions,
+  abortTopicCreateClaim,
+  type TopicCreateClaimAbortResult,
+} from "#topics/claim-abort";
 export type { RegisterTopicOptions } from "#topics/create";
 // ── Topics ──────────────────────────────────────────────────────────
 export { registerTopic, TopicValidationError } from "#topics/create";
@@ -484,6 +518,7 @@ export {
   deleteTopicCascade,
   TopicArchiveRequiredError,
   TopicCleanupRequiredError,
+  TopicDeleteVetoedError,
   TopicTurnStillActiveError,
 } from "#topics/lifecycle";
 export { ensurePersonalGeneral } from "#topics/personal-general";

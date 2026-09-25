@@ -4,7 +4,11 @@ import { resolveFallbackAgent } from "#platform/config-helpers";
 import { GENERAL_TOPIC_ID } from "#platform/constants";
 import { logger } from "#platform/logger";
 import { db } from "#storage/forum-db";
+import { onRuntimeTopicMaintenanceReleased } from "#storage/runtime-topic-state";
 import { registerStorageSchemaInitializer } from "#storage/storage-host";
+// Also registers the claim/tombstone schema and the api_topics tombstone and
+// scope-immutability triggers wherever topics can be written (topic-link PR7).
+import { repairUnscopedOtiumTopicScopes } from "#storage/topic-link-records";
 import type { AgentKind, EffortLevel } from "#types";
 import type {
   AiMode,
@@ -81,6 +85,44 @@ export function setSurfaceScopeRequired(required: boolean): void {
 
 export function isSurfaceScopeRequired(): boolean {
   return surfaceScopeRequired;
+}
+
+/**
+ * How many Otium workspaces the adapter currently has mounted, or null when no
+ * adapter ever reported (a node without the Otium adapter). Lets a loopback
+ * caller tell "one workspace, scope not resolved yet" apart from "no
+ * workspace at all" (topic-link design v2 §4.6, `GET /surface-scope`).
+ */
+let mountedSurfaceScopeCount: number | null = null;
+
+export function setMountedSurfaceScopeCount(count: number | null): void {
+  mountedSurfaceScopeCount = count === null ? null : Math.max(0, Math.floor(count));
+}
+
+export interface LocalSurfaceScopeStatus {
+  /** The workspace an unscoped (loopback) caller's otium rooms are filed under. */
+  surfaceScope: string | null;
+  /** False while the scope cannot be stated (several workspaces, or one not resolved yet). */
+  resolved: boolean;
+  /** True while several workspaces are mounted: a room must name one. */
+  scopeRequired: boolean;
+  /** Mounted Otium workspaces; 0 when no adapter reported. */
+  joinsMounted: number;
+}
+
+/** The scope a loopback (no scope header) gateway caller gets. */
+export function localSurfaceScopeStatus(): LocalSurfaceScopeStatus {
+  const joinsMounted = mountedSurfaceScopeCount ?? 0;
+  if (surfaceScopeRequired) {
+    return { surfaceScope: null, resolved: false, scopeRequired: true, joinsMounted };
+  }
+  const surfaceScope = defaultSurfaceScope();
+  return {
+    surfaceScope,
+    resolved: joinsMounted === 1 ? surfaceScope !== null : true,
+    scopeRequired: false,
+    joinsMounted,
+  };
 }
 
 function tableColumns(table: string): Set<string> {
@@ -474,6 +516,7 @@ function initializeApiTopicsSchema(): void {
   WHERE browser_profile_owner IS NULL
 `);
   backfillTopicSurfaces();
+  ensureSurfaceScopeStampTables();
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_api_topics_last_message ON api_topics(last_message_at DESC)",
   );
@@ -486,6 +529,97 @@ function initializeApiTopicsSchema(): void {
 const SURFACE_SCOPE_STAMP_MIGRATION = "api_topics_surface_scope_stamp_20260809";
 
 /**
+ * Minimum spacing between two unforced retries of an incomplete M-9 stamp.
+ * The retry is driven by timers / scope refreshes, never by request traffic,
+ * and this bound keeps even a tight caller from turning it into a hot path.
+ */
+export const SURFACE_SCOPE_STAMP_RETRY_INTERVAL_MS = 30_000;
+
+/**
+ * Refusals that leave a room pending: the room is still an unscoped otium room
+ * and the stamp may succeed later (maintenance ends, an operator renames the
+ * conflicting room or resolves a duplicate manager room, the row settles).
+ * Every other refusal (`not_found`, `not_otium`, `scope_not_null`) means there
+ * is nothing left to stamp.
+ */
+const SURFACE_SCOPE_STAMP_RETRYABLE = new Set([
+  "maintenance_in_progress",
+  "title_conflict",
+  "duplicate_manager",
+  "row_changed",
+  "invalid_scope",
+]);
+
+function ensureSurfaceScopeStampTables(): void {
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS api_schema_migrations (
+    key TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL
+  )
+`);
+  // Rooms the M-9 stamp could not file yet (revision 5). `scope` is pinned at
+  // the first attempt: a retry never re-reads the current workspace, so a
+  // second workspace joined later cannot swallow the first one's rooms.
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS api_surface_scope_stamp_pending (
+    topic_id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    detail TEXT,
+    attempts INTEGER NOT NULL DEFAULT 1,
+    first_seen_at TEXT NOT NULL,
+    last_attempt_at TEXT NOT NULL
+  )
+`);
+}
+
+export interface SurfaceScopeStampStatus {
+  /** The completion marker is written: every pre-existing room was filed. */
+  complete: boolean;
+  /** Rooms the stamp skipped and will retry (maintenance, title conflict ...). */
+  pending: number;
+  /** Workspace the pending rooms will be filed under (pinned at first attempt). */
+  scope: string | null;
+  pendingTopics: Array<{
+    topicId: string;
+    reason: string;
+    detail: string | null;
+    attempts: number;
+  }>;
+}
+
+/**
+ * Operator view of the M-9 stamp (diagnostics; `unscopedPending` on
+ * `GET /surface-scope`). Read-only: the tables exist from schema init.
+ */
+export function surfaceScopeStampStatus(): SurfaceScopeStampStatus {
+  const complete = Boolean(
+    db
+      .query("SELECT key FROM api_schema_migrations WHERE key = ?")
+      .get(SURFACE_SCOPE_STAMP_MIGRATION),
+  );
+  const rows = db
+    .query<
+      { topic_id: string; scope: string; reason: string; detail: string | null; attempts: number },
+      []
+    >(
+      "SELECT topic_id, scope, reason, detail, attempts FROM api_surface_scope_stamp_pending ORDER BY topic_id",
+    )
+    .all();
+  return {
+    complete,
+    pending: rows.length,
+    scope: rows[0]?.scope ?? null,
+    pendingTopics: rows.map((row) => ({
+      topicId: row.topic_id,
+      reason: row.reason,
+      detail: row.detail,
+      attempts: Number(row.attempts),
+    })),
+  };
+}
+
+/**
  * M-9 — file every pre-existing Otium room under the workspace attached now.
  *
  * Deliberately *not* a schema-init step. The scope is only knowable after the
@@ -494,45 +628,178 @@ const SURFACE_SCOPE_STAMP_MIGRATION = "api_topics_surface_scope_stamp_20260809";
  * leave every room unstamped forever. The Otium runtime calls this instead, once,
  * as soon as it has resolved its workspace.
  *
- * Runs at most once per store: rooms created after this point are stamped at
- * creation, and a second workspace joined later must not swallow the first
+ * Completes at most once per store: rooms created after this point are stamped
+ * at creation, and a second workspace joined later must not swallow the first
  * one's rooms. Unlike the surface migration this can never rename anything —
  * the scope enters the uniqueness key in the same release, so nothing can start
  * colliding because of it.
+ *
+ * Revision 5: the completion marker is written only when NO room was skipped.
+ * A room refused for a retryable reason (live maintenance, title conflict) is
+ * recorded in `api_surface_scope_stamp_pending` with the first attempt's scope,
+ * and later calls retry exactly those rooms under that pinned scope — never a
+ * fresh sweep, never the caller's (possibly different) scope. Rooms already
+ * stamped are no longer unscoped and drop out, so every pass is idempotent. The
+ * whole pass is one `BEGIN IMMEDIATE`, so concurrent boots serialize: the
+ * second sees the first one's marker or pending set and re-checks it.
  */
 export function stampUnscopedOtiumTopics(scope: string): number {
   const normalized = normalizeSurfaceScope(scope);
   if (!normalized) return 0;
-  db.exec(`
-  CREATE TABLE IF NOT EXISTS api_schema_migrations (
-    key TEXT PRIMARY KEY,
-    applied_at TEXT NOT NULL
-  )
-`);
-  const applied = db
-    .query("SELECT key FROM api_schema_migrations WHERE key = ?")
-    .get(SURFACE_SCOPE_STAMP_MIGRATION);
-  if (applied) return 0;
+  ensureSurfaceScopeStampTables();
+  // Cheap unlocked pre-check: a completed store never takes the write lock.
+  if (
+    db
+      .query("SELECT key FROM api_schema_migrations WHERE key = ?")
+      .get(SURFACE_SCOPE_STAMP_MIGRATION)
+  ) {
+    return 0;
+  }
 
   let stamped = 0;
+  const stillPending: Array<{ topicId: string; reason: string; detail?: string }> = [];
+  let effectiveScope = normalized;
+  let ran = false;
   db.transaction(() => {
-    stamped = Number(
+    // Re-check under the write lock: a concurrent boot may have finished.
+    if (
       db
-        .query(
-          "UPDATE api_topics SET surface_scope = ? WHERE surface = 'otium' AND surface_scope IS NULL",
-        )
-        .run(normalized).changes ?? 0,
+        .query("SELECT key FROM api_schema_migrations WHERE key = ?")
+        .get(SURFACE_SCOPE_STAMP_MIGRATION)
+    ) {
+      return;
+    }
+    ran = true;
+    const pendingRows = db
+      .query<{ topic_id: string; scope: string }, []>(
+        "SELECT topic_id, scope FROM api_surface_scope_stamp_pending ORDER BY topic_id",
+      )
+      .all();
+    const retry = pendingRows.length > 0;
+    if (retry) effectiveScope = pendingRows[0]?.scope ?? normalized;
+    // Through the audited scope repair: an otium room's scope is otherwise
+    // immutable (topic-link review fix 6); the move is recorded and create
+    // claims stay on their original principal.
+    const result = repairUnscopedOtiumTopicScopes(
+      effectiveScope,
+      "m9-stamp",
+      "file pre-existing Otium rooms under the resolved workspace",
+      retry ? { topicIds: pendingRows.map((row) => row.topic_id) } : {},
     );
-    db.query("INSERT INTO api_schema_migrations (key, applied_at) VALUES (?, ?)").run(
-      SURFACE_SCOPE_STAMP_MIGRATION,
-      new Date().toISOString(),
+    stamped = result.stamped;
+    for (const skip of result.skipped) {
+      if (skip.ok || !SURFACE_SCOPE_STAMP_RETRYABLE.has(skip.reason)) continue;
+      stillPending.push({ topicId: skip.topicId, reason: skip.reason, detail: skip.detail });
+    }
+    const now = new Date().toISOString();
+    const keep = new Set(stillPending.map((row) => row.topicId));
+    for (const row of pendingRows) {
+      if (!keep.has(row.topic_id)) {
+        db.query("DELETE FROM api_surface_scope_stamp_pending WHERE topic_id = ?").run(
+          row.topic_id,
+        );
+      }
+    }
+    for (const row of stillPending) {
+      db.query(
+        `INSERT INTO api_surface_scope_stamp_pending
+           (topic_id, scope, reason, detail, attempts, first_seen_at, last_attempt_at)
+         VALUES (?, ?, ?, ?, 1, ?, ?)
+         ON CONFLICT(topic_id) DO UPDATE SET
+           reason = excluded.reason,
+           detail = excluded.detail,
+           attempts = api_surface_scope_stamp_pending.attempts + 1,
+           last_attempt_at = excluded.last_attempt_at`,
+      ).run(row.topicId, effectiveScope, row.reason, row.detail ?? null, now, now);
+    }
+    if (stillPending.length === 0) {
+      db.query("INSERT INTO api_schema_migrations (key, applied_at) VALUES (?, ?)").run(
+        SURFACE_SCOPE_STAMP_MIGRATION,
+        now,
+      );
+    }
+  }).immediate();
+  if (!ran) return 0;
+  if (effectiveScope !== normalized) {
+    logger.info(
+      { scope: normalized, pinnedScope: effectiveScope },
+      "api_topics: surface scope stamp retry keeps the workspace of its first attempt",
     );
-  })();
+  }
   if (stamped > 0) {
-    logger.info({ scope: normalized, stamped }, "api_topics: surface scope stamped");
+    logger.info({ scope: effectiveScope, stamped }, "api_topics: surface scope stamped");
+  }
+  if (stillPending.length > 0) {
+    // Operator-visible every attempt: a permanent title conflict never
+    // completes the migration and needs a rename (or admin repair).
+    logger.warn(
+      {
+        scope: effectiveScope,
+        pending: stillPending.length,
+        topicIds: stillPending.map((row) => row.topicId),
+        skipped: stillPending,
+      },
+      "api_topics: surface scope stamp incomplete; rooms stay pending and will be retried",
+    );
+  } else {
+    logger.info({ scope: effectiveScope }, "api_topics: surface scope stamp complete");
   }
   return stamped;
 }
+
+let lastSurfaceScopeStampRetryAt = 0;
+
+/**
+ * Retry an incomplete M-9 stamp under its pinned scope. No-op (no write lock)
+ * when the stamp never started or already completed. Unforced calls run at most
+ * once per {@link SURFACE_SCOPE_STAMP_RETRY_INTERVAL_MS} per process; `force`
+ * is for discrete events (a pending room's maintenance released, a scope
+ * refresh). Never throws: a busy database just waits for the next trigger.
+ */
+export function retryPendingSurfaceScopeStamp(
+  options: { force?: boolean; now?: number } = {},
+): number {
+  const now = options.now ?? Date.now();
+  if (
+    !options.force &&
+    now - lastSurfaceScopeStampRetryAt < SURFACE_SCOPE_STAMP_RETRY_INTERVAL_MS
+  ) {
+    return 0;
+  }
+  lastSurfaceScopeStampRetryAt = now;
+  try {
+    ensureSurfaceScopeStampTables();
+    const pinned = db
+      .query<{ scope: string }, []>("SELECT scope FROM api_surface_scope_stamp_pending LIMIT 1")
+      .get();
+    if (!pinned) return 0;
+    return stampUnscopedOtiumTopics(pinned.scope);
+  } catch (err) {
+    logger.warn({ err }, "api_topics: surface scope stamp retry failed (will retry)");
+    return 0;
+  }
+}
+
+/** Whether `topicId` is waiting for the M-9 stamp (cheap point lookup). */
+export function isSurfaceScopeStampPending(topicId: string): boolean {
+  return Boolean(
+    db.query("SELECT 1 FROM api_surface_scope_stamp_pending WHERE topic_id = ?").get(topicId),
+  );
+}
+
+// A pending room's maintenance fence was released: retry now instead of
+// waiting for the next timer tick. Deferred so the stamp never runs inside the
+// releasing caller's transaction.
+onRuntimeTopicMaintenanceReleased((topicId) => {
+  const timer = setTimeout(() => {
+    try {
+      if (isSurfaceScopeStampPending(topicId)) retryPendingSurfaceScopeStamp({ force: true });
+    } catch (err) {
+      logger.warn({ err, topicId }, "api_topics: surface scope stamp retry on release failed");
+    }
+  }, 0);
+  timer.unref?.();
+});
 
 const SURFACE_BACKFILL_MIGRATION = "api_topics_surface_backfill_20260808";
 
@@ -886,7 +1153,14 @@ export function upsertTopic(t: TopicDto): void {
        -- A room's workspace is fixed at creation (M-1). COALESCE, not
        -- assignment: an update may fill in a scope that was unknown when the
        -- room was created, but may never move a room to another workspace.
-       surface_scope = COALESCE(api_topics.surface_scope, excluded.surface_scope),
+       -- An otium room is stricter (topic-link review fix 6): its scope never
+       -- changes through an upsert, not even NULL -> scope; only the audited
+       -- repair (adminRepairOtiumTopicScope / the M-9 stamp) may assign it.
+       surface_scope = CASE
+         WHEN excluded.surface = 'otium' OR api_topics.surface = 'otium'
+           THEN api_topics.surface_scope
+         ELSE COALESCE(api_topics.surface_scope, excluded.surface_scope)
+       END,
        subagent_report_mode = excluded.subagent_report_mode,
        -- Who asked for the derive is a fact about creation; a later update
        -- that omits it must not erase it.

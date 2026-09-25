@@ -24,6 +24,7 @@ import {
   normalizeTopicSurface,
   upsertTopic,
 } from "#storage/api-topics";
+import { db } from "#storage/forum-db";
 import { type AgentKind, type EffortLevel, isAgentKind } from "#types";
 import type { TopicDto, TopicSurface } from "#types/api";
 
@@ -60,6 +61,12 @@ export interface RegisterTopicOptions {
   surfaceScope?: string | null;
   /** Wiki memory persona this room continues. */
   memoryKey?: string;
+  /**
+   * Runs inside the SQLite transaction that inserts the topic row, before the
+   * topic is broadcast. A throw rolls the topic back. Used by the gateway to
+   * record a host create claim atomically with the topic (topic-link PR7).
+   */
+  withinCreateTransaction?: (topic: TopicDto) => void;
 }
 
 /**
@@ -156,7 +163,15 @@ export function registerTopic(opts: RegisterTopicOptions): TopicDto {
     lastMessageAt: now,
   };
 
-  upsertTopic(topic);
+  const withinCreateTransaction = opts.withinCreateTransaction;
+  if (withinCreateTransaction) {
+    db.transaction(() => {
+      upsertTopic(topic);
+      withinCreateTransaction(topic);
+    }).immediate();
+  } else {
+    upsertTopic(topic);
+  }
   try {
     mkdirSync(resolveTopicWorkspaceDir(topic.id), { recursive: true });
   } catch (err) {

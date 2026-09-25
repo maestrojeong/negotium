@@ -250,6 +250,102 @@ The RuntimeBus log keeps a soft maximum of 100,000 events. Active durable consum
 highest sequence they have captured; pruning never crosses the minimum active cursor. Inactive
 consumers must reconcile canonical topic/message state if their cursor predates the retained log.
 
+## Topic link v2 (create claims, existence, tombstones, surface scope)
+
+Additive; advertised as `canonical-topic-create-claims`, `canonical-topic-existence`,
+`canonical-topic-tombstones` and `canonical-surface-scope`. A host sending none of the new fields
+sees the previous behaviour byte for byte.
+
+- **Create claims.** `POST /topics` and `POST /topics/:id/derive` accept optional `requestId` (1-200
+  chars) and `payloadHash`. The node keys a claim on `(caller principal, requestId)` and its own
+  sha256 of the canonical JSON (keys sorted at every depth, compact, `undefined` dropped) of the body
+  minus `requestId`/`payloadHash` — for derive, of `{ sourceTopicId: <path id>, ...body }`. The
+  principal is `loopback` (no `x-negotium-surface-scope`) or `scope:<value>`; it is never read from
+  the body. The claim is written in the topic's own SQLite transaction, before `topic-created` is
+  broadcast. Answers: first create `201 { topic, requestId, payloadHash, replayed: false }`; the same
+  key and hash again `201 … replayed: true` with the same topic; another hash `409
+  request_id_conflict`; an aborted key `409 request_aborted`; a claimed topic since deleted `410
+  claim_topic_gone`; a key still being processed `409 request_in_progress`. Topic DTOs from
+  `GET /topics` and `GET /topics/:id` carry `hostCreate: { requestId, op, createdAt }` for rooms the
+  same principal created.
+- **Claim recovery.** `GET /topic-claims/:requestId` → `{ state: "none" | "committed" | "aborted",
+  op?, topicId?, topicPresent? }` (always 200). `POST /topic-claims/:requestId/abort` deletes the
+  claimed room only while it holds no message written after creation (`409
+  claim_topic_has_messages` otherwise) and fences the id so a late create is refused; an abort for
+  an unknown id records the fence. The abort decides the claim's state and writes its outcome in one
+  `BEGIN IMMEDIATE` transaction, so a create committing concurrently in another process is either
+  refused by the fence or deleted by the abort — a committed claim is never aborted while its room
+  lives. While an abort deletes a room, every message insert into it is refused by SQLite and
+  `POST /turns` for it answers `409 topic_unavailable`; the "no new message" check is repeated inside
+  the transaction that deletes the messages, so a message that still lands keeps the room (`409
+  claim_topic_has_messages`, claim stays committed). The loser of a cross-process race on the same
+  key (create or derive) gets the winner's `201 … replayed: true`.
+- **Claim binding (review round 2).** `requestId` is used exactly as sent: 1-200 characters, and a
+  leading/trailing space is `400 invalid_request_id` (never trimmed). A claimed derive is bound to the
+  PATH source: the hash input is `{ ...body, sourceTopicId: <path id> }`, a body `sourceTopicId` that
+  differs from the path is `400 source_topic_mismatch`, the claim records its source (a replay on
+  another parent is `409 request_id_conflict`), and a derive replay is only answered after the normal
+  source-access check (a gone/inaccessible source is 404). A replay or abort whose room is no longer
+  filed under the caller's workspace is `409 claim_topic_moved` (no DTO, nothing deleted);
+  `GET /topic-claims/:id` then reads `topicPresent: false, topicMoved: true`. An abort deletes only a
+  room whose message set is exactly the one it was created with (count + hash of ids recorded with
+  the claim). Claim retention: committed claims 30 days from `created_at`, aborted claims (fences)
+  30 days from the moment they became aborted (`settled_at`); pruning is bounded per request.
+- **Otium scope immutability.** An otium room's `surface_scope` never changes after creation (SQLite
+  trigger `api_topics_otium_scope_immutable`; upserts keep the stored value). The only exception is the
+  audited, storage-only `adminRepairOtiumTopicScope` (`NULL → scope`, CAS), which the one-time M-9
+  stamp also uses. Create claims are never re-bound: they stay on their original principal and a
+  replay/abort by a principal the room's current scope no longer belongs to is `409
+  claim_topic_moved`. The move is recorded in `api_topic_scope_moves` with a seq from the tombstone
+  counter and appears in `GET /topic-tombstones` as `reason: "unshared", scopeMoved: true` for the OLD
+  scope (not shown to callers that still see the room); existence answers the old scope `present,
+  shared: false`. Refusals (nothing changes): `invalid_scope | not_found | not_otium |
+  scope_not_null | row_changed | title_conflict | duplicate_manager | maintenance_in_progress`.
+- **Repair title rule (revision 6).** The repair uses the same title rule as room creation
+  (`findTopicTitleConflict`): manager rooms — every member's personal "General" — take no part in
+  title conflicts, neither as the room being moved nor as a room already in the target scope (the
+  reserved shared `general` row is still a peer of a regular room titled "General"). Regular rooms
+  still refuse `title_conflict` against a same-titled (trimmed, case-insensitive) regular room in
+  the target scope. Instead, moving a manager room is refused with `duplicate_manager` (`detail`:
+  the existing room's id) when the target scope already holds a manager room with an owner in common
+  with it, so no caller can give one owner two manager rooms in one workspace. The M-9 stamp uses the
+  same check and keeps a `duplicate_manager` room pending like a title conflict.
+- **Existence.** `GET /topics/:id/existence` → `{ nodeId, topicId, state: "present" | "gone" |
+  "unknown", shared?, deletedAt? }`. `gone` only when this store holds a deletion tombstone stamped
+  with the identity answering now and within the caller's scope; a topic the node simply does not
+  have is `unknown`, never `gone`.
+- **Tombstones.** SQLite triggers on `api_topics` write `api_topic_tombstones` (`deleted`, or
+  `unshared` when a room leaves the visible Otium surface) in the same statement as the change,
+  stamped with the node identity. `GET /topic-tombstones?after=&limit=` pages them by `seq`, which
+  comes from a never-decreasing counter (`highWater` on the page is its current value): every
+  tombstone written after a cursor has a larger `seq`. A topic can appear more than once (unshared,
+  later deleted); consumers must be idempotent. The `ready` event of `GET /events` and every
+  `topic-deleted` payload carry `nodeId`.
+- **Store epoch.** `/health`, `/surface-scope`, existence, tombstone and claim responses carry
+  `dbEpoch`, a random id minted when the store first recorded an identity. A wiped/recreated store
+  under the same `NODE_ID` has another one; a restore of a backup of the same store does not (a hub
+  can only notice that as `highWater` below its recorded cursor).
+- **Surface scope.** `GET /surface-scope` → `{ nodeId, principal, surfaceScope, resolved,
+  scopeRequired, joinsMounted, linkGuard, unscopedPending }`: the workspace this caller's rooms are
+  filed under. `unscopedPending` (additive, revision 5) counts pre-existing otium rooms the one-time
+  M-9 stamp has not filed yet; non-zero means that migration is incomplete and still retrying.
+- **M-9 stamp completion (revision 5).** The stamp that files pre-existing unscoped otium rooms under
+  the first resolved workspace records itself complete only when no room was skipped. A room refused
+  for a retryable reason (live maintenance, title conflict, duplicate manager room, row changed) is
+  kept in `api_surface_scope_stamp_pending` with the scope of the first attempt; retries touch only those
+  rooms, always under that pinned scope (never a newly joined workspace), and run on scope
+  resolution, when a pending room's maintenance fence is released in-process, and on a 30-second
+  timer (unforced retries are rate-limited to one per 30 s per process). Each incomplete attempt
+  logs a warning with the pending topic ids. A permanent title conflict (or duplicate manager room)
+  keeps the migration open until an operator renames or resolves the room (or repairs it with
+  `adminRepairOtiumTopicScope`).
+- **Create guard.** `NEGOTIUM_OTIUM_LINK_V2` (default off) applies to the three gateway room creators.
+  `on`: callers declaring `x-otium-link-protocol: 2` get `409 scope_unresolved` when the scope is
+  not resolved (create and manager-topic) and `409 scope_mismatch` when an
+  `x-otium-link-expected-scope` header differs from it; callers without the header are unaffected.
+  `strict`: additionally `409 link_protocol_required` for callers without protocol 2. A replay of a
+  committed claim is answered before the guard.
+
 ## Known limitations
 
 - **Remote-session authority is the hub's, per call.** Unlike the assertion, the remote-session

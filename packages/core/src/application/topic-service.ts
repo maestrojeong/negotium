@@ -68,6 +68,8 @@ export interface DeriveUserTopicParams {
   userId: string;
   copyHistory: boolean;
   name?: string;
+  /** See `DerivedTopicOptions.withinCreateTransaction`. */
+  withinCreateTransaction?: (topic: TopicDto) => void;
 }
 
 export const topicService = {
@@ -80,7 +82,14 @@ export const topicService = {
       params.sourceTopicId,
       params.userId,
       params.copyHistory,
-      params.name ? { name: params.name } : undefined,
+      params.name || params.withinCreateTransaction
+        ? {
+            ...(params.name ? { name: params.name } : {}),
+            ...(params.withinCreateTransaction
+              ? { withinCreateTransaction: params.withinCreateTransaction }
+              : {}),
+          }
+        : undefined,
     );
   },
 

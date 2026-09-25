@@ -292,3 +292,47 @@ test("forwards the hub's remote session-comm inbox delivery and nothing else und
   }
   expect(calls).toHaveLength(1);
 });
+
+test("forwards the topic-link v2 reads and claim abort, and keeps the link protocol header", async () => {
+  for (const [method, path] of [
+    ["GET", "/surface-scope"],
+    ["GET", "/topic-tombstones?after=3&limit=10"],
+    ["GET", "/topics/abc/existence"],
+    ["GET", "/topic-claims/req-1"],
+    ["POST", "/topic-claims/req-1/abort"],
+  ] as const) {
+    const { fetch: stub, calls } = captureFetch();
+    const response = await forwardGatewayRequest(
+      forwardRequest(path, {
+        method,
+        headers: { "x-otium-link-protocol": "2" },
+        ...(method === "GET" ? {} : { body: "{}" }),
+      }),
+      { nodeOrigin: NODE_ORIGIN, surfaceScope: "ws-1", strictScope: false, fetch: stub },
+    );
+    expect(response?.status, `${method} ${path}`).toBe(200);
+    expect(calls, `${method} ${path}`).toHaveLength(1);
+    // The claim/existence answers are scoped by the stamped workspace.
+    expect(calls[0]?.headers.get("x-negotium-surface-scope")).toBe("ws-1");
+    expect(calls[0]?.headers.get("x-otium-link-protocol")).toBe("2");
+  }
+});
+
+test("the topic-link routes are exact shapes", async () => {
+  for (const [method, path] of [
+    ["POST", "/topic-claims/req-1"],
+    ["GET", "/topic-claims/req-1/abort"],
+    ["GET", "/topic-claims/req-1/abort/extra"],
+    ["POST", "/topics/abc/existence"],
+    ["GET", "/topics/abc/existence/extra"],
+    ["POST", "/surface-scope"],
+  ] as const) {
+    const { fetch: stub, calls } = captureFetch();
+    const response = await forwardGatewayRequest(
+      forwardRequest(path, { method, ...(method === "GET" ? {} : { body: "{}" }) }),
+      { nodeOrigin: NODE_ORIGIN, surfaceScope: "ws-1", strictScope: false, fetch: stub },
+    );
+    expect(response?.status, `${method} ${path}`).toBe(404);
+    expect(calls, `${method} ${path}`).toHaveLength(0);
+  }
+});

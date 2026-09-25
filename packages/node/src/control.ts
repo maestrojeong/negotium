@@ -53,6 +53,7 @@ import {
   RUN_DIR,
   type RuntimeBusEvent,
   RuntimeGatewayIdempotencyConflictError,
+  RuntimeGatewayTopicUnavailableError,
   readDecisions,
   STATE_DIR,
   type StoredRuntimeEvent,
@@ -76,6 +77,7 @@ import {
   TopicTitleConflictError,
   TopicUpdateConflictError,
   TopicValidationError,
+  topicLinkDbEpoch,
   topicService,
   updateApiMessageText,
   updateManagerTopicRuntimeConfig,
@@ -107,6 +109,15 @@ import {
 } from "@negotium/module-cron";
 import { MAX_NODE_UPLOAD_BYTES, nodeFileStore } from "./files";
 import { createPollingSseStream } from "./polling-sse";
+import {
+  handleTopicLinkRoute,
+  initializeTopicLinkIdentity,
+  otiumLinkCreateGuard,
+  parseTopicLinkRequest,
+  replayTopicCreateClaim,
+  runClaimedTopicCreate,
+  withHostCreate,
+} from "./topic-link";
 
 export const NODE_CONTROL_PROTOCOL_VERSION = 1;
 export const NODE_CONTROL_BASE_PATH = "/api/v1/control";
@@ -474,6 +485,9 @@ function createRuntimeContractEventStream(
   return createPollingSseStream(req, {
     ready: {
       v: NODE_RUNTIME_CONTRACT_VERSION,
+      // Which node this stream speaks for, so a host binds tombstones to the
+      // identity of the connection itself (topic-link design v2 §4.5).
+      nodeId: NODE_ID,
       cursor,
       oldestCursor,
       truncated: oldestCursor > 0 && cursor < oldestCursor - 1,
@@ -564,6 +578,7 @@ export function createNodeControlHandler(
 
     const path = url.pathname.slice(NODE_CONTROL_BASE_PATH.length) || "/";
     try {
+      initializeTopicLinkIdentity();
       const runtimePath = url.pathname.startsWith(NODE_RUNTIME_CONTRACT_BASE_PATH)
         ? url.pathname.slice(NODE_RUNTIME_CONTRACT_BASE_PATH.length) || "/"
         : null;
@@ -576,6 +591,10 @@ export function createNodeControlHandler(
             // Which node this is, so a host can tell a re-pointed base URL from
             // a topic whose owner withdrew it.
             nodeId: NODE_ID,
+            // Random id of this node's store (topic-link PR7): a hub that
+            // records it can tell a wiped/recreated store under the same
+            // NODE_ID. Null until the identity is recorded.
+            dbEpoch: topicLinkDbEpoch(),
             // This node's own AI persona name (node-local, see `/ai-name`). Read
             // here rather than only through the dedicated control route because
             // `/health` is the one GET the gateway forward already relays to a
@@ -632,11 +651,21 @@ export function createNodeControlHandler(
               // (`remote-session-comm-relay`) is contributed by the Otium
               // adapter when its gateway forward allowlists the inbox route.
               "remote-session-comm",
+              // Topic-link v2 (PR7): `requestId` create claims + claim
+              // lookup/abort, identity-bound existence, the tombstone log, the
+              // surface-scope lookup and `nodeId` on `ready`/`topic-deleted`.
+              "canonical-topic-create-claims",
+              "canonical-topic-existence",
+              "canonical-topic-tombstones",
+              "canonical-surface-scope",
               ...listRuntimeGatewayCapabilities(),
             ],
             cursor: latestRuntimeEventSeq(),
           });
         }
+
+        const topicLinkResponse = await handleTopicLinkRoute(req, runtimePath, url);
+        if (topicLinkResponse) return topicLinkResponse;
 
         if (req.method === "POST" && runtimePath === "/input-files") {
           const form = await req.formData();
@@ -669,6 +698,8 @@ export function createNodeControlHandler(
           const body = await bodyRecord(req);
           if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
           const userId = requiredText(body.userId, "userId");
+          const guard = otiumLinkCreateGuard(req, "manager");
+          if (guard) return guard;
           const topic = ensurePersonalGeneral(userId, "otium", requestSurfaceScope(req));
           return Response.json({
             ok: true,
@@ -1193,7 +1224,7 @@ export function createNodeControlHandler(
           return Response.json({
             ok: true,
             v: NODE_RUNTIME_CONTRACT_VERSION,
-            topics: topics.map((topic) => {
+            topics: withHostCreate(req, topics).map((topic) => {
               const preview = previews.get(topic.id);
               return {
                 ...topic,
@@ -1241,7 +1272,15 @@ export function createNodeControlHandler(
           if (body.memoryKey !== undefined && typeof body.memoryKey !== "string") {
             return jsonError(400, "memoryKey must be a string");
           }
-          const topic = topicService.create({
+          const link = parseTopicLinkRequest(req, body, "create", body);
+          if (link instanceof Response) return link;
+          if (link) {
+            const replay = replayTopicCreateClaim(link, req);
+            if (replay) return replay;
+          }
+          const guard = otiumLinkCreateGuard(req, "create");
+          if (guard) return guard;
+          const createOptions: Parameters<typeof topicService.create>[0] = {
             title,
             userId,
             kind,
@@ -1259,7 +1298,18 @@ export function createNodeControlHandler(
               ? { effort: body.effort as "low" | "medium" | "high" | "xhigh" | "max" }
               : {}),
             ...(typeof body.memoryKey === "string" ? { memoryKey: body.memoryKey } : {}),
-          });
+          };
+          if (link) {
+            const claimed = await runClaimedTopicCreate(
+              link,
+              req,
+              async (withinCreateTransaction) =>
+                topicService.create({ ...createOptions, withinCreateTransaction }),
+            );
+            if (claimed) return claimed;
+            return jsonError(500, "Failed to create topic");
+          }
+          const topic = topicService.create(createOptions);
           return Response.json(
             {
               ok: true,
@@ -1298,17 +1348,56 @@ export function createNodeControlHandler(
           if (body.name !== undefined && typeof body.name !== "string") {
             return jsonError(400, "name must be a string");
           }
+          // A claimed derive is bound to the PATH source. The hub never puts
+          // `sourceTopicId` in the body; one that names another topic would
+          // otherwise make two parents hash alike (review fix 5).
+          if (
+            body.requestId !== undefined &&
+            body.requestId !== null &&
+            body.sourceTopicId !== undefined &&
+            body.sourceTopicId !== topicId
+          ) {
+            return jsonError(
+              400,
+              "body sourceTopicId must be absent or equal the path topic id",
+              "source_topic_mismatch",
+            );
+          }
+          // Hashed exactly like the hub's derive intent: the body plus the
+          // path's source id — the path last, so the body cannot override it.
+          const link = parseTopicLinkRequest(req, body, "derive", {
+            ...body,
+            sourceTopicId: topicId,
+          });
+          if (link instanceof Response) return link;
+          // The source-access check comes BEFORE a replay: a replay hands out
+          // a derived room, so the caller must still be allowed to derive
+          // from this source under the normal rules.
           const source = topicForUser(topicId, userId);
           if (!source || source.kind === "manager" || !topicInRequestScope(req, source)) {
             return jsonError(404, "Topic not found");
           }
+          if (link) {
+            const replay = replayTopicCreateClaim(link, req);
+            if (replay) return replay;
+          }
+          const guard = otiumLinkCreateGuard(req, "derive");
+          if (guard) return guard;
           const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : "";
-          const derived = await topicService.derive({
+          const deriveParams = {
             sourceTopicId: topicId,
             userId,
             copyHistory: body.copyHistory,
             ...(name ? { name } : {}),
-          });
+          };
+          if (link) {
+            const claimed = await runClaimedTopicCreate(link, req, (withinCreateTransaction) =>
+              topicService.derive({ ...deriveParams, withinCreateTransaction }),
+            );
+            if (claimed) return claimed;
+            return jsonError(500, "Failed to derive topic");
+          }
+          const derived = await topicService.derive(deriveParams);
           if (!derived) return jsonError(500, "Failed to derive topic");
           return Response.json(
             { ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, topic: derived },
@@ -1790,7 +1879,7 @@ export function createNodeControlHandler(
           return Response.json({
             ok: true,
             v: NODE_RUNTIME_CONTRACT_VERSION,
-            topic,
+            topic: withHostCreate(req, [topic])[0],
             config: getApiTopicConfig(topic.id) ?? {},
           });
         }
@@ -2224,6 +2313,9 @@ export function createNodeControlHandler(
     } catch (error) {
       if (error instanceof RuntimeGatewayIdempotencyConflictError) {
         return jsonError(409, error.message);
+      }
+      if (error instanceof RuntimeGatewayTopicUnavailableError) {
+        return jsonError(409, error.message, error.code);
       }
       if (error instanceof TopicServiceError) return topicServiceError(error);
       if (error instanceof TopicDeriveBusyError) return jsonError(409, error.message);

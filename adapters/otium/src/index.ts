@@ -17,8 +17,11 @@ import {
   registerPeerRuntimeBridge,
   registerPeerSessionBridge,
   registerRuntimeGatewayCapability,
+  retryPendingSurfaceScopeStamp,
   runtimeBus,
+  SURFACE_SCOPE_STAMP_RETRY_INTERVAL_MS,
   setDefaultSurfaceScope,
+  setMountedSurfaceScopeCount,
   setSurfaceScopeRequired,
   stampUnscopedOtiumTopics,
 } from "@negotium/core";
@@ -147,6 +150,13 @@ function acquireGlobalOtiumServices(): () => void {
         );
       }
     });
+    // M-9 revision 5: an incomplete stamp (a room was in maintenance or had a
+    // title conflict) is retried on a slow timer under its pinned scope; a
+    // no-op read once the stamp is complete or never started.
+    const stampRetryTimer = setInterval(() => {
+      retryPendingSurfaceScopeStamp();
+    }, SURFACE_SCOPE_STAMP_RETRY_INTERVAL_MS);
+    stampRetryTimer.unref?.();
     void failInterruptedRemoteAskCallbacks().then((failedAsks) => {
       if (failedAsks > 0) {
         logger.warn({ failedAsks }, "otium: failed remote asks interrupted by previous process");
@@ -155,6 +165,7 @@ function acquireGlobalOtiumServices(): () => void {
     globalServices = {
       refs: 1,
       stop: () => {
+        clearInterval(stampRetryTimer);
         unsubscribeTopicCleanup();
         unregisterRuntimeBridge();
         unregisterSessionBridge();
@@ -196,6 +207,7 @@ function refreshDefaultSurfaceScope(): void {
   // With several attached there is no default to fall back on, so a room that
   // names no workspace is refused rather than filed where nobody can see it.
   setSurfaceScopeRequired(scopes.length > 1);
+  setMountedSurfaceScopeCount(scopes.length);
 }
 
 /**
@@ -237,7 +249,10 @@ export function startOtiumNodeRuntime(options: OtiumAdapterOptions): OtiumNodeRu
       // this node was attached to when it upgraded. That is only answerable
       // while exactly one workspace is attached; with several, the first
       // Central to answer would otherwise claim rooms that may not be its own.
+      // An already-started stamp retries its pending rooms under the scope of
+      // its first attempt whatever is mounted now (revision 5).
       if (mountedScopes.size === 1) stampUnscopedOtiumTopics(scope);
+      else retryPendingSurfaceScopeStamp({ force: true });
     })
     .catch((err) => {
       logger.warn({ err }, "otium: workspace scope resolution failed");

@@ -352,18 +352,28 @@ describe("api topic storage", () => {
     expect(ids()).toEqual(expect.arrayContaining([alpha.id, beta.id, unscoped.id]));
   });
 
-  test("a room never changes workspace, but an unknown one can be filled in later", () => {
-    const topic = { ...makeTopic(), surface: "otium" as const };
+  test("a room never changes workspace; only a non-otium unknown one can be filled in later", () => {
+    const topic = { ...makeTopic(), surface: "telegram" as const };
     createdTopicIds.push(topic.id);
     upsertTopic(topic);
     expect(getTopic(topic.id)?.surfaceScope).toBeNull();
 
-    upsertTopic({ ...topic, surfaceScope: "ws_alpha" });
-    expect(getTopic(topic.id)?.surfaceScope).toBe("ws_alpha");
+    upsertTopic({ ...topic, surfaceScope: "tg:alpha" });
+    expect(getTopic(topic.id)?.surfaceScope).toBe("tg:alpha");
 
     // A later write claiming a different workspace must not move the room.
-    upsertTopic({ ...topic, surfaceScope: "ws_beta" });
-    expect(getTopic(topic.id)?.surfaceScope).toBe("ws_alpha");
+    upsertTopic({ ...topic, surfaceScope: "tg:beta" });
+    expect(getTopic(topic.id)?.surfaceScope).toBe("tg:alpha");
+  });
+
+  test("an otium room's scope never changes through an upsert, not even NULL -> scope (topic-link fix 6)", () => {
+    const topic = { ...makeTopic(), surface: "otium" as const, surfaceScope: null };
+    createdTopicIds.push(topic.id);
+    upsertTopic(topic);
+    expect(getTopic(topic.id)?.surfaceScope).toBeNull();
+    // Only the audited repair (repairOtiumTopicScope / the M-9 stamp) assigns it.
+    upsertTopic({ ...topic, surfaceScope: "ws_alpha" });
+    expect(getTopic(topic.id)?.surfaceScope).toBeNull();
   });
 
   test("an explicit namespace is preserved on every surface", () => {

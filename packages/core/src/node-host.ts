@@ -8,6 +8,7 @@ export {
 export { sweepStaleSubagentCards } from "#agents/mcp-tools/spawn-subagent";
 export {
   RuntimeGatewayIdempotencyConflictError,
+  RuntimeGatewayTopicUnavailableError,
   submitRuntimeGatewayTurn,
 } from "#application/submit-runtime-gateway-turn";
 export { submitUserMessage } from "#application/submit-user-message";
@@ -114,7 +115,14 @@ export {
   setApiTopicConfig,
   type TopicConfig,
 } from "#storage/api-topic-config";
-export { getTopic, upsertTopic } from "#storage/api-topics";
+export {
+  getTopic,
+  type LocalSurfaceScopeStatus,
+  localSurfaceScopeStatus,
+  type SurfaceScopeStampStatus,
+  surfaceScopeStampStatus,
+  upsertTopic,
+} from "#storage/api-topics";
 export { getGlobalAiName, setGlobalAiName } from "#storage/app-settings";
 export { readDecisions, writeDecisionGraphSvg } from "#storage/decisions";
 export {
@@ -135,6 +143,36 @@ export {
 } from "#storage/runtime-events";
 export { acquireRuntimeProcessLease } from "#storage/runtime-process-leases";
 export { getTopicStats } from "#storage/token-stats";
+export {
+  type AdminRepairOtiumTopicScopeInput,
+  type AdminRepairOtiumTopicScopeRefusal,
+  type AdminRepairOtiumTopicScopeResult,
+  adminRepairOtiumTopicScope,
+  committedClaimsByTopic,
+  getTopicCreateClaim,
+  getTopicTombstone,
+  insertCommittedTopicCreateClaim,
+  isTopicClaimAbortFenced,
+  latestTopicScopeMove,
+  listTopicTombstonesAfter,
+  markTopicCreateClaimAborted,
+  OTIUM_TOPIC_SCOPE_IMMUTABLE_ERROR,
+  pruneTopicCreateClaims,
+  recordTopicLinkNodeIdentity,
+  TOPIC_CREATE_CLAIM_PRUNE_BATCH,
+  type TopicCreateClaim,
+  type TopicTombstone,
+  topicHasMessagesAfterClaim,
+  topicLinkDbEpoch,
+  topicLinkNodeIdentity,
+  topicLinkPayloadHash,
+  topicTombstoneHighWater,
+} from "#storage/topic-link-records";
+export {
+  type AbortTopicCreateClaimOptions,
+  abortTopicCreateClaim,
+  type TopicCreateClaimAbortResult,
+} from "#topics/claim-abort";
 export { TopicValidationError } from "#topics/create";
 export {
   getVisibleTopics,
