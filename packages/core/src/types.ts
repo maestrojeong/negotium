@@ -186,10 +186,17 @@ export interface PeerRuntimeBridgeContext {
  * spawn/report/follow-up) is fail-closed to the current room plus the node's
  * own subagent lineage (direct parent, `grant_subagent_tell` targets, own
  * child workers).
+ *
+ * `issuedAt` (epoch ms) bounds how long the assertion is believed: this node
+ * stamps it when the turn request arrives (the earlier of the hub's own
+ * `issuedAt`, if sent, and the receipt time). Past
+ * `actorTopicScopeMaxAgeMs()` — or with no `issuedAt` at all — the assertion
+ * is stale and grants no cross-room reach (see `isActorTopicScopeFresh`).
  */
 export interface ActorTopicScope {
   visibleNodeTopicIds: string[];
   ownedNodeTopicIds: string[];
+  issuedAt?: number;
 }
 
 /**

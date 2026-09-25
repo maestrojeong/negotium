@@ -204,11 +204,15 @@ const sessionTargetCatalog = createSessionTargetCatalog<AgentKind>({
     // On `otium` the rows are the whole workspace (no roster, design Q1), so
     // the hub's per-turn assertion decides which of those rooms this actor
     // may actually name. Fail-closed without one: current room + lineage.
-    const reachable = actorReachableTopicIds({
-      surface: currentSessionPlacement().surface,
-      currentTopicId: currentTopicId || undefined,
-      actorTopicScope: sessionCommContext.actorTopicScope,
-    });
+    // Freshness is checked here, on every listing/resolution, not at startup.
+    const reachable = actorReachableTopicIds(
+      {
+        surface: currentSessionPlacement().surface,
+        currentTopicId: currentTopicId || undefined,
+        actorTopicScope: sessionCommContext.actorTopicScope,
+      },
+      { maxAgeMs: sessionCommContext.actorTopicScopeMaxAgeMs },
+    );
     return sessionTargetRows()
       .filter((row) => !reachable || reachable.has(row.id))
       .map((row) => ({

@@ -32,9 +32,10 @@ import { enqueueSessionInbox } from "#storage/session-inbox";
 import { connectStdio, mcpError, mcpOk } from "../mcp-helpers";
 import {
   abortTargetRefusal,
-  crossPrincipalAskRefusal,
+  crossPrincipalRefusal,
   localDeliveryPrincipal,
   remoteSessionRoute,
+  roomStatusPrincipal,
 } from "./actor-policy";
 import {
   hubRemoteAbort,
@@ -96,12 +97,12 @@ function remotePeerTarget(to: string): PeerTarget | null {
 
 /**
  * Principal a local inbox entry for `targetTopicId` is filed under, and the
- * target's turn runs as (see `localDeliveryPrincipal`); `null` refuses. Same
- * rule as the hosted host, from the same module.
+ * target's turn runs as: this turn's own, or `null` (refuse) when it is not a
+ * participant of the target room (see `localDeliveryPrincipal`). Same rule as
+ * the hosted host, from the same module.
  */
 function deliveryPrincipal(targetTopicId: string): string | null {
   return localDeliveryPrincipal({
-    surface: currentSessionSurface(),
     callerUserId: userId,
     targetParticipants: getTopic(targetTopicId)?.participants,
   });
@@ -435,8 +436,14 @@ server.tool(
 
     for (const { key: name, topic } of targets) {
       let isRunning = false;
-      // A room of another principal (otium, Q1) records its turns under that principal.
-      const principal = topic.topicId ? deliveryPrincipal(topic.topicId) : null;
+      // Read-only: a visible room of another principal (otium, Q1) records its
+      // turns under that principal. Never used to file an inbox entry.
+      const principal = topic.topicId
+        ? roomStatusPrincipal({
+            callerUserId: userId,
+            targetParticipants: getTopic(topic.topicId)?.participants,
+          })
+        : null;
       const state = readQueryState(
         principal && principal !== userId
           ? join(USERS_LOG_DIR, principal, "active-queries")
@@ -648,7 +655,7 @@ if (!isReplyOnly) {
           );
         }
         if (validation.target.topicId && deliveryPrincipal(validation.target.topicId) !== userId) {
-          return mcpError(crossPrincipalAskRefusal(to));
+          return mcpError(crossPrincipalRefusal("ask_session", to));
         }
 
         const fromRef = currentTopicRef();
@@ -820,15 +827,17 @@ if (!isReplyOnly) {
             surface: currentSessionSurface(),
             currentTopicId: currentTopicId || undefined,
             actorTopicScope: sessionCommContext.actorTopicScope,
+            clock: { maxAgeMs: sessionCommContext.actorTopicScopeMaxAgeMs },
             targetTopicId,
             to,
           });
           if (refused) return mcpError(refused);
-          const principal = deliveryPrincipal(targetTopicId);
-          if (!principal) return mcpError(`Error: Session "${to}" not found.`);
+          if (deliveryPrincipal(targetTopicId) !== userId) {
+            return mcpError(crossPrincipalRefusal("abort_session", to));
+          }
           // Send query abort signal via inbox
           enqueueSessionInbox({
-            userId: principal,
+            userId,
             topicId: targetTopicId,
             entry: {
               type: "abort",
@@ -946,13 +955,14 @@ if (!isReplyOnly) {
       //
       // NOTE: no direct DB write here; the consumer in the Otium server process
       // handles `deliverMessageToTopic` + the AI trigger.
-      const principal = deliveryPrincipal(targetTopicId);
-      if (!principal) return mcpError(`Error: Session "${to}" not found.`);
+      if (deliveryPrincipal(targetTopicId) !== userId) {
+        return mcpError(crossPrincipalRefusal("tell_session", to));
+      }
       const fromRef = currentTopicRef();
       const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       try {
         enqueueSessionInbox({
-          userId: principal,
+          userId,
           topicId: targetTopicId,
           entry: {
             type: "tell",

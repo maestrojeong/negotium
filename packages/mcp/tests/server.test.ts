@@ -571,6 +571,7 @@ describe("negotium MCP endpoint", () => {
       actorTopicScope: {
         visibleNodeTopicIds: [parent.id, caller.id],
         ownedNodeTopicIds: [caller.id],
+        issuedAt: Date.now(),
       },
       topicId: caller.id,
       topicTitle: caller.title,
@@ -657,16 +658,19 @@ describe("negotium MCP endpoint", () => {
     const stranger = await connect(memberId, {
       visibleNodeTopicIds: [parent.id],
       ownedNodeTopicIds: [],
+      issuedAt: Date.now(),
     });
     // Hub says the member sees the worker but owns nothing: list, no delete.
     const viewer = await connect(memberId, {
       visibleNodeTopicIds: [parent.id, worker.id],
       ownedNodeTopicIds: [],
+      issuedAt: Date.now(),
     });
     // Hub mirrors the worker into the owner's owned set: full management.
     const owner = await connect(ownerId, {
       visibleNodeTopicIds: [parent.id, worker.id],
       ownedNodeTopicIds: [parent.id, worker.id],
+      issuedAt: Date.now(),
     });
     try {
       expect(await listed(stranger)).toEqual([]);
@@ -840,6 +844,7 @@ describe("negotium MCP endpoint", () => {
       actorTopicScope: {
         visibleNodeTopicIds: [backed.id, humanOnly.id, general.id, otherWorkspace.id],
         ownedNodeTopicIds: [general.id, humanOnly.id],
+        issuedAt: Date.now(),
       },
       topicId: general.id,
       topicTitle: general.title,
@@ -940,6 +945,7 @@ describe("negotium MCP endpoint", () => {
       actorTopicScope: {
         visibleNodeTopicIds: [owned.id, general.id],
         ownedNodeTopicIds: [owned.id, general.id],
+        issuedAt: Date.now(),
       },
       topicId: general.id,
       topicTitle: general.title,
@@ -1018,7 +1024,11 @@ describe("negotium MCP endpoint", () => {
 
     // A member of the shared parent who does not own it: the worker is not
     // in their assertion, so it is "not found" for every lifecycle tool.
-    const member = await connect({ visibleNodeTopicIds: [parent.id], ownedNodeTopicIds: [] });
+    const member = await connect({
+      visibleNodeTopicIds: [parent.id],
+      ownedNodeTopicIds: [],
+      issuedAt: Date.now(),
+    });
     try {
       const listed = resultText(await member.callTool({ name: "list_topics", arguments: {} }));
       expect(listed).not.toContain(worker.id);
@@ -1039,6 +1049,7 @@ describe("negotium MCP endpoint", () => {
     const owner = await connect({
       visibleNodeTopicIds: [parent.id, worker.id],
       ownedNodeTopicIds: [parent.id, worker.id],
+      issuedAt: Date.now(),
     });
     try {
       const listed = resultText(await owner.callTool({ name: "list_topics", arguments: {} }));
@@ -1151,6 +1162,7 @@ describe("negotium MCP endpoint", () => {
       actorTopicScope: {
         visibleNodeTopicIds: [backed.id, general.id],
         ownedNodeTopicIds: [backed.id, general.id],
+        issuedAt: Date.now(),
       },
       topicId: general.id,
       topicTitle: general.title,

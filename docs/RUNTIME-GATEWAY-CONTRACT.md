@@ -20,7 +20,7 @@ the canonical topic.
   `userId` is the canonical execution principal. A trusted gateway may preserve the authenticated
   human author separately in `actorUserId`/`actorLabel` and select the topic owner's credential
   namespace with `vaultUserId`.
-  `actorTopicScope` is `{ visibleNodeTopicIds: string[], ownedNodeTopicIds: string[] }`: the node
+  `actorTopicScope` is `{ visibleNodeTopicIds: string[], ownedNodeTopicIds: string[], issuedAt?: number }`: the node
   topic ids (on the receiving node) the human author participates in and owns, as the gateway's
   own membership store sees them. It rides the durable turn row and the signed per-turn MCP token,
   so a retried or handed-off turn keeps it and the agent cannot widen it. On the `otium` surface the
@@ -49,11 +49,27 @@ the canonical topic.
   **No roster on `otium` (Q1).** A node topic's participants on `otium` are only its execution
   principals — `local`, the person who owned a synced node topic, or both — so they bound
   nothing there. `session-comm`, like the runtime MCP, lists and resolves local rooms by workspace
-  (surface + `surfaceScope`) ∩ the reach set above, never by the turn's `userId`. A local
-  tell/abort is filed under the caller's principal when it is in the target room, else under the
-  target room's owner principal, so the target turn always runs as one of its own participants;
-  an `ask_session` across principals is refused (its reply path is keyed to one principal).
-  `terminal`/`telegram` keep the node roster as the boundary.
+  (surface + `surfaceScope`) ∩ the reach set above, never by the turn's `userId`. That decides
+  what a turn may *see* (`list_sessions`, `peek_session`), not whom it may *act as*: Q1 removes
+  a visibility filter and approves no delegation or impersonation. A local `tell_session`,
+  `ask_session` or `abort_session` is always filed under the calling turn's own principal —
+  which is the principal the target's turn then runs as (its vault namespace, browser profile and
+  tool grants) — and only when that principal is a participant of the target room, e.g. `local`
+  in a `local`+person two-owner room. A visible room that does not hold the caller's principal is
+  refused explicitly (`Error: tell_session to "<room>" is not available: that room runs under a
+  different execution principal on this node, and a session cannot act as another principal.`,
+  same wording for ask/abort), before any inbox entry or pending ask exists; it is never
+  delivered under the room owner's principal. `terminal`/`telegram` keep the node roster as the
+  boundary.
+  **Assertion freshness.** The node stamps `issuedAt` when `/turns` accepts the assertion — its
+  own receipt time, or the gateway's `issuedAt` if that is earlier (a later one is clamped, so a
+  skewed gateway clock can only shorten the window). Folded requests keep the oldest stamp. The
+  assertion grants cross-room reach only while `now - issuedAt ≤ NEGOTIUM_ACTOR_TOPIC_SCOPE_MAX_AGE_MS`
+  (default 10 min, clamped to 0–4 h; the stdio `session-comm` child is handed the same value as
+  `--actor-topic-scope-max-age-ms`). A stale or unstamped assertion (a row or token written
+  before this rule) keeps only the current room and the part of its own subagent lineage the
+  assertion also named — never more than a fresh assertion or bare lineage would give. The check
+  runs on every list/peek/tell/ask/abort and runtime-MCP call, not once per token.
   **Subagent management.** The tools that manage the current room's delegation tree follow the
   same rule as the cross-room tools. On `otium` with an assertion, `list_subagents` shows only
   the descendants in `visibleNodeTopicIds`; `start_subagent`, `delete_subagent` and
@@ -70,7 +86,8 @@ the canonical topic.
   what lets a parent's own follow-up turn manage the workers it spawned.
   **Limits.** Each list holds at most 200 ids (counted before de-duplication), an id is at most
   128 characters after trimming, the normalized assertion is at most 8 KiB of JSON, and the object
-  must carry exactly those two keys (any other key, including prototype names, is rejected).
+  must carry exactly those two keys plus the optional `issuedAt` (epoch ms, a non-negative
+  integer; any other key, including prototype names, is rejected).
   Anything over is a `400` naming the limit. The same parser enforces the caps on the gateway
   body, the signed tokens and the stdio argv. A hub whose actor is in more rooms than fit must
   trim the assertion (the node then treats the omitted rooms as not visible) — the node rejects an
@@ -278,10 +295,16 @@ consumers must reconcile canonical topic/message state if their cursor predates 
   `deduplicated: true` and any capability minted for that replay has no turn to end it. The hub's per-actor rate limit (60 calls/min) is a
   process-local sliding window on the hub (accepted: a hub restart resets it; the per-turn
   capability counter is persisted).
-- **Revocation is not instant.** The actor room assertion is captured when a turn is accepted
-  and travels with the durable request and the signed MCP token (TTL 4 h). A membership change
-  the hub learns of afterwards does not reach a turn that is already queued or running, and a
-  replay of the same `clientMessageId` with a narrower assertion is acknowledged as a duplicate
-  while the stored assertion stays as first accepted (the assertion is outside the idempotency
-  hash). Aborting the turn is the only way to cut it short. Tightening this — per-tool-call
-  re-validation against the hub, or shorter token TTLs — is deliberately deferred.
+- **Revocation is bounded by the freshness window.** The actor room assertion is captured when
+  a turn is accepted and travels with the durable request and the signed MCP token (TTL 4 h), but
+  it grants cross-room reach only for the freshness window after its `issuedAt` (default
+  10 min, see above). A membership change the hub learns of afterwards reaches the person's next
+  turn (a new assertion) at once, and a turn that is already queued or running at the latest when
+  the window closes; a check-then-enqueue race is bounded by the same window. A replay of the
+  same `clientMessageId` keeps the first-accepted assertion *and its stamp*, so a replay cannot
+  refresh the window. Trade-off (safe default, product decision): a turn that runs longer than
+  the window keeps its own room and lineage but loses list/tell/ask/abort of other rooms until
+  the person speaks again. Alternatives considered: a hub membership epoch (needs shared state
+  and a hub→node push to be useful) and online re-validation against the hub at enqueue (a hub
+  round trip on every local call and a new hub API; unavailable offline). Both remain possible
+  later; the window bounds the exposure without either.

@@ -2,10 +2,11 @@ import { basename, join } from "node:path";
 import type { SessionCommMcpHost, SessionCommMcpResult } from "#mcp/factories/session-comm";
 import {
   abortTargetRefusal,
-  crossPrincipalAskRefusal,
+  crossPrincipalRefusal,
   excludesAgentlessTargets,
   localDeliveryPrincipal,
   remoteSessionRoute,
+  roomStatusPrincipal,
   rosterBoundsSessionTargets,
 } from "#mcp/session-comm/actor-policy";
 import type { SessionCommContext } from "#mcp/session-comm/context";
@@ -148,12 +149,12 @@ function remoteTarget(context: SessionCommContext, to: string) {
 }
 
 /**
- * Principal a local inbox entry for `targetTopicId` is filed under (see
- * `localDeliveryPrincipal`); `null` refuses. Only for resolved targets.
+ * Principal a local inbox entry for `targetTopicId` is filed under: the
+ * caller's own, or `null` (refuse) when the caller is not a participant of
+ * the target room (see `localDeliveryPrincipal`). Only for resolved targets.
  */
 function deliveryPrincipal(context: SessionCommContext, targetTopicId: string): string | null {
   return localDeliveryPrincipal({
-    surface: currentSurface(context),
     callerUserId: context.userId,
     targetParticipants: getTopic(targetTopicId)?.participants,
   });
@@ -169,8 +170,13 @@ function newRequestId(): string {
 }
 
 function activeQuery(context: SessionCommContext, topicId: string, title: string) {
-  // A room's turn runs as the principal its inbox entries are filed under.
-  const principal = deliveryPrincipal(context, topicId) ?? context.userId;
+  // Read-only: a visible room of another principal (otium, Q1) records its
+  // turns under that principal. Never used to file an inbox entry.
+  const principal =
+    roomStatusPrincipal({
+      callerUserId: context.userId,
+      targetParticipants: getTopic(topicId)?.participants,
+    }) ?? context.userId;
   const dir = join(USERS_LOG_DIR, principal, "active-queries");
   const candidates = [join(dir, `${sanitizeId(topicId)}.json`)];
   if (title && basename(title) === title && title !== "." && title !== "..") {
@@ -485,7 +491,7 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
         }
         if (deliveryPrincipal(context, targetTopicId) !== context.userId) {
           clearAsk();
-          return error(crossPrincipalAskRefusal(to));
+          return error(crossPrincipalRefusal("ask_session", to));
         }
         enqueueSessionInbox({
           userId: context.userId,
@@ -588,10 +594,11 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
         to,
       });
       if (refused) return error(refused);
-      const principal = deliveryPrincipal(context, targetTopicId);
-      if (!principal) return error(`Error: Session "${to}" not found.`);
+      if (deliveryPrincipal(context, targetTopicId) !== context.userId) {
+        return error(crossPrincipalRefusal("abort_session", to));
+      }
       enqueueSessionInbox({
-        userId: principal,
+        userId: context.userId,
         topicId: targetTopicId,
         entry: {
           type: "abort",
@@ -657,11 +664,12 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
       if (!canSubagentTellTarget(identity, targetTopicId)) {
         return error("Error: subagent tell_session target is not permitted.");
       }
-      const principal = deliveryPrincipal(context, targetTopicId);
-      if (!principal) return error(`Error: Session "${to}" not found.`);
+      if (deliveryPrincipal(context, targetTopicId) !== context.userId) {
+        return error(crossPrincipalRefusal("tell_session", to));
+      }
       const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       enqueueSessionInbox({
-        userId: principal,
+        userId: context.userId,
         topicId: targetTopicId,
         entry: {
           type: "tell",

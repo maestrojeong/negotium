@@ -40,6 +40,67 @@ export const ACTOR_TOPIC_SCOPE_LIMITS = Object.freeze({
 });
 
 const SCOPE_KEYS = ["visibleNodeTopicIds", "ownedNodeTopicIds"] as const;
+const OPTIONAL_SCOPE_KEYS = ["issuedAt"] as const;
+
+/**
+ * How long a hub room assertion is believed after it was issued.
+ *
+ * The assertion rides the per-turn MCP token, which lives for hours
+ * (`HOSTED_MCP_TOKEN_TTL_MS`), and nothing on this node re-asks the hub
+ * whether a person is still in a room. Without a bound, a person removed from
+ * a room would keep reaching it for the whole token lifetime. Past this age
+ * the assertion is stale and grants no cross-room reach (fail-closed, see
+ * `isActorTopicScopeFresh`): a person removed from a room loses it on their
+ * next turn (a fresh assertion), and at the latest this long after the
+ * assertion was issued for a turn that is still running.
+ *
+ * Trade-off (product decision, safe default): a turn that runs longer than
+ * this keeps its own room and its own lineage but can no longer list, tell,
+ * ask or abort other rooms until the person speaks again.
+ * `NEGOTIUM_ACTOR_TOPIC_SCOPE_MAX_AGE_MS` overrides it, clamped to
+ * [0, `ACTOR_TOPIC_SCOPE_MAX_AGE_CEILING_MS`]; `0` disables cross-room reach.
+ */
+export const ACTOR_TOPIC_SCOPE_DEFAULT_MAX_AGE_MS = 10 * 60 * 1000;
+/** Never believe an assertion longer than a hosted MCP token lives. */
+export const ACTOR_TOPIC_SCOPE_MAX_AGE_CEILING_MS = 4 * 60 * 60 * 1000;
+/** A stamp this far ahead of the local clock is not trusted as "fresh". */
+const ACTOR_TOPIC_SCOPE_FUTURE_SKEW_MS = 60 * 1000;
+
+export function actorTopicScopeMaxAgeMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.NEGOTIUM_ACTOR_TOPIC_SCOPE_MAX_AGE_MS?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return ACTOR_TOPIC_SCOPE_DEFAULT_MAX_AGE_MS;
+  return Math.min(Number(raw), ACTOR_TOPIC_SCOPE_MAX_AGE_CEILING_MS);
+}
+
+/**
+ * Whether `scope` may still grant cross-room reach at `now`. An assertion
+ * without `issuedAt` (a row or token written before the stamp existed) is
+ * never fresh — the safe reading of "we do not know how old this is".
+ */
+export function isActorTopicScopeFresh(
+  scope: ActorTopicScope,
+  now: number = Date.now(),
+  maxAgeMs: number = actorTopicScopeMaxAgeMs(),
+): boolean {
+  const issuedAt = scope.issuedAt;
+  if (issuedAt === undefined) return false;
+  if (issuedAt > now + ACTOR_TOPIC_SCOPE_FUTURE_SKEW_MS) return false;
+  return now - issuedAt <= maxAgeMs;
+}
+
+/**
+ * Stamp an assertion as it enters this node. The node's receipt time is the
+ * upper bound (a hub `issuedAt` in the future, e.g. clock skew, cannot extend
+ * it); an older hub `issuedAt` is kept, so time the hub spent before sending
+ * counts against the window.
+ */
+export function stampActorTopicScope(
+  scope: ActorTopicScope,
+  now: number = Date.now(),
+): ActorTopicScope {
+  const issuedAt = scope.issuedAt === undefined ? now : Math.min(scope.issuedAt, now);
+  return { ...scope, issuedAt };
+}
 
 export type ActorTopicScopeValidation =
   | { ok: true; scope: ActorTopicScope | undefined }
@@ -68,7 +129,8 @@ function idList(value: unknown, name: string): string[] | string {
  *
  * `undefined` in means `undefined` out (no assertion, fail-closed downstream);
  * anything else must be exactly `{ visibleNodeTopicIds, ownedNodeTopicIds }`
- * — a plain object with those two own keys and nothing else (so a stray
+ * plus an optional `issuedAt` (epoch ms) — a plain object with those own keys
+ * and nothing else (so a stray
  * `__proto__` or `constructor` key is a rejection, not a property), each a
  * list of non-empty strings within {@link ACTOR_TOPIC_SCOPE_LIMITS} — or it is
  * rejected, so a malformed assertion can never be read as "everything".
@@ -87,8 +149,10 @@ export function validateActorTopicScope(value: unknown): ActorTopicScopeValidati
     return { ok: false, error: "actorTopicScope must be a plain object" };
   }
   const keys = Object.keys(value);
-  const unknown = keys.filter((key) => !(SCOPE_KEYS as readonly string[]).includes(key));
-  if (unknown.length || keys.length !== SCOPE_KEYS.length) {
+  const allowed: readonly string[] = [...SCOPE_KEYS, ...OPTIONAL_SCOPE_KEYS];
+  const unknown = keys.filter((key) => !allowed.includes(key));
+  const required = SCOPE_KEYS.filter((key) => keys.includes(key)).length;
+  if (unknown.length || required !== SCOPE_KEYS.length) {
     return {
       ok: false,
       error: unknown.length
@@ -101,7 +165,15 @@ export function validateActorTopicScope(value: unknown): ActorTopicScopeValidati
   if (typeof visible === "string") return { ok: false, error: visible };
   const owned = idList(record.ownedNodeTopicIds, "actorTopicScope.ownedNodeTopicIds");
   if (typeof owned === "string") return { ok: false, error: owned };
-  const scope: ActorTopicScope = { visibleNodeTopicIds: visible, ownedNodeTopicIds: owned };
+  const issuedAt = record.issuedAt;
+  if (issuedAt !== undefined && (!Number.isSafeInteger(issuedAt) || (issuedAt as number) < 0)) {
+    return { ok: false, error: "actorTopicScope.issuedAt must be epoch milliseconds" };
+  }
+  const scope: ActorTopicScope = {
+    visibleNodeTopicIds: visible,
+    ownedNodeTopicIds: owned,
+    ...(issuedAt !== undefined ? { issuedAt: issuedAt as number } : {}),
+  };
   const bytes = Buffer.byteLength(JSON.stringify(scope), "utf-8");
   if (bytes > ACTOR_TOPIC_SCOPE_LIMITS.maxSerializedBytes) {
     return {
@@ -150,12 +222,20 @@ export function intersectActorTopicScopes(
   scopes: ReadonlyArray<ActorTopicScope | undefined>,
 ): ActorTopicScope | undefined {
   if (scopes.length === 0 || scopes.some((scope) => scope === undefined)) return undefined;
-  const [first, ...rest] = scopes as ActorTopicScope[];
-  const keep = (key: keyof ActorTopicScope) =>
+  const all = scopes as ActorTopicScope[];
+  const [first, ...rest] = all;
+  const keep = (key: "visibleNodeTopicIds" | "ownedNodeTopicIds") =>
     first[key].filter((id) => rest.every((scope) => scope[key].includes(id)));
+  // The oldest stamp wins; one unstamped request leaves the batch unstamped
+  // (stale), never fresher than any folded assertion.
+  const stamps = all.map((scope) => scope.issuedAt);
+  const issuedAt = stamps.every((stamp) => stamp !== undefined)
+    ? Math.min(...(stamps as number[]))
+    : undefined;
   return {
     visibleNodeTopicIds: keep("visibleNodeTopicIds"),
     ownedNodeTopicIds: keep("ownedNodeTopicIds"),
+    ...(issuedAt !== undefined ? { issuedAt } : {}),
   };
 }
 

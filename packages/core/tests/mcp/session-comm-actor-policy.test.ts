@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { localDeliveryPrincipal, rosterBoundsSessionTargets } from "#mcp/session-comm/actor-policy";
+import {
+  crossPrincipalRefusal,
+  localDeliveryPrincipal,
+  roomStatusPrincipal,
+  rosterBoundsSessionTargets,
+} from "#mcp/session-comm/actor-policy";
 
 describe("session-comm actor policy (design Q1)", () => {
   test("only otium drops the roster boundary", () => {
@@ -14,53 +19,51 @@ describe("session-comm actor policy (design Q1)", () => {
       { userId: "local", role: "owner" },
       { userId: "alice", role: "owner" },
     ];
-    for (const surface of ["otium", "terminal"]) {
-      expect(
-        localDeliveryPrincipal({ surface, callerUserId: "local", targetParticipants: dual }),
-      ).toBe("local");
-      expect(
-        localDeliveryPrincipal({ surface, callerUserId: "alice", targetParticipants: dual }),
-      ).toBe("alice");
-    }
+    expect(localDeliveryPrincipal({ callerUserId: "local", targetParticipants: dual })).toBe(
+      "local",
+    );
+    expect(localDeliveryPrincipal({ callerUserId: "alice", targetParticipants: dual })).toBe(
+      "alice",
+    );
   });
 
-  test("on otium a room of another principal is filed under its own owner", () => {
+  test("never substitutes another principal (no confused deputy)", () => {
+    // A room of another principal is refused, never filed under its owner.
     expect(
       localDeliveryPrincipal({
-        surface: "otium",
         callerUserId: "local",
         targetParticipants: [
           { userId: "bob", role: "member" },
           { userId: "alice", role: "owner" },
         ],
       }),
-    ).toBe("alice");
+    ).toBeNull();
     expect(
       localDeliveryPrincipal({
-        surface: "otium",
         callerUserId: "local",
         targetParticipants: [{ userId: "bob", role: "member" }],
       }),
-    ).toBe("bob");
+    ).toBeNull();
+    expect(localDeliveryPrincipal({ callerUserId: "local", targetParticipants: [] })).toBeNull();
+    expect(
+      localDeliveryPrincipal({ callerUserId: "local", targetParticipants: undefined }),
+    ).toBeNull();
   });
 
-  test("refuses when no participant principal exists or off otium", () => {
+  test("the status principal is read-only and may name the room owner", () => {
     expect(
-      localDeliveryPrincipal({ surface: "otium", callerUserId: "local", targetParticipants: [] }),
-    ).toBeNull();
-    expect(
-      localDeliveryPrincipal({
-        surface: "otium",
-        callerUserId: "local",
-        targetParticipants: undefined,
-      }),
-    ).toBeNull();
-    expect(
-      localDeliveryPrincipal({
-        surface: "terminal",
+      roomStatusPrincipal({
         callerUserId: "local",
         targetParticipants: [{ userId: "alice", role: "owner" }],
       }),
-    ).toBeNull();
+    ).toBe("alice");
+  });
+
+  test("one refusal wording for tell, ask and abort", () => {
+    for (const tool of ["tell_session", "ask_session", "abort_session"] as const) {
+      const text = crossPrincipalRefusal(tool, "Room");
+      expect(text).toStartWith(`Error: ${tool} to "Room" is not available:`);
+      expect(text).toContain("different execution principal");
+    }
   });
 });

@@ -39,7 +39,7 @@ import {
   buildPlaywrightMcpTransport,
   CODEX_BROWSER_CAPABILITY_ENV,
 } from "#platform/playwright/mcp-transport";
-import { encodeActorTopicScopeArg } from "#runtime/actor-topic-scope";
+import { actorTopicScopeMaxAgeMs, encodeActorTopicScopeArg } from "#runtime/actor-topic-scope";
 import { getRegisteredCronSession } from "#runtime/cron-sessions";
 import { encodeRemoteSessionGrantArg } from "#runtime/remote-session-grant";
 import type { HostMcpServerSpec } from "#runtime-gateway";
@@ -531,7 +531,12 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
         `--user-id=${userId}`,
         ...(actorUserId ? [`--actor-user-id=${actorUserId}`] : []),
         ...(actorTopicScope
-          ? [`--actor-topic-scope=${encodeActorTopicScopeArg(actorTopicScope)}`]
+          ? [
+              `--actor-topic-scope=${encodeActorTopicScopeArg(actorTopicScope)}`,
+              // The child does not inherit this process's env; hand it the
+              // same freshness window the hosted tools apply.
+              `--actor-topic-scope-max-age-ms=${actorTopicScopeMaxAgeMs()}`,
+            ]
           : []),
         ...(remoteSession
           ? [`--remote-session-grant=${encodeRemoteSessionGrantArg(remoteSession)}`]
