@@ -21,12 +21,17 @@ import {
   isTopicBrowserProfileOwner,
   listBrowserProfiles,
 } from "#storage/browser-profiles";
-import { beginRemoteSessionAsk, deleteRemoteSessionAsk } from "#storage/remote-session";
+import {
+  abandonRemoteSessionAsk,
+  beginRemoteSessionAsk,
+  markRemoteSessionAskSent,
+} from "#storage/remote-session";
 import {
   clearPendingAsk,
   createPendingAsk,
   describePendingAskState,
   listPendingAsksForCaller,
+  releasePendingAsk,
 } from "#storage/session-asks";
 import { enqueueSessionInbox } from "#storage/session-inbox";
 import { connectStdio, mcpError, mcpOk } from "../mcp-helpers";
@@ -599,8 +604,11 @@ if (!isReplyOnly) {
           if (route.kind === "hub") {
             // Durable caller record first: the hub's `ask-reply` delivery is
             // routed back through it, possibly after this process restarted.
-            // Row and pending marker are registered together; a failure undoes
-            // both, and a crash before the hub call is reconciled later.
+            // Row and pending marker are one state machine (see
+            // `RemoteSessionAskDispatchState`): the row never goes while its
+            // marker may remain, and a crash anywhere is reconciled later.
+            const releaseAsk = () =>
+              releasePendingAsk({ userId, from: fromRef.key, to, requestId });
             let begun: "ok" | "pending";
             try {
               begun = beginRemoteSessionAsk({
@@ -613,9 +621,7 @@ if (!isReplyOnly) {
                   ? { callerThreadRootId: sessionCommContext.currentThreadRootId }
                   : {}),
                 createMarker,
-                clearMarker: () => {
-                  clearPendingAsk({ userId, from: fromRef.key, to, requestId });
-                },
+                releaseMarker: releaseAsk,
               });
             } catch (err) {
               return mcpError(
@@ -636,10 +642,10 @@ if (!isReplyOnly) {
                   `"${to}" 세션(노드 ${remote.node})에 참조 요청을 보냈지만 hub의 확인을 받지 못했습니다 (${sent.error}).\n\nrequest_id: ${requestId}\n\n응답이 도착하면 '[Reply from ${remote.node}/${remote.topic}]' 형식으로 이 세션에 돌아옵니다. 같은 요청으로 ask_session을 재호출하지 마세요.`,
                 );
               }
-              clearPendingAsk({ userId, from: fromRef.key, to, requestId });
-              deleteRemoteSessionAsk(requestId);
+              abandonRemoteSessionAsk(requestId, releaseAsk);
               return mcpError(`Error: "${to}" 원격 세션에 전송 실패: ${sent.error}`);
             }
+            markRemoteSessionAskSent(requestId);
             return mcpOk(
               `"${to}" 세션(노드 ${remote.node})에 참조 요청을 보냈습니다.\n\nrequest_id: ${requestId}\n\n응답은 '[Reply from ${remote.node}/${remote.topic}]' 형식으로 이 세션에 자동으로 돌아옵니다. 응답이 도착할 때까지 같은 요청으로 ask_session을 재호출하지 마세요.`,
             );

@@ -47,12 +47,17 @@ import {
   isTopicBrowserProfileOwner,
   listBrowserProfiles,
 } from "#storage/browser-profiles";
-import { beginRemoteSessionAsk, deleteRemoteSessionAsk } from "#storage/remote-session";
+import {
+  abandonRemoteSessionAsk,
+  beginRemoteSessionAsk,
+  markRemoteSessionAskSent,
+} from "#storage/remote-session";
 import {
   clearPendingAsk,
   createPendingAsk,
   describePendingAskState,
   listPendingAsksForCaller,
+  releasePendingAsk,
 } from "#storage/session-asks";
 import { enqueueSessionInbox } from "#storage/session-inbox";
 import { isAgentKind, type QueryState } from "#types";
@@ -423,6 +428,8 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
         error(`Error: an ask_session request to "${to}" is already pending.`);
       const clearAsk = () =>
         clearPendingAsk({ userId: context.userId, from: from.key, to, requestId });
+      const releaseAsk = () =>
+        releasePendingAsk({ userId: context.userId, from: from.key, to, requestId });
       if (remote) {
         const route = remoteRoute(context);
         if (route.kind === "refused") return error(route.error);
@@ -430,8 +437,9 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
         if (route.kind === "hub") {
           // Durable caller record first: the hub's `ask-reply` delivery is
           // routed back through it, possibly after this process restarted.
-          // Row and pending marker are registered together; a failure undoes
-          // both, and a crash before the hub call is reconciled later.
+          // Row and pending marker are one state machine (see
+          // `RemoteSessionAskDispatchState`): the row never goes while its
+          // marker may remain, and a crash anywhere is reconciled later.
           let begun: "ok" | "pending";
           try {
             begun = beginRemoteSessionAsk({
@@ -444,9 +452,7 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
                 ? { callerThreadRootId: context.currentThreadRootId }
                 : {}),
               createMarker: () => createAsk().ok,
-              clearMarker: () => {
-                clearAsk();
-              },
+              releaseMarker: releaseAsk,
             });
           } catch (err) {
             logger.warn({ err, requestId, to }, "session-comm: could not record remote ask");
@@ -462,16 +468,17 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
           });
           if (!sent.ok) {
             if (sent.uncertain) {
-              // The hub may have forwarded it. Keep the pending marker so a
-              // late answer still lands; the ask TTL cleans up otherwise.
+              // The hub may have forwarded it: the row stays `dispatched` so a
+              // late answer still lands; reconciliation turns it `unknown`
+              // (marker released) and the caller hears if none ever arrives.
               return ok(
                 `Ask sent to "${to}" (delivery unconfirmed: ${sent.error}). request_id: ${requestId}`,
               );
             }
-            clearAsk();
-            deleteRemoteSessionAsk(requestId);
+            abandonRemoteSessionAsk(requestId, releaseAsk);
             return error(`Error: ${sent.error}`);
           }
+          markRemoteSessionAskSent(requestId);
           return ok(`Ask sent to "${to}". request_id: ${requestId}`);
         }
         if (!createAsk().ok) return alreadyPending();

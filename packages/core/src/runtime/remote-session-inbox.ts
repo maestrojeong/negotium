@@ -15,10 +15,13 @@ import { db } from "#storage/forum-db";
 import {
   claimRemoteSessionInbox,
   completeRemoteSessionInboxClaim,
+  deleteExpiredRemoteSessionAsk,
   deleteRemoteSessionAsk,
   getRemoteSessionAsk,
   getRemoteSessionInboxClaim,
   listExpiredRemoteSessionInboxClaims,
+  listRemoteSessionAsksToExpire,
+  markRemoteSessionAskExpired,
   type RemoteSessionAskRecord,
   type RemoteSessionInboxClaimRecord,
   releaseRemoteSessionInboxClaim,
@@ -698,6 +701,66 @@ async function runAskReplyDelivery(
     return { ok: false, status: 500, error: "reply could not be delivered to the caller" };
   }
   return { ok: true, replayed: false };
+}
+
+/** The caller-facing text for an outbound ask whose fate nobody learned. */
+export function remoteSessionAskNoReplyText(
+  ask: Pick<RemoteSessionAskRecord, "toKey" | "requestId">,
+): string {
+  return [
+    `No reply arrived for the ask to "${ask.toKey}" (request_id: ${ask.requestId}).`,
+    "This node was interrupted (restart or lost connection) before the hub confirmed the ask was delivered, and nothing came back within the ask timeout.",
+    "It may never have reached the target. Ask again if you still need an answer.",
+  ].join(" ");
+}
+
+/**
+ * Tell callers that an outbound hub ask in the `unknown` state (the hub's
+ * receipt was never confirmed) timed out without a reply. Each ask is moved
+ * `unknown` → `expired` first — refused while a late reply holds an inbox
+ * claim for it, and from then on invisible to the reply path — and the row
+ * is removed in the same transaction that records the notice. A notice that
+ * could not be recorded stays `expired` and is retried on the next pass.
+ * Idempotent; runs in the maintenance pass. Returns how many notices landed.
+ */
+export async function expireUnknownRemoteSessionAsks(now: number = Date.now()): Promise<number> {
+  const due = listRemoteSessionAsksToExpire(now);
+  if (!due.length) return 0;
+  const deliverAskCallbackToCaller =
+    askReplyDeliverer ?? (await import("#runtime/turn-runner")).deliverAskCallbackToCaller;
+  let notified = 0;
+  for (const ask of due) {
+    await withRequestLock(ask.requestId, async () => {
+      if (ask.dispatchState === "unknown" && !markRemoteSessionAskExpired(ask.requestId)) return;
+      let recorded = false;
+      try {
+        await deliverAskCallbackToCaller(
+          {
+            requestId: ask.requestId,
+            callerTopicId: ask.callerTopicId,
+            ...(ask.callerThreadRootId ? { callerThreadRootId: ask.callerThreadRootId } : {}),
+            callerUserId: ask.userId,
+          },
+          ask.toKey,
+          remoteSessionAskNoReplyText(ask),
+          "error",
+          {
+            onRecorded: () => {
+              deleteExpiredRemoteSessionAsk(ask.requestId);
+              recorded = true;
+            },
+          },
+        );
+      } catch (err) {
+        logger.warn(
+          { err, requestId: ask.requestId, callerTopicId: ask.callerTopicId },
+          "session-comm: remote ask no-reply notice threw",
+        );
+      }
+      if (recorded) notified += 1;
+    });
+  }
+  return notified;
 }
 
 /**
