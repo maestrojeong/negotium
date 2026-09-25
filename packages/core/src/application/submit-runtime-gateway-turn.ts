@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isReservedRuntimeMcpServerName } from "#platform/mcp-config";
+import { stampActorTopicScope } from "#runtime/actor-topic-scope";
 import { resolveAttachmentByFileId } from "#runtime/file-hooks";
 import { describeQuotedAuthor } from "#runtime/thread-context";
 import type { UserTurnReplyContext } from "#runtime/user-turn-envelope";
@@ -340,7 +341,12 @@ export function submitRuntimeGatewayTurn(
             loggedUserMessageCount: 0,
             vaultUserId: params.vaultUserId,
             actorUserId,
-            ...(params.actorTopicScope ? { actorTopicScope: params.actorTopicScope } : {}),
+            // Stamped on arrival: the assertion is believed for a bounded
+            // window from here (`isActorTopicScopeFresh`), not for the MCP
+            // token's lifetime.
+            ...(params.actorTopicScope
+              ? { actorTopicScope: stampActorTopicScope(params.actorTopicScope) }
+              : {}),
             // Like the assertion: describes the caller's authority for this
             // turn, rides the durable row, and is outside the idempotency hash.
             ...(params.remoteSession ? { remoteSession: params.remoteSession } : {}),

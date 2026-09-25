@@ -1,4 +1,7 @@
-import { parseActorTopicScope } from "#runtime/actor-topic-scope";
+import {
+  ACTOR_TOPIC_SCOPE_MAX_AGE_CEILING_MS,
+  parseActorTopicScope,
+} from "#runtime/actor-topic-scope";
 import { decodeRemoteSessionGrantArg } from "#runtime/remote-session-grant";
 import type { ActorTopicScope, AgentKind, RemoteSessionGrant } from "#types";
 import { isAgentKind } from "#types";
@@ -15,6 +18,12 @@ export interface SessionCommContext {
    * only the current room plus its own subagent lineage.
    */
   actorTopicScope?: ActorTopicScope;
+  /**
+   * How long `actorTopicScope` is believed after its `issuedAt`. Set for the
+   * stdio child from `--actor-topic-scope-max-age-ms` (it does not inherit the
+   * node's env); unset means `actorTopicScopeMaxAgeMs()` of this process.
+   */
+  actorTopicScopeMaxAgeMs?: number;
   /**
    * Hub-issued per-turn authority for the remote (`node/topic`) branches on
    * the `otium` surface. Opaque to the node; presented to the hub as a bearer.
@@ -72,6 +81,12 @@ export function parseSessionCommContext(
     if (!parsed) throw new Error("Invalid --actor-topic-scope arg");
     actorTopicScope = parsed;
   }
+  const maxAgeValue = value(args, "actor-topic-scope-max-age-ms");
+  let actorTopicScopeMaxAgeMs: number | undefined;
+  if (maxAgeValue !== undefined) {
+    if (!/^\d+$/.test(maxAgeValue)) throw new Error(`Invalid --actor-topic-scope-max-age-ms arg`);
+    actorTopicScopeMaxAgeMs = Math.min(Number(maxAgeValue), ACTOR_TOPIC_SCOPE_MAX_AGE_CEILING_MS);
+  }
   const grantValue = value(args, "remote-session-grant");
   let remoteSession: RemoteSessionGrant | undefined;
   if (grantValue) {
@@ -83,6 +98,7 @@ export function parseSessionCommContext(
     userId: value(args, "user-id") ?? defaults.userId,
     actorUserId: value(args, "actor-user-id") || undefined,
     ...(actorTopicScope ? { actorTopicScope } : {}),
+    ...(actorTopicScopeMaxAgeMs !== undefined ? { actorTopicScopeMaxAgeMs } : {}),
     ...(remoteSession ? { remoteSession } : {}),
     currentTopic: value(args, "topic") ?? "",
     currentTopicId: value(args, "topic-id") || undefined,

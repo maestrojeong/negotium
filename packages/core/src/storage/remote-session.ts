@@ -19,9 +19,9 @@
  *   answer waiting to be posted to the hub with its one-shot reply token,
  *   retried until the hub acknowledges it or the pending-ask TTL passes.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { db } from "#storage/forum-db";
-import { PENDING_ASK_TTL_MS } from "#storage/session-asks";
+import { PENDING_ASK_TTL_MS, releasePendingAsk } from "#storage/session-asks";
 import { registerStorageSchemaInitializer } from "#storage/storage-host";
 
 registerStorageSchemaInitializer((database) => {
@@ -67,6 +67,13 @@ registerStorageSchemaInitializer((database) => {
     "ALTER TABLE remote_session_inbox_claims ADD COLUMN state TEXT NOT NULL DEFAULT 'completed'",
     "ALTER TABLE remote_session_inbox_claims ADD COLUMN lease_until INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE remote_session_inbox_claims ADD COLUMN payload_json TEXT",
+    // Opaque per-claim ownership token (see `claimRemoteSessionInboxOwned`).
+    // NULL only on claims written before it existed.
+    "ALTER TABLE remote_session_inbox_claims ADD COLUMN owner_token TEXT",
+    // Outbound ask state (see `RemoteSessionAskDispatchState`). Rows that
+    // predate the column may or may not have reached the hub: `dispatched`
+    // (reconciled to `unknown`).
+    "ALTER TABLE remote_session_asks ADD COLUMN dispatch_state TEXT NOT NULL DEFAULT 'dispatched'",
   ]) {
     try {
       database.exec(ddl);
@@ -120,7 +127,11 @@ export function remoteSessionRetryDelayMs(
   return Math.round(base * jitter);
 }
 
-/** Stable digest of a delivery body, so a retried delivery is recognised as one. */
+/**
+ * Stable digest of a value. The inbox hashes its actor-bound claim identity
+ * (`remoteSessionInboxClaimIdentity` in `#runtime/remote-session-inbox`), so
+ * a retried delivery is recognised as one only under the same principal.
+ */
 export function remoteSessionPayloadHash(payload: unknown): string {
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
@@ -132,6 +143,7 @@ interface InboxClaimRow {
   state: RemoteSessionInboxClaimState;
   lease_until: number | bigint;
   payload_json: string | null;
+  owner_token: string | null;
   created_at: number | bigint;
 }
 
@@ -144,6 +156,47 @@ export interface RemoteSessionInboxClaimRecord {
   leaseUntil: number;
   payload: unknown;
   createdAt: number;
+  /** Who holds the claim right now (`null`: written before tokens existed). */
+  owner: string | null;
+}
+
+/** This process's incarnation; tells a reused pid apart from a live owner. */
+const CLAIM_PROCESS_INSTANCE = randomUUID();
+
+/**
+ * A fresh, unique claim-ownership token: `<pid>.<process instance>.<nonce>`.
+ * Every claim and every takeover mints a new one, so two holders of the same
+ * payload digest (a stalled process and the one that took its lease over,
+ * possibly in another process) never share an identity.
+ */
+function mintRemoteSessionClaimOwner(): string {
+  return `${process.pid}.${CLAIM_PROCESS_INSTANCE}.${randomUUID()}`;
+}
+
+/**
+ * `true` only when the process that holds `owner` is provably gone: our own
+ * pid under another incarnation (the pid was reused after a restart), or a
+ * pid the OS reports as nonexistent. A live process, a pid we may not signal,
+ * an unparseable or legacy (`null`) token are all "maybe alive".
+ */
+export function remoteSessionClaimOwnerIsDead(owner: string | null): boolean {
+  if (!owner) return false;
+  const [pidText, instance] = owner.split(".");
+  const pid = Number(pidText);
+  if (!Number.isSafeInteger(pid) || pid <= 0 || !instance) return false;
+  if (pid === process.pid) return instance !== CLAIM_PROCESS_INSTANCE;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+export interface RemoteSessionInboxClaimResult {
+  outcome: RemoteSessionInboxClaimOutcome;
+  /** Set exactly when `outcome` is `claimed`: the token release/complete must present. */
+  owner?: string;
 }
 
 /**
@@ -153,7 +206,7 @@ export interface RemoteSessionInboxClaimRecord {
  * answer is durably in the caller's room, or is released so the hub's retry
  * runs the delivery again.
  */
-export function claimRemoteSessionInbox(args: {
+export function claimRemoteSessionInboxOwned(args: {
   requestId: string;
   kind: RemoteSessionInboxKind;
   topicId: string;
@@ -162,58 +215,112 @@ export function claimRemoteSessionInbox(args: {
   payload?: unknown;
   now?: number;
   leaseMs?: number;
-  /** Take over even a live lease (a fresh process knows nobody holds one). */
+  /**
+   * Take over even a live lease — but only one whose owner process is
+   * provably dead ({@link remoteSessionClaimOwnerIsDead}); a live or unknown
+   * owner is still `in_progress`. Used by the startup recovery pass.
+   */
   force?: boolean;
-}): RemoteSessionInboxClaimOutcome {
+  /**
+   * The digest a node before the actor-bound hash would have stored for this
+   * delivery (payload only, no principal). A claim bearing it was written by
+   * that version: `completed` answers a replay (no side effect), `processing`
+   * is taken over and re-bound to `payloadHash`/`payload` — the caller has
+   * already verified the principal of the delivery it is re-running.
+   */
+  legacyPayloadHash?: string;
+}): RemoteSessionInboxClaimResult {
   const now = args.now ?? Date.now();
   const leaseUntil = now + (args.leaseMs ?? REMOTE_SESSION_INBOX_CLAIM_LEASE_MS);
   const payloadJson = args.payload === undefined ? null : JSON.stringify(args.payload);
-  return db.transaction((): RemoteSessionInboxClaimOutcome => {
+  const owner = mintRemoteSessionClaimOwner();
+  return db.transaction((): RemoteSessionInboxClaimResult => {
     const inserted = db
       .query(
         `INSERT OR IGNORE INTO remote_session_inbox_claims
-           (request_id, kind, topic_id, payload_hash, created_at, state, lease_until, payload_json)
-         VALUES (?, ?, ?, ?, ?, 'processing', ?, ?)`,
+           (request_id, kind, topic_id, payload_hash, created_at, state, lease_until, payload_json,
+            owner_token)
+         VALUES (?, ?, ?, ?, ?, 'processing', ?, ?, ?)`,
       )
-      .run(args.requestId, args.kind, args.topicId, args.payloadHash, now, leaseUntil, payloadJson);
-    if (Number(inserted.changes ?? 0) === 1) return "claimed";
+      .run(
+        args.requestId,
+        args.kind,
+        args.topicId,
+        args.payloadHash,
+        now,
+        leaseUntil,
+        payloadJson,
+        owner,
+      );
+    if (Number(inserted.changes ?? 0) === 1) return { outcome: "claimed", owner };
     const existing = db
       .query<InboxClaimRow, [string]>(
         "SELECT * FROM remote_session_inbox_claims WHERE request_id = ?",
       )
       .get(args.requestId);
+    const legacy =
+      args.legacyPayloadHash !== undefined && existing?.payload_hash === args.legacyPayloadHash;
     if (
       !existing ||
       existing.kind !== args.kind ||
       existing.topic_id !== args.topicId ||
-      existing.payload_hash !== args.payloadHash
+      (existing.payload_hash !== args.payloadHash && !legacy)
     ) {
-      return "conflict";
+      return { outcome: "conflict" };
     }
-    if (existing.state === "completed") return "replay";
-    if (!args.force && Number(existing.lease_until) > now) return "in_progress";
-    // The previous holder died (or hung past its lease): take the claim over.
-    db.query(
-      `UPDATE remote_session_inbox_claims
-       SET lease_until = ?, payload_json = COALESCE(?, payload_json)
-       WHERE request_id = ?`,
-    ).run(leaseUntil, payloadJson, args.requestId);
-    return "claimed";
+    if (existing.state === "completed") return { outcome: "replay" };
+    const leaseLive = Number(existing.lease_until) > now;
+    if (leaseLive && !(args.force && remoteSessionClaimOwnerIsDead(existing.owner_token))) {
+      return { outcome: "in_progress" };
+    }
+    // The previous holder died (or hung past its lease): take the claim over
+    // under a NEW owner token, so the previous holder's late release or
+    // completion (same digest, maybe another process) no longer matches.
+    // A legacy claim is re-bound to the actor-bound digest and envelope, so
+    // recovery never meets it again in its unverifiable form.
+    const taken = db
+      .query(
+        `UPDATE remote_session_inbox_claims
+         SET lease_until = ?, payload_json = COALESCE(?, payload_json), payload_hash = ?,
+             owner_token = ?
+         WHERE request_id = ? AND state = 'processing' AND owner_token IS ?`,
+      )
+      .run(leaseUntil, payloadJson, args.payloadHash, owner, args.requestId, existing.owner_token);
+    return Number(taken.changes ?? 0) === 1
+      ? { outcome: "claimed", owner }
+      : { outcome: "in_progress" };
   })();
 }
 
-/** The delivery is durably recorded: replays may now be acknowledged. */
+/** {@link claimRemoteSessionInboxOwned} without the token (inspection and tests). */
+export function claimRemoteSessionInbox(
+  args: Parameters<typeof claimRemoteSessionInboxOwned>[0],
+): RemoteSessionInboxClaimOutcome {
+  return claimRemoteSessionInboxOwned(args).outcome;
+}
+
+/**
+ * The delivery is durably recorded: replays may now be acknowledged.
+ * Compare-and-set on (requestId, `processing`, owner token — and the payload
+ * digest when given): `false` means
+ * the caller no longer owns the claim (taken over, completed or released by
+ * someone else) and must not record anything — run it inside the recording
+ * transaction and abort that transaction on `false`.
+ */
 export function completeRemoteSessionInboxClaim(
   requestId: string,
+  owner: string,
   now: number = Date.now(),
+  expected: { payloadHash?: string } = {},
 ): boolean {
   const result = db
     .query(
       `UPDATE remote_session_inbox_claims
        SET state = 'completed', lease_until = ?, payload_json = NULL
-       WHERE request_id = ? AND state = 'processing'`,
+       WHERE request_id = ? AND state = 'processing' AND owner_token = ?
+         AND (? IS NULL OR payload_hash = ?)`,
     )
-    .run(now, requestId);
+    .run(now, requestId, owner, expected.payloadHash ?? null, expected.payloadHash ?? null);
   return Number(result.changes ?? 0) === 1;
 }
 
@@ -246,6 +353,7 @@ function toClaimRecord(row: InboxClaimRow & { request_id: string }): RemoteSessi
     leaseUntil: Number(row.lease_until),
     payload,
     createdAt: Number(row.created_at),
+    owner: row.owner_token ?? null,
   };
 }
 
@@ -264,10 +372,34 @@ export function listExpiredRemoteSessionInboxClaims(
     .map(toClaimRecord);
 }
 
-export function releaseRemoteSessionInboxClaim(requestId: string): boolean {
+/**
+ * Hand a `processing` claim back so the hub's retry runs the delivery again.
+ *
+ * A compare-and-delete on (requestId, `processing`, owner token, payload
+ * digest and — when given — the exact lease): only the claim instance the
+ * caller holds — or, for recovery, exactly the one it read — is deleted. A claim that was meanwhile completed, or taken over by
+ * another holder (even with the same payload digest, even in another
+ * process), carries a different state or token and is never deleted: losing
+ * it would turn the hub's next retry into a 404 (an ask-reply whose answer
+ * already landed) or a second enqueue (tell/ask/abort).
+ */
+export function releaseRemoteSessionInboxClaim(
+  requestId: string,
+  expected: { owner: string | null; payloadHash: string; leaseUntil?: number },
+): boolean {
   const result = db
-    .query("DELETE FROM remote_session_inbox_claims WHERE request_id = ?")
-    .run(requestId);
+    .query(
+      `DELETE FROM remote_session_inbox_claims
+       WHERE request_id = ? AND state = 'processing' AND owner_token IS ? AND payload_hash = ?
+         AND (? IS NULL OR lease_until = ?)`,
+    )
+    .run(
+      requestId,
+      expected.owner,
+      expected.payloadHash,
+      expected.leaseUntil ?? null,
+      expected.leaseUntil ?? null,
+    );
   return Number(result.changes ?? 0) === 1;
 }
 
@@ -286,6 +418,8 @@ export interface RemoteSessionAskRecord {
   toKey: string;
   callerThreadRootId?: string;
   createdAt: number;
+  /** Where the outbound ask stands; see {@link RemoteSessionAskDispatchState}. */
+  dispatchState?: RemoteSessionAskDispatchState;
 }
 
 interface RemoteSessionAskRow {
@@ -296,6 +430,7 @@ interface RemoteSessionAskRow {
   to_key: string;
   caller_thread_root_id: string | null;
   created_at: number | bigint;
+  dispatch_state: RemoteSessionAskDispatchState;
 }
 
 function toAskRecord(row: RemoteSessionAskRow): RemoteSessionAskRecord {
@@ -307,24 +442,80 @@ function toAskRecord(row: RemoteSessionAskRow): RemoteSessionAskRecord {
     toKey: row.to_key,
     ...(row.caller_thread_root_id ? { callerThreadRootId: row.caller_thread_root_id } : {}),
     createdAt: Number(row.created_at),
+    dispatchState: row.dispatch_state,
   };
 }
 
+/**
+ * One state machine for the outbound hub ask: the durable row *and* the
+ * caller's pending marker (a file) it may hold. Invariant: the row is never
+ * deleted while its marker may still exist — the marker is released first
+ * (requestId-scoped, idempotent: {@link releasePendingAsk}) and the row goes
+ * only once that succeeded, so a marker is always findable through its row.
+ *
+ * - `prepared`: row written, marker maybe; the hub has certainly not been called.
+ * - `dispatched`: the hub call is in flight (or its process died during it, or
+ *   it ended "uncertain"); the hub may hold the ask. Row + marker.
+ * - `sent`: the hub acknowledged the ask. Row + marker until the reply lands
+ *   (the reply path consumes both) or the TTL passes.
+ * - `abandoned`: no reply can come (the hub refused, or registration failed)
+ *   but the marker could not be released yet; reconciliation retries.
+ * - `unknown`: a `dispatched` ask whose outcome nobody will learn (the hub
+ *   call's grant is per-turn, so neither an idempotent resend nor a hub status
+ *   query is possible after the fact). Marker released so the room can ask
+ *   again; row kept so a late reply is still routed; at the TTL the caller is
+ *   told no reply arrived.
+ * - `expired`: an `unknown` ask whose "no reply arrived" notice is being
+ *   delivered; invisible to the reply path, removed with the notice's record.
+ *
+ * prepared ─marker─▶ dispatched ─hub ok─▶ sent ─reply/TTL─▶ ∅
+ *    │                 │  └─hub refused─▶ abandoned ─release─▶ ∅
+ *    └─fail/grace─▶ release ─▶ ∅ (or abandoned)
+ *                      └─crash/uncertain + grace ─release─▶ unknown ─reply─▶ ∅
+ *                                                     └─TTL─▶ expired ─notice─▶ ∅
+ */
+export type RemoteSessionAskDispatchState =
+  | "prepared"
+  | "dispatched"
+  | "sent"
+  | "abandoned"
+  | "unknown"
+  | "expired";
+
+/**
+ * A `prepared` row older than this belongs to a process that died between
+ * writing it and calling the hub: prepare → marker → dispatched is
+ * synchronous, so a live one is never this old.
+ */
+export const REMOTE_SESSION_ASK_PREPARE_GRACE_MS = 60_000;
+/**
+ * A `dispatched` row older than this is not waiting on a live hub call: one
+ * `hubRemoteAsk` is bounded by 3 attempts × 15 s (+ backoff), so the caller
+ * has long since either confirmed it (`sent`) or given up on knowing.
+ */
+export const REMOTE_SESSION_ASK_DISPATCH_GRACE_MS = 2 * 60_000;
+
 /** Remember an outbound remote ask before the hub is asked to forward it. */
 export function recordRemoteSessionAsk(
-  args: Omit<RemoteSessionAskRecord, "createdAt"> & { createdAt?: number },
+  args: Omit<RemoteSessionAskRecord, "createdAt" | "dispatchState"> & {
+    createdAt?: number;
+    /** Defaults to `sent` (an ask the hub holds); the hub-ask path passes `prepared`. */
+    dispatchState?: RemoteSessionAskDispatchState;
+  },
 ): void {
   db.query(
     `INSERT INTO remote_session_asks
-       (request_id, caller_topic_id, user_id, from_key, to_key, caller_thread_root_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+       (request_id, caller_topic_id, user_id, from_key, to_key, caller_thread_root_id, created_at,
+        dispatch_state)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(request_id) DO UPDATE SET
        caller_topic_id = excluded.caller_topic_id,
        user_id = excluded.user_id,
        from_key = excluded.from_key,
        to_key = excluded.to_key,
        caller_thread_root_id = excluded.caller_thread_root_id,
-       created_at = excluded.created_at`,
+       created_at = excluded.created_at,
+       dispatch_state = excluded.dispatch_state`,
   ).run(
     args.requestId,
     args.callerTopicId,
@@ -333,12 +524,230 @@ export function recordRemoteSessionAsk(
     args.toKey,
     args.callerThreadRootId ?? null,
     args.createdAt ?? Date.now(),
+    args.dispatchState ?? "sent",
   );
 }
 
+/** Compare-and-set of the dispatch state; `false` if the row is not in `from`. */
+function moveRemoteSessionAsk(
+  requestId: string,
+  from: RemoteSessionAskDispatchState,
+  to: RemoteSessionAskDispatchState,
+): boolean {
+  const result = db
+    .query(
+      "UPDATE remote_session_asks SET dispatch_state = ? WHERE request_id = ? AND dispatch_state = ?",
+    )
+    .run(to, requestId, from);
+  return Number(result.changes ?? 0) === 1;
+}
+
+/** Compare-and-delete: drop the row only if it is still in `state`. */
+function deleteRemoteSessionAskInState(
+  requestId: string,
+  state: RemoteSessionAskDispatchState,
+): boolean {
+  const result = db
+    .query("DELETE FROM remote_session_asks WHERE request_id = ? AND dispatch_state = ?")
+    .run(requestId, state);
+  return Number(result.changes ?? 0) === 1;
+}
+
+/** The hub call is about to be made: from now on the hub may hold the ask. */
+export function markRemoteSessionAskDispatched(requestId: string): boolean {
+  return moveRemoteSessionAsk(requestId, "prepared", "dispatched");
+}
+
+/**
+ * The hub acknowledged the ask. Best effort: a row left `dispatched` (this
+ * write failed, or the reply already consumed the row) is still correct —
+ * reconciliation merely treats it as `unknown` after the grace.
+ */
+export function markRemoteSessionAskSent(requestId: string): boolean {
+  try {
+    return moveRemoteSessionAsk(requestId, "dispatched", "sent");
+  } catch {
+    return false;
+  }
+}
+
+/** `true` when no marker of this ask remains; a throw counts as "still held". */
+function tryRelease(release: () => boolean): boolean {
+  try {
+    return release() === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Drop the row only once its marker is released; otherwise park it as
+ * `abandoned` (from `state`) so reconciliation retries the release. If even
+ * that write fails the row keeps `state`, which reconciliation also covers.
+ */
+function retireRemoteSessionAsk(
+  requestId: string,
+  state: RemoteSessionAskDispatchState,
+  release: () => boolean,
+): void {
+  try {
+    if (tryRelease(release)) deleteRemoteSessionAskInState(requestId, state);
+    else if (state !== "abandoned") moveRemoteSessionAsk(requestId, state, "abandoned");
+  } catch {
+    // Row left as it was: reconciliation retries from that state.
+  }
+}
+
+/**
+ * Register an outbound hub ask: durable caller row (`prepared`), then the
+ * caller's pending marker, then `dispatched` — only after this returns `ok`
+ * may the hub be called. A failure retires what was written without ever
+ * orphaning the marker: the row is deleted only after `releaseMarker`
+ * confirmed the marker is gone, else it stays (`abandoned`/`prepared`) for
+ * {@link reconcileRemoteSessionAsks}. `pending` means another ask to that
+ * room is outstanding (its marker is not ours and is never touched).
+ */
+export function beginRemoteSessionAsk(
+  args: Omit<RemoteSessionAskRecord, "createdAt" | "dispatchState"> & {
+    createMarker: () => boolean;
+    /** RequestId-scoped, idempotent: `true` once no marker of this ask remains. */
+    releaseMarker: () => boolean;
+  },
+): "ok" | "pending" {
+  const { createMarker, releaseMarker, ...record } = args;
+  recordRemoteSessionAsk({ ...record, dispatchState: "prepared" });
+  let created: boolean;
+  try {
+    created = createMarker();
+  } catch (err) {
+    // A throwing create may still have left a (partial) marker file.
+    retireRemoteSessionAsk(record.requestId, "prepared", releaseMarker);
+    throw err;
+  }
+  if (!created) {
+    // The slot belongs to another ask: its marker is never touched.
+    retireRemoteSessionAsk(record.requestId, "prepared", () => true);
+    return "pending";
+  }
+  try {
+    if (!markRemoteSessionAskDispatched(record.requestId)) {
+      throw new Error("remote session ask row vanished before dispatch");
+    }
+  } catch (err) {
+    retireRemoteSessionAsk(record.requestId, "prepared", releaseMarker);
+    throw err;
+  }
+  return "ok";
+}
+
+/**
+ * The hub definitively refused a `dispatched` ask (nothing was forwarded):
+ * release the marker, then drop the row — or keep it `abandoned` until the
+ * release succeeds.
+ */
+export function abandonRemoteSessionAsk(requestId: string, releaseMarker: () => boolean): void {
+  retireRemoteSessionAsk(requestId, "dispatched", releaseMarker);
+}
+
+function releaseRowMarker(row: RemoteSessionAskRow): boolean {
+  return tryRelease(() =>
+    releasePendingAsk({
+      userId: row.user_id,
+      from: row.from_key,
+      to: row.to_key,
+      requestId: row.request_id,
+    }),
+  );
+}
+
+/**
+ * Durable recovery of the outbound-ask state machine; runs in the
+ * maintenance pass (at startup and then periodically). Idempotent.
+ *
+ * - `abandoned` (any age) and `prepared` past {@link REMOTE_SESSION_ASK_PREPARE_GRACE_MS}
+ *   (the hub was never called): release the marker, then drop the row.
+ * - `dispatched` past {@link REMOTE_SESSION_ASK_DISPATCH_GRACE_MS} (the
+ *   process died around the hub call, or the call ended uncertain): release
+ *   the marker so the room can ask again, then mark the row `unknown`.
+ *
+ * A failed release leaves the row as it was, so the next pass retries; past
+ * the ask TTL the marker is stale (it no longer blocks a new ask and is
+ * swept on read), so the row moves on regardless.
+ */
+export function reconcileRemoteSessionAsks(
+  now: number = Date.now(),
+  opts: { prepareGraceMs?: number; dispatchGraceMs?: number } = {},
+): { removed: number; unknown: number } {
+  const prepareCutoff = now - (opts.prepareGraceMs ?? REMOTE_SESSION_ASK_PREPARE_GRACE_MS);
+  const dispatchCutoff = now - (opts.dispatchGraceMs ?? REMOTE_SESSION_ASK_DISPATCH_GRACE_MS);
+  const ttlCutoff = now - PENDING_ASK_TTL_MS;
+  const rows = db
+    .query<RemoteSessionAskRow, [number, number]>(
+      `SELECT * FROM remote_session_asks
+       WHERE dispatch_state = 'abandoned'
+          OR (dispatch_state = 'prepared' AND created_at <= ?)
+          OR (dispatch_state = 'dispatched' AND created_at <= ?)`,
+    )
+    .all(prepareCutoff, dispatchCutoff);
+  let removed = 0;
+  let unknown = 0;
+  for (const row of rows) {
+    const released = releaseRowMarker(row) || Number(row.created_at) < ttlCutoff;
+    if (!released) continue;
+    if (row.dispatch_state === "dispatched") {
+      if (moveRemoteSessionAsk(row.request_id, "dispatched", "unknown")) unknown += 1;
+    } else if (deleteRemoteSessionAskInState(row.request_id, row.dispatch_state)) {
+      removed += 1;
+    }
+  }
+  return { removed, unknown };
+}
+
+/**
+ * Asks whose caller must now be told that no reply arrived: `unknown` past
+ * the ask TTL, and `expired` ones whose notice did not land yet.
+ */
+export function listRemoteSessionAsksToExpire(now: number = Date.now()): RemoteSessionAskRecord[] {
+  return db
+    .query<RemoteSessionAskRow, [number]>(
+      `SELECT * FROM remote_session_asks
+       WHERE dispatch_state = 'expired' OR (dispatch_state = 'unknown' AND created_at < ?)
+       ORDER BY created_at`,
+    )
+    .all(now - PENDING_ASK_TTL_MS)
+    .map(toAskRecord);
+}
+
+/**
+ * `unknown` → `expired`, unless a late reply is being delivered right now
+ * (it holds an inbox claim for the same requestId): that reply wins.
+ * From here on the reply path no longer sees the row.
+ */
+export function markRemoteSessionAskExpired(requestId: string): boolean {
+  const result = db
+    .query(
+      `UPDATE remote_session_asks SET dispatch_state = 'expired'
+       WHERE request_id = ? AND dispatch_state = 'unknown'
+         AND NOT EXISTS (
+           SELECT 1 FROM remote_session_inbox_claims
+           WHERE request_id = ? AND kind = 'ask-reply' AND state = 'processing'
+         )`,
+    )
+    .run(requestId, requestId);
+  return Number(result.changes ?? 0) === 1;
+}
+
+/** The "no reply arrived" notice is durable: the `expired` row goes with it. */
+export function deleteExpiredRemoteSessionAsk(requestId: string): boolean {
+  return deleteRemoteSessionAskInState(requestId, "expired");
+}
+
+/** The ask a reply may still answer (an `expired` one no longer can). */
 export function getRemoteSessionAsk(requestId: string): RemoteSessionAskRecord | null {
   const row = db
-    .query<RemoteSessionAskRow, [string]>("SELECT * FROM remote_session_asks WHERE request_id = ?")
+    .query<RemoteSessionAskRow, [string]>(
+      "SELECT * FROM remote_session_asks WHERE request_id = ? AND dispatch_state <> 'expired'",
+    )
     .get(requestId);
   return row ? toAskRecord(row) : null;
 }
@@ -364,10 +773,20 @@ export function deleteRemoteSessionAsksForTopic(callerTopicId: string): number {
   return Number(result.changes ?? 0);
 }
 
+/**
+ * Forget asks past the TTL. Only states whose marker is settled go at the TTL
+ * (`sent`: the marker is stale by then); the others are walked through
+ * {@link reconcileRemoteSessionAsks} and the expiry notice first. Anything
+ * still here at twice the TTL is dropped unconditionally (a caller room that
+ * can no longer take the notice must not pin the row forever).
+ */
 export function purgeStaleRemoteSessionAsks(now: number = Date.now()): number {
   const result = db
-    .query("DELETE FROM remote_session_asks WHERE created_at < ?")
-    .run(now - PENDING_ASK_TTL_MS);
+    .query(
+      `DELETE FROM remote_session_asks
+       WHERE (dispatch_state = 'sent' AND created_at < ?) OR created_at < ?`,
+    )
+    .run(now - PENDING_ASK_TTL_MS, now - 2 * PENDING_ASK_TTL_MS);
   return Number(result.changes ?? 0);
 }
 

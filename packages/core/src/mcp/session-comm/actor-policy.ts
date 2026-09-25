@@ -4,13 +4,15 @@
  * owner check and the peer rules independently and drifted (the stdio server
  * lost the owner check on `abort_session`); one module keeps them identical.
  */
-import { actorOwnedTopicIds } from "#runtime/actor-topic-reach";
+import { type ActorTopicScopeClock, actorOwnedTopicIds } from "#runtime/actor-topic-reach";
 import type { ActorTopicScope, RemoteSessionGrant } from "#types";
 
 export interface ActorTopicPolicyInput {
   surface: string | undefined;
   currentTopicId: string | undefined;
   actorTopicScope: ActorTopicScope | undefined;
+  /** Freshness clock/window for the assertion (defaults: now, env window). */
+  clock?: ActorTopicScopeClock;
 }
 
 /**
@@ -25,7 +27,7 @@ export interface ActorTopicPolicyInput {
 export function abortTargetRefusal(
   input: ActorTopicPolicyInput & { targetTopicId: string; to: string },
 ): string | null {
-  const owned = actorOwnedTopicIds(input);
+  const owned = actorOwnedTopicIds(input, input.clock);
   if (owned && !owned.has(input.targetTopicId)) return `Error: Session "${input.to}" not found.`;
   return null;
 }
@@ -84,4 +86,75 @@ export function remoteSessionRoute(
  */
 export function excludesAgentlessTargets(surface: string | undefined): boolean {
   return surface === "otium";
+}
+
+/**
+ * Whether the node's own roster (`participants` / `topic_members`) bounds
+ * which local rooms session-comm may list and address on this surface.
+ *
+ * Off `otium` this node owns membership and the roster is the boundary.
+ * On `otium` it is not (design Q1): a node topic's participants there are
+ * only its execution principal — the hub's `local`, or the person who owned
+ * a synced node topic, and some rooms carry both — so matching them against
+ * the turn's principal hid rooms the person may reach and proved nothing
+ * about the ones it showed. There the boundary is the workspace (surface +
+ * scope, applied in the store query) intersected with
+ * `actorReachableTopicIds`: the hub's signed per-turn assertion when present,
+ * else only the current room and its own subagent lineage (fail-closed).
+ */
+export function rosterBoundsSessionTargets(surface: string | undefined): boolean {
+  return surface !== "otium";
+}
+
+export interface DeliveryParticipant {
+  userId: string;
+  role?: string;
+}
+
+/**
+ * The principal a local tell/ask/abort inbox entry is filed under — which is
+ * also the principal the target's turn runs as (`runtime/inbox.ts` hands the
+ * entry's principal to `triggerTopicAiTurn`, and the turn's vault namespace,
+ * browser profile and tool grants follow from it).
+ *
+ * Always the calling turn's own principal, and only when that principal is a
+ * participant of the target room; otherwise `null` and the call is refused.
+ * Seeing a room (design Q1: on `otium` the roster no longer bounds the
+ * listing) is not the right to make it run: filing the entry under the
+ * room's owner instead would run one principal's prompt with another
+ * principal's credentials (a confused deputy), which Q1 does not approve.
+ */
+export function localDeliveryPrincipal(input: {
+  callerUserId: string;
+  targetParticipants: readonly DeliveryParticipant[] | undefined;
+}): string | null {
+  const participants = input.targetParticipants ?? [];
+  return participants.some((p) => p.userId === input.callerUserId) ? input.callerUserId : null;
+}
+
+/**
+ * The principal a room's turns run under, for read-only status (peek): the
+ * caller's when it is a participant, else the room's owner. Never used to
+ * file an inbox entry — see {@link localDeliveryPrincipal}.
+ */
+export function roomStatusPrincipal(input: {
+  callerUserId: string;
+  targetParticipants: readonly DeliveryParticipant[] | undefined;
+}): string | null {
+  const participants = input.targetParticipants ?? [];
+  if (participants.some((p) => p.userId === input.callerUserId)) return input.callerUserId;
+  return (participants.find((p) => p.role === "owner") ?? participants[0])?.userId ?? null;
+}
+
+/**
+ * Refusal for a local `tell_session`/`ask_session`/`abort_session` whose
+ * target room runs under a different execution principal than the calling
+ * turn (see {@link localDeliveryPrincipal}). Explicit, never a silent drop,
+ * and returned before any inbox entry or pending-ask record exists.
+ */
+export function crossPrincipalRefusal(
+  tool: "tell_session" | "ask_session" | "abort_session",
+  to: string,
+): string {
+  return `Error: ${tool} to "${to}" is not available: that room runs under a different execution principal on this node, and a session cannot act as another principal.`;
 }

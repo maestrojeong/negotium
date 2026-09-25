@@ -14,7 +14,7 @@ import { sanitizeTopicName } from "#security/sanitize";
 // `maestro-agent-sdk` (whose `bootstrapHostPath()` prints to stdout) out of
 // this stdio MCP server's import graph.
 import { type AgentKind, isAgentKind, type QueryState } from "#types";
-import { excludesAgentlessTargets } from "./actor-policy";
+import { excludesAgentlessTargets, rosterBoundsSessionTargets } from "./actor-policy";
 import {
   currentTopic,
   currentTopicId,
@@ -108,7 +108,7 @@ function readCurrentPlacement(): CurrentPlacement {
   }
 }
 
-function sessionTargetRows(): Array<{
+interface SessionTargetRow {
   id: string;
   title: string;
   kind: string | null;
@@ -116,36 +116,47 @@ function sessionTargetRows(): Array<{
   session_id: string | null;
   description: string | null;
   surface: string | null;
-}> {
+}
+
+/**
+ * Candidate target rows for a principal in a placement. Two Otium workspaces
+ * share the otium surface and must still be invisible to each other (M-8),
+ * so the workspace is always part of the boundary. The roster
+ * (`topic_members`) is too, except on `otium` where participants are only
+ * execution principals (design Q1, `rosterBoundsSessionTargets`); there the
+ * catalog narrows the rows with `actorReachableTopicIds` instead.
+ */
+export function sessionTargetRowsFor(placement: {
+  userId: string;
+  surface: string | undefined;
+  surfaceScope: string | null;
+}): SessionTargetRow[] {
+  const rosterBound = rosterBoundsSessionTargets(placement.surface) ? 1 : 0;
+  return withDb((db) =>
+    db
+      .query<SessionTargetRow, (string | number | null)[]>(
+        `SELECT t.id, t.title, t.kind, t.agent, t.session_id, t.description, t.surface
+         FROM api_topics t
+         WHERE (? = 0 OR EXISTS (
+                 SELECT 1 FROM topic_members m WHERE m.topic_id = t.id AND m.user_id = ?))
+           AND (? IS NULL OR t.surface IS NULL OR t.surface = ?)
+           AND t.surface_scope IS ?`,
+      )
+      .all(
+        rosterBound,
+        placement.userId,
+        placement.surface ?? null,
+        placement.surface ?? null,
+        placement.surfaceScope,
+      ),
+  );
+}
+
+function sessionTargetRows(): SessionTargetRow[] {
   if (!existsSync(SESSIONS_DB)) return [];
   try {
     const { surface, surfaceScope } = currentSessionPlacement();
-    return withDb((db) => {
-      return db
-        .query<
-          {
-            id: string;
-            title: string;
-            kind: string | null;
-            agent: string | null;
-            session_id: string | null;
-            description: string | null;
-            surface: string | null;
-          },
-          (string | null)[]
-        >(
-          `SELECT t.id, t.title, t.kind, t.agent, t.session_id, t.description, t.surface
-           FROM api_topics t
-           INNER JOIN topic_members m ON m.topic_id = t.id
-           WHERE m.user_id = ?
-             AND (? IS NULL OR t.surface IS NULL OR t.surface = ?)
-             -- Two Otium workspaces share the otium surface and must still be
-             -- invisible to each other (M-8), so the workspace is part of the
-             -- boundary, not a refinement of it.
-             AND t.surface_scope IS ?`,
-        )
-        .all(userId, surface ?? null, surface ?? null, surfaceScope);
-    });
+    return sessionTargetRowsFor({ userId, surface, surfaceScope });
   } catch (e) {
     process.stderr.write(`warn: session-comm: failed to load topics from DB: ${e}\n`);
     return [];
@@ -190,14 +201,18 @@ const sessionTargetCatalog = createSessionTargetCatalog<AgentKind>({
   },
   isAgent: isAgentKind,
   listRows: () => {
-    // On `otium` the roster join above matches the hub's execution principal,
-    // not the person who spoke, so the hub's per-turn assertion decides which
-    // of those rooms this actor may actually name. Fail-closed without one.
-    const reachable = actorReachableTopicIds({
-      surface: currentSessionPlacement().surface,
-      currentTopicId: currentTopicId || undefined,
-      actorTopicScope: sessionCommContext.actorTopicScope,
-    });
+    // On `otium` the rows are the whole workspace (no roster, design Q1), so
+    // the hub's per-turn assertion decides which of those rooms this actor
+    // may actually name. Fail-closed without one: current room + lineage.
+    // Freshness is checked here, on every listing/resolution, not at startup.
+    const reachable = actorReachableTopicIds(
+      {
+        surface: currentSessionPlacement().surface,
+        currentTopicId: currentTopicId || undefined,
+        actorTopicScope: sessionCommContext.actorTopicScope,
+      },
+      { maxAgeMs: sessionCommContext.actorTopicScopeMaxAgeMs },
+    );
     return sessionTargetRows()
       .filter((row) => !reachable || reachable.has(row.id))
       .map((row) => ({

@@ -17,7 +17,10 @@
 import { hubRemoteReply } from "#mcp/session-comm/hub-remote-session";
 import { logger } from "#platform/logger";
 import { deleteHubRemoteAskCallbackRow, purgeStaleAsks } from "#runtime/ask-callbacks";
-import { recoverRemoteSessionInbox } from "#runtime/remote-session-inbox";
+import {
+  expireUnknownRemoteSessionAsks,
+  recoverRemoteSessionInbox,
+} from "#runtime/remote-session-inbox";
 import { db } from "#storage/forum-db";
 import {
   deferRemoteSessionReplyOutbox,
@@ -27,6 +30,7 @@ import {
   purgeRemoteSessionInboxClaims,
   purgeStaleRemoteSessionAsks,
   REMOTE_SESSION_REPLY_RETRY_MS,
+  reconcileRemoteSessionAsks,
   upsertRemoteSessionReplyOutbox,
 } from "#storage/remote-session";
 
@@ -132,11 +136,19 @@ export async function runRemoteSessionMaintenance(
 ): Promise<{ claims: number; asks: number; recovered: number }> {
   await flushRemoteSessionReplyOutbox(now);
   const claims = purgeRemoteSessionInboxClaims(now);
-  const asks = purgeStaleRemoteSessionAsks(now);
+  // Outbound hub asks (row + pending marker): drop the ones the hub never
+  // got, release the marker of the ones nobody will learn about (`unknown`).
+  const reconciled = reconcileRemoteSessionAsks(now);
+  const asks = purgeStaleRemoteSessionAsks(now) + reconciled.removed;
   purgeStaleAsks(now);
   const recovered = await recoverRemoteSessionInbox(now);
-  if (claims || asks || recovered) {
-    logger.info({ claims, asks, recovered }, "session-comm: remote session maintenance");
+  // After the inbox recovery, so a late reply it just delivered wins.
+  const noReply = await expireUnknownRemoteSessionAsks(now);
+  if (claims || asks || recovered || reconciled.unknown || noReply) {
+    logger.info(
+      { claims, asks, recovered, unknownAsks: reconciled.unknown, noReplyNotices: noReply },
+      "session-comm: remote session maintenance",
+    );
   }
   return { claims, asks, recovered };
 }

@@ -49,6 +49,22 @@ describe("parseSessionCommContext", () => {
     ).toThrow("Invalid --agent");
   });
 
+  test("carries the node's assertion freshness window for the stdio child", () => {
+    const defaults = { userId: "default", agent: "claude" } as const;
+    expect(
+      parseSessionCommContext(["--actor-topic-scope-max-age-ms=60000"], defaults)
+        .actorTopicScopeMaxAgeMs,
+    ).toBe(60_000);
+    expect(parseSessionCommContext([], defaults).actorTopicScopeMaxAgeMs).toBeUndefined();
+    expect(
+      parseSessionCommContext(["--actor-topic-scope-max-age-ms=99999999999"], defaults)
+        .actorTopicScopeMaxAgeMs,
+    ).toBe(4 * 60 * 60 * 1000);
+    expect(() => parseSessionCommContext(["--actor-topic-scope-max-age-ms=-1"], defaults)).toThrow(
+      "Invalid --actor-topic-scope-max-age-ms arg",
+    );
+  });
+
   test("carries the hub's actor assertion for the otium surface", () => {
     const scope = { visibleNodeTopicIds: ["v"], ownedNodeTopicIds: ["v"] };
     const encoded = Buffer.from(JSON.stringify(scope), "utf-8").toString("base64url");

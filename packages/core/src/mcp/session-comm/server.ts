@@ -21,16 +21,27 @@ import {
   isTopicBrowserProfileOwner,
   listBrowserProfiles,
 } from "#storage/browser-profiles";
-import { deleteRemoteSessionAsk, recordRemoteSessionAsk } from "#storage/remote-session";
+import {
+  abandonRemoteSessionAsk,
+  beginRemoteSessionAsk,
+  markRemoteSessionAskSent,
+} from "#storage/remote-session";
 import {
   clearPendingAsk,
   createPendingAsk,
   describePendingAskState,
   listPendingAsksForCaller,
+  releasePendingAsk,
 } from "#storage/session-asks";
 import { enqueueSessionInbox } from "#storage/session-inbox";
 import { connectStdio, mcpError, mcpOk } from "../mcp-helpers";
-import { abortTargetRefusal, remoteSessionRoute } from "./actor-policy";
+import {
+  abortTargetRefusal,
+  crossPrincipalRefusal,
+  localDeliveryPrincipal,
+  remoteSessionRoute,
+  roomStatusPrincipal,
+} from "./actor-policy";
 import {
   hubRemoteAbort,
   hubRemoteAsk,
@@ -87,6 +98,19 @@ function remotePeerTarget(to: string): PeerTarget | null {
   const slash = to.indexOf("/");
   if (slash <= 0 || slash === to.length - 1) return null;
   return { node: to.slice(0, slash), topic: to.slice(slash + 1) };
+}
+
+/**
+ * Principal a local inbox entry for `targetTopicId` is filed under, and the
+ * target's turn runs as: this turn's own, or `null` (refuse) when it is not a
+ * participant of the target room (see `localDeliveryPrincipal`). Same rule as
+ * the hosted host, from the same module.
+ */
+function deliveryPrincipal(targetTopicId: string): string | null {
+  return localDeliveryPrincipal({
+    callerUserId: userId,
+    targetParticipants: getTopic(targetTopicId)?.participants,
+  });
 }
 
 /** Which transport serves `node/topic` targets for this turn (see `remoteSessionRoute`). */
@@ -417,7 +441,21 @@ server.tool(
 
     for (const { key: name, topic } of targets) {
       let isRunning = false;
-      const state = readQueryState(activeQueriesDir, topic.topicId, topic.name);
+      // Read-only: a visible room of another principal (otium, Q1) records its
+      // turns under that principal. Never used to file an inbox entry.
+      const principal = topic.topicId
+        ? roomStatusPrincipal({
+            callerUserId: userId,
+            targetParticipants: getTopic(topic.topicId)?.participants,
+          })
+        : null;
+      const state = readQueryState(
+        principal && principal !== userId
+          ? join(USERS_LOG_DIR, principal, "active-queries")
+          : activeQueriesDir,
+        topic.topicId,
+        topic.name,
+      );
       if (state) {
         const elapsed = Date.now() - new Date(state.since).getTime();
         if (elapsed <= ACTIVE_QUERY_STALE_MS) {
@@ -549,28 +587,48 @@ if (!isReplyOnly) {
             );
           }
           const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-          const pending = createPendingAsk({ userId, from: fromRef.key, to, requestId });
-          if (!pending.ok) {
-            const detail = pending.existing
-              ? `${describePendingAskState(pending.existing.state)} (request_id: ${pending.existing.requestId})`
+          let pending: ReturnType<typeof createPendingAsk> | null = null;
+          const alreadyPending = () => {
+            const existing = pending && !pending.ok ? pending.existing : null;
+            const detail = existing
+              ? `${describePendingAskState(existing.state)} (request_id: ${existing.requestId})`
               : "상태 파일 확인 중";
             return mcpError(
               `"${to}"에 이미 진행 중인 ask_session 요청이 있습니다: ${detail}. 응답이 이 세션에 자동으로 돌아올 때까지 기다리세요.`,
             );
-          }
+          };
+          const createMarker = () => {
+            pending = createPendingAsk({ userId, from: fromRef.key, to, requestId });
+            return pending.ok;
+          };
           if (route.kind === "hub") {
             // Durable caller record first: the hub's `ask-reply` delivery is
             // routed back through it, possibly after this process restarted.
-            recordRemoteSessionAsk({
-              requestId,
-              callerTopicId: fromRef.topicId,
-              userId,
-              fromKey: fromRef.key,
-              toKey: to,
-              ...(sessionCommContext.currentThreadRootId
-                ? { callerThreadRootId: sessionCommContext.currentThreadRootId }
-                : {}),
-            });
+            // Row and pending marker are one state machine (see
+            // `RemoteSessionAskDispatchState`): the row never goes while its
+            // marker may remain, and a crash anywhere is reconciled later.
+            const releaseAsk = () =>
+              releasePendingAsk({ userId, from: fromRef.key, to, requestId });
+            let begun: "ok" | "pending";
+            try {
+              begun = beginRemoteSessionAsk({
+                requestId,
+                callerTopicId: fromRef.topicId,
+                userId,
+                fromKey: fromRef.key,
+                toKey: to,
+                ...(sessionCommContext.currentThreadRootId
+                  ? { callerThreadRootId: sessionCommContext.currentThreadRootId }
+                  : {}),
+                createMarker,
+                releaseMarker: releaseAsk,
+              });
+            } catch (err) {
+              return mcpError(
+                `Error: "${to}" 원격 ask를 기록하지 못해 전송하지 않았습니다: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+            if (begun === "pending") return alreadyPending();
             const sent = await hubRemoteAsk(route.grant, {
               requestId,
               to: remote,
@@ -584,14 +642,15 @@ if (!isReplyOnly) {
                   `"${to}" 세션(노드 ${remote.node})에 참조 요청을 보냈지만 hub의 확인을 받지 못했습니다 (${sent.error}).\n\nrequest_id: ${requestId}\n\n응답이 도착하면 '[Reply from ${remote.node}/${remote.topic}]' 형식으로 이 세션에 돌아옵니다. 같은 요청으로 ask_session을 재호출하지 마세요.`,
                 );
               }
-              clearPendingAsk({ userId, from: fromRef.key, to, requestId });
-              deleteRemoteSessionAsk(requestId);
+              abandonRemoteSessionAsk(requestId, releaseAsk);
               return mcpError(`Error: "${to}" 원격 세션에 전송 실패: ${sent.error}`);
             }
+            markRemoteSessionAskSent(requestId);
             return mcpOk(
               `"${to}" 세션(노드 ${remote.node})에 참조 요청을 보냈습니다.\n\nrequest_id: ${requestId}\n\n응답은 '[Reply from ${remote.node}/${remote.topic}]' 형식으로 이 세션에 자동으로 돌아옵니다. 응답이 도착할 때까지 같은 요청으로 ask_session을 재호출하지 마세요.`,
             );
           }
+          if (!createMarker()) return alreadyPending();
           const result = await forwardToPeer({
             action: "ask",
             toNode: remote.node,
@@ -620,6 +679,9 @@ if (!isReplyOnly) {
           return mcpError(
             `Error: "${to}" 토픽에는 AI가 초대되어 있지 않아 ask_session을 실행할 수 없습니다.`,
           );
+        }
+        if (validation.target.topicId && deliveryPrincipal(validation.target.topicId) !== userId) {
+          return mcpError(crossPrincipalRefusal("ask_session", to));
         }
 
         const fromRef = currentTopicRef();
@@ -791,10 +853,14 @@ if (!isReplyOnly) {
             surface: currentSessionSurface(),
             currentTopicId: currentTopicId || undefined,
             actorTopicScope: sessionCommContext.actorTopicScope,
+            clock: { maxAgeMs: sessionCommContext.actorTopicScopeMaxAgeMs },
             targetTopicId,
             to,
           });
           if (refused) return mcpError(refused);
+          if (deliveryPrincipal(targetTopicId) !== userId) {
+            return mcpError(crossPrincipalRefusal("abort_session", to));
+          }
           // Send query abort signal via inbox
           enqueueSessionInbox({
             userId,
@@ -915,6 +981,9 @@ if (!isReplyOnly) {
       //
       // NOTE: no direct DB write here; the consumer in the Otium server process
       // handles `deliverMessageToTopic` + the AI trigger.
+      if (deliveryPrincipal(targetTopicId) !== userId) {
+        return mcpError(crossPrincipalRefusal("tell_session", to));
+      }
       const fromRef = currentTopicRef();
       const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       try {

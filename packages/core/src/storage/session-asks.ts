@@ -317,6 +317,20 @@ export function clearPendingAsk(args: AskIdentity): boolean {
   }
 }
 
+/**
+ * Retry-safe, requestId-scoped release of one ask's pending marker: `true`
+ * once no marker of *this* ask remains (it was removed now, was already gone,
+ * or the slot now belongs to a different — newer — ask, which is never
+ * touched). `false` means our marker is still there (the unlink failed), so
+ * whoever holds the ask's durable row must keep it and try again. Idempotent.
+ * May throw on unexpected I/O errors; callers treat that as `false`.
+ */
+export function releasePendingAsk(args: PendingAskKey & { requestId: string }): boolean {
+  if (clearPendingAsk(args)) return true;
+  const still = readPendingAsk(args);
+  return !still || still.record.requestId !== args.requestId;
+}
+
 export function markPendingAskSources(args: {
   userId: PendingAskUserId;
   callerTopic: string;

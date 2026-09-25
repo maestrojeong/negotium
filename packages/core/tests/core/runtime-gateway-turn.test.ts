@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, setSystemTime, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
   RuntimeGatewayIdempotencyConflictError,
@@ -617,6 +617,9 @@ test("runtime gateway keeps the host's actor room assertion on the durable turn 
     const freshTopic = getTopic(topic.id);
     if (!freshTopic) throw new Error("topic was not created");
     const actorTopicScope = { visibleNodeTopicIds: ["n-a", "n-b"], ownedNodeTopicIds: ["n-b"] };
+    // The node stamps the assertion on arrival (its freshness window starts here).
+    const t1 = Date.parse("2026-09-25T01:00:00.000Z");
+    setSystemTime(new Date(t1));
     submitRuntimeGatewayTurn({
       topic: freshTopic,
       userId,
@@ -627,7 +630,7 @@ test("runtime gateway keeps the host's actor room assertion on the durable turn 
     });
     expect(getRuntimeUserTurnRequest(topic.id)?.execution).toMatchObject({
       actorUserId: "actor-alice",
-      actorTopicScope,
+      actorTopicScope: { ...actorTopicScope, issuedAt: t1 },
     });
 
     // A steering message from the same person that arrives while the first is
@@ -635,6 +638,7 @@ test("runtime gateway keeps the host's actor room assertion on the durable turn 
     // the two assertions, so it can never reach a room either message could
     // not (retries read the merged row, so nothing is lost across a restart).
     const later = { visibleNodeTopicIds: ["n-a", "n-z"], ownedNodeTopicIds: ["n-a"] };
+    setSystemTime(new Date(t1 + 5000));
     submitRuntimeGatewayTurn({
       topic: freshTopic,
       userId,
@@ -643,9 +647,11 @@ test("runtime gateway keeps the host's actor room assertion on the durable turn 
       text: "second scoped turn",
       clientMessageId: randomUUID(),
     });
+    // ...and the batch is only as fresh as its oldest assertion.
     expect(getRuntimeUserTurnRequest(topic.id)?.execution?.actorTopicScope).toEqual({
       visibleNodeTopicIds: ["n-a"],
       ownedNodeTopicIds: [],
+      issuedAt: t1,
     });
 
     // No assertion from the host leaves the batch without one — never a stale
@@ -659,6 +665,7 @@ test("runtime gateway keeps the host's actor room assertion on the durable turn 
     });
     expect(getRuntimeUserTurnRequest(topic.id)?.execution?.actorTopicScope).toBeUndefined();
   } finally {
+    setSystemTime();
     cancelRuntimeUserTurnRequests(topic.id);
     deleteTopic(topic.id);
   }
@@ -745,6 +752,8 @@ test("runtime gateway replay keeps the first-accepted actor room assertion", () 
     if (!freshTopic) throw new Error("topic was not created");
     const clientMessageId = randomUUID();
     const first = { visibleNodeTopicIds: ["n-a", "n-b"], ownedNodeTopicIds: ["n-b"] };
+    const t1 = Date.parse("2026-09-25T02:00:00.000Z");
+    setSystemTime(new Date(t1));
     const accepted = submitRuntimeGatewayTurn({
       topic: freshTopic,
       userId,
@@ -755,6 +764,7 @@ test("runtime gateway replay keeps the first-accepted actor room assertion", () 
     });
     expect(accepted.deduplicated).toBe(false);
 
+    setSystemTime(new Date(t1 + 60_000));
     const replayed = submitRuntimeGatewayTurn({
       topic: freshTopic,
       userId,
@@ -767,8 +777,13 @@ test("runtime gateway replay keeps the first-accepted actor room assertion", () 
     expect(replayed.deduplicated).toBe(true);
     expect(replayed.requestId).toBe(accepted.requestId);
     // Stale by design: the durable row still says what the first submit said.
-    expect(getRuntimeUserTurnRequest(topic.id)?.execution?.actorTopicScope).toEqual(first);
+    // (including its arrival stamp, so the replay cannot refresh the window).
+    expect(getRuntimeUserTurnRequest(topic.id)?.execution?.actorTopicScope).toEqual({
+      ...first,
+      issuedAt: t1,
+    });
   } finally {
+    setSystemTime();
     cancelRuntimeUserTurnRequests(topic.id);
     deleteTopic(topic.id);
   }

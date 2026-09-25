@@ -92,6 +92,7 @@ export {
   parseRemoteSessionInboxDelivery,
   RemoteSessionInboxError,
   recoverRemoteSessionInbox,
+  resolveRemoteSessionInboxPrincipal,
 } from "#runtime/remote-session-inbox";
 export {
   runRemoteSessionMaintenance,

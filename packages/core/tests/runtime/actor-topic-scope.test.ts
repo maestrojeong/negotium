@@ -1,10 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
+  ACTOR_TOPIC_SCOPE_DEFAULT_MAX_AGE_MS,
   ACTOR_TOPIC_SCOPE_LIMITS,
+  ACTOR_TOPIC_SCOPE_MAX_AGE_CEILING_MS,
   actorTopicScopeFrom,
+  actorTopicScopeMaxAgeMs,
   encodeActorTopicScopeArg,
   intersectActorTopicScopes,
+  isActorTopicScopeFresh,
   parseActorTopicScope,
+  stampActorTopicScope,
   validateActorTopicScope,
 } from "#runtime/actor-topic-scope";
 
@@ -181,5 +186,61 @@ describe("actor topic scope limits", () => {
     expect(intersectActorTopicScopes([scope(["a"], ["a"])])).toEqual(scope(["a"], ["a"]));
     expect(intersectActorTopicScopes([scope(["a"], ["a"]), undefined])).toBeUndefined();
     expect(intersectActorTopicScopes([])).toBeUndefined();
+  });
+});
+
+describe("actor topic scope freshness", () => {
+  const base = { visibleNodeTopicIds: ["a"], ownedNodeTopicIds: ["a"] };
+
+  test("issuedAt is optional, must be epoch ms, and survives argv", () => {
+    expect(parseActorTopicScope({ ...base, issuedAt: 1234 })).toEqual({ ...base, issuedAt: 1234 });
+    for (const issuedAt of [-1, 1.5, "1234", null, Number.NaN]) {
+      expect(parseActorTopicScope({ ...base, issuedAt })).toBeNull();
+    }
+    const encoded = encodeActorTopicScopeArg({ ...base, issuedAt: 99 });
+    expect(
+      parseActorTopicScope(JSON.parse(Buffer.from(encoded, "base64url").toString("utf-8"))),
+    ).toEqual({ ...base, issuedAt: 99 });
+  });
+
+  test("the node stamps on arrival; a hub stamp can only make it older", () => {
+    expect(stampActorTopicScope(base, 5000)).toEqual({ ...base, issuedAt: 5000 });
+    expect(stampActorTopicScope({ ...base, issuedAt: 4000 }, 5000).issuedAt).toBe(4000);
+    // A future hub stamp (clock skew, bug) cannot extend the window.
+    expect(stampActorTopicScope({ ...base, issuedAt: 9000 }, 5000).issuedAt).toBe(5000);
+  });
+
+  test("fresh within the window, stale after it, unstamped is stale", () => {
+    const window = ACTOR_TOPIC_SCOPE_DEFAULT_MAX_AGE_MS;
+    const scope = { ...base, issuedAt: 1_000_000 };
+    expect(isActorTopicScopeFresh(scope, 1_000_000 + window, window)).toBe(true);
+    expect(isActorTopicScopeFresh(scope, 1_000_000 + window + 1, window)).toBe(false);
+    expect(isActorTopicScopeFresh(base, 1_000_000, window)).toBe(false);
+    expect(isActorTopicScopeFresh({ ...base, issuedAt: 10_000_000 }, 1_000_000, window)).toBe(
+      false,
+    );
+  });
+
+  test("the window defaults to 10 minutes and is clamped to the token lifetime", () => {
+    expect(ACTOR_TOPIC_SCOPE_DEFAULT_MAX_AGE_MS).toBe(600_000);
+    expect(actorTopicScopeMaxAgeMs({})).toBe(600_000);
+    expect(actorTopicScopeMaxAgeMs({ NEGOTIUM_ACTOR_TOPIC_SCOPE_MAX_AGE_MS: "0" })).toBe(0);
+    expect(actorTopicScopeMaxAgeMs({ NEGOTIUM_ACTOR_TOPIC_SCOPE_MAX_AGE_MS: "60000" })).toBe(
+      60_000,
+    );
+    expect(actorTopicScopeMaxAgeMs({ NEGOTIUM_ACTOR_TOPIC_SCOPE_MAX_AGE_MS: "-5" })).toBe(600_000);
+    expect(actorTopicScopeMaxAgeMs({ NEGOTIUM_ACTOR_TOPIC_SCOPE_MAX_AGE_MS: "999999999999" })).toBe(
+      ACTOR_TOPIC_SCOPE_MAX_AGE_CEILING_MS,
+    );
+  });
+
+  test("a folded batch keeps the oldest stamp, and none if any request lacked one", () => {
+    expect(
+      intersectActorTopicScopes([
+        { ...base, issuedAt: 300 },
+        { ...base, issuedAt: 100 },
+      ])?.issuedAt,
+    ).toBe(100);
+    expect(intersectActorTopicScopes([{ ...base, issuedAt: 300 }, base])?.issuedAt).toBeUndefined();
   });
 });

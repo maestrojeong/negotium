@@ -20,7 +20,7 @@ the canonical topic.
   `userId` is the canonical execution principal. A trusted gateway may preserve the authenticated
   human author separately in `actorUserId`/`actorLabel` and select the topic owner's credential
   namespace with `vaultUserId`.
-  `actorTopicScope` is `{ visibleNodeTopicIds: string[], ownedNodeTopicIds: string[] }`: the node
+  `actorTopicScope` is `{ visibleNodeTopicIds: string[], ownedNodeTopicIds: string[], issuedAt?: number }`: the node
   topic ids (on the receiving node) the human author participates in and owns, as the gateway's
   own membership store sees them. It rides the durable turn row and the signed per-turn MCP token,
   so a retried or handed-off turn keeps it and the agent cannot widen it. On the `otium` surface the
@@ -46,6 +46,30 @@ the canonical topic.
   node's own lineage stands in: a subagent reaches its direct parent and the rooms an ancestor
   granted it (`grant_subagent_tell`), a room reaches and may abort its own subagent workers, and
   nothing else.
+  **No roster on `otium` (Q1).** A node topic's participants on `otium` are only its execution
+  principals — `local`, the person who owned a synced node topic, or both — so they bound
+  nothing there. `session-comm`, like the runtime MCP, lists and resolves local rooms by workspace
+  (surface + `surfaceScope`) ∩ the reach set above, never by the turn's `userId`. That decides
+  what a turn may *see* (`list_sessions`, `peek_session`), not whom it may *act as*: Q1 removes
+  a visibility filter and approves no delegation or impersonation. A local `tell_session`,
+  `ask_session` or `abort_session` is always filed under the calling turn's own principal —
+  which is the principal the target's turn then runs as (its vault namespace, browser profile and
+  tool grants) — and only when that principal is a participant of the target room, e.g. `local`
+  in a `local`+person two-owner room. A visible room that does not hold the caller's principal is
+  refused explicitly (`Error: tell_session to "<room>" is not available: that room runs under a
+  different execution principal on this node, and a session cannot act as another principal.`,
+  same wording for ask/abort), before any inbox entry or pending ask exists; it is never
+  delivered under the room owner's principal. `terminal`/`telegram` keep the node roster as the
+  boundary.
+  **Assertion freshness.** The node stamps `issuedAt` when `/turns` accepts the assertion — its
+  own receipt time, or the gateway's `issuedAt` if that is earlier (a later one is clamped, so a
+  skewed gateway clock can only shorten the window). Folded requests keep the oldest stamp. The
+  assertion grants cross-room reach only while `now - issuedAt ≤ NEGOTIUM_ACTOR_TOPIC_SCOPE_MAX_AGE_MS`
+  (default 10 min, clamped to 0–4 h; the stdio `session-comm` child is handed the same value as
+  `--actor-topic-scope-max-age-ms`). A stale or unstamped assertion (a row or token written
+  before this rule) keeps only the current room and the part of its own subagent lineage the
+  assertion also named — never more than a fresh assertion or bare lineage would give. The check
+  runs on every list/peek/tell/ask/abort and runtime-MCP call, not once per token.
   **Subagent management.** The tools that manage the current room's delegation tree follow the
   same rule as the cross-room tools. On `otium` with an assertion, `list_subagents` shows only
   the descendants in `visibleNodeTopicIds`; `start_subagent`, `delete_subagent` and
@@ -62,7 +86,8 @@ the canonical topic.
   what lets a parent's own follow-up turn manage the workers it spawned.
   **Limits.** Each list holds at most 200 ids (counted before de-duplication), an id is at most
   128 characters after trimming, the normalized assertion is at most 8 KiB of JSON, and the object
-  must carry exactly those two keys (any other key, including prototype names, is rejected).
+  must carry exactly those two keys plus the optional `issuedAt` (epoch ms, a non-negative
+  integer; any other key, including prototype names, is rejected).
   Anything over is a `400` naming the limit. The same parser enforces the caps on the gateway
   body, the signed tokens and the stdio argv. A hub whose actor is in more rooms than fit must
   trim the assertion (the node then treats the omitted rooms as not visible) — the node rejects an
@@ -146,10 +171,33 @@ the canonical topic.
   assertion the hub's real grant adds ≈680 URL characters (12,800 of the 14,336 budget); the hard
   budget check refuses a mint that does not fit rather than dropping a field. Full contract:
   `cross-node-interface.md` (node ↔ hub), summarized below.
-  **Remote session-comm inbox.** `POST /topics/:id/session-comm/inbox` (`{ v: 1, userId, kind:
+  **Remote session-comm inbox.** `POST /topics/:id/session-comm/inbox` (`{ v: 1, userId, actorUserId?, kind:
   "tell" | "ask" | "abort" | "ask-reply", requestId, ... }`) is how the hub delivers a remote
   `tell`/`ask`/`abort` into a room on this node, or the `ask-reply` answering an ask this room
   raised. Same authentication and workspace check as `/turns`; `userId` must be a participant.
+  **Actor binding (`actorUserId`, advertised as `remote-session-comm-actor`).** The target's turn
+  runs as the principal the entry is filed under (its vault, browser profile and tool grants), so
+  that principal must be the *sender's*, never the room owner's on the sender's behalf. A hub sends
+  `actorUserId`: the node-side execution principal of the person whose remote capability issued the
+  delivery (for `ask-reply`: of the person who raised the ask). The node then requires, before
+  parsing, claiming or queueing anything: `actorUserId === userId` (else `403 { code:
+  "actor_mismatch" }`), that principal is a participant of the room (else `403 { code:
+  "actor_not_participant" }`), and for `ask-reply` that the pending ask was raised by that principal
+  (else `403 { code: "actor_mismatch" }`, checked before any claim is written). A present but empty or non-string
+  `actorUserId` is `400`. All three carry the `v: 1` envelope; a hub must read `403` *with one of
+  these codes* as a final refusal of the delivery (do not retry, report it to the caller), not as an
+  authentication failure. Without `actorUserId` (a hub older than this contract) the node cannot
+  tell the sender from the owner, so the old rule applies (`userId` a participant, else `404`)
+  unless `NEGOTIUM_REMOTE_SESSION_REQUIRE_ACTOR=1` (also `true`/`yes`/`on`; read per request), which
+  refuses such a delivery with `403 { code: "actor_required" }`. The flag is off by default for
+  compatibility. Rollout: upgrade the hub first (it refuses remote tell/ask/abort whose capability
+  actor is not the target's execution principal, and sends `actorUserId` on every kind), then
+  upgrade nodes, then turn the flag on at each node. Compatibility:
+
+  | hub \ node | old node | new node, flag off | new node, flag on |
+  | --- | --- | --- | --- |
+  | old hub (no `actorUserId`) | confused deputy possible | same as old (legacy rule) | every delivery `403 actor_required` (remote session-comm off) |
+  | new hub (sends `actorUserId`) | field ignored; the hub's own check is the only guard | enforced | enforced |
   `tell` carries `from: { label, hubTopicId? }`, `message` (≤ 10,000 chars, else 413) and `depth`
   (≤ `MAX_TELL_DEPTH`, else 400); `ask` adds `fromDepth` and a `remoteReply`
   `{ via: "hub", hubUrl, token: "rsr1.…", nodeName, topicId, requestId }` the node uses to post
@@ -165,7 +213,19 @@ the canonical topic.
   as the caller-room record and the consumption of the durable ask), a duplicate that meets a
   live `processing` claim answers `409 { code: "in_progress" }` (retry later, never a false
   replay), a `processing` claim whose lease expired is re-run by the node's maintenance pass and
-  at startup, and a different payload is `409`. A room with no AI answers `409` to tell/ask
+  at startup, and a different payload is `409`. The claim binds the `requestId` to the delivery
+  *and* the principal it was accepted under: its digest is `sha256` of `{ userId, actorUserId
+  (null for an old hub), delivery }`, so the same `requestId` from another actor (or with/without
+  `actorUserId`) is `409`, never a replay. An `ask-reply` is checked against the pending ask
+  (room, and `actorUserId === userId === ask.userId`) *before* its claim is written; the
+  `processing` claim then persists an envelope `{ v: 2, userId, actorUserId, delivery, askUserId }`,
+  and the recovery pass re-runs it only if the envelope matches the claim digest and re-verifies
+  against the current ask row and room (principal still a participant; an actor-less envelope
+  only while `NEGOTIUM_REMOTE_SESSION_REQUIRE_ACTOR` is off). A payload that fails this — including
+  a delivery-only payload persisted by a node before this contract — is dropped (claim released,
+  ask row kept, nothing delivered), so the hub's retry goes through the live checks again. A claim
+  a previous node version *completed* (delivery-only digest) still answers the same delivery as a
+  replay. A room with no AI answers `409` to tell/ask
   whatever the hub's mirror said; an `ask-reply` nobody is waiting for is `404`. Versioning on
   this route is scoped, and a client must classify accordingly: the `202`/`200` acknowledgement
   and every error the inbox handler itself produces (validation, claim, delivery — the `400`s,
@@ -181,7 +241,8 @@ the canonical topic.
   retried. A hub must in turn accept a `2xx` only
   as the exact envelope (`ok: true`, `v: 1`, `accepted: true`, the `requestId` it sent, and a
   boolean `replayed`); any other `2xx` is a protocol failure, never a delivery. Nodes
-  advertise `remote-session-comm` (route and `remoteSession` supported) and, when the Otium
+  advertise `remote-session-comm` (route and `remoteSession` supported), `remote-session-comm-actor`
+  (the inbox enforces `actorUserId`, above) and, when the Otium
   adapter forwards the route over its relay, `remote-session-comm-relay`; a hub must see the
   former before attaching a grant and the latter before routing a delivery to a worker.
   `visualTools` and `fileDeliveryTools` are capabilities minted by the gateway and are
@@ -366,10 +427,16 @@ sees the previous behaviour byte for byte.
   `deduplicated: true` and any capability minted for that replay has no turn to end it. The hub's per-actor rate limit (60 calls/min) is a
   process-local sliding window on the hub (accepted: a hub restart resets it; the per-turn
   capability counter is persisted).
-- **Revocation is not instant.** The actor room assertion is captured when a turn is accepted
-  and travels with the durable request and the signed MCP token (TTL 4 h). A membership change
-  the hub learns of afterwards does not reach a turn that is already queued or running, and a
-  replay of the same `clientMessageId` with a narrower assertion is acknowledged as a duplicate
-  while the stored assertion stays as first accepted (the assertion is outside the idempotency
-  hash). Aborting the turn is the only way to cut it short. Tightening this — per-tool-call
-  re-validation against the hub, or shorter token TTLs — is deliberately deferred.
+- **Revocation is bounded by the freshness window.** The actor room assertion is captured when
+  a turn is accepted and travels with the durable request and the signed MCP token (TTL 4 h), but
+  it grants cross-room reach only for the freshness window after its `issuedAt` (default
+  10 min, see above). A membership change the hub learns of afterwards reaches the person's next
+  turn (a new assertion) at once, and a turn that is already queued or running at the latest when
+  the window closes; a check-then-enqueue race is bounded by the same window. A replay of the
+  same `clientMessageId` keeps the first-accepted assertion *and its stamp*, so a replay cannot
+  refresh the window. Trade-off (safe default, product decision): a turn that runs longer than
+  the window keeps its own room and lineage but loses list/tell/ask/abort of other rooms until
+  the person speaks again. Alternatives considered: a hub membership epoch (needs shared state
+  and a hub→node push to be useful) and online re-validation against the hub at enqueue (a hub
+  round trip on every local call and a new hub API; unavailable offline). Both remain possible
+  later; the window bounds the exposure without either.

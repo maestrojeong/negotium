@@ -598,6 +598,7 @@ describe("subagent management tools", () => {
     const stranger = toolsFor("member-1", {
       visibleNodeTopicIds: [parent.id],
       ownedNodeTopicIds: [],
+      issuedAt: Date.now(),
     });
     expect(await stranger.list()).toEqual([]);
     for (const attempt of [
@@ -616,6 +617,7 @@ describe("subagent management tools", () => {
     const viewer = toolsFor("member-1", {
       visibleNodeTopicIds: [parent.id, workerA.id, workerB.id],
       ownedNodeTopicIds: [],
+      issuedAt: Date.now(),
     });
     expect(await viewer.list()).toEqual([workerA.id, workerB.id].sort());
     for (const attempt of [
@@ -634,6 +636,7 @@ describe("subagent management tools", () => {
     const owner = toolsFor("owner-1", {
       visibleNodeTopicIds: [parent.id, workerA.id, workerB.id],
       ownedNodeTopicIds: [parent.id, workerA.id, workerB.id],
+      issuedAt: Date.now(),
     });
     expect(await owner.list()).toEqual([workerA.id, workerB.id].sort());
     expect((await owner.grant(workerA.id, workerB.id)).isError).toBeUndefined();
@@ -641,6 +644,7 @@ describe("subagent management tools", () => {
     const ownerOfAOnly = toolsFor("owner-1", {
       visibleNodeTopicIds: [parent.id, workerA.id],
       ownedNodeTopicIds: [parent.id, workerA.id],
+      issuedAt: Date.now(),
     });
     expect(await ownerOfAOnly.list()).toEqual([workerA.id]);
     expect((await ownerOfAOnly.grant(workerA.id, workerB.id)).isError).toBe(true);
@@ -668,7 +672,7 @@ describe("subagent management tools", () => {
       topicId: parent.id,
       surface: "terminal",
       // An assertion off `otium` is not consulted: the node owns membership there.
-      actorTopicScope: { visibleNodeTopicIds: [], ownedNodeTopicIds: [] },
+      actorTopicScope: { visibleNodeTopicIds: [], ownedNodeTopicIds: [], issuedAt: Date.now() },
     });
     const deleted = await terminal
       .find((tool) => tool.name === "delete_subagent")
@@ -763,6 +767,7 @@ describe("subagent management tools", () => {
     const narrow = await listFrom({
       visibleNodeTopicIds: [manager.id, source.id],
       ownedNodeTopicIds: [manager.id, source.id],
+      issuedAt: Date.now(),
     });
     expect(narrow.targets).toEqual([]);
     expect(narrow.text).not.toContain(sibling.id);
@@ -771,6 +776,7 @@ describe("subagent management tools", () => {
     const wide = await listFrom({
       visibleNodeTopicIds: [manager.id, source.id, sibling.id],
       ownedNodeTopicIds: [manager.id, source.id],
+      issuedAt: Date.now(),
     });
     expect(wide.targets).toEqual([sibling.id]);
 

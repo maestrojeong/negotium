@@ -825,6 +825,8 @@ describe("mcp-config: playwright transport selection per agent", () => {
       const args = (servers["session-comm"] as { args: string[] }).args;
       const arg = args.find((entry) => entry.startsWith("--actor-topic-scope="));
       expect(arg).toBeDefined();
+      // The child gets the node's freshness window explicitly (no env inheritance).
+      expect(args).toContain("--actor-topic-scope-max-age-ms=600000");
       expect(
         JSON.parse(Buffer.from(arg!.slice("--actor-topic-scope=".length), "base64url").toString()),
       ).toEqual(valid);

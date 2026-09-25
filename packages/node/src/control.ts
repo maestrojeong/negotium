@@ -55,6 +55,7 @@ import {
   RuntimeGatewayIdempotencyConflictError,
   RuntimeGatewayTopicUnavailableError,
   readDecisions,
+  resolveRemoteSessionInboxPrincipal,
   STATE_DIR,
   type StoredRuntimeEvent,
   saveVaultEntry,
@@ -658,6 +659,12 @@ export function createNodeControlHandler(
               "canonical-topic-existence",
               "canonical-topic-tombstones",
               "canonical-surface-scope",
+              // The inbox route accepts `actorUserId` and files a delivery
+              // only under that principal (`userId` must equal it, and it
+              // must be a participant). A hub may send the field to any node
+              // — an older one ignores it — but only a node advertising this
+              // enforces it itself.
+              "remote-session-comm-actor",
               ...listRuntimeGatewayCapabilities(),
             ],
             cursor: latestRuntimeEventSeq(),
@@ -1543,12 +1550,30 @@ export function createNodeControlHandler(
             if (!topic || !topicInRequestScope(req, topic)) {
               return runtimeJsonError(404, "Topic not found");
             }
-            const userId = requiredText(body.userId, "userId");
-            if (!topic.participants.some((participant) => participant.userId === userId)) {
-              return runtimeJsonError(404, "Topic not found");
+            const requestedUserId = requiredText(body.userId, "userId");
+            const actorUserId =
+              body.actorUserId === undefined
+                ? undefined
+                : requiredText(body.actorUserId, "actorUserId");
+            // The hub's asserted actor decides whose principal the target
+            // runs as — never the room's owner on the actor's behalf. Checked
+            // before the body is parsed or anything is claimed or queued.
+            const principal = resolveRemoteSessionInboxPrincipal({
+              userId: requestedUserId,
+              actorUserId,
+              targetParticipants: topic.participants,
+            });
+            if (!principal.ok) {
+              return runtimeJsonError(principal.status, principal.error, principal.code);
             }
+            const userId = principal.userId;
             const delivery = parseRemoteSessionInboxDelivery(body);
-            const result = await deliverRemoteSessionInbox({ topic, userId, delivery });
+            const result = await deliverRemoteSessionInbox({
+              topic,
+              userId,
+              ...(actorUserId !== undefined ? { actorUserId } : {}),
+              delivery,
+            });
             if (!result.ok) return runtimeJsonError(result.status, result.error, result.code);
             return Response.json(
               {

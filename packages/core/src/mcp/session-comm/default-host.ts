@@ -2,8 +2,12 @@ import { basename, join } from "node:path";
 import type { SessionCommMcpHost, SessionCommMcpResult } from "#mcp/factories/session-comm";
 import {
   abortTargetRefusal,
+  crossPrincipalRefusal,
   excludesAgentlessTargets,
+  localDeliveryPrincipal,
   remoteSessionRoute,
+  roomStatusPrincipal,
+  rosterBoundsSessionTargets,
 } from "#mcp/session-comm/actor-policy";
 import type { SessionCommContext } from "#mcp/session-comm/context";
 import {
@@ -43,12 +47,17 @@ import {
   isTopicBrowserProfileOwner,
   listBrowserProfiles,
 } from "#storage/browser-profiles";
-import { deleteRemoteSessionAsk, recordRemoteSessionAsk } from "#storage/remote-session";
+import {
+  abandonRemoteSessionAsk,
+  beginRemoteSessionAsk,
+  markRemoteSessionAskSent,
+} from "#storage/remote-session";
 import {
   clearPendingAsk,
   createPendingAsk,
   describePendingAskState,
   listPendingAsksForCaller,
+  releasePendingAsk,
 } from "#storage/session-asks";
 import { enqueueSessionInbox } from "#storage/session-inbox";
 import { isAgentKind, type QueryState } from "#types";
@@ -91,12 +100,15 @@ function targetCatalog(context: SessionCommContext) {
     : surface === "otium"
       ? defaultSurfaceScope()
       : null;
-  // On `otium` the roster check below matches the hub's execution principal
-  // (`local`), which sits in every hub-backed room, not the person who spoke.
-  // The hub's signed per-turn assertion is what says which of those rooms this
-  // actor is actually in, and it is the whole answer when present. Without one
-  // (a turn no person started) only the current room plus its own subagent
-  // lineage — direct parent, granted targets, own workers — is reachable.
+  // Off `otium` the node's roster is the boundary. On `otium` it is not
+  // (design Q1, see `rosterBoundsSessionTargets`): participants there are only
+  // execution principals (`local`, a synced room's person, or both), so the
+  // workspace (the store query) intersected with the reach set below is the
+  // whole rule. The hub's signed per-turn assertion is that set when present;
+  // without one (a turn no person started) only the current room plus its own
+  // subagent lineage — direct parent, granted targets, own workers — is
+  // reachable (fail-closed).
+  const rosterBound = rosterBoundsSessionTargets(surface);
   const reachable = actorReachableTopicIds({
     surface,
     currentTopicId: context.currentTopicId,
@@ -111,7 +123,9 @@ function targetCatalog(context: SessionCommContext) {
     // Scoped in the store query, not after the fact.
     listRows: () =>
       listTopics({ surface, surfaceScope })
-        .filter((topic) => topic.participants.some((p) => p.userId === context.userId))
+        .filter(
+          (topic) => !rosterBound || topic.participants.some((p) => p.userId === context.userId),
+        )
         .filter((topic) => !reachable || reachable.has(topic.id))
         .map((topic) => ({
           id: topic.id,
@@ -139,6 +153,18 @@ function remoteTarget(context: SessionCommContext, to: string) {
   return { node: to.slice(0, slash), topic: to.slice(slash + 1) };
 }
 
+/**
+ * Principal a local inbox entry for `targetTopicId` is filed under: the
+ * caller's own, or `null` (refuse) when the caller is not a participant of
+ * the target room (see `localDeliveryPrincipal`). Only for resolved targets.
+ */
+function deliveryPrincipal(context: SessionCommContext, targetTopicId: string): string | null {
+  return localDeliveryPrincipal({
+    callerUserId: context.userId,
+    targetParticipants: getTopic(targetTopicId)?.participants,
+  });
+}
+
 /** Which transport serves `node/topic` targets for this turn (see `remoteSessionRoute`). */
 function remoteRoute(context: SessionCommContext) {
   return remoteSessionRoute(currentSurface(context), context.remoteSession);
@@ -149,7 +175,14 @@ function newRequestId(): string {
 }
 
 function activeQuery(context: SessionCommContext, topicId: string, title: string) {
-  const dir = join(USERS_LOG_DIR, context.userId, "active-queries");
+  // Read-only: a visible room of another principal (otium, Q1) records its
+  // turns under that principal. Never used to file an inbox entry.
+  const principal =
+    roomStatusPrincipal({
+      callerUserId: context.userId,
+      targetParticipants: getTopic(topicId)?.participants,
+    }) ?? context.userId;
+  const dir = join(USERS_LOG_DIR, principal, "active-queries");
   const candidates = [join(dir, `${sanitizeId(topicId)}.json`)];
   if (title && basename(title) === title && title !== "." && title !== "..") {
     candidates.push(join(dir, `${title}.json`));
@@ -381,33 +414,51 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
       const from = currentRef(context);
       const remote = remoteTarget(context, to);
       const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const pending = createPendingAsk({ userId: context.userId, from: from.key, to, requestId });
-      if (!pending.ok) return error(`Error: an ask_session request to "${to}" is already pending.`);
+      /*
+       * Every refusal — the route, the target, and above all the principal
+       * check — is decided before the pending-ask row exists (the stdio server
+       * does the same). The row is created only right before the entry is
+       * queued or sent, so a refused ask never leaves, or even briefly holds,
+       * a pending marker under the caller's principal for a room it may not
+       * reach.
+       */
+      const createAsk = () =>
+        createPendingAsk({ userId: context.userId, from: from.key, to, requestId });
+      const alreadyPending = () =>
+        error(`Error: an ask_session request to "${to}" is already pending.`);
       const clearAsk = () =>
         clearPendingAsk({ userId: context.userId, from: from.key, to, requestId });
+      const releaseAsk = () =>
+        releasePendingAsk({ userId: context.userId, from: from.key, to, requestId });
       if (remote) {
         const route = remoteRoute(context);
-        if (route.kind === "refused") {
-          clearAsk();
-          return error(route.error);
-        }
-        if (!from.topicId) {
-          clearAsk();
-          return error("Error: current topic id is unavailable.");
-        }
+        if (route.kind === "refused") return error(route.error);
+        if (!from.topicId) return error("Error: current topic id is unavailable.");
         if (route.kind === "hub") {
           // Durable caller record first: the hub's `ask-reply` delivery is
           // routed back through it, possibly after this process restarted.
-          recordRemoteSessionAsk({
-            requestId,
-            callerTopicId: from.topicId,
-            userId: context.userId,
-            fromKey: from.key,
-            toKey: to,
-            ...(context.currentThreadRootId
-              ? { callerThreadRootId: context.currentThreadRootId }
-              : {}),
-          });
+          // Row and pending marker are one state machine (see
+          // `RemoteSessionAskDispatchState`): the row never goes while its
+          // marker may remain, and a crash anywhere is reconciled later.
+          let begun: "ok" | "pending";
+          try {
+            begun = beginRemoteSessionAsk({
+              requestId,
+              callerTopicId: from.topicId,
+              userId: context.userId,
+              fromKey: from.key,
+              toKey: to,
+              ...(context.currentThreadRootId
+                ? { callerThreadRootId: context.currentThreadRootId }
+                : {}),
+              createMarker: () => createAsk().ok,
+              releaseMarker: releaseAsk,
+            });
+          } catch (err) {
+            logger.warn({ err, requestId, to }, "session-comm: could not record remote ask");
+            return error("Error: could not record the remote ask; nothing was sent.");
+          }
+          if (begun === "pending") return alreadyPending();
           const sent = await hubRemoteAsk(route.grant, {
             requestId,
             to: remote,
@@ -417,18 +468,20 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
           });
           if (!sent.ok) {
             if (sent.uncertain) {
-              // The hub may have forwarded it. Keep the pending marker so a
-              // late answer still lands; the ask TTL cleans up otherwise.
+              // The hub may have forwarded it: the row stays `dispatched` so a
+              // late answer still lands; reconciliation turns it `unknown`
+              // (marker released) and the caller hears if none ever arrives.
               return ok(
                 `Ask sent to "${to}" (delivery unconfirmed: ${sent.error}). request_id: ${requestId}`,
               );
             }
-            clearAsk();
-            deleteRemoteSessionAsk(requestId);
+            abandonRemoteSessionAsk(requestId, releaseAsk);
             return error(`Error: ${sent.error}`);
           }
+          markRemoteSessionAskSent(requestId);
           return ok(`Ask sent to "${to}". request_id: ${requestId}`);
         }
+        if (!createAsk().ok) return alreadyPending();
         const result = await forwardToPeer({
           action: "ask",
           toNode: remote.node,
@@ -448,36 +501,36 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
         }
       } else {
         const validation = targetCatalog(context).validateTarget(to);
-        if (!validation.ok) {
-          clearAsk();
-          return validation.error;
-        }
-        if (!validation.target.agent) {
-          clearAsk();
-          return error(`Error: "${to}" has no AI agent.`);
-        }
+        if (!validation.ok) return validation.error;
+        if (!validation.target.agent) return error(`Error: "${to}" has no AI agent.`);
         const targetTopicId = validation.target.topicId;
-        if (!targetTopicId) {
-          clearAsk();
-          return error(`Error: "${to}" has no topic id.`);
+        if (!targetTopicId) return error(`Error: "${to}" has no topic id.`);
+        if (deliveryPrincipal(context, targetTopicId) !== context.userId) {
+          return error(crossPrincipalRefusal("ask_session", to));
         }
-        enqueueSessionInbox({
-          userId: context.userId,
-          topicId: targetTopicId,
-          entry: {
-            type: "ask",
-            requestId,
-            from: from.key,
-            fromTitle: from.title,
-            ...(from.topicId ? { fromTopicId: from.topicId } : {}),
-            ...(context.currentThreadRootId
-              ? { fromThreadRootId: context.currentThreadRootId }
-              : {}),
-            message,
-            fromDepth: context.depth,
-            timestamp: new Date().toISOString(),
-          },
-        });
+        if (!createAsk().ok) return alreadyPending();
+        try {
+          enqueueSessionInbox({
+            userId: context.userId,
+            topicId: targetTopicId,
+            entry: {
+              type: "ask",
+              requestId,
+              from: from.key,
+              fromTitle: from.title,
+              ...(from.topicId ? { fromTopicId: from.topicId } : {}),
+              ...(context.currentThreadRootId
+                ? { fromThreadRootId: context.currentThreadRootId }
+                : {}),
+              message,
+              fromDepth: context.depth,
+              timestamp: new Date().toISOString(),
+            },
+          });
+        } catch (err) {
+          clearAsk();
+          throw err;
+        }
       }
       return ok(`Ask sent to "${to}". request_id: ${requestId}`);
     },
@@ -562,6 +615,9 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
         to,
       });
       if (refused) return error(refused);
+      if (deliveryPrincipal(context, targetTopicId) !== context.userId) {
+        return error(crossPrincipalRefusal("abort_session", to));
+      }
       enqueueSessionInbox({
         userId: context.userId,
         topicId: targetTopicId,
@@ -628,6 +684,9 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
       );
       if (!canSubagentTellTarget(identity, targetTopicId)) {
         return error("Error: subagent tell_session target is not permitted.");
+      }
+      if (deliveryPrincipal(context, targetTopicId) !== context.userId) {
+        return error(crossPrincipalRefusal("tell_session", to));
       }
       const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       enqueueSessionInbox({

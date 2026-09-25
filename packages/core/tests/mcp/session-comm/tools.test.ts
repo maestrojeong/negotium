@@ -220,6 +220,7 @@ describe("session-comm stdio server on the Otium surface", () => {
     const scopeArg = `--actor-topic-scope=${encodeActorTopicScopeArg({
       visibleNodeTopicIds: [current.id, invited.id, owned.id],
       ownedNodeTopicIds: [current.id, owned.id],
+      issuedAt: Date.now(),
     })}`;
     try {
       const refused = await callSessionCommTool({
@@ -252,6 +253,142 @@ describe("session-comm stdio server on the Otium surface", () => {
       expect(inbox(owned.id)).toEqual(["abort"]);
     } finally {
       for (const topic of [current, invited, owned]) {
+        db.run("DELETE FROM session_inbox WHERE topic_id = ?", [topic.id]);
+        db.run("DELETE FROM api_topics WHERE id = ?", [topic.id]);
+      }
+    }
+  });
+
+  test("Q1: two-owner rooms deliver as the caller, other principals' rooms are visible but refused, strangers invisible", async () => {
+    const scope = `ws-stdio-q1-${randomUUID()}`;
+    const human = `stdio-human-${randomUUID()}`;
+    const stranger = `stdio-stranger-${randomUUID()}`;
+    const current = otiumRoom(`stdio-q1-current-${randomUUID()}`, scope);
+    const dual = otiumRoom(`stdio-q1-dual-${randomUUID()}`, scope, {
+      participants: [
+        { userId: USER_ID, role: "owner" as const },
+        { userId: human, role: "owner" as const },
+      ],
+    });
+    const humanRoom = otiumRoom(`stdio-q1-human-${randomUUID()}`, scope, {
+      participants: [{ userId: human, role: "owner" as const }],
+    });
+    const strangerRoom = otiumRoom(`stdio-q1-stranger-${randomUUID()}`, scope, {
+      participants: [{ userId: stranger, role: "owner" as const }],
+    });
+    const scopeArg = `--actor-topic-scope=${encodeActorTopicScopeArg({
+      visibleNodeTopicIds: [current.id, dual.id, humanRoom.id],
+      ownedNodeTopicIds: [current.id, humanRoom.id],
+      issuedAt: Date.now(),
+    })}`;
+    const call = (name: string, input: Record<string, unknown>) =>
+      callSessionCommTool({
+        title: current.title,
+        topicId: current.id,
+        agent: "codex",
+        extraArgs: [`--actor-user-id=${human}`, scopeArg],
+        name,
+        input,
+      });
+    const inbox = (topicId: string) =>
+      db
+        .query<{ user_id: string; payload: string }, [string]>(
+          "SELECT user_id, payload FROM session_inbox WHERE topic_id = ? ORDER BY sequence",
+        )
+        .all(topicId)
+        .map((row) => `${row.user_id}:${JSON.parse(row.payload).type}`);
+    try {
+      const listed = (await call("list_sessions", {})).text;
+      expect(listed).toContain(dual.title);
+      expect(listed).toContain(humanRoom.title);
+      expect(listed).not.toContain(strangerRoom.title);
+
+      // Case 1: the caller principal is in the `local`+human two-owner room:
+      // delivered, filed under the caller principal (unchanged).
+      expect((await call("tell_session", { to: dual.title, message: "hi" })).isError).toBe(false);
+      expect(inbox(dual.id)).toEqual([`${USER_ID}:tell`]);
+
+      // Case 2: visible (and even asserted owned) but the caller principal is
+      // not in the room: tell/abort/ask refused explicitly, nothing filed —
+      // never under the room owner's principal.
+      const peeked = await call("peek_session", {});
+      expect(peeked.text).toContain(humanRoom.title);
+      for (const [name, input] of [
+        ["tell_session", { to: humanRoom.title, message: "hi" }],
+        ["abort_session", { to: humanRoom.title }],
+        ["ask_session", { to: humanRoom.title, message: "?" }],
+      ] as const) {
+        const refused = await call(name, input);
+        expect(refused.isError).toBe(true);
+        expect(refused.text).toContain(`${name} to "${humanRoom.title}" is not available`);
+        expect(refused.text).toContain("execution principal");
+      }
+      expect(inbox(humanRoom.id)).toEqual([]);
+
+      for (const [name, input] of [
+        ["tell_session", { to: strangerRoom.title, message: "hi" }],
+        ["abort_session", { to: strangerRoom.title }],
+      ] as const) {
+        expect((await call(name, input)).isError).toBe(true);
+      }
+      expect(inbox(strangerRoom.id)).toEqual([]);
+    } finally {
+      for (const topic of [current, dual, humanRoom, strangerRoom]) {
+        db.run("DELETE FROM session_inbox WHERE topic_id = ?", [topic.id]);
+        db.run("DELETE FROM topic_members WHERE topic_id = ?", [topic.id]);
+        db.run("DELETE FROM api_topics WHERE id = ?", [topic.id]);
+      }
+    }
+  });
+
+  test("a stale assertion fails closed on the stdio path too (checked per call)", async () => {
+    const scope = `ws-stdio-stale-${randomUUID()}`;
+    const current = otiumRoom(`stdio-stale-current-${randomUUID()}`, scope);
+    const other = otiumRoom(`stdio-stale-other-${randomUUID()}`, scope);
+    const scopeArg = (issuedAt: number | undefined) =>
+      `--actor-topic-scope=${encodeActorTopicScopeArg({
+        visibleNodeTopicIds: [current.id, other.id],
+        ownedNodeTopicIds: [current.id, other.id],
+        ...(issuedAt === undefined ? {} : { issuedAt }),
+      })}`;
+    const call = (extraArgs: string[], name: string, input: Record<string, unknown>) =>
+      callSessionCommTool({
+        title: current.title,
+        topicId: current.id,
+        agent: "codex",
+        extraArgs: ["--actor-user-id=person", ...extraArgs],
+        name,
+        input,
+      });
+    const inbox = (topicId: string) =>
+      db
+        .query<{ payload: string }, [string]>(
+          "SELECT payload FROM session_inbox WHERE topic_id = ?",
+        )
+        .all(topicId).length;
+    try {
+      const elevenMinutesAgo = Date.now() - 11 * 60 * 1000;
+      for (const args of [[scopeArg(elevenMinutesAgo)], [scopeArg(undefined)]]) {
+        expect((await call(args, "list_sessions", {})).text).not.toContain(other.title);
+        for (const [name, input] of [
+          ["tell_session", { to: other.title, message: "hi" }],
+          ["abort_session", { to: other.title }],
+        ] as const) {
+          const refused = await call(args, name, input);
+          expect(refused.isError).toBe(true);
+          expect(refused.text).toContain("not found");
+        }
+      }
+      expect(inbox(other.id)).toBe(0);
+      // The window the node hands the child is the one applied.
+      const wider = [scopeArg(elevenMinutesAgo), "--actor-topic-scope-max-age-ms=3600000"];
+      expect((await call(wider, "list_sessions", {})).text).toContain(other.title);
+      expect((await call(wider, "tell_session", { to: other.title, message: "hi" })).isError).toBe(
+        false,
+      );
+      expect(inbox(other.id)).toBe(1);
+    } finally {
+      for (const topic of [current, other]) {
         db.run("DELETE FROM session_inbox WHERE topic_id = ?", [topic.id]);
         db.run("DELETE FROM api_topics WHERE id = ?", [topic.id]);
       }
@@ -361,6 +498,7 @@ describe("session-comm stdio server on the Otium surface", () => {
           `--actor-topic-scope=${encodeActorTopicScopeArg({
             visibleNodeTopicIds: [current.id],
             ownedNodeTopicIds: [current.id],
+            issuedAt: Date.now(),
           })}`,
         ],
         name: "tell_session",

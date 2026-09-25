@@ -12,6 +12,8 @@ import {
   deliverRemoteSessionInbox,
   REMOTE_SESSION_INBOX_IN_PROGRESS_CODE,
   recoverRemoteSessionInbox,
+  remoteSessionInboxClaimHash,
+  remoteSessionInboxEnvelope,
   setRemoteSessionAskReplyDeliverer,
 } from "#runtime/remote-session-inbox";
 import { runRemoteSessionMaintenance } from "#runtime/remote-session-reply-outbox";
@@ -75,6 +77,28 @@ function replyDelivery(requestId: string) {
     fromLabel: "worker/Target",
     replyKind: "reply" as const,
     replyText: `answer ${requestId}`,
+  };
+}
+
+/** The claim the live path persists for a verified ask-reply (before a crash). */
+function verifiedClaim(
+  topic: { id: string },
+  delivery: ReturnType<typeof replyDelivery>,
+  principal: { userId?: string; actorUserId?: string | null; askUserId?: string } = {},
+) {
+  const userId = principal.userId ?? PRINCIPAL;
+  const actorUserId = principal.actorUserId === undefined ? PRINCIPAL : principal.actorUserId;
+  return {
+    requestId: delivery.requestId,
+    kind: "ask-reply" as const,
+    topicId: topic.id,
+    payloadHash: remoteSessionInboxClaimHash({ userId, actorUserId, delivery }),
+    payload: remoteSessionInboxEnvelope({
+      userId,
+      actorUserId,
+      delivery,
+      askUserId: principal.askUserId ?? PRINCIPAL,
+    }),
   };
 }
 
@@ -163,7 +187,12 @@ describe("remote ask-reply inbox state machine", () => {
     expect(replies(topic.id)).toBe(0);
     expect(getRemoteSessionAsk(requestId)).not.toBeNull();
     // Hand the other process's claim back so later passes do not adopt it.
-    releaseRemoteSessionInboxClaim(requestId);
+    expect(
+      releaseRemoteSessionInboxClaim(requestId, {
+        owner: getRemoteSessionInboxClaim(requestId)?.owner ?? null,
+        payloadHash: remoteSessionPayloadHash(delivery),
+      }),
+    ).toBe(true);
   });
 
   test("crash after the claim: the expired lease is re-run once by recovery; the hub then sees a replay", async () => {
@@ -174,14 +203,7 @@ describe("remote ask-reply inbox state machine", () => {
     const died = Date.now() - REMOTE_SESSION_INBOX_CLAIM_LEASE_MS - 1;
     // "Killed after claim": processing claim with the payload, ask row intact,
     // nothing in the room.
-    claimRemoteSessionInbox({
-      requestId,
-      kind: "ask-reply",
-      topicId: topic.id,
-      payloadHash: remoteSessionPayloadHash(delivery),
-      payload: delivery,
-      now: died,
-    });
+    claimRemoteSessionInbox({ ...verifiedClaim(topic, delivery), now: died });
     // Before the lease runs out nothing is touched.
     expect(await recoverRemoteSessionInbox(died + 1)).toBe(0);
     expect(replies(topic.id)).toBe(0);
@@ -195,25 +217,29 @@ describe("remote ask-reply inbox state machine", () => {
     // Recovery is idempotent and the hub's retry is a replay.
     await recoverRemoteSessionInbox(Date.now() + REMOTE_SESSION_INBOX_CLAIM_LEASE_MS);
     expect(replies(topic.id)).toBe(1);
-    expect(await deliverRemoteSessionInbox({ topic, userId: PRINCIPAL, delivery })).toEqual({
-      ok: true,
-      replayed: true,
-    });
+    // The hub's retry carries the same asserted actor the claim was bound to.
+    expect(
+      await deliverRemoteSessionInbox({
+        topic,
+        userId: PRINCIPAL,
+        actorUserId: PRINCIPAL,
+        delivery,
+      }),
+    ).toEqual({ ok: true, replayed: true });
     expect(replies(topic.id)).toBe(1);
   });
 
-  test("a fresh process re-runs even a live-lease claim (startup) — exactly once", async () => {
+  test("a fresh process re-runs a live-lease claim of its dead predecessor (startup) — exactly once", async () => {
     const topic = callerRoom();
     const requestId = `ar-boot-${randomUUID()}`;
     askFor(topic, requestId);
     const delivery = replyDelivery(requestId);
-    claimRemoteSessionInbox({
+    claimRemoteSessionInbox(verifiedClaim(topic, delivery));
+    // The holder is the previous incarnation of this pid: provably gone.
+    db.run("UPDATE remote_session_inbox_claims SET owner_token = ? WHERE request_id = ?", [
+      `${process.pid}.previous-incarnation.x`,
       requestId,
-      kind: "ask-reply",
-      topicId: topic.id,
-      payloadHash: remoteSessionPayloadHash(delivery),
-      payload: delivery,
-    });
+    ]);
     expect(await recoverRemoteSessionInbox(Date.now(), { includeLive: true })).toBe(1);
     expect(replies(topic.id)).toBe(1);
     expect(await recoverRemoteSessionInbox(Date.now(), { includeLive: true })).toBe(0);

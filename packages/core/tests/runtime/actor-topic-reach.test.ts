@@ -60,7 +60,11 @@ describe("actor reach on the otium surface", () => {
 
   test("the assertion plus the current room is exactly what is reachable", () => {
     const current = room();
-    const scope = { visibleNodeTopicIds: ["a", "b"], ownedNodeTopicIds: ["b"] };
+    const scope = {
+      visibleNodeTopicIds: ["a", "b"],
+      ownedNodeTopicIds: ["b"],
+      issuedAt: Date.now(),
+    };
     expect(
       [
         ...(actorReachableTopicIds({
@@ -90,7 +94,11 @@ describe("actor reach on the otium surface", () => {
     // lists the parent as visible, not owned, and does not mention the
     // worker. The parent's delegation must not lend this person authority
     // over the worker (the review's scenario 1).
-    const memberScope = { visibleNodeTopicIds: [parent.id, outside.id], ownedNodeTopicIds: [] };
+    const memberScope = {
+      visibleNodeTopicIds: [parent.id, outside.id],
+      ownedNodeTopicIds: [],
+      issuedAt: Date.now(),
+    };
     const memberReach = actorReachableTopicIds({
       surface: "otium",
       currentTopicId: parent.id,
@@ -113,6 +121,7 @@ describe("actor reach on the otium surface", () => {
     const fromWorkerScope = {
       visibleNodeTopicIds: [worker.id, parent.id],
       ownedNodeTopicIds: [],
+      issuedAt: Date.now(),
     };
     const fromWorker = actorReachableTopicIds({
       surface: "otium",
@@ -127,6 +136,7 @@ describe("actor reach on the otium surface", () => {
     const ownerScope = {
       visibleNodeTopicIds: [parent.id, worker.id],
       ownedNodeTopicIds: [parent.id, worker.id],
+      issuedAt: Date.now(),
     };
     expect([
       ...(actorOwnedTopicIds({
@@ -171,5 +181,57 @@ describe("actor reach on the otium surface", () => {
       actorTopicScope: undefined,
     });
     expect([...(ownedFromParent ?? [])].sort()).toEqual([worker.id, otherWorker.id].sort());
+  });
+});
+
+describe("a stale assertion grants no cross-room reach", () => {
+  const t0 = 1_800_000_000_000;
+  const window = 10 * 60 * 1000;
+  const staleClock = { now: t0 + window + 1, maxAgeMs: window };
+  const freshClock = { now: t0 + window, maxAgeMs: window };
+
+  test("fresh is authoritative; stale keeps only the current room and asserted lineage", () => {
+    const parent = room();
+    const worker = room({ parentTopicId: parent.id, isSubagent: true });
+    const unasserted = room({ parentTopicId: parent.id, isSubagent: true });
+    const outside = room();
+    const scope = {
+      visibleNodeTopicIds: [parent.id, worker.id, outside.id],
+      ownedNodeTopicIds: [parent.id, worker.id, outside.id],
+      issuedAt: t0,
+    };
+    const input = { surface: "otium", currentTopicId: parent.id, actorTopicScope: scope };
+    expect([...(actorReachableTopicIds(input, freshClock) ?? [])].sort()).toEqual(
+      [parent.id, worker.id, outside.id].sort(),
+    );
+    expect([...(actorOwnedTopicIds(input, freshClock) ?? [])].sort()).toEqual(
+      [parent.id, worker.id, outside.id].sort(),
+    );
+    // Stale: never more than the fresh assertion nor bare lineage — the
+    // unasserted worker stays out, the outside room is gone.
+    expect([...(actorReachableTopicIds(input, staleClock) ?? [])].sort()).toEqual(
+      [parent.id, worker.id].sort(),
+    );
+    expect([...(actorOwnedTopicIds(input, staleClock) ?? [])]).toEqual([worker.id]);
+    expect(actorReachableTopicIds(input, staleClock)?.has(unasserted.id)).toBe(false);
+  });
+
+  test("missing or future-dated issuedAt is stale; off otium nothing changes", () => {
+    const current = room();
+    const other = room();
+    const base = { visibleNodeTopicIds: [other.id], ownedNodeTopicIds: [other.id] };
+    for (const scope of [base, { ...base, issuedAt: t0 + 2 * window }]) {
+      const input = { surface: "otium", currentTopicId: current.id, actorTopicScope: scope };
+      expect([...(actorReachableTopicIds(input, { now: t0, maxAgeMs: window }) ?? [])]).toEqual([
+        current.id,
+      ]);
+      expect([...(actorOwnedTopicIds(input, { now: t0, maxAgeMs: window }) ?? [])]).toEqual([]);
+    }
+    expect(
+      actorReachableTopicIds(
+        { surface: "terminal", currentTopicId: current.id, actorTopicScope: base },
+        staleClock,
+      ),
+    ).toBeNull();
   });
 });
