@@ -85,3 +85,59 @@ export function remoteSessionRoute(
 export function excludesAgentlessTargets(surface: string | undefined): boolean {
   return surface === "otium";
 }
+
+/**
+ * Whether the node's own roster (`participants` / `topic_members`) bounds
+ * which local rooms session-comm may list and address on this surface.
+ *
+ * Off `otium` this node owns membership and the roster is the boundary.
+ * On `otium` it is not (design Q1): a node topic's participants there are
+ * only its execution principal — the hub's `local`, or the person who owned
+ * a synced node topic, and some rooms carry both — so matching them against
+ * the turn's principal hid rooms the person may reach and proved nothing
+ * about the ones it showed. There the boundary is the workspace (surface +
+ * scope, applied in the store query) intersected with
+ * `actorReachableTopicIds`: the hub's signed per-turn assertion when present,
+ * else only the current room and its own subagent lineage (fail-closed).
+ */
+export function rosterBoundsSessionTargets(surface: string | undefined): boolean {
+  return surface !== "otium";
+}
+
+export interface DeliveryParticipant {
+  userId: string;
+  role: string;
+}
+
+/**
+ * The principal a local tell/ask/abort inbox entry is filed under, which is
+ * also the principal the target's turn runs as. Called only for a target the
+ * catalog already resolved, i.e. one the actor may reach.
+ *
+ * The caller's principal whenever it is in the target room — every
+ * single-principal case and the two-owner (`local` + person) rooms, exactly
+ * as before. On `otium` a reachable room may hold only another principal;
+ * the entry is then filed under that room's own owner so the inbox accepts
+ * it and the turn runs as a participant of its room, never as a stranger to
+ * it. Returns `null` when no such principal exists (refuse).
+ */
+export function localDeliveryPrincipal(input: {
+  surface: string | undefined;
+  callerUserId: string;
+  targetParticipants: readonly DeliveryParticipant[] | undefined;
+}): string | null {
+  const participants = input.targetParticipants ?? [];
+  if (participants.some((p) => p.userId === input.callerUserId)) return input.callerUserId;
+  if (rosterBoundsSessionTargets(input.surface)) return null;
+  return (participants.find((p) => p.role === "owner") ?? participants[0])?.userId ?? null;
+}
+
+/**
+ * Refusal for an `ask_session` whose target runs under a different
+ * principal. The ask reply path (pending-ask record, caller-room lookup,
+ * reply delivery in `runtime/inbox.ts`) is keyed to one principal, so such
+ * an ask would be dropped after the fact; say so up front instead.
+ */
+export function crossPrincipalAskRefusal(to: string): string {
+  return `Error: ask_session to "${to}" is not available: that room runs under a different execution principal on this node. Use tell_session instead.`;
+}

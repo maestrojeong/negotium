@@ -46,6 +46,14 @@ the canonical topic.
   node's own lineage stands in: a subagent reaches its direct parent and the rooms an ancestor
   granted it (`grant_subagent_tell`), a room reaches and may abort its own subagent workers, and
   nothing else.
+  **No roster on `otium` (Q1).** A node topic's participants on `otium` are only its execution
+  principals — `local`, the person who owned a synced node topic, or both — so they bound
+  nothing there. `session-comm`, like the runtime MCP, lists and resolves local rooms by workspace
+  (surface + `surfaceScope`) ∩ the reach set above, never by the turn's `userId`. A local
+  tell/abort is filed under the caller's principal when it is in the target room, else under the
+  target room's owner principal, so the target turn always runs as one of its own participants;
+  an `ask_session` across principals is refused (its reply path is keyed to one principal).
+  `terminal`/`telegram` keep the node roster as the boundary.
   **Subagent management.** The tools that manage the current room's delegation tree follow the
   same rule as the cross-room tools. On `otium` with an assertion, `list_subagents` shows only
   the descendants in `visibleNodeTopicIds`; `start_subagent`, `delete_subagent` and

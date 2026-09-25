@@ -938,3 +938,277 @@ describe("default session-comm MCP host", () => {
     expect(listPendingAsksForCaller({ userId, from: `agent:${source.title}` })).toEqual([]);
   });
 });
+
+/**
+ * PR9 / design Q1: on `otium` a node topic's participants are only its
+ * execution principal (the hub's `local`, or the person who owned a synced
+ * node topic — and some rooms carry both). They say nothing about who may
+ * reach a room, so the session-comm roster filter is gone there and the
+ * workspace (surface + scope) intersected with the hub's per-turn assertion
+ * (fail-closed without one) is the whole visibility rule.
+ */
+describe("Otium session-comm without a participant filter (Q1)", () => {
+  const human = `session-default-human-${randomUUID()}`;
+  const stranger = `session-default-stranger-${randomUUID()}`;
+
+  function inboxRows(topicId: string) {
+    return db
+      .query<{ user_id: string; payload: string }, [string]>(
+        "SELECT user_id, payload FROM session_inbox WHERE topic_id = ? ORDER BY sequence",
+      )
+      .all(topicId)
+      .map((row) => ({ userId: row.user_id, type: JSON.parse(row.payload).type as string }));
+  }
+
+  function isError(result: object) {
+    return "isError" in result && result.isError === true;
+  }
+
+  function workspace() {
+    const scope = `ws-q1-${randomUUID()}`;
+    // `userId` plays the hub's execution principal `local`.
+    const localRoom = makeTopic({ surface: "otium", surfaceScope: scope });
+    const dualRoom = makeTopic({
+      surface: "otium",
+      surfaceScope: scope,
+      participants: [
+        { userId, role: "owner" },
+        { userId: human, role: "owner" },
+      ],
+    });
+    const humanRoom = makeTopic({
+      surface: "otium",
+      surfaceScope: scope,
+      participants: [{ userId: human, role: "owner" }],
+    });
+    const strangerRoom = makeTopic({
+      surface: "otium",
+      surfaceScope: scope,
+      participants: [{ userId: stranger, role: "owner" }],
+    });
+    return { scope, localRoom, dualRoom, humanRoom, strangerRoom };
+  }
+
+  test("a `local` turn sees the asserted two-owner and human-principal rooms", async () => {
+    const { localRoom, dualRoom, humanRoom, strangerRoom } = workspace();
+    const scoped: SessionCommContext = {
+      ...context(localRoom),
+      actorUserId: human,
+      actorTopicScope: {
+        visibleNodeTopicIds: [localRoom.id, dualRoom.id, humanRoom.id],
+        ownedNodeTopicIds: [localRoom.id, dualRoom.id, humanRoom.id],
+      },
+    };
+    const host = createDefaultSessionCommMcpHost();
+    const listed = JSON.stringify(await host.listSessions(scoped));
+    expect(listed).toContain(dualRoom.title);
+    expect(listed).toContain(humanRoom.title);
+    // Not asserted: another person's room stays invisible although it is in
+    // the same workspace.
+    expect(listed).not.toContain(strangerRoom.title);
+    const peeked = JSON.stringify(await host.peekSession(scoped));
+    expect(peeked).toContain(humanRoom.title);
+    expect(peeked).not.toContain(strangerRoom.title);
+
+    // The two-owner room holds the caller principal: filed under it, as before.
+    expect(isError(await host.tellSession(scoped, { to: dualRoom.title, message: "hi" }))).toBe(
+      false,
+    );
+    expect(inboxRows(dualRoom.id)).toEqual([{ userId, type: "tell" }]);
+
+    // A room of another principal is filed under that room's own principal, so
+    // the inbox accepts it and its turn runs as a participant of the room.
+    expect(isError(await host.tellSession(scoped, { to: humanRoom.title, message: "hi" }))).toBe(
+      false,
+    );
+    expect(isError(await host.abortSession(scoped, humanRoom.title))).toBe(false);
+    expect(inboxRows(humanRoom.id)).toEqual([
+      { userId: human, type: "tell" },
+      { userId: human, type: "abort" },
+    ]);
+
+    // ask's reply path is keyed to one principal: refused plainly, not dropped.
+    const asked = await host.askSession(scoped, { to: humanRoom.title, message: "?" });
+    expect(isError(asked)).toBe(true);
+    expect(JSON.stringify(asked)).toContain("execution principal");
+    expect(listPendingAsksForCaller({ userId, from: `agent:${localRoom.title}` })).toEqual([]);
+    expect(inboxRows(humanRoom.id)).toHaveLength(2);
+    // ...but a room that holds the caller principal still takes an ask.
+    expect(isError(await host.askSession(scoped, { to: dualRoom.title, message: "?" }))).toBe(
+      false,
+    );
+    expect(inboxRows(dualRoom.id).map((row) => row.type)).toEqual(["tell", "ask"]);
+
+    for (const refused of [
+      await host.tellSession(scoped, { to: strangerRoom.title, message: "hi" }),
+      await host.askSession(scoped, { to: strangerRoom.title, message: "?" }),
+      await host.abortSession(scoped, strangerRoom.title),
+    ]) {
+      expect(isError(refused)).toBe(true);
+      expect(JSON.stringify(refused)).toContain("not found");
+    }
+    expect(inboxRows(strangerRoom.id)).toEqual([]);
+  });
+
+  test("a turn running as the human principal sees `local` rooms it was asserted", async () => {
+    const { localRoom, dualRoom, humanRoom, strangerRoom } = workspace();
+    const scoped: SessionCommContext = {
+      ...context(dualRoom),
+      userId: human,
+      actorUserId: human,
+      actorTopicScope: {
+        visibleNodeTopicIds: [dualRoom.id, localRoom.id, humanRoom.id],
+        ownedNodeTopicIds: [dualRoom.id],
+      },
+    };
+    const host = createDefaultSessionCommMcpHost();
+    const listed = JSON.stringify(await host.listSessions(scoped));
+    // The roster filter used to hide every `local` room from this turn.
+    expect(listed).toContain(localRoom.title);
+    expect(listed).toContain(humanRoom.title);
+    expect(listed).not.toContain(strangerRoom.title);
+
+    expect(isError(await host.tellSession(scoped, { to: localRoom.title, message: "hi" }))).toBe(
+      false,
+    );
+    expect(inboxRows(localRoom.id)).toEqual([{ userId, type: "tell" }]);
+    // Visible is still not owned.
+    const abort = await host.abortSession(scoped, localRoom.title);
+    expect(isError(abort)).toBe(true);
+    expect(JSON.stringify(abort)).toContain("not found");
+    expect(inboxRows(localRoom.id)).toHaveLength(1);
+  });
+
+  test("the assertion cannot reach across workspaces or surfaces", async () => {
+    const { localRoom } = workspace();
+    const foreign = makeTopic({ surface: "otium", surfaceScope: `ws-q1-other-${randomUUID()}` });
+    const terminal = makeTopic({ surface: "terminal" });
+    const scoped: SessionCommContext = {
+      ...context(localRoom),
+      actorUserId: human,
+      // A stale or hostile assertion naming rooms outside this workspace.
+      actorTopicScope: {
+        visibleNodeTopicIds: [localRoom.id, foreign.id, terminal.id],
+        ownedNodeTopicIds: [localRoom.id, foreign.id, terminal.id],
+      },
+    };
+    const host = createDefaultSessionCommMcpHost();
+    const listed = JSON.stringify(await host.listSessions(scoped));
+    expect(listed).not.toContain(foreign.title);
+    expect(listed).not.toContain(terminal.title);
+    for (const to of [foreign.title, terminal.title]) {
+      expect(isError(await host.tellSession(scoped, { to, message: "hi" }))).toBe(true);
+      expect(isError(await host.abortSession(scoped, to))).toBe(true);
+    }
+    expect(inboxRows(foreign.id)).toEqual([]);
+    expect(inboxRows(terminal.id)).toEqual([]);
+  });
+
+  test("without an assertion only the current room and its lineage are reachable", async () => {
+    const { localRoom, dualRoom, humanRoom } = workspace();
+    const worker = makeTopic({
+      surface: "otium",
+      surfaceScope: localRoom.surfaceScope ?? null,
+      parentTopicId: localRoom.id,
+      isSubagent: true,
+      participants: [{ userId: human, role: "owner" }],
+    });
+    const host = createDefaultSessionCommMcpHost();
+    const listed = JSON.stringify(await host.listSessions(context(localRoom)));
+    expect(listed).toContain(worker.title);
+    expect(listed).not.toContain(dualRoom.title);
+    expect(listed).not.toContain(humanRoom.title);
+    expect(
+      isError(await host.tellSession(context(localRoom), { to: humanRoom.title, message: "hi" })),
+    ).toBe(true);
+    expect(inboxRows(humanRoom.id)).toEqual([]);
+  });
+
+  test("dropping a room from the next turn's assertion revokes it at once", async () => {
+    const { localRoom, humanRoom } = workspace();
+    const host = createDefaultSessionCommMcpHost();
+    const withRoom: SessionCommContext = {
+      ...context(localRoom),
+      actorUserId: human,
+      actorTopicScope: {
+        visibleNodeTopicIds: [localRoom.id, humanRoom.id],
+        ownedNodeTopicIds: [localRoom.id],
+      },
+    };
+    expect(JSON.stringify(await host.listSessions(withRoom))).toContain(humanRoom.title);
+    const revoked: SessionCommContext = {
+      ...withRoom,
+      actorTopicScope: { visibleNodeTopicIds: [localRoom.id], ownedNodeTopicIds: [localRoom.id] },
+    };
+    expect(JSON.stringify(await host.listSessions(revoked))).not.toContain(humanRoom.title);
+    const told = await host.tellSession(revoked, { to: humanRoom.title, message: "hi" });
+    expect(isError(told)).toBe(true);
+    expect(inboxRows(humanRoom.id)).toEqual([]);
+  });
+
+  test("a revoked hub capability still refuses remote calls from a two-owner room", async () => {
+    const forwarded: PeerForwardArgs[] = [];
+    const unregister = registerPeerSessionBridge({
+      async forward(args) {
+        forwarded.push(args);
+        return { ok: true };
+      },
+      async sessions() {
+        return { ok: true, nodes: [] };
+      },
+      async reply() {
+        return true;
+      },
+    });
+    stubHub(() => Response.json({ ok: false, error: "capability revoked" }, { status: 401 }));
+    try {
+      const { dualRoom } = workspace();
+      const host = createDefaultSessionCommMcpHost();
+      const base: SessionCommContext = {
+        ...context(dualRoom),
+        userId: human,
+        actorUserId: human,
+        actorTopicScope: { visibleNodeTopicIds: [dualRoom.id], ownedNodeTopicIds: [dualRoom.id] },
+      };
+      const revoked = await host.tellSession(
+        { ...base, remoteSession: grant },
+        { to: "gmovie/Render", message: "go" },
+      );
+      expect(isError(revoked)).toBe(true);
+      expect(JSON.stringify(revoked)).toContain("no longer valid");
+      // No grant at all: fail-closed, never the peer bridge.
+      const noGrant = await host.tellSession(base, { to: "gmovie/Render", message: "go" });
+      expect(isError(noGrant)).toBe(true);
+      expect(forwarded).toEqual([]);
+    } finally {
+      unregister();
+    }
+  });
+
+  test("off Otium the node's membership stays the boundary", async () => {
+    const own = makeTopic({ surface: "terminal" });
+    const shared = makeTopic({
+      surface: "terminal",
+      participants: [
+        { userId, role: "owner" },
+        { userId: human, role: "member" },
+      ],
+    });
+    const others = makeTopic({
+      surface: "terminal",
+      participants: [{ userId: human, role: "owner" }],
+    });
+    const host = createDefaultSessionCommMcpHost();
+    const listed = JSON.stringify(await host.listSessions(context(own)));
+    expect(listed).toContain(shared.title);
+    expect(listed).not.toContain(others.title);
+    expect(isError(await host.tellSession(context(own), { to: others.title, message: "hi" }))).toBe(
+      true,
+    );
+    expect(inboxRows(others.id)).toEqual([]);
+    expect(isError(await host.tellSession(context(own), { to: shared.title, message: "hi" }))).toBe(
+      false,
+    );
+    expect(inboxRows(shared.id)).toEqual([{ userId, type: "tell" }]);
+  });
+});

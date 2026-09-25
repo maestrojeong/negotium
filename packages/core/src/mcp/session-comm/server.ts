@@ -30,7 +30,12 @@ import {
 } from "#storage/session-asks";
 import { enqueueSessionInbox } from "#storage/session-inbox";
 import { connectStdio, mcpError, mcpOk } from "../mcp-helpers";
-import { abortTargetRefusal, remoteSessionRoute } from "./actor-policy";
+import {
+  abortTargetRefusal,
+  crossPrincipalAskRefusal,
+  localDeliveryPrincipal,
+  remoteSessionRoute,
+} from "./actor-policy";
 import {
   hubRemoteAbort,
   hubRemoteAsk,
@@ -87,6 +92,19 @@ function remotePeerTarget(to: string): PeerTarget | null {
   const slash = to.indexOf("/");
   if (slash <= 0 || slash === to.length - 1) return null;
   return { node: to.slice(0, slash), topic: to.slice(slash + 1) };
+}
+
+/**
+ * Principal a local inbox entry for `targetTopicId` is filed under, and the
+ * target's turn runs as (see `localDeliveryPrincipal`); `null` refuses. Same
+ * rule as the hosted host, from the same module.
+ */
+function deliveryPrincipal(targetTopicId: string): string | null {
+  return localDeliveryPrincipal({
+    surface: currentSessionSurface(),
+    callerUserId: userId,
+    targetParticipants: getTopic(targetTopicId)?.participants,
+  });
 }
 
 /** Which transport serves `node/topic` targets for this turn (see `remoteSessionRoute`). */
@@ -417,7 +435,15 @@ server.tool(
 
     for (const { key: name, topic } of targets) {
       let isRunning = false;
-      const state = readQueryState(activeQueriesDir, topic.topicId, topic.name);
+      // A room of another principal (otium, Q1) records its turns under that principal.
+      const principal = topic.topicId ? deliveryPrincipal(topic.topicId) : null;
+      const state = readQueryState(
+        principal && principal !== userId
+          ? join(USERS_LOG_DIR, principal, "active-queries")
+          : activeQueriesDir,
+        topic.topicId,
+        topic.name,
+      );
       if (state) {
         const elapsed = Date.now() - new Date(state.since).getTime();
         if (elapsed <= ACTIVE_QUERY_STALE_MS) {
@@ -621,6 +647,9 @@ if (!isReplyOnly) {
             `Error: "${to}" 토픽에는 AI가 초대되어 있지 않아 ask_session을 실행할 수 없습니다.`,
           );
         }
+        if (validation.target.topicId && deliveryPrincipal(validation.target.topicId) !== userId) {
+          return mcpError(crossPrincipalAskRefusal(to));
+        }
 
         const fromRef = currentTopicRef();
         const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -795,9 +824,11 @@ if (!isReplyOnly) {
             to,
           });
           if (refused) return mcpError(refused);
+          const principal = deliveryPrincipal(targetTopicId);
+          if (!principal) return mcpError(`Error: Session "${to}" not found.`);
           // Send query abort signal via inbox
           enqueueSessionInbox({
-            userId,
+            userId: principal,
             topicId: targetTopicId,
             entry: {
               type: "abort",
@@ -915,11 +946,13 @@ if (!isReplyOnly) {
       //
       // NOTE: no direct DB write here; the consumer in the Otium server process
       // handles `deliverMessageToTopic` + the AI trigger.
+      const principal = deliveryPrincipal(targetTopicId);
+      if (!principal) return mcpError(`Error: Session "${to}" not found.`);
       const fromRef = currentTopicRef();
       const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       try {
         enqueueSessionInbox({
-          userId,
+          userId: principal,
           topicId: targetTopicId,
           entry: {
             type: "tell",

@@ -23,7 +23,9 @@ process.argv = [
   `--topic-id=${currentTopicId}`,
 ];
 
-const { getTopicsForUser, listSessionTargetsForUser } = await import("#mcp/session-comm/topics");
+const { getTopicsForUser, listSessionTargetsForUser, sessionTargetRowsFor } = await import(
+  "#mcp/session-comm/topics"
+);
 const { withDb } = await import("#mcp/session-comm/runtime");
 
 function makeTopic(patch: Partial<TopicDto>): TopicDto {
@@ -172,5 +174,57 @@ describe("session-comm topic listing", () => {
 
     expect(getApiTopicConfig(current.id)?.mcp).toEqual(["linear"]);
     expect(getMcpConfig().enabled).toEqual(["linear"]);
+  });
+});
+
+describe("stdio session-comm target rows (design Q1)", () => {
+  test("on otium the roster does not bound the rows; the workspace does", () => {
+    const scope = `ws-stdio-${randomUUID()}`;
+    const human = `session-comm-human-${randomUUID()}`;
+    const stranger = `session-comm-stranger-${randomUUID()}`;
+    const localRoom = makeTopic({ surface: "otium", surfaceScope: scope });
+    const dualRoom = makeTopic({
+      surface: "otium",
+      surfaceScope: scope,
+      participants: [
+        { userId, role: "owner" },
+        { userId: human, role: "owner" },
+      ],
+    });
+    const humanRoom = makeTopic({
+      surface: "otium",
+      surfaceScope: scope,
+      participants: [{ userId: human, role: "owner" }],
+    });
+    const strangerRoom = makeTopic({
+      surface: "otium",
+      surfaceScope: scope,
+      participants: [{ userId: stranger, role: "owner" }],
+    });
+    const otherWorkspace = makeTopic({ surface: "otium", surfaceScope: `${scope}-other` });
+
+    const ids = sessionTargetRowsFor({ userId, surface: "otium", surfaceScope: scope }).map(
+      (row) => row.id,
+    );
+    // Every room of the workspace, once each; the hub assertion
+    // (`actorReachableTopicIds`) narrows them in the catalog.
+    for (const room of [localRoom, dualRoom, humanRoom, strangerRoom]) {
+      expect(ids.filter((id) => id === room.id)).toHaveLength(1);
+    }
+    expect(ids).not.toContain(otherWorkspace.id);
+  });
+
+  test("off otium the roster still bounds the rows", () => {
+    const human = `session-comm-human-${randomUUID()}`;
+    const own = makeTopic({ surface: "terminal" });
+    const others = makeTopic({
+      surface: "terminal",
+      participants: [{ userId: human, role: "owner" }],
+    });
+    const ids = sessionTargetRowsFor({ userId, surface: "terminal", surfaceScope: null }).map(
+      (row) => row.id,
+    );
+    expect(ids).toContain(own.id);
+    expect(ids).not.toContain(others.id);
   });
 });

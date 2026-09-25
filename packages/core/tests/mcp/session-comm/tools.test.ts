@@ -258,6 +258,76 @@ describe("session-comm stdio server on the Otium surface", () => {
     }
   });
 
+  test("Q1: two-owner and human-principal rooms are reachable per the assertion, strangers are not", async () => {
+    const scope = `ws-stdio-q1-${randomUUID()}`;
+    const human = `stdio-human-${randomUUID()}`;
+    const stranger = `stdio-stranger-${randomUUID()}`;
+    const current = otiumRoom(`stdio-q1-current-${randomUUID()}`, scope);
+    const dual = otiumRoom(`stdio-q1-dual-${randomUUID()}`, scope, {
+      participants: [
+        { userId: USER_ID, role: "owner" as const },
+        { userId: human, role: "owner" as const },
+      ],
+    });
+    const humanRoom = otiumRoom(`stdio-q1-human-${randomUUID()}`, scope, {
+      participants: [{ userId: human, role: "owner" as const }],
+    });
+    const strangerRoom = otiumRoom(`stdio-q1-stranger-${randomUUID()}`, scope, {
+      participants: [{ userId: stranger, role: "owner" as const }],
+    });
+    const scopeArg = `--actor-topic-scope=${encodeActorTopicScopeArg({
+      visibleNodeTopicIds: [current.id, dual.id, humanRoom.id],
+      ownedNodeTopicIds: [current.id, humanRoom.id],
+    })}`;
+    const call = (name: string, input: Record<string, unknown>) =>
+      callSessionCommTool({
+        title: current.title,
+        topicId: current.id,
+        agent: "codex",
+        extraArgs: [`--actor-user-id=${human}`, scopeArg],
+        name,
+        input,
+      });
+    const inbox = (topicId: string) =>
+      db
+        .query<{ user_id: string; payload: string }, [string]>(
+          "SELECT user_id, payload FROM session_inbox WHERE topic_id = ? ORDER BY sequence",
+        )
+        .all(topicId)
+        .map((row) => `${row.user_id}:${JSON.parse(row.payload).type}`);
+    try {
+      const listed = (await call("list_sessions", {})).text;
+      expect(listed).toContain(dual.title);
+      expect(listed).toContain(humanRoom.title);
+      expect(listed).not.toContain(strangerRoom.title);
+
+      expect((await call("tell_session", { to: dual.title, message: "hi" })).isError).toBe(false);
+      expect((await call("tell_session", { to: humanRoom.title, message: "hi" })).isError).toBe(
+        false,
+      );
+      expect((await call("abort_session", { to: humanRoom.title })).isError).toBe(false);
+      const asked = await call("ask_session", { to: humanRoom.title, message: "?" });
+      expect(asked.isError).toBe(true);
+      expect(asked.text).toContain("execution principal");
+      expect(inbox(dual.id)).toEqual([`${USER_ID}:tell`]);
+      expect(inbox(humanRoom.id)).toEqual([`${human}:tell`, `${human}:abort`]);
+
+      for (const [name, input] of [
+        ["tell_session", { to: strangerRoom.title, message: "hi" }],
+        ["abort_session", { to: strangerRoom.title }],
+      ] as const) {
+        expect((await call(name, input)).isError).toBe(true);
+      }
+      expect(inbox(strangerRoom.id)).toEqual([]);
+    } finally {
+      for (const topic of [current, dual, humanRoom, strangerRoom]) {
+        db.run("DELETE FROM session_inbox WHERE topic_id = ?", [topic.id]);
+        db.run("DELETE FROM topic_members WHERE topic_id = ?", [topic.id]);
+        db.run("DELETE FROM api_topics WHERE id = ?", [topic.id]);
+      }
+    }
+  });
+
   test("with a hub grant the stdio server sends node/topic tells to the hub as a bearer call", async () => {
     const scope = `ws-stdio-hub-${randomUUID()}`;
     const current = otiumRoom(`stdio-hub-${randomUUID()}`, scope);

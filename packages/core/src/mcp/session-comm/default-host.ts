@@ -2,8 +2,11 @@ import { basename, join } from "node:path";
 import type { SessionCommMcpHost, SessionCommMcpResult } from "#mcp/factories/session-comm";
 import {
   abortTargetRefusal,
+  crossPrincipalAskRefusal,
   excludesAgentlessTargets,
+  localDeliveryPrincipal,
   remoteSessionRoute,
+  rosterBoundsSessionTargets,
 } from "#mcp/session-comm/actor-policy";
 import type { SessionCommContext } from "#mcp/session-comm/context";
 import {
@@ -91,12 +94,15 @@ function targetCatalog(context: SessionCommContext) {
     : surface === "otium"
       ? defaultSurfaceScope()
       : null;
-  // On `otium` the roster check below matches the hub's execution principal
-  // (`local`), which sits in every hub-backed room, not the person who spoke.
-  // The hub's signed per-turn assertion is what says which of those rooms this
-  // actor is actually in, and it is the whole answer when present. Without one
-  // (a turn no person started) only the current room plus its own subagent
-  // lineage — direct parent, granted targets, own workers — is reachable.
+  // Off `otium` the node's roster is the boundary. On `otium` it is not
+  // (design Q1, see `rosterBoundsSessionTargets`): participants there are only
+  // execution principals (`local`, a synced room's person, or both), so the
+  // workspace (the store query) intersected with the reach set below is the
+  // whole rule. The hub's signed per-turn assertion is that set when present;
+  // without one (a turn no person started) only the current room plus its own
+  // subagent lineage — direct parent, granted targets, own workers — is
+  // reachable (fail-closed).
+  const rosterBound = rosterBoundsSessionTargets(surface);
   const reachable = actorReachableTopicIds({
     surface,
     currentTopicId: context.currentTopicId,
@@ -111,7 +117,9 @@ function targetCatalog(context: SessionCommContext) {
     // Scoped in the store query, not after the fact.
     listRows: () =>
       listTopics({ surface, surfaceScope })
-        .filter((topic) => topic.participants.some((p) => p.userId === context.userId))
+        .filter(
+          (topic) => !rosterBound || topic.participants.some((p) => p.userId === context.userId),
+        )
         .filter((topic) => !reachable || reachable.has(topic.id))
         .map((topic) => ({
           id: topic.id,
@@ -139,6 +147,18 @@ function remoteTarget(context: SessionCommContext, to: string) {
   return { node: to.slice(0, slash), topic: to.slice(slash + 1) };
 }
 
+/**
+ * Principal a local inbox entry for `targetTopicId` is filed under (see
+ * `localDeliveryPrincipal`); `null` refuses. Only for resolved targets.
+ */
+function deliveryPrincipal(context: SessionCommContext, targetTopicId: string): string | null {
+  return localDeliveryPrincipal({
+    surface: currentSurface(context),
+    callerUserId: context.userId,
+    targetParticipants: getTopic(targetTopicId)?.participants,
+  });
+}
+
 /** Which transport serves `node/topic` targets for this turn (see `remoteSessionRoute`). */
 function remoteRoute(context: SessionCommContext) {
   return remoteSessionRoute(currentSurface(context), context.remoteSession);
@@ -149,7 +169,9 @@ function newRequestId(): string {
 }
 
 function activeQuery(context: SessionCommContext, topicId: string, title: string) {
-  const dir = join(USERS_LOG_DIR, context.userId, "active-queries");
+  // A room's turn runs as the principal its inbox entries are filed under.
+  const principal = deliveryPrincipal(context, topicId) ?? context.userId;
+  const dir = join(USERS_LOG_DIR, principal, "active-queries");
   const candidates = [join(dir, `${sanitizeId(topicId)}.json`)];
   if (title && basename(title) === title && title !== "." && title !== "..") {
     candidates.push(join(dir, `${title}.json`));
@@ -461,6 +483,10 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
           clearAsk();
           return error(`Error: "${to}" has no topic id.`);
         }
+        if (deliveryPrincipal(context, targetTopicId) !== context.userId) {
+          clearAsk();
+          return error(crossPrincipalAskRefusal(to));
+        }
         enqueueSessionInbox({
           userId: context.userId,
           topicId: targetTopicId,
@@ -562,8 +588,10 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
         to,
       });
       if (refused) return error(refused);
+      const principal = deliveryPrincipal(context, targetTopicId);
+      if (!principal) return error(`Error: Session "${to}" not found.`);
       enqueueSessionInbox({
-        userId: context.userId,
+        userId: principal,
         topicId: targetTopicId,
         entry: {
           type: "abort",
@@ -629,9 +657,11 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
       if (!canSubagentTellTarget(identity, targetTopicId)) {
         return error("Error: subagent tell_session target is not permitted.");
       }
+      const principal = deliveryPrincipal(context, targetTopicId);
+      if (!principal) return error(`Error: Session "${to}" not found.`);
       const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       enqueueSessionInbox({
-        userId: context.userId,
+        userId: principal,
         topicId: targetTopicId,
         entry: {
           type: "tell",
