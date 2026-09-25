@@ -34,6 +34,7 @@ import {
   NODE_ID,
   pruneTopicCreateClaims,
   recordTopicLinkNodeIdentity,
+  surfaceScopeStampStatus,
   TOPIC_CREATE_CLAIM_PRUNE_BATCH,
   type TopicCreateClaim,
   type TopicDto,
@@ -697,6 +698,10 @@ export async function handleTopicLinkRoute(
       dbEpoch: topicLinkDbEpoch(),
       ...requestSurfaceScopeResolution(req),
       linkGuard: otiumLinkGuardMode(),
+      // Revision 5 (additive): pre-existing otium rooms the M-9 stamp has not
+      // been able to file yet (live maintenance, title conflict). Non-zero
+      // means the migration is incomplete and still retrying.
+      unscopedPending: surfaceScopeStampStatus().pending,
     });
   }
   if (req.method === "GET" && runtimePath === "/topic-tombstones") {

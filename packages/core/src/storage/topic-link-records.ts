@@ -1021,21 +1021,28 @@ export function adminRepairOtiumTopicScope(
 /**
  * M-9 bulk variant: stamp every unscoped otium room with `toScope` through the
  * same per-topic repair (history recorded, claims untouched). Rooms that are
- * refused (busy, title conflict) are skipped and reported.
+ * refused (busy, title conflict) are skipped and reported — the caller decides
+ * whether that leaves its migration incomplete (it must, revision 5).
+ *
+ * `topicIds` narrows the pass to those rooms (the M-9 retry of its pending
+ * set); ids that are no longer unscoped otium rooms are simply not selected.
  */
 export function repairUnscopedOtiumTopicScopes(
   toScope: string,
   actor: string,
   reason: string,
+  options: { topicIds?: readonly string[] } = {},
 ): { stamped: number; skipped: AdminRepairOtiumTopicScopeResult[] } {
   const skipped: AdminRepairOtiumTopicScopeResult[] = [];
   let stamped = 0;
-  const rows = db
+  const all = db
     .query<RepairTopicRow, []>(
       `SELECT id, title, surface, surface_scope, created_at FROM api_topics
        WHERE surface = 'otium' AND surface_scope IS NULL`,
     )
     .all();
+  const only = options.topicIds ? new Set(options.topicIds) : null;
+  const rows = only ? all.filter((row) => only.has(row.id)) : all;
   for (const row of rows) {
     const result = repairOneTopicScope({
       topicId: row.id,

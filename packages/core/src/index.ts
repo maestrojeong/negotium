@@ -391,7 +391,10 @@ export {
   localSurfaceScopeStatus,
   normalizeSurfaceScope,
   normalizeTopicSurface,
+  retryPendingSurfaceScopeStamp,
   revokeSubagentTellTarget,
+  SURFACE_SCOPE_STAMP_RETRY_INTERVAL_MS,
+  type SurfaceScopeStampStatus,
   setDefaultSurfaceScope,
   setMountedSurfaceScopeCount,
   setSurfaceScopeRequired,
@@ -399,6 +402,7 @@ export {
   setTopicSurfaceScope,
   setTopicSurfaces,
   stampUnscopedOtiumTopics,
+  surfaceScopeStampStatus,
   upsertTopic,
 } from "#storage/api-topics";
 export { DEFAULT_AI_NAME, getGlobalAiName, setGlobalAiName } from "#storage/app-settings";

@@ -41,6 +41,34 @@ registerStorageSchemaInitializer((database) => {
   `);
 }, 32);
 
+type MaintenanceReleasedListener = (topicId: string) => void;
+const maintenanceReleasedListeners = new Set<MaintenanceReleasedListener>();
+
+/**
+ * Observe maintenance fences released by THIS process (`finish()`). Listeners
+ * run synchronously after the release and must not throw into the caller;
+ * anything that writes should defer itself out of the caller's transaction.
+ * Releases in other processes are not observed — pair with a timer.
+ */
+export function onRuntimeTopicMaintenanceReleased(
+  listener: MaintenanceReleasedListener,
+): () => void {
+  maintenanceReleasedListeners.add(listener);
+  return () => {
+    maintenanceReleasedListeners.delete(listener);
+  };
+}
+
+function notifyMaintenanceReleased(topicId: string): void {
+  for (const listener of maintenanceReleasedListeners) {
+    try {
+      listener(topicId);
+    } catch {
+      // A diagnostic hook never breaks a maintenance release.
+    }
+  }
+}
+
 function rowToState(row: RuntimeTopicStateRow, now = Date.now()): RuntimeTopicState {
   const heartbeatAt = row.heartbeat_at === null ? undefined : Number(row.heartbeat_at);
   const maintenance =
@@ -139,6 +167,7 @@ export function beginRuntimeTopicMaintenance(
           `DELETE FROM runtime_topic_state
            WHERE topic_id = ? AND epoch = ? AND maintenance_owner = ?`,
         ).run(topicId, epoch, ownerId);
+        notifyMaintenanceReleased(topicId);
         return;
       }
       db.query(
@@ -146,6 +175,7 @@ export function beginRuntimeTopicMaintenance(
          SET maintenance = 0, maintenance_owner = NULL, heartbeat_at = NULL
          WHERE topic_id = ? AND epoch = ? AND maintenance_owner = ?`,
       ).run(topicId, epoch, ownerId);
+      notifyMaintenanceReleased(topicId);
     },
   };
 }

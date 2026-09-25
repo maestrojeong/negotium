@@ -476,6 +476,25 @@ describe("surface-scope lookup", () => {
     });
   });
 
+  test("reports rooms the M-9 stamp still has pending (revision 5, additive)", async () => {
+    // Only the diagnostic table is touched: no room is stamped or created.
+    const id = `pending-${randomUUID()}`;
+    const before = (await call("/surface-scope")).body.unscopedPending as number;
+    expect(typeof before).toBe("number");
+    const now = new Date().toISOString();
+    db.query(
+      `INSERT INTO api_surface_scope_stamp_pending
+         (topic_id, scope, reason, detail, attempts, first_seen_at, last_attempt_at)
+       VALUES (?, 'ws-one', 'title_conflict', NULL, 2, ?, ?)`,
+    ).run(id, now, now);
+    try {
+      expect((await call("/surface-scope")).body.unscopedPending).toBe(before + 1);
+    } finally {
+      db.query("DELETE FROM api_surface_scope_stamp_pending WHERE topic_id = ?").run(id);
+    }
+    expect((await call("/surface-scope")).body.unscopedPending).toBe(before);
+  });
+
   test("relayed: the scope the sidecar stamped", async () => {
     expect(
       (await call("/surface-scope", { headers: { [NODE_RUNTIME_SURFACE_SCOPE_HEADER]: "ws-r" } }))

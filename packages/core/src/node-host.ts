@@ -119,6 +119,8 @@ export {
   getTopic,
   type LocalSurfaceScopeStatus,
   localSurfaceScopeStatus,
+  type SurfaceScopeStampStatus,
+  surfaceScopeStampStatus,
   upsertTopic,
 } from "#storage/api-topics";
 export { getGlobalAiName, setGlobalAiName } from "#storage/app-settings";

@@ -316,7 +316,18 @@ sees the previous behaviour byte for byte.
   under the same `NODE_ID` has another one; a restore of a backup of the same store does not (a hub
   can only notice that as `highWater` below its recorded cursor).
 - **Surface scope.** `GET /surface-scope` → `{ nodeId, principal, surfaceScope, resolved,
-  scopeRequired, joinsMounted, linkGuard }`: the workspace this caller's rooms are filed under.
+  scopeRequired, joinsMounted, linkGuard, unscopedPending }`: the workspace this caller's rooms are
+  filed under. `unscopedPending` (additive, revision 5) counts pre-existing otium rooms the one-time
+  M-9 stamp has not filed yet; non-zero means that migration is incomplete and still retrying.
+- **M-9 stamp completion (revision 5).** The stamp that files pre-existing unscoped otium rooms under
+  the first resolved workspace records itself complete only when no room was skipped. A room refused
+  for a retryable reason (live maintenance, title conflict, row changed) is kept in
+  `api_surface_scope_stamp_pending` with the scope of the first attempt; retries touch only those
+  rooms, always under that pinned scope (never a newly joined workspace), and run on scope
+  resolution, when a pending room's maintenance fence is released in-process, and on a 30-second
+  timer (unforced retries are rate-limited to one per 30 s per process). Each incomplete attempt
+  logs a warning with the pending topic ids. A permanent title conflict keeps the migration open
+  until an operator renames the room (or repairs it with `adminRepairOtiumTopicScope`).
 - **Create guard.** `NEGOTIUM_OTIUM_LINK_V2` (default off) applies to the three gateway room creators.
   `on`: callers declaring `x-otium-link-protocol: 2` get `409 scope_unresolved` when the scope is
   not resolved (create and manager-topic) and `409 scope_mismatch` when an
