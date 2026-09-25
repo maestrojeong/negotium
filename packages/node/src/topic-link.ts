@@ -27,6 +27,7 @@ import {
   getTopicCreateClaim,
   getTopicTombstone,
   insertCommittedTopicCreateClaim,
+  latestTopicScopeMove,
   listTopicTombstonesAfter,
   localSurfaceScopeStatus,
   logger,
@@ -508,10 +509,15 @@ export function topicExistence(req: Request, topicId: string) {
     // Withdrawn from this caller's workspace: the unshare tombstone proves it
     // once belonged to that caller, so saying "present, not shared" leaks
     // nothing it did not already know.
+    // Same for a room an admin scope repair moved out of this caller's scope.
+    const moved = latestTopicScopeMove(topicId);
     if (
-      tombstone?.reason === "unshared" &&
-      tombstone.nodeId === nodeId &&
-      recordInRequestScope(req, tombstone)
+      [tombstone, moved].some(
+        (evidence) =>
+          evidence?.reason === "unshared" &&
+          evidence.nodeId === nodeId &&
+          recordInRequestScope(req, evidence),
+      )
     ) {
       return { ...base, state: "present" as const, shared: false };
     }
@@ -638,6 +644,13 @@ function tombstonePage(req: Request, url: URL) {
   const rows = listTopicTombstonesAfter(after, limit);
   const tombstones = rows
     .filter((row) => recordInRequestScope(req, row))
+    // A scope move is news only to a caller that lost the room: one that still
+    // sees it (the new scope, loopback) is not told it was withdrawn.
+    .filter((row) => {
+      if (!row.scopeMoved) return true;
+      const topic = getTopic(row.topicId);
+      return !(topic && recordInRequestScope(req, topic));
+    })
     .map((row) => ({
       seq: row.seq,
       topicId: row.topicId,
@@ -649,6 +662,7 @@ function tombstonePage(req: Request, url: URL) {
       surface: row.surface,
       surfaceScope: row.surfaceScope,
       deletedAt: row.deletedAt,
+      ...(row.scopeMoved ? { scopeMoved: true } : {}),
     }));
   const last = rows.at(-1);
   return {

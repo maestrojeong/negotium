@@ -937,7 +937,7 @@ export function upsertTopic(t: TopicDto): void {
        -- room was created, but may never move a room to another workspace.
        -- An otium room is stricter (topic-link review fix 6): its scope never
        -- changes through an upsert, not even NULL -> scope; only the audited
-       -- repair (repairOtiumTopicScope / the M-9 stamp) may assign it.
+       -- repair (adminRepairOtiumTopicScope / the M-9 stamp) may assign it.
        surface_scope = CASE
          WHEN excluded.surface = 'otium' OR api_topics.surface = 'otium'
            THEN api_topics.surface_scope

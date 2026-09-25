@@ -225,98 +225,124 @@ describe("blocker 6 — an otium room's scope is immutable; old claims lose auth
   });
 });
 
-describe("PR12 — audited otium scope repair", () => {
+describe("PR12 — adminRepairOtiumTopicScope", () => {
   const unresolved = { [NODE_RUNTIME_SURFACE_SCOPE_HEADER]: "" };
+  const wsR = { [NODE_RUNTIME_SURFACE_SCOPE_HEADER]: "ws-r" };
 
-  test("NULL -> scope re-binds the unresolved principal's claim; replay and abort work after it", async () => {
+  async function unscopedClaimedRoom() {
     const requestId = randomUUID();
     const sent = createBody(`Repair ${randomUUID()}`, requestId);
     const created = await post("/topics", sent, unresolved);
     expect(created.status).toBe(201);
     const id = created.body.topic.id as string;
-    const row = getTopic(id);
-    expect(row?.surfaceScope).toBeNull();
+    return { requestId, sent, id, row: getTopic(id) };
+  }
 
-    const result = core.repairOtiumTopicScope({
+  test("NULL -> scope moves the room, leaves claims on their principal, and tells the old scope", async () => {
+    const { requestId, sent, id, row } = await unscopedClaimedRoom();
+    expect(row?.surfaceScope).toBeNull();
+    const cursor = (await call("/topic-tombstones?after=0&limit=1", { headers: unresolved })).body
+      .highWater as number;
+
+    const result = core.adminRepairOtiumTopicScope({
       topicId: id,
       fromScope: null,
       toScope: "ws-r",
-      expected: { surface: "otium", surfaceScope: null, createdAt: row?.createdAt },
+      expectedRow: { surface: "otium", surfaceScope: null, createdAt: row?.createdAt },
       actor: "test-admin",
       reason: "test",
     });
-    expect(result).toMatchObject({ ok: true, reboundClaims: 1, keptClaims: 0 });
+    expect(result).toMatchObject({ ok: true, fromScope: null, toScope: "ws-r", claimsLeft: 1 });
+    expect(result.moveSeq).toBeGreaterThan(cursor);
     expect(getTopic(id)?.surfaceScope).toBe("ws-r");
-    expect(getTopicCreateClaim("scope:", requestId)).toBeNull();
-    expect(getTopicCreateClaim("scope:ws-r", requestId)?.state).toBe("committed");
+    // Not re-bound: the new scope's principal gains no authority over the room.
+    expect(getTopicCreateClaim("scope:", requestId)?.state).toBe("committed");
+    expect(getTopicCreateClaim("scope:ws-r", requestId)).toBeNull();
     expect(
       db
-        .query("SELECT actor, to_scope FROM api_topic_scope_repairs WHERE id = ?")
-        .get(result.auditId),
-    ).toEqual({ actor: "test-admin", to_scope: "ws-r" });
-    // No grant is left behind.
+        .query(
+          "SELECT actor, from_scope, to_scope, claims_left FROM api_topic_scope_moves WHERE seq = ?",
+        )
+        .get(result.moveSeq),
+    ).toEqual({ actor: "test-admin", from_scope: null, to_scope: "ws-r", claims_left: 1 });
     expect(db.query("SELECT * FROM api_topic_scope_repair_grants").all()).toEqual([]);
 
-    const wsR = { [NODE_RUNTIME_SURFACE_SCOPE_HEADER]: "ws-r" };
-    const replay = await post("/topics", sent, wsR);
-    expect(replay.status).toBe(201);
-    expect(replay.body).toMatchObject({ replayed: true, topic: { id } });
-    const aborted = await post(`/topic-claims/${requestId}/abort`, {}, wsR);
-    expect(aborted.body).toMatchObject({ topicDeleted: true, topicId: id });
+    // The old principal's claim no longer returns or deletes the room.
+    const replay = await post("/topics", sent, unresolved);
+    expect(replay.status).toBe(409);
+    expect(replay.body.code).toBe("claim_topic_moved");
+    const aborted = await post(`/topic-claims/${requestId}/abort`, {}, unresolved);
+    expect(aborted.body.code).toBe("claim_topic_moved");
+    expect(getTopic(id)).not.toBeNull();
+    // The new scope's principal cannot abort it through that claim either.
+    const foreign = await post(`/topic-claims/${requestId}/abort`, {}, wsR);
+    expect(foreign.body).toMatchObject({ existed: false });
+    expect(getTopic(id)).not.toBeNull();
+
+    // Feed: the old scope sees an `unshared` scope move; the new scope does not.
+    const oldFeed = (
+      await call(`/topic-tombstones?after=${cursor}&limit=500`, { headers: unresolved })
+    ).body;
+    expect(oldFeed.tombstones).toContainEqual(
+      expect.objectContaining({
+        topicId: id,
+        reason: "unshared",
+        scopeMoved: true,
+        seq: result.moveSeq,
+      }),
+    );
+    const newFeed = (await call(`/topic-tombstones?after=${cursor}&limit=500`, { headers: wsR }))
+      .body;
+    expect(newFeed.tombstones.some((row: { topicId: string }) => row.topicId === id)).toBe(false);
+    // Existence: the old scope learns "present, no longer shared with you".
+    expect((await call(`/topics/${id}/existence`, { headers: unresolved })).body).toMatchObject({
+      state: "present",
+      shared: false,
+    });
+    expect((await call(`/topics/${id}/existence`, { headers: wsR })).body).toMatchObject({
+      state: "present",
+      shared: true,
+    });
   });
 
-  test("refuses: already scoped, row changed, foreign claim — and changes nothing", async () => {
+  test("refuses: already scoped, row changed, bad scope — and changes nothing", async () => {
     const scoped = registerTopic({
       title: `Has scope ${randomUUID()}`,
       userId,
       surface: "otium",
       surfaceScope: "ws-x",
     });
-    const base = {
-      fromScope: null,
-      toScope: "ws-r",
-      actor: "test-admin",
-      reason: "test",
-    };
+    const base = { fromScope: null, toScope: "ws-r", actor: "test-admin", reason: "test" };
     expect(
-      core.repairOtiumTopicScope({
+      core.adminRepairOtiumTopicScope({
         ...base,
         topicId: scoped.id,
-        expected: { surface: "otium", surfaceScope: null },
+        expectedRow: { surface: "otium", surfaceScope: null },
       }).reason,
     ).toBe("scope_not_null");
 
-    const requestId = randomUUID();
-    const created = await post(
-      "/topics",
-      createBody(`Foreign ${randomUUID()}`, requestId),
-      unresolved,
-    );
-    const id = created.body.topic.id as string;
+    const { id } = await unscopedClaimedRoom();
     expect(
-      core.repairOtiumTopicScope({
+      core.adminRepairOtiumTopicScope({
         ...base,
         topicId: id,
-        expected: { surface: "otium", surfaceScope: null, createdAt: "1999-01-01T00:00:00.000Z" },
+        expectedRow: {
+          surface: "otium",
+          surfaceScope: null,
+          createdAt: "1999-01-01T00:00:00.000Z",
+        },
       }).reason,
     ).toBe("row_changed");
-
-    // A claim held by another workspace cannot be re-bound safely.
-    core.insertCommittedTopicCreateClaim({
-      principalKey: "scope:ws-other",
-      requestId: randomUUID(),
-      op: "create",
-      payloadHash: "x",
-      topicId: id,
-    });
-    const refused = core.repairOtiumTopicScope({
-      ...base,
-      topicId: id,
-      expected: { surface: "otium", surfaceScope: null },
-    });
-    expect(refused.reason).toBe("claim_not_rebindable");
+    expect(
+      core.adminRepairOtiumTopicScope({
+        ...base,
+        toScope: " ws-r",
+        topicId: id,
+        expectedRow: { surface: "otium", surfaceScope: null },
+      }).reason,
+    ).toBe("invalid_scope");
     expect(getTopic(id)?.surfaceScope).toBeNull();
-    expect(getTopicCreateClaim("scope:", requestId)?.state).toBe("committed");
+    expect(db.query("SELECT 1 FROM api_topic_scope_moves WHERE topic_id = ?").get(id)).toBeNull();
   });
 });
 
@@ -369,6 +395,12 @@ describe("blocker 7 — an abort fence is retained from its settlement", () => {
     ).run(old, old, requestId);
     const aborted = await post(`/topic-claims/${requestId}/abort`, {});
     expect(aborted.body.topicDeleted).toBe(true);
+    const settled = db
+      .query<{ settled_at: string | null }, [string]>(
+        "SELECT settled_at FROM api_topic_create_claims WHERE request_id = ?",
+      )
+      .get(requestId)?.settled_at;
+    expect(Date.parse(settled ?? "") > Date.now() - 60_000).toBe(true);
 
     core.pruneTopicCreateClaims(Date.now());
     const late = await post("/topics", sent);

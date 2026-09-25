@@ -68,6 +68,12 @@ export interface TopicTombstone {
   surface: string | null;
   surfaceScope: string | null;
   deletedAt: string;
+  /**
+   * Present on feed entries that come from `api_topic_scope_moves`: the room
+   * was moved OUT of `surfaceScope` by an admin scope repair (reported to the
+   * old scope as `unshared`). Not a row of `api_topic_tombstones`.
+   */
+  scopeMoved?: true;
 }
 
 interface ClaimRow {
@@ -140,19 +146,21 @@ const SCHEMA_TABLES = [
   "api_topic_tombstones",
   "api_topic_tombstone_seq",
   "api_topic_scope_repair_grants",
-  "api_topic_scope_repairs",
+  "api_topic_scope_moves",
 ];
 const SCHEMA_INDEXES = [
   "idx_api_topic_create_claims_topic",
   "idx_api_topic_create_claims_created",
   "idx_api_topic_create_claims_principal",
-  "idx_api_topic_create_claims_settled",
+  "idx_api_topic_create_claims_settled_at",
+  "idx_api_topic_scope_moves_seq",
 ];
 /** Columns added to `api_topic_create_claims` after its first release. */
 const CLAIM_ADDED_COLUMNS: Record<string, string> = {
   source_topic_id: "TEXT",
   seed_message_count: "INTEGER",
   seed_message_ids_hash: "TEXT",
+  settled_at: "TEXT",
 };
 const SCHEMA_INDEXES_TOMBSTONES = ["idx_api_topic_tombstones_seq"];
 /** Trigger → a marker its current SQL must contain (older builds lack it). */
@@ -201,7 +209,8 @@ function topicLinkSchemaIsCurrent(database: SchemaDatabase, nodeId?: string): bo
   const counter = database
     .query(
       `SELECT (SELECT seq FROM api_topic_tombstone_seq WHERE singleton = 1) AS counter,
-              (SELECT COALESCE(MAX(seq), 0) FROM api_topic_tombstones) AS max_seq`,
+              MAX((SELECT COALESCE(MAX(seq), 0) FROM api_topic_tombstones),
+                  (SELECT COALESCE(MAX(seq), 0) FROM api_topic_scope_moves)) AS max_seq`,
     )
     .all() as Array<{ counter: number | bigint | null; max_seq: number | bigint }>;
   const row = counter[0];
@@ -253,6 +262,7 @@ export function initializeTopicLinkRecordsSchema(database: SchemaDatabase, nodeI
         source_topic_id TEXT,
         seed_message_count INTEGER,
         seed_message_ids_hash TEXT,
+        settled_at TEXT,
         PRIMARY KEY (principal_key, request_id)
       )
     `);
@@ -270,8 +280,8 @@ export function initializeTopicLinkRecordsSchema(database: SchemaDatabase, nodeI
     );
     // Retention anchor of a settled (aborted) claim is its settlement time.
     database.exec(
-      `CREATE INDEX IF NOT EXISTS idx_api_topic_create_claims_settled
-       ON api_topic_create_claims(state, updated_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_api_topic_create_claims_settled_at
+       ON api_topic_create_claims(state, settled_at)`,
     );
     // Scope repair (review fix 6): the one sanctioned way to change an otium
     // topic's surface_scope. A grant row exists only inside the repair's own
@@ -282,19 +292,25 @@ export function initializeTopicLinkRecordsSchema(database: SchemaDatabase, nodeI
         topic_id TEXT PRIMARY KEY
       )
     `);
+    // Scope move history + audit (one row per admin repair). Its seq comes
+    // from the tombstone counter, so moves merge into the tombstone feed in
+    // order: a hub bound to the OLD scope sees the move as `unshared`.
     database.exec(`
-      CREATE TABLE IF NOT EXISTS api_topic_scope_repairs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+      CREATE TABLE IF NOT EXISTS api_topic_scope_moves (
+        seq INTEGER PRIMARY KEY,
         topic_id TEXT NOT NULL,
+        node_id TEXT,
         from_scope TEXT,
         to_scope TEXT NOT NULL,
         actor TEXT NOT NULL,
         reason TEXT NOT NULL,
-        rebound_claims INTEGER NOT NULL,
-        kept_claims INTEGER NOT NULL,
-        created_at TEXT NOT NULL
+        claims_left INTEGER NOT NULL,
+        moved_at TEXT NOT NULL
       )
     `);
+    database.exec(
+      "CREATE INDEX IF NOT EXISTS idx_api_topic_scope_moves_seq ON api_topic_scope_moves(topic_id, seq)",
+    );
     database.exec(
       "CREATE INDEX IF NOT EXISTS idx_api_topic_create_claims_topic ON api_topic_create_claims(topic_id)",
     );
@@ -327,7 +343,9 @@ export function initializeTopicLinkRecordsSchema(database: SchemaDatabase, nodeI
     `);
     database.exec(`
       INSERT INTO api_topic_tombstone_seq (singleton, seq)
-      VALUES (1, (SELECT COALESCE(MAX(seq), 0) FROM api_topic_tombstones))
+      VALUES (1, (SELECT MAX(
+        (SELECT COALESCE(MAX(seq), 0) FROM api_topic_tombstones),
+        (SELECT COALESCE(MAX(seq), 0) FROM api_topic_scope_moves))))
       ON CONFLICT(singleton) DO UPDATE SET seq = MAX(api_topic_tombstone_seq.seq, excluded.seq)
     `);
     // Recreated on every init so a store migrated by an earlier build (whose
@@ -387,7 +405,7 @@ export function initializeTopicLinkRecordsSchema(database: SchemaDatabase, nodeI
     // An otium room's workspace is fixed (review fix 6): a claim, a tombstone
     // and the host's mapping all bind to it, and one topic_id-keyed tombstone
     // cannot express several past scopes. Only the audited scope repair
-    // (`repairOtiumTopicScope`) may change it, through a grant row that exists
+    // (`adminRepairOtiumTopicScope`) may change it, through a grant row that exists
     // only inside its own transaction. Leaving the otium surface is allowed
     // (that is an unshare, tombstoned with the old scope).
     database.exec(`
@@ -651,10 +669,10 @@ export function insertTopicCreateAbortFence(principalKey: string, requestId: str
     .query(
       `INSERT OR IGNORE INTO api_topic_create_claims
          (principal_key, request_id, op, payload_hash, topic_id, state, node_id,
-          seed_max_message_rowid, created_at, updated_at)
-       VALUES (?, ?, 'abort', '', NULL, 'aborted', ${NODE_IDENTITY_SQL}, 0, ?, ?)`,
+          seed_max_message_rowid, created_at, updated_at, settled_at)
+       VALUES (?, ?, 'abort', '', NULL, 'aborted', ${NODE_IDENTITY_SQL}, 0, ?, ?, ?)`,
     )
-    .run(principalKey, requestId, now, now);
+    .run(principalKey, requestId, now, now, now);
   return Number(inserted.changes ?? 0) > 0;
 }
 
@@ -669,8 +687,8 @@ export function flipCommittedTopicCreateClaimToAborted(
 ): boolean {
   const updated = db
     .query(
-      `UPDATE api_topic_create_claims SET state = 'aborted', updated_at = ?
-       WHERE principal_key = ? AND request_id = ? AND state = 'committed'`,
+      `UPDATE api_topic_create_claims SET state = 'aborted', updated_at = ?1, settled_at = ?1
+       WHERE principal_key = ?2 AND request_id = ?3 AND state = 'committed'`,
     )
     .run(new Date().toISOString(), principalKey, requestId);
   return Number(updated.changes ?? 0) > 0;
@@ -758,8 +776,9 @@ export const TOPIC_CREATE_CLAIM_PRUNE_BATCH = 500;
  * Drop claims past the retention window. Returns the number removed.
  *
  * The retention anchor is the claim's LAST settlement: a committed claim is
- * kept from its `created_at`, an aborted one (fence) from its `updated_at` —
- * the moment it became aborted. An old committed claim aborted today therefore
+ * kept from its `created_at`, an aborted one (fence) from its `settled_at` —
+ * the moment it became aborted (rows settled before that column existed fall
+ * back to `updated_at`). An old committed claim aborted today therefore
  * keeps refusing a late create with the same requestId for a full window.
  * Removes at most `batch` rows per call.
  */
@@ -774,7 +793,7 @@ export function pruneTopicCreateClaims(
       `DELETE FROM api_topic_create_claims WHERE rowid IN (
          SELECT rowid FROM api_topic_create_claims
          WHERE (state = 'committed' AND created_at < ?)
-            OR (state = 'aborted' AND updated_at < ?)
+            OR (state = 'aborted' AND COALESCE(settled_at, updated_at) < ?)
          LIMIT ?)`,
     )
     .run(cutoff, cutoff, batch);
@@ -803,67 +822,109 @@ export function getTopicTombstone(topicId: string): TopicTombstone | null {
 }
 
 /** Tombstones after a cursor, oldest first. */
+/**
+ * The tombstone feed after a cursor, oldest first: current tombstones merged
+ * with scope moves (as `unshared` for the OLD scope, `scopeMoved: true`). Both
+ * take their seq from the same never-decreasing counter.
+ */
 export function listTopicTombstonesAfter(after: number, limit: number): TopicTombstone[] {
   return db
-    .query<TombstoneRow, [number, number]>(
-      "SELECT * FROM api_topic_tombstones WHERE seq > ? ORDER BY seq ASC LIMIT ?",
+    .query<TombstoneRow & { scope_moved: number }, [number, number, number]>(
+      `SELECT seq, topic_id, node_id, reason, surface, surface_scope, deleted_at, 0 AS scope_moved
+         FROM api_topic_tombstones WHERE seq > ?1
+       UNION ALL
+       SELECT seq, topic_id, node_id, 'unshared', 'otium', from_scope, moved_at, 1
+         FROM api_topic_scope_moves WHERE seq > ?2
+       ORDER BY seq ASC LIMIT ?3`,
     )
-    .all(after, limit)
-    .map(toTombstone);
+    .all(after, after, limit)
+    .map((row) => ({
+      ...toTombstone(row),
+      ...(row.scope_moved ? { scopeMoved: true as const } : {}),
+    }));
+}
+
+/** The latest admin scope move of a topic (the scope it was moved out of), if any. */
+export function latestTopicScopeMove(topicId: string): TopicTombstone | null {
+  const row = db
+    .query<
+      { seq: number | bigint; node_id: string | null; from_scope: string | null; moved_at: string },
+      [string]
+    >(
+      `SELECT seq, node_id, from_scope, moved_at FROM api_topic_scope_moves
+       WHERE topic_id = ? ORDER BY seq DESC LIMIT 1`,
+    )
+    .get(topicId);
+  if (!row) return null;
+  return {
+    seq: Number(row.seq),
+    topicId,
+    nodeId: row.node_id,
+    reason: "unshared",
+    surface: "otium",
+    surfaceScope: row.from_scope,
+    deletedAt: row.moved_at,
+    scopeMoved: true,
+  };
 }
 
 // ── otium scope repair (review fix 6 / PR12 admin repair) ────────────────
 
-export interface RepairOtiumTopicScopeInput {
+export interface AdminRepairOtiumTopicScopeInput {
   topicId: string;
-  /** Only an unscoped room can be repaired. */
+  /** Only an unscoped room can be repaired: must be `null`. */
   fromScope: null;
+  /** Non-empty, no leading/trailing whitespace. */
   toScope: string;
   /**
-   * The row the operator looked at: compare-and-set. `surface`/`surfaceScope`
+   * The row the operator observed — compare-and-set. `surface`/`surfaceScope`
    * are required; `createdAt`/`title` pin the exact row when given.
    */
-  expected: { surface: "otium"; surfaceScope: null; createdAt?: string; title?: string };
-  /** Who asked (operator, CLI user, `m9-stamp`). Recorded in the audit row. */
+  expectedRow: { surface: "otium"; surfaceScope: null; createdAt?: string; title?: string };
+  /** Who asked (operator/CLI user, `m9-stamp`). Recorded in the history row. */
   actor: string;
   reason: string;
 }
 
-export type RepairOtiumTopicScopeRefusal =
+export type AdminRepairOtiumTopicScopeRefusal =
   | "invalid_scope"
   | "not_found"
   | "not_otium"
   | "scope_not_null"
   | "row_changed"
   | "title_conflict"
-  | "claim_not_rebindable"
   | "maintenance_in_progress";
 
-export type RepairOtiumTopicScopeResult =
+export type AdminRepairOtiumTopicScopeResult =
   | {
       ok: true;
       topicId: string;
+      fromScope: null;
       toScope: string;
-      /** Committed claims moved from the unresolved principal `scope:` to `scope:<toScope>`. */
-      reboundClaims: number;
-      /** Committed claims kept as they were (`loopback`, `scope:<toScope>`). */
-      keptClaims: number;
-      auditId: number;
+      /**
+       * Committed create claims of the topic, left on their ORIGINAL principal
+       * (never re-bound). A claim whose principal no longer covers the new
+       * scope answers `409 claim_topic_moved` on replay/abort.
+       */
+      claimsLeft: number;
+      /** seq of the scope-move entry in the tombstone feed (also the audit id). */
+      moveSeq: number;
     }
-  | { ok: false; topicId: string; reason: RepairOtiumTopicScopeRefusal; detail?: string };
+  | { ok: false; topicId: string; reason: AdminRepairOtiumTopicScopeRefusal; detail?: string };
 
 interface RepairTopicRow {
   id: string;
   title: string;
-  kind: string;
   surface: string;
   surface_scope: string | null;
   created_at: string;
 }
 
-function repairOneTopicScope(input: RepairOtiumTopicScopeInput): RepairOtiumTopicScopeResult {
+function repairOneTopicScope(
+  input: AdminRepairOtiumTopicScopeInput,
+): AdminRepairOtiumTopicScopeResult {
   const { topicId } = input;
-  const refuse = (reason: RepairOtiumTopicScopeRefusal, detail?: string) =>
+  const refuse = (reason: AdminRepairOtiumTopicScopeRefusal, detail?: string) =>
     ({ ok: false, topicId, reason, ...(detail ? { detail } : {}) }) as const;
   const toScope = typeof input.toScope === "string" ? input.toScope : "";
   if (!toScope || toScope !== toScope.trim() || input.fromScope !== null) {
@@ -871,21 +932,21 @@ function repairOneTopicScope(input: RepairOtiumTopicScopeInput): RepairOtiumTopi
   }
   const row = db
     .query<RepairTopicRow, [string]>(
-      "SELECT id, title, kind, surface, surface_scope, created_at FROM api_topics WHERE id = ?",
+      "SELECT id, title, surface, surface_scope, created_at FROM api_topics WHERE id = ?",
     )
     .get(topicId);
   if (!row) return refuse("not_found");
-  if (row.surface !== "otium" || input.expected.surface !== "otium") return refuse("not_otium");
-  if (row.surface_scope !== null || input.expected.surfaceScope !== null) {
+  if (row.surface !== "otium" || input.expectedRow.surface !== "otium") return refuse("not_otium");
+  if (row.surface_scope !== null || input.expectedRow.surfaceScope !== null) {
     return refuse("scope_not_null", row.surface_scope ?? undefined);
   }
   if (
-    (input.expected.createdAt !== undefined && input.expected.createdAt !== row.created_at) ||
-    (input.expected.title !== undefined && input.expected.title !== row.title)
+    (input.expectedRow.createdAt !== undefined && input.expectedRow.createdAt !== row.created_at) ||
+    (input.expectedRow.title !== undefined && input.expectedRow.title !== row.title)
   ) {
     return refuse("row_changed");
   }
-  // A claim abort (or any delete/reset) holds the topic right now.
+  // A claim abort (or any delete/reset/compact) holds the topic right now.
   const busy = db
     .query<{ found: number }, [string, number]>(
       `SELECT 1 AS found FROM runtime_topic_state
@@ -902,38 +963,14 @@ function repairOneTopicScope(input: RepairOtiumTopicScopeInput): RepairOtiumTopi
     .get(row.title, toScope, topicId);
   if (conflict) return refuse("title_conflict", conflict.id);
 
-  // Claims: the unresolved principal (`scope:`, a caller whose workspace was
-  // not resolved yet) is rebound to the repaired workspace — the same caller
-  // resolves to exactly that principal, so its replay/abort keep working.
-  // `loopback` and `scope:<toScope>` are unaffected. Any other workspace's
-  // claim cannot be re-bound without granting or losing authority: refuse.
-  const claims = db
-    .query<{ principal_key: string; request_id: string }, [string]>(
-      `SELECT principal_key, request_id FROM api_topic_create_claims
-       WHERE topic_id = ? AND state = 'committed'`,
-    )
-    .all(topicId);
-  const target = `scope:${toScope}`;
-  const rebind: string[] = [];
-  let kept = 0;
-  for (const claim of claims) {
-    if (claim.principal_key === "loopback" || claim.principal_key === target) {
-      kept += 1;
-    } else if (claim.principal_key === "scope:") {
-      const taken = getTopicCreateClaim(target, claim.request_id);
-      if (taken) return refuse("claim_not_rebindable", claim.request_id);
-      rebind.push(claim.request_id);
-    } else {
-      return refuse("claim_not_rebindable", claim.request_id);
-    }
-  }
-  const now = new Date().toISOString();
-  for (const requestId of rebind) {
-    db.query(
-      `UPDATE api_topic_create_claims SET principal_key = ?, updated_at = ?
-       WHERE principal_key = 'scope:' AND request_id = ? AND topic_id = ? AND state = 'committed'`,
-    ).run(target, now, requestId, topicId);
-  }
+  const claimsLeft = Number(
+    db
+      .query<{ n: number }, [string]>(
+        `SELECT COUNT(*) AS n FROM api_topic_create_claims
+         WHERE topic_id = ? AND state = 'committed'`,
+      )
+      .get(topicId)?.n ?? 0,
+  );
   db.query("INSERT INTO api_topic_scope_repair_grants (topic_id) VALUES (?)").run(topicId);
   const updated = db
     .query(
@@ -943,67 +980,59 @@ function repairOneTopicScope(input: RepairOtiumTopicScopeInput): RepairOtiumTopi
     .run(toScope, topicId);
   db.query("DELETE FROM api_topic_scope_repair_grants WHERE topic_id = ?").run(topicId);
   if (Number(updated.changes ?? 0) !== 1) throw new Error("scope repair CAS lost the row");
-  const audit = db
-    .query(
-      `INSERT INTO api_topic_scope_repairs
-         (topic_id, from_scope, to_scope, actor, reason, rebound_claims, kept_claims, created_at)
-       VALUES (?, NULL, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(topicId, toScope, input.actor, input.reason, rebind.length, kept, now);
-  return {
-    ok: true,
-    topicId,
-    toScope,
-    reboundClaims: rebind.length,
-    keptClaims: kept,
-    auditId: Number(audit.lastInsertRowid),
-  };
+  db.query(BUMP_TOMBSTONE_SEQ_SQL).run();
+  db.query(
+    `INSERT INTO api_topic_scope_moves
+       (seq, topic_id, node_id, from_scope, to_scope, actor, reason, claims_left, moved_at)
+     VALUES (${TOMBSTONE_SEQ_SQL}, ?, ${NODE_IDENTITY_SQL}, NULL, ?, ?, ?, ?, ?)`,
+  ).run(topicId, toScope, input.actor, input.reason, claimsLeft, new Date().toISOString());
+  const moveSeq = Number(
+    db.query<{ seq: number }, []>(`SELECT ${TOMBSTONE_SEQ_SQL} AS seq`).get()?.seq ?? 0,
+  );
+  return { ok: true, topicId, fromScope: null, toScope, claimsLeft, moveSeq };
 }
 
 /**
  * The ONLY sanctioned way to change an otium topic's `surface_scope` after
- * creation (the `api_topics_otium_scope_immutable` trigger refuses every other
- * writer). One-shot, audited, one `BEGIN IMMEDIATE`:
+ * creation — the `api_topics_otium_scope_immutable` trigger refuses every other
+ * writer. One-shot, audited, one `BEGIN IMMEDIATE` (joins the caller's
+ * transaction when there is one):
  *
- * - only `NULL → <non-empty, untrimmed-free scope>` on a `surface='otium'` row,
- *   compare-and-set against the row the operator observed;
- * - committed create claims of the topic are re-bound: the unresolved
- *   principal `scope:` becomes `scope:<toScope>`; `loopback` and
- *   `scope:<toScope>` are kept; any other principal's claim refuses the whole
- *   repair (`claim_not_rebindable`) — nothing is changed;
- * - tombstones are not touched (they record the scope a past event happened
- *   in);
- * - writes an `api_topic_scope_repairs` audit row.
+ * - only `NULL → <non-empty scope>` on a `surface='otium'` row, compare-and-set
+ *   against `expectedRow`; any refusal changes nothing;
+ * - create claims are NOT re-bound: they stay on their original principal, and
+ *   replay/abort re-verify that the topic's current scope still belongs to the
+ *   claim's principal (else `409 claim_topic_moved`). Re-binding would let the
+ *   new scope's principal delete a room another caller created, and that
+ *   caller's retry would then create a duplicate;
+ * - the move is recorded in `api_topic_scope_moves` (history + audit) with a
+ *   seq from the tombstone counter, and appears in the tombstone feed as an
+ *   `unshared` entry for the OLD scope (`scopeMoved: true`);
+ * - tombstones are not rewritten.
  *
- * No HTTP route: storage/CLI only.
+ * No HTTP route: storage / admin CLI only.
  */
-export function repairOtiumTopicScope(
-  input: RepairOtiumTopicScopeInput,
-): RepairOtiumTopicScopeResult {
-  return db
-    .transaction(() => {
-      const result = repairOneTopicScope(input);
-      return result;
-    })
-    .immediate();
+export function adminRepairOtiumTopicScope(
+  input: AdminRepairOtiumTopicScopeInput,
+): AdminRepairOtiumTopicScopeResult {
+  return db.transaction(() => repairOneTopicScope(input)).immediate();
 }
 
 /**
- * M-9 bulk variant: stamp every unscoped otium room with `toScope`, through
- * the same per-topic repair (claims re-bound, audited). Rooms whose claims
- * cannot be re-bound are skipped and reported. Runs inside the caller's
- * transaction when there is one.
+ * M-9 bulk variant: stamp every unscoped otium room with `toScope` through the
+ * same per-topic repair (history recorded, claims untouched). Rooms that are
+ * refused (busy, title conflict) are skipped and reported.
  */
 export function repairUnscopedOtiumTopicScopes(
   toScope: string,
   actor: string,
   reason: string,
-): { stamped: number; skipped: RepairOtiumTopicScopeResult[] } {
-  const skipped: RepairOtiumTopicScopeResult[] = [];
+): { stamped: number; skipped: AdminRepairOtiumTopicScopeResult[] } {
+  const skipped: AdminRepairOtiumTopicScopeResult[] = [];
   let stamped = 0;
   const rows = db
     .query<RepairTopicRow, []>(
-      `SELECT id, title, kind, surface, surface_scope, created_at FROM api_topics
+      `SELECT id, title, surface, surface_scope, created_at FROM api_topics
        WHERE surface = 'otium' AND surface_scope IS NULL`,
     )
     .all();
@@ -1012,7 +1041,7 @@ export function repairUnscopedOtiumTopicScopes(
       topicId: row.id,
       fromScope: null,
       toScope,
-      expected: { surface: "otium", surfaceScope: null, createdAt: row.created_at },
+      expectedRow: { surface: "otium", surfaceScope: null, createdAt: row.created_at },
       actor,
       reason,
     });

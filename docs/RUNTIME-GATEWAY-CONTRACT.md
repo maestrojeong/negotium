@@ -290,11 +290,16 @@ sees the previous behaviour byte for byte.
   `GET /topic-claims/:id` then reads `topicPresent: false, topicMoved: true`. An abort deletes only a
   room whose message set is exactly the one it was created with (count + hash of ids recorded with
   the claim). Claim retention: committed claims 30 days from `created_at`, aborted claims (fences)
-  30 days from the moment they became aborted; pruning is bounded per request.
+  30 days from the moment they became aborted (`settled_at`); pruning is bounded per request.
 - **Otium scope immutability.** An otium room's `surface_scope` never changes after creation (SQLite
   trigger `api_topics_otium_scope_immutable`; upserts keep the stored value). The only exception is the
-  audited, storage-only `repairOtiumTopicScope` (`NULL → scope`, CAS, re-binds `scope:` claims to
-  `scope:<new>`, audit row in `api_topic_scope_repairs`), which the one-time M-9 stamp also uses.
+  audited, storage-only `adminRepairOtiumTopicScope` (`NULL → scope`, CAS), which the one-time M-9
+  stamp also uses. Create claims are never re-bound: they stay on their original principal and a
+  replay/abort by a principal the room's current scope no longer belongs to is `409
+  claim_topic_moved`. The move is recorded in `api_topic_scope_moves` with a seq from the tombstone
+  counter and appears in `GET /topic-tombstones` as `reason: "unshared", scopeMoved: true` for the OLD
+  scope (not shown to callers that still see the room); existence answers the old scope `present,
+  shared: false`.
 - **Existence.** `GET /topics/:id/existence` → `{ nodeId, topicId, state: "present" | "gone" |
   "unknown", shared?, deletedAt? }`. `gone` only when this store holds a deletion tombstone stamped
   with the identity answering now and within the caller's scope; a topic the node simply does not
