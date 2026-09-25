@@ -89,9 +89,10 @@ describe("remote session-comm schema initializer", () => {
     initializeRemoteSessionSchema(db);
     initializeRemoteSessionSchema(db);
     expect(columns(db, "remote_session_inbox_claims")).toEqual(CLAIM_COLUMNS);
-    expect(
-      db.query("SELECT state, owner_token FROM remote_session_inbox_claims").get(),
-    ).toEqual({ state: "completed", owner_token: null });
+    expect(db.query("SELECT state, owner_token FROM remote_session_inbox_claims").get()).toEqual({
+      state: "completed",
+      owner_token: null,
+    });
     expect(db.query("SELECT dispatch_state FROM remote_session_asks").get()).toEqual({
       dispatch_state: "dispatched",
     });
