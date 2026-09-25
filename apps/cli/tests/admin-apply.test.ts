@@ -37,7 +37,7 @@ const { runAdminCli, ADMIN_EXIT } = await import("@/commands/admin/index");
 const { nodePaths, topicWorkspaceDir, sessionInboxFiles, pendingAskDir } = await import(
   "@/commands/admin/paths"
 );
-const { loadCoreExclusive } = await import("@/commands/admin/apply-env");
+const { loadCoreExclusive, openBackupReadOnly } = await import("@/commands/admin/apply-env");
 const { defaultFsSeam } = await import("@/commands/admin/safe-fs");
 const { ensureCronSchema } = await import("@negotium/module-cron");
 
@@ -244,8 +244,8 @@ describe("delete-manager: eligibility", () => {
     const backup = join(r.backupDir, files[0] as string);
     expect(files[0]).not.toContain(pair.dup);
     expect(statSync(backup).mode & 0o777).toBe(0o600);
-    const { Database } = await import("bun:sqlite");
-    const copy = new Database(`file:${backup}?immutable=1`, { readonly: true });
+    // Not a `file:…?immutable=1` URI: Bun's Linux SQLite has no URI support.
+    const copy = openBackupReadOnly(backup);
     expect(copy.query("SELECT id FROM api_topics WHERE id = ?").get(pair.dup)).toBeTruthy();
     copy.close();
     // The keeper is what the owner's General resolves to now.
@@ -515,11 +515,7 @@ describe("delete-manager: eligibility", () => {
     const r = await deleteApply(pair);
     expect(r.code).toBe(ADMIN_EXIT.ok);
     const [name] = readdirSync(r.backupDir);
-    const { Database } = await import("bun:sqlite");
-    const copy = new Database(`file:${join(r.backupDir, name as string)}?immutable=1`, {
-      readonly: true,
-      safeIntegers: true,
-    });
+    const copy = openBackupReadOnly(join(r.backupDir, name as string));
     const rows = copy.query("SELECT v FROM admin_test_int64").all() as Array<{ v: bigint }>;
     copy.close();
     expect(rows.map((row) => row.v)).toContain(big);

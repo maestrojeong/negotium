@@ -27,6 +27,7 @@ import {
   mkdtempSync,
   openSync,
   readFileSync,
+  readSync,
   rmSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -172,6 +173,48 @@ export interface BackupResult {
   sizeBytes: number;
 }
 
+const SQLITE_SIDECARS = ["-journal", "-wal", "-shm"] as const;
+
+function assertNoSqliteSidecars(path: string): void {
+  const present = SQLITE_SIDECARS.filter((suffix) => existsSync(`${path}${suffix}`));
+  if (present.length > 0) refuse(`${path} has SQLite sidecar files: ${present.join(", ")}`);
+}
+
+/**
+ * Opens a fresh `VACUUM INTO` backup read-only with `safeIntegers`.
+ *
+ * Deliberately a plain path, not a `file:…?immutable=1` URI: Bun's bundled
+ * SQLite on Linux is built without `SQLITE_USE_URI` and Bun's options-object
+ * constructor never passes `SQLITE_OPEN_URI`, so a URI is taken as a literal
+ * (non-existent) file name — "unable to open database file". (macOS Bun links
+ * the system SQLite, which has URIs enabled, which is why it worked there.)
+ * Numeric open flags could enable URIs but cannot be combined with
+ * `safeIntegers`. What `immutable=1` guaranteed is kept explicitly instead:
+ * the file must be a rollback-journal database (header bytes 18/19 == 1, which
+ * `VACUUM INTO` always writes, even from a WAL source), so a read-only
+ * connection never creates `-wal`/`-shm`, and no sidecar (e.g. a hot
+ * `-journal`) may exist next to it; the caller also hashes it before and after.
+ */
+export function openBackupReadOnly(path: string): Database {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const header = Buffer.alloc(100);
+  try {
+    if (readSync(fd, header, 0, 100, 0) !== 100) refuse(`${path} is not an SQLite database`);
+  } finally {
+    closeSync(fd);
+  }
+  if (header.subarray(0, 16).toString("latin1") !== "SQLite format 3\0") {
+    refuse(`${path} is not an SQLite database`);
+  }
+  if (header[18] !== 1 || header[19] !== 1) {
+    refuse(
+      `${path} is not a rollback-journal database (read/write version ${header[18]}/${header[19]})`,
+    );
+  }
+  assertNoSqliteSidecars(path);
+  return new Database(path, { readonly: true, safeIntegers: true });
+}
+
 /**
  * VACUUM INTO → fsync(file) → verify → rename → fsync(dir), in that order,
  * each through `seam`. SQLite refuses to VACUUM INTO an existing file (even an
@@ -179,7 +222,9 @@ export interface BackupResult {
  * directory (0700, ours) under the pinned backup dir; the file is then opened
  * `O_NOFOLLOW`, checked to be a single-link regular file, chmod 0600, and its
  * inode is re-checked before the no-clobber rename. `verify` gets the backup
- * opened `immutable=1` read-only with `safeIntegers` (int64 values exact).
+ * opened read-only with `safeIntegers` (int64 values exact) through
+ * {@link openBackupReadOnly}; its bytes are hashed before and after `verify`
+ * and must be identical, so verification provably did not change the file.
  */
 export function takeVerifiedBackup(
   db: SqlDb,
@@ -208,10 +253,9 @@ export function takeVerifiedBackup(
     closeSync(fd);
     fd = null;
 
-    const backup = new Database(`file:${tempPath}?immutable=1`, {
-      readonly: true,
-      safeIntegers: true,
-    });
+    const bytes = readFileSync(tempPath);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const backup = openBackupReadOnly(tempPath);
     try {
       const check = backup.query("PRAGMA quick_check").get() as { quick_check: string } | null;
       if (check?.quick_check !== "ok") {
@@ -221,8 +265,10 @@ export function takeVerifiedBackup(
     } finally {
       backup.close();
     }
-    const bytes = readFileSync(tempPath);
-    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    assertNoSqliteSidecars(tempPath);
+    if (createHash("sha256").update(readFileSync(tempPath)).digest("hex") !== sha256) {
+      refuse(`${tempPath} changed while it was being verified`);
+    }
     seam.event?.("verify", tempPath);
 
     recheckSafeDir(dir);
