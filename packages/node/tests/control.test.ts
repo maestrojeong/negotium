@@ -2406,6 +2406,21 @@ test("runtime /health advertises remote session-comm and registered relay capabi
   }
 });
 
+test("runtime /health advertises the topic-link (PR7) and session-comm actor (PR9) capabilities exactly once", async () => {
+  const health = await handler(runtimeRequest("/health"));
+  const capabilities = ((await health?.json()) as { capabilities?: string[] }).capabilities ?? [];
+  for (const capability of [
+    "canonical-topic-create-claims",
+    "canonical-topic-existence",
+    "canonical-topic-tombstones",
+    "canonical-surface-scope",
+    "remote-session-comm-actor",
+  ]) {
+    expect(capabilities.filter((c) => c === capability)).toEqual([capability]);
+  }
+  expect(new Set(capabilities).size).toBe(capabilities.length);
+});
+
 test("runtime /topics/:id/session-comm/inbox queues hub deliveries once and routes an ask-reply to its caller", async () => {
   const suffix = randomUUID();
   const scope = `ws-inbox-${suffix}`;
