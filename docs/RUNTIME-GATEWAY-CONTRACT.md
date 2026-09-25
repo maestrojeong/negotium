@@ -272,15 +272,29 @@ sees the previous behaviour byte for byte.
   op?, topicId?, topicPresent? }` (always 200). `POST /topic-claims/:requestId/abort` deletes the
   claimed room only while it holds no message written after creation (`409
   claim_topic_has_messages` otherwise) and fences the id so a late create is refused; an abort for
-  an unknown id records the fence.
+  an unknown id records the fence. The abort decides the claim's state and writes its outcome in one
+  `BEGIN IMMEDIATE` transaction, so a create committing concurrently in another process is either
+  refused by the fence or deleted by the abort — a committed claim is never aborted while its room
+  lives. While an abort deletes a room, every message insert into it is refused by SQLite and
+  `POST /turns` for it answers `409 topic_unavailable`; the "no new message" check is repeated inside
+  the transaction that deletes the messages, so a message that still lands keeps the room (`409
+  claim_topic_has_messages`, claim stays committed). The loser of a cross-process race on the same
+  key (create or derive) gets the winner's `201 … replayed: true`.
 - **Existence.** `GET /topics/:id/existence` → `{ nodeId, topicId, state: "present" | "gone" |
   "unknown", shared?, deletedAt? }`. `gone` only when this store holds a deletion tombstone stamped
   with the identity answering now and within the caller's scope; a topic the node simply does not
   have is `unknown`, never `gone`.
 - **Tombstones.** SQLite triggers on `api_topics` write `api_topic_tombstones` (`deleted`, or
   `unshared` when a room leaves the visible Otium surface) in the same statement as the change,
-  stamped with the node identity. `GET /topic-tombstones?after=&limit=` pages them by `seq`. The
-  `ready` event of `GET /events` and every `topic-deleted` payload carry `nodeId`.
+  stamped with the node identity. `GET /topic-tombstones?after=&limit=` pages them by `seq`, which
+  comes from a never-decreasing counter (`highWater` on the page is its current value): every
+  tombstone written after a cursor has a larger `seq`. A topic can appear more than once (unshared,
+  later deleted); consumers must be idempotent. The `ready` event of `GET /events` and every
+  `topic-deleted` payload carry `nodeId`.
+- **Store epoch.** `/health`, `/surface-scope`, existence, tombstone and claim responses carry
+  `dbEpoch`, a random id minted when the store first recorded an identity. A wiped/recreated store
+  under the same `NODE_ID` has another one; a restore of a backup of the same store does not (a hub
+  can only notice that as `highWater` below its recorded cursor).
 - **Surface scope.** `GET /surface-scope` → `{ nodeId, principal, surfaceScope, resolved,
   scopeRequired, joinsMounted, linkGuard }`: the workspace this caller's rooms are filed under.
 - **Create guard.** `NEGOTIUM_OTIUM_LINK_V2` (default off) applies to the three gateway room creators.

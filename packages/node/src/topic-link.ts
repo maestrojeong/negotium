@@ -20,6 +20,8 @@
  * behaviour.
  */
 import {
+  type AbortTopicCreateClaimOptions,
+  abortTopicCreateClaim,
   committedClaimsByTopic,
   getTopic,
   getTopicCreateClaim,
@@ -28,15 +30,14 @@ import {
   listTopicTombstonesAfter,
   localSurfaceScopeStatus,
   logger,
-  markTopicCreateClaimAborted,
   NODE_ID,
   pruneTopicCreateClaims,
   recordTopicLinkNodeIdentity,
   type TopicCreateClaim,
   type TopicDto,
-  topicHasMessagesAfterClaim,
+  topicLinkDbEpoch,
   topicLinkPayloadHash,
-  topicService,
+  topicTombstoneHighWater,
 } from "@negotium/core/node-host";
 
 const CONTRACT_VERSION = 1;
@@ -372,7 +373,13 @@ export async function runClaimedTopicCreate(
       if (raced) return answerExistingClaim(raced, link);
       throw error;
     }
-    if (!topic) return null;
+    if (!topic) {
+      // A creator that swallows its failure (derive returns null) may still
+      // have lost the race to another process: answer from that claim.
+      const raced = getTopicCreateClaim(link.principalKey, link.requestId);
+      if (raced) return answerExistingClaim(raced, link);
+      return null;
+    }
     if (!claim) throw new Error("topic create finished without recording its claim");
     return claimedCreateResponse(topic, claim, false);
   } finally {
@@ -421,7 +428,13 @@ export type TopicExistenceState = "present" | "gone" | "unknown";
  */
 export function topicExistence(req: Request, topicId: string) {
   const nodeId = currentNodeId();
-  const base = { ok: true as const, v: CONTRACT_VERSION, nodeId, topicId };
+  const base = {
+    ok: true as const,
+    v: CONTRACT_VERSION,
+    nodeId,
+    dbEpoch: topicLinkDbEpoch(),
+    topicId,
+  };
   const topic = getTopic(topicId);
   const tombstone = getTopicTombstone(topicId);
   if (topic) {
@@ -454,7 +467,13 @@ export function topicExistence(req: Request, topicId: string) {
 
 function claimView(req: Request, requestId: string) {
   const claim = getTopicCreateClaim(topicLinkPrincipalKey(req), requestId);
-  const base = { ok: true as const, v: CONTRACT_VERSION, nodeId: currentNodeId(), requestId };
+  const base = {
+    ok: true as const,
+    v: CONTRACT_VERSION,
+    nodeId: currentNodeId(),
+    dbEpoch: topicLinkDbEpoch(),
+    requestId,
+  };
   if (!claim) return { ...base, state: "none" as const };
   return {
     ...base,
@@ -467,9 +486,11 @@ function claimView(req: Request, requestId: string) {
   };
 }
 
-function ownerOf(topic: TopicDto): string | null {
-  return topic.participants.find((participant) => participant.role === "owner")?.userId ?? null;
-}
+/**
+ * Test seam for the abort path (gates between the fence and the cascade, and
+ * a deterministic cleanup hook). Empty in production.
+ */
+export const topicLinkAbortTestHooks: AbortTopicCreateClaimOptions = {};
 
 async function abortClaim(req: Request, requestId: string): Promise<Response> {
   const principalKey = topicLinkPrincipalKey(req);
@@ -479,65 +500,49 @@ async function abortClaim(req: Request, requestId: string): Promise<Response> {
       requestId,
     });
   }
-  const base = { ok: true, v: CONTRACT_VERSION, nodeId: currentNodeId(), requestId };
-  const claim = getTopicCreateClaim(principalKey, requestId);
-  if (!claim) {
-    markTopicCreateClaimAborted(principalKey, requestId);
-    return Response.json({ ...base, aborted: true, existed: false, topicDeleted: false });
+  const base = {
+    ok: true,
+    v: CONTRACT_VERSION,
+    nodeId: currentNodeId(),
+    dbEpoch: topicLinkDbEpoch(),
+    requestId,
+  };
+  inFlight.add(key);
+  let result: Awaited<ReturnType<typeof abortTopicCreateClaim>>;
+  try {
+    // One BEGIN IMMEDIATE decides the claim's state and writes what the abort
+    // needs (fence / flip / maintenance fence); see core `claim-abort.ts`.
+    result = await abortTopicCreateClaim(principalKey, requestId, topicLinkAbortTestHooks);
+  } finally {
+    inFlight.delete(key);
   }
-  if (claim.state === "aborted") {
-    return Response.json({
-      ...base,
-      aborted: true,
-      existed: true,
-      topicDeleted: false,
-      topicId: claim.topicId,
-    });
-  }
-  const topic = claim.topicId ? getTopic(claim.topicId) : null;
-  if (topic) {
-    if (topicHasMessagesAfterClaim(claim)) {
+  const topicId = result.claim.topicId;
+  switch (result.kind) {
+    case "fenced":
+      return Response.json({ ...base, aborted: true, existed: false, topicDeleted: false });
+    case "already-aborted":
+    case "topic-missing":
+      return Response.json({ ...base, aborted: true, existed: true, topicDeleted: false, topicId });
+    case "deleted":
+      return Response.json({ ...base, aborted: true, existed: true, topicDeleted: true, topicId });
+    case "has-messages":
       return linkError(
         409,
         "claim_topic_has_messages",
         "the topic has messages written after its creation; it is not deleted automatically",
-        { requestId, topicId: topic.id },
+        { requestId, topicId },
       );
-    }
-    const owner = ownerOf(topic);
-    if (!owner || topic.kind === "manager") {
+    case "protected":
       return linkError(409, "claim_topic_protected", "the topic cannot be deleted by an abort", {
         requestId,
-        topicId: topic.id,
+        topicId,
       });
-    }
-    inFlight.add(key);
-    try {
-      await topicService.delete({ topicId: topic.id, userId: owner });
-    } catch (error) {
-      logger.warn({ error, requestId, topicId: topic.id }, "otium link: claim abort delete failed");
+    case "busy":
       return linkError(409, "claim_topic_busy", "the topic could not be deleted right now", {
         requestId,
-        topicId: topic.id,
+        topicId,
       });
-    } finally {
-      inFlight.delete(key);
-    }
-    if (getTopic(topic.id)) {
-      return linkError(409, "claim_topic_busy", "the topic could not be deleted right now", {
-        requestId,
-        topicId: topic.id,
-      });
-    }
   }
-  markTopicCreateClaimAborted(principalKey, requestId);
-  return Response.json({
-    ...base,
-    aborted: true,
-    existed: true,
-    topicDeleted: Boolean(topic),
-    topicId: claim.topicId,
-  });
 }
 
 function tombstonePage(req: Request, url: URL) {
@@ -568,6 +573,10 @@ function tombstonePage(req: Request, url: URL) {
     ok: true,
     v: CONTRACT_VERSION,
     nodeId,
+    dbEpoch: topicLinkDbEpoch(),
+    // Highest seq ever handed out (never decreases). A cursor above it means
+    // this store was rolled back.
+    highWater: topicTombstoneHighWater(),
     tombstones,
     // Advances past rows filtered out of this caller's scope too.
     cursor: last ? last.seq : after,
@@ -589,6 +598,7 @@ export async function handleTopicLinkRoute(
       ok: true,
       v: CONTRACT_VERSION,
       nodeId: currentNodeId(),
+      dbEpoch: topicLinkDbEpoch(),
       ...requestSurfaceScopeResolution(req),
       linkGuard: otiumLinkGuardMode(),
     });

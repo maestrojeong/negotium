@@ -27,7 +27,13 @@
  */
 
 import { createHash } from "node:crypto";
+// Side effect: registers `api_messages`, which the message fence trigger
+// guards (and orders it before this schema).
+import "#storage/api-messages";
 import { db } from "#storage/forum-db";
+// Side effect: registers `runtime_topic_state`, which the message fence
+// trigger reads (and orders it before this schema).
+import "#storage/runtime-topic-state";
 import { registerStorageSchemaInitializer } from "#storage/storage-host";
 
 export type TopicCreateClaimOp = "create" | "derive" | "abort";
@@ -86,25 +92,122 @@ export const TOPIC_CREATE_CLAIM_RETENTION_MS = 30 * 24 * 60 * 60_000;
 
 const NODE_IDENTITY_SQL = "(SELECT node_id FROM api_node_identity WHERE singleton = 1)";
 const NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
-const NEXT_TOMBSTONE_SEQ_SQL = "(SELECT COALESCE(MAX(seq), 0) + 1 FROM api_topic_tombstones)";
+const TOMBSTONE_SEQ_SQL = "(SELECT seq FROM api_topic_tombstone_seq WHERE singleton = 1)";
+// Advances the never-decreasing tombstone sequence. Runs as the first
+// statement of every tombstone-writing trigger, so the new row's seq is read
+// back from the counter within the same statement/transaction.
+const BUMP_TOMBSTONE_SEQ_SQL =
+  "UPDATE api_topic_tombstone_seq SET seq = seq + 1 WHERE singleton = 1";
+const NEW_EPOCH_SQL = "lower(hex(randomblob(16)))";
+
+/**
+ * Owner-id prefix of the runtime maintenance fence a claim abort holds while
+ * it deletes the claimed topic. While such a fence is live, the
+ * `api_messages_claim_abort_fence` trigger refuses every message insert into
+ * that topic (any writer, any process), so nothing can land between the
+ * abort's "no new messages" check and the delete.
+ */
+export const TOPIC_CLAIM_ABORT_OWNER_PREFIX = "topic-link-abort:";
+/** The message the fence trigger raises; matched by ingress to answer 409. */
+export const TOPIC_CLAIM_ABORT_FENCE_ERROR = "topic_claim_abort_in_progress";
+// Same staleness rule as `runtime-topic-state` (TOPIC_MAINTENANCE_STALE_MS):
+// a crashed abort never blocks a room for longer than a stale fence.
+const CLAIM_ABORT_FENCE_STALE_MS = 30_000;
+const NOW_MS_SQL = "CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)";
+const CLAIM_ABORT_FENCE_PREDICATE = `maintenance = 1
+  AND maintenance_owner LIKE '${TOPIC_CLAIM_ABORT_OWNER_PREFIX}%'
+  AND heartbeat_at IS NOT NULL
+  AND heartbeat_at >= ${NOW_MS_SQL} - ${CLAIM_ABORT_FENCE_STALE_MS}`;
+
+type SchemaDatabase = {
+  exec(sql: string): unknown;
+  transaction<T>(fn: () => T): (() => T) & { immediate?: () => T };
+  query(sql: string): { all(...params: never[]): unknown[] };
+};
+
+const SCHEMA_TABLES = [
+  "api_node_identity",
+  "api_topic_create_claims",
+  "api_topic_tombstones",
+  "api_topic_tombstone_seq",
+];
+const SCHEMA_INDEXES = ["idx_api_topic_create_claims_topic", "idx_api_topic_create_claims_created"];
+const SCHEMA_INDEXES_TOMBSTONES = ["idx_api_topic_tombstones_seq"];
+/** Trigger → a marker its current SQL must contain (older builds lack it). */
+const SCHEMA_TRIGGERS: Record<string, string> = {
+  api_topics_tombstone_on_delete: "api_topic_tombstone_seq",
+  api_topics_tombstone_on_unshare: "api_topic_tombstone_seq",
+  api_topics_tombstone_on_reshare: "api_topic_tombstones",
+  api_topics_tombstone_on_insert: "api_topic_tombstones",
+  api_messages_claim_abort_fence: TOPIC_CLAIM_ABORT_OWNER_PREFIX,
+};
+
+/**
+ * Read-only: whether the schema (and identity) is already current. Every
+ * process start runs the initializer, so the common path must not write — a
+ * write here would take the database lock on every boot and can fail with
+ * SQLITE_BUSY while other processes start concurrently.
+ */
+function topicLinkSchemaIsCurrent(database: SchemaDatabase, nodeId?: string): boolean {
+  const objects = new Map(
+    (
+      database
+        .query("SELECT name, sql FROM sqlite_master WHERE type IN ('table','index','trigger')")
+        .all() as Array<{ name: string; sql: string | null }>
+    ).map((row) => [row.name, row.sql ?? ""]),
+  );
+  for (const name of [...SCHEMA_TABLES, ...SCHEMA_INDEXES, ...SCHEMA_INDEXES_TOMBSTONES]) {
+    if (!objects.has(name)) return false;
+  }
+  for (const [name, marker] of Object.entries(SCHEMA_TRIGGERS)) {
+    if (!objects.get(name)?.includes(marker)) return false;
+  }
+  if (!columnNames(database, "api_node_identity").has("epoch_id")) return false;
+  const identity = database
+    .query("SELECT node_id, epoch_id FROM api_node_identity WHERE singleton = 1")
+    .all() as Array<{ node_id: string; epoch_id: string | null }>;
+  if (identity.some((row) => row.epoch_id === null)) return false;
+  if (nodeId && identity[0]?.node_id !== nodeId) return false;
+  const counter = database
+    .query(
+      `SELECT (SELECT seq FROM api_topic_tombstone_seq WHERE singleton = 1) AS counter,
+              (SELECT COALESCE(MAX(seq), 0) FROM api_topic_tombstones) AS max_seq`,
+    )
+    .all() as Array<{ counter: number | bigint | null; max_seq: number | bigint }>;
+  const row = counter[0];
+  return row?.counter !== null && row?.counter !== undefined && row.counter >= row.max_seq;
+}
+
+function columnNames(database: SchemaDatabase, table: string): Set<string> {
+  const rows = database.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return new Set(rows.map((row) => row.name));
+}
 
 /**
  * Idempotent, and all-or-nothing: every statement is `IF NOT EXISTS` / an
- * upsert, and the whole set runs in one transaction so a crash half-way never
- * leaves triggers without the table they write to.
+ * upsert / a drop-and-recreate of a trigger, and the whole set runs in one
+ * transaction so a crash half-way never leaves triggers without the table
+ * they write to.
  */
-export function initializeTopicLinkRecordsSchema(
-  database: { exec(sql: string): unknown; transaction<T>(fn: () => T): () => T },
-  nodeId?: string,
-): void {
-  database.transaction(() => {
+export function initializeTopicLinkRecordsSchema(database: SchemaDatabase, nodeId?: string): void {
+  if (topicLinkSchemaIsCurrent(database, nodeId)) return;
+  const migrate = database.transaction(() => {
     database.exec(`
       CREATE TABLE IF NOT EXISTS api_node_identity (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         node_id TEXT NOT NULL,
+        epoch_id TEXT,
         updated_at TEXT NOT NULL
       )
     `);
+    // PR7 fix: a random id minted when this store first records an identity.
+    // Survives NODE_ID changes; a wiped/recreated store gets a new one.
+    if (!columnNames(database, "api_node_identity").has("epoch_id")) {
+      database.exec("ALTER TABLE api_node_identity ADD COLUMN epoch_id TEXT");
+    }
+    database.exec(
+      `UPDATE api_node_identity SET epoch_id = ${NEW_EPOCH_SQL} WHERE epoch_id IS NULL`,
+    );
     database.exec(`
       CREATE TABLE IF NOT EXISTS api_topic_create_claims (
         principal_key TEXT NOT NULL,
@@ -140,16 +243,43 @@ export function initializeTopicLinkRecordsSchema(
     database.exec(
       "CREATE INDEX IF NOT EXISTS idx_api_topic_tombstones_seq ON api_topic_tombstones(seq)",
     );
+    // Never-decreasing tombstone sequence (PR7 fix). `api_topic_tombstones` is
+    // a current-state table whose rows are deleted on reshare/reinsert, so
+    // MAX(seq)+1 could hand out a seq a cursor already passed. Seeded from the
+    // table on every init, and never lowered.
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS api_topic_tombstone_seq (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        seq INTEGER NOT NULL
+      )
+    `);
+    database.exec(`
+      INSERT INTO api_topic_tombstone_seq (singleton, seq)
+      VALUES (1, (SELECT COALESCE(MAX(seq), 0) FROM api_topic_tombstones))
+      ON CONFLICT(singleton) DO UPDATE SET seq = MAX(api_topic_tombstone_seq.seq, excluded.seq)
+    `);
+    // Recreated on every init so a store migrated by an earlier build (whose
+    // triggers computed MAX(seq)+1) gets the counter-based versions.
+    for (const name of [
+      "api_topics_tombstone_on_delete",
+      "api_topics_tombstone_on_unshare",
+      "api_topics_tombstone_on_reshare",
+      "api_topics_tombstone_on_insert",
+      "api_messages_claim_abort_fence",
+    ]) {
+      database.exec(`DROP TRIGGER IF EXISTS ${name}`);
+    }
     // Hard delete, from any writer. `DROP TABLE` (the legacy schema rebuild)
     // does not fire row triggers, so a migration never fabricates tombstones.
     database.exec(`
-      CREATE TRIGGER IF NOT EXISTS api_topics_tombstone_on_delete
+      CREATE TRIGGER api_topics_tombstone_on_delete
       AFTER DELETE ON api_topics
       BEGIN
+        ${BUMP_TOMBSTONE_SEQ_SQL};
         INSERT OR REPLACE INTO api_topic_tombstones
           (topic_id, seq, node_id, reason, surface, surface_scope, deleted_at)
         VALUES
-          (OLD.id, ${NEXT_TOMBSTONE_SEQ_SQL}, ${NODE_IDENTITY_SQL}, 'deleted',
+          (OLD.id, ${TOMBSTONE_SEQ_SQL}, ${NODE_IDENTITY_SQL}, 'deleted',
            OLD.surface, OLD.surface_scope, ${NOW_SQL});
       END
     `);
@@ -157,20 +287,21 @@ export function initializeTopicLinkRecordsSchema(
     // a withdrawal, never of a deletion: the existence API still answers
     // `present` for such a topic.
     database.exec(`
-      CREATE TRIGGER IF NOT EXISTS api_topics_tombstone_on_unshare
+      CREATE TRIGGER api_topics_tombstone_on_unshare
       AFTER UPDATE OF surface, visibility ON api_topics
       WHEN OLD.surface = 'otium' AND COALESCE(OLD.visibility, 'visible') != 'hidden'
         AND (NEW.surface IS NOT 'otium' OR NEW.visibility = 'hidden')
       BEGIN
+        ${BUMP_TOMBSTONE_SEQ_SQL};
         INSERT OR REPLACE INTO api_topic_tombstones
           (topic_id, seq, node_id, reason, surface, surface_scope, deleted_at)
         VALUES
-          (OLD.id, ${NEXT_TOMBSTONE_SEQ_SQL}, ${NODE_IDENTITY_SQL}, 'unshared',
+          (OLD.id, ${TOMBSTONE_SEQ_SQL}, ${NODE_IDENTITY_SQL}, 'unshared',
            OLD.surface, OLD.surface_scope, ${NOW_SQL});
       END
     `);
     database.exec(`
-      CREATE TRIGGER IF NOT EXISTS api_topics_tombstone_on_reshare
+      CREATE TRIGGER api_topics_tombstone_on_reshare
       AFTER UPDATE OF surface, visibility ON api_topics
       WHEN NEW.surface = 'otium' AND COALESCE(NEW.visibility, 'visible') != 'hidden'
       BEGIN
@@ -179,24 +310,41 @@ export function initializeTopicLinkRecordsSchema(
     `);
     // A row that exists again (restored or re-inserted id) is not gone.
     database.exec(`
-      CREATE TRIGGER IF NOT EXISTS api_topics_tombstone_on_insert
+      CREATE TRIGGER api_topics_tombstone_on_insert
       AFTER INSERT ON api_topics
       BEGIN
         DELETE FROM api_topic_tombstones WHERE topic_id = NEW.id;
       END
     `);
+    // A topic a claim abort is deleting accepts no message (PR7 fix): see
+    // TOPIC_CLAIM_ABORT_OWNER_PREFIX. Checked by SQLite on every insert path,
+    // atomically with the insert itself.
+    database.exec(`
+      CREATE TRIGGER api_messages_claim_abort_fence
+      BEFORE INSERT ON api_messages
+      WHEN EXISTS (SELECT 1 FROM runtime_topic_state
+                   WHERE topic_id = NEW.topic_id AND ${CLAIM_ABORT_FENCE_PREDICATE})
+      BEGIN
+        SELECT RAISE(ABORT, '${TOPIC_CLAIM_ABORT_FENCE_ERROR}');
+      END
+    `);
     if (nodeId) {
       database.exec(
-        `INSERT INTO api_node_identity (singleton, node_id, updated_at) VALUES (1, '${nodeId.replaceAll("'", "''")}', ${NOW_SQL})
+        `INSERT INTO api_node_identity (singleton, node_id, epoch_id, updated_at)
+         VALUES (1, '${nodeId.replaceAll("'", "''")}', ${NEW_EPOCH_SQL}, ${NOW_SQL})
          ON CONFLICT(singleton) DO UPDATE SET node_id = excluded.node_id, updated_at = excluded.updated_at
          WHERE api_node_identity.node_id IS NOT excluded.node_id`,
       );
     }
-  })();
+  });
+  // BEGIN IMMEDIATE when available: a migrating process waits on the busy
+  // timeout for another one instead of failing its read→write upgrade.
+  if (migrate.immediate) migrate.immediate();
+  else migrate();
 }
 
-// After api_topics (20) and api_messages (30): the triggers name api_topics
-// columns, so the table must already have its current shape.
+// After api_topics (20), api_messages (30) and runtime_topic_state (32): the
+// triggers name their columns, so the tables must already have their shape.
 registerStorageSchemaInitializer((database) => initializeTopicLinkRecordsSchema(database), 45);
 
 // ── canonical payload hash ────────────────────────────────────────────────
@@ -233,10 +381,41 @@ export function recordTopicLinkNodeIdentity(nodeId: string): void {
   const id = nodeId.trim();
   if (!id) return;
   db.query(
-    `INSERT INTO api_node_identity (singleton, node_id, updated_at) VALUES (1, ?, ${NOW_SQL})
+    `INSERT INTO api_node_identity (singleton, node_id, epoch_id, updated_at)
+     VALUES (1, ?, ${NEW_EPOCH_SQL}, ${NOW_SQL})
      ON CONFLICT(singleton) DO UPDATE SET node_id = excluded.node_id, updated_at = excluded.updated_at
      WHERE api_node_identity.node_id IS NOT excluded.node_id`,
   ).run(id);
+}
+
+/**
+ * Random id minted when this store first recorded an identity (`dbEpoch` on
+ * the wire). A wiped/recreated store answering under the same `NODE_ID` has a
+ * different one; a restore of a backup of the SAME store does not (residual
+ * risk, see the contract). Null until an identity is recorded.
+ */
+export function topicLinkDbEpoch(): string | null {
+  return (
+    db
+      .query<{ epoch_id: string | null }, []>(
+        "SELECT epoch_id FROM api_node_identity WHERE singleton = 1",
+      )
+      .get()?.epoch_id ?? null
+  );
+}
+
+/**
+ * The highest tombstone seq ever handed out (never decreases, also counts
+ * rows later removed by a reshare/reinsert). A hub whose recorded cursor is
+ * above this value is talking to a rolled-back store.
+ */
+export function topicTombstoneHighWater(): number {
+  const row = db
+    .query<{ seq: number | bigint }, []>(
+      "SELECT seq FROM api_topic_tombstone_seq WHERE singleton = 1",
+    )
+    .get();
+  return Number(row?.seq ?? 0);
 }
 
 /** The identity new tombstones and claims are stamped with. */
@@ -346,33 +525,91 @@ export function insertCommittedTopicCreateClaim(input: {
 }
 
 /**
- * Settle a claim as aborted: an existing committed claim flips (CAS on its
- * state), a missing one becomes an aborted tombstone so a create that arrives
- * after the abort is refused rather than orphaned. Returns the stored claim.
+ * Write the aborted fence for a key that has no claim yet, so a create that
+ * arrives after the abort is refused rather than orphaned. No-op (false) when
+ * any claim already exists for the key. Callers deciding "no claim" MUST do so
+ * in the same transaction (see `abortTopicCreateClaim`).
+ */
+export function insertTopicCreateAbortFence(principalKey: string, requestId: string): boolean {
+  const now = new Date().toISOString();
+  const inserted = db
+    .query(
+      `INSERT OR IGNORE INTO api_topic_create_claims
+         (principal_key, request_id, op, payload_hash, topic_id, state, node_id,
+          seed_max_message_rowid, created_at, updated_at)
+       VALUES (?, ?, 'abort', '', NULL, 'aborted', ${NODE_IDENTITY_SQL}, 0, ?, ?)`,
+    )
+    .run(principalKey, requestId, now, now);
+  return Number(inserted.changes ?? 0) > 0;
+}
+
+/**
+ * CAS a committed claim to aborted. Only for a caller that has decided the
+ * claim's topic in the same transaction (deleted it, or found it gone): a
+ * committed claim must never become aborted while its topic lives on.
+ */
+export function flipCommittedTopicCreateClaimToAborted(
+  principalKey: string,
+  requestId: string,
+): boolean {
+  const updated = db
+    .query(
+      `UPDATE api_topic_create_claims SET state = 'aborted', updated_at = ?
+       WHERE principal_key = ? AND request_id = ? AND state = 'committed'`,
+    )
+    .run(new Date().toISOString(), principalKey, requestId);
+  return Number(updated.changes ?? 0) > 0;
+}
+
+/**
+ * Settle a claim as aborted where that is safe without deleting anything, in
+ * one `BEGIN IMMEDIATE`: no claim → aborted fence; committed claim whose topic
+ * row is already gone → aborted. A committed claim whose topic still exists is
+ * returned UNCHANGED (deleting it is `abortTopicCreateClaim`'s job). Returns
+ * the stored claim.
  */
 export function markTopicCreateClaimAborted(
   principalKey: string,
   requestId: string,
 ): TopicCreateClaim {
-  const now = new Date().toISOString();
-  db.transaction(() => {
-    const updated = db
-      .query(
-        `UPDATE api_topic_create_claims SET state = 'aborted', updated_at = ?
-         WHERE principal_key = ? AND request_id = ? AND state = 'committed'`,
+  return db
+    .transaction(() => {
+      const current = getTopicCreateClaim(principalKey, requestId);
+      if (!current) {
+        insertTopicCreateAbortFence(principalKey, requestId);
+      } else if (current.state === "committed" && !topicRowExists(current.topicId)) {
+        flipCommittedTopicCreateClaimToAborted(principalKey, requestId);
+      }
+      const claim = getTopicCreateClaim(principalKey, requestId);
+      if (!claim) throw new Error("topic create claim abort was not recorded");
+      return claim;
+    })
+    .immediate();
+}
+
+function topicRowExists(topicId: string | null): boolean {
+  if (!topicId) return false;
+  return Boolean(
+    db
+      .query<{ found: number }, [string]>("SELECT 1 AS found FROM api_topics WHERE id = ?")
+      .get(topicId),
+  );
+}
+
+/** Whether a live claim-abort fence currently refuses messages into this topic. */
+export function isTopicClaimAbortFenced(topicId: string): boolean {
+  return Boolean(
+    db
+      .query<{ found: number }, [string]>(
+        `SELECT 1 AS found FROM runtime_topic_state WHERE topic_id = ? AND ${CLAIM_ABORT_FENCE_PREDICATE}`,
       )
-      .run(now, principalKey, requestId);
-    if (Number(updated.changes ?? 0) > 0) return;
-    db.query(
-      `INSERT OR IGNORE INTO api_topic_create_claims
-         (principal_key, request_id, op, payload_hash, topic_id, state, node_id,
-          seed_max_message_rowid, created_at, updated_at)
-       VALUES (?, ?, 'abort', '', NULL, 'aborted', ${NODE_IDENTITY_SQL}, 0, ?, ?)`,
-    ).run(principalKey, requestId, now, now);
-  })();
-  const claim = getTopicCreateClaim(principalKey, requestId);
-  if (!claim) throw new Error("topic create claim abort was not recorded");
-  return claim;
+      .get(topicId),
+  );
+}
+
+/** Whether an error is the message fence trigger's refusal. */
+export function isTopicClaimAbortFenceError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes(TOPIC_CLAIM_ABORT_FENCE_ERROR);
 }
 
 /** Messages written to a claimed topic after its creation committed. */

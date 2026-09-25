@@ -53,6 +53,7 @@ import {
   RUN_DIR,
   type RuntimeBusEvent,
   RuntimeGatewayIdempotencyConflictError,
+  RuntimeGatewayTopicUnavailableError,
   readDecisions,
   STATE_DIR,
   type StoredRuntimeEvent,
@@ -76,6 +77,7 @@ import {
   TopicTitleConflictError,
   TopicUpdateConflictError,
   TopicValidationError,
+  topicLinkDbEpoch,
   topicService,
   updateApiMessageText,
   updateManagerTopicRuntimeConfig,
@@ -589,6 +591,10 @@ export function createNodeControlHandler(
             // Which node this is, so a host can tell a re-pointed base URL from
             // a topic whose owner withdrew it.
             nodeId: NODE_ID,
+            // Random id of this node's store (topic-link PR7): a hub that
+            // records it can tell a wiped/recreated store under the same
+            // NODE_ID. Null until the identity is recorded.
+            dbEpoch: topicLinkDbEpoch(),
             // This node's own AI persona name (node-local, see `/ai-name`). Read
             // here rather than only through the dedicated control route because
             // `/health` is the one GET the gateway forward already relays to a
@@ -2286,6 +2292,9 @@ export function createNodeControlHandler(
     } catch (error) {
       if (error instanceof RuntimeGatewayIdempotencyConflictError) {
         return jsonError(409, error.message);
+      }
+      if (error instanceof RuntimeGatewayTopicUnavailableError) {
+        return jsonError(409, error.message, error.code);
       }
       if (error instanceof TopicServiceError) return topicServiceError(error);
       if (error instanceof TopicDeriveBusyError) return jsonError(409, error.message);

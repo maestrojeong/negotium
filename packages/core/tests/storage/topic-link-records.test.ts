@@ -27,9 +27,60 @@ function memoryDb(): Database {
       visibility TEXT NOT NULL DEFAULT 'visible'
     );
     CREATE TABLE api_messages (id TEXT PRIMARY KEY, topic_id TEXT NOT NULL);
+    CREATE TABLE runtime_topic_state (
+      topic_id TEXT PRIMARY KEY,
+      epoch INTEGER NOT NULL DEFAULT 0,
+      maintenance INTEGER NOT NULL DEFAULT 0,
+      maintenance_owner TEXT,
+      heartbeat_at INTEGER
+    );
   `);
   return db;
 }
+
+function seqs(db: Database) {
+  return db
+    .query<{ topic_id: string; seq: number; reason: string }, []>(
+      "SELECT topic_id, seq, reason FROM api_topic_tombstones ORDER BY seq",
+    )
+    .all();
+}
+
+function after(db: Database, cursor: number) {
+  return db
+    .query<{ topic_id: string; seq: number; reason: string }, [number]>(
+      "SELECT topic_id, seq, reason FROM api_topic_tombstones WHERE seq > ? ORDER BY seq",
+    )
+    .all(cursor);
+}
+
+/** The PR7 (pre-fix) trigger shape: seq = MAX(seq) + 1 over the current-state table. */
+const PRE_FIX_TRIGGERS = `
+  CREATE TABLE api_node_identity (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    node_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  INSERT INTO api_node_identity VALUES (1, 'node-old', '2026-09-01T00:00:00.000Z');
+  CREATE TABLE api_topic_tombstones (
+    topic_id TEXT PRIMARY KEY,
+    seq INTEGER NOT NULL,
+    node_id TEXT,
+    reason TEXT NOT NULL CHECK (reason IN ('deleted','unshared')),
+    surface TEXT,
+    surface_scope TEXT,
+    deleted_at TEXT NOT NULL
+  );
+  CREATE TRIGGER api_topics_tombstone_on_delete AFTER DELETE ON api_topics BEGIN
+    INSERT OR REPLACE INTO api_topic_tombstones
+      (topic_id, seq, node_id, reason, surface, surface_scope, deleted_at)
+    VALUES (OLD.id, (SELECT COALESCE(MAX(seq), 0) + 1 FROM api_topic_tombstones),
+      'node-old', 'deleted', OLD.surface, OLD.surface_scope, 'x');
+  END;
+  CREATE TRIGGER api_topics_tombstone_on_insert AFTER INSERT ON api_topics BEGIN
+    DELETE FROM api_topic_tombstones WHERE topic_id = NEW.id;
+  END;
+`;
 
 function tombstones(db: Database) {
   return db
@@ -97,6 +148,17 @@ describe("topic link schema", () => {
     ]);
   });
 
+  test("a current schema is left alone without a write (concurrent process starts)", () => {
+    const db = memoryDb();
+    initializeTopicLinkRecordsSchema(db, "node-a");
+    // Every boot runs the initializer; on a current store it must not take the
+    // write lock (SQLITE_BUSY when several processes start together).
+    db.exec("PRAGMA query_only = 1");
+    expect(() => initializeTopicLinkRecordsSchema(db, "node-a")).not.toThrow();
+    expect(() => initializeTopicLinkRecordsSchema(db)).not.toThrow();
+    db.exec("PRAGMA query_only = 0");
+  });
+
   test("is all-or-nothing: a failing step leaves no partial schema behind", () => {
     // No api_topics table: the first trigger cannot be created.
     const db = new Database(":memory:");
@@ -145,6 +207,140 @@ describe("topic link schema", () => {
     ).toThrow("crash after delete");
     expect(tombstones(db)).toEqual([]);
     expect(db.query("SELECT id FROM api_topics").all()).toEqual([{ id: "t1" }]);
+  });
+});
+
+describe("tombstone seq never decreases (review fix 2)", () => {
+  test("deleting the current max row does not let the next tombstone reuse its seq", () => {
+    const db = memoryDb();
+    initializeTopicLinkRecordsSchema(db, "node-a");
+    db.exec("INSERT INTO api_topics (id, surface) VALUES ('a', 'otium'), ('b', 'otium')");
+    db.exec("UPDATE api_topics SET surface = 'terminal' WHERE id = 'a'");
+    const cursor = seqs(db).at(-1)?.seq ?? 0;
+    expect(cursor).toBe(1);
+    // Reshare removes the max row; the next event must still be past the cursor.
+    db.exec("UPDATE api_topics SET surface = 'otium' WHERE id = 'a'");
+    db.exec("DELETE FROM api_topics WHERE id = 'b'");
+    expect(after(db, cursor)).toEqual([{ topic_id: "b", seq: 2, reason: "deleted" }]);
+  });
+
+  test("interleaved unshare/reshare/delete/reinsert: every event lands past every earlier cursor", () => {
+    const db = memoryDb();
+    initializeTopicLinkRecordsSchema(db, "node-a");
+    db.exec(
+      "INSERT INTO api_topics (id, surface) VALUES ('a','otium'), ('b','otium'), ('c','otium')",
+    );
+    const steps = [
+      "UPDATE api_topics SET surface = 'terminal' WHERE id = 'a'",
+      "UPDATE api_topics SET visibility = 'hidden' WHERE id = 'b'",
+      "UPDATE api_topics SET surface = 'otium' WHERE id = 'a'",
+      "UPDATE api_topics SET visibility = 'visible' WHERE id = 'b'",
+      "DELETE FROM api_topics WHERE id = 'c'",
+      "INSERT INTO api_topics (id, surface) VALUES ('c', 'otium')",
+      "UPDATE api_topics SET surface = 'terminal' WHERE id = 'a'",
+      "DELETE FROM api_topics WHERE id = 'a'",
+      "DELETE FROM api_topics WHERE id = 'b'",
+    ];
+    let cursor = 0;
+    const seen: string[] = [];
+    let lastSeq = 0;
+    for (const step of steps) {
+      db.exec(step);
+      for (const row of after(db, cursor)) {
+        expect(row.seq).toBeGreaterThan(lastSeq);
+        lastSeq = row.seq;
+        seen.push(`${row.topic_id}:${row.reason}`);
+      }
+      cursor = lastSeq;
+    }
+    // A topic may appear more than once (unshared, then deleted): consumers
+    // must be idempotent. Nothing that happened after a cursor is skipped.
+    expect(seen).toEqual([
+      "a:unshared",
+      "b:unshared",
+      "c:deleted",
+      "a:unshared",
+      "a:deleted",
+      "b:deleted",
+    ]);
+  });
+
+  test("a store migrated by the pre-fix build seeds the counter from MAX(seq) and switches triggers", () => {
+    const db = memoryDb();
+    db.exec(PRE_FIX_TRIGGERS);
+    db.exec(
+      "INSERT INTO api_topics (id, surface) VALUES ('x','otium'), ('y','otium'), ('z','otium')",
+    );
+    db.exec("DELETE FROM api_topics WHERE id IN ('x', 'y')");
+    expect(seqs(db).map((row) => row.seq)).toEqual([1, 2]);
+
+    initializeTopicLinkRecordsSchema(db, "node-old");
+    expect(
+      db.query<{ seq: number }, []>("SELECT seq FROM api_topic_tombstone_seq").get()?.seq,
+    ).toBe(2);
+    // The max row disappears (id re-inserted); the next tombstone still moves on.
+    db.exec("INSERT INTO api_topics (id, surface) VALUES ('y', 'otium')");
+    db.exec("DELETE FROM api_topics WHERE id = 'z'");
+    expect(after(db, 2)).toEqual([{ topic_id: "z", seq: 3, reason: "deleted" }]);
+    // Re-running init never lowers the counter.
+    initializeTopicLinkRecordsSchema(db, "node-old");
+    db.exec("DELETE FROM api_topics WHERE id = 'y'");
+    expect(after(db, 3)).toEqual([{ topic_id: "y", seq: 4, reason: "deleted" }]);
+    // The pre-fix identity row gained an epoch.
+    expect(
+      db.query<{ epoch_id: string | null }, []>("SELECT epoch_id FROM api_node_identity").get()
+        ?.epoch_id,
+    ).toMatch(/^[0-9a-f]{32}$/);
+  });
+});
+
+describe("claim-abort message fence trigger (review fix 1)", () => {
+  function fence(db: Database, owner: string, heartbeatAt: number) {
+    db.query(
+      `INSERT OR REPLACE INTO runtime_topic_state (topic_id, epoch, maintenance, maintenance_owner, heartbeat_at)
+       VALUES ('t1', 1, 1, ?, ?)`,
+    ).run(owner, heartbeatAt);
+  }
+  const insert = (db: Database, id: string) =>
+    db.query("INSERT INTO api_messages (id, topic_id) VALUES (?, 't1')").run(id);
+
+  test("refuses inserts only while a live topic-link-abort fence holds the topic", () => {
+    const db = memoryDb();
+    initializeTopicLinkRecordsSchema(db, "node-a");
+    insert(db, "m0");
+    fence(db, "topic-link-abort:1-x", Date.now());
+    expect(() => insert(db, "m1")).toThrow("topic_claim_abort_in_progress");
+    // Other topics are unaffected.
+    db.query("INSERT INTO api_messages (id, topic_id) VALUES ('other', 't2')").run();
+    // A stale fence (crashed abort) refuses nothing.
+    fence(db, "topic-link-abort:1-x", Date.now() - 60_000);
+    insert(db, "m2");
+    // Ordinary maintenance (user delete, reset, compact) is not a claim abort.
+    fence(db, "1234-ordinary", Date.now());
+    insert(db, "m3");
+    expect(db.query("SELECT id FROM api_messages WHERE topic_id = 't1' ORDER BY id").all()).toEqual(
+      [{ id: "m0" }, { id: "m2" }, { id: "m3" }],
+    );
+  });
+
+  test("the store epoch is minted once and survives identity changes", () => {
+    const db = memoryDb();
+    initializeTopicLinkRecordsSchema(db);
+    expect(db.query("SELECT * FROM api_node_identity").all()).toEqual([]);
+    initializeTopicLinkRecordsSchema(db, "node-a");
+    const epoch = () =>
+      db.query<{ epoch_id: string }, []>("SELECT epoch_id FROM api_node_identity").get()?.epoch_id;
+    const first = epoch();
+    expect(first).toMatch(/^[0-9a-f]{32}$/);
+    initializeTopicLinkRecordsSchema(db, "node-b");
+    expect(epoch()).toBe(first);
+    // A fresh store under the same identity is distinguishable.
+    const fresh = memoryDb();
+    initializeTopicLinkRecordsSchema(fresh, "node-a");
+    expect(
+      fresh.query<{ epoch_id: string }, []>("SELECT epoch_id FROM api_node_identity").get()
+        ?.epoch_id,
+    ).not.toBe(first);
   });
 });
 

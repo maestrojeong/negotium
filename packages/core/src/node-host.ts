@@ -8,6 +8,7 @@ export {
 export { sweepStaleSubagentCards } from "#agents/mcp-tools/spawn-subagent";
 export {
   RuntimeGatewayIdempotencyConflictError,
+  RuntimeGatewayTopicUnavailableError,
   submitRuntimeGatewayTurn,
 } from "#application/submit-runtime-gateway-turn";
 export { submitUserMessage } from "#application/submit-user-message";
@@ -145,6 +146,7 @@ export {
   getTopicCreateClaim,
   getTopicTombstone,
   insertCommittedTopicCreateClaim,
+  isTopicClaimAbortFenced,
   listTopicTombstonesAfter,
   markTopicCreateClaimAborted,
   pruneTopicCreateClaims,
@@ -152,9 +154,16 @@ export {
   type TopicCreateClaim,
   type TopicTombstone,
   topicHasMessagesAfterClaim,
+  topicLinkDbEpoch,
   topicLinkNodeIdentity,
   topicLinkPayloadHash,
+  topicTombstoneHighWater,
 } from "#storage/topic-link-records";
+export {
+  type AbortTopicCreateClaimOptions,
+  abortTopicCreateClaim,
+  type TopicCreateClaimAbortResult,
+} from "#topics/claim-abort";
 export { TopicValidationError } from "#topics/create";
 export {
   getVisibleTopics,

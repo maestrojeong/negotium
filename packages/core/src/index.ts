@@ -64,6 +64,7 @@ export type {
 } from "#application/submit-runtime-gateway-turn";
 export {
   RuntimeGatewayIdempotencyConflictError,
+  RuntimeGatewayTopicUnavailableError,
   submitRuntimeGatewayTurn,
 } from "#application/submit-runtime-gateway-turn";
 export type {
@@ -459,12 +460,17 @@ export {
 export {
   getTopicCreateClaim,
   getTopicTombstone,
+  isTopicClaimAbortFenced,
   listTopicTombstonesAfter,
+  markTopicCreateClaimAborted,
   recordTopicLinkNodeIdentity,
+  TOPIC_CLAIM_ABORT_FENCE_ERROR,
   type TopicCreateClaim,
   type TopicTombstone,
+  topicLinkDbEpoch,
   topicLinkNodeIdentity,
   topicLinkPayloadHash,
+  topicTombstoneHighWater,
 } from "#storage/topic-link-records";
 export type { VaultEntry, VaultEntryWithValue } from "#storage/vault";
 export {
@@ -479,6 +485,11 @@ export {
   vaultListWithValues,
   vaultSet,
 } from "#storage/vault";
+export {
+  type AbortTopicCreateClaimOptions,
+  abortTopicCreateClaim,
+  type TopicCreateClaimAbortResult,
+} from "#topics/claim-abort";
 export type { RegisterTopicOptions } from "#topics/create";
 // ── Topics ──────────────────────────────────────────────────────────
 export { registerTopic, TopicValidationError } from "#topics/create";
@@ -497,6 +508,7 @@ export {
   deleteTopicCascade,
   TopicArchiveRequiredError,
   TopicCleanupRequiredError,
+  TopicDeleteVetoedError,
   TopicTurnStillActiveError,
 } from "#topics/lifecycle";
 export { ensurePersonalGeneral } from "#topics/personal-general";

@@ -40,8 +40,12 @@ import {
   reparentTopicChildren,
 } from "#storage/api-topics";
 import { getBrowserProfileOwner, getTopicBrowserProfile } from "#storage/browser-profiles";
+import { db } from "#storage/forum-db";
 import { getRuntimeTurnLease } from "#storage/runtime-leases";
-import { beginRuntimeTopicMaintenance } from "#storage/runtime-topic-state";
+import {
+  beginRuntimeTopicMaintenance,
+  type RuntimeTopicMaintenanceHandle,
+} from "#storage/runtime-topic-state";
 import {
   cancelRuntimeUserTurnRequests,
   cancelRuntimeUserTurnRequestsBeforeEpoch,
@@ -169,6 +173,37 @@ export interface DeleteTopicCascadeOptions {
   skipArchive?: boolean;
   /** Override used by embedded hosts and deterministic cleanup-failure tests. */
   purgeLogs?: typeof purgeTopicLogs;
+  /**
+   * An already-held maintenance fence to adopt instead of taking a new one
+   * (a claim abort takes it atomically with its checks). The cascade owns it
+   * from here on and finishes it either way. Never passed to child cascades.
+   */
+  maintenance?: RuntimeTopicMaintenanceHandle;
+  /**
+   * Re-validates that the delete may still happen; throw (normally a
+   * {@link TopicDeleteVetoedError}) to keep the topic. Runs once after the
+   * active turn stopped (before any cleanup) and once more inside the
+   * transaction that deletes messages and the topic row, immediately before
+   * the first destructive statement. Never passed to child cascades.
+   */
+  guard?: () => void;
+  /**
+   * Runs inside that same transaction, after the topic row was deleted; a
+   * throw rolls the whole destructive step back. Never passed to child cascades.
+   */
+  withinDeleteTransaction?: () => void;
+}
+
+/** A {@link DeleteTopicCascadeOptions.guard} refused the delete; the topic is kept. */
+export class TopicDeleteVetoedError extends Error {
+  readonly code = "TOPIC_DELETE_VETOED";
+  readonly topicId: string;
+
+  constructor(topicId: string, reason: string) {
+    super(`Topic delete was vetoed: ${reason}`);
+    this.name = "TopicDeleteVetoedError";
+    this.topicId = topicId;
+  }
 }
 
 /**
@@ -202,13 +237,15 @@ async function deleteTopicCascadeImpl(
   const topicId = topic.id;
   if (topicId === GENERAL_TOPIC_ID || (topic.kind === "manager" && !options.allowManager)) {
     logger.warn({ topicId }, "deleteTopicCascade: refused to delete essential topic");
+    options.maintenance?.finish();
     return;
   }
   const deletingTopicIds = new Set(deletingAncestorIds);
   deletingTopicIds.add(topicId);
   const force = options.force === true;
-  const maintenance = beginRuntimeTopicMaintenance(topicId);
+  const maintenance = options.maintenance ?? beginRuntimeTopicMaintenance(topicId);
   if (!maintenance) throw new Error("Topic maintenance is already in progress.");
+  const { maintenance: _adopted, guard, withinDeleteTransaction, ...childOptions } = options;
   let deleted = false;
   const cancelledQueryIds = cancelRuntimeUserTurnRequestsBeforeEpoch(topicId, maintenance.epoch);
   for (const queryId of cancelledQueryIds) {
@@ -222,6 +259,7 @@ async function deleteTopicCascadeImpl(
     const turnStopped = await abortAndWaitForTopic(topicId);
     if (!turnStopped && !force) throw new TopicTurnStillActiveError(topicId);
     if (!maintenance.isOwned()) throw new Error("Topic maintenance ownership was lost.");
+    guard?.();
     let archived: ReturnType<typeof archiveTopicMessages> = null;
     const rawArchives: string[] = [];
 
@@ -311,7 +349,7 @@ async function deleteTopicCascadeImpl(
         !deletingTopicIds.has(candidate.id),
     );
     for (const child of spawnedChildren) {
-      await deleteTopicCascadeImpl(child, userId, options, deletingTopicIds);
+      await deleteTopicCascadeImpl(child, userId, childOptions, deletingTopicIds);
     }
 
     // Background shells remain topic-owned. Browser profiles are shared, so
@@ -343,14 +381,24 @@ async function deleteTopicCascadeImpl(
     deleteTopicHostMcpGrant(topicId);
     deleteTopicToolCapabilities(topicId);
     deleteTopicArchiveState(topicId);
-    deleteMessagesForTopic(topicId);
-    deleteApiTopicConfig(topicId);
-    deleteTopicBrief(topicId);
-    const reparentedChildIds = reparentTopicChildren(topicId, topic.parentTopicId ?? null);
-    // The tombstone trigger stamps this identity in the same statement.
-    recordTopicLinkNodeIdentity(NODE_ID);
-    const rowDeleted = deleteTopicDB(topicId, { allowManager: options.allowManager });
-    if (!rowDeleted) {
+    // The destructive step is one transaction: a guard that re-checks the
+    // topic (e.g. "no message arrived") sees exactly what gets deleted.
+    const destroyed = db
+      .transaction(() => {
+        guard?.();
+        deleteMessagesForTopic(topicId);
+        deleteApiTopicConfig(topicId);
+        deleteTopicBrief(topicId);
+        const reparented = reparentTopicChildren(topicId, topic.parentTopicId ?? null);
+        // The tombstone trigger stamps this identity in the same statement.
+        recordTopicLinkNodeIdentity(NODE_ID);
+        const rowDeleted = deleteTopicDB(topicId, { allowManager: options.allowManager });
+        if (rowDeleted) withinDeleteTransaction?.();
+        return { rowDeleted, reparented };
+      })
+      .immediate();
+    const reparentedChildIds = destroyed.reparented;
+    if (!destroyed.rowDeleted) {
       logger.warn({ topicId }, "deleteTopicCascade: topic row was not deleted");
       return;
     }

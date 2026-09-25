@@ -333,6 +333,8 @@ async function createDerivedTopicImpl(
   let rollbackHandle: ForkHandle | undefined;
   let compactedForkEntries: ConversationEntry[] | undefined;
   let wroteDerivedConversation = false;
+  // Set when `withinCreateTransaction` threw, so that error is rethrown.
+  let createHookFailure = null as { error: unknown } | null;
   const forkSnapshot = copyHistory
     ? captureForkSnapshot(sourceTopicId, userId, topic.title)
     : undefined;
@@ -523,7 +525,14 @@ async function createDerivedTopicImpl(
             sessionId,
           });
         }
-        opts?.withinCreateTransaction?.(derived);
+        if (opts?.withinCreateTransaction) {
+          try {
+            opts.withinCreateTransaction(derived);
+          } catch (hookError) {
+            createHookFailure = { error: hookError };
+            throw hookError;
+          }
+        }
         return derived;
       })
       .immediate();
@@ -574,7 +583,11 @@ async function createDerivedTopicImpl(
     if (
       err instanceof TopicDeriveBusyError ||
       err instanceof TopicTitleConflictError ||
-      err instanceof TopicForkCompactionError
+      err instanceof TopicForkCompactionError ||
+      // The caller's own create hook (a host create claim) failed — e.g. its
+      // primary key lost a race to another process. The caller must see it
+      // to answer from the winning claim instead of a generic failure.
+      (createHookFailure !== null && err === createHookFailure.error)
     ) {
       throw err;
     }

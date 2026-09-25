@@ -349,6 +349,7 @@ describe("existence and tombstones", () => {
       ok: true,
       v: 1,
       nodeId: NODE_ID,
+      dbEpoch: expect.stringMatching(/^[0-9a-f]{32}$/),
       topicId: id,
       state: "present",
       shared: true,
@@ -582,4 +583,11 @@ test("health advertises the topic-link capabilities", async () => {
       "canonical-surface-scope",
     ]),
   );
+  // The store epoch is the same on every identity-bearing surface.
+  expect(body.dbEpoch).toMatch(/^[0-9a-f]{32}$/);
+  expect((await call("/surface-scope")).body.dbEpoch).toBe(body.dbEpoch);
+  const page = (await call("/topic-tombstones?after=0&limit=1")).body;
+  expect(page.dbEpoch).toBe(body.dbEpoch);
+  expect(typeof page.highWater).toBe("number");
+  expect(page.highWater).toBeGreaterThanOrEqual(page.cursor);
 });

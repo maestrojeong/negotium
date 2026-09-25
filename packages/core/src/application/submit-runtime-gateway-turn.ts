@@ -21,6 +21,7 @@ import {
   mergeRuntimeUserTurnRequest,
 } from "#storage/runtime-turn-requests";
 import { recordTopicHostMcpGrant } from "#storage/topic-host-mcp-grants";
+import { isTopicClaimAbortFenced, isTopicClaimAbortFenceError } from "#storage/topic-link-records";
 import { recordTopicToolCapabilities } from "#storage/topic-tool-capabilities";
 import type { ActorTopicScope, RemoteSessionGrant } from "#types";
 import type { MessageDto, TopicDto } from "#types/api";
@@ -203,6 +204,21 @@ export class RuntimeGatewayIdempotencyConflictError extends Error {
   }
 }
 
+/**
+ * The topic is being deleted by a host create-claim abort (topic-link PR7):
+ * the message is refused, not stored. Mapped to 409 `topic_unavailable`; a
+ * retry after the abort settles either succeeds (the delete failed or was
+ * vetoed) or finds the topic gone.
+ */
+export class RuntimeGatewayTopicUnavailableError extends Error {
+  readonly code = "topic_unavailable";
+
+  constructor(message = "the topic is being deleted and accepts no messages") {
+    super(message);
+    this.name = "RuntimeGatewayTopicUnavailableError";
+  }
+}
+
 export function submitRuntimeGatewayTurn(
   params: SubmitRuntimeGatewayTurnParams,
 ): SubmitRuntimeGatewayTurnResult {
@@ -227,6 +243,9 @@ export function submitRuntimeGatewayTurn(
   if (existing) {
     return duplicateResult(existing, params, requestId, actorUserId, payloadHash);
   }
+  // Refused before anything is recorded. The same fence is enforced again,
+  // atomically, by the `api_messages` trigger inside the transaction below.
+  if (isTopicClaimAbortFenced(params.topic.id)) throw new RuntimeGatewayTopicUnavailableError();
 
   // Remember what this adapter grants for the room, so the turns that never
   // see an adapter — tell/ask, cron, auto-continue, subagent reports — inherit
@@ -362,9 +381,10 @@ export function submitRuntimeGatewayTurn(
       submission.messageCursor = messageEvent?.seq ?? 0;
       recordRuntimeGatewaySubmission(submission);
     })();
-  } catch {
+  } catch (error) {
     const raced = findRuntimeGatewaySubmission(params.clientMessageId, requestId);
     if (raced) return duplicateResult(raced, params, requestId, actorUserId, payloadHash);
+    if (isTopicClaimAbortFenceError(error)) throw new RuntimeGatewayTopicUnavailableError();
     throw new Error("failed to persist gateway turn idempotency record");
   }
 
