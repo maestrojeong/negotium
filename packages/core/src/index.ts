@@ -340,10 +340,16 @@ export {
 export {
   deliverRemoteSessionInbox,
   parseRemoteSessionInboxDelivery,
+  REMOTE_SESSION_ACTOR_MISMATCH_CODE,
+  REMOTE_SESSION_ACTOR_NOT_PARTICIPANT_CODE,
+  REMOTE_SESSION_ACTOR_REQUIRED_CODE,
   REMOTE_SESSION_INBOX_IN_PROGRESS_CODE,
+  REMOTE_SESSION_REQUIRE_ACTOR_ENV,
   type RemoteSessionInboxDelivery,
   RemoteSessionInboxError,
   recoverRemoteSessionInbox,
+  remoteSessionRequireActor,
+  resolveRemoteSessionInboxPrincipal,
 } from "#runtime/remote-session-inbox";
 export {
   deliverHubRemoteReply,

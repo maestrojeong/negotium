@@ -5,6 +5,7 @@
  * raised. Parsing and the idempotent hand-off to the durable session inbox
  * live here so the gateway route in `control.ts` only does transport.
  */
+import { type DeliveryParticipant, localDeliveryPrincipal } from "#mcp/session-comm/actor-policy";
 import { MAX_PEER_MESSAGE_LENGTH } from "#mcp/session-comm/limits";
 import { type HubRemoteReplyRoute, parseHubRemoteReplyRoute } from "#mcp/session-comm/peer-forward";
 import { MAX_TELL_DEPTH } from "#platform/config";
@@ -185,6 +186,88 @@ export type RemoteSessionInboxOutcome =
 export const REMOTE_SESSION_INBOX_IN_PROGRESS_CODE = "in_progress";
 
 /**
+ * The hub asserts, in `actorUserId`, the execution principal of the person
+ * whose remote capability sent this delivery. The node files the inbox entry
+ * — and so runs the target's turn, with that principal's vault, browser
+ * profile and tool grants — only under that same principal: `userId` must
+ * equal `actorUserId`, and that principal must be a participant of the room.
+ * This is the remote twin of `localDeliveryPrincipal` (a session can never
+ * make a room run as someone else), and it holds even if the hub resolves
+ * `userId` to the room's owner instead of the actor (the confused deputy).
+ */
+export const REMOTE_SESSION_REQUIRE_ACTOR_ENV = "NEGOTIUM_REMOTE_SESSION_REQUIRE_ACTOR";
+/** 403: `actorUserId` absent while {@link REMOTE_SESSION_REQUIRE_ACTOR_ENV} is on. */
+export const REMOTE_SESSION_ACTOR_REQUIRED_CODE = "actor_required";
+/** 403: `actorUserId` differs from `userId` (or, for `ask-reply`, from the asker). */
+export const REMOTE_SESSION_ACTOR_MISMATCH_CODE = "actor_mismatch";
+/** 403: the asserted actor is not a participant of the target room. */
+export const REMOTE_SESSION_ACTOR_NOT_PARTICIPANT_CODE = "actor_not_participant";
+
+/**
+ * Whether a delivery without `actorUserId` (a hub older than this contract)
+ * is refused. Off by default so an upgraded node keeps working behind an old
+ * hub; turn it on once every hub that reaches this node sends the field.
+ * Read per request, so flipping it needs no restart of the route's state.
+ */
+export function remoteSessionRequireActor(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env[REMOTE_SESSION_REQUIRE_ACTOR_ENV]?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+export type RemoteSessionPrincipalOutcome =
+  | { ok: true; userId: string }
+  | { ok: false; status: number; error: string; code?: string };
+
+/**
+ * Decide the principal a remote delivery is filed under, before anything is
+ * claimed or queued. `actorUserId: undefined` is the pre-contract hub: it is
+ * refused when `requireActor`, else it keeps the old rule (`userId` must be a
+ * participant; 404 otherwise, as before).
+ */
+export function resolveRemoteSessionInboxPrincipal(input: {
+  userId: string;
+  actorUserId: string | undefined;
+  targetParticipants: readonly DeliveryParticipant[] | undefined;
+  requireActor?: boolean;
+}): RemoteSessionPrincipalOutcome {
+  const { userId, actorUserId, targetParticipants } = input;
+  const requireActor = input.requireActor ?? remoteSessionRequireActor();
+  if (actorUserId === undefined) {
+    if (requireActor) {
+      return {
+        ok: false,
+        status: 403,
+        error: "actorUserId is required: this node only accepts actor-bound remote deliveries",
+        code: REMOTE_SESSION_ACTOR_REQUIRED_CODE,
+      };
+    }
+    if (!(targetParticipants ?? []).some((participant) => participant.userId === userId)) {
+      return { ok: false, status: 404, error: "Topic not found" };
+    }
+    return { ok: true, userId };
+  }
+  if (actorUserId !== userId) {
+    return {
+      ok: false,
+      status: 403,
+      error:
+        "actorUserId must equal userId: a remote session can only run a room as its own principal",
+      code: REMOTE_SESSION_ACTOR_MISMATCH_CODE,
+    };
+  }
+  const principal = localDeliveryPrincipal({ callerUserId: actorUserId, targetParticipants });
+  if (principal === null) {
+    return {
+      ok: false,
+      status: 403,
+      error: "actorUserId is not a participant of the target room",
+      code: REMOTE_SESSION_ACTOR_NOT_PARTICIPANT_CODE,
+    };
+  }
+  return { ok: true, userId: principal };
+}
+
+/**
  * One delivery at a time per `requestId` inside this process. The durable
  * lease guards across processes; this guards the async window between the
  * claim and its completion within one, so two identical ask-replies arriving
@@ -222,9 +305,25 @@ export async function deliverRemoteSessionInbox(args: {
   topic: Pick<TopicDto, "id" | "title" | "agent">;
   /** Execution principal the inbox entry is queued under (a participant). */
   userId: string;
+  /**
+   * The hub-asserted actor ({@link resolveRemoteSessionInboxPrincipal}).
+   * When present it must equal `userId` — re-checked here so no caller of
+   * this function can queue an entry under a principal other than the actor —
+   * and an `ask-reply` must answer an ask that principal raised.
+   */
+  actorUserId?: string;
   delivery: RemoteSessionInboxDelivery;
 }): Promise<RemoteSessionInboxOutcome> {
-  const { topic, userId, delivery } = args;
+  const { topic, userId, actorUserId, delivery } = args;
+  if (actorUserId !== undefined && actorUserId !== userId) {
+    return {
+      ok: false,
+      status: 403,
+      error:
+        "actorUserId must equal userId: a remote session can only run a room as its own principal",
+      code: REMOTE_SESSION_ACTOR_MISMATCH_CODE,
+    };
+  }
   const payloadHash = remoteSessionPayloadHash(delivery);
   const timestamp = new Date().toISOString();
 
@@ -238,7 +337,7 @@ export async function deliverRemoteSessionInbox(args: {
 
   if (delivery.kind === "ask-reply") {
     return withRequestLock(delivery.requestId, () =>
-      deliverAskReply({ topic, delivery, payloadHash }),
+      deliverAskReply({ topic, delivery, payloadHash, actorUserId }),
     );
   }
 
@@ -321,9 +420,10 @@ async function deliverAskReply(args: {
   topic: Pick<TopicDto, "id" | "title" | "agent">;
   delivery: AskReplyDelivery;
   payloadHash: string;
+  actorUserId?: string;
   now?: number;
 }): Promise<RemoteSessionInboxOutcome> {
-  const { topic, delivery, payloadHash } = args;
+  const { topic, delivery, payloadHash, actorUserId } = args;
   const claim = claimRemoteSessionInbox({
     requestId: delivery.requestId,
     kind: delivery.kind,
@@ -348,6 +448,17 @@ async function deliverAskReply(args: {
   if (!ask || ask.callerTopicId !== topic.id) {
     releaseRemoteSessionInboxClaim(delivery.requestId);
     return { ok: false, status: 404, error: "no pending remote ask with this requestId" };
+  }
+  if (actorUserId !== undefined && ask.userId !== actorUserId) {
+    // The answer goes into the room of the principal that asked; a delivery
+    // asserted for anyone else is not that answer.
+    releaseRemoteSessionInboxClaim(delivery.requestId);
+    return {
+      ok: false,
+      status: 403,
+      error: "actorUserId is not the principal that raised this ask",
+      code: REMOTE_SESSION_ACTOR_MISMATCH_CODE,
+    };
   }
   return runAskReplyDelivery(ask, delivery);
 }

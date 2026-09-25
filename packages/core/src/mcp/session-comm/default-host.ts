@@ -409,20 +409,25 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
       const from = currentRef(context);
       const remote = remoteTarget(context, to);
       const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const pending = createPendingAsk({ userId: context.userId, from: from.key, to, requestId });
-      if (!pending.ok) return error(`Error: an ask_session request to "${to}" is already pending.`);
+      /*
+       * Every refusal — the route, the target, and above all the principal
+       * check — is decided before the pending-ask row exists (the stdio server
+       * does the same). The row is created only right before the entry is
+       * queued or sent, so a refused ask never leaves, or even briefly holds,
+       * a pending marker under the caller's principal for a room it may not
+       * reach.
+       */
+      const createAsk = () =>
+        createPendingAsk({ userId: context.userId, from: from.key, to, requestId });
+      const alreadyPending = () =>
+        error(`Error: an ask_session request to "${to}" is already pending.`);
       const clearAsk = () =>
         clearPendingAsk({ userId: context.userId, from: from.key, to, requestId });
       if (remote) {
         const route = remoteRoute(context);
-        if (route.kind === "refused") {
-          clearAsk();
-          return error(route.error);
-        }
-        if (!from.topicId) {
-          clearAsk();
-          return error("Error: current topic id is unavailable.");
-        }
+        if (route.kind === "refused") return error(route.error);
+        if (!from.topicId) return error("Error: current topic id is unavailable.");
+        if (!createAsk().ok) return alreadyPending();
         if (route.kind === "hub") {
           // Durable caller record first: the hub's `ask-reply` delivery is
           // routed back through it, possibly after this process restarted.
@@ -476,40 +481,36 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
         }
       } else {
         const validation = targetCatalog(context).validateTarget(to);
-        if (!validation.ok) {
-          clearAsk();
-          return validation.error;
-        }
-        if (!validation.target.agent) {
-          clearAsk();
-          return error(`Error: "${to}" has no AI agent.`);
-        }
+        if (!validation.ok) return validation.error;
+        if (!validation.target.agent) return error(`Error: "${to}" has no AI agent.`);
         const targetTopicId = validation.target.topicId;
-        if (!targetTopicId) {
-          clearAsk();
-          return error(`Error: "${to}" has no topic id.`);
-        }
+        if (!targetTopicId) return error(`Error: "${to}" has no topic id.`);
         if (deliveryPrincipal(context, targetTopicId) !== context.userId) {
-          clearAsk();
           return error(crossPrincipalRefusal("ask_session", to));
         }
-        enqueueSessionInbox({
-          userId: context.userId,
-          topicId: targetTopicId,
-          entry: {
-            type: "ask",
-            requestId,
-            from: from.key,
-            fromTitle: from.title,
-            ...(from.topicId ? { fromTopicId: from.topicId } : {}),
-            ...(context.currentThreadRootId
-              ? { fromThreadRootId: context.currentThreadRootId }
-              : {}),
-            message,
-            fromDepth: context.depth,
-            timestamp: new Date().toISOString(),
-          },
-        });
+        if (!createAsk().ok) return alreadyPending();
+        try {
+          enqueueSessionInbox({
+            userId: context.userId,
+            topicId: targetTopicId,
+            entry: {
+              type: "ask",
+              requestId,
+              from: from.key,
+              fromTitle: from.title,
+              ...(from.topicId ? { fromTopicId: from.topicId } : {}),
+              ...(context.currentThreadRootId
+                ? { fromThreadRootId: context.currentThreadRootId }
+                : {}),
+              message,
+              fromDepth: context.depth,
+              timestamp: new Date().toISOString(),
+            },
+          });
+        } catch (err) {
+          clearAsk();
+          throw err;
+        }
       }
       return ok(`Ask sent to "${to}". request_id: ${requestId}`);
     },

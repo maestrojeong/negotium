@@ -16,6 +16,11 @@ import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { SessionCommContext } from "#mcp/session-comm/context";
 import { createDefaultSessionCommMcpHost } from "#mcp/session-comm/default-host";
+import {
+  deliverRemoteSessionInbox,
+  parseRemoteSessionInboxDelivery,
+  resolveRemoteSessionInboxPrincipal,
+} from "#runtime/remote-session-inbox";
 import { deleteTopic, upsertTopic } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
 import { enqueueSessionInbox } from "#storage/session-inbox";
@@ -189,5 +194,105 @@ describe("session-comm tell -> inbox -> turn identity (two-owner rooms)", () => 
       false,
     );
     expect(started.some((turn) => turn.topicId === localRoom.id)).toBe(false);
+  });
+});
+
+describe("hub-routed remote tell -> node inbox -> turn identity (actorUserId)", () => {
+  /**
+   * The node half of the control-plane route, verbatim: resolve the principal
+   * from the hub's `userId` + `actorUserId`, then hand the delivery to the
+   * durable inbox. A refusal never reaches `deliverRemoteSessionInbox`.
+   */
+  async function hubDelivers(
+    target: TopicDto,
+    body: { userId: string; actorUserId?: string; requestId: string },
+    requireActor = false,
+  ): Promise<{ ok: boolean; status?: number; code?: string }> {
+    const principal = resolveRemoteSessionInboxPrincipal({
+      userId: body.userId,
+      actorUserId: body.actorUserId,
+      targetParticipants: target.participants,
+      requireActor,
+    });
+    if (!principal.ok) return principal;
+    const delivery = parseRemoteSessionInboxDelivery({
+      kind: "tell",
+      requestId: body.requestId,
+      from: { label: "hub-node/Origin" },
+      message: "run with my grants",
+      depth: 1,
+    });
+    return deliverRemoteSessionInbox({
+      topic: target,
+      userId: principal.userId,
+      ...(body.actorUserId !== undefined ? { actorUserId: body.actorUserId } : {}),
+      delivery,
+    });
+  }
+
+  test("a remote actor's prompt never runs as the room owner", async () => {
+    const scope = `e2e-remote-ws-${randomUUID()}`;
+    const owner = `e2e-owner-${randomUUID()}`;
+    const actor = `e2e-actor-${randomUUID()}`;
+    // Y's room, where X is only a member (so X's own principal can run there).
+    const shared = room(scope, [
+      { userId: owner, role: "owner" },
+      { userId: actor, role: "member" },
+    ]);
+    // Y's private room: X has no principal there at all.
+    const ownerOnly = room(scope, [{ userId: owner, role: "owner" }]);
+    const all = [shared.id, ownerOnly.id];
+
+    // The confused deputy: the hub resolved `userId` to the owner while the
+    // capability belongs to X. Refused on the node, nothing queued.
+    for (const target of [shared, ownerOnly]) {
+      const deputy = await hubDelivers(target, {
+        userId: owner,
+        actorUserId: actor,
+        requestId: randomUUID(),
+      });
+      expect(deputy).toMatchObject({ ok: false, status: 403, code: "actor_mismatch" });
+    }
+    // X asserting itself where it is not a participant: refused.
+    expect(
+      await hubDelivers(ownerOnly, { userId: actor, actorUserId: actor, requestId: randomUUID() }),
+    ).toMatchObject({ ok: false, status: 403, code: "actor_not_participant" });
+    // An old hub (no assertion) against a node that requires one: refused.
+    expect(
+      await hubDelivers(ownerOnly, { userId: owner, requestId: randomUUID() }, true),
+    ).toMatchObject({ ok: false, status: 403, code: "actor_required" });
+    // Defense in depth: even a direct caller of the inbox cannot file the
+    // entry under a principal other than the asserted actor.
+    expect(
+      await deliverRemoteSessionInbox({
+        topic: ownerOnly,
+        userId: owner,
+        actorUserId: actor,
+        delivery: parseRemoteSessionInboxDelivery({
+          kind: "tell",
+          requestId: randomUUID(),
+          from: { label: "hub-node/Origin" },
+          message: "direct",
+          depth: 1,
+        }),
+      }),
+    ).toMatchObject({ ok: false, status: 403, code: "actor_mismatch" });
+    expect(pending(shared.id)).toBe(0);
+    expect(pending(ownerOnly.id)).toBe(0);
+
+    // The correct assertion: X's prompt is queued — and runs — as X.
+    expect(
+      await hubDelivers(shared, { userId: actor, actorUserId: actor, requestId: randomUUID() }),
+    ).toMatchObject({ ok: true, replayed: false });
+    expect(pending(shared.id)).toBe(1);
+
+    await drain(all);
+
+    const ours = started
+      .filter((turn) => all.includes(turn.topicId))
+      .map((turn) => `${turn.topicId}|${turn.userId}|${turn.vaultUserId}`);
+    expect(ours).toEqual([`${shared.id}|${actor}|${actor}`]);
+    // No turn ran as the owner on the actor's behalf, anywhere.
+    expect(started.some((turn) => all.includes(turn.topicId) && turn.userId === owner)).toBe(false);
   });
 });

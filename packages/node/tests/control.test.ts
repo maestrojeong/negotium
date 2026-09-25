@@ -2796,3 +2796,184 @@ test("runtime session-comm inbox errors carry the contract's v:1 envelope", asyn
     db.run("DELETE FROM remote_session_inbox_claims WHERE request_id LIKE ?", [`v-%${suffix}`]);
   }
 });
+
+test("runtime session-comm inbox files a hub delivery only under the hub-asserted actor", async () => {
+  // PR9 confused deputy: the hub used to resolve `userId` to the target room's
+  // owner, so a remote actor X telling a room owned by Y ran X's prompt with
+  // Y's vault, browser profile and tool grants. `actorUserId` is the hub's
+  // assertion of whose capability sent the delivery; the node files it only
+  // under that principal, and never queues anything when it refuses.
+  const suffix = randomUUID();
+  const scope = `ws-inbox-actor-${suffix}`;
+  const owner = NODE_EXECUTION_PRINCIPAL_FOR_TEST;
+  const member = `member-${suffix}`;
+  const target = registerTopic({
+    title: `inbox-actor-target-${suffix}`,
+    userId: owner,
+    agent: "claude",
+    surface: "otium",
+    surfaceScope: scope,
+  });
+  const caller = registerTopic({
+    title: `inbox-actor-caller-${suffix}`,
+    userId: owner,
+    surface: "otium",
+    surfaceScope: scope,
+  });
+  db.run(
+    "UPDATE api_topics SET kind = 'channel', response_policy = 'off', agent = NULL WHERE id = ?",
+    [caller.id],
+  );
+  db.run("INSERT INTO topic_members (topic_id, user_id, role) VALUES (?, ?, 'member')", [
+    caller.id,
+    member,
+  ]);
+  const inbox = (topicId: string, body: Record<string, unknown>) =>
+    handler(
+      runtimeRequest(`/topics/${topicId}/session-comm/inbox`, {
+        method: "POST",
+        body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, userId: owner, ...body }),
+      }),
+    );
+  const rows = (topicId: string) =>
+    db
+      .query<{ user_id: string }, [string]>(
+        "SELECT user_id FROM session_inbox WHERE topic_id = ? ORDER BY sequence",
+      )
+      .all(topicId)
+      .map((row) => row.user_id);
+  const claimed = (requestId: string) =>
+    db
+      .query<{ n: number }, [string]>(
+        "SELECT COUNT(*) AS n FROM remote_session_inbox_claims WHERE request_id = ?",
+      )
+      .get(requestId)?.n ?? 0;
+  const tell = (requestId: string) => ({
+    kind: "tell",
+    requestId,
+    from: { label: "hub/Origin" },
+    message: "run this",
+    depth: 1,
+  });
+  const refused = async (
+    response: Response | null | undefined,
+    status: number,
+    code: string | undefined,
+  ) => {
+    expect(response?.status).toBe(status);
+    const body = (await response?.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ ok: false, v: NODE_RUNTIME_CONTRACT_VERSION });
+    expect(body.code).toBe(code);
+  };
+  const previousFlag = process.env.NEGOTIUM_REMOTE_SESSION_REQUIRE_ACTOR;
+  try {
+    const health = await handler(runtimeRequest("/health"));
+    expect(((await health?.json()) as { capabilities: string[] }).capabilities).toContain(
+      "remote-session-comm-actor",
+    );
+
+    // Actor X, owner Y: refused whatever `userId` the hub resolved.
+    for (const kind of ["tell", "ask", "abort"] as const) {
+      const requestId = `mismatch-${kind}-${suffix}`;
+      const body =
+        kind === "tell"
+          ? tell(requestId)
+          : kind === "abort"
+            ? { kind, requestId }
+            : {
+                kind,
+                requestId,
+                from: { label: "o/O" },
+                message: "?",
+                fromDepth: 0,
+                remoteReply: {
+                  via: "hub",
+                  hubUrl: "https://hub.example",
+                  token: "rsr1.cGF5bG9hZA.c2ln",
+                  nodeName: "origin-node",
+                  topicId: "origin-topic",
+                  requestId,
+                },
+              };
+      await refused(
+        await inbox(target.id, { ...body, actorUserId: `stranger-${suffix}` }),
+        403,
+        "actor_mismatch",
+      );
+      expect(claimed(requestId)).toBe(0);
+    }
+    // Actor asserted consistently but not in the room: refused.
+    await refused(
+      await inbox(target.id, {
+        ...tell(`outsider-${suffix}`),
+        userId: `stranger-${suffix}`,
+        actorUserId: `stranger-${suffix}`,
+      }),
+      403,
+      "actor_not_participant",
+    );
+    // A malformed assertion is a bad request, not a silent legacy fallback.
+    for (const actorUserId of ["", "  ", 42]) {
+      const response = await inbox(target.id, { ...tell(`bad-actor-${suffix}`), actorUserId });
+      expect(response?.status).toBe(400);
+    }
+    expect(rows(target.id)).toEqual([]);
+
+    // The actor's own principal, a participant: queued under exactly it.
+    const accepted = await inbox(target.id, { ...tell(`ok-${suffix}`), actorUserId: owner });
+    expect(accepted?.status).toBe(202);
+    expect(rows(target.id)).toEqual([owner]);
+
+    // Old hub (no actorUserId), flag off: the pre-contract rule still applies.
+    delete process.env.NEGOTIUM_REMOTE_SESSION_REQUIRE_ACTOR;
+    expect((await inbox(target.id, tell(`legacy-${suffix}`)))?.status).toBe(202);
+    expect(rows(target.id)).toEqual([owner, owner]);
+    // Flag on: an unasserted delivery is refused and nothing is queued...
+    process.env.NEGOTIUM_REMOTE_SESSION_REQUIRE_ACTOR = "1";
+    await refused(await inbox(target.id, tell(`required-${suffix}`)), 403, "actor_required");
+    expect(claimed(`required-${suffix}`)).toBe(0);
+    expect(rows(target.id)).toEqual([owner, owner]);
+    // ...while an asserted one is still accepted.
+    expect(
+      (await inbox(target.id, { ...tell(`required-ok-${suffix}`), actorUserId: owner }))?.status,
+    ).toBe(202);
+    expect(rows(target.id)).toEqual([owner, owner, owner]);
+    delete process.env.NEGOTIUM_REMOTE_SESSION_REQUIRE_ACTOR;
+
+    // ask-reply: only the principal that raised the ask can be answered.
+    const replyId = `actor-reply-${suffix}`;
+    recordRemoteSessionAsk({
+      requestId: replyId,
+      callerTopicId: caller.id,
+      userId: owner,
+      fromKey: `agent:${caller.title}`,
+      toKey: "worker/Target",
+    });
+    const reply = {
+      kind: "ask-reply",
+      requestId: replyId,
+      fromLabel: "worker/Target",
+      replyKind: "reply",
+      replyText: "42",
+    };
+    const before = listApiMessages(caller.id).page.length;
+    await refused(
+      await inbox(caller.id, { ...reply, userId: member, actorUserId: member }),
+      403,
+      "actor_mismatch",
+    );
+    expect(listApiMessages(caller.id).page).toHaveLength(before);
+    // The claim is released and the ask kept, so the right delivery still lands.
+    expect(claimed(replyId)).toBe(0);
+    const answered = await inbox(caller.id, { ...reply, actorUserId: owner });
+    expect(answered?.status).toBe(202);
+    expect(listApiMessages(caller.id).page).toHaveLength(before + 1);
+  } finally {
+    if (previousFlag === undefined) delete process.env.NEGOTIUM_REMOTE_SESSION_REQUIRE_ACTOR;
+    else process.env.NEGOTIUM_REMOTE_SESSION_REQUIRE_ACTOR = previousFlag;
+    for (const id of [target.id, caller.id]) {
+      db.run("DELETE FROM session_inbox WHERE topic_id = ?", [id]);
+    }
+    db.run("DELETE FROM remote_session_asks WHERE request_id = ?", [`actor-reply-${suffix}`]);
+  }
+});

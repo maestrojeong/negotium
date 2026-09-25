@@ -171,10 +171,33 @@ the canonical topic.
   assertion the hub's real grant adds ≈680 URL characters (12,800 of the 14,336 budget); the hard
   budget check refuses a mint that does not fit rather than dropping a field. Full contract:
   `cross-node-interface.md` (node ↔ hub), summarized below.
-  **Remote session-comm inbox.** `POST /topics/:id/session-comm/inbox` (`{ v: 1, userId, kind:
+  **Remote session-comm inbox.** `POST /topics/:id/session-comm/inbox` (`{ v: 1, userId, actorUserId?, kind:
   "tell" | "ask" | "abort" | "ask-reply", requestId, ... }`) is how the hub delivers a remote
   `tell`/`ask`/`abort` into a room on this node, or the `ask-reply` answering an ask this room
   raised. Same authentication and workspace check as `/turns`; `userId` must be a participant.
+  **Actor binding (`actorUserId`, advertised as `remote-session-comm-actor`).** The target's turn
+  runs as the principal the entry is filed under (its vault, browser profile and tool grants), so
+  that principal must be the *sender's*, never the room owner's on the sender's behalf. A hub sends
+  `actorUserId`: the node-side execution principal of the person whose remote capability issued the
+  delivery (for `ask-reply`: of the person who raised the ask). The node then requires, before
+  parsing, claiming or queueing anything: `actorUserId === userId` (else `403 { code:
+  "actor_mismatch" }`), that principal is a participant of the room (else `403 { code:
+  "actor_not_participant" }`), and for `ask-reply` that the pending ask was raised by that principal
+  (else `403 { code: "actor_mismatch" }`, the claim released). A present but empty or non-string
+  `actorUserId` is `400`. All three carry the `v: 1` envelope; a hub must read `403` *with one of
+  these codes* as a final refusal of the delivery (do not retry, report it to the caller), not as an
+  authentication failure. Without `actorUserId` (a hub older than this contract) the node cannot
+  tell the sender from the owner, so the old rule applies (`userId` a participant, else `404`)
+  unless `NEGOTIUM_REMOTE_SESSION_REQUIRE_ACTOR=1` (also `true`/`yes`/`on`; read per request), which
+  refuses such a delivery with `403 { code: "actor_required" }`. The flag is off by default for
+  compatibility. Rollout: upgrade the hub first (it refuses remote tell/ask/abort whose capability
+  actor is not the target's execution principal, and sends `actorUserId` on every kind), then
+  upgrade nodes, then turn the flag on at each node. Compatibility:
+
+  | hub \ node | old node | new node, flag off | new node, flag on |
+  | --- | --- | --- | --- |
+  | old hub (no `actorUserId`) | confused deputy possible | same as old (legacy rule) | every delivery `403 actor_required` (remote session-comm off) |
+  | new hub (sends `actorUserId`) | field ignored; the hub's own check is the only guard | enforced | enforced |
   `tell` carries `from: { label, hubTopicId? }`, `message` (≤ 10,000 chars, else 413) and `depth`
   (≤ `MAX_TELL_DEPTH`, else 400); `ask` adds `fromDepth` and a `remoteReply`
   `{ via: "hub", hubUrl, token: "rsr1.…", nodeName, topicId, requestId }` the node uses to post
@@ -206,7 +229,8 @@ the canonical topic.
   retried. A hub must in turn accept a `2xx` only
   as the exact envelope (`ok: true`, `v: 1`, `accepted: true`, the `requestId` it sent, and a
   boolean `replayed`); any other `2xx` is a protocol failure, never a delivery. Nodes
-  advertise `remote-session-comm` (route and `remoteSession` supported) and, when the Otium
+  advertise `remote-session-comm` (route and `remoteSession` supported), `remote-session-comm-actor`
+  (the inbox enforces `actorUserId`, above) and, when the Otium
   adapter forwards the route over its relay, `remote-session-comm-relay`; a hub must see the
   former before attaching a grant and the latter before routing a delivery to a worker.
   `visualTools` and `fileDeliveryTools` are capabilities minted by the gateway and are
