@@ -64,6 +64,25 @@ Relay mode uses the optional `relay` field in join credentials, or
 The worker dials the relay outbound with the cell secret and forwards the local
 node's HTTP and WebSocket endpoints through relay protocol v1.
 
+## Topic link v2
+
+The node advertises topic-link v2 over the Runtime Gateway. It covers create/derive claims with
+replay, `GET /topics/:id/existence`, the `GET /topic-tombstones` feed, `GET /surface-scope`, and an
+identity-conditional `DELETE /topics/:id` (`x-negotium-expected-node-id`, capability
+`canonical-topic-delete-conditional`). The sidecar forwards that header verbatim. An otium room's
+surface scope is immutable after creation, and only the audited `negotium admin scope-repair` can
+file an unscoped room.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `NEGOTIUM_OTIUM_LINK_V2` | `off` | `on`: protocol-2 creates with an unresolved or mismatched scope get `409`; `strict`: callers without protocol 2 also get `409 link_protocol_required` |
+| `NEGOTIUM_ACTOR_TOPIC_SCOPE_MAX_AGE_MS` | 10 min | Freshness window of the hub actor assertion for cross-room session-comm (clamped 0–4 h) |
+| `NEGOTIUM_REMOTE_SESSION_REQUIRE_ACTOR` | off | Refuses hub-routed remote deliveries that carry no `actorUserId` |
+
+On `otium` rooms, session-comm follows the hub's actor assertion rather than the node roster. Roll
+out as hub → node → flags, and never let an old hub run against an upgraded node. See
+`docs/RUNTIME-GATEWAY-CONTRACT.md` and `docs/ADMIN-CLI.md`.
+
 ## Local experiment (no cloud)
 
 `scripts/otium-experiment/hub-setup.ts` boots otium central-api + a hub runtime-api locally

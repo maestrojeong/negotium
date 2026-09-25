@@ -22,6 +22,7 @@ negotium stop
 negotium telegram
 negotium otium join <invite-code>
 negotium serve otium     # separate shell
+negotium admin help      # node DB maintenance for the Otium topic-link migration
 negotium -v
 ```
 

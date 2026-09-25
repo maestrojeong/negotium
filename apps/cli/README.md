@@ -16,6 +16,7 @@ negotium stop
 negotium telegram
 negotium otium join <invite-code>
 negotium serve otium
+negotium admin help
 negotium -v
 ```
 
@@ -32,6 +33,12 @@ authenticated loopback node for the state directory, so an agent turn continues 
 or crashes. Multiple Terminal clients may connect to it. Use `negotium serve` for a foreground
 node, `negotium status`/`negotium stop` for lifecycle control, and
 `negotium terminal --embedded` for the in-process fallback.
+
+`negotium admin` holds node-local database maintenance for the Otium topic-link migration:
+`list-managers` and `owners-report` (read-only reports), and `delete-manager` and `scope-repair`
+(dry runs unless `--apply`, which requires a stopped node). A scope repair cannot be undone. The
+commands are not reachable over the Runtime Gateway. See the repository's
+[admin CLI guide](https://github.com/maestrojeong/negotium/blob/main/docs/ADMIN-CLI.md).
 
 Run channel processes directly with `negotium terminal`, `negotium telegram`, or
 `negotium serve otium`. All processes share one canonical node and durable SQLite state.

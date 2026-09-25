@@ -220,6 +220,29 @@ negotium serve otium
 The node binds to `127.0.0.1:7777` by default. Use `negotium status` to inspect
 it and `negotium stop --all` to stop the node and channel processes.
 
+### Otium topic links
+
+A node attached to an Otium hub exposes the topic-link v2 gateway surface (create claims with
+replay, existence, tombstones, surface scope, identity-conditional delete); see the
+[Runtime Gateway Contract](./docs/RUNTIME-GATEWAY-CONTRACT.md). Three environment variables
+control it; all default to the compatible behaviour:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `NEGOTIUM_OTIUM_LINK_V2` | `off` | Room-create guard: `on` (also `1`/`true`) refuses protocol-2 creates whose scope is unresolved or mismatched; `strict` also refuses callers that do not declare protocol 2 |
+| `NEGOTIUM_ACTOR_TOPIC_SCOPE_MAX_AGE_MS` | `600000` (10 min) | How long a hub actor assertion grants cross-room session-comm reach on `otium` rooms; clamped to 0–4 h, `0` disables cross-room reach |
+| `NEGOTIUM_REMOTE_SESSION_REQUIRE_ACTOR` | off | `1`/`true`/`yes`/`on` refuses hub-routed tell/ask/abort/ask-reply deliveries without `actorUserId` (`403 actor_required`) |
+
+Roll out in this order: upgrade the hub, then the node, then turn the flags on. Do not let an older
+hub run against an upgraded node.
+
+`negotium admin` holds node-local maintenance commands for the topic-link migration:
+`list-managers` and `owners-report` (read-only, run against a private copy of the database),
+`delete-manager`, and `scope-repair`. The last two change nothing without `--apply`, and `--apply`
+requires a stopped node. `scope-repair` is irreversible, because an otium room's scope is
+immutable after creation. Run `negotium admin help` for the syntax. [Admin CLI](./docs/ADMIN-CLI.md)
+covers the safety model.
+
 ## Local data and secrets
 
 State lives under `~/.negotium` by default:
