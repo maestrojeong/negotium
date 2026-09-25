@@ -20,6 +20,7 @@
 
 import {
   closeSync,
+  existsSync,
   openSync,
   readdirSync,
   readFileSync,
@@ -236,6 +237,11 @@ export async function flushBashrsCompletions(): Promise<void> {
       continue;
     }
 
+    // Another consumer of the same spill dir (a node and an embedding host can
+    // both hold leadership, each under its own lease store) may have finished
+    // this job between our read and now. Nothing left to deliver.
+    if (!existsSync(resultPath)) continue;
+
     try {
       // The stable bash_id is carried through so at-least-once delivery on
       // either side — this watcher crashing before the rename, or the sink's
@@ -246,7 +252,19 @@ export async function flushBashrsCompletions(): Promise<void> {
         bashId: result.bash_id,
         message: buildMessage(dir, result),
       });
-      renameSync(resultPath, marker);
+      try {
+        renameSync(resultPath, marker);
+      } catch (renameErr) {
+        // ENOENT here means a concurrent consumer already marked the job
+        // delivered (the sink collapses the duplicate by bash_id). That is the
+        // success state, not a failure to retry.
+        if ((renameErr as NodeJS.ErrnoException).code !== "ENOENT") throw renameErr;
+        logger.debug(
+          { bashId: result.bash_id },
+          "bashrs-completions: already delivered by another consumer",
+        );
+        continue;
+      }
       logger.info(
         { bashId: result.bash_id, userId: parsed.userId, topicId: parsed.topicId },
         "bashrs-completions: delivered",

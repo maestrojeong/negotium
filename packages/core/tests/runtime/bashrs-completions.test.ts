@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BASHRS_SPILL_ROOT } from "#platform/config";
-import { flushBashrsCompletions } from "#runtime/bashrs-completions";
+import { logger } from "#platform/logger";
+import { flushBashrsCompletions, setBashrsCompletionSink } from "#runtime/bashrs-completions";
 import { db } from "#storage/forum-db";
 
 function entries(topicId: string): Array<Record<string, unknown>> {
@@ -24,6 +25,7 @@ function writeResult(bashId: string, body: Record<string, unknown>): string {
 }
 
 afterEach(() => {
+  setBashrsCompletionSink(null);
   rmSync(BASHRS_SPILL_ROOT, { recursive: true, force: true });
   db.run("DELETE FROM session_inbox WHERE id LIKE 'bashrs:%'");
 });
@@ -70,6 +72,41 @@ describe("bashrs-completions", () => {
     await flushBashrsCompletions();
 
     expect(entries("topic-2")).toHaveLength(1);
+  });
+
+  test("a concurrent consumer that already marked the job delivered is not a failure", async () => {
+    // A node and an embedding host can both hold leadership for the same spill
+    // dir. The other consumer wins the rename while our sink is running; our own
+    // rename then finds no result.json. That is the delivered state, not an error
+    // to retry (and re-deliver) forever.
+    const dir = writeResult("bash_race01", {
+      bash_id: "bash_race01",
+      owner: "user-r\0topic-r",
+      exit_code: 0,
+      finished_at_ms: Date.now(),
+      matched_line: null,
+      unknown: false,
+    });
+    let sinkCalls = 0;
+    setBashrsCompletionSink(() => {
+      sinkCalls += 1;
+      renameSync(join(dir, "result.json"), join(dir, "result.json.injected"));
+    });
+
+    const warn = spyOn(logger, "warn");
+    try {
+      await flushBashrsCompletions();
+      await flushBashrsCompletions();
+
+      expect(sinkCalls).toBe(1);
+      expect(existsSync(join(dir, "result.json.injected"))).toBe(true);
+      // The lost rename race used to surface as "delivery failed, will retry".
+      expect(warn.mock.calls.some(([, message]) => /delivery failed/.test(String(message)))).toBe(
+        false,
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test("skips owners that aren't negotium's userId\\0topicId convention", async () => {
