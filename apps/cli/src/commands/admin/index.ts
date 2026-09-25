@@ -249,6 +249,7 @@ function reportHeader(session: Session): Record<string, unknown> {
   return {
     dbPath: session.dbPath,
     analysedCopy: true,
+    nodeIdentity: readNodeIdentity(session.copy.db),
     hubReport: session.report
       ? {
           path: session.report.path,
@@ -260,6 +261,11 @@ function reportHeader(session: Session): Record<string, unknown> {
         }
       : null,
   };
+}
+
+function identityLine(session: Session): string {
+  const identity = readNodeIdentity(session.copy.db);
+  return `node identity: node_id=${identity.nodeId ?? "NULL"} db_epoch=${identity.dbEpoch ?? "NULL"} (cross-check node_id against the hub's record before passing --expect-node-id/--expect-db-epoch)`;
 }
 
 async function runListManagers(
@@ -278,6 +284,7 @@ async function runListManagers(
     if (parsed.flags.has("json")) printJson(io, { ...reportHeader(session), ...report });
     else {
       io.out(`db: ${session.dbPath} (analysed on a private copy)`);
+      io.out(identityLine(session));
       for (const line of renderListManagers(report, session.report)) io.out(line);
     }
     return ADMIN_EXIT.ok;
@@ -303,6 +310,7 @@ async function runOwnersReport(
       printJson(io, { ...reportHeader(session), count: entries.length, topics: entries });
     else {
       io.out(`db: ${session.dbPath} (analysed on a private copy)`);
+      io.out(identityLine(session));
       for (const line of renderOwnersReport(entries)) io.out(line);
     }
     return ADMIN_EXIT.ok;

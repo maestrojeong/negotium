@@ -11,9 +11,11 @@ import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from
 import { join, resolve } from "node:path";
 import {
   core,
+  DB_EPOCH,
   freshScope,
   freshUser,
   makeReport,
+  NODE_ID,
   nodeSnapshot,
   privateDir,
   type Report,
@@ -147,6 +149,8 @@ describe("admin: reports and dry-runs never change the live DB files", () => {
     const list = await run(["list-managers", ...report.args, "--json"]);
     expect(list.code).toBe(ADMIN_EXIT.ok);
     const parsed = JSON.parse(list.out);
+    expect(parsed.nodeIdentity).toEqual({ nodeId: NODE_ID, dbEpoch: DB_EPOCH });
+    expect((await run(["list-managers"])).out).toContain(`node_id=${NODE_ID} db_epoch=${DB_EPOCH}`);
     const group = parsed.groups.find((g: { owner: string }) => g.owner === owner);
     expect(group.duplicate).toBe(true);
     expect(group.managers.map((m: { hub: { state: string } }) => m.hub.state)).toEqual([

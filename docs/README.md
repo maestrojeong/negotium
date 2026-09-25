@@ -11,6 +11,7 @@ instead of copying the explanation.
 | [Terminal usage](./TERMINAL-USAGE.md) | Keyboard shortcuts, chat commands, and the live subagent graph |
 | [Otium coupling](./OTIUM-COUPLING.md) | The versioned protocol between an Otium hub and a Negotium worker |
 | [Runtime Gateway contract](./RUNTIME-GATEWAY-CONTRACT.md) | Private idempotent ingress for local hosts and the peer-forwarded Otium subset |
+| [Admin CLI](./ADMIN-CLI.md) | `negotium admin`: node DB reports, duplicate-General cleanup and scope repair for the topic-link migration |
 | [Otium enrollment and sharing](./OTIUM-ENROLLMENT-AND-SHARING.md) | Node invitation, enrollment security, topic-sharing product model, UX, and delivery plan |
 | [Feature review](./FEATURE-REVIEW.md) | Review order, acceptance questions, source areas, and regression coverage |
 | [Wiki search evaluation for 0.2.18](./WIKI-SEARCH-EVALUATION-0.2.18.md) | Topic, article, and summary retrieval dataset, metrics, and limitations |
