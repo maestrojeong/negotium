@@ -10,6 +10,7 @@ import {
   runtimeBus,
   upsertTopic,
 } from "@negotium/core";
+import { NODE_ID } from "@negotium/core/node-host";
 import {
   createNodeControlHandler,
   NODE_CONTROL_BASE_PATH,
@@ -80,7 +81,14 @@ test("DELETE removes the canonical topic so a deleted mirror stays deleted", asy
     }),
   );
   expect(response?.status).toBe(200);
-  expect(await response?.json()).toEqual({ ok: true, v: 1 });
+  // Revision 7: the 2xx names the node and store that performed the delete.
+  expect(await response?.json()).toEqual({
+    ok: true,
+    v: 1,
+    topicId: created.id,
+    nodeId: NODE_ID,
+    dbEpoch: expect.stringMatching(/^[0-9a-f]{32}$/),
+  });
   expect(getTopic(created.id)).toBeNull();
   createdTopics.splice(createdTopics.indexOf(created), 1);
 });
