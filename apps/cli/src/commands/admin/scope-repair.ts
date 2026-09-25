@@ -14,8 +14,11 @@
  *   scope not NULL, title conflict (any otium room with the same
  *   LOWER(TRIM(title)) in the target scope — this includes other Generals and
  *   the retired `general` row — or between listed topics), maintenance fence.
- *   Plus: the retired `general` row itself, a manager that is not single-owner,
- *   or whose owner already has a General in the target scope (D7 duplicate).
+ *   Plus: the retired `general` row itself, a non-manager room titled
+ *   `general` (reserved: core resolves that title to the retired row), a
+ *   manager that is not single-owner, whose report D7 entry (owner, NULL
+ *   scope, mapped, message count) does not match, or whose owner already has a
+ *   General in the target scope (D7 duplicate).
  * - All listed topics are repaired in ONE outer `BEGIN IMMEDIATE` transaction
  *   (the primitive joins it); any refusal rolls every topic back.
  * - Irreversible: a repaired scope is immutable. There is no revert command.
@@ -170,6 +173,27 @@ export function planScopeRepair(
         const mapping = report.mapping(item.topicId);
         if (mapping.state !== "mapped")
           r.push(`report is inconsistent about this topic (${mapping.state})`);
+        if (row.kind === "manager") {
+          // A General is also a D7 member: same owner, still unscoped, mapped to
+          // the same hub room, with the live message count.
+          const owner = item.facts.owners.length === 1 ? item.facts.owners[0] : null;
+          const member = owner
+            ? report
+                .d7Groups()
+                .find((g) => g.owner === owner && g.scope === null)
+                ?.members.find((m) => m.id === item.topicId)
+            : undefined;
+          if (
+            !member?.mapped ||
+            member.otiumTopicId !== d2.otiumTopicId ||
+            member.messageCount !== item.facts.messages ||
+            member.owners
+          ) {
+            r.push(
+              `report D7 has no matching (owner ${owner ?? "?"}, scope NULL) entry for this General (mapped -> ${d2.otiumTopicId}, ${item.facts.messages} messages)`,
+            );
+          }
+        }
       }
       if (report.d3()?.conflictingCandidateIds.includes(item.topicId)) {
         r.push("report D3 lists a title conflict for this topic in the target scope");
@@ -177,6 +201,11 @@ export function planScopeRepair(
       if (fingerprint(topicFacts(report.auditCopy.db, item.topicId)) !== item.pin) {
         r.push("topic changed since the audit snapshot; re-run the audit");
       }
+    }
+    if (row.kind !== "manager" && titleKey(db, row.title) === GENERAL_TOPIC_ID) {
+      // Core resolves the title `general` to the retired shared row
+      // (api-topics.ts findTopicTitleConflict); a room titled so would be shadowed.
+      r.push("title_conflict: the title `general` is reserved for the retired shared row");
     }
     if (targetScope !== null) {
       // The primitive's own title rule: ANY otium room, any kind.

@@ -13,6 +13,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   statSync,
   symlinkSync,
   unlinkSync,
@@ -171,7 +172,8 @@ function realSame(a: string, b: string): boolean {
 
 describe("delete-manager: messageful Generals are never deletable", () => {
   test("any topic with >= 1 message is refused under every flag combination", async () => {
-    for (const count of [1, 7]) {
+    // jaehomacmini's messageful unmapped Generals hold 52 / 77 / 9 / 7 messages.
+    for (const count of [1, 7, 9, 52, 77]) {
       const owner = freshUser();
       const scope = freshScope();
       const keeper = seedTopic({ owners: [owner], scope, messages: 3 });
@@ -468,6 +470,84 @@ describe("delete-manager: eligibility", () => {
     expect((await deleteApply(pair, { backupDir: fresh })).code).toBe(ADMIN_EXIT.ok);
     expect(statSync(fresh).mode & 0o777).toBe(0o700);
   });
+  test("a target the report does not list (unknown) is refused", async () => {
+    const owner = freshUser();
+    const scope = freshScope();
+    const keeper = seedTopic({ owners: [owner], scope, messages: 1 });
+    const report = makeReport({ mapped: { [keeper]: "room-k" } });
+    const late = seedTopic({ owners: [owner], scope });
+    const r = await run([
+      "delete-manager",
+      late,
+      ...report.args,
+      ...confirm(late, owner, scope, privateDir("b")),
+    ]);
+    expect(r.code).toBe(ADMIN_EXIT.refused);
+    expect(r.err).toContain("unknown");
+    expect(exists(late)).toBe(true);
+  });
+
+  test("a report D6 row that disagrees with the live row (owners) is refused", async () => {
+    const pair = duplicatePair();
+    const report = makeReport({
+      mapped: { [pair.keeper]: "r" },
+      mutate: (json) => {
+        for (const row of json.checks["D6.manager[]"].rows)
+          if (row.id === pair.dup) row.owners = ["someone-else"];
+      },
+    });
+    const r = await run([
+      "delete-manager",
+      pair.dup,
+      ...report.args,
+      ...confirm(pair.dup, pair.owner, pair.scope, privateDir("b")),
+    ]);
+    expect(r.code).toBe(ADMIN_EXIT.refused);
+    expect(r.err).toContain("D6 row disagrees");
+    expect(exists(pair.dup)).toBe(true);
+  });
+
+  test("backup keeps int64 values exact (> 2^53)", async () => {
+    const big = BigInt("9007199254740993"); // 2^53 + 1: not representable as a double
+    core.db.exec("CREATE TABLE IF NOT EXISTS admin_test_int64 (v INTEGER NOT NULL)");
+    core.db.query("INSERT INTO admin_test_int64 (v) VALUES (?)").run(big);
+    const pair = duplicatePair();
+    const r = await deleteApply(pair);
+    expect(r.code).toBe(ADMIN_EXIT.ok);
+    const [name] = readdirSync(r.backupDir);
+    const { Database } = await import("bun:sqlite");
+    const copy = new Database(`file:${join(r.backupDir, name as string)}?immutable=1`, {
+      readonly: true,
+      safeIntegers: true,
+    });
+    const rows = copy.query("SELECT v FROM admin_test_int64").all() as Array<{ v: bigint }>;
+    copy.close();
+    expect(rows.map((row) => row.v)).toContain(big);
+  });
+
+  test("a backup dir swapped (dev/ino) during the backup is refused before any delete", async () => {
+    const pair = duplicatePair();
+    const backupDir = join(work, `swap-${randomUUID()}`);
+    mkdirSync(backupDir, { mode: 0o700 });
+    const r = await deleteApply(pair, {
+      backupDir,
+      hooks: {
+        fs: {
+          ...defaultFsSeam,
+          event: (step) => {
+            if (step !== "verify") return;
+            renameSync(backupDir, `${backupDir}.moved`);
+            mkdirSync(backupDir, { mode: 0o700 });
+          },
+        },
+      },
+    });
+    expect(r.code).toBe(ADMIN_EXIT.refused);
+    expect(r.err).toContain("dev/ino changed");
+    expect(exists(pair.dup)).toBe(true);
+    expect(journalRowsFor(pair.dup)).toBe(0);
+    expect(readdirSync(backupDir)).toEqual([]);
+  });
 });
 
 describe("delete-manager: durability order, journal and exit 9", () => {
@@ -729,6 +809,41 @@ describe("scope-repair: only through adminRepairOtiumTopicScope, justified by th
     expect(
       (await run(repairArgs(["general"], scope, makeReport({ scopes: [scope] })))).code,
     ).not.toBe(ADMIN_EXIT.ok);
+  });
+
+  test("refuses the reserved title `general` for a room, and a General without a matching D7 entry", async () => {
+    const scope = freshScope();
+    const room = seedTopic({
+      owners: [freshUser()],
+      scope: null,
+      kind: "agent",
+      title: " General ",
+    });
+    const reserved = await run(
+      repairArgs([room], scope, makeReport({ mapped: { [room]: "r" }, scopes: [scope] })),
+    );
+    expect(reserved.code).toBe(ADMIN_EXIT.refused);
+    expect(reserved.out).toContain("reserved");
+    expect(scopeOf(room)).toBeNull();
+
+    const general = seedTopic({ owners: [freshUser()], scope: null, messages: 9 });
+    const s2 = freshScope();
+    const lying = makeReport({
+      mapped: { [general]: "g" },
+      scopes: [s2],
+      mutate: (json) => {
+        for (const group of json.checks["D7[]"].rows)
+          for (const m of group.members) if (m.id === general) m.messageCount = 0;
+      },
+    });
+    const d7 = await run(
+      repairArgs([general], s2, lying, ["--apply", "--backup-dir", privateDir("b")]),
+    );
+    expect(d7.code).toBe(ADMIN_EXIT.refused);
+    expect(d7.out).toContain("report D7 has no matching");
+    expect(scopeOf(general)).toBeNull();
+    const honest = makeReport({ mapped: { [general]: "g" }, scopes: [s2] });
+    expect((await run(repairArgs([general], s2, honest))).code).toBe(ADMIN_EXIT.ok);
   });
 
   test("all-or-nothing: a fault after both primitive calls rolls both back", async () => {
