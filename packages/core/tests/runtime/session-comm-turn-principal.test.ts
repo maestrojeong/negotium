@@ -69,7 +69,7 @@ function room(scope: string, participants: TopicDto["participants"]): TopicDto {
     title: `E2E ${randomUUID().slice(0, 8)}`,
     kind: "agent",
     agent: "codex",
-    defaultModel: "gpt-5.6-luna",
+    defaultModel: "gpt-6-luna",
     defaultEffort: "medium",
     aiMode: "always",
     aiMention: false,

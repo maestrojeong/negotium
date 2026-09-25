@@ -40,7 +40,7 @@ function room(scope: string, patch: Partial<TopicDto> = {}): TopicDto {
     title: `Ask Order ${randomUUID().slice(0, 8)}`,
     kind: "agent",
     agent: "codex",
-    defaultModel: "gpt-5.6-luna",
+    defaultModel: "gpt-6-luna",
     defaultEffort: "medium",
     aiMode: "always",
     aiMention: false,
