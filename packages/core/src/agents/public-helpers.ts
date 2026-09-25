@@ -31,6 +31,11 @@ export {
   withCodexSpawnSerial,
 } from "#agents/codex-tree-kill";
 export {
+  explicitAgentSwitchTargets,
+  hasExplicitAgentSwitchRequest,
+  isExplicitAgentSwitchTargets,
+} from "#agents/explicit-agent-switch";
+export {
   type AgentForkHelpers,
   type AgentForkHost,
   cleanupAgentFork,

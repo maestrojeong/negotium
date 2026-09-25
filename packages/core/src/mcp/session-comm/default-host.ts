@@ -1,6 +1,18 @@
 import { basename, join } from "node:path";
 import type { SessionCommMcpHost, SessionCommMcpResult } from "#mcp/factories/session-comm";
+import {
+  abortTargetRefusal,
+  excludesAgentlessTargets,
+  remoteSessionRoute,
+} from "#mcp/session-comm/actor-policy";
 import type { SessionCommContext } from "#mcp/session-comm/context";
+import {
+  hubRemoteAbort,
+  hubRemoteAsk,
+  hubRemotePeek,
+  hubRemoteSessions,
+  hubRemoteTell,
+} from "#mcp/session-comm/hub-remote-session";
 import { forwardToPeer, peerSessionsForUser } from "#mcp/session-comm/peer-forward";
 import {
   canSubagentTellTarget,
@@ -13,6 +25,7 @@ import { logger } from "#platform/logger";
 import { OPTIONAL_FORUM_MCP_SERVERS, REQUIRED_FORUM_MCP_SERVERS } from "#platform/mcp-config";
 import { closeBrowserOwnerTabs } from "#platform/playwright/manager";
 import { deleteManagedBrowserProfile } from "#platform/playwright/profile-management";
+import { actorReachableTopicIds } from "#runtime/actor-topic-reach";
 import { getRegisteredCronSession } from "#runtime/cron-sessions";
 import { sanitizeId } from "#security/sanitize";
 import { getApiTopicConfig, setApiTopicConfig } from "#storage/api-topic-config";
@@ -30,6 +43,7 @@ import {
   isTopicBrowserProfileOwner,
   listBrowserProfiles,
 } from "#storage/browser-profiles";
+import { deleteRemoteSessionAsk, recordRemoteSessionAsk } from "#storage/remote-session";
 import {
   clearPendingAsk,
   createPendingAsk,
@@ -57,6 +71,14 @@ function currentTopic(context: SessionCommContext) {
   return topic;
 }
 
+/** Surface of the room this turn runs in; the host default when unknown. */
+function currentSurface(context: SessionCommContext) {
+  return (
+    (context.currentTopicId ? getTopic(context.currentTopicId) : null)?.surface ??
+    defaultTopicSurface()
+  );
+}
+
 function targetCatalog(context: SessionCommContext) {
   const current = context.currentTopicId ? getTopic(context.currentTopicId) : null;
   const surface = current?.surface ?? defaultTopicSurface();
@@ -69,15 +91,28 @@ function targetCatalog(context: SessionCommContext) {
     : surface === "otium"
       ? defaultSurfaceScope()
       : null;
+  // On `otium` the roster check below matches the hub's execution principal
+  // (`local`), which sits in every hub-backed room, not the person who spoke.
+  // The hub's signed per-turn assertion is what says which of those rooms this
+  // actor is actually in, and it is the whole answer when present. Without one
+  // (a turn no person started) only the current room plus its own subagent
+  // lineage — direct parent, granted targets, own workers — is reachable.
+  const reachable = actorReachableTopicIds({
+    surface,
+    currentTopicId: context.currentTopicId,
+    actorTopicScope: context.actorTopicScope,
+  });
   return createSessionTargetCatalog({
     currentTopicId: context.currentTopicId,
     currentTopicName: context.currentTopic,
     currentSurface: surface,
+    excludeAgentless: excludesAgentlessTargets(surface),
     isAgent: isAgentKind,
     // Scoped in the store query, not after the fact.
     listRows: () =>
       listTopics({ surface, surfaceScope })
         .filter((topic) => topic.participants.some((p) => p.userId === context.userId))
+        .filter((topic) => !reachable || reachable.has(topic.id))
         .map((topic) => ({
           id: topic.id,
           title: topic.title,
@@ -102,6 +137,15 @@ function remoteTarget(context: SessionCommContext, to: string) {
   const slash = to.indexOf("/");
   if (slash <= 0 || slash === to.length - 1) return null;
   return { node: to.slice(0, slash), topic: to.slice(slash + 1) };
+}
+
+/** Which transport serves `node/topic` targets for this turn (see `remoteSessionRoute`). */
+function remoteRoute(context: SessionCommContext) {
+  return remoteSessionRoute(currentSurface(context), context.remoteSession);
+}
+
+function newRequestId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function activeQuery(context: SessionCommContext, topicId: string, title: string) {
@@ -148,7 +192,29 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
           ({ key, topic }) =>
             `- ${key}: ${topic.sessionId ? "active" : "fresh-start ready"}${topic.description ? `\n    description: ${topic.description.slice(0, 80)}` : ""}`,
         );
-      if (!identity.restricted) {
+      // Remote rooms are listed only where a remote call could be authorized
+      // for this turn (see `remoteSessionRoute`): through the hub with the
+      // turn's grant on Otium, through the peer bridge elsewhere, else not.
+      const route = identity.restricted ? null : remoteRoute(context);
+      if (route?.kind === "hub") {
+        const remote = await hubRemoteSessions(route.grant);
+        if (!remote.ok) {
+          entries.push(`- remote nodes: (${remote.error})`);
+        } else {
+          for (const node of remote.nodes) {
+            if (node.error) {
+              entries.push(`- ${node.node}/: (unreachable: ${node.error})`);
+              continue;
+            }
+            for (const session of node.sessions ?? []) {
+              if (!session.agent) continue;
+              entries.push(
+                `- ${node.node}/${session.name}: ${session.status === "active" ? "active" : "fresh-start ready"}${session.description ? `\n    description: ${session.description.slice(0, 80)}` : ""}`,
+              );
+            }
+          }
+        }
+      } else if (route?.kind === "peer") {
         const peers = await peerSessionsForUser(
           context.userId,
           context.peerHostQueryId,
@@ -241,7 +307,7 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
       }
     },
 
-    peekSession(context) {
+    async peekSession(context) {
       const targets = targetCatalog(context).listTargets();
       const running: string[] = [];
       const idle: string[] = [];
@@ -258,6 +324,39 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
         userId: context.userId,
         from: currentRef(context).key,
       });
+      // Remote rooms (v1): the hub's own active/ready view, no elapsed time
+      // or task text — the hub does not fan out to every node for a peek.
+      const remoteLines: string[] = [];
+      const route = remoteRoute(context);
+      if (route.kind === "hub") {
+        const remote = await hubRemotePeek(route.grant);
+        if (!remote.ok) {
+          remoteLines.push(`Remote: (${remote.error})`);
+        } else {
+          const remoteRunning: string[] = [];
+          const remoteIdle: string[] = [];
+          for (const node of remote.nodes) {
+            if (node.error) {
+              remoteLines.push(`Remote ${node.node}: (unreachable: ${node.error})`);
+              continue;
+            }
+            for (const session of node.sessions ?? []) {
+              // Same policy as the listing: a room with no AI is not a session.
+              if (session.agent === null) continue;
+              (session.status === "active" ? remoteRunning : remoteIdle).push(
+                `${node.node}/${session.name}`,
+              );
+            }
+          }
+          remoteLines.push(
+            `Remote running: ${remoteRunning.join(", ") || "none"}`,
+            `Remote idle: ${remoteIdle.join(", ") || "none"}`,
+            ...remote.pendingAsks.map(
+              (ask) => `Pending ${ask.to}: ${ask.status} (${ask.requestId})`,
+            ),
+          );
+        }
+      }
       return ok(
         [
           `Running: ${running.join(", ") || "none"}`,
@@ -265,6 +364,7 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
           ...pending.map(
             (ask) => `Pending ${ask.to}: ${describePendingAskState(ask.state)} (${ask.requestId})`,
           ),
+          ...remoteLines,
         ].join("\n"),
       );
     },
@@ -286,9 +386,48 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
       const clearAsk = () =>
         clearPendingAsk({ userId: context.userId, from: from.key, to, requestId });
       if (remote) {
+        const route = remoteRoute(context);
+        if (route.kind === "refused") {
+          clearAsk();
+          return error(route.error);
+        }
         if (!from.topicId) {
           clearAsk();
           return error("Error: current topic id is unavailable.");
+        }
+        if (route.kind === "hub") {
+          // Durable caller record first: the hub's `ask-reply` delivery is
+          // routed back through it, possibly after this process restarted.
+          recordRemoteSessionAsk({
+            requestId,
+            callerTopicId: from.topicId,
+            userId: context.userId,
+            fromKey: from.key,
+            toKey: to,
+            ...(context.currentThreadRootId
+              ? { callerThreadRootId: context.currentThreadRootId }
+              : {}),
+          });
+          const sent = await hubRemoteAsk(route.grant, {
+            requestId,
+            to: remote,
+            message,
+            fromDepth: context.depth,
+            fromLabel: { key: from.key, title: from.title },
+          });
+          if (!sent.ok) {
+            if (sent.uncertain) {
+              // The hub may have forwarded it. Keep the pending marker so a
+              // late answer still lands; the ask TTL cleans up otherwise.
+              return ok(
+                `Ask sent to "${to}" (delivery unconfirmed: ${sent.error}). request_id: ${requestId}`,
+              );
+            }
+            clearAsk();
+            deleteRemoteSessionAsk(requestId);
+            return error(`Error: ${sent.error}`);
+          }
+          return ok(`Ask sent to "${to}". request_id: ${requestId}`);
         }
         const result = await forwardToPeer({
           action: "ask",
@@ -395,6 +534,12 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
     async abortSession(context, to) {
       const remote = remoteTarget(context, to);
       if (remote) {
+        const route = remoteRoute(context);
+        if (route.kind === "refused") return error(route.error);
+        if (route.kind === "hub") {
+          const sent = await hubRemoteAbort(route.grant, { requestId: newRequestId(), to: remote });
+          return sent.ok ? ok(`Abort sent to "${to}".`) : error(`Error: ${sent.error}`);
+        }
         const result = await forwardToPeer({
           action: "abort",
           toNode: remote.node,
@@ -409,6 +554,14 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
       const targetTopicId = validation.target.topicId;
       if (!targetTopicId) return error(`Error: "${to}" has no topic id.`);
       if (targetTopicId === context.currentTopicId) return error("Error: cannot abort self.");
+      const refused = abortTargetRefusal({
+        surface: currentSurface(context),
+        currentTopicId: context.currentTopicId,
+        actorTopicScope: context.actorTopicScope,
+        targetTopicId,
+        to,
+      });
+      if (refused) return error(refused);
       enqueueSessionInbox({
         userId: context.userId,
         topicId: targetTopicId,
@@ -426,6 +579,29 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
       const from = currentRef(context);
       const remote = remoteTarget(context, to);
       if (remote) {
+        const route = remoteRoute(context);
+        if (route.kind === "refused") return error(route.error);
+        if (route.kind === "hub") {
+          const requestId = newRequestId();
+          const sent = await hubRemoteTell(route.grant, {
+            requestId,
+            to: remote,
+            message,
+            depth: context.depth + 1,
+            fromLabel: { key: from.key, title: from.title },
+          });
+          if (!sent.ok) {
+            // A timed-out response may still have been delivered; report it
+            // as sent-but-unconfirmed rather than invite a duplicate.
+            if (sent.uncertain) {
+              return ok(
+                `Message sent to "${to}" (delivery unconfirmed: ${sent.error}). request_id: ${requestId}`,
+              );
+            }
+            return error(`Error: ${sent.error}`);
+          }
+          return ok(`Message sent to "${to}". request_id: ${requestId}`);
+        }
         const result = await forwardToPeer({
           action: "tell",
           toNode: remote.node,

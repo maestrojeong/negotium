@@ -8,6 +8,7 @@ import {
   createSubagentManagementToolDefinitions,
   type SpawnSubagentToolContext,
   type SubagentLifecycleHost,
+  type SubagentToolContext,
   settleSubagentSuccess,
   sweepStaleSubagentCards,
   takeSubagentWatch,
@@ -523,6 +524,159 @@ describe("subagent management tools", () => {
     expect(deleted?.isError).toBeUndefined();
   });
 
+  test("on otium the hub's assertion decides which workers a person sees and manages", async () => {
+    // A shared room: owner-1 owns it, member-1 merely belongs. The node gives
+    // every worker the parent's roster verbatim, so without an assertion both
+    // could manage both workers. On `otium` the hub's assertion is the whole
+    // answer: what it lists as owned may be managed, what it lists as visible
+    // may be seen, and what it omits is not there.
+    const participants: TopicDto["participants"] = [
+      { userId: "owner-1", role: "owner" },
+      { userId: "member-1", role: "member" },
+    ];
+    const parent = makeTopic("owner-1", { participants, surface: "otium" });
+    const workerA = makeTopic("owner-1", {
+      title: `worker-a-${randomUUID()}`,
+      parentTopicId: parent.id,
+      isSubagent: true,
+      participants,
+      surface: "otium",
+    });
+    const workerB = makeTopic("owner-1", {
+      title: `worker-b-${randomUUID()}`,
+      parentTopicId: parent.id,
+      isSubagent: true,
+      participants,
+      surface: "otium",
+    });
+    for (const worker of [workerA, workerB]) {
+      makeCardMessage(parent.id, {
+        subagentTopicId: worker.id,
+        name: worker.title,
+        task: "wait",
+        status: "ready",
+      });
+    }
+    const toolsFor = (userId: string, scope: SubagentToolContext["actorTopicScope"]) => {
+      const tools = createSubagentManagementToolDefinitions({
+        userId,
+        topicId: parent.id,
+        surface: "otium",
+        actorTopicScope: scope,
+      });
+      const tool = (name: string) => tools.find((candidate) => candidate.name === name);
+      return {
+        // Membership, not order, is what this test is about: the two workers
+        // are created in the same millisecond, so the listing's own (stable)
+        // tie-break is by id and asserting the spawn order would be asserting
+        // which random uuid sorts first.
+        list: async () =>
+          (
+            JSON.parse((await tool("list_subagents")?.handler({}))?.content[0]?.text ?? "{}") as {
+              subagents?: Array<{ topic_id: string }>;
+            }
+          ).subagents
+            ?.map((child) => child.topic_id)
+            .sort(),
+        start: (topicId: string) => tool("start_subagent")!.handler({ topic_id: topicId }),
+        del: (topicId: string) => tool("delete_subagent")!.handler({ topic_id: topicId }),
+        grant: (source: string, target: string) =>
+          tool("grant_subagent_tell")!.handler({
+            subagent_topic_id: source,
+            target_topic_id: target,
+          }),
+        revoke: (source: string, target: string) =>
+          tool("revoke_subagent_tell")!.handler({
+            subagent_topic_id: source,
+            target_topic_id: target,
+          }),
+      };
+    };
+
+    // Non-owner member whose hub omits the workers entirely: nothing to see,
+    // nothing to manage — every tool answers as if the workers did not exist.
+    const stranger = toolsFor("member-1", {
+      visibleNodeTopicIds: [parent.id],
+      ownedNodeTopicIds: [],
+    });
+    expect(await stranger.list()).toEqual([]);
+    for (const attempt of [
+      await stranger.start(workerA.id),
+      await stranger.del(workerA.id),
+      await stranger.grant(workerA.id, workerB.id),
+      await stranger.revoke(workerA.id, workerB.id),
+    ]) {
+      expect(attempt.isError).toBe(true);
+      expect(attempt.content[0]?.text).toMatch(/not a descendant|no owned descendant/);
+    }
+    expect(getTopic(workerA.id)).not.toBeNull();
+
+    // Member whose hub lists the workers as visible only: may list them, may
+    // not start, delete or connect them.
+    const viewer = toolsFor("member-1", {
+      visibleNodeTopicIds: [parent.id, workerA.id, workerB.id],
+      ownedNodeTopicIds: [],
+    });
+    expect(await viewer.list()).toEqual([workerA.id, workerB.id].sort());
+    for (const attempt of [
+      await viewer.start(workerA.id),
+      await viewer.del(workerA.id),
+      await viewer.grant(workerA.id, workerB.id),
+      await viewer.revoke(workerA.id, workerB.id),
+    ]) {
+      expect(attempt.isError).toBe(true);
+    }
+    expect(getTopic(workerA.id)).not.toBeNull();
+
+    // Owner whose hub mirrors the workers as owned: full management. A grant
+    // target must still be visible to the actor — a worker the hub left out
+    // of the assertion cannot be named even by an owner.
+    const owner = toolsFor("owner-1", {
+      visibleNodeTopicIds: [parent.id, workerA.id, workerB.id],
+      ownedNodeTopicIds: [parent.id, workerA.id, workerB.id],
+    });
+    expect(await owner.list()).toEqual([workerA.id, workerB.id].sort());
+    expect((await owner.grant(workerA.id, workerB.id)).isError).toBeUndefined();
+    expect((await owner.revoke(workerA.id, workerB.id)).isError).toBeUndefined();
+    const ownerOfAOnly = toolsFor("owner-1", {
+      visibleNodeTopicIds: [parent.id, workerA.id],
+      ownedNodeTopicIds: [parent.id, workerA.id],
+    });
+    expect(await ownerOfAOnly.list()).toEqual([workerA.id]);
+    expect((await ownerOfAOnly.grant(workerA.id, workerB.id)).isError).toBe(true);
+    expect((await ownerOfAOnly.grant(workerA.id, parent.id)).content[0]?.text).toContain(
+      "No grant needed",
+    );
+    expect((await owner.del(workerB.id)).isError).toBeUndefined();
+    expect(getTopic(workerB.id)).toBeNull();
+
+    // A turn no person started (no assertion) on the same surface, and a
+    // member on another surface, keep the room's own lineage rules: both
+    // workers of the shared room are theirs to manage, as before.
+    const internal = createSubagentManagementToolDefinitions({
+      userId: "member-1",
+      topicId: parent.id,
+      surface: "otium",
+    });
+    const internalList = JSON.parse(
+      (await internal.find((tool) => tool.name === "list_subagents")?.handler({}))?.content[0]
+        ?.text ?? "{}",
+    ) as { subagents?: Array<{ topic_id: string }> };
+    expect(internalList.subagents?.map((child) => child.topic_id)).toEqual([workerA.id]);
+    const terminal = createSubagentManagementToolDefinitions({
+      userId: "member-1",
+      topicId: parent.id,
+      surface: "terminal",
+      // An assertion off `otium` is not consulted: the node owns membership there.
+      actorTopicScope: { visibleNodeTopicIds: [], ownedNodeTopicIds: [] },
+    });
+    const deleted = await terminal
+      .find((tool) => tool.name === "delete_subagent")
+      ?.handler({ topic_id: workerA.id });
+    expect(deleted?.isError).toBeUndefined();
+    expect(getTopic(workerA.id)).toBeNull();
+  });
+
   test("an ancestor can connect descendant subagents with tell grants", async () => {
     const parent = makeTopic("user-1");
     const source = makeTopic("user-1", {
@@ -551,6 +705,77 @@ describe("subagent management tools", () => {
     };
     const sourceEntry = listedPayload.subagents?.find((child) => child.topic_id === source.id);
     expect(sourceEntry?.tell_target_topic_ids).toEqual([target.id]);
+  });
+
+  test("on an asserted otium turn list_subagents hides grant targets the hub did not list", async () => {
+    // root → manager → source, and root's other child `sibling`. Root connects
+    // source → sibling (an ancestor grant that manager could not have made).
+    // Someone reading manager's list_subagents with a hub assertion that does
+    // not include sibling must not learn sibling's id from source's grants.
+    const root = makeTopic("owner-1", { surface: "otium" });
+    const manager = makeTopic("owner-1", {
+      parentTopicId: root.id,
+      isSubagent: true,
+      surface: "otium",
+    });
+    const source = makeTopic("owner-1", {
+      parentTopicId: manager.id,
+      isSubagent: true,
+      surface: "otium",
+    });
+    const sibling = makeTopic("owner-1", {
+      parentTopicId: root.id,
+      isSubagent: true,
+      surface: "otium",
+    });
+    const rootTools = createSubagentManagementToolDefinitions({
+      userId: "owner-1",
+      topicId: root.id,
+      surface: "otium",
+    });
+    const granted = await rootTools
+      .find((tool) => tool.name === "grant_subagent_tell")
+      ?.handler({ subagent_topic_id: source.id, target_topic_id: sibling.id });
+    expect(granted?.isError).toBeUndefined();
+
+    const listFrom = async (scope?: SubagentToolContext["actorTopicScope"]) => {
+      const tools = createSubagentManagementToolDefinitions({
+        userId: "owner-1",
+        topicId: manager.id,
+        surface: "otium",
+        actorTopicScope: scope,
+      });
+      const text =
+        (await tools.find((tool) => tool.name === "list_subagents")?.handler({}))?.content[0]
+          ?.text ?? "{}";
+      const payload = JSON.parse(text) as {
+        subagents?: Array<{ topic_id: string; tell_target_topic_ids: string[] }>;
+      };
+      return {
+        text,
+        targets: payload.subagents?.find((child) => child.topic_id === source.id)
+          ?.tell_target_topic_ids,
+      };
+    };
+
+    // Asserted actor whose scope stops at manager's own tree: the grant exists
+    // (sending is a separate reach check) but its target is not disclosed.
+    const narrow = await listFrom({
+      visibleNodeTopicIds: [manager.id, source.id],
+      ownedNodeTopicIds: [manager.id, source.id],
+    });
+    expect(narrow.targets).toEqual([]);
+    expect(narrow.text).not.toContain(sibling.id);
+
+    // Asserted actor whose scope includes sibling sees the grant as-is.
+    const wide = await listFrom({
+      visibleNodeTopicIds: [manager.id, source.id, sibling.id],
+      ownedNodeTopicIds: [manager.id, source.id],
+    });
+    expect(wide.targets).toEqual([sibling.id]);
+
+    // A turn no person started (no assertion) keeps the full answer.
+    expect((await listFrom(undefined)).targets).toEqual([sibling.id]);
   });
 
   test("a lower manager cannot revoke an ancestor grant outside its tree", async () => {

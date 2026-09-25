@@ -106,6 +106,34 @@ describe("createSessionTargetCatalog", () => {
     }
   });
 
+  test("can drop AI-off rows at the catalog level instead of listing them idle", () => {
+    const withAgentless = createSessionTargetCatalog({
+      listRows: () => rows,
+      currentTopicId: "current",
+      isAgent: (value): value is "codex" | "claude" | "maestro" =>
+        value === "codex" || value === "claude" || value === "maestro",
+    });
+    const withoutAgentless = createSessionTargetCatalog({
+      listRows: () => rows,
+      currentTopicId: "current",
+      excludeAgentless: true,
+      isAgent: (value): value is "codex" | "claude" | "maestro" =>
+        value === "codex" || value === "claude" || value === "maestro",
+    });
+    expect(withAgentless.listTargets().map(({ topic }) => topic.topicId)).toContain(
+      "channel-shared",
+    );
+    const ids = withoutAgentless.listTargets().map(({ topic }) => topic.topicId);
+    expect(ids).not.toContain("channel-shared");
+    // Current and manager rows stay excluded either way.
+    expect(ids).not.toContain("current");
+    expect(ids).not.toContain("manager");
+    // With the AI-off "shared" gone, the agent room's title no longer collides
+    // and it is addressable by its plain title; the channel is simply unknown.
+    expect(withoutAgentless.validateTarget("Shared").ok).toBe(true);
+    expect(withoutAgentless.validateTarget("channel:shared").ok).toBe(false);
+  });
+
   test("keeps state isolated between hosts", () => {
     const first = createCatalog();
     const second = createSessionTargetCatalog({

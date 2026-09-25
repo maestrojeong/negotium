@@ -4,7 +4,9 @@ import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ACTOR_TOPIC_SCOPE_LIMITS,
   appendApiMessage,
+  claimRemoteSessionInbox,
   claimRuntimeTurnLease,
   db,
   getApiMessage,
@@ -16,6 +18,8 @@ import {
   listRunningTopicQueries,
   NEGOTIUM_VERSION,
   NODE_CONTROL_TOKEN,
+  recordRemoteSessionAsk,
+  registerRuntimeGatewayCapability,
   registerTopic,
   releaseRuntimeTurnLease,
   resolveTopicTurnExecution,
@@ -2182,4 +2186,613 @@ test("runtime gateway file reads are scoped to the room that owns them", async (
   expect(ownerlessWrongRoom?.status).toBe(404);
 
   unlinkSync(scratch);
+});
+
+test("runtime /turns validates and persists the hub's actor room assertion", async () => {
+  const suffix = randomUUID();
+  const topic = registerTopic({
+    title: `scope-turn-${suffix}`,
+    userId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+    agent: "claude",
+    surface: "otium",
+  });
+  const actorTopicScope = { visibleNodeTopicIds: [topic.id, "n-2"], ownedNodeTopicIds: ["n-2"] };
+  const accepted = await handler(
+    runtimeRequest("/turns", {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        topicId: topic.id,
+        userId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+        actorUserId: "person",
+        actorTopicScope,
+        text: "scoped",
+        clientMessageId: `scope-${suffix}`,
+      }),
+    }),
+  );
+  expect(accepted?.status).toBe(202);
+  const row = db
+    .query<{ execution_json: string | null }, [string]>(
+      "SELECT execution_json FROM runtime_user_turn_requests WHERE topic_id = ?",
+    )
+    .get(topic.id);
+  expect(JSON.parse(row?.execution_json ?? "{}")).toMatchObject({
+    actorUserId: "person",
+    actorTopicScope,
+  });
+
+  // A malformed assertion is a bad request, not silently "no assertion".
+  const malformed = await handler(
+    runtimeRequest("/turns", {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        topicId: topic.id,
+        userId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+        actorUserId: "person",
+        actorTopicScope: { visibleNodeTopicIds: "everything" },
+        text: "bad scope",
+        clientMessageId: `scope-bad-${suffix}`,
+      }),
+    }),
+  );
+  expect(malformed?.status).toBe(400);
+  expect(((await malformed?.json()) as { error: string }).error).toContain("actorTopicScope");
+
+  // Size is validated at the door too, with the reason: the assertion travels
+  // in the per-turn MCP token URL, so an oversized one would not narrow the
+  // turn — it would make every built-in MCP unreachable for it.
+  const turn = (actorTopicScope: unknown, tag: string) =>
+    handler(
+      runtimeRequest("/turns", {
+        method: "POST",
+        body: JSON.stringify({
+          v: NODE_RUNTIME_CONTRACT_VERSION,
+          topicId: topic.id,
+          userId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+          actorUserId: "person",
+          actorTopicScope,
+          text: `scope ${tag}`,
+          clientMessageId: `scope-${tag}-${suffix}`,
+        }),
+      }),
+    );
+  const ids = (count: number) => Array.from({ length: count }, (_, index) => `n-${index}`);
+  const tooMany = await turn(
+    { visibleNodeTopicIds: ids(ACTOR_TOPIC_SCOPE_LIMITS.maxIdsPerList + 1), ownedNodeTopicIds: [] },
+    "too-many",
+  );
+  expect(tooMany?.status).toBe(400);
+  expect(((await tooMany?.json()) as { error: string }).error).toContain(
+    `at most ${ACTOR_TOPIC_SCOPE_LIMITS.maxIdsPerList}`,
+  );
+  const tooLong = await turn(
+    {
+      visibleNodeTopicIds: ["x".repeat(ACTOR_TOPIC_SCOPE_LIMITS.maxIdLength + 1)],
+      ownedNodeTopicIds: [],
+    },
+    "too-long",
+  );
+  expect(tooLong?.status).toBe(400);
+  expect(((await tooLong?.json()) as { error: string }).error).toContain(
+    `longer than ${ACTOR_TOPIC_SCOPE_LIMITS.maxIdLength}`,
+  );
+  const tooBig = await turn(
+    {
+      visibleNodeTopicIds: Array.from({ length: 80 }, (_, i) => `${i}-${"y".repeat(120)}`),
+      ownedNodeTopicIds: [],
+    },
+    "too-big",
+  );
+  expect(tooBig?.status).toBe(400);
+  expect(((await tooBig?.json()) as { error: string }).error).toContain(
+    `at most ${ACTOR_TOPIC_SCOPE_LIMITS.maxSerializedBytes}`,
+  );
+  const extraKey = await turn(
+    { visibleNodeTopicIds: [topic.id], ownedNodeTopicIds: [], everything: true },
+    "extra-key",
+  );
+  expect(extraKey?.status).toBe(400);
+  expect(((await extraKey?.json()) as { error: string }).error).toContain("unexpected key");
+  // Exactly at the per-list cap is accepted.
+  const atCap = await turn(
+    {
+      visibleNodeTopicIds: ids(ACTOR_TOPIC_SCOPE_LIMITS.maxIdsPerList),
+      ownedNodeTopicIds: ids(ACTOR_TOPIC_SCOPE_LIMITS.maxIdsPerList),
+    },
+    "at-cap",
+  );
+  expect(atCap?.status).toBe(202);
+});
+
+test("runtime /turns validates and persists the hub's remote-session grant", async () => {
+  const suffix = randomUUID();
+  const topic = registerTopic({
+    title: `grant-turn-${suffix}`,
+    userId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+    agent: "claude",
+    surface: "otium",
+  });
+  const remoteSession = { hubUrl: "http://127.0.0.1:3100/", capability: "rsc1.cGF5bG9hZA.c2ln" };
+  const accepted = await handler(
+    runtimeRequest("/turns", {
+      method: "POST",
+      body: JSON.stringify({
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        topicId: topic.id,
+        userId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+        actorUserId: "person",
+        remoteSession,
+        text: "granted",
+        clientMessageId: `grant-${suffix}`,
+      }),
+    }),
+  );
+  expect(accepted?.status).toBe(202);
+  const row = db
+    .query<{ execution_json: string | null }, [string]>(
+      "SELECT execution_json FROM runtime_user_turn_requests WHERE topic_id = ?",
+    )
+    .get(topic.id);
+  // Persisted with the origin normalized (no trailing slash), as the node
+  // will call it.
+  expect(JSON.parse(row?.execution_json ?? "{}")).toMatchObject({
+    actorUserId: "person",
+    remoteSession: { hubUrl: "http://127.0.0.1:3100", capability: remoteSession.capability },
+  });
+
+  const turn = (remoteSession: unknown, tag: string) =>
+    handler(
+      runtimeRequest("/turns", {
+        method: "POST",
+        body: JSON.stringify({
+          v: NODE_RUNTIME_CONTRACT_VERSION,
+          topicId: topic.id,
+          userId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+          actorUserId: "person",
+          remoteSession,
+          text: `grant ${tag}`,
+          clientMessageId: `grant-${tag}-${suffix}`,
+        }),
+      }),
+    );
+  // Malformed is a bad request, never silently "no grant".
+  for (const [bad, tag, reason] of [
+    [{ hubUrl: "http://hub.example", capability: "rsc1.a.b" }, "plain-http", "hubUrl"],
+    [{ hubUrl: "https://hub.example", capability: "rsc2.a.b" }, "prefix", "capability"],
+    [
+      { hubUrl: "https://hub.example", capability: `rsc1.${"a".repeat(2100)}.b` },
+      "size",
+      "at most 2048",
+    ],
+    [{ hubUrl: "https://hub.example" }, "missing", "capability"],
+    [
+      { hubUrl: "https://hub.example", capability: "rsc1.a.b", actor: "x" },
+      "extra",
+      "unexpected key",
+    ],
+    ["rsc1.a.b", "string", "remoteSession"],
+  ] as const) {
+    const refused = await turn(bad, tag);
+    expect(refused?.status).toBe(400);
+    expect(((await refused?.json()) as { error: string }).error).toContain(reason);
+  }
+  // Version skew: a hub that never sends the field gets the pre-existing
+  // behaviour — accepted, and the durable row carries no grant.
+  const plain = await turn(undefined, "absent");
+  expect(plain?.status).toBe(202);
+  const plainRow = db
+    .query<{ execution_json: string | null }, [string]>(
+      "SELECT execution_json FROM runtime_user_turn_requests WHERE topic_id = ?",
+    )
+    .get(topic.id);
+  expect(JSON.parse(plainRow?.execution_json ?? "{}").remoteSession).toBeUndefined();
+});
+
+test("runtime /health advertises remote session-comm and registered relay capabilities", async () => {
+  const health = await handler(runtimeRequest("/health"));
+  const capabilities = ((await health?.json()) as { capabilities?: string[] }).capabilities ?? [];
+  expect(capabilities).toContain("remote-session-comm");
+  expect(capabilities).not.toContain("remote-session-comm-relay");
+  const unregister = registerRuntimeGatewayCapability("remote-session-comm-relay");
+  try {
+    const relayed = await handler(runtimeRequest("/health"));
+    expect(((await relayed?.json()) as { capabilities: string[] }).capabilities).toContain(
+      "remote-session-comm-relay",
+    );
+  } finally {
+    unregister();
+  }
+});
+
+test("runtime /topics/:id/session-comm/inbox queues hub deliveries once and routes an ask-reply to its caller", async () => {
+  const suffix = randomUUID();
+  const scope = `ws-inbox-${suffix}`;
+  const target = registerTopic({
+    title: `inbox-target-${suffix}`,
+    userId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+    agent: "claude",
+    surface: "otium",
+    surfaceScope: scope,
+  });
+  const humanOnly = registerTopic({
+    title: `inbox-human-${suffix}`,
+    userId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+    surface: "otium",
+    surfaceScope: scope,
+  });
+  db.run(
+    "UPDATE api_topics SET kind = 'channel', response_policy = 'off', agent = NULL WHERE id = ?",
+    [humanOnly.id],
+  );
+  const inbox = (topicId: string, body: Record<string, unknown>, init: RequestInit = {}) =>
+    handler(
+      runtimeRequest(`/topics/${topicId}/session-comm/inbox`, {
+        method: "POST",
+        body: JSON.stringify({
+          v: NODE_RUNTIME_CONTRACT_VERSION,
+          userId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+          ...body,
+        }),
+        ...init,
+      }),
+    );
+  const queued = (topicId: string) =>
+    db
+      .query<{ payload: string }, [string]>(
+        "SELECT payload FROM session_inbox WHERE topic_id = ? ORDER BY sequence",
+      )
+      .all(topicId)
+      .map((row) => JSON.parse(row.payload) as Record<string, unknown>);
+  try {
+    // Only the host capability may deliver.
+    const anonymous = await handler(
+      new Request(
+        `http://127.0.0.1:43210${NODE_RUNTIME_CONTRACT_BASE_PATH}/topics/${target.id}/session-comm/inbox`,
+        { method: "POST", body: "{}" },
+      ),
+    );
+    expect(anonymous?.status).toBe(401);
+
+    // tell: queued as a session inbox entry labelled with the hub's sender.
+    const tellBody = {
+      kind: "tell",
+      requestId: `tell-${suffix}`,
+      from: { label: "hub/Origin", hubTopicId: "hub-topic-1" },
+      message: "do the thing",
+      depth: 1,
+    };
+    const told = await inbox(target.id, tellBody);
+    expect(told?.status).toBe(202);
+    expect(await told?.json()).toMatchObject({
+      ok: true,
+      accepted: true,
+      requestId: tellBody.requestId,
+      replayed: false,
+    });
+    expect(queued(target.id)).toEqual([
+      expect.objectContaining({
+        type: "tell",
+        requestId: tellBody.requestId,
+        from: "hub/Origin",
+        fromTitle: "hub/Origin",
+        message: "do the thing",
+        depth: 1,
+      }),
+    ]);
+    // Same delivery again (a relay retry): acknowledged as a replay, not queued twice.
+    const replayed = await inbox(target.id, tellBody);
+    expect(replayed?.status).toBe(200);
+    expect(await replayed?.json()).toMatchObject({ ok: true, replayed: true });
+    expect(queued(target.id)).toHaveLength(1);
+    // Same requestId with a different payload: a conflict.
+    const conflict = await inbox(target.id, { ...tellBody, message: "something else" });
+    expect(conflict?.status).toBe(409);
+    expect(queued(target.id)).toHaveLength(1);
+
+    // Bad deliveries never reach the inbox.
+    expect(
+      (await inbox(target.id, { ...tellBody, requestId: `deep-${suffix}`, depth: 99 }))?.status,
+    ).toBe(400);
+    expect(
+      (
+        await inbox(target.id, {
+          ...tellBody,
+          requestId: `long-${suffix}`,
+          message: "x".repeat(10_001),
+        })
+      )?.status,
+    ).toBe(413);
+    expect(
+      (await inbox(target.id, { ...tellBody, requestId: `kind-${suffix}`, kind: "poke" }))?.status,
+    ).toBe(400);
+    expect((await inbox(target.id, { ...tellBody, requestId: `v-${suffix}`, v: 99 }))?.status).toBe(
+      400,
+    );
+    // A room with no AI is the node's final word (409), whatever the hub thought.
+    expect((await inbox(humanOnly.id, { ...tellBody, requestId: `human-${suffix}` }))?.status).toBe(
+      409,
+    );
+    // Outside the caller's workspace, or a principal not in the room: not found.
+    const foreign = await inbox(
+      target.id,
+      { ...tellBody, requestId: `scope-${suffix}` },
+      {
+        headers: { [NODE_RUNTIME_SURFACE_SCOPE_HEADER]: `other-${suffix}` },
+      },
+    );
+    expect(foreign?.status).toBe(404);
+    expect(
+      (await inbox(target.id, { ...tellBody, requestId: `who-${suffix}`, userId: "stranger" }))
+        ?.status,
+    ).toBe(404);
+    expect((await inbox(`missing-${suffix}`, tellBody))?.status).toBe(404);
+    expect(queued(target.id)).toHaveLength(1);
+
+    // ask: the hub's reply route rides the entry so the answer goes back through the hub.
+    const remoteReply = {
+      via: "hub",
+      hubUrl: "https://hub.example",
+      token: "rsr1.cGF5bG9hZA.c2ln",
+      nodeName: "origin-node",
+      topicId: "origin-node-topic",
+      requestId: `ask-${suffix}`,
+    };
+    const asked = await inbox(target.id, {
+      kind: "ask",
+      requestId: `ask-${suffix}`,
+      from: { label: "origin-node/Origin" },
+      message: "what?",
+      fromDepth: 0,
+      remoteReply,
+    });
+    expect(asked?.status).toBe(202);
+    expect(queued(target.id).at(-1)).toMatchObject({
+      type: "ask",
+      requestId: `ask-${suffix}`,
+      from: "origin-node/Origin",
+      message: "what?",
+      fromDepth: 0,
+      remoteReply,
+    });
+    expect(
+      (
+        await inbox(target.id, {
+          kind: "ask",
+          requestId: `ask-bad-${suffix}`,
+          from: { label: "o/O" },
+          message: "?",
+          fromDepth: 0,
+          remoteReply: { ...remoteReply, requestId: "someone-elses" },
+        })
+      )?.status,
+    ).toBe(400);
+
+    // abort: queued as the plain abort entry.
+    const aborted = await inbox(target.id, { kind: "abort", requestId: `abort-${suffix}` });
+    expect(aborted?.status).toBe(202);
+    expect(queued(target.id).at(-1)).toMatchObject({ type: "abort" });
+
+    // ask-reply: the caller side. The room that asked has a durable record;
+    // the answer lands in it (here a human-only caller, so as a message) and
+    // the record is consumed.
+    const caller = registerTopic({
+      title: `inbox-caller-${suffix}`,
+      userId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+      surface: "otium",
+      surfaceScope: scope,
+    });
+    db.run(
+      "UPDATE api_topics SET kind = 'channel', response_policy = 'off', agent = NULL WHERE id = ?",
+      [caller.id],
+    );
+    const replyId = `reply-${suffix}`;
+    recordRemoteSessionAsk({
+      requestId: replyId,
+      callerTopicId: caller.id,
+      userId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+      fromKey: `agent:${caller.title}`,
+      toKey: "worker/Target",
+    });
+    const replyBody = {
+      kind: "ask-reply",
+      requestId: replyId,
+      fromLabel: "worker/Target",
+      replyKind: "reply",
+      replyText: "42",
+    };
+    const replied = await inbox(caller.id, replyBody);
+    expect(replied?.status).toBe(202);
+    const messages = listApiMessages(caller.id).page;
+    expect(messages.at(-1)).toMatchObject({
+      kind: "tell",
+      tellCard: { fromLabel: "worker/Target", label: "Reply from worker/Target", message: "42" },
+    });
+    expect(messages.at(-1)?.text).toContain("[Reply from worker/Target]");
+    // Delivered once: the retry is a replay, and the record is gone.
+    const replyAgain = await inbox(caller.id, replyBody);
+    expect(replyAgain?.status).toBe(200);
+    expect(await replyAgain?.json()).toMatchObject({ replayed: true });
+    expect(listApiMessages(caller.id).page).toHaveLength(messages.length);
+    // An answer nobody asked for, or addressed to the wrong room, is not found.
+    expect((await inbox(caller.id, { ...replyBody, requestId: `unknown-${suffix}` }))?.status).toBe(
+      404,
+    );
+    recordRemoteSessionAsk({
+      requestId: `elsewhere-${suffix}`,
+      callerTopicId: target.id,
+      userId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+      fromKey: "a",
+      toKey: "b",
+    });
+    expect(
+      (await inbox(caller.id, { ...replyBody, requestId: `elsewhere-${suffix}` }))?.status,
+    ).toBe(404);
+    // ...and the record it did not consume is still there for the right room.
+    expect(
+      db
+        .query<{ n: number }, [string]>(
+          "SELECT COUNT(*) AS n FROM remote_session_asks WHERE request_id = ?",
+        )
+        .get(`elsewhere-${suffix}`)?.n,
+    ).toBe(1);
+  } finally {
+    for (const id of [target.id, humanOnly.id]) {
+      db.run("DELETE FROM session_inbox WHERE topic_id = ?", [id]);
+    }
+    db.run("DELETE FROM remote_session_asks WHERE request_id = ?", [`elsewhere-${suffix}`]);
+  }
+});
+
+test("runtime session-comm inbox errors carry the contract's v:1 envelope", async () => {
+  // Conventions of the node↔hub interface: EVERY body of these routes carries
+  // `v: 1` — success and error alike. A hub that version-checks what it reads
+  // would otherwise have to treat the node's own 404 as an unparseable answer.
+  const suffix = randomUUID();
+  const scope = `ws-inbox-v-${suffix}`;
+  const target = registerTopic({
+    title: `inbox-v-target-${suffix}`,
+    userId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+    agent: "claude",
+    surface: "otium",
+    surfaceScope: scope,
+  });
+  const humanOnly = registerTopic({
+    title: `inbox-v-human-${suffix}`,
+    userId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+    surface: "otium",
+    surfaceScope: scope,
+  });
+  db.run(
+    "UPDATE api_topics SET kind = 'channel', response_policy = 'off', agent = NULL WHERE id = ?",
+    [humanOnly.id],
+  );
+  const inbox = (topicId: string, body: Record<string, unknown>) =>
+    handler(
+      runtimeRequest(`/topics/${topicId}/session-comm/inbox`, {
+        method: "POST",
+        body: JSON.stringify({
+          v: NODE_RUNTIME_CONTRACT_VERSION,
+          userId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+          ...body,
+        }),
+      }),
+    );
+  const tellBody = {
+    kind: "tell",
+    requestId: `v-tell-${suffix}`,
+    from: { label: "hub/Origin" },
+    message: "hi",
+    depth: 1,
+  };
+  try {
+    const cases: Array<{ status: number; response: Response | null | undefined }> = [
+      // unsupported v
+      { status: 400, response: await inbox(target.id, { ...tellBody, v: 99 }) },
+      // topic missing
+      { status: 404, response: await inbox(`missing-${suffix}`, tellBody) },
+      // principal not a participant
+      { status: 404, response: await inbox(target.id, { ...tellBody, userId: "stranger" }) },
+      // malformed entry (depth over the limit)
+      { status: 400, response: await inbox(target.id, { ...tellBody, depth: 99 }) },
+      // message too long
+      {
+        status: 413,
+        response: await inbox(target.id, { ...tellBody, message: "x".repeat(10_001) }),
+      },
+      // the node's own verdict: a room with no AI
+      { status: 409, response: await inbox(humanOnly.id, tellBody) },
+    ];
+    for (const { status, response } of cases) {
+      expect(response?.status).toBe(status);
+      expect(await response?.json()).toMatchObject({
+        ok: false,
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        error: expect.any(String),
+      });
+    }
+    // Faults raised *outside* the route's own checks — by the body reader, by
+    // `requiredText`, by `decodeURIComponent`, by the delivery itself — used to
+    // fall through to the control plane's common catch and come back in the
+    // versionless `{ok:false,error}` envelope. They are this contract's bodies
+    // too, so they carry `v` like every other one.
+    const raw = (topicId: string, body: string) =>
+      handler(runtimeRequest(`/topics/${topicId}/session-comm/inbox`, { method: "POST", body }));
+    const escaped: Array<{ status: number; response: Response | null | undefined }> = [
+      // a body that is not JSON at all: read as empty, so the version is missing
+      { status: 400, response: await raw(target.id, "not json at all") },
+      // userId absent (JSON.stringify drops the undefined key)
+      { status: 400, response: await inbox(target.id, { ...tellBody, userId: undefined }) },
+      // userId present but not a string
+      { status: 400, response: await inbox(target.id, { ...tellBody, userId: 42 }) },
+      // a path segment that is not valid percent-encoding (URIError)
+      {
+        status: 400,
+        response: await raw(
+          "%",
+          JSON.stringify({
+            ...tellBody,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            userId: NODE_EXECUTION_PRINCIPAL_FOR_TEST,
+          }),
+        ),
+      },
+    ];
+    for (const { status, response } of escaped) {
+      expect(response?.status).toBe(status);
+      expect(await response?.json()).toMatchObject({
+        ok: false,
+        v: NODE_RUNTIME_CONTRACT_VERSION,
+        error: expect.any(String),
+      });
+    }
+
+    // An unexpected internal fault (here the durable inbox table is gone, as it
+    // would be for an unavailable dependency) is a 500 — still versioned, and
+    // still saying nothing about the internals.
+    db.run("ALTER TABLE session_inbox RENAME TO session_inbox_v_probe");
+    let broken: Response | null | undefined;
+    try {
+      broken = await inbox(target.id, { ...tellBody, requestId: `v-boom-${suffix}` });
+    } finally {
+      db.run("ALTER TABLE session_inbox_v_probe RENAME TO session_inbox");
+    }
+    expect(broken?.status).toBe(500);
+    expect(await broken?.json()).toEqual({
+      ok: false,
+      v: NODE_RUNTIME_CONTRACT_VERSION,
+      error: "Internal control-plane error",
+    });
+    // The failed transaction left no claim behind, so the hub's retry is taken.
+    expect(
+      db
+        .query<{ n: number }, [string]>(
+          "SELECT COUNT(*) AS n FROM remote_session_inbox_claims WHERE request_id = ?",
+        )
+        .get(`v-boom-${suffix}`)?.n,
+    ).toBe(0);
+
+    // A requestId already bound to a different payload: the version rides
+    // beside the error, and a `code` (when there is one) beside both.
+    claimRemoteSessionInbox({
+      requestId: `v-live-${suffix}`,
+      kind: "tell",
+      topicId: target.id,
+      payloadHash: "someone-elses-hash",
+      payload: { held: true },
+    });
+    const conflicted = await inbox(target.id, { ...tellBody, requestId: `v-live-${suffix}` });
+    expect(conflicted?.status).toBe(409);
+    expect(await conflicted?.json()).toMatchObject({
+      ok: false,
+      v: NODE_RUNTIME_CONTRACT_VERSION,
+      error: "requestId is already bound to another delivery",
+    });
+  } finally {
+    for (const id of [target.id, humanOnly.id]) {
+      db.run("DELETE FROM session_inbox WHERE topic_id = ?", [id]);
+    }
+    db.run("DELETE FROM remote_session_inbox_claims WHERE request_id LIKE ?", [`v-%${suffix}`]);
+  }
 });

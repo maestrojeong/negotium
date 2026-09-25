@@ -155,22 +155,82 @@ describe("otium runtime peer bridge", () => {
         canSpawnSubagents: true,
       },
       userId: "central-user",
-      tool: "set_model",
-      input: { model: "opus" },
-      currentUserPrompt: "switch to opus",
+      tool: "set_agent",
+      input: { agent: "codex" },
+      explicitAgentSwitchTargets: ["codex"],
     });
 
     expect(result).toEqual({ content: [{ type: "text", text: "Hub model updated" }] });
+    // Only the derived gate input travels; the user's prompt never does.
     expect(received).toEqual({
       auth: `Bearer ${MINTED_TOKEN}`,
       body: {
         hostQueryId: "host-query",
         userId: "central-user",
-        tool: "set_model",
-        input: { model: "opus" },
-        currentUserPrompt: "switch to opus",
+        tool: "set_agent",
+        input: { agent: "codex" },
+        explicitAgentSwitchTargets: ["codex"],
       },
     });
+    expect(JSON.stringify(received?.body)).not.toContain("currentUserPrompt");
+  });
+
+  test("self-config omits the switch list when core derived none and fails closed on a malformed one", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const hub = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        bodies.push((await req.json()) as Record<string, unknown>);
+        return Response.json({ ok: true, result: { content: [{ type: "text", text: "ok" }] } });
+      },
+    });
+    running.push(hub);
+    const central = startFakeCentral();
+    running.push(central);
+    central.setHubBaseUrl(`http://127.0.0.1:${hub.port}`);
+    configureOtiumCentral(central.join);
+    const bridge = {
+      hubCellId: HUB_CELL_ID,
+      hostTopicId: "host-parent",
+      hostQueryId: "host-query",
+      canSpawnSubagents: true,
+    };
+
+    await otiumPeerRuntimeBridge.selfConfig({
+      bridge,
+      userId: "central-user",
+      tool: "set_model",
+      input: { model: "opus" },
+    });
+    expect(bodies[0]).toEqual({
+      hostQueryId: "host-query",
+      userId: "central-user",
+      tool: "set_model",
+      input: { model: "opus" },
+    });
+
+    // An empty list is still a decision ("nothing was asked for") and is sent
+    // as such, so the hub never falls back to a prompt it does not have.
+    await otiumPeerRuntimeBridge.selfConfig({
+      bridge,
+      userId: "central-user",
+      tool: "set_agent",
+      input: { agent: "codex" },
+      explicitAgentSwitchTargets: [],
+    });
+    expect(bodies[1]?.explicitAgentSwitchTargets).toEqual([]);
+
+    // A list that fails the shared shape check is forwarded as empty, never
+    // as-is: the hub must not have to trust the node's spelling of an agent.
+    await otiumPeerRuntimeBridge.selfConfig({
+      bridge,
+      userId: "central-user",
+      tool: "set_agent",
+      input: { agent: "codex" },
+      explicitAgentSwitchTargets: ["codex", "codex", "gemini"] as unknown as ["codex"],
+    });
+    expect(bodies[2]?.explicitAgentSwitchTargets).toEqual([]);
   });
 
   test("show_html returns the hub-owned visual URL", async () => {

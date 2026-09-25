@@ -566,6 +566,12 @@ describe("negotium MCP endpoint", () => {
     const memberCtx: RuntimeMcpContext = {
       ...ctx,
       userId: memberId,
+      actorUserId: memberId,
+      // The hub confirms the member can see the parent but does not own it.
+      actorTopicScope: {
+        visibleNodeTopicIds: [parent.id, caller.id],
+        ownedNodeTopicIds: [caller.id],
+      },
       topicId: caller.id,
       topicTitle: caller.title,
     };
@@ -582,11 +588,112 @@ describe("negotium MCP endpoint", () => {
         arguments: { topic: parent.id, force: true },
       });
       expect(result.isError).toBe(true);
-      expect(resultText(result)).toContain("only the topic owner");
+      // On Otium a room the person may see but not own is refused as "not
+      // found" (the same answer a stranger gets), not with an ownership
+      // message that would confirm the room and its owner exist.
+      expect(resultText(result)).toContain("not found");
       expect(getTopic(parent.id)).toBeDefined();
       expect(getTopic(child.id)).toBeDefined();
     } finally {
       await memberClient.close();
+    }
+  });
+
+  test("subagent management on Otium follows the hub's assertion, not the shared roster", async () => {
+    const suffix = randomUUID();
+    const ownerId = `subagent-owner-${suffix}`;
+    const memberId = `subagent-member-${suffix}`;
+    const parent = registerTopic({
+      title: `shared-subagent-parent-${suffix}`,
+      userId: ownerId,
+      agent: "codex",
+      surface: "otium",
+    });
+    parent.participants.push({ userId: memberId, role: "member" });
+    upsertTopic(parent);
+    // The node gives a worker its parent's roster verbatim, so by roster
+    // alone the member "belongs" to the worker as much as the owner does.
+    const worker = registerTopic({
+      title: `shared-subagent-worker-${suffix}`,
+      userId: ownerId,
+      agent: "codex",
+      surface: "otium",
+    });
+    worker.participants.push({ userId: memberId, role: "member" });
+    worker.parentTopicId = parent.id;
+    worker.isSubagent = true;
+    upsertTopic(worker);
+
+    const connect = async (userId: string, scope: RuntimeMcpContext["actorTopicScope"]) => {
+      const scopedCtx: RuntimeMcpContext = {
+        ...ctx,
+        userId,
+        actorUserId: userId,
+        actorTopicScope: scope,
+        topicId: parent.id,
+        topicTitle: parent.title,
+      };
+      const scopedClient = new Client({ name: `subagent-scope-${userId}`, version: "1.0.0" });
+      const token = issueRuntimeMcpToken(scopedCtx);
+      await scopedClient.connect(
+        new StreamableHTTPClientTransport(
+          new URL(
+            `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+          ),
+        ),
+      );
+      return scopedClient;
+    };
+    const listed = async (scopedClient: Client) =>
+      (
+        JSON.parse(
+          resultText(await scopedClient.callTool({ name: "list_subagents", arguments: {} })),
+        ) as {
+          subagents: Array<{ topic_id: string }>;
+        }
+      ).subagents.map((child) => child.topic_id);
+
+    // Hub says the member sees the parent only: the worker is not there.
+    const stranger = await connect(memberId, {
+      visibleNodeTopicIds: [parent.id],
+      ownedNodeTopicIds: [],
+    });
+    // Hub says the member sees the worker but owns nothing: list, no delete.
+    const viewer = await connect(memberId, {
+      visibleNodeTopicIds: [parent.id, worker.id],
+      ownedNodeTopicIds: [],
+    });
+    // Hub mirrors the worker into the owner's owned set: full management.
+    const owner = await connect(ownerId, {
+      visibleNodeTopicIds: [parent.id, worker.id],
+      ownedNodeTopicIds: [parent.id, worker.id],
+    });
+    try {
+      expect(await listed(stranger)).toEqual([]);
+      const hiddenDelete = await stranger.callTool({
+        name: "delete_subagent",
+        arguments: { topic_id: worker.id },
+      });
+      expect(hiddenDelete.isError).toBe(true);
+      expect(getTopic(worker.id)).toBeDefined();
+
+      expect(await listed(viewer)).toEqual([worker.id]);
+      const visibleDelete = await viewer.callTool({
+        name: "delete_subagent",
+        arguments: { topic_id: worker.id },
+      });
+      expect(visibleDelete.isError).toBe(true);
+      expect(getTopic(worker.id)).toBeDefined();
+
+      expect(await listed(owner)).toEqual([worker.id]);
+      const ownedDelete = await owner.callTool({
+        name: "delete_subagent",
+        arguments: { topic_id: worker.id },
+      });
+      expect(ownedDelete.isError).not.toBe(true);
+      expect(getTopic(worker.id)).toBeNull();
+    } finally {
+      await Promise.all([stranger.close(), viewer.close(), owner.close()]);
     }
   });
 
@@ -675,8 +782,14 @@ describe("negotium MCP endpoint", () => {
    * by the turn's user matched nothing: the manager room reported "one topic",
    * naming only the private General this node had just made for that person,
    * while the workspace it spoke for held all the rooms.
+   *
+   * The workspace is the outer boundary, not the listing: which of its rooms
+   * the person may name is the hub's per-turn assertion (`actorTopicScope`),
+   * since only the hub knows who is in which room. This used to list every
+   * room in the workspace, which let a member's agent see — and abort — rooms
+   * that member was never invited to.
    */
-  test("list_topics on the Otium surface covers the caller's workspace", async () => {
+  test("list_topics on the Otium surface lists the hub-asserted rooms inside the workspace", async () => {
     const suffix = randomUUID();
     // The hub files every room it backs under its own execution principal.
     const hubPrincipal = NODE_LOCAL_USER_ID;
@@ -697,6 +810,21 @@ describe("negotium MCP endpoint", () => {
       surface: "otium",
       surfaceScope: `other-${suffix}`,
     });
+    const uninvited = registerTopic({
+      title: `hub-private-room-${suffix}`,
+      userId: hubPrincipal,
+      agent: "codex",
+      surface: "otium",
+      surfaceScope: scope,
+    });
+    const humanOnly = registerTopic({
+      title: `hub-human-room-${suffix}`,
+      userId: hubPrincipal,
+      kind: "channel",
+      agent: "none",
+      surface: "otium",
+      surfaceScope: scope,
+    });
     const general = ensurePersonalGeneral(person, "otium", { surfaceScope: scope });
     const someoneElsesGeneral = ensurePersonalGeneral(`bystander-${suffix}`, "otium", {
       surfaceScope: scope,
@@ -705,6 +833,14 @@ describe("negotium MCP endpoint", () => {
     const callerCtx: RuntimeMcpContext = {
       ...ctx,
       userId: person,
+      actorUserId: person,
+      // The hub says: this person is in `backed`, `humanOnly` (and their
+      // General) but only owns the General and the human-only room;
+      // `uninvited` and `otherWorkspace` are not mentioned.
+      actorTopicScope: {
+        visibleNodeTopicIds: [backed.id, humanOnly.id, general.id, otherWorkspace.id],
+        ownedNodeTopicIds: [general.id, humanOnly.id],
+      },
       topicId: general.id,
       topicTitle: general.title,
     };
@@ -718,31 +854,279 @@ describe("negotium MCP endpoint", () => {
       await managerClient.connect(new StreamableHTTPClientTransport(url));
       const text = resultText(await managerClient.callTool({ name: "list_topics", arguments: {} }));
       expect(text).toContain(backed.id);
-      expect(text).toContain(general.id);
-      // Another workspace on the same node, and another person's private
-      // General inside this one, both stay out.
+      // The room this turn is speaking from — here the person's General — is
+      // not a target of anything, so it is not offered as one.
+      expect(text).not.toContain(general.id);
+      // Nor is a room whose AI is off: there is no turn to abort or restart
+      // and nothing to tell, so it is left out even though the hub asserts it.
+      expect(text).not.toContain(humanOnly.id);
+      // A room in the workspace the hub did not assert for this person is
+      // invisible — the listing is the assertion, not the workspace.
+      expect(text).not.toContain(uninvited.id);
+      // Another workspace on the same node stays out even when a (buggy or
+      // stale) assertion names it: the workspace boundary is still applied.
       expect(text).not.toContain(otherWorkspace.id);
+      // Another person's private General inside this one stays out too.
       expect(text).not.toContain(someoneElsesGeneral.id);
       // The terminal rooms this node also holds are a different surface.
       expect(text).not.toContain(mainTopic.id);
 
-      // A room the caller does not participate in is still addressable, so the
-      // listing and the lifecycle tools agree on what exists.
+      // Visible is not owned: a member may see `backed` but stopping its work
+      // is the owner's call, and the refusal reads exactly like "no such room".
       const aborted = await managerClient.callTool({
         name: "abort_topic",
         arguments: { topic: backed.id },
       });
+      expect(aborted.isError).toBe(true);
+      expect(resultText(aborted)).toContain("not found");
+      const restarted = await managerClient.callTool({
+        name: "restart_topic",
+        arguments: { topic: backed.id },
+      });
+      expect(restarted.isError).toBe(true);
+      expect(resultText(restarted)).toContain("not found");
+      const deleted = await managerClient.callTool({
+        name: "delete_topic",
+        arguments: { topic: backed.id, force: true },
+      });
+      expect(deleted.isError).toBe(true);
+      expect(resultText(deleted)).toContain("not found");
+      expect(getTopic(backed.id)).not.toBeNull();
+
+      // A room the hub never asserted is "not found" for every tool, by id or
+      // by title, so its existence never leaks through an error message. The
+      // asserted-but-AI-off room answers the same way: excluded from the
+      // listing, it cannot be a target either.
+      for (const name of ["abort_topic", "restart_topic", "delete_topic"]) {
+        for (const ref of [uninvited.title, humanOnly.id]) {
+          const refused = await managerClient.callTool({ name, arguments: { topic: ref } });
+          expect(refused.isError).toBe(true);
+          expect(resultText(refused)).toContain("not found");
+        }
+      }
+      expect(getTopic(uninvited.id)).not.toBeNull();
+      expect(getTopic(humanOnly.id)).not.toBeNull();
+      // The current room stays precisely refused, not "not found": the caller
+      // is told what is actually wrong with aborting the room it speaks from.
+      const self = await managerClient.callTool({
+        name: "abort_topic",
+        arguments: { topic: general.id },
+      });
+      expect(self.isError).toBe(true);
+      expect(resultText(self)).toContain("current topic");
+    } finally {
+      await managerClient.close();
+    }
+  });
+
+  test("Otium lifecycle tools act on a room the hub asserts the person owns", async () => {
+    const suffix = randomUUID();
+    const hubPrincipal = NODE_LOCAL_USER_ID;
+    const person = `hub-owner-${suffix}`;
+    const scope = `workspace-owner-${suffix}`;
+    const owned = registerTopic({
+      title: `hub-owned-${suffix}`,
+      userId: hubPrincipal,
+      agent: "codex",
+      surface: "otium",
+      surfaceScope: scope,
+    });
+    const general = ensurePersonalGeneral(person, "otium", { surfaceScope: scope });
+    const managerClient = new Client({ name: "negotium-otium-owner-test", version: "1.0.0" });
+    const token = issueRuntimeMcpToken({
+      ...ctx,
+      userId: person,
+      actorUserId: person,
+      actorTopicScope: {
+        visibleNodeTopicIds: [owned.id, general.id],
+        ownedNodeTopicIds: [owned.id, general.id],
+      },
+      topicId: general.id,
+      topicTitle: general.title,
+    });
+    const url = new URL(
+      `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+    );
+    try {
+      await managerClient.connect(new StreamableHTTPClientTransport(url));
+      const aborted = await managerClient.callTool({
+        name: "abort_topic",
+        arguments: { topic: owned.id },
+      });
       expect(aborted.isError).toBeFalsy();
+      const restarted = await managerClient.callTool({
+        name: "restart_topic",
+        arguments: { topic: owned.title },
+      });
+      expect(restarted.isError).toBeFalsy();
+      const deleted = await managerClient.callTool({
+        name: "delete_topic",
+        arguments: { topic: owned.id, force: true },
+      });
+      expect(deleted.isError).toBeFalsy();
+      expect(getTopic(owned.id)).toBeNull();
     } finally {
       await managerClient.close();
     }
   });
 
   /**
-   * No person owns a hub-backed room, so an owner check against the turn's
-   * user could never pass: the manager room could see every room in its
-   * workspace and was refused every one of them with "only the topic owner can
-   * delete it".
+   * A room's subagent workers are reachable through lineage only for turns no
+   * person started. Once a person speaks, the hub's assertion is the whole
+   * story: it mirrors a worker with its parent's roster, so the parent's
+   * owner is asserted as the worker's owner — and a member who merely shares
+   * the parent is not, and must not inherit the parent's delegation.
+   */
+  test("Otium lifecycle tools on a subagent worker follow the assertion, not the parent's lineage", async () => {
+    const suffix = randomUUID();
+    const hubPrincipal = NODE_LOCAL_USER_ID;
+    const scope = `workspace-lineage-${suffix}`;
+    const parent = registerTopic({
+      title: `hub-parent-${suffix}`,
+      userId: hubPrincipal,
+      agent: "codex",
+      surface: "otium",
+      surfaceScope: scope,
+    });
+    const worker = registerTopic({
+      title: `hub-worker-${suffix}`,
+      userId: hubPrincipal,
+      agent: "codex",
+      surface: "otium",
+      surfaceScope: scope,
+    });
+    upsertTopic({ ...worker, parentTopicId: parent.id, isSubagent: true });
+    const connect = async (actorTopicScope: RuntimeMcpContext["actorTopicScope"]) => {
+      const c = new Client({ name: `negotium-otium-lineage-${randomUUID()}`, version: "1.0.0" });
+      const token = issueRuntimeMcpToken({
+        ...ctx,
+        userId: hubPrincipal,
+        actorUserId: `person-${suffix}`,
+        actorTopicScope,
+        topicId: parent.id,
+        topicTitle: parent.title,
+      });
+      await c.connect(
+        new StreamableHTTPClientTransport(
+          new URL(
+            `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+          ),
+        ),
+      );
+      return c;
+    };
+
+    // A member of the shared parent who does not own it: the worker is not
+    // in their assertion, so it is "not found" for every lifecycle tool.
+    const member = await connect({ visibleNodeTopicIds: [parent.id], ownedNodeTopicIds: [] });
+    try {
+      const listed = resultText(await member.callTool({ name: "list_topics", arguments: {} }));
+      expect(listed).not.toContain(worker.id);
+      for (const name of ["abort_topic", "restart_topic", "delete_topic"]) {
+        for (const ref of [worker.id, worker.title]) {
+          const refused = await member.callTool({ name, arguments: { topic: ref, force: true } });
+          expect(refused.isError).toBe(true);
+          expect(resultText(refused)).toContain("not found");
+        }
+      }
+      expect(getTopic(worker.id)).not.toBeNull();
+    } finally {
+      await member.close();
+    }
+
+    // The parent's owner: the hub asserts the mirrored worker as owned, and
+    // that — not the lineage — is what allows it.
+    const owner = await connect({
+      visibleNodeTopicIds: [parent.id, worker.id],
+      ownedNodeTopicIds: [parent.id, worker.id],
+    });
+    try {
+      const listed = resultText(await owner.callTool({ name: "list_topics", arguments: {} }));
+      expect(listed).toContain(worker.id);
+      const aborted = await owner.callTool({
+        name: "abort_topic",
+        arguments: { topic: worker.id },
+      });
+      expect(aborted.isError).toBeFalsy();
+      const deleted = await owner.callTool({
+        name: "delete_topic",
+        arguments: { topic: worker.id, force: true },
+      });
+      expect(deleted.isError).toBeFalsy();
+      expect(getTopic(worker.id)).toBeNull();
+    } finally {
+      await owner.close();
+    }
+  });
+
+  /**
+   * No assertion means the hub is older than this node, or the turn was not
+   * started by a person (cron, self-schedule, subagent, peer bridge). The
+   * node cannot reconstruct membership on its own, so it fails closed: the
+   * current room is the only room these tools know about.
+   */
+  test("without a hub assertion, Otium tools see only the current room", async () => {
+    const suffix = randomUUID();
+    const hubPrincipal = NODE_LOCAL_USER_ID;
+    const person = `hub-legacy-${suffix}`;
+    const scope = `workspace-legacy-${suffix}`;
+    const other = registerTopic({
+      title: `hub-other-${suffix}`,
+      userId: hubPrincipal,
+      agent: "codex",
+      surface: "otium",
+      surfaceScope: scope,
+    });
+    const current = registerTopic({
+      title: `hub-current-${suffix}`,
+      userId: hubPrincipal,
+      agent: "codex",
+      surface: "otium",
+      surfaceScope: scope,
+    });
+    const client2 = new Client({ name: "negotium-otium-legacy-test", version: "1.0.0" });
+    const token = issueRuntimeMcpToken({
+      ...ctx,
+      userId: hubPrincipal,
+      actorUserId: person,
+      topicId: current.id,
+      topicTitle: current.title,
+    });
+    const url = new URL(
+      `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+    );
+    try {
+      await client2.connect(new StreamableHTTPClientTransport(url));
+      const text = resultText(await client2.callTool({ name: "list_topics", arguments: {} }));
+      // The current room is never a target, so with no assertion there is
+      // nothing to list at all.
+      expect(text).toContain("No topics found");
+      expect(text).not.toContain(current.id);
+      expect(text).not.toContain(other.id);
+      for (const name of ["abort_topic", "restart_topic", "delete_topic"]) {
+        const refused = await client2.callTool({ name, arguments: { topic: other.id } });
+        expect(refused.isError).toBe(true);
+        expect(resultText(refused)).toContain("not found");
+      }
+      expect(getTopic(other.id)).not.toBeNull();
+      // The current room still resolves, so the refusal names the real reason.
+      const self = await client2.callTool({
+        name: "restart_topic",
+        arguments: { topic: current.id },
+      });
+      expect(self.isError).toBe(true);
+      expect(resultText(self)).toContain("current topic");
+    } finally {
+      await client2.close();
+    }
+  });
+
+  /**
+   * No person owns a hub-backed room on this node, so an owner check against
+   * the turn's user could never pass: the manager room could see every room in
+   * its workspace and was refused every one of them with "only the topic owner
+   * can delete it". The node still administers the room as its own principal —
+   * but only once the hub has asserted that the calling person owns it.
    */
   test("delete_topic administers a hub-backed room as the room's own owner", async () => {
     const suffix = randomUUID();
@@ -763,6 +1147,11 @@ describe("negotium MCP endpoint", () => {
     const token = issueRuntimeMcpToken({
       ...ctx,
       userId: person,
+      actorUserId: person,
+      actorTopicScope: {
+        visibleNodeTopicIds: [backed.id, general.id],
+        ownedNodeTopicIds: [backed.id, general.id],
+      },
       topicId: general.id,
       topicTitle: general.title,
     });

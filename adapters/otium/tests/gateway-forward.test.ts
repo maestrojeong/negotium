@@ -260,3 +260,35 @@ test("dot-segment traversal cannot reach the node with a peer token", async () =
     expect(calls, path).toHaveLength(0);
   }
 });
+
+test("forwards the hub's remote session-comm inbox delivery and nothing else under session-comm", async () => {
+  const { fetch: stub, calls } = captureFetch();
+  const inbox = await forwardGatewayRequest(
+    forwardRequest("/topics/abc/session-comm/inbox", {
+      method: "POST",
+      body: JSON.stringify({ v: 1, kind: "tell", requestId: "r-1" }),
+    }),
+    { nodeOrigin: NODE_ORIGIN, surfaceScope: "ws-1", strictScope: false, fetch: stub },
+  );
+  expect(inbox?.status).toBe(200);
+  expect(calls).toHaveLength(1);
+  expect(calls[0]!.url).toBe(
+    `${NODE_ORIGIN}/api/v1/control/runtime/v1/topics/abc/session-comm/inbox`,
+  );
+  expect(calls[0]!.headers.get("authorization")).toBe(`Bearer ${NODE_CONTROL_TOKEN}`);
+  expect(calls[0]!.headers.get("x-negotium-surface-scope")).toBe("ws-1");
+  for (const [method, path] of [
+    ["GET", "/topics/abc/session-comm/inbox"],
+    ["POST", "/topics/abc/session-comm"],
+    ["POST", "/topics/abc/session-comm/outbox"],
+    ["POST", "/topics/abc/session-comm/inbox/extra"],
+    ["DELETE", "/topics/abc/session-comm/inbox"],
+  ] as const) {
+    const refused = await forwardGatewayRequest(
+      forwardRequest(path, { method, ...(method === "GET" ? {} : { body: "{}" }) }),
+      { nodeOrigin: NODE_ORIGIN, surfaceScope: "ws-1", strictScope: false, fetch: stub },
+    );
+    expect(refused?.status).toBe(404);
+  }
+  expect(calls).toHaveLength(1);
+});

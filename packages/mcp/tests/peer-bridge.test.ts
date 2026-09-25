@@ -166,7 +166,7 @@ describe("placed-room runtime bridge", () => {
       cwd: mkdtempSync(join(tmpdir(), "negotium-peer-runtime-")),
       agent: "claude",
       model: "sonnet",
-      currentUserPrompt: "inspect the hub",
+      explicitAgentSwitchTargets: ["codex"],
       peerBridge: {
         hubCellId: "hub-cell",
         hostTopicId: "host-topic",
@@ -222,7 +222,7 @@ describe("placed-room runtime bridge", () => {
           userId: ctx.userId,
           tool: "get_model",
           input: {},
-          currentUserPrompt: "inspect the hub",
+          explicitAgentSwitchTargets: ["codex"],
         },
       ]);
     } finally {

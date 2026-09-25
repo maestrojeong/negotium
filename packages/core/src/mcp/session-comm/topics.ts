@@ -8,17 +8,20 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sessionInboxPath } from "#query/session-inbox-path";
+import { actorReachableTopicIds } from "#runtime/actor-topic-reach";
 import { sanitizeTopicName } from "#security/sanitize";
 // NOTE: see `runtime.ts` — import these from `@/types` directly to keep
 // `maestro-agent-sdk` (whose `bootstrapHostPath()` prints to stdout) out of
 // this stdio MCP server's import graph.
 import { type AgentKind, isAgentKind, type QueryState } from "#types";
+import { excludesAgentlessTargets } from "./actor-policy";
 import {
   currentTopic,
   currentTopicId,
   PLAYWRIGHT_PORTS_DIR,
   parseJsonField,
   SESSIONS_DB,
+  sessionCommContext,
   userId,
   withDb,
 } from "./runtime";
@@ -171,23 +174,42 @@ function currentSessionPlacement(): CurrentPlacement {
   return cachedSessionPlacement;
 }
 
+/** Surface of the room this server serves (undefined when it cannot be read). */
+export function currentSessionSurface(): string | undefined {
+  return currentSessionPlacement().surface;
+}
+
 const sessionTargetCatalog = createSessionTargetCatalog<AgentKind>({
   currentTopicId,
   currentTopicName: currentTopic,
   get currentSurface() {
     return currentSessionPlacement().surface;
   },
+  get excludeAgentless() {
+    return excludesAgentlessTargets(currentSessionPlacement().surface);
+  },
   isAgent: isAgentKind,
-  listRows: () =>
-    sessionTargetRows().map((row) => ({
-      id: row.id,
-      title: row.title,
-      kind: row.kind,
-      agent: row.agent,
-      sessionId: row.session_id,
-      description: row.description,
-      surface: row.surface,
-    })),
+  listRows: () => {
+    // On `otium` the roster join above matches the hub's execution principal,
+    // not the person who spoke, so the hub's per-turn assertion decides which
+    // of those rooms this actor may actually name. Fail-closed without one.
+    const reachable = actorReachableTopicIds({
+      surface: currentSessionPlacement().surface,
+      currentTopicId: currentTopicId || undefined,
+      actorTopicScope: sessionCommContext.actorTopicScope,
+    });
+    return sessionTargetRows()
+      .filter((row) => !reachable || reachable.has(row.id))
+      .map((row) => ({
+        id: row.id,
+        title: row.title,
+        kind: row.kind,
+        agent: row.agent,
+        sessionId: row.session_id,
+        description: row.description,
+        surface: row.surface,
+      }));
+  },
 });
 
 export function getMcpUserConfig(): McpUserConfig | null {

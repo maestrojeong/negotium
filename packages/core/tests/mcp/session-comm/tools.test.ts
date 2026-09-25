@@ -4,6 +4,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SESSION_COMM_SERVER } from "#platform/config";
 import { clearQueryState, writeQueryState } from "#query/state";
+import { encodeActorTopicScopeArg } from "#runtime/actor-topic-scope";
+import { encodeRemoteSessionGrantArg } from "#runtime/remote-session-grant";
 import { upsertTopic } from "#storage/api-topics";
 import { db } from "#storage/forum-db";
 import { clearPendingAsk } from "#storage/session-asks";
@@ -128,6 +130,8 @@ async function callSessionCommTool(args: {
   topicId: string;
   agent: "claude" | "codex" | "maestro";
   cronSessionId?: string;
+  /** Extra launch arguments, e.g. the hub's `--actor-topic-scope=`. */
+  extraArgs?: string[];
   name: string;
   input: Record<string, unknown>;
 }): Promise<{ text: string; isError?: boolean }> {
@@ -143,6 +147,7 @@ async function callSessionCommTool(args: {
       "--depth=0",
       `--agent=${args.agent}`,
       ...(args.cronSessionId ? [`--cron-session-id=${args.cronSessionId}`] : []),
+      ...(args.extraArgs ?? []),
     ],
     env: Object.fromEntries(
       Object.entries(process.env).filter(
@@ -177,6 +182,208 @@ function expectCommunicationContract(names: string[]): void {
   );
   expect(names).not.toContain("send_message");
 }
+
+function otiumRoom(title: string, scope: string, patch: Record<string, unknown> = {}) {
+  const now = new Date().toISOString();
+  const topic = {
+    id: randomUUID(),
+    title,
+    kind: "agent" as const,
+    agent: "codex" as const,
+    defaultModel: "gpt-5.6-luna",
+    defaultEffort: "medium" as const,
+    aiMode: "always" as const,
+    aiMention: false,
+    participants: [{ userId: USER_ID, role: "owner" as const }],
+    createdAt: now,
+    lastMessageAt: now,
+    surface: "otium" as const,
+    surfaceScope: scope,
+    ...patch,
+  };
+  upsertTopic(topic);
+  return topic;
+}
+
+/**
+ * The stdio server (`NEGOTIUM_BUILTIN_MCP_TRANSPORT=stdio`) is a second
+ * implementation of the same tools. It shares the owner and peer rules with the
+ * hosted host through `actor-policy.ts`; this pins that the stdio path really
+ * applies them, since it once applied only the visibility filter.
+ */
+describe("session-comm stdio server on the Otium surface", () => {
+  test("abort_session refuses a visible-but-not-owned room as not found", async () => {
+    const scope = `ws-stdio-${randomUUID()}`;
+    const current = otiumRoom(`stdio-current-${randomUUID()}`, scope);
+    const invited = otiumRoom(`stdio-invited-${randomUUID()}`, scope);
+    const owned = otiumRoom(`stdio-owned-${randomUUID()}`, scope);
+    const scopeArg = `--actor-topic-scope=${encodeActorTopicScopeArg({
+      visibleNodeTopicIds: [current.id, invited.id, owned.id],
+      ownedNodeTopicIds: [current.id, owned.id],
+    })}`;
+    try {
+      const refused = await callSessionCommTool({
+        title: current.title,
+        topicId: current.id,
+        agent: "codex",
+        extraArgs: ["--actor-user-id=person", scopeArg],
+        name: "abort_session",
+        input: { to: invited.title },
+      });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain("not found");
+      const allowed = await callSessionCommTool({
+        title: current.title,
+        topicId: current.id,
+        agent: "codex",
+        extraArgs: ["--actor-user-id=person", scopeArg],
+        name: "abort_session",
+        input: { to: owned.title },
+      });
+      expect(allowed.isError).toBe(false);
+      const inbox = (topicId: string) =>
+        db
+          .query<{ payload: string }, [string]>(
+            "SELECT payload FROM session_inbox WHERE topic_id = ? ORDER BY sequence",
+          )
+          .all(topicId)
+          .map((row) => JSON.parse(row.payload).type);
+      expect(inbox(invited.id)).toEqual([]);
+      expect(inbox(owned.id)).toEqual(["abort"]);
+    } finally {
+      for (const topic of [current, invited, owned]) {
+        db.run("DELETE FROM session_inbox WHERE topic_id = ?", [topic.id]);
+        db.run("DELETE FROM api_topics WHERE id = ?", [topic.id]);
+      }
+    }
+  });
+
+  test("with a hub grant the stdio server sends node/topic tells to the hub as a bearer call", async () => {
+    const scope = `ws-stdio-hub-${randomUUID()}`;
+    const current = otiumRoom(`stdio-hub-${randomUUID()}`, scope);
+    const received: Array<{
+      path: string;
+      authorization: string | null;
+      body: Record<string, unknown>;
+    }> = [];
+    const hub = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(req) {
+        const url = new URL(req.url);
+        received.push({
+          path: url.pathname,
+          authorization: req.headers.get("authorization"),
+          body: (await req.json()) as Record<string, unknown>,
+        });
+        if (url.pathname.endsWith("/abort")) {
+          return Response.json(
+            { ok: false, v: 1, error: 'Session "worker/Nope" not found.' },
+            { status: 404 },
+          );
+        }
+        return Response.json({ ok: true, v: 1, replayed: false }, { status: 202 });
+      },
+    });
+    const capability = "rsc1.cGF5bG9hZA.c2lnbmF0dXJl";
+    try {
+      const grantArg = `--remote-session-grant=${encodeRemoteSessionGrantArg({
+        hubUrl: `http://127.0.0.1:${hub.port}`,
+        capability,
+      })}`;
+      const told = await callSessionCommTool({
+        title: current.title,
+        topicId: current.id,
+        agent: "codex",
+        extraArgs: ["--actor-user-id=person", grantArg],
+        name: "tell_session",
+        input: { to: "worker/Render", message: "hi" },
+      });
+      expect(told.isError).not.toBe(true);
+      expect(told.text).toContain("request_id");
+      expect(received).toHaveLength(1);
+      expect(received[0]).toMatchObject({
+        path: "/api/v1/session-comm/remote/tell",
+        authorization: `Bearer ${capability}`,
+        body: {
+          v: 1,
+          to: { node: "worker", topic: "Render" },
+          message: "hi",
+          depth: 1,
+          fromLabel: { key: `agent:${current.title}`, title: current.title },
+        },
+      });
+      // No actor id in the body: the hub recovers it from the capability.
+      expect(JSON.stringify(received[0]!.body)).not.toContain("person");
+      const aborted = await callSessionCommTool({
+        title: current.title,
+        topicId: current.id,
+        agent: "codex",
+        extraArgs: ["--actor-user-id=person", grantArg],
+        name: "abort_session",
+        input: { to: "worker/Nope" },
+      });
+      expect(aborted.isError).toBe(true);
+      expect(aborted.text).toContain("not found");
+      // The same turn without the grant is the pre-existing refusal.
+      const refused = await callSessionCommTool({
+        title: current.title,
+        topicId: current.id,
+        agent: "codex",
+        extraArgs: ["--actor-user-id=person"],
+        name: "tell_session",
+        input: { to: "worker/Render", message: "hi" },
+      });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain("Otium room");
+      expect(received).toHaveLength(2);
+    } finally {
+      hub.stop(true);
+      db.run("DELETE FROM api_topics WHERE id = ?", [current.id]);
+    }
+  });
+
+  test("remote node/topic targets are fail-closed on Otium and unchanged elsewhere", async () => {
+    const scope = `ws-stdio-peer-${randomUUID()}`;
+    const current = otiumRoom(`stdio-peer-${randomUUID()}`, scope);
+    const terminal = registerTopic({
+      title: `stdio-terminal-${randomUUID()}`,
+      userId: USER_ID,
+      agent: "codex",
+    });
+    try {
+      const refused = await callSessionCommTool({
+        title: current.title,
+        topicId: current.id,
+        agent: "codex",
+        extraArgs: [
+          "--actor-user-id=person",
+          `--actor-topic-scope=${encodeActorTopicScopeArg({
+            visibleNodeTopicIds: [current.id],
+            ownedNodeTopicIds: [current.id],
+          })}`,
+        ],
+        name: "tell_session",
+        input: { to: "peer/remote-room", message: "hi" },
+      });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain("Otium room");
+      // A terminal room reaches the (here: absent) bridge as before.
+      const standalone = await callSessionCommTool({
+        title: terminal.title,
+        topicId: terminal.id,
+        agent: "codex",
+        name: "tell_session",
+        input: { to: "peer/remote-room", message: "hi" },
+      });
+      expect(standalone.isError).toBe(true);
+      expect(standalone.text).toContain("standalone mode");
+    } finally {
+      db.run("DELETE FROM api_topics WHERE id = ?", [current.id]);
+      db.run("DELETE FROM api_topics WHERE id = ?", [terminal.id]);
+    }
+  });
+});
 
 describe("session-comm tool exposure", () => {
   test("manager rooms expose the canonical tell/ask contract", async () => {

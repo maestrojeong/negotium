@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { explicitAgentSwitchTargets } from "#agents/explicit-agent-switch";
 import {
   cancelSelfConfigSchedule,
   getSelfConfigModel,
@@ -382,6 +383,57 @@ describe("self-config core", () => {
       expect(result.isError).toBe(true);
       expect(result.text).toContain("explicit request");
       expect(getTopic(topicId)?.agent).toBe("codex");
+    } finally {
+      if (prevDeepseekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+      else process.env.DEEPSEEK_API_KEY = prevDeepseekKey;
+    }
+  });
+
+  test("set_agent authorizes against the derived switch targets, wherever the phrase was", () => {
+    const prevDeepseekKey = process.env.DEEPSEEK_API_KEY;
+    process.env.DEEPSEEK_API_KEY = "test-key";
+    try {
+      // What the runtime MCP hands over: the node derived the targets from the
+      // full prompt when it minted the token, so a phrase past any transport
+      // cap still counts, and the raw prompt is not consulted at all.
+      const topicId = seedTopic("codex");
+      const honored = setSelfConfigAgent(
+        {
+          topicId,
+          userId: USER,
+          explicitAgentSwitchTargets: explicitAgentSwitchTargets(
+            `${"긴 설명. ".repeat(400)}\n이제 maestro로 바꿔줘`,
+          ),
+        },
+        "maestro",
+      );
+      expect(honored.isError).toBeUndefined();
+      expect(getTopic(topicId)?.agent).toBe("maestro");
+
+      // The derived field wins over a raw prompt when both are present: an
+      // empty derivation is a refusal even if the prompt text would match.
+      const other = seedTopic("codex");
+      const refused = setSelfConfigAgent(
+        {
+          topicId: other,
+          userId: USER,
+          explicitAgentSwitchTargets: [],
+          currentUserPrompt: "maestro로 바꿔",
+        },
+        "maestro",
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain("explicit request");
+      expect(getTopic(other)?.agent).toBe("codex");
+
+      // A target for another agent does not authorize this one.
+      const third = seedTopic("codex");
+      const wrongTarget = setSelfConfigAgent(
+        { topicId: third, userId: USER, explicitAgentSwitchTargets: ["claude"] },
+        "maestro",
+      );
+      expect(wrongTarget.isError).toBe(true);
+      expect(getTopic(third)?.agent).toBe("codex");
     } finally {
       if (prevDeepseekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
       else process.env.DEEPSEEK_API_KEY = prevDeepseekKey;

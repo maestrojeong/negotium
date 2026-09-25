@@ -427,6 +427,106 @@ describe("turn session resolution", () => {
     }
   });
 
+  test("another person's message queues behind a running user turn instead of steering it", () => {
+    const topicId = seedTopic();
+    const topic = getTopic(topicId)!;
+    const running: RoomQueryControl = {
+      topicId,
+      queryId: `running-${randomUUID()}`,
+      origin: "user",
+      actorUserId: "alice",
+      prompt: "alice's question",
+      userMessages: [{ prompt: "alice's question", actorUserId: "alice" }],
+      sessionId: "live-native-session",
+      providerSessionObserved: true,
+      abortController: new AbortController(),
+      abortReason: AbortReason.None,
+    };
+    expect(setRoomQuery(running)).toBe(true);
+
+    try {
+      const queuedQueryId = startAiTurn({
+        topic,
+        userId: "owner",
+        actorUserId: "bob",
+        actorTopicScope: { visibleNodeTopicIds: ["room-b"], ownedNodeTopicIds: [] },
+        prompt: "bob's question",
+        allowAutoContinue: true,
+      });
+
+      expect(queuedQueryId).toBeString();
+      // Alice's turn is left alone: not aborted, still the room's query.
+      expect(running.abortController.signal.aborted).toBe(false);
+      expect(running.abortReason).toBe(AbortReason.None);
+      expect(getRoomQuery(topicId)?.queryId).toBe(running.queryId);
+      // Bob's message is its own durable turn — his words, his actor, his
+      // assertion — waiting for the worker to claim it once Alice is done.
+      expect(getRuntimeUserTurnRequest(topicId)).toMatchObject({
+        requestId: queuedQueryId,
+        status: "pending",
+        // A direct startAiTurn envelope carries no author marker; the actor
+        // rides on `execution`, which is what the worker runs with.
+        userMessages: [{ prompt: "bob's question" }],
+        execution: {
+          actorUserId: "bob",
+          actorTopicScope: { visibleNodeTopicIds: ["room-b"], ownedNodeTopicIds: [] },
+          conversationPrompts: ["bob's question"],
+          supersededRequestIds: [],
+        },
+      });
+      const statuses = listRecentRuntimeEventsForTopic(topicId).map((event) => event.payload);
+      expect(statuses).not.toContainEqual({
+        kind: "ai_aborted",
+        queryId: running.queryId,
+        reason: "superseded",
+      });
+    } finally {
+      clearRoomQuery(topicId, running.queryId);
+    }
+  });
+
+  test("the same person's follow-up still steers their running turn", () => {
+    const topicId = seedTopic();
+    const topic = getTopic(topicId)!;
+    const running: RoomQueryControl = {
+      topicId,
+      queryId: `running-${randomUUID()}`,
+      origin: "user",
+      actorUserId: "alice",
+      prompt: "alice's question",
+      userMessages: [{ prompt: "alice's question", actorUserId: "alice" }],
+      sessionId: "live-native-session",
+      providerSessionObserved: true,
+      abortController: new AbortController(),
+      abortReason: AbortReason.None,
+    };
+    expect(setRoomQuery(running)).toBe(true);
+
+    try {
+      const replacementQueryId = startAiTurn({
+        topic,
+        userId: "owner",
+        actorUserId: "alice",
+        prompt: "alice, again",
+        allowAutoContinue: true,
+      });
+
+      expect(replacementQueryId).toBeString();
+      expect(running.abortController.signal.aborted).toBe(true);
+      expect(running.abortReason).toBe(AbortReason.Internal);
+      expect(getRuntimeUserTurnRequest(topicId)).toMatchObject({
+        requestId: replacementQueryId,
+        userMessages: [
+          { prompt: "alice's question", actorUserId: "alice" },
+          { prompt: "alice, again" },
+        ],
+        execution: { actorUserId: "alice", loggedUserMessageCount: 1 },
+      });
+    } finally {
+      clearRoomQuery(topicId, running.queryId);
+    }
+  });
+
   test("omits an interrupted prompt only after provider content confirms it", () => {
     const topicId = seedTopic();
     const topic = getTopic(topicId)!;

@@ -9,7 +9,12 @@
  * (the ask/tell REST routes stayed in the host).
  */
 
-import { deliverPeerReply, type RemoteReplyRoute } from "#mcp/session-comm/peer-forward";
+import {
+  deliverPeerReply,
+  isHubRemoteReplyRoute,
+  parseHubRemoteReplyRoute,
+  type RemoteReplyRoute,
+} from "#mcp/session-comm/peer-forward";
 import { db } from "#storage/forum-db";
 import { PENDING_ASK_TTL_MS, type PendingAskUserId } from "#storage/session-asks";
 import { registerStorageSchemaInitializer } from "#storage/storage-host";
@@ -31,6 +36,13 @@ registerStorageSchemaInitializer((database) => {
       created_at INTEGER NOT NULL
     )
   `);
+  // Hub-routed asks keep their whole route here; the legacy columns are
+  // blank for them. Added after the table existed, so guarded.
+  try {
+    database.exec("ALTER TABLE remote_ask_callbacks ADD COLUMN route_json TEXT");
+  } catch {
+    // Column already present.
+  }
 });
 
 interface PendingAskIdentity {
@@ -65,25 +77,29 @@ const MAX_ASK_AGE_MS = PENDING_ASK_TTL_MS;
 export function registerAskCallback(entry: AskPending): void {
   pendingAsks.set(entry.targetQueryId, entry);
   if (entry.remoteReply) {
+    const route = entry.remoteReply;
+    const hub = isHubRemoteReplyRoute(route);
     db.query(
       `INSERT INTO remote_ask_callbacks
-       (target_query_id, request_id, node_name, node_cell_id, topic_id, user_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+       (target_query_id, request_id, node_name, node_cell_id, topic_id, user_id, created_at, route_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(target_query_id) DO UPDATE SET
          request_id = excluded.request_id,
          node_name = excluded.node_name,
          node_cell_id = excluded.node_cell_id,
          topic_id = excluded.topic_id,
          user_id = excluded.user_id,
-         created_at = excluded.created_at`,
+         created_at = excluded.created_at,
+         route_json = excluded.route_json`,
     ).run(
       entry.targetQueryId,
-      entry.remoteReply.requestId,
-      entry.remoteReply.nodeName,
-      entry.remoteReply.nodeCellId,
-      entry.remoteReply.topicId,
-      entry.remoteReply.userId,
+      route.requestId,
+      route.nodeName,
+      hub ? "" : route.nodeCellId,
+      route.topicId,
+      hub ? "" : route.userId,
       entry.createdAt,
+      hub ? JSON.stringify(route) : null,
     );
   }
 }
@@ -99,8 +115,21 @@ export function resolveAskCallback(queryId: string): AskPending | null {
     entry.timedOut = true;
   }
   pendingAsks.delete(queryId);
-  db.query("DELETE FROM remote_ask_callbacks WHERE target_query_id = ?").run(queryId);
+  // A hub-routed callback keeps its durable row until the answer is in the
+  // reply outbox: `deliverHubRemoteReply` deletes it in the same transaction
+  // as the outbox insert, so a crash between resolve and enqueue still leaves
+  // the row for the startup pass to fail explicitly instead of losing both.
+  if (!entry.remoteReply || !isHubRemoteReplyRoute(entry.remoteReply)) {
+    db.query("DELETE FROM remote_ask_callbacks WHERE target_query_id = ?").run(queryId);
+  }
   return entry;
+}
+
+/** The hub-routed answer is durably queued: the callback row has served its purpose. */
+export function deleteHubRemoteAskCallbackRow(requestId: string): void {
+  db.query("DELETE FROM remote_ask_callbacks WHERE request_id = ? AND route_json IS NOT NULL").run(
+    requestId,
+  );
 }
 
 /** Clean up stale asks that outlived their TTL (periodic, lightweight). */
@@ -130,28 +159,52 @@ interface DurableRemoteAskCallbackRow {
   node_cell_id: string;
   topic_id: string;
   user_id: string;
+  route_json: string | null;
+}
+
+function durableRoute(row: DurableRemoteAskCallbackRow): RemoteReplyRoute | null {
+  if (row.route_json) {
+    try {
+      return parseHubRemoteReplyRoute(JSON.parse(row.route_json));
+    } catch {
+      return null;
+    }
+  }
+  return {
+    nodeName: row.node_name,
+    nodeCellId: row.node_cell_id,
+    topicId: row.topic_id,
+    userId: row.user_id,
+    requestId: row.request_id,
+  };
 }
 
 /** Fail remote asks whose target turn was interrupted by the previous process.
- *  Call once during startup after the peer session bridge is registered. */
-export async function failInterruptedRemoteAskCallbacks(): Promise<number> {
+ *  Call once during startup after the peer session bridge is registered.
+ *  `routes: "hub"` limits the pass to hub-routed asks, which need no adapter
+ *  bridge and are therefore failed by the node itself at startup. */
+export async function failInterruptedRemoteAskCallbacks(
+  options: { routes?: "all" | "hub" } = {},
+): Promise<number> {
   const rows = db
     .query(
-      `SELECT target_query_id, request_id, node_name, node_cell_id, topic_id, user_id
+      `SELECT target_query_id, request_id, node_name, node_cell_id, topic_id, user_id, route_json
        FROM remote_ask_callbacks
        ORDER BY created_at ASC`,
     )
     .all() as DurableRemoteAskCallbackRow[];
   let failed = 0;
   for (const row of rows) {
+    const route = durableRoute(row);
+    if (!route) {
+      db.query("DELETE FROM remote_ask_callbacks WHERE target_query_id = ?").run(
+        row.target_query_id,
+      );
+      continue;
+    }
+    if (options.routes === "hub" && !isHubRemoteReplyRoute(route)) continue;
     const delivered = await deliverPeerReply(
-      {
-        nodeName: row.node_name,
-        nodeCellId: row.node_cell_id,
-        topicId: row.topic_id,
-        userId: row.user_id,
-        requestId: row.request_id,
-      },
+      route,
       "peer",
       "The remote worker restarted before this ask completed. Please retry the request.",
       "error",

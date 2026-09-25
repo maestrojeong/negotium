@@ -20,6 +20,7 @@ import {
   asUserId,
   type compactTopicSession,
   deleteVaultEntry,
+  deliverRemoteSessionInbox,
   earliestRuntimeEventSeq,
   ensurePersonalGeneral,
   executeVaultCommand,
@@ -40,12 +41,15 @@ import {
   listRecentRuntimeEventsForTopic,
   listRunningTopicQueries,
   listRuntimeEventsAfter,
+  listRuntimeGatewayCapabilities,
   listThreadMessages,
   listVaultEntries,
   logger,
   NEGOTIUM_VERSION,
   NODE_CONTROL_TOKEN,
   NODE_ID,
+  parseRemoteSessionInboxDelivery,
+  RemoteSessionInboxError,
   RUN_DIR,
   type RuntimeBusEvent,
   RuntimeGatewayIdempotencyConflictError,
@@ -77,6 +81,8 @@ import {
   updateManagerTopicRuntimeConfig,
   updateTopicSettings,
   upsertTopic,
+  validateActorTopicScope,
+  validateRemoteSessionGrant,
   WsHub,
   writeDecisionGraphSvg,
 } from "@negotium/core/node-host";
@@ -171,8 +177,21 @@ interface ControlHandlerOptions {
   compactSession?: typeof compactTopicSession;
 }
 
-function jsonError(status: number, error: string): Response {
-  return Response.json({ ok: false, error }, { status });
+function jsonError(status: number, error: string, code?: string): Response {
+  return Response.json({ ok: false, error, ...(code ? { code } : {}) }, { status });
+}
+
+/**
+ * Error envelope for the routes whose contract spells one out: the cross-node
+ * interface says every body — success *and* error — carries `v: 1`, and the
+ * hub reads `code` beside it to tell a retryable `in_progress` from a verdict.
+ * A body without the version is not this contract's body.
+ */
+function runtimeJsonError(status: number, error: string, code?: string): Response {
+  return Response.json(
+    { ok: false, v: NODE_RUNTIME_CONTRACT_VERSION, error, ...(code ? { code } : {}) },
+    { status },
+  );
 }
 
 /**
@@ -605,6 +624,15 @@ export function createNodeControlHandler(
               // to hide the reply affordance everywhere or to show it and
               // sometimes lose the answer.
               "turn-submit-reply-context",
+              // Remote session-comm: `POST /turns` accepts `remoteSession`
+              // and `POST /topics/:id/session-comm/inbox` delivers hub-routed
+              // tell/ask/abort/ask-reply. A hub must see this before it
+              // attaches a grant; a node without it ignores the field and
+              // keeps remote session-comm fail-closed. The relay variant
+              // (`remote-session-comm-relay`) is contributed by the Otium
+              // adapter when its gateway forward allowlists the inbox route.
+              "remote-session-comm",
+              ...listRuntimeGatewayCapabilities(),
             ],
             cursor: latestRuntimeEventSeq(),
           });
@@ -817,6 +845,17 @@ export function createNodeControlHandler(
               : asUserId(requiredText(body.actorUserId, "actorUserId"));
           const actorLabel =
             body.actorLabel === undefined ? undefined : requiredText(body.actorLabel, "actorLabel");
+          // Validated here, before anything is persisted: a malformed
+          // assertion is a bad request, never silently "no assertion" — that
+          // would let a host bug narrow a turn without anyone noticing.
+          const scopeValidation = validateActorTopicScope(body.actorTopicScope);
+          if (!scopeValidation.ok) throw new ControlRequestError(scopeValidation.error);
+          const actorTopicScope = scopeValidation.scope;
+          // Same rule for the hub's remote-session grant: opaque to this
+          // node, but its shape and callback origin are checked at the door.
+          const grantValidation = validateRemoteSessionGrant(body.remoteSession);
+          if (!grantValidation.ok) throw new ControlRequestError(grantValidation.error);
+          const remoteSession = grantValidation.grant;
           const vaultUserId =
             body.vaultUserId === undefined
               ? undefined
@@ -826,6 +865,10 @@ export function createNodeControlHandler(
               ? undefined
               : requiredText(body.sourceAdapter, "sourceAdapter");
           if (typeof body.text !== "string") throw new ControlRequestError("text is required");
+          // Deliberately unbounded: the text goes to the transcript and the
+          // durable turn row; the signed MCP token does not carry it at all
+          // (only what `set_agent` derives from it, `explicitAgentSwitchTargets`),
+          // so no length here can make the turn's MCP URL overflow the transport.
           const text = body.text;
           const clientMessageId = asClientMessageId(
             requiredText(body.clientMessageId, "clientMessageId"),
@@ -914,6 +957,8 @@ export function createNodeControlHandler(
             topic,
             userId,
             actorUserId,
+            ...(actorTopicScope ? { actorTopicScope } : {}),
+            ...(remoteSession ? { remoteSession } : {}),
             actorLabel,
             vaultUserId,
             sourceAdapter,
@@ -1373,6 +1418,79 @@ export function createNodeControlHandler(
             v: NODE_RUNTIME_CONTRACT_VERSION,
             aborted: topicService.abortTurn(topicId, userId),
           });
+        }
+
+        /**
+         * Hub-routed remote session-comm delivered into one of this node's
+         * rooms: a `tell`/`ask`/`abort` a person on another node addressed to
+         * it through the hub, or the `ask-reply` answering an ask this room
+         * raised. The hub is the only caller (host capability on loopback,
+         * the adapter's relay allowlist for a worker) and the only party that
+         * authorized the person; this node re-checks only what is its own —
+         * the room exists in the caller's workspace, the principal is a
+         * participant, the room has an AI to tell/ask, the depth is within
+         * its limit — and claims the hub's `requestId` so a retried delivery
+         * is acknowledged, not queued twice (200 + `replayed: true`).
+         */
+        const runtimeSessionCommInboxMatch = runtimePath.match(
+          /^\/topics\/([^/]+)\/session-comm\/inbox$/,
+        );
+        if (runtimeSessionCommInboxMatch && req.method === "POST") {
+          /*
+           * Every body this route answers with — success *and* failure — has to
+           * carry `v: 1`, so no throw may escape into the control plane's
+           * common catch, which answers with the versionless `{ok:false,error}`
+           * envelope. `requiredText`, `decodeURIComponent` and the delivery
+           * itself can all throw, so the whole route is fenced here and each
+           * class of fault is re-answered in the contract's envelope.
+           */
+          try {
+            const body = await bodyRecord(req);
+            if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) {
+              return runtimeJsonError(400, "Unsupported v");
+            }
+            const topicId = decodeURIComponent(runtimeSessionCommInboxMatch[1]);
+            const topic = getTopic(topicId);
+            if (!topic || !topicInRequestScope(req, topic)) {
+              return runtimeJsonError(404, "Topic not found");
+            }
+            const userId = requiredText(body.userId, "userId");
+            if (!topic.participants.some((participant) => participant.userId === userId)) {
+              return runtimeJsonError(404, "Topic not found");
+            }
+            const delivery = parseRemoteSessionInboxDelivery(body);
+            const result = await deliverRemoteSessionInbox({ topic, userId, delivery });
+            if (!result.ok) return runtimeJsonError(result.status, result.error, result.code);
+            return Response.json(
+              {
+                ok: true,
+                v: NODE_RUNTIME_CONTRACT_VERSION,
+                accepted: true,
+                requestId: delivery.requestId,
+                replayed: result.replayed,
+              },
+              { status: result.replayed ? 200 : 202 },
+            );
+          } catch (error) {
+            if (error instanceof RemoteSessionInboxError) {
+              return runtimeJsonError(error.status, error.message);
+            }
+            if (error instanceof ControlRequestError) {
+              return runtimeJsonError(400, error.message);
+            }
+            // `decodeURIComponent` on a malformed path segment (`/topics/%/…`)
+            // throws URIError: bad input from the caller, not a node fault.
+            if (error instanceof URIError) {
+              return runtimeJsonError(400, "Malformed URL encoding");
+            }
+            // Unclassified: a bug or an unavailable dependency. Log the detail
+            // locally and return nothing that could leak internals.
+            logger.error(
+              { err: error, method: req.method, path },
+              "control: unhandled session-comm inbox error",
+            );
+            return runtimeJsonError(500, "Internal control-plane error");
+          }
         }
 
         /**

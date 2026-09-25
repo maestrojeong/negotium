@@ -3,7 +3,9 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  type AgentKind,
   errorResult,
+  isExplicitAgentSwitchTargets,
   logger,
   type McpToolResult,
   type PeerRuntimeBridge,
@@ -154,6 +156,24 @@ export const otiumPeerRuntimeBridge = {
   async selfConfig(request) {
     const hubNode = await resolvePeerNodeByCellId(request.bridge.hubCellId).catch(() => null);
     if (!hubNode) return errorResult("Error: Hub node is no longer attached.");
+    // The hub authorizes `set_agent` against the derived field alone; the raw
+    // user prompt never crosses the peer boundary. A malformed list (only
+    // possible from a mis-built in-process context) is forwarded as "nothing
+    // was asked for" rather than dropped, so the hub still sees a derived
+    // field and never falls back to a prompt it does not have — fail closed.
+    const switchTargets = request.explicitAgentSwitchTargets;
+    let explicitAgentSwitchTargets: AgentKind[] | undefined;
+    if (switchTargets !== undefined) {
+      if (isExplicitAgentSwitchTargets(switchTargets)) {
+        explicitAgentSwitchTargets = [...switchTargets];
+      } else {
+        logger.warn(
+          { tool: request.tool, hostQueryId: request.bridge.hostQueryId },
+          "otium bridge: malformed explicitAgentSwitchTargets; forwarding an empty list",
+        );
+        explicitAgentSwitchTargets = [];
+      }
+    }
     try {
       const token = await mintPeerToken(hubNode);
       const response = await fetch(
@@ -169,7 +189,7 @@ export const otiumPeerRuntimeBridge = {
             userId: request.userId,
             tool: request.tool,
             input: request.input,
-            ...(request.currentUserPrompt ? { currentUserPrompt: request.currentUserPrompt } : {}),
+            ...(explicitAgentSwitchTargets ? { explicitAgentSwitchTargets } : {}),
           }),
           signal: AbortSignal.timeout(PEER_BRIDGE_TIMEOUT_MS),
         },

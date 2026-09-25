@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseSessionCommContext } from "#mcp/session-comm/context";
+import { encodeRemoteSessionGrantArg } from "#runtime/remote-session-grant";
 
 describe("parseSessionCommContext", () => {
   test("parses an explicit standalone context", () => {
@@ -46,5 +47,79 @@ describe("parseSessionCommContext", () => {
     expect(() =>
       parseSessionCommContext(["--agent=unknown"], { userId: "default", agent: "claude" }),
     ).toThrow("Invalid --agent");
+  });
+
+  test("carries the hub's actor assertion for the otium surface", () => {
+    const scope = { visibleNodeTopicIds: ["v"], ownedNodeTopicIds: ["v"] };
+    const encoded = Buffer.from(JSON.stringify(scope), "utf-8").toString("base64url");
+    const context = parseSessionCommContext(
+      ["--user-id=local", "--actor-user-id=person", `--actor-topic-scope=${encoded}`],
+      { userId: "default", agent: "claude" },
+    );
+    expect(context.actorUserId).toBe("person");
+    expect(context.actorTopicScope).toEqual(scope);
+    expect(
+      parseSessionCommContext([], { userId: "default", agent: "claude" }).actorTopicScope,
+    ).toBeUndefined();
+    // A malformed assertion is a broken launch, never "no assertion".
+    expect(() =>
+      parseSessionCommContext(["--actor-topic-scope=not-json"], {
+        userId: "default",
+        agent: "claude",
+      }),
+    ).toThrow("Invalid --actor-topic-scope arg");
+    const wrongShape = Buffer.from(JSON.stringify({ visibleNodeTopicIds: "v" })).toString(
+      "base64url",
+    );
+    expect(() =>
+      parseSessionCommContext([`--actor-topic-scope=${wrongShape}`], {
+        userId: "default",
+        agent: "claude",
+      }),
+    ).toThrow("Invalid --actor-topic-scope arg");
+    // The argv path enforces the same caps as the gateway and the tokens.
+    const oversized = Buffer.from(
+      JSON.stringify({
+        visibleNodeTopicIds: Array.from({ length: 201 }, (_, i) => `n-${i}`),
+        ownedNodeTopicIds: [],
+      }),
+    ).toString("base64url");
+    expect(() =>
+      parseSessionCommContext([`--actor-topic-scope=${oversized}`], {
+        userId: "default",
+        agent: "claude",
+      }),
+    ).toThrow("Invalid --actor-topic-scope arg");
+  });
+
+  test("parses and validates the hub's remote-session grant", () => {
+    const grant = { hubUrl: "https://hub.example", capability: "rsc1.cGF5bG9hZA.c2lnbmF0dXJl" };
+    const encoded = encodeRemoteSessionGrantArg(grant);
+    expect(
+      parseSessionCommContext([`--remote-session-grant=${encoded}`], {
+        userId: "default",
+        agent: "claude",
+      }).remoteSession,
+    ).toEqual(grant);
+    // Absent means absent — never an empty or default grant.
+    expect(
+      "remoteSession" in parseSessionCommContext([], { userId: "default", agent: "claude" }),
+    ).toBe(false);
+    for (const bad of [
+      "not-base64",
+      Buffer.from(
+        JSON.stringify({ hubUrl: "http://hub.example", capability: "rsc1.a.b" }),
+      ).toString("base64url"),
+      Buffer.from(JSON.stringify({ hubUrl: "https://hub.example", capability: "x.y.z" })).toString(
+        "base64url",
+      ),
+    ]) {
+      expect(() =>
+        parseSessionCommContext([`--remote-session-grant=${bad}`], {
+          userId: "default",
+          agent: "claude",
+        }),
+      ).toThrow("Invalid --remote-session-grant");
+    }
   });
 });

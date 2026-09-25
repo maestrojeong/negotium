@@ -50,7 +50,12 @@ export interface PeerRuntimeSelfConfigRequest {
   userId: string;
   tool: string;
   input: Record<string, unknown>;
-  currentUserPrompt?: string;
+  /**
+   * Agents the current user message explicitly asked to switch to, derived
+   * on the executing node from the full prompt; the hub authorizes
+   * `set_agent` against it. The raw prompt is not carried.
+   */
+  explicitAgentSwitchTargets?: readonly AgentKind[];
 }
 
 export interface PeerRuntimeBridge {

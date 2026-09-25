@@ -16,9 +16,13 @@ import {
 } from "#storage/runtime-gateway-submissions";
 import { requestRuntimeTurnAbort } from "#storage/runtime-leases";
 import { getRuntimeTopicEpoch } from "#storage/runtime-topic-state";
-import { mergeRuntimeUserTurnRequest } from "#storage/runtime-turn-requests";
+import {
+  getActiveRuntimeUserTurnRequest,
+  mergeRuntimeUserTurnRequest,
+} from "#storage/runtime-turn-requests";
 import { recordTopicHostMcpGrant } from "#storage/topic-host-mcp-grants";
 import { recordTopicToolCapabilities } from "#storage/topic-tool-capabilities";
+import type { ActorTopicScope, RemoteSessionGrant } from "#types";
 import type { MessageDto, TopicDto } from "#types/api";
 
 export interface SubmitRuntimeGatewayTurnParams {
@@ -27,6 +31,10 @@ export interface SubmitRuntimeGatewayTurnParams {
   userId: string;
   /** Authenticated upstream author retained independently from execution. */
   actorUserId?: string;
+  /** Host-asserted rooms the author may reach on this node; absent = current room only. */
+  actorTopicScope?: ActorTopicScope;
+  /** Hub-issued per-turn authority for remote session-comm; absent = fail-closed. */
+  remoteSession?: RemoteSessionGrant;
   actorLabel?: string;
   /** Topic owner's credential namespace. */
   vaultUserId?: string;
@@ -275,6 +283,13 @@ export function submitRuntimeGatewayTurn(
     payloadHash,
   };
 
+  // Whether this message steers (aborts and resumes) the turn a worker holds
+  // right now. Decided by what the merge actually absorbed, so it cannot drift
+  // from the merge rule: the active request folds into the new batch only when
+  // the same person is speaking (a different person, or a turn whose actor was
+  // never recorded, stays a separate queue entry), and only a folded turn has
+  // a replacement batch to resume from after the abort.
+  let steersActiveTurn = false;
   try {
     db.transaction(() => {
       if (!params.silent) appendApiMessage(message, { notify: false });
@@ -283,7 +298,8 @@ export function submitRuntimeGatewayTurn(
       // a silent message is indistinguishable from a normal one everywhere
       // except that no turn is queued for it.
       if (respond) {
-        mergeRuntimeUserTurnRequest({
+        const active = getActiveRuntimeUserTurnRequest(params.topic.id);
+        const merged = mergeRuntimeUserTurnRequest({
           topicId: params.topic.id,
           userId: params.userId,
           userMessages: [
@@ -305,6 +321,10 @@ export function submitRuntimeGatewayTurn(
             loggedUserMessageCount: 0,
             vaultUserId: params.vaultUserId,
             actorUserId,
+            ...(params.actorTopicScope ? { actorTopicScope: params.actorTopicScope } : {}),
+            // Like the assertion: describes the caller's authority for this
+            // turn, rides the durable row, and is outside the idempotency hash.
+            ...(params.remoteSession ? { remoteSession: params.remoteSession } : {}),
             silent: params.silent === true,
             // The adapter's capability grant has to ride the durable request:
             // the turn worker builds the runtime MCP from `execution`, so a
@@ -315,6 +335,8 @@ export function submitRuntimeGatewayTurn(
             ...(params.threadRootId ? { threadRootId: params.threadRootId } : {}),
           },
         });
+        steersActiveTurn =
+          active !== null && merged.supersededRequestIds.includes(active.requestId);
       }
       if (hostMcpServers !== undefined) {
         recordTopicHostMcpGrant(params.topic.id, hostMcpServers);
@@ -346,14 +368,18 @@ export function submitRuntimeGatewayTurn(
     throw new Error("failed to persist gateway turn idempotency record");
   }
 
-  // A new human message steers the active topic turn. The durable replacement
-  // is committed first; the provider observes this abort on its next lease
-  // heartbeat and the worker resumes the merged batch after unwind.
+  // A new message from the *same* person steers the active topic turn. The
+  // durable replacement is committed first; the provider observes this abort
+  // on its next lease heartbeat and the worker resumes the merged batch after
+  // unwind.
   //
   // That resume is the whole reason the abort is safe, so it is conditional on
-  // the merge: with `respond: false` there is no replacement batch, and
-  // aborting would kill a running answer with nothing left to resume it.
-  if (respond) requestRuntimeTurnAbort(params.topic.id, "internal");
+  // the merge having absorbed the active turn: with `respond: false` there is
+  // no replacement batch, and when another person (or a turn whose actor is
+  // unknown) is being answered, that answer is left to finish — the new
+  // request waits its turn in the queue and runs with its own actor and
+  // assertion.
+  if (steersActiveTurn) requestRuntimeTurnAbort(params.topic.id, "internal");
 
   return { ...submission, message, deduplicated: false };
 }

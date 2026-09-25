@@ -5,8 +5,8 @@ import {
   logger,
   type PeerForwardArgs,
   type PeerForwardResult,
+  type PeerRemoteReplyRoute,
   type PeerSessionBridge,
-  type RemoteReplyRoute,
 } from "@negotium/core";
 import {
   listPeerNodes,
@@ -290,7 +290,7 @@ async function sessions(userId: string, sourceQueryId?: string, fromTopicId?: st
 }
 
 async function reply(
-  route: RemoteReplyRoute,
+  route: PeerRemoteReplyRoute,
   sourceTitle: string,
   replyText: string,
   kind: "reply" | "error",

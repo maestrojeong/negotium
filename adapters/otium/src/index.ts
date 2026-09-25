@@ -16,6 +16,7 @@ import {
   NEGOTIUM_VERSION,
   registerPeerRuntimeBridge,
   registerPeerSessionBridge,
+  registerRuntimeGatewayCapability,
   runtimeBus,
   setDefaultSurfaceScope,
   setSurfaceScopeRequired,
@@ -129,6 +130,12 @@ function acquireGlobalOtiumServices(): () => void {
     const sessionBridgeIpc = startPeerSessionBridgeIpc(otiumPeerSessionBridge);
     const canonicalMcpBridge = startCanonicalMcpBridge();
     const stopPeerReplyOutbox = startPeerReplyOutboxWorker();
+    // The hub reads `/health` through this adapter's relay forward, so the
+    // relay-side half of remote session-comm (the inbox route in the
+    // gateway-forward allowlist) is advertised from here: a worker whose
+    // adapter predates the route shows `remote-session-comm` alone and the
+    // hub knows not to route to it.
+    const unregisterRelayCapability = registerRuntimeGatewayCapability("remote-session-comm-relay");
     const uninstallFileHooks = installPeerFileHooks();
     const unsubscribeTopicCleanup = runtimeBus().subscribe((event) => {
       if (event.type !== "topic-deleted") return;
@@ -154,6 +161,7 @@ function acquireGlobalOtiumServices(): () => void {
         sessionBridgeIpc.stop();
         canonicalMcpBridge.stop();
         stopPeerReplyOutbox();
+        unregisterRelayCapability();
         uninstallFileHooks();
       },
     };

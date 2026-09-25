@@ -1,3 +1,4 @@
+import type { ActorTopicScope, RemoteSessionGrant } from "#types";
 import type { MessageDto } from "#types/api";
 
 export const RUNTIME_GATEWAY_VERSION = 1 as const;
@@ -114,6 +115,25 @@ export interface RuntimeGatewayTurnInput {
   userId: string;
   /** Product-side actor, when it differs from the execution principal. */
   actorUserId?: string;
+  /**
+   * The node topic ids `actorUserId` may reach on the receiving node, as the
+   * host's membership store sees it. Omitted by hosts that predate it; the
+   * node then confines the turn's cross-room tools to the current room.
+   */
+  actorTopicScope?: ActorTopicScope;
+  /**
+   * Hub-issued per-turn authority for remote (`node/topic`) session-comm:
+   * `{ hubUrl, capability }`. `hubUrl` must be a loopback `http://` or any
+   * `https://` origin (≤ 512 chars); `capability` an opaque `rsc1.` bearer
+   * (≤ 2 KiB) the node presents back to the hub and cannot verify — it holds
+   * no key. It does base64-decode the payload's `e` (expiry) for one purpose,
+   * ordering grants when several requests fold into one turn
+   * (`remoteSessionGrantExpiry`); that value is untrusted and takes part in no
+   * security decision. Omitted
+   * by hosts that predate it or have the feature off; the node then keeps
+   * remote session-comm fail-closed on the `otium` surface. Malformed → 400.
+   */
+  remoteSession?: RemoteSessionGrant;
   actorLabel?: string;
   vaultUserId?: string;
   /** Adapter provenance recorded on the canonical message. */

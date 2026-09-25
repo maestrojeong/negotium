@@ -454,6 +454,9 @@ function initializeApiTopicsSchema(): void {
   if (!tableColumns("api_topics").has("subagent_report_mode")) {
     db.exec("ALTER TABLE api_topics ADD COLUMN subagent_report_mode TEXT NOT NULL DEFAULT 'auto'");
   }
+  if (!tableColumns("api_topics").has("derived_by_user_id")) {
+    db.exec("ALTER TABLE api_topics ADD COLUMN derived_by_user_id TEXT");
+  }
   if (!tableColumns("api_topics").has("memory_topic_id")) {
     db.exec("ALTER TABLE api_topics ADD COLUMN memory_topic_id TEXT");
   }
@@ -632,6 +635,7 @@ export interface TopicRow {
   is_fork: number;
   is_subagent: number;
   subagent_report_mode: string | null;
+  derived_by_user_id: string | null;
   visibility: string | null;
   surface: string | null;
   surface_scope: string | null;
@@ -716,6 +720,7 @@ function rowToDto(
     memoryTopicId: r.memory_topic_id ?? undefined,
     memoryKey: r.memory_key ?? undefined,
     isFork: r.is_fork !== 0,
+    ...(r.derived_by_user_id ? { derivedByUserId: r.derived_by_user_id } : {}),
     ...(r.is_subagent !== 0 ? { isSubagent: true } : {}),
     ...(r.is_subagent !== 0
       ? {
@@ -859,8 +864,8 @@ export function upsertTopic(t: TopicDto): void {
       `INSERT INTO api_topics
        (id,title,kind,description,agent,base_model,base_effort,response_policy,
         created_at,last_message_at,parent_topic_id,memory_topic_id,memory_key,is_fork,is_subagent,visibility,surface,
-        surface_scope,subagent_report_mode)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        surface_scope,subagent_report_mode,derived_by_user_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(id) DO UPDATE SET
        title = excluded.title,
        kind = excluded.kind,
@@ -882,7 +887,10 @@ export function upsertTopic(t: TopicDto): void {
        -- assignment: an update may fill in a scope that was unknown when the
        -- room was created, but may never move a room to another workspace.
        surface_scope = COALESCE(api_topics.surface_scope, excluded.surface_scope),
-       subagent_report_mode = excluded.subagent_report_mode`,
+       subagent_report_mode = excluded.subagent_report_mode,
+       -- Who asked for the derive is a fact about creation; a later update
+       -- that omits it must not erase it.
+       derived_by_user_id = COALESCE(excluded.derived_by_user_id, api_topics.derived_by_user_id)`,
     ).run(
       t.id,
       t.title,
@@ -907,6 +915,7 @@ export function upsertTopic(t: TopicDto): void {
       normalizeTopicSurface(t.surface ?? defaultTopicSurface()),
       surfaceScopeForWrite(t),
       t.subagentReportMode ?? "auto",
+      t.derivedByUserId ?? null,
     );
     db.query("DELETE FROM topic_members WHERE topic_id = ?").run(t.id);
     for (const participant of t.participants) {
@@ -1305,6 +1314,16 @@ export function revokeSubagentTellTarget(subagentTopicId: string, targetTopicId:
  * Direct children move to the deleted topic's parent (or become roots) rather
  * than retaining a dangling parent id that would break memory-origin lookup.
  */
+/** Ids of the subagent worker rooms spawned directly from `parentTopicId`. */
+export function listSubagentChildTopicIds(parentTopicId: string): string[] {
+  return db
+    .query<{ id: string }, string>(
+      "SELECT id FROM api_topics WHERE parent_topic_id = ? AND is_subagent = 1 ORDER BY created_at",
+    )
+    .all(parentTopicId)
+    .map((row) => row.id);
+}
+
 export function reparentTopicChildren(
   deletedTopicId: string,
   replacementParentTopicId: string | null,

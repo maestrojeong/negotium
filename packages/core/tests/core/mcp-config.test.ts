@@ -260,6 +260,160 @@ describe("mcp-config: playwright transport selection per agent", () => {
     expect(hostedContext(servers.vault, "vault").userId).toBe("vault-owner");
   });
 
+  test("the hub's actor room assertion rides both the runtime and session-comm tokens", () => {
+    const actorTopicScope = { visibleNodeTopicIds: ["n1", "n2"], ownedNodeTopicIds: ["n2"] };
+    const forum = getForumMcpServers({
+      userId: "local",
+      actorUserId: "product-member",
+      actorTopicScope,
+      session: "shared-room",
+      topicId: "shared-topic",
+      agent: "codex",
+      enabled: [],
+    });
+    expect(runtimeContext(forum.runtime)).toMatchObject({
+      actorUserId: "product-member",
+      actorTopicScope,
+    });
+    expect(hostedContext(forum["session-comm"], "session-comm")).toMatchObject({
+      userId: "local",
+      actorUserId: "product-member",
+      actorTopicScope,
+    });
+    // The manager bundle (a person's General) carries it too: that is where
+    // "which rooms do I have?" is asked most.
+    const manager = getManagerMcpServers({
+      userId: "person",
+      actorUserId: "person",
+      actorTopicScope,
+      topicId: "general-topic",
+      agent: "codex",
+    });
+    expect(runtimeContext(manager.runtime).actorTopicScope).toEqual(actorTopicScope);
+    // Without one the token simply has no assertion — the tools fail closed.
+    const bare = getForumMcpServers({
+      userId: "local",
+      session: "shared-room",
+      topicId: "shared-topic",
+      agent: "codex",
+      enabled: [],
+    });
+    expect(runtimeContext(bare.runtime).actorTopicScope).toBeUndefined();
+    expect(hostedContext(bare["session-comm"], "session-comm").actorTopicScope).toBeUndefined();
+  });
+
+  test("the hub's remote-session grant rides only the session-comm token and its stdio argv", () => {
+    const remoteSession = { hubUrl: "https://hub.example", capability: "rsc1.cGF5bG9hZA.c2ln" };
+    const forum = getForumMcpServers({
+      userId: "local",
+      actorUserId: "product-member",
+      remoteSession,
+      session: "shared-room",
+      topicId: "shared-topic",
+      agent: "codex",
+      enabled: ["wiki"],
+    });
+    expect(hostedContext(forum["session-comm"], "session-comm").remoteSession).toEqual(
+      remoteSession,
+    );
+    // Not on the runtime token (its tools never address a remote room) and
+    // not on any other hosted surface: no URL budget spent where it is unused.
+    expect(JSON.stringify(runtimeContext(forum.runtime))).not.toContain("rsc1.");
+    expect(hostedContext(forum.wiki, "wiki").remoteSession).toBeUndefined();
+    const manager = getManagerMcpServers({
+      userId: "person",
+      actorUserId: "person",
+      remoteSession,
+      topicId: "general-topic",
+      agent: "codex",
+    });
+    expect(hostedContext(manager["session-comm"], "session-comm").remoteSession).toEqual(
+      remoteSession,
+    );
+    // Without one, the token has no grant — the remote branches fail closed.
+    const bare = getForumMcpServers({
+      userId: "local",
+      session: "shared-room",
+      topicId: "shared-topic",
+      agent: "codex",
+      enabled: [],
+    });
+    expect(hostedContext(bare["session-comm"], "session-comm").remoteSession).toBeUndefined();
+
+    const previous = process.env.NEGOTIUM_BUILTIN_MCP_TRANSPORT;
+    process.env.NEGOTIUM_BUILTIN_MCP_TRANSPORT = "stdio";
+    try {
+      const stdio = getForumMcpServers({
+        userId: "local",
+        remoteSession,
+        session: "argv",
+        topicId: "argv-topic",
+        agent: "codex",
+        enabled: ["session-comm"],
+      });
+      const args = (stdio["session-comm"] as { args: string[] }).args;
+      const arg = args.find((entry) => entry.startsWith("--remote-session-grant="));
+      expect(arg).toBeDefined();
+      expect(
+        JSON.parse(
+          Buffer.from(arg!.slice("--remote-session-grant=".length), "base64url").toString(),
+        ),
+      ).toEqual(remoteSession);
+      expect(
+        (
+          getForumMcpServers({
+            userId: "local",
+            session: "argv",
+            topicId: "argv-topic",
+            agent: "codex",
+            enabled: ["session-comm"],
+          })["session-comm"] as { args: string[] }
+        ).args.some((a) => a.startsWith("--remote-session-grant=")),
+      ).toBe(false);
+      // A malformed grant from an in-process caller is refused, not spawned.
+      expect(() =>
+        getForumMcpServers({
+          userId: "local",
+          remoteSession: { hubUrl: "http://hub.example", capability: "rsc1.a.b" },
+          session: "argv",
+          topicId: "argv-topic",
+          agent: "codex",
+          enabled: ["session-comm"],
+        }),
+      ).toThrow("hubUrl");
+    } finally {
+      if (previous === undefined) delete process.env.NEGOTIUM_BUILTIN_MCP_TRANSPORT;
+      else process.env.NEGOTIUM_BUILTIN_MCP_TRANSPORT = previous;
+    }
+  });
+
+  test("the runtime token carries the switch targets derived from the whole prompt, not the prompt", () => {
+    const longPreamble = "가".repeat(5_000);
+    const asked = getForumMcpServers({
+      userId: "local",
+      session: "long-room",
+      topicId: "long-topic",
+      agent: "claude",
+      currentUserPrompt: `${longPreamble}\nswitch to codex please`,
+      enabled: [],
+    });
+    const askedContext = runtimeContext(asked.runtime);
+    expect(askedContext.explicitAgentSwitchTargets).toEqual(["codex"]);
+    expect(askedContext).not.toHaveProperty("currentUserPrompt");
+    // A prompt of any length fits: the URL is bounded by the fixed fields.
+    expect(String((asked.runtime as { url: string }).url).length).toBeLessThan(3_000);
+
+    const notAsked = getForumMcpServers({
+      userId: "local",
+      session: "long-room",
+      topicId: "long-topic",
+      agent: "claude",
+      currentUserPrompt: `${longPreamble}\nexplain the codex config code`,
+      enabled: [],
+    });
+    expect(runtimeContext(notAsked.runtime)).not.toHaveProperty("explicitAgentSwitchTargets");
+  });
+
   test("manager/codex omits heavyweight browser tools even with a port", () => {
     const topicId = "private-general-topic";
     const servers = getManagerMcpServers({
@@ -653,6 +807,48 @@ describe("mcp-config: playwright transport selection per agent", () => {
       enabled: ["wiki"],
     });
     expect(hostedContext(servers.wiki, "wiki").wikiTopicId).toBe("__archiver_deleted-topic");
+  });
+
+  test("the stdio session-comm refuses an oversized assertion instead of building argv", () => {
+    const previous = process.env.NEGOTIUM_BUILTIN_MCP_TRANSPORT;
+    process.env.NEGOTIUM_BUILTIN_MCP_TRANSPORT = "stdio";
+    try {
+      const valid = { visibleNodeTopicIds: ["n1"], ownedNodeTopicIds: ["n1"] };
+      const servers = getForumMcpServers({
+        userId,
+        actorTopicScope: valid,
+        session: "argv",
+        topicId: "argv-topic",
+        agent: "codex",
+        enabled: ["session-comm"],
+      });
+      const args = (servers["session-comm"] as { args: string[] }).args;
+      const arg = args.find((entry) => entry.startsWith("--actor-topic-scope="));
+      expect(arg).toBeDefined();
+      expect(
+        JSON.parse(Buffer.from(arg!.slice("--actor-topic-scope=".length), "base64url").toString()),
+      ).toEqual(valid);
+      // An in-process caller handing over an unvalidated, over-cap object
+      // gets an error here rather than a child that fails to spawn (E2BIG).
+      // Short ids keep the runtime URL under its own budget, so what refuses
+      // is the argv encoder, not the URL check that runs before it.
+      expect(() =>
+        getForumMcpServers({
+          userId,
+          actorTopicScope: {
+            visibleNodeTopicIds: Array.from({ length: 201 }, (_, i) => `n-${i}`),
+            ownedNodeTopicIds: [],
+          },
+          session: "argv",
+          topicId: "argv-topic",
+          agent: "codex",
+          enabled: ["session-comm"],
+        }),
+      ).toThrow("at most 200");
+    } finally {
+      if (previous === undefined) delete process.env.NEGOTIUM_BUILTIN_MCP_TRANSPORT;
+      else process.env.NEGOTIUM_BUILTIN_MCP_TRANSPORT = previous;
+    }
   });
 
   test("built-in MCP transport can roll back to stdio", () => {

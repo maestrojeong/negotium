@@ -7,6 +7,21 @@
  * gracefully and `peerSessionsForUser` contributes nothing to peek listings.
  */
 
+import {
+  MAX_REMOTE_SESSION_REPLY_TOKEN_LENGTH,
+  normalizeHubUrl,
+  REMOTE_SESSION_REPLY_TOKEN_PATTERN,
+} from "#runtime/remote-session-grant";
+import {
+  deliverHubRemoteReply,
+  type HubRemoteReplyRoute,
+} from "#runtime/remote-session-reply-outbox";
+
+const MAX_ROUTE_REQUEST_ID_LENGTH = 200;
+const MAX_ROUTE_LABEL_LENGTH = 300;
+
+export type { HubRemoteReplyRoute };
+
 export interface PeerForwardArgs {
   action: "tell" | "ask" | "abort";
   toNode: string;
@@ -25,12 +40,68 @@ export interface PeerForwardArgs {
 
 export type PeerForwardResult = { ok: true } | { ok: false; error: string };
 
-export interface RemoteReplyRoute {
+/** Legacy adapter-owned route: the answer goes back over the Central peer protocol. */
+export interface PeerRemoteReplyRoute {
+  via?: undefined;
   nodeName: string;
   nodeCellId: string;
   topicId: string;
   userId: string;
   requestId: string;
+}
+
+/**
+ * Where a remote ask's answer goes. A hub-routed ask (`via: "hub"`) carries
+ * the hub URL and the hub's one-shot reply token and needs no adapter: core
+ * posts the answer itself from a durable outbox. The legacy peer route stays
+ * for the adapter bridge.
+ */
+export type RemoteReplyRoute = PeerRemoteReplyRoute | HubRemoteReplyRoute;
+
+export function isHubRemoteReplyRoute(route: RemoteReplyRoute): route is HubRemoteReplyRoute {
+  return route.via === "hub";
+}
+
+/**
+ * Strict check for a route read from an inbox entry or back from storage.
+ * The route names where a bearer (`token`) will be POSTed, so `hubUrl` obeys
+ * exactly the turn grant's rule (`normalizeHubUrl`: https, or loopback http;
+ * no credentials/query/fragment; ≤ 512 chars) and the token must be shaped
+ * like an `rsr1` token within the capability length cap. Anything else is
+ * not a route at all.
+ */
+export function parseHubRemoteReplyRoute(value: unknown): HubRemoteReplyRoute | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const route = value as Partial<HubRemoteReplyRoute>;
+  if (
+    route.via !== "hub" ||
+    typeof route.hubUrl !== "string" ||
+    typeof route.token !== "string" ||
+    typeof route.nodeName !== "string" ||
+    typeof route.topicId !== "string" ||
+    typeof route.requestId !== "string"
+  ) {
+    return null;
+  }
+  const requestId = route.requestId.trim();
+  const nodeName = route.nodeName.trim();
+  const topicId = route.topicId.trim();
+  const token = route.token.trim();
+  if (
+    !requestId ||
+    requestId.length > MAX_ROUTE_REQUEST_ID_LENGTH ||
+    !nodeName ||
+    nodeName.length > MAX_ROUTE_LABEL_LENGTH ||
+    !topicId ||
+    topicId.length > MAX_ROUTE_LABEL_LENGTH ||
+    token.length > MAX_REMOTE_SESSION_REPLY_TOKEN_LENGTH ||
+    !REMOTE_SESSION_REPLY_TOKEN_PATTERN.test(token)
+  ) {
+    return null;
+  }
+  const hubUrl = normalizeHubUrl(route.hubUrl.trim(), "remoteReply.hubUrl");
+  if ("error" in hubUrl) return null;
+  return { via: "hub", hubUrl: hubUrl.url, token, nodeName, topicId, requestId };
 }
 
 export interface PeerSessionBridge {
@@ -46,7 +117,7 @@ export interface PeerSessionBridge {
     fromTopicId?: string,
   ): Promise<PeerSessionsResult>;
   reply(
-    route: RemoteReplyRoute,
+    route: PeerRemoteReplyRoute,
     sourceTitle: string,
     replyText: string,
     kind: "reply" | "error",
@@ -64,7 +135,7 @@ type IpcRequest =
   | { action: "sessions"; userId: string; sourceQueryId?: string; fromTopicId?: string }
   | {
       action: "reply";
-      route: RemoteReplyRoute;
+      route: PeerRemoteReplyRoute;
       sourceTitle: string;
       replyText: string;
       kind: "reply" | "error";
@@ -161,6 +232,10 @@ export async function deliverPeerReply(
   replyText: string,
   kind: "reply" | "error",
 ): Promise<boolean> {
+  // Hub-routed answers need no adapter and work on a loopback node too.
+  if (isHubRemoteReplyRoute(route)) {
+    return deliverHubRemoteReply(route, sourceTitle, replyText, kind);
+  }
   if (activeBridge) return activeBridge.reply(route, sourceTitle, replyText, kind);
   return (
     (

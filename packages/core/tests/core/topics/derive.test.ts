@@ -10,6 +10,7 @@ import { appendApiMessage, getAllMessagesForTopic } from "#storage/api-messages"
 import { deleteApiTopicConfig, getApiTopicConfig } from "#storage/api-topic-config";
 import {
   deleteTopic,
+  getTopic,
   getTopicSessionId,
   setTopicSessionId,
   upsertTopic,
@@ -207,6 +208,53 @@ describe("createDerivedTopic", () => {
       if (childId) {
         deleteTopic(childId);
         rmSync(resolveTopicWorkspaceDir(childId), { recursive: true, force: true });
+      }
+      deleteTopic(sourceTopicId);
+    }
+  });
+
+  test("spawn and fork remember the person who asked when run under a shared principal", async () => {
+    const sourceTopicId = randomUUID();
+    const principal = `principal-${randomUUID()}`;
+    const person = `person-${randomUUID()}`;
+    const now = new Date().toISOString();
+    upsertTopic({
+      id: sourceTopicId,
+      title: `derived-by-source-${randomUUID()}`,
+      kind: "agent",
+      agent: "claude",
+      defaultModel: "sonnet",
+      defaultEffort: "medium",
+      aiMode: "always",
+      participants: [{ userId: principal, role: "owner" }],
+      createdAt: now,
+      lastMessageAt: now,
+    });
+    const created: string[] = [];
+    try {
+      const spawned = await createDerivedTopic(sourceTopicId, principal, false, {
+        derivedByUserId: person,
+      });
+      const forked = await createDerivedTopic(sourceTopicId, principal, true, {
+        derivedByUserId: person,
+      });
+      const plain = await createDerivedTopic(sourceTopicId, principal, false);
+      for (const topic of [spawned, forked, plain]) if (topic) created.push(topic.id);
+      // Node ownership is unchanged — the principal still owns the child; the
+      // person is recorded beside it for whoever mirrors the room.
+      expect(spawned?.participants).toEqual([{ userId: principal, role: "owner" }]);
+      expect(spawned?.derivedByUserId).toBe(person);
+      expect(getTopic(spawned!.id)?.derivedByUserId).toBe(person);
+      expect(forked?.derivedByUserId).toBe(person);
+      expect(getTopic(forked!.id)?.derivedByUserId).toBe(person);
+      expect(plain?.derivedByUserId).toBeUndefined();
+      // A later plain update of the row does not erase the fact.
+      upsertTopic({ ...getTopic(spawned!.id)!, derivedByUserId: undefined, title: "renamed" });
+      expect(getTopic(spawned!.id)?.derivedByUserId).toBe(person);
+    } finally {
+      for (const id of created) {
+        deleteApiTopicConfig(id);
+        deleteTopic(id);
       }
       deleteTopic(sourceTopicId);
     }

@@ -172,6 +172,44 @@ export interface PeerRuntimeBridgeContext {
   canSpawnSubagents: boolean;
 }
 
+/**
+ * The rooms the turn's human actor may reach on this node, asserted by the
+ * hub that owns per-person membership for the `otium` surface.
+ *
+ * Node topic ids, valid on the node the turn was submitted to. `visible` is
+ * every room the actor participates in (owner or member); `owned` is the
+ * subset the actor owns. The assertion rides the signed per-turn MCP token,
+ * so the agent can never widen it. With one, it is authoritative: reachable is
+ * exactly the current room plus `visible`, owned exactly `owned` — the node
+ * adds nothing of its own, not even subagent lineage. A turn without one
+ * (older hub, or a turn no person started: cron, self-schedule, a subagent's
+ * spawn/report/follow-up) is fail-closed to the current room plus the node's
+ * own subagent lineage (direct parent, `grant_subagent_tell` targets, own
+ * child workers).
+ */
+export interface ActorTopicScope {
+  visibleNodeTopicIds: string[];
+  ownedNodeTopicIds: string[];
+}
+
+/**
+ * Hub-issued authority for the `node/topic` branches of `session-comm` on
+ * the `otium` surface, one per turn. `capability` is an opaque bearer
+ * (`rsc1.<payload>.<hmac>`) only the hub can verify: it binds the person who
+ * spoke, the origin room and this turn's request id, and the hub re-checks
+ * the person's membership of the origin and target rooms on every call. The
+ * node holds no key, so it can neither mint nor verify one; the only thing it
+ * reads out of the payload is `e` (expiry), base64-decoded untrusted to order
+ * grants when several requests fold into one turn. `hubUrl` is where the
+ * node presents it (`/api/v1/session-comm/remote/*`). Absent — an older hub,
+ * a hub with the feature off, or a turn no person started (cron,
+ * self-schedule, subagent lineage) — remote session-comm stays fail-closed.
+ */
+export interface RemoteSessionGrant {
+  hubUrl: string;
+  capability: string;
+}
+
 export interface AgentQueryOptions {
   agent: AgentKind;
   prompt: string;
@@ -188,6 +226,10 @@ export interface AgentQueryOptions {
   userId?: string;
   /** Product actor identity when execution uses a canonical node principal. */
   actorUserId?: string;
+  /** Hub-asserted rooms the product actor may reach; absent means fail-closed. */
+  actorTopicScope?: ActorTopicScope;
+  /** Hub-issued per-turn authority for remote (`node/topic`) session-comm. */
+  remoteSession?: RemoteSessionGrant;
   /** Credential namespace when it differs from the execution principal. */
   vaultUserId?: string;
   session?: string;

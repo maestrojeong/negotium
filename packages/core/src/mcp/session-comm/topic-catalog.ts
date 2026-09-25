@@ -43,6 +43,12 @@ export interface SessionTargetCatalogHost<TAgent extends string = string> {
    * surface: terminal with terminal, telegram with telegram, otium with otium.
    */
   readonly currentSurface?: string;
+  /**
+   * Drop rows with no AI agent entirely instead of listing them as targets
+   * that every messaging tool then refuses. The current room and manager rooms
+   * are always dropped; this adds AI-off rooms for surfaces that want it.
+   */
+  readonly excludeAgentless?: boolean;
   readonly isAgent: (value: string | null) => value is TAgent;
 }
 
@@ -64,6 +70,7 @@ export function createSessionTargetCatalog<TAgent extends string = string>(
     const eligibleRows = listRows().filter(
       (row) =>
         row.kind !== "manager" &&
+        (!host.excludeAgentless || isAgent(row.agent)) &&
         // Rows predating the surface column report null and stay addressable
         // from the local surface rather than vanishing mid-migration.
         (!currentSurface || (row.surface ?? currentSurface) === currentSurface),

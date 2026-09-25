@@ -9,8 +9,18 @@
  */
 
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { isExplicitAgentSwitchTargets } from "#agents/explicit-agent-switch";
 import { NEGOTIUM_PORT, RUNTIME_MCP_SECRET } from "#platform/config";
-import { type AgentKind, isAgentKind, type PeerRuntimeBridgeContext } from "#types";
+import { logger } from "#platform/logger";
+import { isActorTopicScope } from "#runtime/actor-topic-scope";
+import { isRemoteSessionGrant } from "#runtime/remote-session-grant";
+import {
+  type ActorTopicScope,
+  type AgentKind,
+  isAgentKind,
+  type PeerRuntimeBridgeContext,
+  type RemoteSessionGrant,
+} from "#types";
 
 export const RUNTIME_MCP_KEY = "runtime";
 
@@ -30,18 +40,80 @@ export type HostedMcpSurface = (typeof HOSTED_MCP_SURFACES)[number];
 const TOKEN_TTL_MS = 4 * 60 * 60 * 1000;
 const CLAUDE_MCP_TOOL_TIMEOUT_MS = 600_000;
 
+/**
+ * Hard ceiling on the length of a built-in MCP URL (path plus `?token=...`).
+ *
+ * The signed per-turn token rides the URL query of an `http://127.0.0.1`
+ * request, and `Bun.serve` answers 431 once the request line is too long:
+ * measured on Bun 1.3.14 with a plain `fetch`, a 16,205-character URL is
+ * served (200) and a 16,305-character one is refused (431). The budget stays
+ * 1,869 characters under the last known-good length so the server, the
+ * agent's own client and a slightly different Bun release all have room.
+ *
+ * Real sizes (UUID ids, base64url growth of 4/3 on the JSON payload):
+ * - runtime token, no assertion, every optional field set (peer bridge,
+ *   thread, 64-char title, workspace cwd, all three explicit-switch
+ *   targets): ~1,150-character URL;
+ * - the same with the largest assertion `validateActorTopicScope` admits
+ *   (8,159 bytes of JSON = 208 UUIDs): 12,052–12,055 characters, under this
+ *   budget with ~2,280 characters to spare for an unusually long cwd or title;
+ *   the hosted tokens (`buildHostedMcpSpec`) with the same assertion measure
+ *   12,100–12,118, so neither variant is the "small" one.
+ * The token has no free-text field: the user's prompt never rides it. It used
+ * to, and an uncapped prompt made the assertion cap meaningless (3,000 Korean
+ * characters on top of the maximal assertion gave a 24,009-character URL and
+ * 10,000 gave 52,009 — every built-in MCP unreachable for that turn), while a
+ * capped one broke `set_agent` for any request phrased after the cap. The
+ * prompt's only consumer was that gate, so the node now derives the gate's
+ * answer from the full prompt when it mints the token
+ * (`explicitAgentSwitchTargets`, at most three agent names) and signs that.
+ *
+ * Over budget, {@link buildRuntimeMcpSpec} throws
+ * {@link McpUrlBudgetExceededError} rather than minting a URL that will 431.
+ * Nothing is dropped or trimmed to fit: every remaining field either
+ * authorizes (ids, assertion, switch targets) or changes behaviour (thread,
+ * capabilities, bridge), and a token missing one would widen or alter the
+ * turn, not narrow it.
+ */
+export const MCP_URL_BUDGET_CHARS = 14 * 1024;
+
+export class McpUrlBudgetExceededError extends Error {
+  constructor(
+    readonly surface: string,
+    readonly urlLength: number,
+  ) {
+    super(
+      `built-in MCP URL for "${surface}" is ${urlLength} characters; the transport allows at most ${MCP_URL_BUDGET_CHARS}`,
+    );
+    this.name = "McpUrlBudgetExceededError";
+  }
+}
+
 export interface RuntimeMcpContext {
   /** Canonical principal authorized against this node's topic roster. */
   userId: string;
   /** Product-side human actor when it differs from the execution principal. */
   actorUserId?: string;
+  /**
+   * Hub-asserted rooms `actorUserId` may reach on this node. Signed with the
+   * rest of the context and authoritative when present (no lineage is added);
+   * absent means the tools reach only the current room plus its own subagent
+   * lineage.
+   */
+  actorTopicScope?: ActorTopicScope;
   topicId: string;
   topicTitle: string;
   queryId?: string;
   cwd: string;
   agent: AgentKind;
   model?: string;
-  currentUserPrompt?: string;
+  /**
+   * Agents the current user message explicitly asked to switch to, derived
+   * from the full prompt at mint time (`explicitAgentSwitchTargets`). Signed
+   * with the rest of the context, so the agent cannot grant itself a switch;
+   * absent or empty means `set_agent` is refused this turn.
+   */
+  explicitAgentSwitchTargets?: AgentKind[];
   autoContinue?: boolean;
   /** Capability minted by the adapter. Visual tools are absent unless true. */
   visualTools?: boolean;
@@ -62,6 +134,19 @@ export interface RuntimeMcpContext {
 /** Signed identity/capability context shared by hosted built-in MCP surfaces. */
 export interface HostedMcpContext {
   userId: string;
+  /** Product-side human actor when it differs from the execution principal. */
+  actorUserId?: string;
+  /** Hub-asserted rooms `actorUserId` may reach; see {@link RuntimeMcpContext}. */
+  actorTopicScope?: ActorTopicScope;
+  /**
+   * Hub-issued per-turn authority for remote (`node/topic`) session-comm.
+   * Carried by the `session-comm` audience only. Signed with the rest of the
+   * context so the agent cannot mint or swap one; the capability inside is a
+   * bearer for the hub, which the node cannot verify (it holds no key) and
+   * only ever decodes for the untrusted `e` expiry it uses to order grants
+   * when several requests fold into one turn.
+   */
+  remoteSession?: RemoteSessionGrant;
   topicTitle: string;
   topicId?: string;
   queryId?: string;
@@ -136,9 +221,11 @@ function isRuntimeMcpContext(value: unknown): value is RuntimeMcpContext {
     typeof ctx.agent === "string" &&
     isAgentKind(ctx.agent) &&
     (ctx.actorUserId === undefined || typeof ctx.actorUserId === "string") &&
+    (ctx.actorTopicScope === undefined || isActorTopicScope(ctx.actorTopicScope)) &&
     (ctx.queryId === undefined || typeof ctx.queryId === "string") &&
     (ctx.model === undefined || typeof ctx.model === "string") &&
-    (ctx.currentUserPrompt === undefined || typeof ctx.currentUserPrompt === "string") &&
+    (ctx.explicitAgentSwitchTargets === undefined ||
+      isExplicitAgentSwitchTargets(ctx.explicitAgentSwitchTargets)) &&
     (ctx.autoContinue === undefined || typeof ctx.autoContinue === "boolean") &&
     (ctx.visualTools === undefined || typeof ctx.visualTools === "boolean") &&
     (ctx.fileDeliveryTools === undefined || typeof ctx.fileDeliveryTools === "boolean") &&
@@ -163,6 +250,9 @@ function isHostedMcpContext(value: unknown): value is HostedMcpContext {
     typeof ctx.cwd === "string" &&
     typeof ctx.agent === "string" &&
     isAgentKind(ctx.agent) &&
+    (ctx.actorUserId === undefined || typeof ctx.actorUserId === "string") &&
+    (ctx.actorTopicScope === undefined || isActorTopicScope(ctx.actorTopicScope)) &&
+    (ctx.remoteSession === undefined || isRemoteSessionGrant(ctx.remoteSession)) &&
     (ctx.topicId === undefined || typeof ctx.topicId === "string") &&
     (ctx.queryId === undefined || typeof ctx.queryId === "string") &&
     (ctx.wikiTopicId === undefined || typeof ctx.wikiTopicId === "string") &&
@@ -247,16 +337,33 @@ export function buildRuntimeMcpSpec(
   agent: AgentKind,
   ctx: RuntimeMcpContext,
 ): Record<string, unknown> {
-  const token = issueRuntimeMcpToken(ctx);
   const base = `http://127.0.0.1:${runtimePort}${RUNTIME_MCP_BASE_PATH}`;
-  const query = `token=${encodeURIComponent(token)}`;
-  if (agent === "codex") return { url: `${base}/mcp?${query}` };
+  const query = `token=${encodeURIComponent(issueRuntimeMcpToken(ctx))}`;
+  const url = agent === "codex" ? `${base}/mcp?${query}` : `${base}/sse?${query}`;
+  assertMcpUrlWithinBudget(RUNTIME_MCP_KEY, url, ctx.topicId);
+  if (agent === "codex") return { url };
   return {
     type: "sse" as const,
-    url: `${base}/sse?${query}`,
+    url,
     timeout: CLAUDE_MCP_TOOL_TIMEOUT_MS,
     ...(agent === "maestro" ? { lifecycle: "turn" as const } : {}),
   };
+}
+
+/**
+ * Refuse loudly rather than hand the agent a URL the server will 431. This
+ * fails the turn's MCP setup, which is the safe outcome: the alternative —
+ * minting the token without the fields that do not fit — would silently
+ * widen the turn whenever the field that did not fit was the assertion.
+ */
+function assertMcpUrlWithinBudget(surface: string, url: string, topicId: string | undefined) {
+  if (url.length <= MCP_URL_BUDGET_CHARS) return;
+  const error = new McpUrlBudgetExceededError(surface, url.length);
+  logger.error(
+    { topicId, surface, urlLength: url.length, budget: MCP_URL_BUDGET_CHARS },
+    "built-in MCP URL exceeds the transport budget; refusing to mint the token",
+  );
+  throw error;
 }
 
 function hostedMcpCacheIdentity(surface: HostedMcpSurface, ctx: HostedMcpContext): string {
@@ -289,6 +396,14 @@ function hostedMcpCacheIdentity(surface: HostedMcpSurface, ctx: HostedMcpContext
     case "session-comm":
       semanticContext = {
         userId: ctx.userId,
+        // Who may reach what changes per turn (a different person, or a hub
+        // that has since changed a roster), so a cached server must not carry
+        // an earlier turn's reach into this one.
+        actorUserId: ctx.actorUserId ?? null,
+        actorTopicScope: ctx.actorTopicScope ?? null,
+        // The grant is per turn (bound to this turn's request id), so a
+        // server cached with one must not answer a later turn with it.
+        remoteSession: ctx.remoteSession ?? null,
         topicTitle: ctx.topicTitle,
         topicId: ctx.topicId ?? null,
         subagentParentTopicId: ctx.subagentParentTopicId ?? null,
@@ -319,13 +434,33 @@ export function buildHostedMcpSpec(
   const token = issueHostedMcpToken(surface, ctx);
   const base = `http://127.0.0.1:${runtimePort}${RUNTIME_MCP_BASE_PATH}/${surface}`;
   const query = `token=${encodeURIComponent(token)}`;
-  if (agent === "codex") return { url: `${base}/mcp?${query}` };
+  const url = agent === "codex" ? `${base}/mcp?${query}` : `${base}/sse?${query}`;
+  // A hosted context has no free-text field either. Measured with the
+  // maximal assertion (208 UUIDs, 8,159 bytes) and every optional field set,
+  // the hosted URL is marginally *longer* than the runtime one — ~12,118
+  // characters for `session-comm`, 12,100–12,109 for the other surfaces,
+  // against 12,052–12,055 for the runtime token — because the surface name
+  // and lifecycle fields outweigh the runtime token's switch-target list.
+  // All stay ≥ 2,200 characters under budget. The session-comm token may
+  // additionally carry a remote-session grant. Measured in
+  // `hosted-runtime-spec.test.ts`: the hub's real grant (≈440-character
+  // capability, short hub URL) adds 682 characters — 12,800 beside the
+  // maximal assertion, ~1,500 to spare. A grant at both caps (512-char URL,
+  // 2 KiB capability) adds ≈3,475 and fits alone (4,689) but not beside the
+  // maximal assertion (15,593); the hard check below refuses that mint, so
+  // the caps bound the grant while the budget bounds the token — the largest
+  // capability that fits beside a maximal assertion is ≈1,590 characters.
+  // The check is the same on purpose, so a field added later cannot quietly
+  // push it past the transport.
+  assertMcpUrlWithinBudget(surface, url, ctx.topicId);
+  if (agent === "codex") return { url };
   const queryBound =
-    surface === "session-comm" && (ctx.silent === true || ctx.peerBridge !== undefined);
+    surface === "session-comm" &&
+    (ctx.silent === true || ctx.peerBridge !== undefined || ctx.remoteSession !== undefined);
   const lifecycle = queryBound ? "turn" : surface === "session-comm" ? "session" : "process";
   return {
     type: "sse" as const,
-    url: `${base}/sse?${query}`,
+    url,
     timeout: CLAUDE_MCP_TOOL_TIMEOUT_MS,
     ...(agent === "maestro"
       ? {

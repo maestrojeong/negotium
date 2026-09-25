@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import type { PeerForwardArgs, PeerSessionBridge, RemoteReplyRoute } from "@negotium/core";
+import type { PeerForwardArgs, PeerRemoteReplyRoute, PeerSessionBridge } from "@negotium/core";
 import { registerPeerSessionBridgeIpcConfig } from "@negotium/core/peer-session-bridge-ipc";
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -12,7 +12,7 @@ type BridgeRequest =
   | { action: "sessions"; userId: string; sourceQueryId?: string; fromTopicId?: string }
   | {
       action: "reply";
-      route: RemoteReplyRoute;
+      route: PeerRemoteReplyRoute;
       sourceTitle: string;
       replyText: string;
       kind: "reply" | "error";

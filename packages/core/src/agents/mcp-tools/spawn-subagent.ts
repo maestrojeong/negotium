@@ -12,6 +12,7 @@ import { errorResult, type SharedMcpTool, textResult } from "#agents/mcp-tools/c
 import { WsHub } from "#bus";
 import { logger } from "#platform/logger";
 import { hasActiveQuery } from "#query/state";
+import { actorOwnedTopicIds, actorReachableTopicIds } from "#runtime/actor-topic-reach";
 import {
   appendApiMessage,
   getApiMessage,
@@ -30,7 +31,7 @@ import {
 import { getRuntimeTurnLease, RUNTIME_INSTANCE_ID } from "#storage/runtime-leases";
 import { getRuntimeUserTurnRequest } from "#storage/runtime-turn-requests";
 import { wikiBriefStorageKey, wikiSummarySlug } from "#storage/wiki-summary-names";
-import { type AgentKind, isAgentKind } from "#types";
+import { type ActorTopicScope, type AgentKind, isAgentKind } from "#types";
 import type { MessageDto, SubagentCardDto, SubagentReportMode, TopicDto } from "#types/api";
 
 const MAX_TASK_CHARS = 8000;
@@ -52,9 +53,22 @@ export interface SpawnSubagentToolContext {
   queryId?: string;
   agent: AgentKind;
   model?: string;
+  /** Surface of the room the turn runs in; the actor rules apply on `otium`. */
+  surface?: string;
+  /**
+   * Hub-asserted rooms the person who sent the message may see and owns. On
+   * `otium` a human turn carries one and it is authoritative: the management
+   * tools list only the asserted-visible workers and act only on the
+   * asserted-owned ones. Absent on turns no person started (the spawn, the
+   * report back, the follow-up), which keep the room's own lineage.
+   */
+  actorTopicScope?: ActorTopicScope;
 }
 
-export type SubagentToolContext = Pick<SpawnSubagentToolContext, "userId" | "topicId">;
+export type SubagentToolContext = Pick<
+  SpawnSubagentToolContext,
+  "userId" | "topicId" | "surface" | "actorTopicScope"
+>;
 
 export interface SubagentToolDefinitionOptions {
   /** Otium owns provider routing, so its public tools inherit execution and omit overrides. */
@@ -762,6 +776,36 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
     );
   }
 
+  /**
+   * The actor's asserted reach, when there is one to apply. Only an `otium`
+   * turn that carries the hub's assertion narrows the tree; everywhere else
+   * (other surfaces, or a turn no person started) `null` means "the node's
+   * own participant and lineage checks decide", as before. The same
+   * `actorReachableTopicIds`/`actorOwnedTopicIds` rules the cross-room tools
+   * use, so "visible" and "owned" mean the same thing in every tool.
+   */
+  function assertedActorScope(
+    ctx: SubagentToolContext,
+  ): { visible: ReadonlySet<string>; owned: ReadonlySet<string> } | null {
+    if (ctx.surface !== "otium" || !ctx.actorTopicScope) return null;
+    const input = {
+      surface: ctx.surface,
+      currentTopicId: ctx.topicId,
+      actorTopicScope: ctx.actorTopicScope,
+    };
+    const visible = actorReachableTopicIds(input);
+    const owned = actorOwnedTopicIds(input);
+    return visible && owned ? { visible, owned } : null;
+  }
+
+  /**
+   * The subagent tree the calling turn may see, and which of it it may act on.
+   * `children` is the visible descendant list (what `list_subagents` shows);
+   * `owned` says whether a listed child may be started, deleted or given a
+   * grant. Without an assertion everything in the tree is owned by the room
+   * that spawned it; with one, both follow the hub's word and a child outside
+   * it is simply not in the tree — the same "not found" a stranger gets.
+   */
   function ownedSubagentTree(ctx: SubagentToolContext) {
     const parent = host.storage.getTopic(ctx.topicId);
     if (!parent) return { ok: false, error: `Error: topic '${ctx.topicId}' not found.` } as const;
@@ -774,6 +818,7 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
         error: "Error: subagent management is only available in agent rooms.",
       } as const;
     }
+    const actorScope = assertedActorScope(ctx);
     // Subagents inherit the room's participants and roles verbatim (see
     // createDerivedTopic), so anyone who legitimately belongs to `parent` —
     // owner or member — belongs equally to every subagent spawned under it;
@@ -787,41 +832,77 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
     const rootOwnerId = parent.participants.find(
       (participant) => participant.role === "owner",
     )?.userId;
+    const descendants: TopicDto[] = rootOwnerId
+      ? (() => {
+          const topics = host.storage.listTopics();
+          const byParent = new Map<string, typeof topics>();
+          for (const topic of topics) {
+            if (!topic.parentTopicId || !topic.isSubagent) continue;
+            const siblings = byParent.get(topic.parentTopicId) ?? [];
+            siblings.push(topic);
+            byParent.set(topic.parentTopicId, siblings);
+          }
+          // `listTopics()` orders by recency, which ties for siblings created
+          // (and never messaged) in the same millisecond — so the tree this
+          // walk produces would come out in an arbitrary order for exactly the
+          // workers a single spawn call created. Break the tie on creation time
+          // then id, so the listing an agent sees is stable across calls.
+          for (const siblings of byParent.values()) {
+            siblings.sort(
+              (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+            );
+          }
+          const descendants: typeof topics = [];
+          const visited = new Set<string>([ctx.topicId]);
+          const visit = (parentId: string) => {
+            for (const child of byParent.get(parentId) ?? []) {
+              if (visited.has(child.id)) continue;
+              visited.add(child.id);
+              if (
+                !child.participants.some(
+                  (participant) =>
+                    participant.userId === rootOwnerId && participant.role === "owner",
+                )
+              ) {
+                continue;
+              }
+              descendants.push(child);
+              visit(child.id);
+            }
+          };
+          visit(ctx.topicId);
+          return descendants;
+        })()
+      : [];
+    const children = actorScope
+      ? descendants.filter((child) => actorScope.visible.has(child.id))
+      : descendants;
     return {
       ok: true,
       parent,
-      children: rootOwnerId
-        ? (() => {
-            const topics = host.storage.listTopics();
-            const byParent = new Map<string, typeof topics>();
-            for (const topic of topics) {
-              if (!topic.parentTopicId || !topic.isSubagent) continue;
-              const siblings = byParent.get(topic.parentTopicId) ?? [];
-              siblings.push(topic);
-              byParent.set(topic.parentTopicId, siblings);
-            }
-            const descendants: typeof topics = [];
-            const visited = new Set<string>([ctx.topicId]);
-            const visit = (parentId: string) => {
-              for (const child of byParent.get(parentId) ?? []) {
-                if (visited.has(child.id)) continue;
-                visited.add(child.id);
-                if (
-                  !child.participants.some(
-                    (participant) =>
-                      participant.userId === rootOwnerId && participant.role === "owner",
-                  )
-                ) {
-                  continue;
-                }
-                descendants.push(child);
-                visit(child.id);
-              }
-            };
-            visit(ctx.topicId);
-            return descendants;
-          })()
-        : [],
+      children,
+      owned: (childId: string) =>
+        children.some((child) => child.id === childId) &&
+        (!actorScope || actorScope.owned.has(childId)),
+      /** Whether `topicId` may be named as a grant target: the room itself or a visible child. */
+      visibleTarget: (topicId: string) =>
+        topicId === ctx.topicId || children.some((child) => child.id === topicId),
+      /**
+       * Existing grant targets a person may be shown. Ancestor grants can point
+       * at rooms the hub never listed for this actor; on an asserted turn those
+       * ids are left out of the answer (a room the actor cannot see must not be
+       * discoverable through a child's connection list). Turns without an
+       * assertion see every grant, as before.
+       */
+      visibleTellTargets: (targetIds: readonly string[]) =>
+        actorScope
+          ? targetIds.filter(
+              (targetId) =>
+                targetId === ctx.topicId ||
+                actorScope.visible.has(targetId) ||
+                children.some((child) => child.id === targetId),
+            )
+          : [...targetIds],
     } as const;
   }
 
@@ -899,7 +980,9 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
             status: subagentStatus(child.parentTopicId ?? ctx.topicId, child.id),
             agent: child.agent ?? null,
             model: child.defaultModel ?? null,
-            tell_target_topic_ids: host.sessionCommunication.listTellTargetIds(child.id),
+            tell_target_topic_ids: result.visibleTellTargets(
+              host.sessionCommunication.listTellTargetIds(child.id),
+            ),
             created_at: child.createdAt,
           }));
           return textResult(JSON.stringify({ subagents: children }, null, 2));
@@ -915,7 +998,7 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
           const result = ownedSubagentTree(ctx);
           if (!result.ok) return errorResult(result.error);
           const topicId = String(input.topic_id ?? "").trim();
-          if (!result.children.some((child) => child.id === topicId)) {
+          if (!result.owned(topicId)) {
             return errorResult("Error: topic is not a descendant subagent managed by this room.");
           }
           const cardMessage = findSubagentCardMessage(topicId);
@@ -938,7 +1021,9 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
           const result = ownedSubagentTree(ctx);
           if (!result.ok) return errorResult(result.error);
           const topicId = typeof input.topic_id === "string" ? input.topic_id.trim() : "";
-          const child = result.children.find((candidate) => candidate.id === topicId);
+          const child = result.owned(topicId)
+            ? result.children.find((candidate) => candidate.id === topicId)
+            : undefined;
           if (!child) {
             return errorResult(
               "Error: no owned descendant subagent with that topic_id exists under this room.",
@@ -969,11 +1054,10 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
           if (!result.ok) return errorResult(result.error);
           const sourceId = String(input.subagent_topic_id ?? "").trim();
           const targetId = String(input.target_topic_id ?? "").trim();
-          const descendantIds = new Set(result.children.map((child) => child.id));
-          if (!descendantIds.has(sourceId)) {
+          if (!result.owned(sourceId)) {
             return errorResult("Error: source is not a descendant subagent managed by this room.");
           }
-          if (targetId !== ctx.topicId && !descendantIds.has(targetId)) {
+          if (!result.visibleTarget(targetId)) {
             return errorResult("Error: target is outside this room's managed subagent tree.");
           }
           if (host.storage.getTopic(sourceId)?.parentTopicId === targetId) {
@@ -998,11 +1082,10 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
           if (!result.ok) return errorResult(result.error);
           const sourceId = String(input.subagent_topic_id ?? "").trim();
           const targetId = String(input.target_topic_id ?? "").trim();
-          const descendantIds = new Set(result.children.map((child) => child.id));
-          if (!descendantIds.has(sourceId)) {
+          if (!result.owned(sourceId)) {
             return errorResult("Error: source is not a descendant subagent managed by this room.");
           }
-          if (targetId !== ctx.topicId && !descendantIds.has(targetId)) {
+          if (!result.visibleTarget(targetId)) {
             return errorResult("Error: target is outside this room's managed subagent tree.");
           }
           const removed = host.sessionCommunication.revokeTellTarget(sourceId, targetId);

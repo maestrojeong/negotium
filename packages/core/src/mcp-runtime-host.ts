@@ -39,6 +39,7 @@ export { OPTIONAL_FORUM_MCP_SERVERS, REQUIRED_FORUM_MCP_SERVERS } from "#platfor
 export { isInsideDir } from "#platform/paths";
 export { abortRoom, getRoomQuery } from "#query/active-rooms";
 export { sessionInboxPath } from "#query/session-inbox-path";
+export { actorOwnedTopicIds, actorReachableTopicIds } from "#runtime/actor-topic-reach";
 export { prepareDeliveryAck } from "#runtime/delivery-ack";
 export { storeLocalFileAsUpload } from "#runtime/file-hooks";
 export {
@@ -70,6 +71,6 @@ export {
   TopicCleanupRequiredError,
 } from "#topics/lifecycle";
 export { restartTopicSession } from "#topics/session";
-export type { EffortLevel } from "#types";
+export type { ActorTopicScope, EffortLevel, RemoteSessionGrant } from "#types";
 export { EFFORT_VALUES } from "#types";
 export type { MessageDto, TopicDto, TopicSurface } from "#types/api";

@@ -11,6 +11,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   abortRoom,
+  actorOwnedTopicIds,
+  actorReachableTopicIds,
   appendJsonlEntry,
   defaultTopicSurface,
   deleteTopicCascade,
@@ -72,19 +74,76 @@ function callerSurfaceScope(ctx: RuntimeMcpContext): string | null {
  * works in: a manager turn asked "what topics do I have?" answered "one",
  * naming only the private General this node had just created for that person,
  * while the workspace it was speaking for held every other room. The
- * workspace — surface plus scope — is the real boundary there. Other people's
+ * workspace — surface plus scope — is the outer boundary there. Other people's
  * private Generals are still excluded, because a manager room is the one
  * per-user room on that surface and the one thing membership does decide.
+ *
+ * Inside the workspace the hub is the only party that knows who is in which
+ * room, so it asserts per turn (`actorTopicScope`, signed into this context)
+ * which node topics the person who spoke may reach. The listing is that
+ * assertion, not the whole workspace: a member's agent must not name rooms
+ * its user was never invited to. No assertion — an older hub, or a turn no
+ * person started — narrows the reach to the current room (fail-closed).
+ *
+ * This is what a reference may *resolve* to. It still contains the current
+ * room and the caller's own General so that abort/restart/delete can answer
+ * "cannot abort the current topic" and "manager rooms are system-managed"
+ * rather than a misleading "not found"; {@link topicsForCaller} is the
+ * narrower set the listing shows. A room whose AI is off is not a target of
+ * any of these tools and is dropped here, so it is "not found" everywhere.
  */
-function topicsForCaller(ctx: RuntimeMcpContext): TopicDto[] {
+function resolvableTopicsForCaller(ctx: RuntimeMcpContext): TopicDto[] {
   const surface = callerSurface(ctx);
   if (surface !== "otium") {
     return getTopics({ surface }).filter((topic) => isParticipant(topic, ctx.userId));
   }
+  const reachable = actorReachableTopicIds({
+    surface,
+    currentTopicId: ctx.topicId,
+    actorTopicScope: ctx.actorTopicScope,
+  });
   return getTopics({ surface, surfaceScope: callerSurfaceScope(ctx) }).filter(
     (topic) =>
-      topic.kind !== "manager" || topic.id === ctx.topicId || isParticipant(topic, ctx.userId),
+      // Only the caller's own General resolves, and only so it can be refused
+      // precisely; everyone else's is a room this person is not in.
+      (topic.kind !== "manager" || topic.id === ctx.topicId) &&
+      Boolean(topic.agent) &&
+      topic.aiMode !== "off" &&
+      (!reachable || reachable.has(topic.id)),
   );
+}
+
+/**
+ * What `list_topics` shows. On `otium` the room this turn is already in and
+ * its General are not targets — there is nothing to tell, ask or abort there
+ * from here — so the listing is the *other* rooms the person may reach. Off
+ * `otium` the node's own membership view is unchanged.
+ */
+function topicsForCaller(ctx: RuntimeMcpContext): TopicDto[] {
+  const topics = resolvableTopicsForCaller(ctx);
+  if (callerSurface(ctx) !== "otium") return topics;
+  return topics.filter((topic) => topic.id !== ctx.topicId && topic.kind !== "manager");
+}
+
+/**
+ * Whether the calling person may abort, restart or delete `target`.
+ *
+ * On `otium` that is the hub's owner assertion for this turn — a room the
+ * person can see but does not own is refused with the same "not found" the
+ * listing would give a stranger, so the refusal leaks nothing. Off `otium`
+ * the tools keep their own participant/owner checks against `ctx.userId`.
+ */
+function actorOwnsTarget(ctx: RuntimeMcpContext, target: TopicDto): boolean {
+  const owned = actorOwnedTopicIds({
+    surface: callerSurface(ctx),
+    currentTopicId: ctx.topicId,
+    actorTopicScope: ctx.actorTopicScope,
+  });
+  return !owned || owned.has(target.id);
+}
+
+function notFoundError(ref: string): string {
+  return `Error: topic '${ref.trim()}' not found (or not uniquely named). Use list_topics to see available topics.`;
 }
 
 function resolveTopicForUser(
@@ -96,9 +155,10 @@ function resolveTopicForUser(
   const notFound = `Error: topic '${trimmed}' not found (or not uniquely named). Use list_topics to see available topics.`;
   const surface = callerSurface(ctx);
   if (surface === "otium") {
-    // Same visibility as `list_topics`, or the manager room could list a room
-    // it is then told does not exist.
-    const visible = topicsForCaller(ctx);
+    // Same reach as `list_topics` (plus the current room and own General, so
+    // they are refused precisely), or the manager room could list a room it is
+    // then told does not exist.
+    const visible = resolvableTopicsForCaller(ctx);
     const byId = visible.find((topic) => topic.id === trimmed);
     if (byId) return { topic: byId };
     const wanted = trimmed.toLowerCase();
@@ -135,6 +195,9 @@ function resolveTopicForUser(
  *
  * A room a *person* owns is untouched by this, on every surface: two people
  * sharing an Otium room still means only its owner may delete or reset it.
+ * On `otium` this runs only after {@link actorOwnsTarget} has accepted the
+ * hub's owner assertion for the calling person — the impersonation is how the
+ * work is filed, never how it is authorized.
  */
 function actingUserFor(ctx: RuntimeMcpContext, target: TopicDto): string {
   const owner = target.participants.find((p) => p.role === "owner")?.userId;
@@ -240,6 +303,7 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
       if (target.id === ctx.topicId) {
         return errorResult("Error: cannot abort the current topic from within its own turn.");
       }
+      if (!actorOwnsTarget(ctx, target)) return errorResult(notFoundError(topic));
 
       const aborted = abortRoom(target.id);
       let queued = true;
@@ -283,6 +347,7 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
       if (target.kind === "manager") {
         return errorResult("Error: manager rooms are system-managed and cannot be restarted.");
       }
+      if (!actorOwnsTarget(ctx, target)) return errorResult(notFoundError(topic));
 
       const result = await restartTopicSession(
         target.id,
@@ -314,6 +379,7 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
       if (target.kind === "manager") {
         return errorResult("Error: manager rooms are system-managed and cannot be deleted.");
       }
+      if (!actorOwnsTarget(ctx, target)) return errorResult(notFoundError(topic));
       const actingUser = actingUserFor(ctx, target);
       const isOwner = target.participants.some(
         (participant) => participant.userId === actingUser && participant.role === "owner",

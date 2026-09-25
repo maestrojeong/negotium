@@ -280,8 +280,11 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
   const selfConfigCtx: SelfConfigContext = {
     topicId: ctx.topicId,
     userId: ctx.userId,
+    ...(ctx.actorUserId ? { actorUserId: ctx.actorUserId } : {}),
     cwd: ctx.cwd,
-    currentUserPrompt: ctx.currentUserPrompt,
+    ...(ctx.explicitAgentSwitchTargets
+      ? { explicitAgentSwitchTargets: ctx.explicitAgentSwitchTargets }
+      : {}),
     onConfigChanged: (field) => appendAutoContinue(ctx, field),
   };
   for (const def of createSelfConfigToolDefinitions(
@@ -295,7 +298,9 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
             userId: ctx.userId,
             tool: def.name,
             input,
-            ...(ctx.currentUserPrompt ? { currentUserPrompt: ctx.currentUserPrompt } : {}),
+            ...(ctx.explicitAgentSwitchTargets
+              ? { explicitAgentSwitchTargets: ctx.explicitAgentSwitchTargets }
+              : {}),
           });
           if (!dispatched) {
             return errorResult("Error: the peer self-config bridge is not available on this node.");
@@ -351,6 +356,8 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
         queryId: ctx.queryId,
         agent: ctx.agent,
         model: ctx.model,
+        surface: topic?.surface,
+        actorTopicScope: ctx.actorTopicScope,
       },
       { executionOverrides: !isOtiumSurface },
     );
@@ -383,6 +390,8 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
           queryId: ctx.queryId,
           agent: ctx.agent,
           model: ctx.model,
+          surface: topic?.surface,
+          actorTopicScope: ctx.actorTopicScope,
         },
         { executionOverrides: !isOtiumSurface },
       );
@@ -395,9 +404,14 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
     }
   }
   if (!peerBridge && topic?.kind === "agent" && ctx.topicId) {
+    // The management tools carry the surface and the hub's assertion so that,
+    // on `otium`, a person sees only the workers the hub says they may see
+    // and manages only the ones it says they own (see SubagentToolContext).
     for (const def of createSubagentManagementToolDefinitions({
       userId: ctx.userId,
       topicId: ctx.topicId,
+      surface: topic?.surface,
+      actorTopicScope: ctx.actorTopicScope,
     })) {
       server.tool(def.name, def.description, def.schema as any, def.handler as any);
     }

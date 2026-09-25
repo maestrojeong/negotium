@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { intersectActorTopicScopes } from "#runtime/actor-topic-scope";
+import { mergeRemoteSessionGrants } from "#runtime/remote-session-grant";
 import {
   flattenUserTurnAttachments,
   legacyUserTurnEnvelope,
@@ -10,7 +12,13 @@ import { TURN_LEASE_STALE_MS } from "#storage/runtime-leases";
 import { getRuntimeTopicEpoch, TOPIC_MAINTENANCE_STALE_MS } from "#storage/runtime-topic-state";
 import type { StorageDatabase } from "#storage/storage-contract";
 import { registerStorageSchemaInitializer } from "#storage/storage-host";
-import type { AgentKind, EffortLevel, PeerRuntimeBridgeContext } from "#types";
+import type {
+  ActorTopicScope,
+  AgentKind,
+  EffortLevel,
+  PeerRuntimeBridgeContext,
+  RemoteSessionGrant,
+} from "#types";
 
 const REQUEST_CLAIM_STALE_MS = TURN_LEASE_STALE_MS;
 
@@ -37,6 +45,10 @@ export interface RuntimeUserTurnExecution {
   vaultUserId?: string;
   /** Product actor identity, independent from the canonical execution principal. */
   actorUserId?: string;
+  /** Host-asserted rooms the actor may reach; kept with the row so retries keep it. */
+  actorTopicScope?: ActorTopicScope;
+  /** Hub-issued per-turn remote session-comm grant; kept with the row like the assertion. */
+  remoteSession?: RemoteSessionGrant;
   /** Newly accepted user texts not yet recorded in the unified conversation log. */
   conversationPrompts?: string[];
   /** Number of leading userMessages already present in the unified conversation log. */
@@ -306,6 +318,17 @@ export function enqueueRuntimeUserTurnRequest(input: {
   return requestId;
 }
 
+/**
+ * Who a request speaks for. `null` when no actor was recorded (a turn the node
+ * started for itself, or a row older than the field): two such requests are
+ * one conversation, but an unrecorded actor never matches a recorded one — the
+ * conservative reading, since the alternative is folding a stranger's message
+ * into a turn whose author is unknown.
+ */
+function requestActor(actorUserId: string | undefined): string | null {
+  return actorUserId ?? null;
+}
+
 function loggedMessageCount(request: RuntimeUserTurnRequest): number {
   const explicit = request.execution?.loggedUserMessageCount;
   if (typeof explicit === "number" && Number.isInteger(explicit)) {
@@ -350,9 +373,25 @@ export function mergeRuntimeUserTurnRequest(input: {
       // and a pending request from another thread is left standing to run on
       // its own (S-13).
       const thread = input.execution.threadRootId;
-      const previous = rows
+      const sameThread = rows
         .map(rowToRequest)
         .filter((request) => request.execution?.threadRootId === thread);
+      // Nor is a different person the same conversation for this purpose. A
+      // merged batch runs with one actor's identity and one room assertion,
+      // so folding B's follow-up onto A's pending question would run A's
+      // words under B's authority (or B's under A's). Only the most recent
+      // unbroken run of the *same* actor's requests is folded; a request from
+      // anyone else ends that run and keeps its own row, in arrival order, so
+      // each turn carries exactly the actor and assertion it was sent with.
+      const actor = requestActor(input.execution.actorUserId);
+      let firstMergeable = sameThread.length;
+      while (
+        firstMergeable > 0 &&
+        requestActor(sameThread[firstMergeable - 1]!.execution?.actorUserId) === actor
+      ) {
+        firstMergeable -= 1;
+      }
+      const previous = sameThread.slice(firstMergeable);
       const omittedRequestIds = new Set([
         ...(input.omitRequestIds ?? []),
         ...previous
@@ -392,8 +431,24 @@ export function mergeRuntimeUserTurnRequest(input: {
       const loggedUserMessageCount =
         carried.reduce((count, request) => count + loggedMessageCount(request), 0) +
         Math.max(0, incomingLoggedCount - alreadyIncludedMessageCount);
+      // Same actor, possibly different assertions (the hub's roster moved
+      // between two messages): the merged turn gets the intersection, and no
+      // assertion at all if any folded request lacked one. Narrowing is the
+      // only safe direction for a batch that speaks with one voice.
+      const actorTopicScope = intersectActorTopicScopes([
+        ...previous.map((request) => request.execution?.actorTopicScope),
+        input.execution.actorTopicScope,
+      ]);
+      // Same rule for the remote-session grant: the batch keeps one only when
+      // every folded request carried one (for the same hub), the latest-expiring.
+      const remoteSession = mergeRemoteSessionGrants([
+        ...previous.map((request) => request.execution?.remoteSession),
+        input.execution.remoteSession,
+      ]);
       const execution: RuntimeUserTurnExecution = {
         ...input.execution,
+        actorTopicScope,
+        remoteSession,
         loggedUserMessageCount,
         supersededRequestIds: [
           ...new Set(
@@ -679,6 +734,24 @@ export function cancelRuntimeUserTurnRequests(topicId: string): string[] {
     .all(topicId);
   db.query("DELETE FROM runtime_user_turn_requests WHERE topic_id = ?").run(topicId);
   return rows.map((row) => row.request_id);
+}
+
+/**
+ * The request a worker currently holds for `topicId` — claimed or already
+ * running — if any. This is the turn a new human message could steer; whether
+ * it may is decided by whoever folds the new message (see
+ * `submitRuntimeGatewayTurn`).
+ */
+export function getActiveRuntimeUserTurnRequest(topicId: string): RuntimeUserTurnRequest | null {
+  const row = db
+    .query<RuntimeUserTurnRequestRow, [string, number]>(
+      `SELECT * FROM runtime_user_turn_requests
+       WHERE topic_id = ?
+         AND (status = 'running' OR (claimed_by IS NOT NULL AND claimed_at >= ?))
+       ORDER BY created_at ASC, rowid ASC LIMIT 1`,
+    )
+    .get(topicId, Date.now() - REQUEST_CLAIM_STALE_MS);
+  return row ? rowToRequest(row) : null;
 }
 
 export function getRuntimeUserTurnRequest(topicId: string): RuntimeUserTurnRequest | null {

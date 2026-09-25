@@ -79,6 +79,9 @@ export async function buildHostedSurfaceServer(
       return createSessionCommMcpServer(
         {
           userId: context.userId,
+          ...(context.actorUserId ? { actorUserId: context.actorUserId } : {}),
+          ...(context.actorTopicScope ? { actorTopicScope: context.actorTopicScope } : {}),
+          ...(context.remoteSession ? { remoteSession: context.remoteSession } : {}),
           currentTopic: context.topicTitle,
           currentTopicId: context.topicId,
           currentThreadRootId: context.threadRootId,

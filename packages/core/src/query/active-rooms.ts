@@ -120,6 +120,12 @@ export interface RoomQueryControl {
   prompt: string;
   /** Original user submissions represented by prompt, in arrival order. */
   userMessages?: UserTurnEnvelope[];
+  /**
+   * Product actor a user turn speaks for, when recorded. Decides whether a
+   * later human message may steer this turn: only the same actor's follow-up
+   * aborts and folds into it; anyone else's waits its turn in the queue.
+   */
+  actorUserId?: string;
   /** Durable request rows whose messages are already represented by userMessages. */
   durableRequestIds?: string[];
   /** Attachment ids currently being processed. User-turn preemption carries them forward. */

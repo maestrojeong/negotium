@@ -203,6 +203,8 @@ function captureForkSnapshot(
 
 interface DerivedTopicOptions {
   name?: string;
+  /** Product actor who asked for the derive, when `userId` is a shared principal. */
+  derivedByUserId?: string;
   subagent?: { agent?: AgentKind; model?: string; memoryTopicId?: string };
   summarizeFork?: (request: CompactSummaryRequest) => Promise<string>;
 }
@@ -312,6 +314,7 @@ async function createDerivedTopicImpl(
     parentTopicId: sourceTopicId,
     ...(subagent?.memoryTopicId ? { memoryTopicId: subagent.memoryTopicId } : {}),
     isFork: copyHistory,
+    ...(opts?.derivedByUserId ? { derivedByUserId: opts.derivedByUserId } : {}),
     ...(subagent ? { isSubagent: true } : {}),
     visibility: topic.visibility,
     // A derived room lives on the same surface as the room it came from.

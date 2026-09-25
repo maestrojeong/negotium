@@ -21,6 +21,7 @@ import {
   isTopicBrowserProfileOwner,
   listBrowserProfiles,
 } from "#storage/browser-profiles";
+import { deleteRemoteSessionAsk, recordRemoteSessionAsk } from "#storage/remote-session";
 import {
   clearPendingAsk,
   createPendingAsk,
@@ -29,6 +30,14 @@ import {
 } from "#storage/session-asks";
 import { enqueueSessionInbox } from "#storage/session-inbox";
 import { connectStdio, mcpError, mcpOk } from "../mcp-helpers";
+import { abortTargetRefusal, remoteSessionRoute } from "./actor-policy";
+import {
+  hubRemoteAbort,
+  hubRemoteAsk,
+  hubRemotePeek,
+  hubRemoteSessions,
+  hubRemoteTell,
+} from "./hub-remote-session";
 import { forwardToPeer, peerSessionsForUser } from "./peer-forward";
 import {
   cronSessionId,
@@ -40,6 +49,7 @@ import {
   MAX_MESSAGE_LENGTH,
   MAX_TELL_DEPTH,
   peerHostQueryId,
+  sessionCommContext,
   subagentParentTopicId,
   userId,
 } from "./runtime";
@@ -51,6 +61,7 @@ import {
   setMcpConfig,
 } from "./topic-config";
 import {
+  currentSessionSurface,
   getTopicsForUser,
   listSessionTargetsForUser,
   type QueryState,
@@ -76,6 +87,11 @@ function remotePeerTarget(to: string): PeerTarget | null {
   const slash = to.indexOf("/");
   if (slash <= 0 || slash === to.length - 1) return null;
   return { node: to.slice(0, slash), topic: to.slice(slash + 1) };
+}
+
+/** Which transport serves `node/topic` targets for this turn (see `remoteSessionRoute`). */
+function currentRemoteRoute() {
+  return remoteSessionRoute(currentSessionSurface(), sessionCommContext.remoteSession);
 }
 
 // --- MCP Server ---
@@ -166,11 +182,39 @@ server.tool(
 
     // Multi-node: append each peer node's rooms, addressed as "node/topic".
     // Disabled or unattached nodes answer with an error — skip silently so
-    // single-node behavior is untouched.
+    // single-node behavior is untouched. On Otium the remote rooms are the
+    // hub's answer for this turn's grant, and none without one (see
+    // `remoteSessionRoute`).
     const remoteSections: string[] = [];
-    const peers = currentSubagentRestricted
-      ? { ok: true as const, nodes: [] }
-      : await peerSessionsForUser(userId, peerHostQueryId || undefined, currentTopicId);
+    const route = currentSubagentRestricted ? null : currentRemoteRoute();
+    if (route?.kind === "hub") {
+      const remote = await hubRemoteSessions(route.grant);
+      if (!remote.ok) {
+        remoteSections.push(`\nRemote nodes: (${remote.error})`);
+      } else {
+        for (const node of remote.nodes) {
+          if (!node.node) continue;
+          if (node.error) {
+            remoteSections.push(`\nNode ${node.node}: (unreachable: ${node.error})`);
+            continue;
+          }
+          const lines = (node.sessions ?? [])
+            .filter((session) => Boolean(session.agent))
+            .map((s) => {
+              const status = s.status === "active" ? "active" : "fresh-start ready";
+              const desc = s.description ? ` — ${s.description.slice(0, 60)}` : "";
+              return `- ${node.node}/${s.name}: ${status}${desc}`;
+            });
+          remoteSections.push(
+            `\nNode ${node.node}:\n${lines.join("\n") || "  (no rooms for this user)"}`,
+          );
+        }
+      }
+    }
+    const peers =
+      route?.kind !== "peer"
+        ? { ok: true as const, nodes: [] }
+        : await peerSessionsForUser(userId, peerHostQueryId || undefined, currentTopicId);
     if (peers.ok && peers.nodes) {
       for (const node of peers.nodes) {
         if (!node.node) continue;
@@ -409,6 +453,46 @@ server.tool(
         ),
       );
     }
+    // Remote rooms (v1): the hub's active/ready view only — no elapsed time
+    // or task text, since the hub does not fan out to every node for a peek.
+    const route = currentSubagentRestricted ? null : currentRemoteRoute();
+    if (route?.kind === "hub") {
+      const remote = await hubRemotePeek(route.grant);
+      if (!remote.ok) {
+        lines.push(``, `원격 노드: (${remote.error})`);
+      } else {
+        const remoteRunning: string[] = [];
+        const remoteIdle: string[] = [];
+        const unreachable: string[] = [];
+        for (const node of remote.nodes) {
+          if (node.error) {
+            unreachable.push(`  ${node.node}: (unreachable: ${node.error})`);
+            continue;
+          }
+          for (const session of node.sessions ?? []) {
+            // Same policy as the listing: a room with no AI is not a session.
+            if (session.agent === null) continue;
+            (session.status === "active" ? remoteRunning : remoteIdle).push(
+              `${node.node}/${session.name}`,
+            );
+          }
+        }
+        lines.push(
+          ``,
+          `원격 실행 중 (${remoteRunning.length}): ${remoteRunning.join(", ") || "없음"}`,
+          `원격 유휴 (${remoteIdle.length}): ${remoteIdle.join(", ") || "없음"}`,
+          ...unreachable,
+        );
+        if (remote.pendingAsks.length) {
+          lines.push(
+            `내 원격 ask_session 대기:`,
+            ...remote.pendingAsks.map(
+              (ask) => `  ${ask.to}: ${ask.status} (request_id: ${ask.requestId})`,
+            ),
+          );
+        }
+      }
+    }
     return mcpOk(lines.join("\n"));
   },
 );
@@ -456,6 +540,8 @@ if (!isReplyOnly) {
         // Remote target ("node/topic") — hand to the runtime's peer forwarder.
         const remote = remotePeerTarget(to);
         if (remote) {
+          const route = currentRemoteRoute();
+          if (route.kind === "refused") return mcpError(route.error);
           const fromRef = currentTopicRef();
           if (!fromRef.topicId) {
             return mcpError(
@@ -470,6 +556,40 @@ if (!isReplyOnly) {
               : "상태 파일 확인 중";
             return mcpError(
               `"${to}"에 이미 진행 중인 ask_session 요청이 있습니다: ${detail}. 응답이 이 세션에 자동으로 돌아올 때까지 기다리세요.`,
+            );
+          }
+          if (route.kind === "hub") {
+            // Durable caller record first: the hub's `ask-reply` delivery is
+            // routed back through it, possibly after this process restarted.
+            recordRemoteSessionAsk({
+              requestId,
+              callerTopicId: fromRef.topicId,
+              userId,
+              fromKey: fromRef.key,
+              toKey: to,
+              ...(sessionCommContext.currentThreadRootId
+                ? { callerThreadRootId: sessionCommContext.currentThreadRootId }
+                : {}),
+            });
+            const sent = await hubRemoteAsk(route.grant, {
+              requestId,
+              to: remote,
+              message,
+              fromDepth: currentDepth,
+              fromLabel: { key: fromRef.key, title: fromRef.title },
+            });
+            if (!sent.ok) {
+              if (sent.uncertain) {
+                return mcpOk(
+                  `"${to}" 세션(노드 ${remote.node})에 참조 요청을 보냈지만 hub의 확인을 받지 못했습니다 (${sent.error}).\n\nrequest_id: ${requestId}\n\n응답이 도착하면 '[Reply from ${remote.node}/${remote.topic}]' 형식으로 이 세션에 돌아옵니다. 같은 요청으로 ask_session을 재호출하지 마세요.`,
+                );
+              }
+              clearPendingAsk({ userId, from: fromRef.key, to, requestId });
+              deleteRemoteSessionAsk(requestId);
+              return mcpError(`Error: "${to}" 원격 세션에 전송 실패: ${sent.error}`);
+            }
+            return mcpOk(
+              `"${to}" 세션(노드 ${remote.node})에 참조 요청을 보냈습니다.\n\nrequest_id: ${requestId}\n\n응답은 '[Reply from ${remote.node}/${remote.topic}]' 형식으로 이 세션에 자동으로 돌아옵니다. 응답이 도착할 때까지 같은 요청으로 ask_session을 재호출하지 마세요.`,
             );
           }
           const result = await forwardToPeer({
@@ -631,6 +751,16 @@ if (!isReplyOnly) {
       async ({ to }) => {
         const remote = remotePeerTarget(to);
         if (remote) {
+          const route = currentRemoteRoute();
+          if (route.kind === "refused") return mcpError(route.error);
+          if (route.kind === "hub") {
+            const sent = await hubRemoteAbort(route.grant, {
+              requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              to: remote,
+            });
+            if (!sent.ok) return mcpError(`Error: "${to}" 원격 abort 실패: ${sent.error}`);
+            return mcpOk(`"${to}" 세션(노드 ${remote.node})에 abort 신호를 보냈습니다.`);
+          }
           const result = await forwardToPeer({
             action: "abort",
             toNode: remote.node,
@@ -656,6 +786,15 @@ if (!isReplyOnly) {
           if (!targetTopicId) {
             return mcpError(`Error: "${to}" 세션의 토픽 ID를 찾을 수 없습니다.`);
           }
+          // Same owner rule as the hosted host, from the same module.
+          const refused = abortTargetRefusal({
+            surface: currentSessionSurface(),
+            currentTopicId: currentTopicId || undefined,
+            actorTopicScope: sessionCommContext.actorTopicScope,
+            targetTopicId,
+            to,
+          });
+          if (refused) return mcpError(refused);
           // Send query abort signal via inbox
           enqueueSessionInbox({
             userId,
@@ -705,8 +844,32 @@ if (!isReplyOnly) {
         if (currentSubagentRestricted) {
           return mcpError("Error: subagent tell_session cannot target remote topics.");
         }
+        const route = currentRemoteRoute();
+        if (route.kind === "refused") return mcpError(route.error);
         const fromRef = currentTopicRef();
         const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        if (route.kind === "hub") {
+          const sent = await hubRemoteTell(route.grant, {
+            requestId,
+            to: remote,
+            message,
+            depth: currentDepth + 1,
+            fromLabel: { key: fromRef.key, title: fromRef.title },
+          });
+          if (!sent.ok) {
+            // A timed-out response may still have been delivered; say so
+            // rather than invite a duplicate.
+            if (sent.uncertain) {
+              return mcpOk(
+                `"${to}" 토픽(노드 ${remote.node})에 메시지를 보냈지만 hub의 확인을 받지 못했습니다 (${sent.error}).\n\nrequest_id: ${requestId}\n\n같은 메시지를 다시 보내지 마세요.`,
+              );
+            }
+            return mcpError(`Error: "${to}" 원격 세션에 전송 실패: ${sent.error}`);
+          }
+          return mcpOk(
+            `"${to}" 토픽(노드 ${remote.node})에 메시지를 전달했습니다.\n\nrequest_id: ${requestId}\n\n결과는 해당 노드의 "${remote.topic}" 대화 기록에 남습니다.`,
+          );
+        }
         const result = await forwardToPeer({
           action: "tell",
           toNode: remote.node,

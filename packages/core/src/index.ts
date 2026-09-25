@@ -12,6 +12,11 @@ import "#platform/maestro-bootstrap-env";
 export { checkAgentAuth, checkAgentModelAuth } from "#agents/auth-check";
 export { killOwnedCodexTreesForShutdown } from "#agents/codex-tree-kill";
 export { estimateTextTokens } from "#agents/compaction-support";
+export {
+  explicitAgentSwitchTargets,
+  hasExplicitAgentSwitchRequest,
+  isExplicitAgentSwitchTargets,
+} from "#agents/explicit-agent-switch";
 export type { ForkHandle } from "#agents/fork";
 export { cleanupAgentFork, forkAgentSession } from "#agents/fork";
 export { runAgent, SUPPORTED_AGENTS } from "#agents/index";
@@ -155,10 +160,26 @@ export {
   setRuntimeMcpPort,
 } from "#mcp/runtime-spec";
 export {
+  hubRemoteAbort,
+  hubRemoteAsk,
+  hubRemotePeek,
+  hubRemoteReply,
+  hubRemoteSessions,
+  hubRemoteTell,
+  REMOTE_SESSION_HUB_BASE_PATH,
+  REMOTE_SESSION_PROTOCOL_VERSION,
+  setRemoteSessionHubFetch,
+} from "#mcp/session-comm/hub-remote-session";
+export { MAX_PEER_MESSAGE_LENGTH } from "#mcp/session-comm/limits";
+export {
   deliverPeerReply,
+  type HubRemoteReplyRoute,
+  isHubRemoteReplyRoute,
   type PeerForwardArgs,
   type PeerForwardResult,
+  type PeerRemoteReplyRoute,
   type PeerSessionBridge,
+  parseHubRemoteReplyRoute,
   type RemoteReplyRoute,
   registerPeerSessionBridge,
 } from "#mcp/session-comm/peer-forward";
@@ -249,6 +270,15 @@ export {
 } from "#query/active-rooms";
 export { sessionInboxPath } from "#query/session-inbox-path";
 export { AbortReason } from "#query/types";
+export { actorOwnedTopicIds, actorReachableTopicIds } from "#runtime/actor-topic-reach";
+export {
+  ACTOR_TOPIC_SCOPE_LIMITS,
+  actorTopicScopeFrom,
+  encodeActorTopicScopeArg,
+  intersectActorTopicScopes,
+  parseActorTopicScope,
+  validateActorTopicScope,
+} from "#runtime/actor-topic-scope";
 export type { AskPending } from "#runtime/ask-callbacks";
 // ── Runtime ─────────────────────────────────────────────────────────
 export {
@@ -293,7 +323,35 @@ export {
   storeLocalFileAsUpload,
 } from "#runtime/file-hooks";
 export { renderTurnFooter } from "#runtime/footer";
+export {
+  listRuntimeGatewayCapabilities,
+  registerRuntimeGatewayCapability,
+} from "#runtime/gateway-capabilities";
 export { flushSessionInbox, startSessionInboxWorker } from "#runtime/inbox";
+export {
+  decodeRemoteSessionGrantArg,
+  encodeRemoteSessionGrantArg,
+  mergeRemoteSessionGrants,
+  parseRemoteSessionGrant,
+  REMOTE_SESSION_GRANT_LIMITS,
+  remoteSessionGrantFrom,
+  validateRemoteSessionGrant,
+} from "#runtime/remote-session-grant";
+export {
+  deliverRemoteSessionInbox,
+  parseRemoteSessionInboxDelivery,
+  REMOTE_SESSION_INBOX_IN_PROGRESS_CODE,
+  type RemoteSessionInboxDelivery,
+  RemoteSessionInboxError,
+  recoverRemoteSessionInbox,
+} from "#runtime/remote-session-inbox";
+export {
+  deliverHubRemoteReply,
+  flushRemoteSessionReplyOutbox,
+  runRemoteSessionMaintenance,
+  setRemoteSessionRetryRandom,
+  startRemoteSessionReplyOutboxWorker,
+} from "#runtime/remote-session-reply-outbox";
 export type { AiTurnSettlement, AiTurnTopic } from "#runtime/turn-runner";
 export {
   deliverAskCallbackToCaller,
@@ -341,6 +399,23 @@ export {
 } from "#storage/api-topics";
 export { DEFAULT_AI_NAME, getGlobalAiName, setGlobalAiName } from "#storage/app-settings";
 export { db } from "#storage/forum-db";
+export {
+  claimRemoteSessionInbox,
+  completeRemoteSessionInboxClaim,
+  deleteRemoteSessionAsk,
+  getRemoteSessionAsk,
+  getRemoteSessionInboxClaim,
+  listExpiredRemoteSessionInboxClaims,
+  listRemoteSessionReplyOutbox,
+  purgeRemoteSessionInboxClaims,
+  purgeStaleRemoteSessionAsks,
+  REMOTE_SESSION_INBOX_CLAIM_LEASE_MS,
+  recordRemoteSessionAsk,
+  releaseRemoteSessionInboxClaim,
+  remoteSessionPayloadHash,
+  remoteSessionRetryDelayMs,
+  takeRemoteSessionAsk,
+} from "#storage/remote-session";
 export type { StoredRuntimeEvent } from "#storage/runtime-events";
 export {
   earliestRuntimeEventSeq,

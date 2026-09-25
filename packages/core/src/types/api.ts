@@ -120,6 +120,12 @@ export interface TopicDto {
   memoryKey?: string;
   /** True when the topic was created via fork (copies history). */
   isFork?: boolean;
+  /**
+   * The person whose turn asked for this spawn/fork, when the node executed it
+   * under a shared principal. A host that mirrors the room seeds its owner from
+   * this; absent for rooms not derived by an agent tool.
+   */
+  derivedByUserId?: string;
   /** True when this topic was spawned by an agent as a subagent worker room. */
   isSubagent?: boolean;
   /** Extra tell_session targets granted to this subagent; direct parent is implicit. */

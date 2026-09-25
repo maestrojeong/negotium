@@ -1,5 +1,6 @@
 import { switchApiTopicAgent } from "#agents/api-topic-agent-switch";
 import { checkAgentModelAuth } from "#agents/auth-check";
+import { hasExplicitAgentSwitchRequest } from "#agents/explicit-agent-switch";
 import { modelOwner, resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
 import { WsHub } from "#bus";
@@ -26,8 +27,21 @@ export type SelfConfigField = "agent" | "model" | "effort";
 export interface SelfConfigContext {
   topicId: string;
   userId: string;
+  /** Product-side human actor when `userId` is a shared execution principal. */
+  actorUserId?: string;
   cwd?: string;
-  /** Raw current user request. Used to prevent autonomous MCP agent switches. */
+  /**
+   * Agents the current user message explicitly asked to switch to, derived
+   * server-side from the full prompt (`explicitAgentSwitchTargets`). This is
+   * what `set_agent` authorizes against; it rides the signed runtime token in
+   * place of the prompt, so its length does not depend on the message.
+   */
+  explicitAgentSwitchTargets?: readonly AgentKind[];
+  /**
+   * Raw current user request, for in-process callers that still hold it and
+   * did not derive the field above. Ignored when `explicitAgentSwitchTargets`
+   * is present.
+   */
   currentUserPrompt?: string;
   /** Called after a successful set_* so the caller can trigger a follow-up turn. */
   onConfigChanged?: (field: SelfConfigField) => void;
@@ -118,7 +132,7 @@ export interface SelfConfigDerivedTopics {
     sourceTopicId: string,
     userId: string,
     copyHistory: boolean,
-    options: { name?: string },
+    options: { name?: string; derivedByUserId?: string },
   ): Promise<SelfConfigTopic | null>;
   link(topicId: string): string;
   isTitleConflict(error: unknown): boolean;
@@ -220,60 +234,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function agentAliases(agent: AgentKind): string[] {
-  switch (agent) {
-    case "codex":
-      return [
-        "codex",
-        "코덱스",
-        "gpt-6-luna",
-        "gpt-6-sol",
-        "gpt-5.6-luna",
-        "gpt-5.6-terra",
-        "gpt-5.6-sol",
-        "gpt-6-astra",
-      ];
-    case "claude":
-      return ["claude", "클로드", "sonnet", "opus", "fable"];
-    case "maestro":
-      return [
-        "maestro",
-        "마에스트로",
-        "메스트로",
-        "deepseek",
-        "deepseek-pro",
-        "kimi",
-        "kimi-pro",
-        "kimi-k3",
-        "kimi-code",
-        "kimi-k2.7-code",
-        "딥시크",
-        "키미",
-      ];
-  }
-}
-
-function hasExplicitAgentSwitchRequest(prompt: string | undefined, agent: AgentKind): boolean {
-  if (!prompt?.trim()) return false;
-  const text = prompt.toLowerCase().replace(/\s+/g, " ").trim();
-  const target = `(?:${agentAliases(agent).map(escapeRegExp).join("|")})`;
-  const switchVerb =
-    "(?:바꿔|바꿔줘|변경|변경해|전환|전환해|설정|설정해|써줘|사용|가|switch|change|set|use)";
-  const switchSubject = "(?:agent|runtime|model|에이전트|런타임|모델)";
-
-  return [
-    new RegExp(`^/(?:agent|runtime)\\s+${target}(?:\\s|$)`, "iu"),
-    new RegExp(`${target}\\s*(?:로|으로)\\s*.{0,16}${switchVerb}`, "iu"),
-    new RegExp(`${switchSubject}.{0,24}${target}.{0,24}${switchVerb}`, "iu"),
-    new RegExp(`${switchVerb}.{0,24}${switchSubject}.{0,24}${target}`, "iu"),
-    new RegExp(`(?:switch|change|set|use).{0,24}${target}`, "iu"),
-  ].some((pattern) => pattern.test(text));
-}
-
 export function createSelfConfigCore(
   host: SelfConfigHost,
   productOverrides: Partial<SelfConfigProductConfig> = {},
@@ -371,7 +331,10 @@ export function createSelfConfigCore(
     if (config.agentLocked) {
       return err("Agent for this topic is locked by the user. Cannot override.");
     }
-    if (!hasExplicitAgentSwitchRequest(ctx.currentUserPrompt, agent)) {
+    const explicitlyRequested = ctx.explicitAgentSwitchTargets
+      ? ctx.explicitAgentSwitchTargets.includes(agent)
+      : hasExplicitAgentSwitchRequest(ctx.currentUserPrompt, agent);
+    if (!explicitlyRequested) {
       return err(
         `Agent switch to '${agent}' requires an explicit request in the current user message.`,
       );
@@ -579,7 +542,14 @@ export function createSelfConfigCore(
 
     let derived: SelfConfigTopic | null;
     try {
-      derived = await host.derivedTopics.create(topic.id, ctx.userId, copyHistory, { name });
+      derived = await host.derivedTopics.create(topic.id, ctx.userId, copyHistory, {
+        name,
+        // The room is created under the execution principal; remember who
+        // actually asked so a host mirroring it can make that person its owner.
+        ...(ctx.actorUserId && ctx.actorUserId !== ctx.userId
+          ? { derivedByUserId: ctx.actorUserId }
+          : {}),
+      });
     } catch (error) {
       if (host.derivedTopics.isTitleConflict(error)) {
         return err(`${errorMessage(error)} — pick a different name.`);

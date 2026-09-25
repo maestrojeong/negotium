@@ -75,6 +75,14 @@ function allowedRuntimePath(path: string, method: string): boolean {
     // ask card is unanswerable from the hub, which is the whole point of
     // rendering it there.
     if (/^\/topics\/[^/]+\/messages\/[^/]+\/ask-answer$/.test(path)) return true;
+    // Hub-routed remote session-comm delivered into a room on this worker
+    // (a tell/ask/abort a person elsewhere addressed to it, or the answer to
+    // an ask this room raised). Narrower than `/turns`: the hub has already
+    // authorized the person against its membership store, the node only
+    // queues into its own session inbox, and every delivery is claimed by
+    // the hub's requestId so a relay retry cannot queue it twice. Exact leaf,
+    // so no other `session-comm/*` route is forwarded by accident.
+    if (/^\/topics\/[^/]+\/session-comm\/inbox$/.test(path)) return true;
     if (/^\/topics\/[^/]+\/messages\/system$/.test(path)) return true;
     if (/^\/topics\/[^/]+\/messages\/[^/]+\/reactions$/.test(path)) return true;
     return /^\/topics\/[^/]+\/(abort|session\/(reset|compact))$/.test(path);

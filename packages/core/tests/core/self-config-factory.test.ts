@@ -199,6 +199,39 @@ describe("self-config host factory", () => {
     expect(deriveCalls).toBe(1);
   });
 
+  test("spawn/fork tell the host who asked when the turn runs under a shared principal", async () => {
+    const calls: Array<{ userId: string; options: { name?: string; derivedByUserId?: string } }> =
+      [];
+    const state = createHost({
+      derivedTopics: {
+        create: async (_topicId, userId, _copyHistory, options) => {
+          calls.push({ userId, options });
+          return TOPIC;
+        },
+        link: (topicId) => `topic:${topicId}`,
+        isTitleConflict: () => false,
+        isForkCompactionError: () => false,
+      },
+    });
+    const runtime = createSelfConfigRuntime({ host: state.host });
+    const asPerson = runtime
+      .createToolDefinitions({ topicId: TOPIC.id, userId: "host-user", actorUserId: "person" })
+      .find((candidate) => candidate.name === "spawn_topic");
+    const asSelf = runtime
+      .createToolDefinitions({ topicId: TOPIC.id, userId: "host-user", actorUserId: "host-user" })
+      .find((candidate) => candidate.name === "fork_topic");
+    if (!asPerson || !asSelf) throw new Error("missing derived-topic tools");
+
+    await asPerson.handler({ name: "child" });
+    await asSelf.handler({});
+    expect(calls).toEqual([
+      // Execution stays under the principal; the person is carried as metadata.
+      { userId: "host-user", options: { name: "child", derivedByUserId: "person" } },
+      // An actor who *is* the principal adds nothing.
+      { userId: "host-user", options: { name: undefined } },
+    ]);
+  });
+
   test("freezes product policy before MCP schemas capture its limits", () => {
     const runtime = createSelfConfigRuntime({
       host: createHost().host,

@@ -51,6 +51,7 @@ import {
 } from "#query/active-rooms";
 import { writeQueryState } from "#query/state";
 import { AbortReason } from "#query/types";
+import { actorTopicScopeFrom } from "#runtime/actor-topic-scope";
 import {
   materializePromptAttachments,
   promptWithAttachments,
@@ -60,6 +61,7 @@ import { buildMentionOnlyChannelPrompt } from "#runtime/channel-context";
 import { classifyAgentError, stringifyError } from "#runtime/errors";
 import { withTurnSilenceHeartbeat } from "#runtime/event-heartbeat";
 import { trackPlaywrightTurn, untrackPlaywrightTurn } from "#runtime/playwright-turn-abort";
+import { remoteSessionGrantFrom } from "#runtime/remote-session-grant";
 import { getTopicConfig } from "#runtime/topic-config";
 import { runTurnEventStream, type StreamAgentOutcome } from "#runtime/turn-event-stream";
 import {
@@ -87,6 +89,7 @@ import {
 import { getGlobalAiName } from "#storage/app-settings";
 import { isTopicBrowserProfileOwner } from "#storage/browser-profiles";
 import { appendConversationEvent, readConversation } from "#storage/conversations";
+import { db } from "#storage/forum-db";
 import {
   getRuntimeTurnLease,
   RUNTIME_INSTANCE_ID,
@@ -96,6 +99,7 @@ import { getRuntimeTopicEpoch, isRuntimeTopicMaintenance } from "#storage/runtim
 import {
   claimNextRuntimeUserTurnRequest,
   completeRuntimeUserTurnRequest,
+  getActiveRuntimeUserTurnRequest,
   markRuntimeUserTurnMessagesLogged,
   markRuntimeUserTurnRunning,
   mergeRuntimeUserTurnRequest,
@@ -113,7 +117,14 @@ import {
   wikiSummaryFilename,
 } from "#storage/wiki-summary-names";
 import { getTopics } from "#topics/derive";
-import type { AgentKind, EffortLevel, PeerRuntimeBridgeContext, UnifiedEvent } from "#types";
+import type {
+  ActorTopicScope,
+  AgentKind,
+  EffortLevel,
+  PeerRuntimeBridgeContext,
+  RemoteSessionGrant,
+  UnifiedEvent,
+} from "#types";
 import type { MessageDto, TopicDto } from "#types/api";
 
 // 분해된 헬퍼 모듈 재노출 — 기존 @/api/routes/ai 소비자(테스트 포함) 경로 유지
@@ -439,7 +450,10 @@ async function markPendingAskFile(
 }
 
 /** Caller-side injection of an ask reply — delivers the target AI's answer (or
- *  error) back into the caller topic, triggering its AI when one is invited. */
+ *  error) back into the caller topic, triggering its AI when one is invited.
+ *  `options.onRecorded` runs inside the same storage transaction as the durable
+ *  room record (the appended reply message), so a caller that must consume its
+ *  own bookkeeping exactly when the answer is durable can do so atomically. */
 export async function deliverAskCallbackToCaller(
   pending: AskPendingFileRef & {
     requestId: string;
@@ -451,28 +465,36 @@ export async function deliverAskCallbackToCaller(
   sourceLabel: string,
   body: string,
   kind: "reply" | "error",
+  options: { onRecorded?: () => void } = {},
 ): Promise<boolean> {
   if (pending.remoteReply) {
     const { deliverPeerReply } = await import("#mcp/session-comm/peer-forward");
-    return deliverPeerReply(pending.remoteReply, sourceLabel, body, kind);
+    const delivered = await deliverPeerReply(pending.remoteReply, sourceLabel, body, kind);
+    if (delivered) options.onRecorded?.();
+    return delivered;
   }
   const callerTopic = getTopic(pending.callerTopicId);
   const heading = kind === "error" ? `Error from ${sourceLabel}` : `Reply from ${sourceLabel}`;
   const prompt = `[${heading}]\n\n${body}`;
-
-  await markPendingAskFile(pending, "reply_ready");
-
-  if (!callerTopic?.agent) {
-    try {
+  const record = (agentType?: AgentKind | null) =>
+    db.transaction(() => {
       appendAskReplyMessage(
         pending.callerTopicId,
         prompt,
         sourceLabel,
         body,
         kind,
-        undefined,
+        agentType ?? undefined,
         pending.callerThreadRootId,
       );
+      options.onRecorded?.();
+    })();
+
+  await markPendingAskFile(pending, "reply_ready");
+
+  if (!callerTopic?.agent) {
+    try {
+      record(undefined);
       await clearPendingAskFile(pending);
       return true;
     } catch (err) {
@@ -513,22 +535,36 @@ export async function deliverAskCallbackToCaller(
   if (queued) {
     // Keep individual replies visible in topic history; only the model-facing
     // caller turn is coalesced into one prompt.
-    appendAskReplyMessage(
-      pending.callerTopicId,
-      prompt,
-      sourceLabel,
-      body,
-      kind,
-      callerTopic.agent,
-      pending.callerThreadRootId,
-    );
+    try {
+      record(callerTopic.agent);
+    } catch (err) {
+      // The durable record is what makes this answer real — it is also the
+      // transaction that consumes the caller's bookkeeping (`onRecorded`).
+      // Without it the queued entry is the answer's ONLY trace, in memory, in
+      // a process that just failed a write: leaving it there makes the sender's
+      // retry hit the dedupe branch below and settle as if the answer had
+      // landed, so a crash loses it for good. Drop the entry instead and fail,
+      // so the retry runs the whole delivery again from a clean slate.
+      interSessionQueue.remove(pending.callerTopicId, pending.requestId);
+      logger.warn(
+        { err, requestId: pending.requestId, callerTopicId: pending.callerTopicId },
+        "sessions: ask callback record failed after enqueue; queue entry withdrawn",
+      );
+      return false;
+    }
     await markPendingAskFile(pending, "queued_for_caller");
     return true;
   }
 
   // A replay can encounter the same request while its original callback is
   // still queued. That request is already owned; do not append it twice.
+  // `onRecorded` still has to run atomically: it is an ask row deletion plus a
+  // claim completion, and a crash between the two would leave a completed
+  // claim with the ask still pending (or the reverse).
   if (interSessionQueue.hasRequest(pending.callerTopicId, pending.requestId)) {
+    db.transaction(() => {
+      options.onRecorded?.();
+    })();
     await markPendingAskFile(pending, "queued_for_caller");
     return true;
   }
@@ -537,15 +573,7 @@ export async function deliverAskCallbackToCaller(
     { requestId: pending.requestId, callerTopicId: pending.callerTopicId, source: sourceLabel },
     "sessions: ask callback could not enter caller batch; appending direct fallback",
   );
-  appendAskReplyMessage(
-    pending.callerTopicId,
-    prompt,
-    sourceLabel,
-    body,
-    kind,
-    callerTopic.agent,
-    pending.callerThreadRootId,
-  );
+  record(callerTopic.agent);
   await clearPendingAskFile(pending);
   return true;
 }
@@ -663,6 +691,10 @@ export interface AiTurnExecutionOptions {
   origin?: string;
   /** Product actor identity when the node executes as a shared principal. */
   actorUserId?: string;
+  /** Host-asserted rooms the actor may reach; absent confines cross-room tools. */
+  actorTopicScope?: ActorTopicScope;
+  /** Hub-issued per-turn remote session-comm grant; absent keeps it fail-closed. */
+  remoteSession?: RemoteSessionGrant;
   /** Origin node for transcript echo suppression. */
   sourceNode?: string;
   /** Answer inside this thread instead of the room's main flow (S-13). */
@@ -789,6 +821,39 @@ export interface TriggerTopicAiTurnOptions extends AiTurnExecutionOptions {
 
 const remoteInjectWaiters = new Map<string, ReturnType<typeof setInterval>>();
 
+/**
+ * Whether a new human message comes from the person a running user turn is
+ * answering. Only that person may steer the turn (abort it and fold the new
+ * message into a resumed batch); anyone else's message queues behind it. The
+ * comparison mirrors the durable merge rule: two turns without a recorded
+ * actor are one conversation, but an unrecorded actor never matches a named
+ * one — the conservative reading, since the alternative is folding a
+ * stranger's message into a turn whose author is unknown.
+ */
+export function sameTurnActor(
+  runningActorUserId: string | undefined,
+  incomingActorUserId: string | undefined,
+): boolean {
+  return (runningActorUserId ?? null) === (incomingActorUserId ?? null);
+}
+
+/**
+ * Whether the durable request another worker holds for `topicId` belongs to
+ * the same actor as an incoming user turn. `ownRequestIds` are the incoming
+ * turn's own durable rows, which the lookup must not mistake for the remote
+ * turn. No visible active request means the remote turn's actor is unknown,
+ * which is never "the same person".
+ */
+function remoteTurnHasSameActor(
+  topicId: string,
+  incomingActorUserId: string | undefined,
+  ownRequestIds: readonly string[],
+): boolean {
+  const active = getActiveRuntimeUserTurnRequest(topicId);
+  if (!active || ownRequestIds.includes(active.requestId)) return false;
+  return sameTurnActor(active.execution?.actorUserId, incomingActorUserId);
+}
+
 export function mergeSupersedingUserTurn(
   running: Pick<RoomQueryControl, "prompt" | "userMessages" | "attachments" | "sessionId">,
   incoming: { prompt: string; userMessages?: UserTurnEnvelope[]; attachments?: string[] },
@@ -825,6 +890,8 @@ function serializableUserTurnExecution(params: StartAiTurnParams): RuntimeUserTu
     runtimeEpoch: params._runtimeEpoch ?? getRuntimeTopicEpoch(params.topic.id),
     sourceRequestId: params.requestId,
     actorUserId: params.actorUserId,
+    actorTopicScope: params.actorTopicScope,
+    remoteSession: params.remoteSession,
     agentOverride: params.agentOverride,
     modelOverride: params.modelOverride,
     effortOverride: params.effortOverride,
@@ -921,6 +988,8 @@ async function drainOneDurableUserTurn(): Promise<void> {
       topic,
       userId: request.userId,
       actorUserId: execution?.actorUserId,
+      actorTopicScope: actorTopicScopeFrom(execution?.actorTopicScope),
+      remoteSession: remoteSessionGrantFrom(execution?.remoteSession),
       vaultUserId: execution?.vaultUserId,
       prompt: request.prompt,
       _userMessages: request.userMessages,
@@ -1169,7 +1238,11 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     return null;
   }
   if (decision.action === "remote-abort-wait") {
-    requestRuntimeTurnAbort(topicId, "internal");
+    // Only the same person's follow-up steers the turn the other process is
+    // running; anyone else's message just waits for the lease to be released.
+    if (remoteTurnHasSameActor(topicId, params.actorUserId, durableRequestIds)) {
+      requestRuntimeTurnAbort(topicId, "internal");
+    }
     const queuedQueryId = waitToStartRemoteUserTurn(
       {
         ...params,
@@ -1193,6 +1266,33 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
   }
   if (decision.action === "abort-replace") {
     const running = decision.running;
+    // Another person's running answer is not this message's to interrupt. The
+    // message keeps its own durable row (the merge never folds across actors)
+    // and the worker claims it once the running turn releases the room. A
+    // running session-inject is still preempted by any human message.
+    if (isUserOrigin(running.origin) && !sameTurnActor(running.actorUserId, params.actorUserId)) {
+      const queuedQueryId = waitToStartRemoteUserTurn(
+        {
+          ...params,
+          topic,
+          prompt,
+          attachments,
+          sessionId,
+          _userMessages: userMessages,
+          _conversationPrompts: conversationPrompts,
+          _loggedUserMessageCount: loggedUserMessageCount,
+          _durableRequestIds: durableRequestIds,
+          _runtimeEpoch: runtimeEpoch,
+        },
+        queryId,
+      );
+      announceQueuedUserTurn({ ...params, topic }, queuedQueryId);
+      logger.info(
+        { topicId, queryId: queuedQueryId, runningQueryId: running.queryId },
+        "ai: user turn from another actor queued behind the running turn",
+      );
+      return queuedQueryId;
+    }
     let omitRequestIds: string[] | undefined;
     if (isUserOrigin(running.origin)) {
       if (running.providerTurnContentObserved && running.sessionId) {
@@ -1278,6 +1378,9 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
     origin,
     prompt,
     userMessages,
+    ...(isUserOrigin(origin) && params.actorUserId !== undefined
+      ? { actorUserId: params.actorUserId }
+      : {}),
     durableRequestIds,
     attachments,
     sessionId,
@@ -1329,7 +1432,9 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       return rejectIsolatedTurnBeforeDispatch("failed to claim isolated turn slot");
     }
     if (isUserOrigin(origin)) {
-      requestRuntimeTurnAbort(topicId, "internal");
+      if (remoteTurnHasSameActor(topicId, params.actorUserId, durableRequestIds)) {
+        requestRuntimeTurnAbort(topicId, "internal");
+      }
       const queuedQueryId = waitToStartRemoteUserTurn(
         {
           ...params,
@@ -1708,6 +1813,8 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         sessionId,
         userId,
         actorUserId: params.actorUserId,
+        actorTopicScope: params.actorTopicScope,
+        remoteSession: params.remoteSession,
         vaultUserId,
         session: sessionName,
         sessionType: sessionType ?? (isManager ? "manager" : "forum"),
@@ -1804,12 +1911,14 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
               "Provider session expired and conversation history could not be rebuilt; the existing session was preserved for retry.",
           };
         } else {
-          if (!silent) WsHub.get().broadcastAborted(topicId, queryId, "stopped");
+          // No terminal event, and the same queryId carries over (see the
+          // `_queryId` note on the empty-response retry below): this is one
+          // logical turn recovering internally, not a turn that ended.
           const retrySessionId = retry.sessionId;
           logger.info(
             {
               topicId,
-              prevQueryId: queryId,
+              queryId,
               agent: agentKind,
               retrySessionId: retrySessionId ? retrySessionId.slice(0, 8) : null,
             },
@@ -1824,6 +1933,9 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           startAiTurn({
             topic,
             userId,
+            actorUserId: params.actorUserId,
+            actorTopicScope: params.actorTopicScope,
+            remoteSession: params.remoteSession,
             vaultUserId,
             prompt,
             _userMessages: userMessages,
@@ -1862,6 +1974,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
             askReplySources,
             _runtimeEpoch: runtimeEpoch,
             _sessionRetried: true,
+            _queryId: queryId,
           });
           return;
         }
@@ -1878,14 +1991,24 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           // the CLI self-interrupts within ~1-2s with a zero-usage "success".
           // A same-session retry has reliably produced a real reply in every
           // case seen so far, so retry once before surfacing a failure.
-          if (!silent) WsHub.get().broadcastAborted(topicId, queryId, "stopped");
+          // Deliberately NO terminal event here, and the retry keeps this
+          // queryId. An internal retry is invisible bookkeeping: the turn the
+          // caller asked for is still running. Emitting `ai_aborted` made a
+          // host treat the turn as over — the hub revokes the turn's remote
+          // session-comm capability on any terminal event for its queryId, so
+          // the retried attempt found its own remote tools answering 401 —
+          // and a fresh queryId would leave the original one with no terminal
+          // event at all, stranding that capability for its whole ceiling.
           logger.info(
-            { topicId, prevQueryId: queryId, agent: agentKind },
+            { topicId, queryId, agent: agentKind },
             "ai: retrying query after empty provider response",
           );
           startAiTurn({
             topic,
             userId,
+            actorUserId: params.actorUserId,
+            actorTopicScope: params.actorTopicScope,
+            remoteSession: params.remoteSession,
             vaultUserId,
             prompt,
             _userMessages: userMessages,
@@ -1922,6 +2045,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
             _runtimeEpoch: runtimeEpoch,
             _sessionRetried: sessionRetried,
             _emptyResponseRetried: true,
+            _queryId: queryId,
           });
           return;
         }

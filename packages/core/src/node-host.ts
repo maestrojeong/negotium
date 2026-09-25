@@ -30,6 +30,7 @@ export {
   asUserId,
 } from "#identifiers";
 export { setRuntimeMcpPort } from "#mcp/runtime-spec";
+export { MAX_PEER_MESSAGE_LENGTH } from "#mcp/session-comm/limits";
 export { killAllBgBash } from "#platform/background-bash/manager";
 export {
   DATA_DIR,
@@ -65,6 +66,8 @@ export {
   reapPlaywrightOrphans as reapOrphanBrowsers,
 } from "#platform/playwright/manager";
 export { abortAllRooms, listRunningTopicQueries } from "#query/active-rooms";
+export { parseActorTopicScope, validateActorTopicScope } from "#runtime/actor-topic-scope";
+export { failInterruptedRemoteAskCallbacks } from "#runtime/ask-callbacks";
 export { listBackgroundSessionsForUser } from "#runtime/background-sessions";
 export type {
   BashrsCompletion,
@@ -77,7 +80,22 @@ export {
 } from "#runtime/bashrs-completions";
 export type { FileHooks, UploadAccess } from "#runtime/file-hooks";
 export { setFileHooks } from "#runtime/file-hooks";
+export {
+  listRuntimeGatewayCapabilities,
+  registerRuntimeGatewayCapability,
+} from "#runtime/gateway-capabilities";
 export { startSessionInboxWorker } from "#runtime/inbox";
+export { validateRemoteSessionGrant } from "#runtime/remote-session-grant";
+export {
+  deliverRemoteSessionInbox,
+  parseRemoteSessionInboxDelivery,
+  RemoteSessionInboxError,
+  recoverRemoteSessionInbox,
+} from "#runtime/remote-session-inbox";
+export {
+  runRemoteSessionMaintenance,
+  startRemoteSessionReplyOutboxWorker,
+} from "#runtime/remote-session-reply-outbox";
 export { startAiTurn, startDurableTurnRequestWorker } from "#runtime/turn-runner";
 export type { PortableTopicVisual } from "#runtime/visual-store";
 export { getPortableTopicVisual } from "#runtime/visual-store";
@@ -99,6 +117,14 @@ export {
 export { getTopic, upsertTopic } from "#storage/api-topics";
 export { getGlobalAiName, setGlobalAiName } from "#storage/app-settings";
 export { readDecisions, writeDecisionGraphSvg } from "#storage/decisions";
+export {
+  claimRemoteSessionInbox,
+  purgeRemoteSessionInboxClaims,
+  purgeStaleRemoteSessionAsks,
+  releaseRemoteSessionInboxClaim,
+  remoteSessionPayloadHash,
+  takeRemoteSessionAsk,
+} from "#storage/remote-session";
 export type { StoredRuntimeEvent } from "#storage/runtime-events";
 export {
   earliestRuntimeEventSeq,

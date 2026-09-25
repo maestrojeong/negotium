@@ -1,6 +1,7 @@
 import { accessSync, constants as fsConstants } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { explicitAgentSwitchTargets } from "#agents/explicit-agent-switch";
 
 import { canonicalMcpBridgeEnv } from "#mcp/canonical-bridge-config";
 import {
@@ -38,10 +39,18 @@ import {
   buildPlaywrightMcpTransport,
   CODEX_BROWSER_CAPABILITY_ENV,
 } from "#platform/playwright/mcp-transport";
+import { encodeActorTopicScopeArg } from "#runtime/actor-topic-scope";
 import { getRegisteredCronSession } from "#runtime/cron-sessions";
+import { encodeRemoteSessionGrantArg } from "#runtime/remote-session-grant";
 import type { HostMcpServerSpec } from "#runtime-gateway";
 import { getTopic } from "#storage/api-topics";
-import type { AgentKind, AgentQueryOptions, PeerRuntimeBridgeContext } from "#types";
+import type {
+  ActorTopicScope,
+  AgentKind,
+  AgentQueryOptions,
+  PeerRuntimeBridgeContext,
+  RemoteSessionGrant,
+} from "#types";
 
 export type { RuntimeMcpScope } from "#platform/mcp-catalog-policy";
 
@@ -92,6 +101,14 @@ function buildBuiltinMcpServer(
   const agent = ctx.agent ?? FALLBACK_AGENT;
   return buildHostedMcpSpec(agent, surface, {
     userId: ctx.userId,
+    ...(ctx.actorUserId ? { actorUserId: ctx.actorUserId } : {}),
+    ...(ctx.actorTopicScope ? { actorTopicScope: ctx.actorTopicScope } : {}),
+    // Only the session-comm surface addresses remote rooms; the other hosted
+    // tokens (and the runtime token) never carry the grant, so it costs them
+    // no URL budget.
+    ...(surface === "session-comm" && ctx.remoteSession
+      ? { remoteSession: ctx.remoteSession }
+      : {}),
     topicTitle: ctx.session,
     ...(ctx.topicId ? { topicId: ctx.topicId } : {}),
     ...(ctx.queryId ? { queryId: ctx.queryId } : {}),
@@ -221,6 +238,10 @@ export interface RuntimeMcpBuildContext {
   userId: string;
   /** Product actor identity when it differs from the execution principal. */
   actorUserId?: string;
+  /** Hub-asserted rooms the product actor may reach; forwarded into signed tokens. */
+  actorTopicScope?: ActorTopicScope;
+  /** Hub-issued per-turn remote session-comm grant; session-comm only. */
+  remoteSession?: RemoteSessionGrant;
   /** Vault namespace when credentials belong to a different principal. */
   vaultUserId?: string;
   /** "dm" for DM scope, topic/session name for forum/fork. */
@@ -375,6 +396,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
     build({
       userId,
       actorUserId,
+      actorTopicScope,
       session,
       topicId,
       queryId,
@@ -389,6 +411,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
       peerBridge,
     }) {
       if (!topicId || !agent) return null;
+      const switchTargets = explicitAgentSwitchTargets(currentUserPrompt);
       return buildRuntimeMcpSpec(agent, {
         // Runtime tools mutate node-owned state, so authorization stays bound
         // to the canonical execution principal. Keep the product-side human
@@ -396,13 +419,17 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
         // that appears in this node's topic participant roster.
         userId,
         ...(actorUserId ? { actorUserId } : {}),
+        ...(actorTopicScope ? { actorTopicScope } : {}),
         topicId,
         topicTitle: session,
         queryId,
         cwd: cwd ?? resolveTopicWorkspaceDir(topicId),
         agent,
         model,
-        currentUserPrompt,
+        // Derived here, from the full prompt, so the signed token carries the
+        // gate's answer (bounded) instead of the prompt (unbounded); see
+        // `explicitAgentSwitchTargets`.
+        ...(switchTargets.length ? { explicitAgentSwitchTargets: switchTargets } : {}),
         autoContinue,
         visualTools,
         fileDeliveryTools,
@@ -484,6 +511,9 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
     build(ctx) {
       const {
         userId,
+        actorUserId,
+        actorTopicScope,
+        remoteSession,
         session,
         topicId,
         subagentParentTopicId,
@@ -499,6 +529,13 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
         : undefined;
       const args = [
         `--user-id=${userId}`,
+        ...(actorUserId ? [`--actor-user-id=${actorUserId}`] : []),
+        ...(actorTopicScope
+          ? [`--actor-topic-scope=${encodeActorTopicScopeArg(actorTopicScope)}`]
+          : []),
+        ...(remoteSession
+          ? [`--remote-session-grant=${encodeRemoteSessionGrantArg(remoteSession)}`]
+          : []),
         `--topic=${session}`,
         ...(topicId ? [`--topic-id=${topicId}`] : []),
         ...(subagentParentTopicId ? [`--subagent-parent-topic-id=${subagentParentTopicId}`] : []),
@@ -925,6 +962,9 @@ export function getDmMcpServers(opts: {
  */
 export function getManagerMcpServers(opts: {
   userId: string;
+  actorUserId?: string;
+  actorTopicScope?: ActorTopicScope;
+  remoteSession?: RemoteSessionGrant;
   session?: string;
   topicId?: string;
   queryId?: string;
@@ -945,6 +985,9 @@ export function getManagerMcpServers(opts: {
   const topicId = opts.topicId;
   return buildScope("manager", {
     userId: opts.userId,
+    actorUserId: opts.actorUserId,
+    actorTopicScope: opts.actorTopicScope,
+    remoteSession: opts.remoteSession,
     session: opts.session ?? "General",
     topicId,
     queryId: opts.queryId,
@@ -970,6 +1013,8 @@ export function getManagerMcpServers(opts: {
 export function getForumMcpServers(opts: {
   userId: string;
   actorUserId?: string;
+  actorTopicScope?: ActorTopicScope;
+  remoteSession?: RemoteSessionGrant;
   vaultUserId?: string;
   session: string;
   topicId?: string;
@@ -996,6 +1041,8 @@ export function getForumMcpServers(opts: {
   const {
     userId,
     actorUserId,
+    actorTopicScope,
+    remoteSession,
     vaultUserId,
     session,
     topicId,
@@ -1033,6 +1080,8 @@ export function getForumMcpServers(opts: {
     {
       userId,
       actorUserId,
+      actorTopicScope,
+      remoteSession,
       vaultUserId,
       session,
       topicId,
@@ -1146,6 +1195,9 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
       mergeHostMcpServers(
         getManagerMcpServers({
           userId: opts.userId || "local",
+          actorUserId: opts.actorUserId,
+          actorTopicScope: opts.actorTopicScope,
+          remoteSession: opts.remoteSession,
           session: opts.session,
           topicId: opts.topicId,
           queryId: opts.queryId,
@@ -1169,6 +1221,8 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
     getForumMcpServers({
       userId: opts.userId || "local",
       actorUserId: opts.actorUserId,
+      actorTopicScope: opts.actorTopicScope,
+      remoteSession: opts.remoteSession,
       vaultUserId: opts.vaultUserId,
       session: opts.session || "default",
       topicId: opts.topicId,

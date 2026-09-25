@@ -19,6 +19,7 @@ import {
   abortAllRooms,
   acquireRuntimeProcessLease,
   DATA_DIR,
+  failInterruptedRemoteAskCallbacks,
   getNodeMcpServers,
   killAllBgBash,
   killAllPlaywright,
@@ -33,6 +34,7 @@ import {
   RUN_DIR,
   reapOrphanBrowsers,
   reconcilePendingAskUserQuestionGates,
+  recoverRemoteSessionInbox,
   resolveCuaRsBinary,
   runNodeRequestHandlers,
   runShutdown,
@@ -47,6 +49,7 @@ import {
   startBashrsCompletionsWorker,
   startDurableTurnRequestWorker,
   startNegotiumNodeModules,
+  startRemoteSessionReplyOutboxWorker,
   startSessionInboxWorker,
   stopAskUserQuestionGateOwner,
   sweepStaleSubagentCards,
@@ -408,6 +411,21 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   setRuntimeMcpPort(port);
   const stopTurnRequests = startDurableTurnRequestWorker();
   const stopInbox = startSessionInboxWorker();
+  // Hub-routed ask answers need no adapter, so the node itself posts them
+  // and fails the ones a previous process left mid-flight.
+  const stopRemoteReplyOutbox = startRemoteSessionReplyOutboxWorker();
+  // Inbox deliveries the previous process left `processing` are re-run now,
+  // lease or not: nothing in a fresh process holds one.
+  void recoverRemoteSessionInbox(Date.now(), { includeLive: true }).then((recovered) => {
+    if (recovered > 0) {
+      logger.warn({ recovered }, "re-delivered remote ask replies interrupted by previous process");
+    }
+  });
+  void failInterruptedRemoteAskCallbacks({ routes: "hub" }).then((failedAsks) => {
+    if (failedAsks > 0) {
+      logger.warn({ failedAsks }, "failed hub-routed remote asks interrupted by previous process");
+    }
+  });
   const pruneEventLog = () => {
     try {
       const result = pruneRuntimeEvents();
@@ -437,6 +455,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   } catch (error) {
     stopTurnRequests();
     stopInbox();
+    stopRemoteReplyOutbox();
     clearInterval(eventPruneTimer);
     stopBashrsCompletions();
     server.stop(true);
@@ -486,6 +505,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     });
     stopTurnRequests();
     stopInbox();
+    stopRemoteReplyOutbox();
     clearInterval(eventPruneTimer);
     stopBashrsCompletions();
     server.stop(true);
@@ -502,6 +522,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   onShutdown("node-server", 130, () => {
     stopTurnRequests();
     stopInbox();
+    stopRemoteReplyOutbox();
     clearInterval(eventPruneTimer);
     stopBashrsCompletions();
     server.stop(true);
