@@ -27,6 +27,7 @@ import {
   purgeRemoteSessionInboxClaims,
   purgeStaleRemoteSessionAsks,
   REMOTE_SESSION_REPLY_RETRY_MS,
+  reconcileUndispatchedRemoteSessionAsks,
   upsertRemoteSessionReplyOutbox,
 } from "#storage/remote-session";
 
@@ -132,7 +133,9 @@ export async function runRemoteSessionMaintenance(
 ): Promise<{ claims: number; asks: number; recovered: number }> {
   await flushRemoteSessionReplyOutbox(now);
   const claims = purgeRemoteSessionInboxClaims(now);
-  const asks = purgeStaleRemoteSessionAsks(now);
+  // Asks a dead process wrote but never sent to the hub: row + marker.
+  const undispatched = reconcileUndispatchedRemoteSessionAsks(now);
+  const asks = purgeStaleRemoteSessionAsks(now) + undispatched;
   purgeStaleAsks(now);
   const recovered = await recoverRemoteSessionInbox(now);
   if (claims || asks || recovered) {

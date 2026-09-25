@@ -90,10 +90,17 @@ describe("remote_session_inbox_claims", () => {
     expect(getRemoteSessionInboxClaim(requestId)?.state).toBe("completed");
     expect(claimRemoteSessionInbox(args)).toBe("replay");
     expect(claimRemoteSessionInbox({ ...args, force: true })).toBe("replay");
-    expect(releaseRemoteSessionInboxClaim(requestId)).toBe(true);
-    expect(releaseRemoteSessionInboxClaim(requestId)).toBe(false);
-    expect(claimRemoteSessionInbox(args)).toBe("claimed");
-    releaseRemoteSessionInboxClaim(requestId);
+    // A completed claim is never released (compare-and-delete on `processing`).
+    expect(releaseRemoteSessionInboxClaim(requestId, { payloadHash: args.payloadHash })).toBe(
+      false,
+    );
+    expect(getRemoteSessionInboxClaim(requestId)?.state).toBe("completed");
+    const fresh = `${requestId}-fresh`;
+    expect(claimRemoteSessionInbox({ ...args, requestId: fresh })).toBe("claimed");
+    expect(releaseRemoteSessionInboxClaim(fresh, { payloadHash: args.payloadHash })).toBe(true);
+    expect(releaseRemoteSessionInboxClaim(fresh, { payloadHash: args.payloadHash })).toBe(false);
+    expect(claimRemoteSessionInbox({ ...args, requestId: fresh })).toBe("claimed");
+    releaseRemoteSessionInboxClaim(fresh, { payloadHash: args.payloadHash });
   });
 
   test("a processing claim keeps the delivery payload until completed", () => {
@@ -109,7 +116,6 @@ describe("remote_session_inbox_claims", () => {
     expect(getRemoteSessionInboxClaim(requestId)?.payload).toEqual(payload);
     completeRemoteSessionInboxClaim(requestId);
     expect(getRemoteSessionInboxClaim(requestId)?.payload).toBeNull();
-    releaseRemoteSessionInboxClaim(requestId);
   });
 
   test("forgets claims older than the TTL", () => {
@@ -123,7 +129,7 @@ describe("remote_session_inbox_claims", () => {
       now: now - REMOTE_SESSION_INBOX_CLAIM_TTL_MS - 1,
     });
     expect(purgeRemoteSessionInboxClaims(now)).toBeGreaterThanOrEqual(1);
-    expect(releaseRemoteSessionInboxClaim(requestId)).toBe(false);
+    expect(getRemoteSessionInboxClaim(requestId)).toBeNull();
   });
 });
 

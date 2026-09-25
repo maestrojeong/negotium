@@ -20,6 +20,7 @@ import {
   getRemoteSessionInboxClaim,
   listExpiredRemoteSessionInboxClaims,
   type RemoteSessionAskRecord,
+  type RemoteSessionInboxClaimRecord,
   releaseRemoteSessionInboxClaim,
   remoteSessionPayloadHash,
 } from "#storage/remote-session";
@@ -598,12 +599,12 @@ async function deliverAskReply(args: {
     ? askReplyPrincipalRefusal({ ask: held, topicId: topic.id, userId, actorUserId })
     : { ok: false as const, status: 404, error: "no pending remote ask with this requestId" };
   if (!held || heldRefusal || held.userId !== ask.userId) {
-    releaseRemoteSessionInboxClaim(delivery.requestId);
+    releaseRemoteSessionInboxClaim(delivery.requestId, { payloadHash });
     return (
       heldRefusal ?? { ok: false, status: 404, error: "no pending remote ask with this requestId" }
     );
   }
-  return runAskReplyDelivery(held, delivery);
+  return runAskReplyDelivery(held, delivery, payloadHash);
 }
 
 /** An ask-reply for which no ask is pending: replay, conflict, in-progress or 404 — never a write. */
@@ -643,10 +644,15 @@ export function setRemoteSessionAskReplyDeliverer(next: AskReplyDeliverer | null
   askReplyDeliverer = next;
 }
 
-/** Deliver and, in the same transaction as the room record, consume + complete. */
+/**
+ * Deliver and, in the same transaction as the room record, consume + complete.
+ * `claimHash` is the digest of the `processing` claim the caller holds (under
+ * the request lock); a failed delivery releases only that claim.
+ */
 async function runAskReplyDelivery(
   ask: RemoteSessionAskRecord,
   delivery: AskReplyDelivery,
+  claimHash: string,
 ): Promise<RemoteSessionInboxOutcome> {
   const deliverAskCallbackToCaller =
     askReplyDeliverer ?? (await import("#runtime/turn-runner")).deliverAskCallbackToCaller;
@@ -683,9 +689,12 @@ async function runAskReplyDelivery(
     );
   }
   if (!delivered || !recorded) {
-    // Nothing durable happened in the caller room: hand the claim back so the
-    // hub's retry (or the recovery pass) runs the delivery again.
-    releaseRemoteSessionInboxClaim(ask.requestId);
+    // Nothing durable happened in the caller room (or the recording
+    // transaction rolled back): hand the claim back so the hub's retry (or the
+    // recovery pass) runs the delivery again. A compare-and-delete: if the
+    // answer did become durable, the claim is `completed` and survives, so the
+    // retry after this 500 is a replay rather than a 404.
+    releaseRemoteSessionInboxClaim(ask.requestId, { payloadHash: claimHash });
     return { ok: false, status: 500, error: "reply could not be delivered to the caller" };
   }
   return { ok: true, replayed: false };
@@ -755,9 +764,20 @@ export async function recoverRemoteSessionInbox(
 ): Promise<number> {
   const requireActor = options.requireActor ?? remoteSessionRequireActor();
   let recovered = 0;
+  // Every release below runs under the request lock and is a
+  // compare-and-delete on exactly the claim read here (digest + lease): the
+  // list is read once, and a hub retry may take a stale claim over and
+  // complete it while an earlier iteration awaits its delivery.
+  const releaseAsRead = (claim: RemoteSessionInboxClaimRecord) =>
+    withRequestLock(claim.requestId, async () =>
+      releaseRemoteSessionInboxClaim(claim.requestId, {
+        payloadHash: claim.payloadHash,
+        leaseUntil: claim.leaseUntil,
+      }),
+    );
   for (const claim of listExpiredRemoteSessionInboxClaims(now, options)) {
     if (claim.kind !== "ask-reply") {
-      releaseRemoteSessionInboxClaim(claim.requestId);
+      await releaseAsRead(claim);
       continue;
     }
     const envelope = readRemoteSessionInboxEnvelope(claim.payload);
@@ -771,7 +791,7 @@ export async function recoverRemoteSessionInbox(
         { requestId: claim.requestId, legacy: !envelope },
         "session-comm: interrupted remote ask reply has no verifiable envelope; dropping it (the hub's retry is re-checked)",
       );
-      releaseRemoteSessionInboxClaim(claim.requestId);
+      await releaseAsRead(claim);
       continue;
     }
     const delivery = envelope.delivery;
@@ -799,10 +819,10 @@ export async function recoverRemoteSessionInbox(
           { requestId: claim.requestId, callerTopicId: claim.topicId, reason: refusal },
           "session-comm: interrupted remote ask reply failed re-verification; dropping it",
         );
-        releaseRemoteSessionInboxClaim(claim.requestId);
+        releaseRemoteSessionInboxClaim(claim.requestId, { payloadHash: claim.payloadHash });
         return "refused";
       }
-      const result = await runAskReplyDelivery(ask, delivery);
+      const result = await runAskReplyDelivery(ask, delivery, claim.payloadHash);
       return result.ok ? "delivered" : "failed";
     });
     if (outcome === "delivered") recovered += 1;

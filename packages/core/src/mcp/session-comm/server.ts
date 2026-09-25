@@ -21,7 +21,7 @@ import {
   isTopicBrowserProfileOwner,
   listBrowserProfiles,
 } from "#storage/browser-profiles";
-import { deleteRemoteSessionAsk, recordRemoteSessionAsk } from "#storage/remote-session";
+import { beginRemoteSessionAsk, deleteRemoteSessionAsk } from "#storage/remote-session";
 import {
   clearPendingAsk,
   createPendingAsk,
@@ -582,28 +582,47 @@ if (!isReplyOnly) {
             );
           }
           const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-          const pending = createPendingAsk({ userId, from: fromRef.key, to, requestId });
-          if (!pending.ok) {
-            const detail = pending.existing
-              ? `${describePendingAskState(pending.existing.state)} (request_id: ${pending.existing.requestId})`
+          let pending: ReturnType<typeof createPendingAsk> | null = null;
+          const alreadyPending = () => {
+            const existing = pending && !pending.ok ? pending.existing : null;
+            const detail = existing
+              ? `${describePendingAskState(existing.state)} (request_id: ${existing.requestId})`
               : "상태 파일 확인 중";
             return mcpError(
               `"${to}"에 이미 진행 중인 ask_session 요청이 있습니다: ${detail}. 응답이 이 세션에 자동으로 돌아올 때까지 기다리세요.`,
             );
-          }
+          };
+          const createMarker = () => {
+            pending = createPendingAsk({ userId, from: fromRef.key, to, requestId });
+            return pending.ok;
+          };
           if (route.kind === "hub") {
             // Durable caller record first: the hub's `ask-reply` delivery is
             // routed back through it, possibly after this process restarted.
-            recordRemoteSessionAsk({
-              requestId,
-              callerTopicId: fromRef.topicId,
-              userId,
-              fromKey: fromRef.key,
-              toKey: to,
-              ...(sessionCommContext.currentThreadRootId
-                ? { callerThreadRootId: sessionCommContext.currentThreadRootId }
-                : {}),
-            });
+            // Row and pending marker are registered together; a failure undoes
+            // both, and a crash before the hub call is reconciled later.
+            let begun: "ok" | "pending";
+            try {
+              begun = beginRemoteSessionAsk({
+                requestId,
+                callerTopicId: fromRef.topicId,
+                userId,
+                fromKey: fromRef.key,
+                toKey: to,
+                ...(sessionCommContext.currentThreadRootId
+                  ? { callerThreadRootId: sessionCommContext.currentThreadRootId }
+                  : {}),
+                createMarker,
+                clearMarker: () => {
+                  clearPendingAsk({ userId, from: fromRef.key, to, requestId });
+                },
+              });
+            } catch (err) {
+              return mcpError(
+                `Error: "${to}" 원격 ask를 기록하지 못해 전송하지 않았습니다: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+            if (begun === "pending") return alreadyPending();
             const sent = await hubRemoteAsk(route.grant, {
               requestId,
               to: remote,
@@ -625,6 +644,7 @@ if (!isReplyOnly) {
               `"${to}" 세션(노드 ${remote.node})에 참조 요청을 보냈습니다.\n\nrequest_id: ${requestId}\n\n응답은 '[Reply from ${remote.node}/${remote.topic}]' 형식으로 이 세션에 자동으로 돌아옵니다. 응답이 도착할 때까지 같은 요청으로 ask_session을 재호출하지 마세요.`,
             );
           }
+          if (!createMarker()) return alreadyPending();
           const result = await forwardToPeer({
             action: "ask",
             toNode: remote.node,

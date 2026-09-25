@@ -21,7 +21,7 @@
  */
 import { createHash } from "node:crypto";
 import { db } from "#storage/forum-db";
-import { PENDING_ASK_TTL_MS } from "#storage/session-asks";
+import { clearPendingAsk, PENDING_ASK_TTL_MS } from "#storage/session-asks";
 import { registerStorageSchemaInitializer } from "#storage/storage-host";
 
 registerStorageSchemaInitializer((database) => {
@@ -67,6 +67,9 @@ registerStorageSchemaInitializer((database) => {
     "ALTER TABLE remote_session_inbox_claims ADD COLUMN state TEXT NOT NULL DEFAULT 'completed'",
     "ALTER TABLE remote_session_inbox_claims ADD COLUMN lease_until INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE remote_session_inbox_claims ADD COLUMN payload_json TEXT",
+    // Outbound ask: `prepared` until the hub call is about to be made, then
+    // `dispatched`. Rows that predate the column may have reached the hub.
+    "ALTER TABLE remote_session_asks ADD COLUMN dispatch_state TEXT NOT NULL DEFAULT 'dispatched'",
   ]) {
     try {
       database.exec(ddl);
@@ -280,10 +283,27 @@ export function listExpiredRemoteSessionInboxClaims(
     .map(toClaimRecord);
 }
 
-export function releaseRemoteSessionInboxClaim(requestId: string): boolean {
+/**
+ * Hand a `processing` claim back so the hub's retry runs the delivery again.
+ *
+ * A compare-and-delete: only the claim the caller holds — still
+ * `processing`, still bound to `expected.payloadHash` and, when given, still
+ * under the exact lease the caller read — is deleted. A claim a live delivery
+ * has meanwhile completed (or taken over / re-bound) is never deleted: losing
+ * a `completed` row would turn the hub's next retry into a 404 (an ask-reply
+ * whose answer already landed) or a second enqueue (tell/ask/abort).
+ */
+export function releaseRemoteSessionInboxClaim(
+  requestId: string,
+  expected: { payloadHash: string; leaseUntil?: number },
+): boolean {
   const result = db
-    .query("DELETE FROM remote_session_inbox_claims WHERE request_id = ?")
-    .run(requestId);
+    .query(
+      `DELETE FROM remote_session_inbox_claims
+       WHERE request_id = ? AND state = 'processing' AND payload_hash = ?
+         AND (? IS NULL OR lease_until = ?)`,
+    )
+    .run(requestId, expected.payloadHash, expected.leaseUntil ?? null, expected.leaseUntil ?? null);
   return Number(result.changes ?? 0) === 1;
 }
 
@@ -326,21 +346,42 @@ function toAskRecord(row: RemoteSessionAskRow): RemoteSessionAskRecord {
   };
 }
 
+/**
+ * `prepared`: written, but the hub has certainly not been called yet (a crash
+ * here leaves a row — and maybe a pending marker — nobody will ever answer).
+ * `dispatched`: the hub call is being or was made; the hub may have forwarded
+ * the ask, so the row is kept until an answer arrives or the ask TTL passes.
+ */
+export type RemoteSessionAskDispatchState = "prepared" | "dispatched";
+
+/**
+ * A `prepared` row older than this belongs to a process that died between
+ * writing it and calling the hub: prepare → marker → dispatched is
+ * synchronous, so a live one is never this old.
+ */
+export const REMOTE_SESSION_ASK_PREPARE_GRACE_MS = 60_000;
+
 /** Remember an outbound remote ask before the hub is asked to forward it. */
 export function recordRemoteSessionAsk(
-  args: Omit<RemoteSessionAskRecord, "createdAt"> & { createdAt?: number },
+  args: Omit<RemoteSessionAskRecord, "createdAt"> & {
+    createdAt?: number;
+    /** Defaults to `dispatched` (conservative: kept until answered or TTL). */
+    dispatchState?: RemoteSessionAskDispatchState;
+  },
 ): void {
   db.query(
     `INSERT INTO remote_session_asks
-       (request_id, caller_topic_id, user_id, from_key, to_key, caller_thread_root_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+       (request_id, caller_topic_id, user_id, from_key, to_key, caller_thread_root_id, created_at,
+        dispatch_state)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(request_id) DO UPDATE SET
        caller_topic_id = excluded.caller_topic_id,
        user_id = excluded.user_id,
        from_key = excluded.from_key,
        to_key = excluded.to_key,
        caller_thread_root_id = excluded.caller_thread_root_id,
-       created_at = excluded.created_at`,
+       created_at = excluded.created_at,
+       dispatch_state = excluded.dispatch_state`,
   ).run(
     args.requestId,
     args.callerTopicId,
@@ -349,7 +390,111 @@ export function recordRemoteSessionAsk(
     args.toKey,
     args.callerThreadRootId ?? null,
     args.createdAt ?? Date.now(),
+    args.dispatchState ?? "dispatched",
   );
+}
+
+/** The hub call is about to be made: from now on the hub may hold the ask. */
+export function markRemoteSessionAskDispatched(requestId: string): boolean {
+  const result = db
+    .query(
+      "UPDATE remote_session_asks SET dispatch_state = 'dispatched' WHERE request_id = ? AND dispatch_state = 'prepared'",
+    )
+    .run(requestId);
+  return Number(result.changes ?? 0) === 1;
+}
+
+/**
+ * Register an outbound hub ask: durable caller row (`prepared`), then the
+ * caller's pending marker, then `dispatched` — only after this returns `ok`
+ * may the hub be called. Every failure undoes what was written (row and
+ * marker), so a storage error never leaves a marker that blocks the next ask
+ * to the same room until the TTL; `pending` means another ask to that room is
+ * still outstanding (nothing is left behind either). A crash between the
+ * steps leaves a `prepared` row that {@link reconcileUndispatchedRemoteSessionAsks}
+ * removes together with its marker.
+ */
+export function beginRemoteSessionAsk(
+  args: Omit<RemoteSessionAskRecord, "createdAt"> & {
+    createMarker: () => boolean;
+    clearMarker: () => void;
+  },
+): "ok" | "pending" {
+  const { createMarker, clearMarker, ...record } = args;
+  const undo = (markerCreated: boolean) => {
+    if (markerCreated) {
+      try {
+        clearMarker();
+      } catch {
+        // The row is still removed below; reconciliation cannot see a
+        // row-less marker, but the ask TTL still expires it.
+      }
+    }
+    try {
+      deleteRemoteSessionAsk(record.requestId);
+    } catch {
+      // A `prepared` row left here is removed by reconciliation.
+    }
+  };
+  try {
+    recordRemoteSessionAsk({ ...record, dispatchState: "prepared" });
+  } catch (err) {
+    undo(false);
+    throw err;
+  }
+  let markerCreated = false;
+  try {
+    markerCreated = createMarker();
+    if (!markerCreated) {
+      undo(false);
+      return "pending";
+    }
+    if (!markRemoteSessionAskDispatched(record.requestId)) {
+      throw new Error("remote session ask row vanished before dispatch");
+    }
+    return "ok";
+  } catch (err) {
+    undo(markerCreated);
+    throw err;
+  }
+}
+
+/**
+ * Remove outbound asks a dead process left `prepared` (never sent to the
+ * hub) past {@link REMOTE_SESSION_ASK_PREPARE_GRACE_MS}, together with the
+ * pending marker they hold (matched by `requestId`, so a newer ask to the
+ * same room is never cleared). Runs in the maintenance pass, including the
+ * one at startup. Returns how many rows were removed.
+ */
+export function reconcileUndispatchedRemoteSessionAsks(
+  now: number = Date.now(),
+  graceMs: number = REMOTE_SESSION_ASK_PREPARE_GRACE_MS,
+): number {
+  const rows = db
+    .query<RemoteSessionAskRow, [number]>(
+      "SELECT * FROM remote_session_asks WHERE dispatch_state = 'prepared' AND created_at <= ?",
+    )
+    .all(now - graceMs);
+  let removed = 0;
+  for (const row of rows) {
+    // Marker first: if clearing it fails, the row stays and the next pass
+    // retries; a row-less marker could not be found again.
+    try {
+      clearPendingAsk({
+        userId: row.user_id,
+        from: row.from_key,
+        to: row.to_key,
+        requestId: row.request_id,
+      });
+    } catch {
+      continue;
+    }
+    const result = db
+      .query("DELETE FROM remote_session_asks WHERE request_id = ? AND dispatch_state = 'prepared'")
+      .run(row.request_id);
+    removed += Number(result.changes ?? 0);
+  }
+  return removed;
 }
 
 export function getRemoteSessionAsk(requestId: string): RemoteSessionAskRecord | null {

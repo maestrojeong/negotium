@@ -187,7 +187,11 @@ describe("remote ask-reply inbox state machine", () => {
     expect(replies(topic.id)).toBe(0);
     expect(getRemoteSessionAsk(requestId)).not.toBeNull();
     // Hand the other process's claim back so later passes do not adopt it.
-    releaseRemoteSessionInboxClaim(requestId);
+    expect(
+      releaseRemoteSessionInboxClaim(requestId, {
+        payloadHash: remoteSessionPayloadHash(delivery),
+      }),
+    ).toBe(true);
   });
 
   test("crash after the claim: the expired lease is re-run once by recovery; the hub then sees a replay", async () => {

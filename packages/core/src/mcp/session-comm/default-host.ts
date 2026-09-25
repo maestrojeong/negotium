@@ -47,7 +47,7 @@ import {
   isTopicBrowserProfileOwner,
   listBrowserProfiles,
 } from "#storage/browser-profiles";
-import { deleteRemoteSessionAsk, recordRemoteSessionAsk } from "#storage/remote-session";
+import { beginRemoteSessionAsk, deleteRemoteSessionAsk } from "#storage/remote-session";
 import {
   clearPendingAsk,
   createPendingAsk,
@@ -427,20 +427,32 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
         const route = remoteRoute(context);
         if (route.kind === "refused") return error(route.error);
         if (!from.topicId) return error("Error: current topic id is unavailable.");
-        if (!createAsk().ok) return alreadyPending();
         if (route.kind === "hub") {
           // Durable caller record first: the hub's `ask-reply` delivery is
           // routed back through it, possibly after this process restarted.
-          recordRemoteSessionAsk({
-            requestId,
-            callerTopicId: from.topicId,
-            userId: context.userId,
-            fromKey: from.key,
-            toKey: to,
-            ...(context.currentThreadRootId
-              ? { callerThreadRootId: context.currentThreadRootId }
-              : {}),
-          });
+          // Row and pending marker are registered together; a failure undoes
+          // both, and a crash before the hub call is reconciled later.
+          let begun: "ok" | "pending";
+          try {
+            begun = beginRemoteSessionAsk({
+              requestId,
+              callerTopicId: from.topicId,
+              userId: context.userId,
+              fromKey: from.key,
+              toKey: to,
+              ...(context.currentThreadRootId
+                ? { callerThreadRootId: context.currentThreadRootId }
+                : {}),
+              createMarker: () => createAsk().ok,
+              clearMarker: () => {
+                clearAsk();
+              },
+            });
+          } catch (err) {
+            logger.warn({ err, requestId, to }, "session-comm: could not record remote ask");
+            return error("Error: could not record the remote ask; nothing was sent.");
+          }
+          if (begun === "pending") return alreadyPending();
           const sent = await hubRemoteAsk(route.grant, {
             requestId,
             to: remote,
@@ -462,6 +474,7 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
           }
           return ok(`Ask sent to "${to}". request_id: ${requestId}`);
         }
+        if (!createAsk().ok) return alreadyPending();
         const result = await forwardToPeer({
           action: "ask",
           toNode: remote.node,
