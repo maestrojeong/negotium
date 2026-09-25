@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import { NODE_CONTROL_TOKEN } from "@negotium/core";
-import { forwardGatewayRequest, OTIUM_GATEWAY_FORWARD_PREFIX } from "../src/gateway-forward";
+import {
+  EXPECTED_NODE_ID_HEADER,
+  forwardGatewayRequest,
+  OTIUM_GATEWAY_FORWARD_PREFIX,
+} from "../src/gateway-forward";
 
 const NODE_ORIGIN = "http://127.0.0.1:41999";
 
@@ -335,4 +339,31 @@ test("the topic-link routes are exact shapes", async () => {
     expect(response?.status, `${method} ${path}`).toBe(404);
     expect(calls, `${method} ${path}`).toHaveLength(0);
   }
+});
+
+test("forwards the hub's expected node identity on a room delete verbatim (revision 7)", async () => {
+  expect(EXPECTED_NODE_ID_HEADER).toBe("x-negotium-expected-node-id");
+  const { fetch: stub, calls } = captureFetch();
+  const response = await forwardGatewayRequest(
+    forwardRequest("/topics/room-1?user=u1", {
+      method: "DELETE",
+      headers: { "x-negotium-expected-node-id": "node-a" },
+    }),
+    { nodeOrigin: NODE_ORIGIN, surfaceScope: "ws-1", strictScope: false, fetch: stub },
+  );
+  expect(response?.status).toBe(200);
+  expect(calls).toHaveLength(1);
+  expect(calls[0]?.method).toBe("DELETE");
+  expect(calls[0]?.url).toBe(`${NODE_ORIGIN}/api/v1/control/runtime/v1/topics/room-1?user=u1`);
+  expect(calls[0]?.headers.get("x-negotium-expected-node-id")).toBe("node-a");
+
+  // An old hub sends none; the forward does not invent one.
+  const { fetch: stub2, calls: calls2 } = captureFetch();
+  await forwardGatewayRequest(forwardRequest("/topics/room-1?user=u1", { method: "DELETE" }), {
+    nodeOrigin: NODE_ORIGIN,
+    surfaceScope: "ws-1",
+    strictScope: false,
+    fetch: stub2,
+  });
+  expect(calls2[0]?.headers.get("x-negotium-expected-node-id")).toBeNull();
 });

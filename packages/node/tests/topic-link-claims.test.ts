@@ -25,6 +25,7 @@ import {
   NODE_RUNTIME_SURFACE_SCOPE_STRICT_HEADER,
 } from "../src/control";
 import {
+  NODE_EXPECTED_NODE_ID_HEADER,
   OTIUM_LINK_EXPECTED_SCOPE_HEADER,
   OTIUM_LINK_GUARD_ENV,
   OTIUM_LINK_PROTOCOL_HEADER,
@@ -609,4 +610,97 @@ test("health advertises the topic-link capabilities", async () => {
   expect(page.dbEpoch).toBe(body.dbEpoch);
   expect(typeof page.highWater).toBe("number");
   expect(page.highWater).toBeGreaterThanOrEqual(page.cursor);
+});
+
+describe("conditional delete — DELETE /topics/:id (revision 7)", () => {
+  async function room(label: string): Promise<string> {
+    const created = await post("/topics", createBody(`${label} ${randomUUID()}`));
+    expect(created.status).toBe(201);
+    return created.body.topic.id as string;
+  }
+  function del(id: string, headers: Record<string, string> = {}) {
+    return call(`/topics/${id}?user=${userId}`, { method: "DELETE", headers });
+  }
+
+  test("an expected identity of another node is 409 and deletes nothing", async () => {
+    const id = await room("Other node");
+    const { status, body } = await del(id, { [NODE_EXPECTED_NODE_ID_HEADER]: "node-b" });
+    expect(status).toBe(409);
+    expect(body).toMatchObject({
+      ok: false,
+      code: "node_identity_mismatch",
+      nodeId: NODE_ID,
+      expectedNodeId: "node-b",
+    });
+    expect(typeof body.error).toBe("string");
+    expect(getTopic(id)).toBeTruthy();
+    expect((await call(`/topics/${id}/existence`)).body.state).toBe("present");
+  });
+
+  test("a mismatch is answered before the topic lookup (an unknown id is 409, not 404)", async () => {
+    const { status, body } = await del(randomUUID(), { [NODE_EXPECTED_NODE_ID_HEADER]: "node-b" });
+    expect(status).toBe(409);
+    expect(body.code).toBe("node_identity_mismatch");
+  });
+
+  test("a blank expected identity is 400 and deletes nothing", async () => {
+    const id = await room("Blank identity");
+    const { status, body } = await del(id, { [NODE_EXPECTED_NODE_ID_HEADER]: "  " });
+    expect(status).toBe(400);
+    expect(body.code).toBe("invalid_expected_node_id");
+    expect(getTopic(id)).toBeTruthy();
+  });
+
+  test("the matching identity deletes and the 2xx carries nodeId and dbEpoch", async () => {
+    const id = await room("Matching identity");
+    const { status, body } = await del(id, { [NODE_EXPECTED_NODE_ID_HEADER]: ` ${NODE_ID} ` });
+    expect(status).toBe(200);
+    expect(body).toEqual({
+      ok: true,
+      v: 1,
+      topicId: id,
+      nodeId: NODE_ID,
+      dbEpoch: expect.stringMatching(/^[0-9a-f]{32}$/),
+    });
+    expect(body.dbEpoch).toBe((await call("/health")).body.dbEpoch);
+    expect(getTopic(id)).toBeFalsy();
+    expect((await call(`/topics/${id}/existence`)).body.state).toBe("gone");
+  });
+
+  test("a store stamped with another identity refuses even a matching header", async () => {
+    const id = await room("Copied store");
+    const guard = await import("../src/topic-link");
+    db.query("UPDATE api_node_identity SET node_id = 'node-a' WHERE singleton = 1").run();
+    try {
+      // Direct guard call: an authenticated request would re-stamp the store first.
+      const refusal = guard.topicDeleteIdentityGuard(
+        runtime(`/topics/${id}`, {
+          method: "DELETE",
+          headers: { [NODE_EXPECTED_NODE_ID_HEADER]: NODE_ID },
+        }),
+        id,
+      );
+      expect(refusal?.status).toBe(409);
+      expect(((await refusal?.json()) as { code: string }).code).toBe("node_identity_mismatch");
+    } finally {
+      db.query("UPDATE api_node_identity SET node_id = ? WHERE singleton = 1").run(NODE_ID);
+    }
+    expect(getTopic(id)).toBeTruthy();
+  });
+
+  test("without the header an old hub's delete still works (compat), now with nodeId", async () => {
+    const id = await room("Old hub delete");
+    const { status, body } = await del(id);
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ ok: true, v: 1, nodeId: NODE_ID });
+    expect(getTopic(id)).toBeFalsy();
+  });
+
+  test("health advertises canonical-topic-delete-conditional exactly once", async () => {
+    const { body } = await call("/health");
+    const capabilities = body.capabilities as string[];
+    expect(capabilities.filter((c) => c === "canonical-topic-delete-conditional")).toEqual([
+      "canonical-topic-delete-conditional",
+    ]);
+  });
 });

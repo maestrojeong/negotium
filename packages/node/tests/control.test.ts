@@ -2406,7 +2406,7 @@ test("runtime /health advertises remote session-comm and registered relay capabi
   }
 });
 
-test("runtime /health advertises the topic-link (PR7) and session-comm actor (PR9) capabilities exactly once", async () => {
+test("runtime /health advertises the topic-link (PR7, incl. revision 7) and session-comm actor (PR9) capabilities exactly once", async () => {
   const health = await handler(runtimeRequest("/health"));
   const capabilities = ((await health?.json()) as { capabilities?: string[] }).capabilities ?? [];
   for (const capability of [
@@ -2414,6 +2414,7 @@ test("runtime /health advertises the topic-link (PR7) and session-comm actor (PR
     "canonical-topic-existence",
     "canonical-topic-tombstones",
     "canonical-surface-scope",
+    "canonical-topic-delete-conditional",
     "remote-session-comm-actor",
   ]) {
     expect(capabilities.filter((c) => c === capability)).toEqual([capability]);

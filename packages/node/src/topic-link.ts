@@ -55,6 +55,14 @@ export const OTIUM_LINK_PROTOCOL_HEADER = "x-otium-link-protocol";
 export const OTIUM_LINK_EXPECTED_SCOPE_HEADER = "x-otium-link-expected-scope";
 /** Env flag for the strict create guard: unset/`0`/`off` | `1`/`on` | `strict`. */
 export const OTIUM_LINK_GUARD_ENV = "NEGOTIUM_OTIUM_LINK_V2";
+/**
+ * Revision 7: the node identity a host planned a room delete against (its
+ * recorded `/health.nodeId` for this node). `DELETE /topics/:id` compares it
+ * with the identity answering now before touching anything, so a delete that
+ * reaches another node (a changed loopback URL or relay target) deletes
+ * nothing. Advertised as `canonical-topic-delete-conditional`.
+ */
+export const NODE_EXPECTED_NODE_ID_HEADER = "x-negotium-expected-node-id";
 
 // Mirrors control.ts `NODE_RUNTIME_SURFACE_SCOPE_HEADER` / `_STRICT_HEADER`
 // (pinned equal by tests); duplicated to keep this module free of an import
@@ -482,6 +490,55 @@ function currentNodeId(): string {
   // The identity this process answers as — NOT the stored one: a tombstone
   // only binds when its stamp equals the node actually answering.
   return NODE_ID;
+}
+
+/** Identity fields a conditional delete's `2xx` carries (revision 7). */
+export function topicDeleteIdentity(): { nodeId: string; dbEpoch: string | null } {
+  return { nodeId: currentNodeId(), dbEpoch: topicLinkDbEpoch() };
+}
+
+/**
+ * Revision 7 guard for `DELETE /topics/:id`, run before the topic is looked
+ * up. With `x-negotium-expected-node-id`: a blank value is `400
+ * invalid_expected_node_id`; a value that is not the identity this process
+ * answers as — or a store stamped with another identity — is `409
+ * node_identity_mismatch` carrying the current `nodeId`, and nothing is
+ * deleted. Without the header (a hub older than revision 7) the delete goes
+ * ahead as before, with a warning.
+ */
+export function topicDeleteIdentityGuard(req: Request, topicId: string): Response | null {
+  const header = req.headers.get(NODE_EXPECTED_NODE_ID_HEADER);
+  const nodeId = currentNodeId();
+  if (header === null) {
+    logger.warn(
+      { topicId, nodeId },
+      "topic delete without x-negotium-expected-node-id: identity not verified (pre-revision-7 host)",
+    );
+    return null;
+  }
+  const expected = header.trim();
+  if (!expected) {
+    return linkError(
+      400,
+      "invalid_expected_node_id",
+      `${NODE_EXPECTED_NODE_ID_HEADER} must not be empty`,
+      { nodeId, dbEpoch: topicLinkDbEpoch() },
+    );
+  }
+  const stored = topicLinkNodeIdentity();
+  if (expected !== nodeId || (stored !== null && stored !== nodeId)) {
+    logger.warn(
+      { topicId, nodeId, expectedNodeId: expected, storedNodeId: stored },
+      "topic delete refused: expected node identity does not match this node",
+    );
+    return linkError(
+      409,
+      "node_identity_mismatch",
+      "this delete was planned against a different node; nothing was deleted",
+      { nodeId, dbEpoch: topicLinkDbEpoch(), expectedNodeId: expected },
+    );
+  }
+  return null;
 }
 
 export type TopicExistenceState = "present" | "gone" | "unknown";

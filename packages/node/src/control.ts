@@ -117,6 +117,8 @@ import {
   parseTopicLinkRequest,
   replayTopicCreateClaim,
   runClaimedTopicCreate,
+  topicDeleteIdentity,
+  topicDeleteIdentityGuard,
   withHostCreate,
 } from "./topic-link";
 
@@ -659,6 +661,10 @@ export function createNodeControlHandler(
               "canonical-topic-existence",
               "canonical-topic-tombstones",
               "canonical-surface-scope",
+              // Revision 7: `DELETE /topics/:id` honours
+              // `x-negotium-expected-node-id` (409 node_identity_mismatch,
+              // nothing deleted) and its 2xx carries `nodeId`/`dbEpoch`.
+              "canonical-topic-delete-conditional",
               // The inbox route accepts `actorUserId` and files a delivery
               // only under that principal (`userId` must equal it, and it
               // must be a participant). A hub may send the field to any node
@@ -1921,6 +1927,10 @@ export function createNodeControlHandler(
          */
         if (runtimeTopicMatch && req.method === "DELETE") {
           const topicId = decodeURIComponent(runtimeTopicMatch[1]);
+          // Revision 7: identity first, so a delete aimed at another node
+          // neither deletes nor reveals whether the id exists here.
+          const identityRefusal = topicDeleteIdentityGuard(req, topicId);
+          if (identityRefusal) return identityRefusal;
           const topic = getTopic(topicId);
           if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
           const userId = requiredText(url.searchParams.get("user"), "user");
@@ -1935,7 +1945,12 @@ export function createNodeControlHandler(
             }
             throw err;
           }
-          return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION });
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            topicId,
+            ...topicDeleteIdentity(),
+          });
         }
 
         /**

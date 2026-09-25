@@ -29,6 +29,13 @@ const SURFACE_SCOPE_HEADER = "x-negotium-surface-scope";
 /** Mirrors `NODE_RUNTIME_SURFACE_SCOPE_STRICT_HEADER`. */
 const SURFACE_SCOPE_STRICT_HEADER = "x-negotium-surface-scope-strict";
 
+/**
+ * Mirrors the node's `NODE_EXPECTED_NODE_ID_HEADER` (revision 7). Hub-supplied
+ * and forwarded verbatim — never stamped or dropped here — so the node can
+ * refuse a `DELETE /topics/:id` planned against another node.
+ */
+export const EXPECTED_NODE_ID_HEADER = "x-negotium-expected-node-id";
+
 /** Public prefix the hub addresses; rewritten to the contract path locally. */
 export const OTIUM_GATEWAY_FORWARD_PREFIX = "/api/v1/peer/runtime";
 
@@ -166,6 +173,11 @@ export async function forwardGatewayRequest(
   headers.delete("transfer-encoding");
   headers.delete("content-length");
   headers.delete("host");
+  // The hub's expected node identity must reach the node unchanged (it is
+  // already in the copied inbound headers; re-set it so a future header
+  // filter above cannot silently drop it).
+  const expectedNodeId = req.headers.get(EXPECTED_NODE_ID_HEADER);
+  if (expectedNodeId !== null) headers.set(EXPECTED_NODE_ID_HEADER, expectedNodeId);
   const body = req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer();
   if (body) headers.set("content-length", String(body.byteLength));
 
