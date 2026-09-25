@@ -24,64 +24,147 @@ import { db } from "#storage/forum-db";
 import { PENDING_ASK_TTL_MS, releasePendingAsk } from "#storage/session-asks";
 import { registerStorageSchemaInitializer } from "#storage/storage-host";
 
-registerStorageSchemaInitializer((database) => {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS remote_session_inbox_claims (
-      request_id   TEXT PRIMARY KEY,
-      kind         TEXT NOT NULL,
-      topic_id     TEXT NOT NULL,
-      payload_hash TEXT NOT NULL,
-      created_at   INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_remote_session_inbox_claims_created
-      ON remote_session_inbox_claims(created_at);
-    CREATE TABLE IF NOT EXISTS remote_session_asks (
-      request_id            TEXT PRIMARY KEY,
-      caller_topic_id       TEXT NOT NULL,
-      user_id               TEXT NOT NULL,
-      from_key              TEXT NOT NULL,
-      to_key                TEXT NOT NULL,
-      caller_thread_root_id TEXT,
-      created_at            INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_remote_session_asks_caller
-      ON remote_session_asks(caller_topic_id);
-    CREATE TABLE IF NOT EXISTS remote_session_reply_outbox (
-      request_id      TEXT PRIMARY KEY,
-      hub_url         TEXT NOT NULL,
-      token           TEXT NOT NULL,
-      kind            TEXT NOT NULL CHECK (kind IN ('reply', 'error')),
-      reply_text      TEXT NOT NULL,
-      from_label      TEXT NOT NULL,
-      created_at      INTEGER NOT NULL,
-      attempts        INTEGER NOT NULL DEFAULT 0,
-      next_attempt_at INTEGER NOT NULL DEFAULT 0,
-      last_error      TEXT
-    );
-  `);
-  // Claim state machine (added after the table existed, so guarded): a claim
-  // is `processing` under a lease until its delivery is durably recorded, then
-  // `completed`. `payload_json` keeps what a `processing` ask-reply must
-  // deliver so an expired lease can be re-run after a restart.
-  for (const ddl of [
+const REMOTE_SESSION_TABLES_SQL = `
+  CREATE TABLE IF NOT EXISTS remote_session_inbox_claims (
+    request_id   TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL,
+    topic_id     TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    created_at   INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_remote_session_inbox_claims_created
+    ON remote_session_inbox_claims(created_at);
+  CREATE TABLE IF NOT EXISTS remote_session_asks (
+    request_id            TEXT PRIMARY KEY,
+    caller_topic_id       TEXT NOT NULL,
+    user_id               TEXT NOT NULL,
+    from_key              TEXT NOT NULL,
+    to_key                TEXT NOT NULL,
+    caller_thread_root_id TEXT,
+    created_at            INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_remote_session_asks_caller
+    ON remote_session_asks(caller_topic_id);
+  CREATE TABLE IF NOT EXISTS remote_session_reply_outbox (
+    request_id      TEXT PRIMARY KEY,
+    hub_url         TEXT NOT NULL,
+    token           TEXT NOT NULL,
+    kind            TEXT NOT NULL CHECK (kind IN ('reply', 'error')),
+    reply_text      TEXT NOT NULL,
+    from_label      TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER NOT NULL DEFAULT 0,
+    last_error      TEXT
+  );
+`;
+
+/**
+ * Columns added after their table existed (guarded: `[table, column, DDL]`).
+ * Claim state machine: a claim is `processing` under a lease until its
+ * delivery is durably recorded, then `completed`; `payload_json` keeps what a
+ * `processing` ask-reply must deliver so an expired lease can be re-run after
+ * a restart. `owner_token` is the opaque per-claim ownership token (see
+ * `claimRemoteSessionInboxOwned`), NULL only on claims written before it
+ * existed. `dispatch_state` is the outbound ask state (see
+ * `RemoteSessionAskDispatchState`); rows that predate the column may or may
+ * not have reached the hub: `dispatched` (reconciled to `unknown`).
+ */
+const REMOTE_SESSION_ADDED_COLUMNS: ReadonlyArray<readonly [string, string, string]> = [
+  [
+    "remote_session_inbox_claims",
+    "state",
     "ALTER TABLE remote_session_inbox_claims ADD COLUMN state TEXT NOT NULL DEFAULT 'completed'",
+  ],
+  [
+    "remote_session_inbox_claims",
+    "lease_until",
     "ALTER TABLE remote_session_inbox_claims ADD COLUMN lease_until INTEGER NOT NULL DEFAULT 0",
+  ],
+  [
+    "remote_session_inbox_claims",
+    "payload_json",
     "ALTER TABLE remote_session_inbox_claims ADD COLUMN payload_json TEXT",
-    // Opaque per-claim ownership token (see `claimRemoteSessionInboxOwned`).
-    // NULL only on claims written before it existed.
+  ],
+  [
+    "remote_session_inbox_claims",
+    "owner_token",
     "ALTER TABLE remote_session_inbox_claims ADD COLUMN owner_token TEXT",
-    // Outbound ask state (see `RemoteSessionAskDispatchState`). Rows that
-    // predate the column may or may not have reached the hub: `dispatched`
-    // (reconciled to `unknown`).
+  ],
+  [
+    "remote_session_asks",
+    "dispatch_state",
     "ALTER TABLE remote_session_asks ADD COLUMN dispatch_state TEXT NOT NULL DEFAULT 'dispatched'",
-  ]) {
-    try {
-      database.exec(ddl);
-    } catch {
-      // Column already present.
+  ],
+];
+
+const REMOTE_SESSION_SCHEMA_OBJECTS = [
+  "remote_session_inbox_claims",
+  "idx_remote_session_inbox_claims_created",
+  "remote_session_asks",
+  "idx_remote_session_asks_caller",
+  "remote_session_reply_outbox",
+];
+
+type RemoteSessionSchemaDatabase = Parameters<
+  Parameters<typeof registerStorageSchemaInitializer>[0]
+>[0];
+
+function remoteSessionColumns(database: RemoteSessionSchemaDatabase, table: string): Set<string> {
+  const rows = database.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return new Set(rows.map((row) => row.name));
+}
+
+/** Read-only: every table, index and added column is present. */
+function remoteSessionSchemaIsCurrent(database: RemoteSessionSchemaDatabase): boolean {
+  const names = new Set(
+    (
+      database
+        .query("SELECT name FROM sqlite_master WHERE type IN ('table','index')")
+        .all() as Array<{ name: string }>
+    ).map((row) => row.name),
+  );
+  if (!REMOTE_SESSION_SCHEMA_OBJECTS.every((name) => names.has(name))) return false;
+  const columns = new Map<string, Set<string>>();
+  return REMOTE_SESSION_ADDED_COLUMNS.every(([table, column]) => {
+    let known = columns.get(table);
+    if (!known) {
+      known = remoteSessionColumns(database, table);
+      columns.set(table, known);
     }
-  }
-}, 36);
+    return known.has(column);
+  });
+}
+
+/**
+ * Idempotent and all-or-nothing. A current schema is detected read-only, so a
+ * normal boot never takes the write lock. Otherwise the tables and every
+ * missing column are added in one `BEGIN IMMEDIATE`: concurrent boots
+ * serialize, and the loser re-reads the columns under the lock instead of
+ * racing an `ALTER` (which used to be swallowed together with any other
+ * error, e.g. SQLITE_BUSY, leaving a process without the column).
+ */
+export function initializeRemoteSessionSchema(database: RemoteSessionSchemaDatabase): void {
+  if (remoteSessionSchemaIsCurrent(database)) return;
+  const migrate = database.transaction(() => {
+    database.exec(REMOTE_SESSION_TABLES_SQL);
+    const columns = new Map<string, Set<string>>();
+    for (const [table, column, ddl] of REMOTE_SESSION_ADDED_COLUMNS) {
+      let known = columns.get(table);
+      if (!known) {
+        known = remoteSessionColumns(database, table);
+        columns.set(table, known);
+      }
+      if (known.has(column)) continue;
+      database.exec(ddl);
+      known.add(column);
+    }
+  });
+  if (migrate.immediate) migrate.immediate();
+  else migrate();
+}
+
+registerStorageSchemaInitializer(initializeRemoteSessionSchema, 36);
 
 /** Claims older than this are forgotten; the hub never retries a call this late. */
 export const REMOTE_SESSION_INBOX_CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
