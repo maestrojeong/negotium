@@ -10,15 +10,18 @@
  * - The target scope is not an operator choice: the topic must be a D2 row
  *   (mapped, still unscoped) of the bound report, and the report's D3 check
  *   must name exactly one unambiguous scope. `--expect-scope` must equal it.
- * - Refused up front with the primitive's own rules mirrored: not otium,
- *   scope not NULL, title conflict (any otium room with the same
- *   LOWER(TRIM(title)) in the target scope — this includes other Generals and
- *   the retired `general` row — or between listed topics), maintenance fence.
+ * - Refused up front with the primitive's own rules mirrored (revision 6):
+ *   not otium, scope not NULL, maintenance fence; for a non-manager room a
+ *   title conflict (an otium room with the same LOWER(TRIM(title)) in the
+ *   target scope that is not a manager room — the retired `general` row
+ *   still counts — or another listed non-manager topic); for a manager room
+ *   `duplicate_manager` (a manager room of the same owner already in the
+ *   target scope, or another listed General of that owner). Manager rooms
+ *   take no part in title conflicts, so other users' Generals do not block.
  *   Plus: the retired `general` row itself, a non-manager room titled
  *   `general` (reserved: core resolves that title to the retired row), a
- *   manager that is not single-owner, whose report D7 entry (owner, NULL
- *   scope, mapped, message count) does not match, or whose owner already has a
- *   General in the target scope (D7 duplicate).
+ *   manager that is not single-owner, or whose report D7 entry (owner, NULL
+ *   scope, mapped, message count) does not match.
  * - All listed topics are repaired in ONE outer `BEGIN IMMEDIATE` transaction
  *   (the primitive joins it); any refusal rolls every topic back.
  * - Irreversible: a repaired scope is immutable. There is no revert command.
@@ -208,41 +211,50 @@ export function planScopeRepair(
       r.push("title_conflict: the title `general` is reserved for the retired shared row");
     }
     if (targetScope !== null) {
-      // The primitive's own title rule: ANY otium room, any kind.
-      const conflicts = (
-        db
-          .query(
-            `SELECT id FROM api_topics
-             WHERE LOWER(TRIM(title)) = LOWER(TRIM(?)) AND surface = 'otium' AND surface_scope IS ?
-               AND id != ? ORDER BY id`,
-          )
-          .all(row.title, targetScope, item.topicId) as Array<{ id: string }>
-      ).map((c) => c.id);
-      for (const id of conflicts)
-        r.push(`title_conflict with ${id} in scope ${targetScope} (the primitive refuses this)`);
-      const key = titleKey(db, row.title);
-      for (const peer of items) {
-        if (peer !== item && titleKey(db, peer.facts.row.title) === key) {
-          r.push(
-            `title_conflict with listed topic ${peer.topicId} (both would land in ${targetScope})`,
-          );
+      if (row.kind !== "manager") {
+        // The primitive's title rule (revision 6, same as core's
+        // `findTopicTitleConflict`): manager rooms are not title peers, except
+        // the retired shared `general` row.
+        const conflicts = (
+          db
+            .query(
+              `SELECT id FROM api_topics
+               WHERE LOWER(TRIM(title)) = LOWER(TRIM(?)) AND surface = 'otium' AND surface_scope IS ?
+                 AND id != ? AND (kind != 'manager' OR id = ?) ORDER BY id`,
+            )
+            .all(row.title, targetScope, item.topicId, GENERAL_TOPIC_ID) as Array<{ id: string }>
+        ).map((c) => c.id);
+        for (const id of conflicts)
+          r.push(`title_conflict with ${id} in scope ${targetScope} (the primitive refuses this)`);
+        const key = titleKey(db, row.title);
+        for (const peer of items) {
+          if (
+            peer !== item &&
+            peer.facts.row.kind !== "manager" &&
+            titleKey(db, peer.facts.row.title) === key
+          ) {
+            r.push(
+              `title_conflict with listed topic ${peer.topicId} (both would land in ${targetScope})`,
+            );
+          }
         }
-      }
-      if (row.kind === "manager") {
+      } else {
         if (item.facts.owners.length !== 1) {
           r.push(`manager has ${item.facts.owners.length} owners; exactly one is required`);
         }
         for (const owner of item.facts.owners) {
+          // The primitive's `duplicate_manager` guard (revision 6), which is
+          // also the D7 duplicate rule.
           const dup = db
             .query(
               `SELECT t.id FROM api_topics t JOIN topic_members m ON m.topic_id = t.id
                WHERE t.kind = 'manager' AND t.surface = 'otium' AND t.surface_scope IS ?
-                 AND m.user_id = ? AND m.role = 'owner' AND t.id != ? LIMIT 1`,
+                 AND m.user_id = ? AND m.role = 'owner' AND t.id != ? AND t.id != ? LIMIT 1`,
             )
-            .get(targetScope, owner, item.topicId) as { id: string } | null;
+            .get(targetScope, owner, item.topicId, GENERAL_TOPIC_ID) as { id: string } | null;
           if (dup)
             r.push(
-              `owner ${owner} already has General ${dup.id} in ${targetScope} (would create a D7 duplicate)`,
+              `duplicate_manager: owner ${owner} already has General ${dup.id} in ${targetScope} (would create a D7 duplicate)`,
             );
           for (const peer of items) {
             if (

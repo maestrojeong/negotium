@@ -835,13 +835,15 @@ describe("scope-repair: only through adminRepairOtiumTopicScope, justified by th
     );
     expect(d7.code).toBe(ADMIN_EXIT.refused);
     expect(d7.out).toContain("D7 duplicate");
+    expect(d7.out).toContain("duplicate_manager");
 
-    // The primitive's title rule covers ANY otium room of the scope, incl. another user's General.
+    // The primitive's title rule (revision 6): a non-manager room conflicts
+    // with a non-manager room of the same title key in the target scope.
     const titleScope = freshScope();
-    seedTopic({ owners: [freshUser()], scope: titleScope });
-    const g3 = seedTopic({ owners: [freshUser()], scope: null });
+    seedTopic({ owners: [freshUser()], scope: titleScope, kind: "agent", title: "Roadmap" });
+    const r3 = seedTopic({ owners: [freshUser()], scope: null, kind: "agent", title: " roadmap " });
     const t = await run(
-      repairArgs([g3], titleScope, makeReport({ mapped: { [g3]: "g3" }, scopes: [titleScope] })),
+      repairArgs([r3], titleScope, makeReport({ mapped: { [r3]: "r3" }, scopes: [titleScope] })),
     );
     expect(t.code).toBe(ADMIN_EXIT.refused);
     expect(t.out).toContain("title_conflict");
@@ -859,6 +861,81 @@ describe("scope-repair: only through adminRepairOtiumTopicScope, justified by th
     expect(
       (await run(repairArgs(["general"], scope, makeReport({ scopes: [scope] })))).code,
     ).not.toBe(ADMIN_EXIT.ok);
+  });
+
+  test("integration (revision 6): a General repairs into a scope holding other users' Generals; a same-owner General is refused", async () => {
+    const scope = freshScope();
+    // Other users' Generals (and a non-manager room titled like one) already in the scope.
+    const otherA = seedTopic({ owners: [freshUser()], scope, messages: 1 });
+    const otherB = seedTopic({ owners: [freshUser()], scope });
+    const owner = freshUser();
+    const general = seedTopic({ owners: [owner], scope: null, messages: 4 });
+    const report = makeReport({ mapped: { [general]: "hub-general" }, scopes: [scope] });
+
+    const dry = await run(repairArgs([general], scope, report));
+    expect(dry.code).toBe(ADMIN_EXIT.ok);
+    expect(dry.out).not.toContain("title_conflict");
+    const applied = await run(
+      repairArgs([general], scope, report, ["--apply", "--backup-dir", privateDir("b")]),
+    );
+    expect(applied.code).toBe(ADMIN_EXIT.ok);
+    expect(scopeOf(general)).toBe(scope);
+    expect(scopeOf(otherA)).toBe(scope);
+    expect(scopeOf(otherB)).toBe(scope);
+    expect(messages(general)).toBe(4);
+    const move = core.db
+      .query("SELECT from_scope, to_scope, actor FROM api_topic_scope_moves WHERE topic_id = ?")
+      .get(general) as { from_scope: string | null; to_scope: string; actor: string };
+    expect(move.from_scope).toBeNull();
+    expect(move.to_scope).toBe(scope);
+    expect(move.actor).toStartWith("negotium-admin:");
+
+    // Same owner, second unscoped General: the CLI refuses it up front
+    // (duplicate_manager, the primitive's guard) and nothing is written.
+    const second = seedTopic({ owners: [owner], scope: null });
+    const again = makeReport({ mapped: { [second]: "hub-second" }, scopes: [scope] });
+    const refused = await run(
+      repairArgs([second], scope, again, ["--apply", "--backup-dir", privateDir("b")]),
+    );
+    expect(refused.code).toBe(ADMIN_EXIT.refused);
+    expect(refused.out).toContain(
+      `duplicate_manager: owner ${owner} already has General ${general}`,
+    );
+    expect(scopeOf(second)).toBeNull();
+
+    // The primitive itself refuses the same move (defence in depth, same rule).
+    const direct = core.adminRepairOtiumTopicScope({
+      topicId: second,
+      fromScope: null,
+      toScope: scope,
+      expectedRow: {
+        surface: "otium",
+        surfaceScope: null,
+        createdAt: (
+          core.db.query("SELECT created_at FROM api_topics WHERE id = ?").get(second) as {
+            created_at: string;
+          }
+        ).created_at,
+        title: "General",
+      },
+      actor: "integration-test",
+      reason: "duplicate_manager guard",
+    });
+    expect(direct).toMatchObject({ ok: false, reason: "duplicate_manager", detail: general });
+    expect(scopeOf(second)).toBeNull();
+
+    // And a direct write is still blocked by the immutability trigger, both for
+    // the unscoped room and for the repaired one.
+    expect(() =>
+      core.db.query("UPDATE api_topics SET surface_scope = ? WHERE id = ?").run(scope, second),
+    ).toThrow(/otium_topic_scope_immutable/);
+    expect(() =>
+      core.db
+        .query("UPDATE api_topics SET surface_scope = ? WHERE id = ?")
+        .run(freshScope(), general),
+    ).toThrow(/otium_topic_scope_immutable/);
+    expect(scopeOf(second)).toBeNull();
+    expect(scopeOf(general)).toBe(scope);
   });
 
   test("refuses the reserved title `general` for a room, and a General without a matching D7 entry", async () => {

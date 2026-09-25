@@ -170,9 +170,11 @@ the delete from the tombstone feed on its next full reconcile.
 - It refuses up front whatever the primitive would refuse, plus more:
   - not otium; scope not NULL;
   - a live maintenance fence;
-  - **title conflict with any otium room of the target scope**, which covers
-    other users' Generals and the retired `general` row (this is the
-    primitive's own rule), or with another listed topic;
+  - for a non-manager room, a **title conflict** with a non-manager otium
+    room of the target scope (the retired `general` row still counts) or
+    with another listed non-manager topic. Manager rooms (Generals) take no
+    part in title conflicts, exactly as in core's `findTopicTitleConflict`
+    and the primitive (revision 6), so other users' Generals never block;
   - the `general` row itself, and a non-manager room titled `general`: that
     title is reserved, because core's `findTopicTitleConflict` resolves it to
     the retired shared row;
@@ -181,7 +183,8 @@ the delete from the tombstone feed on its next full reconcile.
     NULL scope, mapped to the same hub room as its D2 row, and the live
     message count;
   - a manager whose owner already has a General in the target scope (D7
-    duplicate);
+    duplicate; the primitive's own `duplicate_manager` refusal), or whose
+    owner has another listed General;
   - a D3 title conflict listed for the topic.
 - All listed topics are repaired in **one outer IMMEDIATE transaction**. The
   primitive joins it through a savepoint. Any refusal or fault rolls every
@@ -241,11 +244,12 @@ sessions DB file). Finish steps 3–9 within `--max-report-age` (24 h).
    `negotium admin scope-repair --topic <id> --expect-scope <WS> $B` (dry-run).
    - Only topics that the report lists in D2 (mapped) get a `WRITE` line.
      Unmapped ones are refused with `no D2 evidence` and stay unscoped.
-   - A `title_conflict` means the target scope already has an otium room
-     titled "General": another user's General, or a General repaired earlier
-     in this same step. The primitive refuses it; leave it unscoped and report
-     it (see Risks). In practice, at most one of the 5 can be repaired into a
-     scope, and only if that scope holds no General yet.
+   - Other users' Generals in the target scope do not block a General
+     (manager rooms take no part in title conflicts). A `duplicate_manager`
+     refusal means that owner already has a General in the target scope,
+     possibly one repaired earlier in this same step: leave the room
+     unscoped and resolve the duplicate with `list-managers` /
+     `delete-manager` (step 9).
    - For each `WRITE` plan:
      `negotium admin scope-repair --topic <id> --expect-scope <WS> $B --apply --backup-dir "$RUN/backup"`.
      Keep the printed `COMMITTED run=…` line. The repair is irreversible.
@@ -272,13 +276,12 @@ follow-up (usually harmless: read-back, `rmdir`, lease release), and continue.
 ## Risks and limits
 
 - **Generals vs. the primitive's title rule.** Every personal General is
-  titled `General`. Core's `findTopicTitleConflict` and link-audit D3 both
-  exempt managers from title checks. PR7's `adminRepairOtiumTopicScope` does
-  **not**: it refuses `title_conflict` whenever any otium room titled `General`
-  is already in the target scope. This tool calls only that primitive and
-  does not work around it, so unscoped Generals whose scope already holds a
-  General stay unscoped. Fixing this is a PR7/core follow-up: exempt
-  `kind='manager'` in the primitive, the same way `findTopicTitleConflict` does.
+  titled `General`. Core's `findTopicTitleConflict`, link-audit D3 and
+  `adminRepairOtiumTopicScope` (revision 6) all exempt manager rooms from
+  title conflicts; the primitive instead refuses `duplicate_manager` when the
+  target scope already holds a manager room of the same owner. This tool
+  mirrors both rules in its plan and then calls only that primitive, which
+  re-checks them inside the transaction.
 - The private copy is a byte copy guarded by a stat-stability check. It does
   not use SQLite's backup API, because that API would open the live DB and
   could create `-shm`. The copy only feeds reports and plans; every apply
