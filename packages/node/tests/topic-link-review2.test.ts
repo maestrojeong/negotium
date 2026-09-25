@@ -346,6 +346,126 @@ describe("PR12 — adminRepairOtiumTopicScope", () => {
   });
 });
 
+describe("PR7 revision 6 — manager rooms and the repair's title rule", () => {
+  // Rows are written directly: manager rooms are system-created (registerTopic
+  // refuses them) and every personal one is titled "General".
+  const seeded: string[] = [];
+  afterAll(() => {
+    for (const id of seeded) {
+      db.transaction(() => {
+        db.query("DELETE FROM api_topic_scope_moves WHERE topic_id = ?").run(id);
+        db.query("DELETE FROM topic_members WHERE topic_id = ?").run(id);
+        db.query("DELETE FROM api_topics WHERE id = ?").run(id);
+      })();
+    }
+  });
+
+  function room(opts: {
+    title: string;
+    kind: "manager" | "agent";
+    scope: string | null;
+    owner?: string;
+  }): string {
+    const id = `r6-${randomUUID()}`;
+    seeded.push(id);
+    db.query(
+      `INSERT INTO api_topics (id, title, kind, agent, response_policy, created_at, surface, surface_scope)
+       VALUES (?, ?, ?, 'codex', 'always', ?, 'otium', ?)`,
+    ).run(id, opts.title, opts.kind, new Date().toISOString(), opts.scope);
+    if (opts.owner) {
+      db.query("INSERT INTO topic_members (topic_id, user_id, role) VALUES (?, ?, 'owner')").run(
+        id,
+        opts.owner,
+      );
+    }
+    return id;
+  }
+
+  function repair(topicId: string, toScope: string) {
+    return core.adminRepairOtiumTopicScope({
+      topicId,
+      fromScope: null,
+      toScope,
+      expectedRow: { surface: "otium", surfaceScope: null },
+      actor: "test-admin",
+      reason: "revision 6",
+    });
+  }
+
+  function unchanged(topicId: string) {
+    expect(getTopic(topicId)?.surfaceScope).toBeNull();
+    expect(
+      db.query("SELECT 1 FROM api_topic_scope_moves WHERE topic_id = ?").get(topicId),
+    ).toBeNull();
+  }
+
+  const user = () => `r6-user-${randomUUID()}`;
+
+  test("a manager General joins a scope that already holds other users' Generals", () => {
+    const scope = `ws-r6-${randomUUID()}`;
+    room({ title: "General", kind: "manager", scope, owner: user() });
+    room({ title: "general", kind: "manager", scope, owner: user() });
+    const mover = room({ title: "General", kind: "manager", scope: null, owner: user() });
+    expect(repair(mover, scope)).toMatchObject({ ok: true, toScope: scope, claimsLeft: 0 });
+    expect(getTopic(mover)?.surfaceScope).toBe(scope);
+  });
+
+  test("a second manager room for the SAME owner in one scope is refused (duplicate_manager)", () => {
+    const scope = `ws-r6-${randomUUID()}`;
+    const owner = user();
+    const existing = room({ title: "General", kind: "manager", scope, owner });
+    const mover = room({ title: "General", kind: "manager", scope: null, owner });
+    expect(repair(mover, scope)).toEqual({
+      ok: false,
+      topicId: mover,
+      reason: "duplicate_manager",
+      detail: existing,
+    });
+    unchanged(mover);
+    // Keyed on the owner, not the title.
+    const renamed = room({ title: "Home", kind: "manager", scope: null, owner });
+    expect(repair(renamed, scope).reason).toBe("duplicate_manager");
+    unchanged(renamed);
+    // The same owner's manager room in ANOTHER scope does not count.
+    const other = `ws-r6-${randomUUID()}`;
+    expect(repair(mover, other)).toMatchObject({ ok: true, toScope: other });
+  });
+
+  test("a manager room never meets a title conflict from a regular room either", () => {
+    const scope = `ws-r6-${randomUUID()}`;
+    room({ title: "General", kind: "agent", scope });
+    const mover = room({ title: "general", kind: "manager", scope: null, owner: user() });
+    expect(repair(mover, scope)).toMatchObject({ ok: true });
+  });
+
+  test("regular rooms: title conflicts among regular rooms still refuse; managers are no peers", () => {
+    const scope = `ws-r6-${randomUUID()}`;
+    const plans = room({ title: "Plans", kind: "agent", scope });
+    const clash = room({ title: " plans ", kind: "agent", scope: null });
+    expect(repair(clash, scope)).toEqual({
+      ok: false,
+      topicId: clash,
+      reason: "title_conflict",
+      detail: plans,
+    });
+    unchanged(clash);
+
+    // A regular room titled General: the managers in the scope are not peers ...
+    room({ title: "General", kind: "manager", scope, owner: user() });
+    const regularGeneral = room({ title: "General", kind: "agent", scope: null });
+    expect(repair(regularGeneral, scope)).toMatchObject({ ok: true });
+    // ... but a second regular "general" (any case) still is.
+    const second = room({ title: "general", kind: "agent", scope: null });
+    expect(repair(second, scope)).toEqual({
+      ok: false,
+      topicId: second,
+      reason: "title_conflict",
+      detail: regularGeneral,
+    });
+    unchanged(second);
+  });
+});
+
 describe("follow-up B — abort compares the exact seeded message set", () => {
   test("a post-create message renumbered below the seed rowid still blocks the abort", async () => {
     const requestId = randomUUID();

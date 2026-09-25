@@ -19,7 +19,16 @@ afterEach(() => {
 });
 
 type Op =
-  | { op: "seed"; rooms: Array<{ id: string; title: string; scope?: string }> }
+  | {
+      op: "seed";
+      rooms: Array<{
+        id: string;
+        title: string;
+        scope?: string;
+        kind?: "agent" | "manager";
+        owner?: string;
+      }>;
+    }
   | { op: "fence"; id: string }
   | { op: "unfence"; id: string }
   | { op: "begin"; id: string }
@@ -56,8 +65,11 @@ const CHILD_SCRIPT = `
       const now = new Date().toISOString();
       for (const room of step.rooms) {
         db.query(
-          "INSERT INTO api_topics (id, title, kind, agent, response_policy, created_at, surface, surface_scope) VALUES (?, ?, 'agent', 'codex', 'always', ?, 'otium', ?)",
-        ).run(room.id, room.title, now, room.scope ?? null);
+          "INSERT INTO api_topics (id, title, kind, agent, response_policy, created_at, surface, surface_scope) VALUES (?, ?, ?, 'codex', 'always', ?, 'otium', ?)",
+        ).run(room.id, room.title, room.kind ?? "agent", now, room.scope ?? null);
+        if (room.owner) {
+          db.query("INSERT INTO topic_members (topic_id, user_id, role) VALUES (?, ?, 'owner')").run(room.id, room.owner);
+        }
       }
       out.push(null);
     } else if (step.op === "fence") {
@@ -252,6 +264,65 @@ describe("M-9 stamp — skipped rooms keep the migration open (revision 5)", () 
     expect(after.scopes.clash).toBe("ws-1");
     expect(after.complete).toBe(true);
     expect(after.status).toMatchObject({ complete: true, pending: 0 });
+  });
+
+  test("revision 6: manager Generals are no title peers; a same-owner duplicate stays pending", async () => {
+    const dir = store();
+    const results = await run(dir, [
+      {
+        op: "seed",
+        rooms: [
+          { id: "gen-b", title: "General", kind: "manager", owner: "user-b", scope: "ws-1" },
+          { id: "gen-a1", title: "General", kind: "manager", owner: "user-a", scope: "ws-1" },
+          { id: "scoped", title: "Plans", scope: "ws-1" },
+          { id: "gen-a2", title: "General", kind: "manager", owner: "user-a" },
+          { id: "gen-c", title: "General", kind: "manager", owner: "user-c" },
+          { id: "gen-d", title: "general", kind: "manager", owner: "user-d" },
+          { id: "reg-general", title: "General" },
+          { id: "clash", title: "plans" },
+        ],
+      },
+      { op: "stamp", scope: "ws-1" },
+      { op: "state" },
+    ]);
+    expect(results[1]).toBe(3);
+    const state = results[2];
+    expect(state.scopes).toEqual({
+      clash: null,
+      "gen-a1": "ws-1",
+      "gen-a2": null,
+      "gen-b": "ws-1",
+      "gen-c": "ws-1",
+      "gen-d": "ws-1",
+      "reg-general": "ws-1",
+      scoped: "ws-1",
+    });
+    expect(state.complete).toBe(false);
+    expect(state.status.pendingTopics).toEqual([
+      { topicId: "clash", reason: "title_conflict", detail: "scoped", attempts: 1 },
+      { topicId: "gen-a2", reason: "duplicate_manager", detail: "gen-a1", attempts: 1 },
+    ]);
+  });
+
+  test("revision 6: the reserved shared `general` row is still a title peer of a regular General", async () => {
+    const dir = store();
+    const results = await run(dir, [
+      {
+        op: "seed",
+        rooms: [
+          { id: "general", title: "General", kind: "manager", scope: "ws-1" },
+          { id: "reg-general", title: "general" },
+          { id: "gen-a", title: "General", kind: "manager", owner: "user-a" },
+        ],
+      },
+      { op: "stamp", scope: "ws-1" },
+      { op: "state" },
+    ]);
+    expect(results[1]).toBe(1);
+    expect(results[2].scopes).toEqual({ "gen-a": "ws-1", general: "ws-1", "reg-general": null });
+    expect(results[2].status.pendingTopics).toEqual([
+      { topicId: "reg-general", reason: "title_conflict", detail: "general", attempts: 1 },
+    ]);
   });
 
   test("unforced retries are rate-limited; a stamp never started is a no-op", async () => {

@@ -27,6 +27,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { GENERAL_TOPIC_ID } from "#platform/constants";
 // Side effect: registers `api_messages`, which the message fence trigger
 // guards (and orders it before this schema).
 import "#storage/api-messages";
@@ -893,6 +894,7 @@ export type AdminRepairOtiumTopicScopeRefusal =
   | "scope_not_null"
   | "row_changed"
   | "title_conflict"
+  | "duplicate_manager"
   | "maintenance_in_progress";
 
 export type AdminRepairOtiumTopicScopeResult =
@@ -915,6 +917,7 @@ export type AdminRepairOtiumTopicScopeResult =
 interface RepairTopicRow {
   id: string;
   title: string;
+  kind: string;
   surface: string;
   surface_scope: string | null;
   created_at: string;
@@ -932,7 +935,7 @@ function repairOneTopicScope(
   }
   const row = db
     .query<RepairTopicRow, [string]>(
-      "SELECT id, title, surface, surface_scope, created_at FROM api_topics WHERE id = ?",
+      "SELECT id, title, kind, surface, surface_scope, created_at FROM api_topics WHERE id = ?",
     )
     .get(topicId);
   if (!row) return refuse("not_found");
@@ -954,14 +957,37 @@ function repairOneTopicScope(
     )
     .get(topicId, Date.now() - CLAIM_ABORT_FENCE_STALE_MS);
   if (busy) return refuse("maintenance_in_progress");
-  const conflict = db
-    .query<{ id: string }, [string, string, string]>(
-      `SELECT id FROM api_topics
-       WHERE LOWER(TRIM(title)) = LOWER(TRIM(?)) AND surface = 'otium' AND surface_scope IS ?
-         AND id != ? LIMIT 1`,
-    )
-    .get(row.title, toScope, topicId);
-  if (conflict) return refuse("title_conflict", conflict.id);
+  if (row.kind === "manager") {
+    // Manager rooms are one-per-user and all titled "General", so — exactly as
+    // in `findTopicTitleConflict` — they take no part in title conflicts.
+    // What must not happen is a SECOND manager room for the same owner in one
+    // scope (the PR12 CLI and hub audit D7 enforce it too; this is the
+    // primitive's own guard so no caller can create one silently).
+    const duplicate = db
+      .query<{ id: string }, [string, string, string, string]>(
+        `SELECT t.id FROM api_topics t
+         JOIN topic_members m ON m.topic_id = t.id AND m.role = 'owner'
+         WHERE t.kind = 'manager' AND t.surface = 'otium' AND t.surface_scope IS ?
+           AND t.id != ? AND t.id != ?
+           AND m.user_id IN (
+             SELECT user_id FROM topic_members WHERE topic_id = ? AND role = 'owner'
+           )
+         LIMIT 1`,
+      )
+      .get(toScope, topicId, GENERAL_TOPIC_ID, topicId);
+    if (duplicate) return refuse("duplicate_manager", duplicate.id);
+  } else {
+    // Same rule as `findTopicTitleConflict`: manager rooms are not title
+    // peers, except the reserved shared `general` row.
+    const conflict = db
+      .query<{ id: string }, [string, string, string, string]>(
+        `SELECT id FROM api_topics
+         WHERE LOWER(TRIM(title)) = LOWER(TRIM(?)) AND surface = 'otium' AND surface_scope IS ?
+           AND id != ? AND (kind != 'manager' OR id = ?) LIMIT 1`,
+      )
+      .get(row.title, toScope, topicId, GENERAL_TOPIC_ID);
+    if (conflict) return refuse("title_conflict", conflict.id);
+  }
 
   const claimsLeft = Number(
     db
@@ -1021,7 +1047,7 @@ export function adminRepairOtiumTopicScope(
 /**
  * M-9 bulk variant: stamp every unscoped otium room with `toScope` through the
  * same per-topic repair (history recorded, claims untouched). Rooms that are
- * refused (busy, title conflict) are skipped and reported — the caller decides
+ * refused (busy, title conflict, duplicate manager) are skipped and reported — the caller decides
  * whether that leaves its migration incomplete (it must, revision 5).
  *
  * `topicIds` narrows the pass to those rooms (the M-9 retry of its pending
@@ -1037,7 +1063,7 @@ export function repairUnscopedOtiumTopicScopes(
   let stamped = 0;
   const all = db
     .query<RepairTopicRow, []>(
-      `SELECT id, title, surface, surface_scope, created_at FROM api_topics
+      `SELECT id, title, kind, surface, surface_scope, created_at FROM api_topics
        WHERE surface = 'otium' AND surface_scope IS NULL`,
     )
     .all();

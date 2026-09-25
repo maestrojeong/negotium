@@ -538,12 +538,14 @@ export const SURFACE_SCOPE_STAMP_RETRY_INTERVAL_MS = 30_000;
 /**
  * Refusals that leave a room pending: the room is still an unscoped otium room
  * and the stamp may succeed later (maintenance ends, an operator renames the
- * conflicting room, the row settles). Every other refusal (`not_found`,
- * `not_otium`, `scope_not_null`) means there is nothing left to stamp.
+ * conflicting room or resolves a duplicate manager room, the row settles).
+ * Every other refusal (`not_found`, `not_otium`, `scope_not_null`) means there
+ * is nothing left to stamp.
  */
 const SURFACE_SCOPE_STAMP_RETRYABLE = new Set([
   "maintenance_in_progress",
   "title_conflict",
+  "duplicate_manager",
   "row_changed",
   "invalid_scope",
 ]);

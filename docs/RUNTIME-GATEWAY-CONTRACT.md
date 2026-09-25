@@ -299,7 +299,17 @@ sees the previous behaviour byte for byte.
   claim_topic_moved`. The move is recorded in `api_topic_scope_moves` with a seq from the tombstone
   counter and appears in `GET /topic-tombstones` as `reason: "unshared", scopeMoved: true` for the OLD
   scope (not shown to callers that still see the room); existence answers the old scope `present,
-  shared: false`.
+  shared: false`. Refusals (nothing changes): `invalid_scope | not_found | not_otium |
+  scope_not_null | row_changed | title_conflict | duplicate_manager | maintenance_in_progress`.
+- **Repair title rule (revision 6).** The repair uses the same title rule as room creation
+  (`findTopicTitleConflict`): manager rooms — every member's personal "General" — take no part in
+  title conflicts, neither as the room being moved nor as a room already in the target scope (the
+  reserved shared `general` row is still a peer of a regular room titled "General"). Regular rooms
+  still refuse `title_conflict` against a same-titled (trimmed, case-insensitive) regular room in
+  the target scope. Instead, moving a manager room is refused with `duplicate_manager` (`detail`:
+  the existing room's id) when the target scope already holds a manager room with an owner in common
+  with it, so no caller can give one owner two manager rooms in one workspace. The M-9 stamp uses the
+  same check and keeps a `duplicate_manager` room pending like a title conflict.
 - **Existence.** `GET /topics/:id/existence` → `{ nodeId, topicId, state: "present" | "gone" |
   "unknown", shared?, deletedAt? }`. `gone` only when this store holds a deletion tombstone stamped
   with the identity answering now and within the caller's scope; a topic the node simply does not
@@ -321,13 +331,14 @@ sees the previous behaviour byte for byte.
   M-9 stamp has not filed yet; non-zero means that migration is incomplete and still retrying.
 - **M-9 stamp completion (revision 5).** The stamp that files pre-existing unscoped otium rooms under
   the first resolved workspace records itself complete only when no room was skipped. A room refused
-  for a retryable reason (live maintenance, title conflict, row changed) is kept in
-  `api_surface_scope_stamp_pending` with the scope of the first attempt; retries touch only those
+  for a retryable reason (live maintenance, title conflict, duplicate manager room, row changed) is
+  kept in `api_surface_scope_stamp_pending` with the scope of the first attempt; retries touch only those
   rooms, always under that pinned scope (never a newly joined workspace), and run on scope
   resolution, when a pending room's maintenance fence is released in-process, and on a 30-second
   timer (unforced retries are rate-limited to one per 30 s per process). Each incomplete attempt
-  logs a warning with the pending topic ids. A permanent title conflict keeps the migration open
-  until an operator renames the room (or repairs it with `adminRepairOtiumTopicScope`).
+  logs a warning with the pending topic ids. A permanent title conflict (or duplicate manager room)
+  keeps the migration open until an operator renames or resolves the room (or repairs it with
+  `adminRepairOtiumTopicScope`).
 - **Create guard.** `NEGOTIUM_OTIUM_LINK_V2` (default off) applies to the three gateway room creators.
   `on`: callers declaring `x-otium-link-protocol: 2` get `409 scope_unresolved` when the scope is
   not resolved (create and manager-topic) and `409 scope_mismatch` when an
