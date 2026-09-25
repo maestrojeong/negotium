@@ -183,7 +183,7 @@ the canonical topic.
   parsing, claiming or queueing anything: `actorUserId === userId` (else `403 { code:
   "actor_mismatch" }`), that principal is a participant of the room (else `403 { code:
   "actor_not_participant" }`), and for `ask-reply` that the pending ask was raised by that principal
-  (else `403 { code: "actor_mismatch" }`, the claim released). A present but empty or non-string
+  (else `403 { code: "actor_mismatch" }`, checked before any claim is written). A present but empty or non-string
   `actorUserId` is `400`. All three carry the `v: 1` envelope; a hub must read `403` *with one of
   these codes* as a final refusal of the delivery (do not retry, report it to the caller), not as an
   authentication failure. Without `actorUserId` (a hub older than this contract) the node cannot
@@ -213,7 +213,19 @@ the canonical topic.
   as the caller-room record and the consumption of the durable ask), a duplicate that meets a
   live `processing` claim answers `409 { code: "in_progress" }` (retry later, never a false
   replay), a `processing` claim whose lease expired is re-run by the node's maintenance pass and
-  at startup, and a different payload is `409`. A room with no AI answers `409` to tell/ask
+  at startup, and a different payload is `409`. The claim binds the `requestId` to the delivery
+  *and* the principal it was accepted under: its digest is `sha256` of `{ userId, actorUserId
+  (null for an old hub), delivery }`, so the same `requestId` from another actor (or with/without
+  `actorUserId`) is `409`, never a replay. An `ask-reply` is checked against the pending ask
+  (room, and `actorUserId === userId === ask.userId`) *before* its claim is written; the
+  `processing` claim then persists an envelope `{ v: 2, userId, actorUserId, delivery, askUserId }`,
+  and the recovery pass re-runs it only if the envelope matches the claim digest and re-verifies
+  against the current ask row and room (principal still a participant; an actor-less envelope
+  only while `NEGOTIUM_REMOTE_SESSION_REQUIRE_ACTOR` is off). A payload that fails this — including
+  a delivery-only payload persisted by a node before this contract — is dropped (claim released,
+  ask row kept, nothing delivered), so the hub's retry goes through the live checks again. A claim
+  a previous node version *completed* (delivery-only digest) still answers the same delivery as a
+  replay. A room with no AI answers `409` to tell/ask
   whatever the hub's mirror said; an `ask-reply` nobody is waiting for is `404`. Versioning on
   this route is scoped, and a client must classify accordingly: the `202`/`200` acknowledgement
   and every error the inbox handler itself produces (validation, claim, delivery — the `400`s,

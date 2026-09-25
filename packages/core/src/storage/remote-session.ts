@@ -120,7 +120,11 @@ export function remoteSessionRetryDelayMs(
   return Math.round(base * jitter);
 }
 
-/** Stable digest of a delivery body, so a retried delivery is recognised as one. */
+/**
+ * Stable digest of a value. The inbox hashes its actor-bound claim identity
+ * (`remoteSessionInboxClaimIdentity` in `#runtime/remote-session-inbox`), so
+ * a retried delivery is recognised as one only under the same principal.
+ */
 export function remoteSessionPayloadHash(payload: unknown): string {
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
@@ -164,6 +168,14 @@ export function claimRemoteSessionInbox(args: {
   leaseMs?: number;
   /** Take over even a live lease (a fresh process knows nobody holds one). */
   force?: boolean;
+  /**
+   * The digest a node before the actor-bound hash would have stored for this
+   * delivery (payload only, no principal). A claim bearing it was written by
+   * that version: `completed` answers a replay (no side effect), `processing`
+   * is taken over and re-bound to `payloadHash`/`payload` — the caller has
+   * already verified the principal of the delivery it is re-running.
+   */
+  legacyPayloadHash?: string;
 }): RemoteSessionInboxClaimOutcome {
   const now = args.now ?? Date.now();
   const leaseUntil = now + (args.leaseMs ?? REMOTE_SESSION_INBOX_CLAIM_LEASE_MS);
@@ -182,22 +194,26 @@ export function claimRemoteSessionInbox(args: {
         "SELECT * FROM remote_session_inbox_claims WHERE request_id = ?",
       )
       .get(args.requestId);
+    const legacy =
+      args.legacyPayloadHash !== undefined && existing?.payload_hash === args.legacyPayloadHash;
     if (
       !existing ||
       existing.kind !== args.kind ||
       existing.topic_id !== args.topicId ||
-      existing.payload_hash !== args.payloadHash
+      (existing.payload_hash !== args.payloadHash && !legacy)
     ) {
       return "conflict";
     }
     if (existing.state === "completed") return "replay";
     if (!args.force && Number(existing.lease_until) > now) return "in_progress";
     // The previous holder died (or hung past its lease): take the claim over.
+    // A legacy claim is re-bound to the actor-bound digest and envelope, so
+    // recovery never meets it again in its unverifiable form.
     db.query(
       `UPDATE remote_session_inbox_claims
-       SET lease_until = ?, payload_json = COALESCE(?, payload_json)
+       SET lease_until = ?, payload_json = COALESCE(?, payload_json), payload_hash = ?
        WHERE request_id = ?`,
-    ).run(leaseUntil, payloadJson, args.requestId);
+    ).run(leaseUntil, payloadJson, args.payloadHash, args.requestId);
     return "claimed";
   })();
 }
