@@ -280,6 +280,21 @@ sees the previous behaviour byte for byte.
   the transaction that deletes the messages, so a message that still lands keeps the room (`409
   claim_topic_has_messages`, claim stays committed). The loser of a cross-process race on the same
   key (create or derive) gets the winner's `201 … replayed: true`.
+- **Claim binding (review round 2).** `requestId` is used exactly as sent: 1-200 characters, and a
+  leading/trailing space is `400 invalid_request_id` (never trimmed). A claimed derive is bound to the
+  PATH source: the hash input is `{ ...body, sourceTopicId: <path id> }`, a body `sourceTopicId` that
+  differs from the path is `400 source_topic_mismatch`, the claim records its source (a replay on
+  another parent is `409 request_id_conflict`), and a derive replay is only answered after the normal
+  source-access check (a gone/inaccessible source is 404). A replay or abort whose room is no longer
+  filed under the caller's workspace is `409 claim_topic_moved` (no DTO, nothing deleted);
+  `GET /topic-claims/:id` then reads `topicPresent: false, topicMoved: true`. An abort deletes only a
+  room whose message set is exactly the one it was created with (count + hash of ids recorded with
+  the claim). Claim retention: committed claims 30 days from `created_at`, aborted claims (fences)
+  30 days from the moment they became aborted; pruning is bounded per request.
+- **Otium scope immutability.** An otium room's `surface_scope` never changes after creation (SQLite
+  trigger `api_topics_otium_scope_immutable`; upserts keep the stored value). The only exception is the
+  audited, storage-only `repairOtiumTopicScope` (`NULL → scope`, CAS, re-binds `scope:` claims to
+  `scope:<new>`, audit row in `api_topic_scope_repairs`), which the one-time M-9 stamp also uses.
 - **Existence.** `GET /topics/:id/existence` → `{ nodeId, topicId, state: "present" | "gone" |
   "unknown", shared?, deletedAt? }`. `gone` only when this store holds a deletion tombstone stamped
   with the identity answering now and within the caller's scope; a topic the node simply does not

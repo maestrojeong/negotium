@@ -299,23 +299,27 @@ describe("fix 3 — an abort never orphans a freshly committed create", () => {
       createBody(title, requestId),
     );
     if (!link || link instanceof Response) throw new Error("expected a link request");
-    const response = await topicLink.runClaimedTopicCreate(link, async (within) => {
-      other
-        .query(
-          `INSERT INTO api_topic_create_claims
+    const response = await topicLink.runClaimedTopicCreate(
+      link,
+      runtime("/topics"),
+      async (within) => {
+        other
+          .query(
+            `INSERT INTO api_topic_create_claims
              (principal_key, request_id, op, payload_hash, topic_id, state, node_id,
               seed_max_message_rowid, created_at, updated_at)
            VALUES ('loopback', ?, 'abort', '', NULL, 'aborted', NULL, 0, ?, ?)`,
-        )
-        .run(requestId, new Date().toISOString(), new Date().toISOString());
-      return topicService.create({
-        title,
-        userId,
-        kind: "agent",
-        agent: "codex",
-        withinCreateTransaction: within,
-      });
-    });
+          )
+          .run(requestId, new Date().toISOString(), new Date().toISOString());
+        return topicService.create({
+          title,
+          userId,
+          kind: "agent",
+          agent: "codex",
+          withinCreateTransaction: within,
+        });
+      },
+    );
     expect(response?.status).toBe(409);
     expect(((await response?.json()) as { code: string }).code).toBe("request_aborted");
     expect(listTopics().filter((topic) => topic.title === title)).toHaveLength(0);
@@ -352,16 +356,20 @@ describe("fix 4 — the loser of a cross-process same-key race gets the replay 2
       kind: "agent",
       agent: "codex",
     });
-    const response = await topicLink.runClaimedTopicCreate(link, async (within) => {
-      commitWinnerClaim(requestId, "create", link.payloadHash, winner.id);
-      return topicService.create({
-        title,
-        userId,
-        kind: "agent",
-        agent: "codex",
-        withinCreateTransaction: within,
-      });
-    });
+    const response = await topicLink.runClaimedTopicCreate(
+      link,
+      runtime("/topics"),
+      async (within) => {
+        commitWinnerClaim(requestId, "create", link.payloadHash, winner.id);
+        return topicService.create({
+          title,
+          userId,
+          kind: "agent",
+          agent: "codex",
+          withinCreateTransaction: within,
+        });
+      },
+    );
     expect(response?.status).toBe(201);
     const answer = (await response?.json()) as Record<string, any>;
     expect(answer).toMatchObject({ requestId, replayed: true });
@@ -391,16 +399,20 @@ describe("fix 4 — the loser of a cross-process same-key race gets the replay 2
       kind: "agent",
       agent: "codex",
     });
-    const response = await topicLink.runClaimedTopicCreate(link, async (within) => {
-      commitWinnerClaim(requestId, "derive", link.payloadHash, winner.id);
-      return topicService.derive({
-        sourceTopicId: sourceId,
-        userId,
-        copyHistory: false,
-        name,
-        withinCreateTransaction: within,
-      });
-    });
+    const response = await topicLink.runClaimedTopicCreate(
+      link,
+      runtime("/topics"),
+      async (within) => {
+        commitWinnerClaim(requestId, "derive", link.payloadHash, winner.id);
+        return topicService.derive({
+          sourceTopicId: sourceId,
+          userId,
+          copyHistory: false,
+          name,
+          withinCreateTransaction: within,
+        });
+      },
+    );
     // Pre-fix: derive swallowed the PK error, returned null → the route's 500.
     expect(response).not.toBeNull();
     expect(response?.status).toBe(201);

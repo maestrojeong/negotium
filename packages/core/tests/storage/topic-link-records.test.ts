@@ -344,6 +344,52 @@ describe("claim-abort message fence trigger (review fix 1)", () => {
   });
 });
 
+describe("otium scope immutability (review fix 6)", () => {
+  test("only a grant row inside the same transaction lets an otium scope change", () => {
+    const db = memoryDb();
+    initializeTopicLinkRecordsSchema(db, "node-a");
+    db.exec(
+      "INSERT INTO api_topics (id, surface, surface_scope) VALUES ('o', 'otium', NULL), ('t', 'telegram', NULL)",
+    );
+    expect(() => db.exec("UPDATE api_topics SET surface_scope = 'ws-a' WHERE id = 'o'")).toThrow(
+      "otium_topic_scope_immutable",
+    );
+    // Moving onto otium with a scope in the same statement is a change too.
+    expect(() =>
+      db.exec("UPDATE api_topics SET surface = 'otium', surface_scope = 'ws-a' WHERE id = 't'"),
+    ).toThrow("otium_topic_scope_immutable");
+    // Non-otium rows keep their own rules.
+    db.exec("UPDATE api_topics SET surface_scope = 'tg:1' WHERE id = 't'");
+    db.transaction(() => {
+      db.exec("INSERT INTO api_topic_scope_repair_grants (topic_id) VALUES ('o')");
+      db.exec("UPDATE api_topics SET surface_scope = 'ws-a' WHERE id = 'o'");
+      db.exec("DELETE FROM api_topic_scope_repair_grants WHERE topic_id = 'o'");
+    })();
+    expect(db.query("SELECT surface_scope FROM api_topics WHERE id = 'o'").get()).toEqual({
+      surface_scope: "ws-a",
+    });
+    expect(() => db.exec("UPDATE api_topics SET surface_scope = 'ws-b' WHERE id = 'o'")).toThrow(
+      "otium_topic_scope_immutable",
+    );
+    // Leaving the otium surface is an unshare, not a scope change.
+    db.exec("UPDATE api_topics SET surface = 'terminal' WHERE id = 'o'");
+  });
+
+  test("a reshare only clears the unshare tombstone of the scope the room returns to", () => {
+    const db = memoryDb();
+    initializeTopicLinkRecordsSchema(db, "node-a");
+    db.exec("INSERT INTO api_topics (id, surface, surface_scope) VALUES ('r', 'otium', 'ws-a')");
+    db.exec("UPDATE api_topics SET surface = 'terminal' WHERE id = 'r'");
+    // While off otium the scope may change (not an otium row) ...
+    db.exec("UPDATE api_topics SET surface_scope = 'ws-b' WHERE id = 'r'");
+    // ... and coming back under ws-b must not erase ws-a's withdrawal evidence.
+    db.exec("UPDATE api_topics SET surface = 'otium' WHERE id = 'r'");
+    expect(tombstones(db)).toEqual([
+      { topic_id: "r", node_id: "node-a", reason: "unshared", surface_scope: "ws-a" },
+    ]);
+  });
+});
+
 describe("topicLinkPayloadHash", () => {
   /** Verbatim copy of the hub's `linkPayloadHash` (otium link/link-intents.ts, PR6). */
   function hubCanonicalJson(value: unknown): string {

@@ -1275,7 +1275,7 @@ export function createNodeControlHandler(
           const link = parseTopicLinkRequest(req, body, "create", body);
           if (link instanceof Response) return link;
           if (link) {
-            const replay = replayTopicCreateClaim(link);
+            const replay = replayTopicCreateClaim(link, req);
             if (replay) return replay;
           }
           const guard = otiumLinkCreateGuard(req, "create");
@@ -1300,8 +1300,11 @@ export function createNodeControlHandler(
             ...(typeof body.memoryKey === "string" ? { memoryKey: body.memoryKey } : {}),
           };
           if (link) {
-            const claimed = await runClaimedTopicCreate(link, async (withinCreateTransaction) =>
-              topicService.create({ ...createOptions, withinCreateTransaction }),
+            const claimed = await runClaimedTopicCreate(
+              link,
+              req,
+              async (withinCreateTransaction) =>
+                topicService.create({ ...createOptions, withinCreateTransaction }),
             );
             if (claimed) return claimed;
             return jsonError(500, "Failed to create topic");
@@ -1345,20 +1348,38 @@ export function createNodeControlHandler(
           if (body.name !== undefined && typeof body.name !== "string") {
             return jsonError(400, "name must be a string");
           }
+          // A claimed derive is bound to the PATH source. The hub never puts
+          // `sourceTopicId` in the body; one that names another topic would
+          // otherwise make two parents hash alike (review fix 5).
+          if (
+            body.requestId !== undefined &&
+            body.requestId !== null &&
+            body.sourceTopicId !== undefined &&
+            body.sourceTopicId !== topicId
+          ) {
+            return jsonError(
+              400,
+              "body sourceTopicId must be absent or equal the path topic id",
+              "source_topic_mismatch",
+            );
+          }
           // Hashed exactly like the hub's derive intent: the body plus the
-          // path's source id, which the body does not carry.
+          // path's source id — the path last, so the body cannot override it.
           const link = parseTopicLinkRequest(req, body, "derive", {
-            sourceTopicId: topicId,
             ...body,
+            sourceTopicId: topicId,
           });
           if (link instanceof Response) return link;
-          if (link) {
-            const replay = replayTopicCreateClaim(link);
-            if (replay) return replay;
-          }
+          // The source-access check comes BEFORE a replay: a replay hands out
+          // a derived room, so the caller must still be allowed to derive
+          // from this source under the normal rules.
           const source = topicForUser(topicId, userId);
           if (!source || source.kind === "manager" || !topicInRequestScope(req, source)) {
             return jsonError(404, "Topic not found");
+          }
+          if (link) {
+            const replay = replayTopicCreateClaim(link, req);
+            if (replay) return replay;
           }
           const guard = otiumLinkCreateGuard(req, "derive");
           if (guard) return guard;
@@ -1370,7 +1391,7 @@ export function createNodeControlHandler(
             ...(name ? { name } : {}),
           };
           if (link) {
-            const claimed = await runClaimedTopicCreate(link, (withinCreateTransaction) =>
+            const claimed = await runClaimedTopicCreate(link, req, (withinCreateTransaction) =>
               topicService.derive({ ...deriveParams, withinCreateTransaction }),
             );
             if (claimed) return claimed;

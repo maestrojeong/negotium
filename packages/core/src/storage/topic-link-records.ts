@@ -50,6 +50,12 @@ export interface TopicCreateClaim {
   nodeId: string | null;
   /** Highest `api_messages.rowid` of the topic when the claim committed (seeded history). */
   seedMaxMessageRowid: number;
+  /** Derive only: the source topic the claim was made for (null on create / legacy rows). */
+  sourceTopicId: string | null;
+  /** Message count of the topic when the claim committed (null on legacy rows). */
+  seedMessageCount: number | null;
+  /** sha256 of the sorted message ids at claim time (null on legacy rows). */
+  seedMessageIdsHash: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -73,6 +79,9 @@ interface ClaimRow {
   state: string;
   node_id: string | null;
   seed_max_message_rowid: number | bigint | null;
+  source_topic_id?: string | null;
+  seed_message_count?: number | bigint | null;
+  seed_message_ids_hash?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -130,17 +139,34 @@ const SCHEMA_TABLES = [
   "api_topic_create_claims",
   "api_topic_tombstones",
   "api_topic_tombstone_seq",
+  "api_topic_scope_repair_grants",
+  "api_topic_scope_repairs",
 ];
-const SCHEMA_INDEXES = ["idx_api_topic_create_claims_topic", "idx_api_topic_create_claims_created"];
+const SCHEMA_INDEXES = [
+  "idx_api_topic_create_claims_topic",
+  "idx_api_topic_create_claims_created",
+  "idx_api_topic_create_claims_principal",
+  "idx_api_topic_create_claims_settled",
+];
+/** Columns added to `api_topic_create_claims` after its first release. */
+const CLAIM_ADDED_COLUMNS: Record<string, string> = {
+  source_topic_id: "TEXT",
+  seed_message_count: "INTEGER",
+  seed_message_ids_hash: "TEXT",
+};
 const SCHEMA_INDEXES_TOMBSTONES = ["idx_api_topic_tombstones_seq"];
 /** Trigger → a marker its current SQL must contain (older builds lack it). */
 const SCHEMA_TRIGGERS: Record<string, string> = {
   api_topics_tombstone_on_delete: "api_topic_tombstone_seq",
   api_topics_tombstone_on_unshare: "api_topic_tombstone_seq",
-  api_topics_tombstone_on_reshare: "api_topic_tombstones",
+  api_topics_tombstone_on_reshare: "surface_scope IS NEW.surface_scope",
   api_topics_tombstone_on_insert: "api_topic_tombstones",
   api_messages_claim_abort_fence: TOPIC_CLAIM_ABORT_OWNER_PREFIX,
+  api_topics_otium_scope_immutable: "api_topic_scope_repair_grants",
 };
+
+/** The message the scope-immutability trigger raises. */
+export const OTIUM_TOPIC_SCOPE_IMMUTABLE_ERROR = "otium_topic_scope_immutable";
 
 /**
  * Read-only: whether the schema (and identity) is already current. Every
@@ -163,6 +189,10 @@ function topicLinkSchemaIsCurrent(database: SchemaDatabase, nodeId?: string): bo
     if (!objects.get(name)?.includes(marker)) return false;
   }
   if (!columnNames(database, "api_node_identity").has("epoch_id")) return false;
+  const claimColumns = columnNames(database, "api_topic_create_claims");
+  for (const column of Object.keys(CLAIM_ADDED_COLUMNS)) {
+    if (!claimColumns.has(column)) return false;
+  }
   const identity = database
     .query("SELECT node_id, epoch_id FROM api_node_identity WHERE singleton = 1")
     .all() as Array<{ node_id: string; epoch_id: string | null }>;
@@ -220,7 +250,49 @@ export function initializeTopicLinkRecordsSchema(database: SchemaDatabase, nodeI
         seed_max_message_rowid INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
+        source_topic_id TEXT,
+        seed_message_count INTEGER,
+        seed_message_ids_hash TEXT,
         PRIMARY KEY (principal_key, request_id)
+      )
+    `);
+    // Review fixes (additive): the derive source a claim was made for, and the
+    // exact message set the created topic was seeded with.
+    const claimColumns = columnNames(database, "api_topic_create_claims");
+    for (const [column, type] of Object.entries(CLAIM_ADDED_COLUMNS)) {
+      if (!claimColumns.has(column)) {
+        database.exec(`ALTER TABLE api_topic_create_claims ADD COLUMN ${column} ${type}`);
+      }
+    }
+    database.exec(
+      `CREATE INDEX IF NOT EXISTS idx_api_topic_create_claims_principal
+       ON api_topic_create_claims(principal_key, state, topic_id)`,
+    );
+    // Retention anchor of a settled (aborted) claim is its settlement time.
+    database.exec(
+      `CREATE INDEX IF NOT EXISTS idx_api_topic_create_claims_settled
+       ON api_topic_create_claims(state, updated_at)`,
+    );
+    // Scope repair (review fix 6): the one sanctioned way to change an otium
+    // topic's surface_scope. A grant row exists only inside the repair's own
+    // transaction (inserted and deleted before commit), so no other
+    // connection ever observes it.
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS api_topic_scope_repair_grants (
+        topic_id TEXT PRIMARY KEY
+      )
+    `);
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS api_topic_scope_repairs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        topic_id TEXT NOT NULL,
+        from_scope TEXT,
+        to_scope TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        rebound_claims INTEGER NOT NULL,
+        kept_claims INTEGER NOT NULL,
+        created_at TEXT NOT NULL
       )
     `);
     database.exec(
@@ -266,6 +338,7 @@ export function initializeTopicLinkRecordsSchema(database: SchemaDatabase, nodeI
       "api_topics_tombstone_on_reshare",
       "api_topics_tombstone_on_insert",
       "api_messages_claim_abort_fence",
+      "api_topics_otium_scope_immutable",
     ]) {
       database.exec(`DROP TRIGGER IF EXISTS ${name}`);
     }
@@ -305,7 +378,26 @@ export function initializeTopicLinkRecordsSchema(database: SchemaDatabase, nodeI
       AFTER UPDATE OF surface, visibility ON api_topics
       WHEN NEW.surface = 'otium' AND COALESCE(NEW.visibility, 'visible') != 'hidden'
       BEGIN
-        DELETE FROM api_topic_tombstones WHERE topic_id = NEW.id AND reason = 'unshared';
+        -- Only the withdrawal from the scope the room is back in is undone; an
+        -- unshare from another workspace stays that workspace's evidence.
+        DELETE FROM api_topic_tombstones
+        WHERE topic_id = NEW.id AND reason = 'unshared' AND surface_scope IS NEW.surface_scope;
+      END
+    `);
+    // An otium room's workspace is fixed (review fix 6): a claim, a tombstone
+    // and the host's mapping all bind to it, and one topic_id-keyed tombstone
+    // cannot express several past scopes. Only the audited scope repair
+    // (`repairOtiumTopicScope`) may change it, through a grant row that exists
+    // only inside its own transaction. Leaving the otium surface is allowed
+    // (that is an unshare, tombstoned with the old scope).
+    database.exec(`
+      CREATE TRIGGER api_topics_otium_scope_immutable
+      BEFORE UPDATE OF surface, surface_scope ON api_topics
+      WHEN NEW.surface = 'otium'
+        AND OLD.surface_scope IS NOT NEW.surface_scope
+        AND NOT EXISTS (SELECT 1 FROM api_topic_scope_repair_grants WHERE topic_id = OLD.id)
+      BEGIN
+        SELECT RAISE(ABORT, '${OTIUM_TOPIC_SCOPE_IMMUTABLE_ERROR}');
       END
     `);
     // A row that exists again (restored or re-inserted id) is not gone.
@@ -439,6 +531,12 @@ function toClaim(row: ClaimRow): TopicCreateClaim {
     state: row.state as TopicCreateClaimState,
     nodeId: row.node_id,
     seedMaxMessageRowid: Number(row.seed_max_message_rowid ?? 0),
+    sourceTopicId: row.source_topic_id ?? null,
+    seedMessageCount:
+      row.seed_message_count === null || row.seed_message_count === undefined
+        ? null
+        : Number(row.seed_message_count),
+    seedMessageIdsHash: row.seed_message_ids_hash ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -456,27 +554,28 @@ export function getTopicCreateClaim(
   return row ? toClaim(row) : null;
 }
 
-/** Committed claims of one principal, by topic id — for `hostCreate` on topic DTOs. */
+/**
+ * Committed claims of one principal for exactly these topics — for
+ * `hostCreate` on topic DTOs. Bounded by the ids asked for (index
+ * `(principal_key, state, topic_id)`), never the principal's whole history.
+ */
 export function committedClaimsByTopic(
   principalKey: string,
-  topicIds?: readonly string[],
+  topicIds: readonly string[],
 ): Map<string, TopicCreateClaim> {
-  const rows =
-    topicIds && topicIds.length === 1
-      ? db
-          .query<ClaimRow, [string, string]>(
-            `SELECT * FROM api_topic_create_claims
-             WHERE principal_key = ? AND state = 'committed' AND topic_id = ?`,
-          )
-          .all(principalKey, topicIds[0] as string)
-      : db
-          .query<ClaimRow, [string]>(
-            `SELECT * FROM api_topic_create_claims
-             WHERE principal_key = ? AND state = 'committed' AND topic_id IS NOT NULL`,
-          )
-          .all(principalKey);
   const byTopic = new Map<string, TopicCreateClaim>();
-  for (const row of rows) if (row.topic_id) byTopic.set(row.topic_id, toClaim(row));
+  const unique = [...new Set(topicIds)];
+  for (let start = 0; start < unique.length; start += 500) {
+    const chunk = unique.slice(start, start + 500);
+    const rows = db
+      .query<ClaimRow, string[]>(
+        `SELECT * FROM api_topic_create_claims
+         WHERE principal_key = ? AND state = 'committed'
+           AND topic_id IN (${chunk.map(() => "?").join(",")})`,
+      )
+      .all(principalKey, ...chunk);
+    for (const row of rows) if (row.topic_id) byTopic.set(row.topic_id, toClaim(row));
+  }
   return byTopic;
 }
 
@@ -487,6 +586,15 @@ function maxMessageRowid(topicId: string): number {
     )
     .get(topicId);
   return Number(row?.max_rowid ?? 0);
+}
+
+/** Count and sha256 of the sorted message ids of a topic: its exact message set. */
+function messageSetOf(topicId: string): { count: number; hash: string } {
+  const ids = db
+    .query<{ id: string }, [string]>("SELECT id FROM api_messages WHERE topic_id = ? ORDER BY id")
+    .all(topicId)
+    .map((row) => row.id);
+  return { count: ids.length, hash: createHash("sha256").update(ids.join("\n")).digest("hex") };
 }
 
 /**
@@ -501,14 +609,18 @@ export function insertCommittedTopicCreateClaim(input: {
   op: "create" | "derive";
   payloadHash: string;
   topicId: string;
+  /** Derive: the path source topic the claim is bound to. */
+  sourceTopicId?: string;
 }): TopicCreateClaim {
   const now = new Date().toISOString();
   const seed = maxMessageRowid(input.topicId);
+  const seeded = messageSetOf(input.topicId);
   db.query(
     `INSERT INTO api_topic_create_claims
        (principal_key, request_id, op, payload_hash, topic_id, state, node_id,
-        seed_max_message_rowid, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'committed', ${NODE_IDENTITY_SQL}, ?, ?, ?)`,
+        seed_max_message_rowid, created_at, updated_at,
+        source_topic_id, seed_message_count, seed_message_ids_hash)
+     VALUES (?, ?, ?, ?, ?, 'committed', ${NODE_IDENTITY_SQL}, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.principalKey,
     input.requestId,
@@ -518,6 +630,9 @@ export function insertCommittedTopicCreateClaim(input: {
     seed,
     now,
     now,
+    input.sourceTopicId ?? null,
+    seeded.count,
+    seeded.hash,
   );
   const claim = getTopicCreateClaim(input.principalKey, input.requestId);
   if (!claim) throw new Error("topic create claim was not recorded");
@@ -612,9 +727,22 @@ export function isTopicClaimAbortFenceError(error: unknown): boolean {
   return error instanceof Error && error.message.includes(TOPIC_CLAIM_ABORT_FENCE_ERROR);
 }
 
-/** Messages written to a claimed topic after its creation committed. */
+/**
+ * Whether the claimed topic's messages differ from what it was created with.
+ *
+ * Compared as an exact SET (count + hash of the sorted ids recorded at claim
+ * time), not by rowid: a logical dump/import or a VACUUM that renumbers rowids
+ * cannot make a post-create message look seeded. Any difference — a new
+ * message, a hard-deleted one — counts, so an abort only ever deletes a topic
+ * holding exactly its seeded history. Legacy claims without a recorded set fall
+ * back to the rowid boundary.
+ */
 export function topicHasMessagesAfterClaim(claim: TopicCreateClaim): boolean {
   if (!claim.topicId) return false;
+  if (claim.seedMessageCount !== null && claim.seedMessageIdsHash !== null) {
+    const current = messageSetOf(claim.topicId);
+    return current.count !== claim.seedMessageCount || current.hash !== claim.seedMessageIdsHash;
+  }
   const row = db
     .query<{ found: number }, [string, number]>(
       "SELECT 1 AS found FROM api_messages WHERE topic_id = ? AND rowid > ? LIMIT 1",
@@ -623,13 +751,33 @@ export function topicHasMessagesAfterClaim(claim: TopicCreateClaim): boolean {
   return Boolean(row);
 }
 
-/** Drop claims older than the retention window. Returns the number removed. */
+/** Upper bound of claims one prune call removes (bounded work per request). */
+export const TOPIC_CREATE_CLAIM_PRUNE_BATCH = 500;
+
+/**
+ * Drop claims past the retention window. Returns the number removed.
+ *
+ * The retention anchor is the claim's LAST settlement: a committed claim is
+ * kept from its `created_at`, an aborted one (fence) from its `updated_at` —
+ * the moment it became aborted. An old committed claim aborted today therefore
+ * keeps refusing a late create with the same requestId for a full window.
+ * Removes at most `batch` rows per call.
+ */
 export function pruneTopicCreateClaims(
   now: number = Date.now(),
   retentionMs: number = TOPIC_CREATE_CLAIM_RETENTION_MS,
+  batch: number = TOPIC_CREATE_CLAIM_PRUNE_BATCH,
 ): number {
   const cutoff = new Date(now - retentionMs).toISOString();
-  const result = db.query("DELETE FROM api_topic_create_claims WHERE created_at < ?").run(cutoff);
+  const result = db
+    .query(
+      `DELETE FROM api_topic_create_claims WHERE rowid IN (
+         SELECT rowid FROM api_topic_create_claims
+         WHERE (state = 'committed' AND created_at < ?)
+            OR (state = 'aborted' AND updated_at < ?)
+         LIMIT ?)`,
+    )
+    .run(cutoff, cutoff, batch);
   return Number(result.changes ?? 0);
 }
 
@@ -662,4 +810,214 @@ export function listTopicTombstonesAfter(after: number, limit: number): TopicTom
     )
     .all(after, limit)
     .map(toTombstone);
+}
+
+// ── otium scope repair (review fix 6 / PR12 admin repair) ────────────────
+
+export interface RepairOtiumTopicScopeInput {
+  topicId: string;
+  /** Only an unscoped room can be repaired. */
+  fromScope: null;
+  toScope: string;
+  /**
+   * The row the operator looked at: compare-and-set. `surface`/`surfaceScope`
+   * are required; `createdAt`/`title` pin the exact row when given.
+   */
+  expected: { surface: "otium"; surfaceScope: null; createdAt?: string; title?: string };
+  /** Who asked (operator, CLI user, `m9-stamp`). Recorded in the audit row. */
+  actor: string;
+  reason: string;
+}
+
+export type RepairOtiumTopicScopeRefusal =
+  | "invalid_scope"
+  | "not_found"
+  | "not_otium"
+  | "scope_not_null"
+  | "row_changed"
+  | "title_conflict"
+  | "claim_not_rebindable"
+  | "maintenance_in_progress";
+
+export type RepairOtiumTopicScopeResult =
+  | {
+      ok: true;
+      topicId: string;
+      toScope: string;
+      /** Committed claims moved from the unresolved principal `scope:` to `scope:<toScope>`. */
+      reboundClaims: number;
+      /** Committed claims kept as they were (`loopback`, `scope:<toScope>`). */
+      keptClaims: number;
+      auditId: number;
+    }
+  | { ok: false; topicId: string; reason: RepairOtiumTopicScopeRefusal; detail?: string };
+
+interface RepairTopicRow {
+  id: string;
+  title: string;
+  kind: string;
+  surface: string;
+  surface_scope: string | null;
+  created_at: string;
+}
+
+function repairOneTopicScope(input: RepairOtiumTopicScopeInput): RepairOtiumTopicScopeResult {
+  const { topicId } = input;
+  const refuse = (reason: RepairOtiumTopicScopeRefusal, detail?: string) =>
+    ({ ok: false, topicId, reason, ...(detail ? { detail } : {}) }) as const;
+  const toScope = typeof input.toScope === "string" ? input.toScope : "";
+  if (!toScope || toScope !== toScope.trim() || input.fromScope !== null) {
+    return refuse("invalid_scope");
+  }
+  const row = db
+    .query<RepairTopicRow, [string]>(
+      "SELECT id, title, kind, surface, surface_scope, created_at FROM api_topics WHERE id = ?",
+    )
+    .get(topicId);
+  if (!row) return refuse("not_found");
+  if (row.surface !== "otium" || input.expected.surface !== "otium") return refuse("not_otium");
+  if (row.surface_scope !== null || input.expected.surfaceScope !== null) {
+    return refuse("scope_not_null", row.surface_scope ?? undefined);
+  }
+  if (
+    (input.expected.createdAt !== undefined && input.expected.createdAt !== row.created_at) ||
+    (input.expected.title !== undefined && input.expected.title !== row.title)
+  ) {
+    return refuse("row_changed");
+  }
+  // A claim abort (or any delete/reset) holds the topic right now.
+  const busy = db
+    .query<{ found: number }, [string, number]>(
+      `SELECT 1 AS found FROM runtime_topic_state
+       WHERE topic_id = ? AND maintenance = 1 AND heartbeat_at >= ?`,
+    )
+    .get(topicId, Date.now() - CLAIM_ABORT_FENCE_STALE_MS);
+  if (busy) return refuse("maintenance_in_progress");
+  const conflict = db
+    .query<{ id: string }, [string, string, string]>(
+      `SELECT id FROM api_topics
+       WHERE LOWER(TRIM(title)) = LOWER(TRIM(?)) AND surface = 'otium' AND surface_scope IS ?
+         AND id != ? LIMIT 1`,
+    )
+    .get(row.title, toScope, topicId);
+  if (conflict) return refuse("title_conflict", conflict.id);
+
+  // Claims: the unresolved principal (`scope:`, a caller whose workspace was
+  // not resolved yet) is rebound to the repaired workspace — the same caller
+  // resolves to exactly that principal, so its replay/abort keep working.
+  // `loopback` and `scope:<toScope>` are unaffected. Any other workspace's
+  // claim cannot be re-bound without granting or losing authority: refuse.
+  const claims = db
+    .query<{ principal_key: string; request_id: string }, [string]>(
+      `SELECT principal_key, request_id FROM api_topic_create_claims
+       WHERE topic_id = ? AND state = 'committed'`,
+    )
+    .all(topicId);
+  const target = `scope:${toScope}`;
+  const rebind: string[] = [];
+  let kept = 0;
+  for (const claim of claims) {
+    if (claim.principal_key === "loopback" || claim.principal_key === target) {
+      kept += 1;
+    } else if (claim.principal_key === "scope:") {
+      const taken = getTopicCreateClaim(target, claim.request_id);
+      if (taken) return refuse("claim_not_rebindable", claim.request_id);
+      rebind.push(claim.request_id);
+    } else {
+      return refuse("claim_not_rebindable", claim.request_id);
+    }
+  }
+  const now = new Date().toISOString();
+  for (const requestId of rebind) {
+    db.query(
+      `UPDATE api_topic_create_claims SET principal_key = ?, updated_at = ?
+       WHERE principal_key = 'scope:' AND request_id = ? AND topic_id = ? AND state = 'committed'`,
+    ).run(target, now, requestId, topicId);
+  }
+  db.query("INSERT INTO api_topic_scope_repair_grants (topic_id) VALUES (?)").run(topicId);
+  const updated = db
+    .query(
+      `UPDATE api_topics SET surface_scope = ?
+       WHERE id = ? AND surface = 'otium' AND surface_scope IS NULL`,
+    )
+    .run(toScope, topicId);
+  db.query("DELETE FROM api_topic_scope_repair_grants WHERE topic_id = ?").run(topicId);
+  if (Number(updated.changes ?? 0) !== 1) throw new Error("scope repair CAS lost the row");
+  const audit = db
+    .query(
+      `INSERT INTO api_topic_scope_repairs
+         (topic_id, from_scope, to_scope, actor, reason, rebound_claims, kept_claims, created_at)
+       VALUES (?, NULL, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(topicId, toScope, input.actor, input.reason, rebind.length, kept, now);
+  return {
+    ok: true,
+    topicId,
+    toScope,
+    reboundClaims: rebind.length,
+    keptClaims: kept,
+    auditId: Number(audit.lastInsertRowid),
+  };
+}
+
+/**
+ * The ONLY sanctioned way to change an otium topic's `surface_scope` after
+ * creation (the `api_topics_otium_scope_immutable` trigger refuses every other
+ * writer). One-shot, audited, one `BEGIN IMMEDIATE`:
+ *
+ * - only `NULL → <non-empty, untrimmed-free scope>` on a `surface='otium'` row,
+ *   compare-and-set against the row the operator observed;
+ * - committed create claims of the topic are re-bound: the unresolved
+ *   principal `scope:` becomes `scope:<toScope>`; `loopback` and
+ *   `scope:<toScope>` are kept; any other principal's claim refuses the whole
+ *   repair (`claim_not_rebindable`) — nothing is changed;
+ * - tombstones are not touched (they record the scope a past event happened
+ *   in);
+ * - writes an `api_topic_scope_repairs` audit row.
+ *
+ * No HTTP route: storage/CLI only.
+ */
+export function repairOtiumTopicScope(
+  input: RepairOtiumTopicScopeInput,
+): RepairOtiumTopicScopeResult {
+  return db
+    .transaction(() => {
+      const result = repairOneTopicScope(input);
+      return result;
+    })
+    .immediate();
+}
+
+/**
+ * M-9 bulk variant: stamp every unscoped otium room with `toScope`, through
+ * the same per-topic repair (claims re-bound, audited). Rooms whose claims
+ * cannot be re-bound are skipped and reported. Runs inside the caller's
+ * transaction when there is one.
+ */
+export function repairUnscopedOtiumTopicScopes(
+  toScope: string,
+  actor: string,
+  reason: string,
+): { stamped: number; skipped: RepairOtiumTopicScopeResult[] } {
+  const skipped: RepairOtiumTopicScopeResult[] = [];
+  let stamped = 0;
+  const rows = db
+    .query<RepairTopicRow, []>(
+      `SELECT id, title, kind, surface, surface_scope, created_at FROM api_topics
+       WHERE surface = 'otium' AND surface_scope IS NULL`,
+    )
+    .all();
+  for (const row of rows) {
+    const result = repairOneTopicScope({
+      topicId: row.id,
+      fromScope: null,
+      toScope,
+      expected: { surface: "otium", surfaceScope: null, createdAt: row.created_at },
+      actor,
+      reason,
+    });
+    if (result.ok) stamped += 1;
+    else skipped.push(result);
+  }
+  return { stamped, skipped };
 }

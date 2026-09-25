@@ -54,12 +54,20 @@ export type TopicCreateClaimAbortResult =
   | { kind: "deleted"; claim: TopicCreateClaim }
   /** The topic holds messages written after the claim; kept, claim committed. */
   | { kind: "has-messages"; claim: TopicCreateClaim }
+  /** The topic left the caller's workspace; nothing deleted, claim committed. */
+  | { kind: "moved"; claim: TopicCreateClaim }
   /** Manager/General/ownerless topic; kept, claim committed. */
   | { kind: "protected"; claim: TopicCreateClaim }
   /** Maintenance fence held elsewhere, or the delete failed; kept, claim committed. */
   | { kind: "busy"; claim: TopicCreateClaim; error?: unknown };
 
 export interface AbortTopicCreateClaimOptions {
+  /**
+   * Whether the claimed topic (current row) is still filed under the calling
+   * principal's workspace. Checked in the deciding transaction and inside the
+   * delete transaction; false → `moved`, nothing deleted. Default: always.
+   */
+  topicInScope?: (topic: TopicDto) => boolean;
   /** Passed to the delete cascade (embedded hosts, deterministic tests). */
   purgeLogs?: typeof purgeTopicLogs;
   /** Test seam: runs before the deciding transaction opens. */
@@ -89,7 +97,11 @@ function requireClaim(principalKey: string, requestId: string): TopicCreateClaim
   return claim;
 }
 
-function decide(principalKey: string, requestId: string): Decision {
+function decide(
+  principalKey: string,
+  requestId: string,
+  topicInScope: (topic: TopicDto) => boolean,
+): Decision {
   return db
     .transaction((): Decision => {
       const claim = getTopicCreateClaim(principalKey, requestId);
@@ -103,6 +115,7 @@ function decide(principalKey: string, requestId: string): Decision {
         flipCommittedTopicCreateClaimToAborted(principalKey, requestId);
         return { kind: "topic-missing", claim: requireClaim(principalKey, requestId) };
       }
+      if (!topicInScope(topic)) return { kind: "moved", claim };
       if (topicHasMessagesAfterClaim(claim)) return { kind: "has-messages", claim };
       const owner = ownerOf(topic);
       if (!owner || topic.kind === "manager" || topic.id === GENERAL_TOPIC_ID) {
@@ -124,7 +137,8 @@ export async function abortTopicCreateClaim(
   options: AbortTopicCreateClaimOptions = {},
 ): Promise<TopicCreateClaimAbortResult> {
   await options.beforeDecide?.();
-  const decision = decide(principalKey, requestId);
+  const topicInScope = options.topicInScope ?? (() => true);
+  const decision = decide(principalKey, requestId, topicInScope);
   if (decision.kind !== "delete") return decision;
   const { claim, topic, owner, maintenance } = decision;
   let cascadeStarted = false;
@@ -138,6 +152,10 @@ export async function abortTopicCreateClaim(
         const current = getTopicCreateClaim(principalKey, requestId);
         if (current?.state !== "committed" || current.topicId !== topic.id) {
           throw new TopicDeleteVetoedError(topic.id, "the create claim changed");
+        }
+        const live = getTopic(topic.id);
+        if (!live || !topicInScope(live)) {
+          throw new TopicDeleteVetoedError(topic.id, "the topic left the caller's workspace");
         }
         if (topicHasMessagesAfterClaim(current)) {
           throw new TopicDeleteVetoedError(topic.id, "messages arrived after the claim");
@@ -157,6 +175,8 @@ export async function abortTopicCreateClaim(
         { requestId, topicId: topic.id, reason: error.message },
         "otium link: claim abort kept the topic",
       );
+      const live = getTopic(topic.id);
+      if (live && !topicInScope(live)) return { kind: "moved", claim: current };
       return topicHasMessagesAfterClaim(current)
         ? { kind: "has-messages", claim: current }
         : { kind: "busy", claim: current, error };

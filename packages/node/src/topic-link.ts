@@ -33,9 +33,11 @@ import {
   NODE_ID,
   pruneTopicCreateClaims,
   recordTopicLinkNodeIdentity,
+  TOPIC_CREATE_CLAIM_PRUNE_BATCH,
   type TopicCreateClaim,
   type TopicDto,
   topicLinkDbEpoch,
+  topicLinkNodeIdentity,
   topicLinkPayloadHash,
   topicTombstoneHighWater,
 } from "@negotium/core/node-host";
@@ -218,6 +220,21 @@ export interface TopicLinkRequest {
   op: "create" | "derive";
   /** Computed by this node from the received body; never the host's value. */
   payloadHash: string;
+  /** Derive: the PATH source topic id (the body cannot name another one). */
+  sourceTopicId?: string;
+}
+
+/**
+ * A requestId exactly as sent: 1..200 chars, no leading/trailing whitespace
+ * (never trimmed — a trimmed id would alias two different keys).
+ */
+function validRequestId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_REQUEST_ID_LENGTH &&
+    value === value.trim()
+  );
 }
 
 /**
@@ -235,10 +252,18 @@ export function parseTopicLinkRequest(
   hashInput: Record<string, unknown>,
 ): TopicLinkRequest | Response | null {
   if (body.requestId === undefined || body.requestId === null) return null;
-  const requestId = typeof body.requestId === "string" ? body.requestId.trim() : "";
-  if (!requestId || requestId.length > MAX_REQUEST_ID_LENGTH) {
-    return linkError(400, "invalid_request_id", "requestId must be a non-empty string");
+  if (!validRequestId(body.requestId)) {
+    return linkError(
+      400,
+      "invalid_request_id",
+      "requestId must be 1-200 characters without leading or trailing whitespace",
+    );
   }
+  const requestId = body.requestId;
+  const sourceTopicId =
+    op === "derive" && typeof hashInput.sourceTopicId === "string"
+      ? hashInput.sourceTopicId
+      : undefined;
   const payloadHash = topicLinkPayloadHash(hashInput);
   if (typeof body.payloadHash === "string" && body.payloadHash !== payloadHash) {
     // Not a refusal: the node's own hash is the one it keys on. A mismatch
@@ -249,7 +274,13 @@ export function parseTopicLinkRequest(
       "otium link: host payloadHash differs from the node's",
     );
   }
-  return { principalKey: topicLinkPrincipalKey(req), requestId, op, payloadHash };
+  return {
+    principalKey: topicLinkPrincipalKey(req),
+    requestId,
+    op,
+    payloadHash,
+    ...(sourceTopicId !== undefined ? { sourceTopicId } : {}),
+  };
 }
 
 function hostCreateOf(claim: TopicCreateClaim) {
@@ -259,9 +290,10 @@ function hostCreateOf(claim: TopicCreateClaim) {
 /** Topic DTOs with `hostCreate` for the rooms this caller itself created. */
 export function withHostCreate<T extends Pick<TopicDto, "id">>(req: Request, topics: T[]): T[] {
   if (topics.length === 0) return topics;
+  maybePruneClaims();
   const claims = committedClaimsByTopic(
     topicLinkPrincipalKey(req),
-    topics.length === 1 ? [topics[0]?.id as string] : undefined,
+    topics.map((topic) => topic.id),
   );
   if (claims.size === 0) return topics;
   return topics.map((topic) => {
@@ -290,13 +322,25 @@ function claimedCreateResponse(
 }
 
 /** What an existing claim says about a repeated request. */
-function answerExistingClaim(claim: TopicCreateClaim, link: TopicLinkRequest): Response {
+function answerExistingClaim(
+  claim: TopicCreateClaim,
+  link: TopicLinkRequest,
+  req: Request,
+): Response {
   if (claim.state === "aborted") {
     return linkError(409, "request_aborted", "this requestId was aborted", {
       requestId: claim.requestId,
     });
   }
-  if (claim.op !== link.op || claim.payloadHash !== link.payloadHash) {
+  if (
+    claim.op !== link.op ||
+    claim.payloadHash !== link.payloadHash ||
+    // A derive claim is bound to the path source it was made on (legacy rows
+    // without a recorded source rely on the hash, which includes it).
+    (claim.op === "derive" &&
+      claim.sourceTopicId !== null &&
+      claim.sourceTopicId !== (link.sourceTopicId ?? null))
+  ) {
     return linkError(
       409,
       "request_id_conflict",
@@ -310,6 +354,19 @@ function answerExistingClaim(claim: TopicCreateClaim, link: TopicLinkRequest): R
       requestId: claim.requestId,
       topicId: claim.topicId,
     });
+  }
+  if (!recordInRequestScope(req, topic)) {
+    // The room is no longer filed under this caller's workspace: its claim
+    // grants nothing (no DTO, no replay).
+    return linkError(
+      409,
+      "claim_topic_moved",
+      "the topic created for this requestId left your workspace",
+      {
+        requestId: claim.requestId,
+        topicId: claim.topicId,
+      },
+    );
   }
   return claimedCreateResponse(topic, claim, true);
 }
@@ -326,14 +383,14 @@ function claimKey(link: { principalKey: string; requestId: string }): string {
  * Answer a request that already has a claim, or null when it has none yet
  * (the caller then applies its guard and calls {@link runClaimedTopicCreate}).
  */
-export function replayTopicCreateClaim(link: TopicLinkRequest): Response | null {
+export function replayTopicCreateClaim(link: TopicLinkRequest, req: Request): Response | null {
   if (inFlight.has(claimKey(link))) {
     return linkError(409, "request_in_progress", "this requestId is still being processed", {
       requestId: link.requestId,
     });
   }
   const claim = getTopicCreateClaim(link.principalKey, link.requestId);
-  return claim ? answerExistingClaim(claim, link) : null;
+  return claim ? answerExistingClaim(claim, link, req) : null;
 }
 
 /**
@@ -343,6 +400,7 @@ export function replayTopicCreateClaim(link: TopicLinkRequest): Response | null 
  */
 export async function runClaimedTopicCreate(
   link: TopicLinkRequest,
+  req: Request,
   create: (withinCreateTransaction: (topic: TopicDto) => void) => Promise<TopicDto | null>,
 ): Promise<Response | null> {
   const key = claimKey(link);
@@ -364,20 +422,21 @@ export async function runClaimedTopicCreate(
           op: link.op,
           payloadHash: link.payloadHash,
           topicId: created.id,
+          ...(link.sourceTopicId !== undefined ? { sourceTopicId: link.sourceTopicId } : {}),
         });
       });
     } catch (error) {
       // Another writer (a second process) committed the same key first: its
       // primary key rolled this topic back, so answer from its claim.
       const raced = getTopicCreateClaim(link.principalKey, link.requestId);
-      if (raced) return answerExistingClaim(raced, link);
+      if (raced) return answerExistingClaim(raced, link, req);
       throw error;
     }
     if (!topic) {
       // A creator that swallows its failure (derive returns null) may still
       // have lost the race to another process: answer from that claim.
       const raced = getTopicCreateClaim(link.principalKey, link.requestId);
-      if (raced) return answerExistingClaim(raced, link);
+      if (raced) return answerExistingClaim(raced, link, req);
       return null;
     }
     if (!claim) throw new Error("topic create finished without recording its claim");
@@ -387,12 +446,17 @@ export async function runClaimedTopicCreate(
   }
 }
 
+/**
+ * Bounded retention sweep, from the create, list and claim routes (so a node
+ * that stops creating still ages its claims out). At most one batch per call;
+ * a full batch lets the next call continue instead of waiting an hour.
+ */
 function maybePruneClaims(): void {
   const now = Date.now();
   if (now - lastPrune < CLAIM_PRUNE_INTERVAL_MS) return;
   lastPrune = now;
   try {
-    pruneTopicCreateClaims(now);
+    if (pruneTopicCreateClaims(now) >= TOPIC_CREATE_CLAIM_PRUNE_BATCH) lastPrune = 0;
   } catch (error) {
     logger.warn({ error }, "otium link: claim prune failed");
   }
@@ -400,17 +464,16 @@ function maybePruneClaims(): void {
 
 // ── read/recovery routes ──────────────────────────────────────────────────
 
-let identityRecorded = false;
-
 /**
- * Stamp this process's identity into the store once, on the first
- * authenticated request (not at handler construction: an embedding host may
- * build the handler before it configures storage).
+ * Stamp this process's identity into the store on authenticated requests (not
+ * at handler construction: an embedding host may build the handler before it
+ * configures storage). Checked against the CURRENT store every time — one
+ * indexed read — so a store swapped in-process (a new DB handle) is stamped
+ * too; the write happens only when the stored identity differs.
  */
 export function initializeTopicLinkIdentity(): void {
-  if (identityRecorded) return;
+  if (topicLinkNodeIdentity() === NODE_ID) return;
   recordTopicLinkNodeIdentity(NODE_ID);
-  identityRecorded = true;
 }
 
 function currentNodeId(): string {
@@ -474,13 +537,19 @@ function claimView(req: Request, requestId: string) {
     dbEpoch: topicLinkDbEpoch(),
     requestId,
   };
+  maybePruneClaims();
   if (!claim) return { ...base, state: "none" as const };
+  const topic = claim.topicId ? getTopic(claim.topicId) : null;
+  // Present = exists AND still filed under this caller's workspace; a room
+  // that left it reads as not present plus `topicMoved` (never its DTO).
+  const inScope = topic !== null && recordInRequestScope(req, topic);
   return {
     ...base,
     state: claim.state,
     op: claim.op,
     topicId: claim.topicId,
-    ...(claim.topicId ? { topicPresent: getTopic(claim.topicId) !== null } : {}),
+    ...(claim.topicId ? { topicPresent: inScope } : {}),
+    ...(topic && !inScope ? { topicMoved: true } : {}),
     createdAt: claim.createdAt,
     updatedAt: claim.updatedAt,
   };
@@ -512,7 +581,13 @@ async function abortClaim(req: Request, requestId: string): Promise<Response> {
   try {
     // One BEGIN IMMEDIATE decides the claim's state and writes what the abort
     // needs (fence / flip / maintenance fence); see core `claim-abort.ts`.
-    result = await abortTopicCreateClaim(principalKey, requestId, topicLinkAbortTestHooks);
+    result = await abortTopicCreateClaim(principalKey, requestId, {
+      ...topicLinkAbortTestHooks,
+      // Re-verified inside the deciding transaction and again right before
+      // the delete: a room that left this caller's workspace is never deleted
+      // through the caller's old claim.
+      topicInScope: (topic) => recordInRequestScope(req, topic),
+    });
   } finally {
     inFlight.delete(key);
   }
@@ -530,6 +605,13 @@ async function abortClaim(req: Request, requestId: string): Promise<Response> {
         409,
         "claim_topic_has_messages",
         "the topic has messages written after its creation; it is not deleted automatically",
+        { requestId, topicId },
+      );
+    case "moved":
+      return linkError(
+        409,
+        "claim_topic_moved",
+        "the topic created for this requestId left your workspace; it is not deleted",
         { requestId, topicId },
       );
     case "protected":
@@ -612,9 +694,13 @@ export async function handleTopicLinkRoute(
   }
   const claimMatch = runtimePath.match(/^\/topic-claims\/([^/]+)(\/abort)?$/);
   if (claimMatch) {
-    const requestId = decodeURIComponent(claimMatch[1] as string).trim();
-    if (!requestId || requestId.length > MAX_REQUEST_ID_LENGTH) {
-      return linkError(400, "invalid_request_id", "requestId must be a non-empty string");
+    const requestId = decodeURIComponent(claimMatch[1] as string);
+    if (!validRequestId(requestId)) {
+      return linkError(
+        400,
+        "invalid_request_id",
+        "requestId must be 1-200 characters without leading or trailing whitespace",
+      );
     }
     if (!claimMatch[2] && req.method === "GET") return Response.json(claimView(req, requestId));
     if (claimMatch[2] && req.method === "POST") return abortClaim(req, requestId);

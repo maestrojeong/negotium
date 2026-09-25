@@ -5,9 +5,9 @@ import { GENERAL_TOPIC_ID } from "#platform/constants";
 import { logger } from "#platform/logger";
 import { db } from "#storage/forum-db";
 import { registerStorageSchemaInitializer } from "#storage/storage-host";
-// Side effect: registers the claim/tombstone schema and the api_topics
-// tombstone triggers wherever topics can be written (topic-link PR7).
-import "#storage/topic-link-records";
+// Also registers the claim/tombstone schema and the api_topics tombstone and
+// scope-immutability triggers wherever topics can be written (topic-link PR7).
+import { repairUnscopedOtiumTopicScopes } from "#storage/topic-link-records";
 import type { AgentKind, EffortLevel } from "#types";
 import type {
   AiMode,
@@ -557,13 +557,21 @@ export function stampUnscopedOtiumTopics(scope: string): number {
 
   let stamped = 0;
   db.transaction(() => {
-    stamped = Number(
-      db
-        .query(
-          "UPDATE api_topics SET surface_scope = ? WHERE surface = 'otium' AND surface_scope IS NULL",
-        )
-        .run(normalized).changes ?? 0,
+    // Through the audited scope repair: an otium room's scope is otherwise
+    // immutable (topic-link review fix 6), and its create claims must be
+    // re-bound to the workspace in the same transaction.
+    const result = repairUnscopedOtiumTopicScopes(
+      normalized,
+      "m9-stamp",
+      "file pre-existing Otium rooms under the resolved workspace",
     );
+    stamped = result.stamped;
+    if (result.skipped.length > 0) {
+      logger.warn(
+        { scope: normalized, skipped: result.skipped },
+        "api_topics: surface scope stamp skipped rooms",
+      );
+    }
     db.query("INSERT INTO api_schema_migrations (key, applied_at) VALUES (?, ?)").run(
       SURFACE_SCOPE_STAMP_MIGRATION,
       new Date().toISOString(),
@@ -927,7 +935,14 @@ export function upsertTopic(t: TopicDto): void {
        -- A room's workspace is fixed at creation (M-1). COALESCE, not
        -- assignment: an update may fill in a scope that was unknown when the
        -- room was created, but may never move a room to another workspace.
-       surface_scope = COALESCE(api_topics.surface_scope, excluded.surface_scope),
+       -- An otium room is stricter (topic-link review fix 6): its scope never
+       -- changes through an upsert, not even NULL -> scope; only the audited
+       -- repair (repairOtiumTopicScope / the M-9 stamp) may assign it.
+       surface_scope = CASE
+         WHEN excluded.surface = 'otium' OR api_topics.surface = 'otium'
+           THEN api_topics.surface_scope
+         ELSE COALESCE(api_topics.surface_scope, excluded.surface_scope)
+       END,
        subagent_report_mode = excluded.subagent_report_mode,
        -- Who asked for the derive is a fact about creation; a later update
        -- that omits it must not erase it.
