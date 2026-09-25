@@ -685,6 +685,56 @@ describe("delete-manager: durability order, journal and exit 9", () => {
   });
 });
 
+describe("apply: the live re-plan inside the transaction and the offline stop check", () => {
+  test("a message arriving after the journal row (inside the window) is drift inside the transaction", async () => {
+    const pair = duplicatePair();
+    const r = await deleteApply(pair, {
+      hooks: { faults: { afterPrepared: () => addMessage(pair.dup, pair.owner) } },
+    });
+    expect(r.code).toBe(ADMIN_EXIT.drift);
+    expect(r.err).toContain("NOT APPLIED");
+    expect(exists(pair.dup)).toBe(true);
+    expect(journalPhase(runIdFrom(r.err))).toBe("aborted");
+  });
+
+  test("scope-repair: a row changed after the journal row is drift inside the transaction", async () => {
+    const scope = freshScope();
+    const room = seedTopic({ owners: [freshUser()], scope: null, kind: "agent" });
+    const report = makeReport({ mapped: { [room]: "r" }, scopes: [scope] });
+    const r = await run(
+      [
+        "scope-repair",
+        "--topic",
+        room,
+        "--expect-scope",
+        scope,
+        ...report.args,
+        "--apply",
+        "--backup-dir",
+        privateDir("b"),
+      ],
+      { faults: { afterPrepared: () => addMessage(room, "x") } },
+    );
+    expect(r.code).toBe(ADMIN_EXIT.drift);
+    expect(scopeOf(room)).toBeNull();
+  });
+
+  test("assertNodeStoppedOffline refuses a live process lease before core is loaded", async () => {
+    const { assertNodeStoppedOffline } = await import("@/commands/admin/apply-env");
+    const role = `adapter-${randomUUID()}`;
+    core.db
+      .query(
+        "INSERT INTO runtime_process_leases (role, owner_id, pid, started_at, heartbeat_at) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run(role, `owner-${randomUUID()}`, process.pid, Date.now(), Date.now());
+    try {
+      expect(() => assertNodeStoppedOffline(paths, core.db as never)).toThrow(role);
+    } finally {
+      core.db.query("DELETE FROM runtime_process_leases WHERE role = ?").run(role);
+    }
+  });
+});
+
 describe("scope-repair: only through adminRepairOtiumTopicScope, justified by the report", () => {
   function repairArgs(
     topics: string[],
