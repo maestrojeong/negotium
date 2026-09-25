@@ -40,7 +40,7 @@ writeFileSync(
   join(codexAuthDir, "models_cache.json"),
   JSON.stringify({
     client_version: BUNDLED_CODEX_VERSION,
-    models: [{ slug: "gpt-5.6-sol", multi_agent_version: "v1" }],
+    models: [{ slug: "gpt-6-sol", multi_agent_version: "v1" }],
   }),
   "utf8",
 );

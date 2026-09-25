@@ -20,7 +20,7 @@ function seedTopic(): string {
     kind: "agent",
     agent: "codex",
     aiMode: "always",
-    defaultModel: "gpt-5.6-luna",
+    defaultModel: "gpt-6-luna",
     defaultEffort: "medium",
     participants: [{ userId: USER, role: "owner" }],
     createdAt: now,

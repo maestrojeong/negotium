@@ -22,7 +22,7 @@ function seedTopic(
     kind: "agent",
     agent: "codex",
     aiMode: "always",
-    defaultModel: "gpt-5.6-luna",
+    defaultModel: "gpt-6-luna",
     defaultEffort: "medium",
     participants: [{ userId: USER, role: "owner" }],
     surface: "otium",
@@ -50,7 +50,7 @@ describe("updateTopicSettings", () => {
     expect(updated.title).toBe("Renamed Room");
     // An absent agent/model/effort must not be read as "reset to defaults".
     expect(updated.agent).toBe("codex");
-    expect(updated.defaultModel).toBe("gpt-5.6-luna");
+    expect(updated.defaultModel).toBe("gpt-6-luna");
     expect(updated.defaultEffort).toBe("medium");
     expect(getTopic(topic.id)?.title).toBe("Renamed Room");
   });
@@ -60,9 +60,9 @@ describe("updateTopicSettings", () => {
     if (!topic) throw new Error("seed failed");
     const updated = updateTopicSettings({ topicId: topic.id, agent: "claude" });
     expect(updated.agent).toBe("claude");
-    // `gpt-5.6-luna` is not selectable on claude, so carrying it over would
+    // `gpt-6-luna` is not selectable on claude, so carrying it over would
     // persist a token the registry rejects on the very next turn.
-    expect(updated.defaultModel).not.toBe("gpt-5.6-luna");
+    expect(updated.defaultModel).not.toBe("gpt-6-luna");
   });
 
   test("accepts a model and effort the chosen agent's registry knows", () => {
@@ -108,7 +108,7 @@ describe("updateTopicSettings", () => {
   test("clears the per-topic override that would otherwise shadow the new default", () => {
     const topic = seedTopic();
     if (!topic) throw new Error("seed failed");
-    setApiTopicConfig(topic.id, { model: "gpt-5.6-sol", effort: "max", mcp: ["wiki"] });
+    setApiTopicConfig(topic.id, { model: "gpt-6-sol", effort: "max", mcp: ["wiki"] });
     updateTopicSettings({ topicId: topic.id, defaultModel: "gpt-5.6-terra" });
     const config = getApiTopicConfig(topic.id);
     expect(config?.model).toBeUndefined();

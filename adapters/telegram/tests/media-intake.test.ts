@@ -8,7 +8,7 @@ function topic(): TopicDto {
     title: "topic",
     kind: "agent",
     agent: "codex",
-    defaultModel: "gpt-5.6-luna",
+    defaultModel: "gpt-6-luna",
     defaultEffort: "medium",
     participants: [{ userId: "owner", role: "owner" }],
     createdAt: new Date(0).toISOString(),

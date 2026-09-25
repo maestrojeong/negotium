@@ -36,12 +36,12 @@ test("explicit execution fields remain independent of memoryKey", () => {
     userId: USER,
     memoryKey: `Persona ${randomUUID()}`,
     agent: "codex",
-    model: "gpt-5.6-luna",
+    model: "gpt-6-luna",
     effort: "high",
   });
 
   expect(topic.agent).toBe("codex");
-  expect(topic.defaultModel).toBe("gpt-5.6-luna");
+  expect(topic.defaultModel).toBe("gpt-6-luna");
   expect(topic.defaultEffort).toBe("high");
 });
 

@@ -102,23 +102,20 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
   {
     model: "gpt-6-astra",
     agent: "codex",
-    description:
-      "Newest OpenAI flagship; replaces gpt-5.6-sol as Codex's highest-capability route.",
+    description: "Newest OpenAI flagship; Codex's highest-capability route.",
     intelligenceTier: "fable",
-    routingSummary:
-      "flagship reasoning; 2x sol's input/cache cost and 1.67x its output cost; matches Fable 5.1 pricing",
+    routingSummary: "flagship reasoning; 5x gpt-6-sol's token cost; matches Fable 5.1 pricing",
     accessCost: CODEX_PRO_20X_COST,
     marginalTokenCost:
       "Codex credits (OpenAI API rate): $10/M uncached input, $1/M cached input, $12.50/M cache write, $50/M output",
-    estimatedUsage: `Released 2026-09-03; became Codex CLI's bundled default in v0.153.4 (2026-09-05). Local message-count/quota-weight ranges not yet published as of the last catalog check — expect a quota weight above gpt-5.6-sol given the higher per-token cost. ${CODEX_COMMUNITY_WEEKLY}`,
+    estimatedUsage: `Released 2026-09-03; became Codex CLI's bundled default in v0.153.4 (2026-09-05). Local message-count/quota-weight ranges not yet published as of the last catalog check — expect a quota weight above gpt-6-sol given the higher per-token cost. ${CODEX_COMMUNITY_WEEKLY}`,
   },
   {
     model: "gpt-6-sol",
     agent: "codex",
     description: "GPT-6 generation Sol route (2026-09-22) for demanding coding and agentic work.",
     intelligenceTier: "opus",
-    routingSummary:
-      "demanding coding work; about half as many mistakes as gpt-5.6-sol at half the price",
+    routingSummary: "demanding coding work; replaces the retired gpt-5.6-sol at half the price",
     accessCost: CODEX_PRO_20X_COST,
     marginalTokenCost:
       "Codex credits (OpenAI API rate): $2/M uncached input, $0.20/M cached input (assumed), $10/M output",
@@ -127,25 +124,13 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
   {
     model: "gpt-6-luna",
     agent: "codex",
-    description: "GPT-6 generation Luna route (2026-09-22): fast, high-volume, lowest cost.",
+    description: "Default Codex route (GPT-6 Luna, 2026-09-22): fast, high-volume, lowest cost.",
     intelligenceTier: "sonnet",
     routingSummary: "fast high-volume work; cheapest Codex route",
     accessCost: CODEX_PRO_20X_COST,
     marginalTokenCost:
       "Codex credits (OpenAI API rate): $0.10/M uncached input, $0.01/M cached input (assumed), $0.50/M output",
     estimatedUsage: `Released 2026-09-22; local message-count/quota-weight ranges not yet published. ${CODEX_COMMUNITY_WEEKLY}`,
-  },
-  {
-    model: "gpt-5.6-sol",
-    agent: "codex",
-    description:
-      "High-capability Codex route for demanding agentic coding work; demoted below gpt-6-astra.",
-    intelligenceTier: "opus",
-    routingSummary:
-      "demanding coding work; 5x Codex quota cost; now second-tier behind gpt-6-astra",
-    accessCost: CODEX_PRO_20X_COST,
-    marginalTokenCost: "Codex credits: $5/M uncached input, $0.50/M cached input, $30/M output",
-    estimatedUsage: `Official Pro 20x range: 300–1,800 local messages per 5 hours; quota weight 5x Luna. ${CODEX_COMMUNITY_WEEKLY}`,
   },
   {
     model: "gpt-5.6-terra",
@@ -155,17 +140,7 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
     routingSummary: "complex coding and reasoning; 2.5x Codex quota cost",
     accessCost: CODEX_PRO_20X_COST,
     marginalTokenCost: "Codex credits: $2.50/M uncached input, $0.25/M cached input, $15/M output",
-    estimatedUsage: `Official Pro 20x range: 400–2,200 local messages per 5 hours; quota weight 2.5x Luna. ${CODEX_COMMUNITY_WEEKLY}`,
-  },
-  {
-    model: "gpt-5.6-luna",
-    agent: "codex",
-    description: "Default Codex route with strong everyday coding intelligence.",
-    intelligenceTier: "sonnet",
-    routingSummary: "everyday coding default; lowest Codex quota cost (1x)",
-    accessCost: CODEX_PRO_20X_COST,
-    marginalTokenCost: "Codex credits: $1/M uncached input, $0.10/M cached input, $6/M output",
-    estimatedUsage: `Official Pro 20x range: 1,000–5,600 local messages per 5 hours; lowest Codex quota weight (1x). ${CODEX_COMMUNITY_WEEKLY}`,
+    estimatedUsage: `Official Pro 20x range: 400–2,200 local messages per 5 hours; quota weight 2.5x the retired GPT-5.6 Luna. ${CODEX_COMMUNITY_WEEKLY}`,
   },
   {
     model: "fable",
@@ -274,6 +249,12 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
 ];
 
 const SELECTABLE_MODEL_ALIASES: Readonly<Record<string, string>> = {
+  // GPT-6 Sol/Luna (2026-09-22) replace the GPT-5.6 tiers of the same name at half the price.
+  // Only the GPT-6 route is selectable; the retired ids resolve to it, so stored topic configs,
+  // cron rows and explicit requests keep working without a second, duplicate Sol/Luna. Terra has
+  // no GPT-6 successor and stays as `gpt-5.6-terra`.
+  "gpt-5.6-sol": "gpt-6-sol",
+  "gpt-5.6-luna": "gpt-6-luna",
   kimi: "kimi-k3",
   "kimi-pro": "kimi-k3",
   "kimi-code": "kimi-k2.7-code",
@@ -364,7 +345,7 @@ export function resolveModelForAgent(
  * Default model for unattended background workers (compaction, memory
  * archiving, and similar fixed-purpose programmatic turns) — Codex prefers
  * the stronger `gpt-5.6-terra` here over its cheap interactive default
- * (`gpt-5.6-luna`), since nothing is waiting on the response in real time.
+ * (`gpt-6-luna`), since nothing is waiting on the response in real time.
  * Claude and Maestro keep their normal registry defaults (`sonnet` /
  * `deepseek-pro`).
  */
@@ -428,14 +409,14 @@ export function resolveCompactionExecution(
 export const FALLBACK_ORDER: Record<AgentKind, { agent: AgentKind; model: string }[]> = {
   claude: [
     { agent: "maestro", model: "deepseek-pro" },
-    { agent: "codex", model: "gpt-5.6-luna" },
+    { agent: "codex", model: "gpt-6-luna" },
   ],
   codex: [
     { agent: "maestro", model: "deepseek-pro" },
     { agent: "claude", model: "sonnet" },
   ],
   maestro: [
-    { agent: "codex", model: "gpt-5.6-luna" },
+    { agent: "codex", model: "gpt-6-luna" },
     { agent: "claude", model: "sonnet" },
   ],
 };

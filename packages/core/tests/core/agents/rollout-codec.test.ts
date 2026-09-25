@@ -663,7 +663,7 @@ describe("writeCodexRollout", () => {
     const { writeCodexRollout } = await import("#agents/rollout/codex");
     const result = writeCodexRollout({
       cwd: TMP_CWD,
-      model: "gpt-5.6-sol",
+      model: "gpt-6-sol",
       effort: "high",
       pairs: [{ userText: "model?", assistantText: "sol" }],
     });
@@ -673,9 +673,9 @@ describe("writeCodexRollout", () => {
       .split("\n")
       .map((line) => JSON.parse(line));
     const turn = entries.find((item) => item.type === "turn_context");
-    expect(turn?.payload?.model).toBe("gpt-5.6-sol");
+    expect(turn?.payload?.model).toBe("gpt-6-sol");
     expect(turn?.payload?.collaboration_mode?.settings).toMatchObject({
-      model: "gpt-5.6-sol",
+      model: "gpt-6-sol",
       reasoning_effort: "high",
     });
     expect(turn?.payload?.current_date).toBe(

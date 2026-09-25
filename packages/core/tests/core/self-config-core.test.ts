@@ -45,8 +45,7 @@ function seedTopic(agent: "claude" | "codex" | "maestro" = "codex"): string {
     id,
     title: `Self Config ${id}`,
     agent: agent,
-    defaultModel:
-      agent === "claude" ? "sonnet" : agent === "codex" ? "gpt-5.6-luna" : "deepseek-pro",
+    defaultModel: agent === "claude" ? "sonnet" : agent === "codex" ? "gpt-6-luna" : "deepseek-pro",
     defaultEffort: agent === "codex" ? "medium" : "high",
     participants: [{ userId: USER, role: "owner" }],
     createdAt: now,
@@ -81,13 +80,13 @@ describe("self-config core", () => {
       if (event.topicId === topicId) events.push(event.type);
     });
 
-    const result = setSelfConfigModel({ topicId, userId: USER }, "gpt-5.6-sol");
+    const result = setSelfConfigModel({ topicId, userId: USER }, "gpt-6-sol");
     unsubscribe();
 
     expect(result.isError).toBeUndefined();
-    expect(getApiTopicConfig(topicId)?.model).toBe("gpt-5.6-sol");
+    expect(getApiTopicConfig(topicId)?.model).toBe("gpt-6-sol");
     expect(getVisibleTopics().find((topic) => topic.id === topicId)?.effectiveModel).toBe(
-      "gpt-5.6-sol",
+      "gpt-6-sol",
     );
     expect(getTopicSessionId(topicId)).toBe("existing-codex-thread");
     expect(events).toContain("topic-updated");
@@ -100,7 +99,7 @@ describe("self-config core", () => {
     const result = getSelfConfigModel({ topicId, userId: USER });
 
     expect(result.isError).toBeUndefined();
-    expect(result.text).toContain("Model (agent=codex): default (gpt-5.6-luna)");
+    expect(result.text).toContain("Model (agent=codex): default (gpt-6-luna)");
   });
 
   test("set_model rejects a model owned by another agent even when Codex accepts open IDs", () => {
@@ -348,7 +347,7 @@ describe("self-config core", () => {
     process.env.DEEPSEEK_API_KEY = "test-key";
     try {
       const topicId = seedTopic("codex");
-      setApiTopicConfig(topicId, { model: "gpt-5.6-luna", effort: "high" });
+      setApiTopicConfig(topicId, { model: "gpt-6-luna", effort: "high" });
       setTopicSessionId(topicId, "codex-session-id", { reason: "test" });
 
       const result = setSelfConfigAgent(

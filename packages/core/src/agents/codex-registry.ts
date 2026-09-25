@@ -10,14 +10,16 @@ const VALID_EFFORTS = new Set<EffortLevel>(CODEX_EFFORT_VALUES);
 
 // Codex CLI's own bundled default became gpt-6-astra as of v0.153.4
 // (2026-09-05); before that it was gpt-5.6-sol (`codex exec` 2026-07-10 →
-// "model: gpt-5.6-sol"). We deliberately default to gpt-5.6-luna — the
-// cheapest/fastest GPT-5.6 tier — for a general always-on assistant where most
-// queries are light. Heavier work escalates to terra/sol/astra via set_model. This
+// "model: gpt-5.6-sol"). We deliberately default to gpt-6-luna — the
+// cheapest/fastest GPT-6 tier — for a general always-on assistant where most
+// queries are light. Heavier work escalates to terra/sol/astra via set_model. The
+// GPT-5.6 Sol/Luna ids are retired aliases of gpt-6-sol/gpt-6-luna (see
+// canonicalModelId), so a stored gpt-5.6-luna still runs as gpt-6-luna. This
 // value is passed explicitly to the SDK (see event-processor resolveDefaultModel),
 // so the footer and the actual model stay in sync.
 export const codexRegistry: AgentRegistry = {
   kind: "codex",
-  defaultModel: "gpt-5.6-luna",
+  defaultModel: "gpt-6-luna",
   // defaultEffort intentionally omitted — Codex SDK treats absence as
   // "reasoning off". Setting "high"/etc. would silently flip on reasoning.
 
@@ -27,7 +29,7 @@ export const codexRegistry: AgentRegistry = {
 
   validateModel(s) {
     // Codex doesn't publish a closed model list and OpenAI ships new IDs
-    // (gpt-6-astra, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, o3, ...) frequently. Best-effort: accept any
+    // (gpt-6-astra, gpt-6-sol, gpt-5.6-terra, gpt-6-luna, o3, ...) frequently. Best-effort: accept any
     // non-empty string. Bad IDs surface at SDK call time with a clear error.
     return typeof s === "string" && s.length > 0;
   },

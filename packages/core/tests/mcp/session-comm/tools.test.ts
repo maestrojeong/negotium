@@ -190,7 +190,7 @@ function otiumRoom(title: string, scope: string, patch: Record<string, unknown> 
     title,
     kind: "agent" as const,
     agent: "codex" as const,
-    defaultModel: "gpt-5.6-luna",
+    defaultModel: "gpt-6-luna",
     defaultEffort: "medium" as const,
     aiMode: "always" as const,
     aiMention: false,

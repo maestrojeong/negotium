@@ -467,7 +467,7 @@ test("runtime gateway resets a manager topic to the node's own FALLBACK_AGENT wi
       body: JSON.stringify({
         v: NODE_RUNTIME_CONTRACT_VERSION,
         agent: "codex",
-        model: "gpt-5.6-luna",
+        model: "gpt-6-luna",
         effort: "xhigh",
         agentLocked: true,
         modelLocked: true,
@@ -1593,7 +1593,7 @@ test("topic usage route returns exact totals only to a participant", async () =>
     userId,
     topic.title,
     { inputTokens: 120, outputTokens: 30, cacheReadInputTokens: 20, costUsd: 0.5 },
-    { topicId: topic.id, agent: "codex", model: "gpt-5.6-luna" },
+    { topicId: topic.id, agent: "codex", model: "gpt-6-luna" },
   );
 
   const response = await handler(
@@ -1736,16 +1736,16 @@ test("POST model applies a picker selection without a public agent argument", as
   const response = await handler(
     request(`/topics/${encodeURIComponent(topic.id)}/model`, {
       method: "POST",
-      body: JSON.stringify({ userId, model: "gpt-5.6-sol" }),
+      body: JSON.stringify({ userId, model: "gpt-6-sol" }),
     }),
   );
   const body = (await response?.json()) as { model?: string; result?: string };
 
   expect(response?.status).toBe(200);
-  expect(body.model).toBe("gpt-5.6-sol");
+  expect(body.model).toBe("gpt-6-sol");
   expect(body.result).not.toContain("codex");
   expect(getApiTopicConfig(topic.id)).toMatchObject({
-    model: "gpt-5.6-sol",
+    model: "gpt-6-sol",
     agentLocked: true,
     modelLocked: true,
   });

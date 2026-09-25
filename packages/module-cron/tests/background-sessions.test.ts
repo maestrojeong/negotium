@@ -22,7 +22,7 @@ function fixture() {
     title: "Daily operations",
     kind: "agent",
     agent: "codex",
-    defaultModel: "gpt-5.6-luna",
+    defaultModel: "gpt-6-luna",
     defaultEffort: "medium",
     aiMode: "always",
     participants: [{ userId: ownerUserId, role: "owner" }],

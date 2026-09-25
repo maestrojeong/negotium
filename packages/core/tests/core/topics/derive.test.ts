@@ -644,7 +644,7 @@ describe("createDerivedTopic", () => {
         title: sourceTitle,
         kind: "agent",
         agent,
-        defaultModel: agent === "codex" ? "gpt-5.6-luna" : "deepseek-pro",
+        defaultModel: agent === "codex" ? "gpt-6-luna" : "deepseek-pro",
         defaultEffort: "medium",
         participants: [{ userId, role: "owner" }],
         createdAt: now,

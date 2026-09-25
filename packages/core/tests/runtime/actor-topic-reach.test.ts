@@ -12,7 +12,7 @@ function room(patch: Partial<TopicDto> = {}): TopicDto {
     title: `reach ${randomUUID().slice(0, 8)}`,
     kind: "agent",
     agent: "codex",
-    defaultModel: "gpt-5.6-luna",
+    defaultModel: "gpt-6-luna",
     defaultEffort: "medium",
     aiMode: "always",
     participants: [{ userId: "local", role: "owner" }],

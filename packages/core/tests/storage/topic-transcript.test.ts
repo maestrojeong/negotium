@@ -39,7 +39,7 @@ describe("topic archive transcript formatting", () => {
         text: "Done.",
         query_id: "q1",
         agent_type: "codex",
-        model: "gpt-5.6-luna",
+        model: "gpt-6-luna",
         attachments: null,
         usage: JSON.stringify({ input: 10, output: 4 }),
         deleted: 0,

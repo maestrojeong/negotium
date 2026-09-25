@@ -1046,7 +1046,7 @@ describe("turn footer", () => {
       const message = aiMessage(topic.id, "checking the repository", {
         queryId: "intermediate-footer-query",
         agentType: "codex",
-        model: "gpt-5.6-luna",
+        model: "gpt-6-luna",
       });
 
       runtimeBus().broadcastMessage(topic.id, message);
@@ -1110,7 +1110,7 @@ describe("turn footer", () => {
       const message = aiMessage(topic.id, "status before final tool", {
         queryId: "late-footer-query",
         agentType: "codex",
-        model: "gpt-5.6-luna",
+        model: "gpt-6-luna",
       });
       runtimeBus().broadcastMessage(topic.id, message);
       await waitFor(() => fake.callsFor(chatId).some((call) => call.text.startsWith(message.text)));
@@ -1121,7 +1121,7 @@ describe("turn footer", () => {
 
       await waitFor(() => fake.editCalls.length === 1);
       expect(fake.editCalls[0]).toEqual({
-        text: "status before final tool\n\n<i>codex · gpt-5.6-luna · ↑12 ↓3 tok</i>",
+        text: "status before final tool\n\n<i>codex · gpt-6-luna · ↑12 ↓3 tok</i>",
         opts: {
           chat_id: chatId,
           message_id: expect.any(Number),
@@ -1143,7 +1143,7 @@ describe("turn footer", () => {
       const message = aiMessage(topic.id, "answer before usage", {
         queryId: "footer-edit-retry-query",
         agentType: "codex",
-        model: "gpt-5.6-luna",
+        model: "gpt-6-luna",
       });
       runtimeBus().broadcastMessage(topic.id, message);
       await waitFor(() => fake.callsFor(chatId).some((call) => call.text === message.text));
@@ -1158,7 +1158,7 @@ describe("turn footer", () => {
       await waitFor(() => fake.editCalls.length === 2);
       expect(fake.callsFor(chatId)).toHaveLength(sendsBeforePatch);
       expect(fake.editCalls[1]?.text).toBe(
-        "answer before usage\n\n<i>codex · gpt-5.6-luna · ↑12 ↓3 tok</i>",
+        "answer before usage\n\n<i>codex · gpt-6-luna · ↑12 ↓3 tok</i>",
       );
     } finally {
       adapter.stop();
@@ -1177,7 +1177,7 @@ describe("turn footer", () => {
       const message = aiMessage(topic.id, "answer before deletion", {
         queryId: "footer-deleted-topic-query",
         agentType: "codex",
-        model: "gpt-5.6-luna",
+        model: "gpt-6-luna",
       });
       runtimeBus().broadcastMessage(topic.id, message);
       await waitFor(() => fake.callsFor(chatId).some((call) => call.text === message.text));

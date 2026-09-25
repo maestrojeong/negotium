@@ -26,7 +26,7 @@ function seedTopic(agent: "codex" | "maestro" = "codex"): string {
     kind: "agent",
     agent,
     aiMode: "always",
-    defaultModel: agent === "codex" ? "gpt-5.6-luna" : "deepseek-pro",
+    defaultModel: agent === "codex" ? "gpt-6-luna" : "deepseek-pro",
     defaultEffort: "medium",
     participants: [{ userId: USER, role: "owner" }],
     createdAt: now,
@@ -49,9 +49,7 @@ describe("topic model picker", () => {
       "gpt-6-astra",
       "gpt-6-sol",
       "gpt-6-luna",
-      "gpt-5.6-sol",
       "gpt-5.6-terra",
-      "gpt-5.6-luna",
       "fable",
       "opus",
       "sonnet",
@@ -62,15 +60,22 @@ describe("topic model picker", () => {
       "deepseek-pro",
       "deepseek-flash",
     ]);
-    expect(selectableModel("GPT-5.6-SOL")?.model).toBe("gpt-5.6-sol");
+    // GPT-5.6 Sol/Luna are retired: they resolve to the GPT-6 route, never to a duplicate entry.
+    expect(selectableModel("GPT-5.6-SOL")?.model).toBe("gpt-6-sol");
+    expect(selectableModel("gpt-5.6-sol")?.model).toBe("gpt-6-sol");
+    expect(selectableModel("gpt-5.6-luna")?.model).toBe("gpt-6-luna");
+    expect(SELECTABLE_MODELS.some(({ model }) => model === "gpt-5.6-sol")).toBe(false);
+    expect(SELECTABLE_MODELS.some(({ model }) => model === "gpt-5.6-luna")).toBe(false);
     expect(selectableModel("gpt-6-astra")?.intelligenceTier).toBe("fable");
-    expect(selectableModel("gpt-5.6-sol")?.intelligenceTier).toBe("opus");
+    expect(selectableModel("gpt-6-sol")?.intelligenceTier).toBe("opus");
+    // Terra has no GPT-6 successor, so it stays selectable.
+    expect(selectableModel("gpt-5.6-terra")?.model).toBe("gpt-5.6-terra");
     expect(selectableModel("gpt-5.6-terra")?.intelligenceTier).toBe("opus");
     expect(selectableModel("sonnet")?.intelligenceTier).toBe("sonnet");
-    expect(selectableModel("gpt-5.6-luna")?.accessCost).toContain("$200/month");
-    expect(selectableModel("gpt-5.6-luna")?.marginalTokenCost).toContain("$1/M");
+    expect(selectableModel("gpt-6-luna")?.accessCost).toContain("$200/month");
+    expect(selectableModel("gpt-6-luna")?.marginalTokenCost).toContain("$0.10/M");
     expect(selectableModel("opus")?.marginalTokenCost).toContain("$20/M output");
-    expect(selectableModel("gpt-5.6-luna")?.estimatedUsage).toContain("1,000–5,600");
+    expect(selectableModel("gpt-6-luna")?.estimatedUsage).toContain("2026-09-22");
     expect(selectableModel("fable")?.estimatedUsage).toContain("explicit user request");
     expect(selectableModel("deepseek-pro")?.marginalTokenCost).toContain("$0.435/M");
     expect(selectableModel("kimi")?.model).toBe("kimi-k3");
@@ -93,19 +98,31 @@ describe("topic model picker", () => {
     const topicId = seedTopic();
     setTopicSessionId(topicId, "old-codex-session", { reason: "test", agent: "codex" });
 
-    const result = switchTopicModel({ topicId, userId: USER, model: "gpt-5.6-sol" });
+    const result = switchTopicModel({ topicId, userId: USER, model: "gpt-6-sol" });
 
     expect(result).toEqual({
       ok: true,
-      model: "gpt-5.6-sol",
-      text: "Model set to 'gpt-5.6-sol'. Applies from the next turn.",
+      model: "gpt-6-sol",
+      text: "Model set to 'gpt-6-sol'. Applies from the next turn.",
     });
     expect(getApiTopicConfig(topicId)).toMatchObject({
-      model: "gpt-5.6-sol",
+      model: "gpt-6-sol",
       agentLocked: true,
       modelLocked: true,
     });
     expect(getTopicSessionId(topicId)).toBe("old-codex-session");
+  });
+
+  test("a retired GPT-5.6 Sol/Luna id is stored as its GPT-6 route, not as a duplicate", () => {
+    for (const [asked, stored] of [
+      ["gpt-5.6-sol", "gpt-6-sol"],
+      ["GPT-5.6-Luna", "gpt-6-luna"],
+    ] as const) {
+      const topicId = seedTopic();
+      const result = switchTopicModel({ topicId, userId: USER, model: asked });
+      expect(result).toMatchObject({ ok: true, model: stored });
+      expect(getApiTopicConfig(topicId)?.model).toBe(stored);
+    }
   });
 
   test("resolves a cross-runtime model to its agent internally", () => {

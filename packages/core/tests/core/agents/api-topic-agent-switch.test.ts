@@ -45,7 +45,7 @@ function seedTopic(agent: "claude" | "codex", title: string) {
     kind: "agent",
     agent,
     aiMode: "always",
-    defaultModel: agent === "codex" ? "gpt-5.6-luna" : "sonnet",
+    defaultModel: agent === "codex" ? "gpt-6-luna" : "sonnet",
     defaultEffort: "medium",
     participants: [{ userId: USER_ID, role: "owner" }],
     createdAt: now,
@@ -137,7 +137,7 @@ describe("switchApiTopicAgent", () => {
       fromAgent: "claude",
       agent: "codex",
       cwd: topic.cwd,
-      config: { model: "gpt-5.6-sol" },
+      config: { model: "gpt-6-sol" },
       reason: "test-roundtrip",
     });
     expect(toCodex.ok).toBe(true);
@@ -170,7 +170,7 @@ describe("switchApiTopicAgent", () => {
       fromAgent: "claude",
       agent: "codex",
       cwd: "/outside-negotium-workspace",
-      config: { model: "gpt-5.6-sol", modelLocked: true },
+      config: { model: "gpt-6-sol", modelLocked: true },
       reason: "test-failure",
     });
 

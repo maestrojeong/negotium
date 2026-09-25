@@ -8,6 +8,7 @@ import { codexRegistry } from "#agents/codex-registry";
 import { maestroRegistry } from "#agents/maestro-registry";
 import {
   canonicalModelId,
+  FALLBACK_ORDER,
   modelOwner,
   resolveCompactionExecution,
   resolveDefaultModel,
@@ -83,6 +84,36 @@ function resolveWorkerModelWithEnv(
   return new TextDecoder().decode(child.stdout);
 }
 
+describe("retired GPT-5.6 Sol/Luna ids", () => {
+  test("resolve to their GPT-6 routes so the same tier is never selectable twice", () => {
+    expect(canonicalModelId("gpt-5.6-sol")).toBe("gpt-6-sol");
+    expect(canonicalModelId("GPT-5.6-Luna")).toBe("gpt-6-luna");
+    // Terra has no GPT-6 successor: it must stay itself.
+    expect(canonicalModelId("gpt-5.6-terra")).toBe("gpt-5.6-terra");
+    // Already-canonical ids are untouched.
+    expect(canonicalModelId("gpt-6-sol")).toBe("gpt-6-sol");
+    expect(canonicalModelId("gpt-6-luna")).toBe("gpt-6-luna");
+  });
+
+  test("a stored old id (topic config, cron row, fallback env) runs as the GPT-6 route", () => {
+    expect(resolveModelForAgent("codex", "gpt-5.6-sol", codexRegistry)).toBe("gpt-6-sol");
+    expect(resolveModelForAgent("codex", "gpt-5.6-luna", codexRegistry)).toBe("gpt-6-luna");
+    expect(resolveWorkerModel("codex", "gpt-5.6-luna", codexRegistry)).toBe("gpt-6-luna");
+    // still owned by codex, so a stale claude topic drops it as before
+    expect(resolveModelForAgent("claude", "gpt-5.6-luna", claudeRegistry)).toBe("sonnet");
+  });
+
+  test("the Codex default and fallbacks use the GPT-6 Luna route", () => {
+    expect(codexRegistry.defaultModel).toBe("gpt-6-luna");
+    expect(FALLBACK_ORDER.claude.find((entry) => entry.agent === "codex")?.model).toBe(
+      "gpt-6-luna",
+    );
+    expect(FALLBACK_ORDER.maestro.find((entry) => entry.agent === "codex")?.model).toBe(
+      "gpt-6-luna",
+    );
+  });
+});
+
 describe("role default models", () => {
   test("pins compact workers to the intended model and medium effort", () => {
     expect(resolveCompactionExecution("claude", claudeRegistry)).toEqual({
@@ -130,7 +161,7 @@ describe("role default models", () => {
     expect(
       resolveWorkerModelWithEnv("codex", "deepseek-pro", {
         FALLBACK_AGENT: "codex",
-        FALLBACK_MODEL: "gpt-5.6-luna",
+        FALLBACK_MODEL: "gpt-6-luna",
       }),
     ).toBe("gpt-5.6-terra");
   });

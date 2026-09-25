@@ -19,7 +19,7 @@ function topicId(): string {
     title: id,
     kind: "agent",
     agent: "codex",
-    defaultModel: "gpt-5.6-luna",
+    defaultModel: "gpt-6-luna",
     defaultEffort: "medium",
     aiMode: "always",
     participants: [{ userId: "config-test", role: "owner" }],
@@ -60,14 +60,14 @@ describe("api topic config", () => {
   test("stores model config without duplicating the topic agent", () => {
     const id = topicId();
     setApiTopicConfig(id, {
-      model: "gpt-5.6-sol",
+      model: "gpt-6-sol",
       effort: "high",
       agentLocked: true,
       modelLocked: true,
     });
 
     expect(getApiTopicConfig(id)).toEqual({
-      model: "gpt-5.6-sol",
+      model: "gpt-6-sol",
       effort: "high",
       agentLocked: true,
       modelLocked: true,

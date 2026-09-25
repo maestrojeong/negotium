@@ -19,7 +19,7 @@ const decision = (
   action,
   reasoning: `Why ${action}`,
   agent: "codex",
-  model: "gpt-5.6-sol",
+  model: "gpt-6-sol",
   status,
   causedBy,
   timestamp: 1,

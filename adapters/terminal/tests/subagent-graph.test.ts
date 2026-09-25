@@ -17,7 +17,7 @@ function topic(id: string, title: string, parentTopicId?: string): TopicDto {
     title,
     kind: "agent",
     agent: "codex",
-    defaultModel: "gpt-5.6-luna",
+    defaultModel: "gpt-6-luna",
     defaultEffort: "medium",
     isSubagent: Boolean(parentTopicId),
     parentTopicId,

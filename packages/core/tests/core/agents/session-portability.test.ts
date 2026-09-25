@@ -85,7 +85,7 @@ describe("provider session portability", () => {
       sessionId: randomUUID(),
       cwd: "/outside-negotium-workspace",
       silent: false,
-      model: "gpt-5.6-luna",
+      model: "gpt-6-luna",
       onSessionReset: () => {
         reset = true;
       },

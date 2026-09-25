@@ -249,7 +249,7 @@ test("Maestro model selection opens the matching provider key form", () => {
   expect(maestroVaultKeyForModel("deepseek-pro")).toBe("DEEPSEEK_API_KEY");
   expect(maestroVaultKeyForModel("glm-5.3")).toBe("GLM_API_KEY");
   expect(maestroVaultKeyForModel("glm-5.3-flash")).toBe("GLM_API_KEY");
-  expect(maestroVaultKeyForModel("gpt-5.6-sol")).toBeNull();
+  expect(maestroVaultKeyForModel("gpt-6-sol")).toBeNull();
 });
 
 test("bare Vault opens the manager while list, set, and del stay compact", async () => {

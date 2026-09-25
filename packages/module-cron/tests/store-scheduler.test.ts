@@ -210,7 +210,7 @@ describe("cron store", () => {
         schedule: "*/15 * * * *",
         timezone: "America/Los_Angeles",
         agent: "codex",
-        model: "gpt-5.6-luna",
+        model: "gpt-6-luna",
         effort: "high",
       },
       new Date("2026-07-14T12:03:00Z"),
@@ -224,7 +224,7 @@ describe("cron store", () => {
       schedule: "*/15 * * * *",
       timezone: "America/Los_Angeles",
       agent: "codex",
-      model: "gpt-5.6-luna",
+      model: "gpt-6-luna",
       effort: "high",
       nextRunAt: "2026-07-14T12:15:00.000Z",
     });

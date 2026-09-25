@@ -50,7 +50,7 @@ const OLD_SCHEMA = `
     PRIMARY KEY (topic_id, user_id)
   );
   INSERT INTO api_topics (id, title, kind, agent, base_model, base_effort, response_policy, created_at, last_message_at, surface)
-  VALUES ('legacy-room', 'Legacy room', 'agent', 'codex', 'gpt-5.6-luna', 'medium', 'always',
+  VALUES ('legacy-room', 'Legacy room', 'agent', 'codex', 'gpt-6-luna', 'medium', 'always',
           '2026-06-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z', 'otium');
   INSERT INTO topic_members (topic_id, user_id, role) VALUES ('legacy-room', 'local', 'owner');
 `;
@@ -69,7 +69,7 @@ const CHILD_SCRIPT = `
     title: "Derived room",
     kind: "agent",
     agent: "codex",
-    defaultModel: "gpt-5.6-luna",
+    defaultModel: "gpt-6-luna",
     defaultEffort: "medium",
     aiMode: "always",
     participants: [{ userId: "local", role: "owner" }],

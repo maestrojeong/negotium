@@ -17,7 +17,7 @@ function storedSubagentContext(): SessionCommContext {
   const common = {
     kind: "agent" as const,
     agent: "codex" as const,
-    defaultModel: "gpt-5.6-luna",
+    defaultModel: "gpt-6-luna",
     defaultEffort: "medium" as const,
     aiMode: "always" as const,
     participants: [{ userId: "factory-test", role: "owner" as const }],

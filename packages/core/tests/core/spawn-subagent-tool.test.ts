@@ -294,7 +294,7 @@ describe("spawn_subagent guards", () => {
 
     expect(description).toContain("claude/sonnet");
     expect(description).toContain("system prompt catalog");
-    expect(description).not.toContain("gpt-5.6-sol");
+    expect(description).not.toContain("gpt-6-sol");
     expect(description).not.toContain("quota cost");
   });
 

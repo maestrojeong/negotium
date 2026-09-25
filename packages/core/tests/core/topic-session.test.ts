@@ -367,7 +367,7 @@ describe("compactTopicSession", () => {
         visibleMessages: [],
         retainedTailTokens: 64_000,
         agent: "codex",
-        model: "gpt-5.6-luna",
+        model: "gpt-6-luna",
         cwd: "/tmp",
       },
       async (request) => {
@@ -408,7 +408,7 @@ describe("compactTopicSession", () => {
             },
           ],
           agent: "codex",
-          model: "gpt-5.6-luna",
+          model: "gpt-6-luna",
           cwd: "/tmp",
           timeoutMs: 5,
         },
@@ -446,7 +446,7 @@ describe("compactTopicSession", () => {
           },
         ],
         agent: "codex",
-        model: "gpt-5.6-luna",
+        model: "gpt-6-luna",
         cwd: "/tmp",
       },
       async (request) => {
@@ -482,7 +482,7 @@ describe("compactTopicSession", () => {
           },
         ],
         agent: "codex",
-        model: "gpt-5.6-luna",
+        model: "gpt-6-luna",
         cwd: "/tmp",
       },
       async (request) => {

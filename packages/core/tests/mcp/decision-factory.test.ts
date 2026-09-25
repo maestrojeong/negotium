@@ -64,7 +64,7 @@ describe("decision MCP factory", () => {
         topic: "Architecture",
         topicId: "topic-1",
         agent: "codex",
-        model: "gpt-5.6-sol",
+        model: "gpt-6-sol",
       },
       host,
     );
@@ -91,7 +91,7 @@ describe("decision MCP factory", () => {
         action: "Use Orchgraph",
         status: "accepted",
         agent: "codex",
-        model: "gpt-5.6-sol",
+        model: "gpt-6-sol",
       });
       expect(writes).toEqual([{ userId: "user-1", scopeKey: "topic-1" }]);
     } finally {

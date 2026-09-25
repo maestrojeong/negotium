@@ -34,7 +34,7 @@ describe("token stats MCP factory", () => {
               topicTitle: "dev",
               providerSessionId: "provider-session-1",
               agent: "codex",
-              model: "gpt-5.6-luna",
+              model: "gpt-6-luna",
               contextTokens: 25_000,
               contextWindow: 100_000,
             },

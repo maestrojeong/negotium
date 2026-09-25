@@ -28,7 +28,7 @@ test("bootstraps a missing Codex model cache before hardening the catalog", asyn
         receivedCache,
         JSON.stringify({
           client_version: BUNDLED_CODEX_VERSION,
-          models: [{ slug: "gpt-5.6-sol", multi_agent_version: "v2" }],
+          models: [{ slug: "gpt-6-sol", multi_agent_version: "v2" }],
         }),
         "utf8",
       );
@@ -53,7 +53,7 @@ test("snapshots a compatible shared cache for the bundled Codex version", async 
     cachePath,
     JSON.stringify({
       client_version: BUNDLED_CODEX_VERSION,
-      models: [{ slug: "gpt-5.6-sol", multi_agent_version: "v2" }],
+      models: [{ slug: "gpt-6-sol", multi_agent_version: "v2" }],
     }),
     "utf8",
   );
@@ -170,7 +170,7 @@ test("rebuilds privately when the shared cache belongs to a different Codex vers
       receivedCache,
       JSON.stringify({
         client_version: BUNDLED_CODEX_VERSION,
-        models: [{ slug: "gpt-5.6-sol", multi_agent_version: "v2" }],
+        models: [{ slug: "gpt-6-sol", multi_agent_version: "v2" }],
       }),
       "utf8",
     );
@@ -178,7 +178,7 @@ test("rebuilds privately when the shared cache belongs to a different Codex vers
 
   expect(bootstrapCalls).toBe(1);
   expect(readFileSync(cachePath, "utf8")).toBe(originalSharedCache);
-  expect(JSON.parse(readFileSync(resolvedCachePath, "utf8")).models[0].slug).toBe("gpt-5.6-sol");
+  expect(JSON.parse(readFileSync(resolvedCachePath, "utf8")).models[0].slug).toBe("gpt-6-sol");
 });
 
 test("does not let a stale hardened catalog replace a missing model cache", async () => {
@@ -188,7 +188,7 @@ test("does not let a stale hardened catalog replace a missing model cache", asyn
   writeFileSync(authPath, "{}", "utf8");
   writeFileSync(
     outputPath,
-    JSON.stringify({ models: [{ slug: "gpt-5.6-sol", multi_agent_version: "disabled" }] }),
+    JSON.stringify({ models: [{ slug: "gpt-6-sol", multi_agent_version: "disabled" }] }),
     "utf8",
   );
 
@@ -199,7 +199,7 @@ test("does not let a stale hardened catalog replace a missing model cache", asyn
       receivedCache,
       JSON.stringify({
         client_version: BUNDLED_CODEX_VERSION,
-        models: [{ slug: "gpt-5.6-sol", multi_agent_version: "v2" }],
+        models: [{ slug: "gpt-6-sol", multi_agent_version: "v2" }],
       }),
       "utf8",
     );
