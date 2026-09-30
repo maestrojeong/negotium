@@ -124,8 +124,8 @@ export interface NegotiumClient {
     description: string,
   ): ClientResult<SaveVaultEntryResult>;
   deleteVaultEntry?(key: string): ClientResult<boolean>;
-  listInputHistory?(): string[];
-  appendInputHistory?(text: string): void;
+  listInputHistory?(topicId: string): string[];
+  appendInputHistory?(topicId: string, text: string): void;
   listRecentEvents?(topicId: string): ClientResult<RuntimeBusEvent[]>;
 }
 
@@ -334,12 +334,12 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
     return deleteVaultEntry(this.#userId, key);
   }
 
-  listInputHistory(): string[] {
-    return loadTerminalInputHistory(this.#userId);
+  listInputHistory(topicId: string): string[] {
+    return loadTerminalInputHistory(this.#userId, topicId);
   }
 
-  appendInputHistory(text: string): void {
-    appendTerminalInputHistory(this.#userId, text);
+  appendInputHistory(topicId: string, text: string): void {
+    appendTerminalInputHistory(this.#userId, topicId, text);
   }
 }
 
@@ -672,12 +672,12 @@ export class RemoteNegotiumClient implements NegotiumClient {
     }
   }
 
-  listInputHistory(): string[] {
-    return loadTerminalInputHistory(this.#userId);
+  listInputHistory(topicId: string): string[] {
+    return loadTerminalInputHistory(this.#userId, topicId);
   }
 
-  appendInputHistory(text: string): void {
-    appendTerminalInputHistory(this.#userId, text);
+  appendInputHistory(topicId: string, text: string): void {
+    appendTerminalInputHistory(this.#userId, topicId, text);
   }
 
   async #request(path: string, init: RequestInit = {}, timeoutMs = 15_000): Promise<ApiEnvelope> {
