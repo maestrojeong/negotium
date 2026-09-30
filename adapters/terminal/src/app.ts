@@ -302,6 +302,7 @@ export class TerminalApp {
   readonly #input = new TextBuffer();
   readonly #screen = new TerminalScreenRenderer();
   readonly #historyByTopic = new Map<string, InputHistory>();
+  readonly #draftsByTopic = new Map<string, { text: string; cursor: BufferCursor }>();
   #vaultDraftValue = "";
   #pendingModelSwitch: { topicId: string; model: string } | undefined;
   #pasting = false;
@@ -399,7 +400,7 @@ export class TerminalApp {
           );
           this.#state = focusCreatedTopic(this.#state, created);
           await this.#refreshTopics(created.title);
-          this.#state = selectTopic(this.#state, created.id);
+          this.#selectTopicKeepingDrafts(created.id);
         }
       }
       if (!this.#options.preferredTopic) {
@@ -1743,8 +1744,31 @@ export class TerminalApp {
     });
   }
 
-  async #activateTopic(topicId: string): Promise<void> {
+  /**
+   * Switches the active topic and swaps the composer with it: the half-typed
+   * message is parked under the topic being left and the target topic's own
+   * parked draft (if any) is restored, so a draft never leaks into another
+   * conversation.
+   */
+  #selectTopicKeepingDrafts(topicId: string): void {
+    const previous = this.#state.activeTopicId;
     this.#state = selectTopic(this.#state, topicId);
+    if (previous === this.#state.activeTopicId) return;
+    if (previous) {
+      const text = this.#collapsedPastes.expand(this.#input.text);
+      if (text) this.#draftsByTopic.set(previous, { text, cursor: this.#input.cursor });
+      else this.#draftsByTopic.delete(previous);
+    }
+    const draft = this.#state.activeTopicId
+      ? this.#draftsByTopic.get(this.#state.activeTopicId)
+      : undefined;
+    this.#collapsedPastes.clear();
+    this.#input.setText(draft?.text ?? "", draft?.cursor ?? "end");
+    this.#syncInput();
+  }
+
+  async #activateTopic(topicId: string): Promise<void> {
+    this.#selectTopicKeepingDrafts(topicId);
     // Paint the switch (title, spinner from already-known state.activity, etc.)
     // immediately instead of waiting on the message-history network round-trip.
     this.#queueRender();
@@ -1845,7 +1869,7 @@ export class TerminalApp {
       const created = await this.#client.createTopic(title, this.#options.defaultAgent);
       this.#state = focusCreatedTopic(this.#state, created);
       await this.#refreshTopics(created.title);
-      this.#state = selectTopic(this.#state, created.id);
+      this.#selectTopicKeepingDrafts(created.id);
       await this.#loadActiveMessages();
       this.#state = { ...this.#state, notice: `Created ${created.title}`, noticeLevel: "success" };
     } catch (error) {
@@ -1864,7 +1888,7 @@ export class TerminalApp {
       const derived = await this.#client.deriveTopic(topic, copyHistory, name);
       this.#state = focusCreatedTopic(this.#state, derived);
       await this.#refreshTopics(derived.title);
-      this.#state = selectTopic(this.#state, derived.id);
+      this.#selectTopicKeepingDrafts(derived.id);
       await this.#loadActiveMessages();
       this.#state = {
         ...this.#state,
