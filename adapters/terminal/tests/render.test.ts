@@ -1520,6 +1520,26 @@ describe("terminal renderer", () => {
     expect(output).toContain("const ok = true;");
   });
 
+  test("expands circled-digit glyphs to legible (n) markers everywhere, including code blocks", () => {
+    const message: MessageDto = {
+      id: "message",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text: "① first step\n```\n① fenced step\n⓪ zero ⑳ twenty\n```",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [message]);
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("(1) first step");
+    expect(output).toContain("(1) fenced step");
+    expect(output).toContain("(0) zero (20) twenty");
+    expect(output).not.toContain("①");
+    expect(output).not.toContain("⓪");
+    expect(output).not.toContain("⑳");
+  });
+
   test("exposes clickable copy targets with the original fenced code", () => {
     const message: MessageDto = {
       id: "message",

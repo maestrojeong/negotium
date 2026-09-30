@@ -301,7 +301,7 @@ export class TerminalApp {
   #state: AppState;
   readonly #input = new TextBuffer();
   readonly #screen = new TerminalScreenRenderer();
-  #history = new InputHistory();
+  readonly #historyByTopic = new Map<string, InputHistory>();
   #vaultDraftValue = "";
   #pendingModelSwitch: { topicId: string; model: string } | undefined;
   #pasting = false;
@@ -359,6 +359,23 @@ export class TerminalApp {
     this.#state = createInitialState(options.userId);
   }
 
+  /**
+   * Input recall (up/down arrow) scoped to the active topic. Each topic's
+   * history is loaded from the client once, on first use, and cached here;
+   * an empty-string bucket covers the moment before any topic is active
+   * (e.g. the startup topic picker) and matches the store's default bucket
+   * for pre-migration rows.
+   */
+  get #history(): InputHistory {
+    const topicId = this.#state.activeTopicId ?? "";
+    let history = this.#historyByTopic.get(topicId);
+    if (!history) {
+      history = new InputHistory(this.#client.listInputHistory?.(topicId) ?? []);
+      this.#historyByTopic.set(topicId, history);
+    }
+    return history;
+  }
+
   async run(): Promise<void> {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
       throw new Error("terminal-adapter requires an interactive TTY");
@@ -368,7 +385,6 @@ export class TerminalApp {
     try {
       clientStartAttempted = true;
       await this.#client.start((event) => this.#handleRuntimeEvent(event));
-      this.#history = new InputHistory(this.#client.listInputHistory?.() ?? []);
       if (this.#stopRequested) return;
       await this.#refreshTopics(this.#options.preferredTopic ?? "General");
       await this.#refreshBackgroundSessions();
@@ -1649,7 +1665,7 @@ export class TerminalApp {
     // the terminal input history, including malformed commands that show help.
     if (!isVaultCommandLine(text)) {
       this.#history.record(text);
-      this.#client.appendInputHistory?.(text);
+      this.#client.appendInputHistory?.(this.#state.activeTopicId ?? "", text);
     }
     this.#input.setText("");
     this.#collapsedPastes.clear();

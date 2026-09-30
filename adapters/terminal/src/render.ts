@@ -258,12 +258,34 @@ function linkifyUrls(text: string): string {
  */
 export const RENDERED_TAB_WIDTH = 4;
 
+/**
+ * Circled-digit glyphs (①②③… "1) 2) 3)" drawn inside a circle) are a common way
+ * agent replies number short lists. Most monospace terminal fonts do not carry
+ * a full glyph for them and fall back to shrinking the digit to fit the circle
+ * outline, so the number itself becomes barely legible even though the cell
+ * renders at normal size. Expanding to a plain "(1)" keeps numbering legible
+ * in every terminal/font instead of depending on font coverage we cannot
+ * control from here.
+ */
+const CIRCLED_DIGIT_START = 0x2460; // ① 1
+const CIRCLED_DIGIT_END = 0x2473; // ⑳ 20
+const CIRCLED_ZERO = 0x24ea; // ⓪ 0
+
+function expandCircledDigit(codePoint: number): string | null {
+  if (codePoint === CIRCLED_ZERO) return "(0)";
+  if (codePoint >= CIRCLED_DIGIT_START && codePoint <= CIRCLED_DIGIT_END) {
+    return `(${codePoint - CIRCLED_DIGIT_START + 1})`;
+  }
+  return null;
+}
+
 function safeText(value: string): string {
   return [...stripAnsi(value).replaceAll("\r", "").replaceAll("\t", " ".repeat(RENDERED_TAB_WIDTH))]
     .filter((character) => {
       const code = character.charCodeAt(0);
       return code === 0x0a || (code >= 0x20 && code !== 0x7f);
     })
+    .map((character) => expandCircledDigit(character.codePointAt(0) ?? 0) ?? character)
     .join("");
 }
 
