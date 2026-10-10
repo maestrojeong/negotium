@@ -312,7 +312,7 @@ describe("terminal renderer", () => {
     const wide = stripAnsi(renderApp(state, 140, 30));
     expect(wide).toContain("104k/258k 40%");
     expect(wide).not.toContain("ctx 104k");
-    expect(wide).toContain("Σ 12.3k in/4.5k out");
+    expect(wide).toContain("Σ 12.3k fresh/4.5k out");
     expect(wide).toContain("cache 90.0k");
     expect(wide).toContain("est $1.25");
 
@@ -466,7 +466,7 @@ describe("terminal renderer", () => {
 
     const footer = stripAnsi(renderApp(state, 120, 30));
     expect(footer).toContain("20.0k/200k 10%");
-    expect(footer).not.toContain("Σ 0 in/0 out");
+    expect(footer).not.toContain("Σ 0 fresh/0 out");
     expect(footer).not.toContain("est $0.00");
 
     const status = stripAnsi(renderApp({ ...state, overlay: "status" }, 120, 30));

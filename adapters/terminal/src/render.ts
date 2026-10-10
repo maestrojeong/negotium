@@ -2392,7 +2392,7 @@ function footerUsageText(state: AppState): FooterVariant[] {
       : "";
   const hasTopicUsage = total !== undefined && total.queries > 0;
   const cumulative = hasTopicUsage
-    ? `Σ ${tokenCount(total.inputTokens)} in/${tokenCount(total.outputTokens)} out`
+    ? `Σ ${tokenCount(total.inputTokens)} fresh/${tokenCount(total.outputTokens)} out`
     : "";
   const cache =
     hasTopicUsage && total.cacheReadInputTokens

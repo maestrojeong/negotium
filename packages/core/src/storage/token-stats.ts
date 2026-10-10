@@ -23,6 +23,15 @@ export interface QueryRecord {
   contextTokens?: number;
   contextWindow?: number;
   estimatedCostUsd: number;
+  /**
+   * The provider's own raw cost figure for this query, when it reported one
+   * (currently only `claude`, via the Agent SDK's `total_cost_usd`). That
+   * figure is the *session's running total so far*, not this query's own
+   * cost -- `estimatedCostUsd` above is already the marginal delta derived
+   * from it (see `recordUsage`). Kept so the *next* query in the same
+   * provider session has something to diff against; never summed itself.
+   */
+  cumulativeCostUsd?: number;
 }
 
 export interface Bucket {
@@ -179,6 +188,39 @@ function isQueryRecord(value: unknown): value is QueryRecord {
   );
 }
 
+/**
+ * The previous query's raw cumulative cost for this same provider session
+ * (`cumulativeCostUsd`, or its `estimatedCostUsd` for a pre-fix row logged
+ * before that field existed -- conservative, since on that older code path
+ * the two were the same number). `0` when this is the session's first
+ * recorded query, or the provider never reports a running total at all.
+ *
+ * Scans the user's whole log backwards; `recordUsage` calls this at most
+ * once per completed query, so it trades a bit of I/O for not having to
+ * keep cross-process session state in memory.
+ */
+function previousCumulativeCost(userId: number | string, providerSessionId: string): number {
+  let lines: string[];
+  try {
+    lines = readJsonlLines(queriesPath(userId));
+  } catch {
+    return 0;
+  }
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let parsed: Partial<QueryRecord>;
+    try {
+      parsed = JSON.parse(lines[i]) as Partial<QueryRecord>;
+    } catch {
+      continue;
+    }
+    if (parsed.providerSessionId !== providerSessionId) continue;
+    if (typeof parsed.cumulativeCostUsd === "number") return parsed.cumulativeCostUsd;
+    if (typeof parsed.estimatedCostUsd === "number") return parsed.estimatedCostUsd;
+    return 0;
+  }
+  return 0;
+}
+
 /** 쿼리 완료 시 호출 — JSONL에 한 줄 추가 */
 export function recordUsage(
   userId: number | string,
@@ -204,6 +246,24 @@ export function recordUsage(
     cacheCreationInputTokens: usage.cacheCreationInputTokens ?? 0,
     cacheReadInputTokens,
   };
+  // `usage.costUsd` (currently claude-only, the Agent SDK's `total_cost_usd`)
+  // is the *session's cost so far*, not this one query's -- summed as-is
+  // across a session's queries (as every other field here is), it inflates
+  // the total roughly `queries / 2`-fold. Store the marginal delta against
+  // the previous query's own cumulative figure instead, so `estimatedCostUsd`
+  // stays what the rest of this module assumes every record's is: this
+  // query's own cost, safe to add up.
+  let estimatedCostUsd: number;
+  let cumulativeCostUsd: number | undefined;
+  if (usage.costUsd !== undefined) {
+    const previous = context.providerSessionId
+      ? previousCumulativeCost(userId, context.providerSessionId)
+      : 0;
+    estimatedCostUsd = Math.max(0, usage.costUsd - previous);
+    cumulativeCostUsd = usage.costUsd;
+  } else {
+    estimatedCostUsd = estimateUsageCost(context.agent, context.model, normalized);
+  }
   const record: QueryRecord = {
     schemaVersion: 2,
     timestamp: new Date().toISOString(),
@@ -215,7 +275,8 @@ export function recordUsage(
     ...normalized,
     ...(usage.contextTokens !== undefined ? { contextTokens: usage.contextTokens } : {}),
     ...(usage.contextWindow !== undefined ? { contextWindow: usage.contextWindow } : {}),
-    estimatedCostUsd: usage.costUsd ?? estimateUsageCost(context.agent, context.model, normalized),
+    estimatedCostUsd,
+    ...(cumulativeCostUsd !== undefined ? { cumulativeCostUsd } : {}),
   };
   try {
     appendJsonlEntry(queriesPath(userId), record);
