@@ -143,10 +143,15 @@ describe("runtime process leases", () => {
     // (a daemon crash; a hung `bun test` on Bun 1.2.15).
     const role = `adapter:test:${crypto.randomUUID()}`;
     let lost = 0;
+    // Timers are wall-clock, not virtual: on a loaded CI runner a setInterval
+    // tick can slip tens of ms past its nominal delay. Keep a wide margin
+    // between heartbeatMs/staleMs and the "still alive" sleep below so that
+    // scheduling jitter alone can't flip the transient check (seen flaking in
+    // shared CI runs with a 10ms/80ms/40ms window).
     const lease = acquireRuntimeProcessLease(role, {
       ownerId: "owner-io-error",
-      staleMs: 80,
-      heartbeatMs: 10,
+      staleMs: 500,
+      heartbeatMs: 25,
       onLost: () => {
         lost += 1;
       },
@@ -159,9 +164,9 @@ describe("runtime process leases", () => {
        WHEN NEW.role = '${role}' BEGIN SELECT RAISE(ABORT, 'injected heartbeat failure'); END`,
     );
     try {
-      await Bun.sleep(40);
+      await Bun.sleep(150);
       expect(lost).toBe(0); // transient: still within staleMs
-      const deadline = Date.now() + 2_000;
+      const deadline = Date.now() + 5_000;
       while (lost === 0 && Date.now() < deadline) await Bun.sleep(10);
       expect(lost).toBe(1);
     } finally {
