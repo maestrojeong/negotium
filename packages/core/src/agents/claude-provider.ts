@@ -840,12 +840,12 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
         for (const block of content as ContentBlock[]) {
           if (block.type !== "tool_result") continue;
           const trBlock = block as ToolResultBlock;
-          // Same as codex's mcp_tool_call path: what reaches clients and the
-          // runtime-events log never carries a Vault secret.
+          // Same as codex's mcp_tool_call path: cap at 200 chars, then redact
+          // Vault secrets before it reaches clients and the runtime-events log.
           const trContent = redactHostedSecrets(
             opts.vaultUserId ?? opts.userId ?? "",
-            toolResultText(trBlock.content),
-          ).slice(0, 200);
+            toolResultText(trBlock.content).slice(0, 200),
+          );
           yield {
             type: "tool_result",
             toolUseId: trBlock.tool_use_id || "",
