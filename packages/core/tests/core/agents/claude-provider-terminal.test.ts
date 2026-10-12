@@ -61,6 +61,99 @@ describe("claudeProvider terminal handling", () => {
     });
   });
 
+  test("keeps the text of MCP content-block tool results", async () => {
+    mock.module("@anthropic-ai/claude-agent-sdk", () => ({
+      query: async function* () {
+        yield { type: "system", subtype: "init", session_id: "sess-mcp-result" };
+        yield {
+          type: "user",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tool-mcp",
+                content: [
+                  { type: "text", text: "국민연금 · [2/5] 최종결정내역을 조회합니다" },
+                  { type: "image", source: { type: "base64", data: "AA==" } },
+                  { type: "text", text: '{"status":"running"}' },
+                ],
+              },
+            ],
+          },
+        };
+        yield { type: "result", subtype: "success", result: "done", stop_reason: "end_turn" };
+      },
+    }));
+
+    const { claudeProvider } = await import("#agents/claude-provider");
+    const events = [];
+    for await (const event of claudeProvider({
+      agent: "claude",
+      prompt: "do work",
+      session: "dev",
+      sessionType: "forum",
+      systemPrompt: "system",
+      cwd: "/tmp",
+      userId: "test-user",
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toContainEqual({
+      type: "tool_result",
+      toolUseId: "tool-mcp",
+      content: '국민연금 · [2/5] 최종결정내역을 조회합니다\n{"status":"running"}',
+    });
+  });
+
+  test("redacts Vault secrets from tool results before they leave the provider", async () => {
+    mock.module("@anthropic-ai/claude-agent-sdk", () => ({
+      query: async function* () {
+        yield { type: "system", subtype: "init", session_id: "sess-mcp-secret" };
+        yield {
+          type: "user",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tool-secret",
+                content: [{ type: "text", text: "password is hunter2" }],
+              },
+            ],
+          },
+        };
+        yield { type: "result", subtype: "success", result: "done", stop_reason: "end_turn" };
+      },
+    }));
+
+    const { configureAgentExecutionHost } = await import("#agents/execution-host");
+    const restore = configureAgentExecutionHost({
+      redactVaultSecrets: (_userId, value) => value.replaceAll("hunter2", "[REDACTED]"),
+    });
+    try {
+      const { claudeProvider } = await import("#agents/claude-provider");
+      const events = [];
+      for await (const event of claudeProvider({
+        agent: "claude",
+        prompt: "do work",
+        session: "dev",
+        sessionType: "forum",
+        systemPrompt: "system",
+        cwd: "/tmp",
+        userId: "test-user",
+      })) {
+        events.push(event);
+      }
+      expect(events).toContainEqual({
+        type: "tool_result",
+        toolUseId: "tool-secret",
+        content: "password is [REDACTED]",
+      });
+    } finally {
+      restore();
+    }
+  });
+
   test("emits completed assistant blocks in canonical text/tool order", async () => {
     mock.module("@anthropic-ai/claude-agent-sdk", () => ({
       query: async function* () {
