@@ -23,7 +23,11 @@ import { ensureBgBash } from "#platform/background-bash/manager";
 import { FROM_AUTO_CONTINUE } from "#platform/constants";
 import { logger } from "#platform/logger";
 import { isBrowserlessMcpSet } from "#platform/mcp-catalog-policy";
-import { consumePlaywrightUnavailable, markPlaywrightUnavailable } from "#platform/mcp-config";
+import {
+  consumePlaywrightUnavailable,
+  isTaxMcpReachable,
+  markPlaywrightUnavailable,
+} from "#platform/mcp-config";
 import {
   ensurePlaywright,
   getPlaywrightCapability,
@@ -1788,6 +1792,12 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           "<system-reminder>Background bash tools are UNAVAILABLE this turn. The `background_bash_*` tools could not be prepared, most often because the bash-rs binary is not installed on this host. Do not attempt to call them; run short commands in the foreground instead, and tell the user if the work genuinely needs a background job.</system-reminder>",
         );
       }
+    }
+    if (turnMcpEnabled.includes("tax") && !(await isTaxMcpReachable())) {
+      logger.warn({ topicId }, "ai: tax MCP is not reachable — telling the agent");
+      turnReminders.push(
+        "<system-reminder>Tax tools are UNAVAILABLE this turn. The tax MCP server (tax-rs) did not answer its health check, so the `mcp__tax__*` tools will fail. Do not attempt tax work or invent results; tell the user, in plain words, that the tax system is not reachable right now and to try again shortly.</system-reminder>",
+      );
     }
     if (playwrightRequested && !browserProfileOwner) {
       turnReminders.push(

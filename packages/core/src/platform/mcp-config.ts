@@ -666,7 +666,7 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   tax: {
     ...commonRuntimeMcpPolicy("tax"),
     build({ agent, userId }) {
-      const url = envText("NEGOTIUM_TAX_MCP_URL") ?? "http://127.0.0.1:9410/mcp";
+      const url = taxMcpUrl();
       const headers = { "X-Tax-Owner": `user:${userId}` };
       return agent === "codex"
         ? { type: "http" as const, url, http_headers: headers }
@@ -674,6 +674,26 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
     },
   },
 };
+
+/** Streamable HTTP endpoint of the tax-rs MCP server. */
+export function taxMcpUrl(): string {
+  return envText("NEGOTIUM_TAX_MCP_URL") ?? "http://127.0.0.1:9410/mcp";
+}
+
+/**
+ * Whether tax-rs answers its `/health` endpoint. tax-rs runs as its own
+ * process, so a turn checks before relying on it, the same way it checks the
+ * browser and background-bash servers it starts itself.
+ */
+export async function isTaxMcpReachable(timeoutMs = 1500): Promise<boolean> {
+  try {
+    const health = new URL("/health", taxMcpUrl());
+    const response = await fetch(health, { signal: AbortSignal.timeout(timeoutMs) });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Locate the `cua-rs` binary, or `null` when it is not installed.
@@ -773,7 +793,8 @@ export function registerRuntimeMcpServer(name: string, entry: RuntimeMcpCatalogE
  * required servers are always active but never written to the whitelist (a
  * browser-replacing server such as tax drops playwright and background-bash).
  * This helper surfaces that split so the model never confuses "not in
- * whitelist" with "not active".
+ * whitelist" with "not active". `enabled: null` means the default catalog
+ * (every server active).
  */
 export function formatMcpStatus(config: {
   enabled: string[] | null;
@@ -795,10 +816,16 @@ export function formatMcpStatus(config: {
   // by required vs optional for display.
   const availableOptional = new Set(OPTIONAL_FORUM_MCP_SERVERS);
   const optionalActive = [...new Set(config.enabled)].filter((name) => availableOptional.has(name));
-  const total = REQUIRED_FORUM_MCP_SERVERS.length + optionalActive.length + extraNames.length;
+  // Same rule as getForumMcpServers: a browser-replacing server drops the
+  // browser and background-bash servers from the room.
+  const browserless = isBrowserlessMcpSet(config.enabled);
+  const required = REQUIRED_FORUM_MCP_SERVERS.filter(
+    (name) => !(browserless && (name === "playwright" || name === "background-bash")),
+  );
+  const total = required.length + optionalActive.length + extraNames.length;
   return [
     `설정 방식: whitelist`,
-    `필수 서버 (항상 활성, ${REQUIRED_FORUM_MCP_SERVERS.length}개): ${REQUIRED_FORUM_MCP_SERVERS.join(", ")}`,
+    `필수 서버 (항상 활성, ${required.length}개): ${required.join(", ")}`,
     `선택 서버 (whitelist, ${optionalActive.length}개): ${optionalActive.length > 0 ? optionalActive.join(", ") : "없음"}`,
     `실제 활성 합계: ${total}개`,
     `추가 서버: ${extraNames.length > 0 ? extraNames.join(", ") : "없음"}`,

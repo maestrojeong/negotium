@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { registerCanonicalMcpBridgeEnvProvider } from "#mcp/canonical-bridge-config";
 import {
@@ -13,11 +13,13 @@ import {
   buildPlaywrightMcpTransport,
   buildStdioMcpServer,
   consumePlaywrightUnavailable,
+  formatMcpStatus,
   getCronMcpServers,
   getDmMcpServers,
   getForumMcpServers,
   getManagerMcpServers,
   getMcpServersForQuery,
+  isTaxMcpReachable,
   markPlaywrightUnavailable,
   OPTIONAL_FORUM_MCP_SERVERS,
   registerRuntimeMcpServer,
@@ -1068,6 +1070,17 @@ test("a threaded turn's session-comm carries its thread on the hosted surface", 
  * a lead room can read the jobs its subagents ran.
  */
 describe("mcp-config: tax", () => {
+  // The default URL is under test, so a developer's override must not leak in.
+  let previousUrl: string | undefined;
+  beforeEach(() => {
+    previousUrl = process.env.NEGOTIUM_TAX_MCP_URL;
+    delete process.env.NEGOTIUM_TAX_MCP_URL;
+  });
+  afterEach(() => {
+    if (previousUrl === undefined) delete process.env.NEGOTIUM_TAX_MCP_URL;
+    else process.env.NEGOTIUM_TAX_MCP_URL = previousUrl;
+  });
+
   test("points at tax-rs Streamable HTTP with a per-user owner header", () => {
     const forClaude = getForumMcpServers({
       userId: "u1",
@@ -1122,5 +1135,35 @@ describe("mcp-config: tax", () => {
     expect(tax.tax).toBeDefined();
     expect(tax.playwright).toBeUndefined();
     expect(tax["background-bash"]).toBeUndefined();
+  });
+
+  test("health probe follows the configured tax URL", async () => {
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: (request) =>
+        new URL(request.url).pathname === "/health"
+          ? Response.json({ ok: true })
+          : new Response(null, { status: 404 }),
+    });
+    try {
+      process.env.NEGOTIUM_TAX_MCP_URL = `http://127.0.0.1:${server.port}/mcp`;
+      expect(await isTaxMcpReachable()).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+    expect(await isTaxMcpReachable(500)).toBe(false);
+  });
+
+  test("status lists the same required servers the room actually gets", () => {
+    const plain = formatMcpStatus({ enabled: [] });
+    expect(plain.find((line) => line.startsWith("필수 서버"))).toContain("playwright");
+
+    const status = formatMcpStatus({ enabled: ["tax"] });
+    const requiredLine = status.find((line) => line.startsWith("필수 서버"));
+    expect(requiredLine).not.toContain("playwright");
+    expect(requiredLine).not.toContain("background-bash");
+    expect(status).toContain("선택 서버 (whitelist, 1개): tax");
+    expect(requiredLine).not.toContain("(항상 활성, 0개)");
   });
 });

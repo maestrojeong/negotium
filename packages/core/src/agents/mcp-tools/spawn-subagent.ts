@@ -200,7 +200,8 @@ function subagentCardMessageId(childTopicId: string): string {
 function displayLine(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const line = value.replace(/\s+/g, " ").trim();
-  return line ? line.slice(0, MAX_DISPLAY_CHARS) : undefined;
+  // Code points, so a cut never splits a surrogate pair.
+  return line ? Array.from(line).slice(0, MAX_DISPLAY_CHARS).join("") : undefined;
 }
 
 function activeQueryUserId(topic: TopicDto | null | undefined): string | undefined {
@@ -1226,10 +1227,12 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
     return {
       name: "set_status",
       description:
-        "Tell the person watching, in one short plain-language phrase in their language, what this room is doing right now or what it just finished (e.g. a step in progress, or a done-with-result line). " +
+        "Tell the person watching, in one short plain-language phrase in their language, what this room is doing right now (e.g. the step in progress). " +
         "Shown in the room list and on the subagent card. Call it when the work moves to a new step; no tool names, ids, file paths or technical terms.",
       schema: {
-        text: z.string().describe("The status phrase, under 60 characters."),
+        text: z
+          .string()
+          .describe(`The status phrase; longer text is cut at ${MAX_DISPLAY_CHARS} characters.`),
       },
       async handler(input) {
         const text = displayLine(input.text);
@@ -1291,8 +1294,7 @@ const defaultSubagentLifecycleHost: SubagentLifecycleHost = {
     publishMessage: (topicId, message) => WsHub.get().broadcastMessage(topicId, message),
     publishCardUpdate: (topicId, messageId, update) =>
       WsHub.get().broadcastMessageUpdated(topicId, messageId, update),
-    publishRoomStatus: (topicId, text) =>
-      WsHub.get().broadcastAiStatus(topicId, { kind: "status_line", text }),
+    publishRoomStatus: (topicId, text) => WsHub.get().broadcastRoomStatus(topicId, text),
   },
   topic: {
     async createDerived(input) {

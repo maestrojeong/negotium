@@ -68,6 +68,8 @@ export interface RuntimeBus {
     patch: Partial<MessageDto> & Record<string, unknown>,
   ): void;
   broadcastAiStatus(topicId: string, status: Record<string, unknown>): void;
+  /** Short plain-language "what this room is doing" line (`set_status`). */
+  broadcastRoomStatus(topicId: string, text: string): void;
   broadcastTopicCreated(topic: { id: string }): void;
   broadcastTopicUpdated(topicId: string): void;
   broadcastTopicDeleted(topicId: string, meta?: TopicDeletedMeta): void;
@@ -233,6 +235,10 @@ export class SqliteRuntimeBus implements RuntimeBus {
   // can reconstruct the exact WsHub feed from the bus if it wants to.
   broadcastAiActive(topicId: string, queryId: string): void {
     this.broadcastAiStatus(topicId, { kind: "ai_active", queryId });
+  }
+
+  broadcastRoomStatus(topicId: string, text: string): void {
+    this.broadcastAiStatus(topicId, { kind: "status_line", text });
   }
 
   broadcastDone(
