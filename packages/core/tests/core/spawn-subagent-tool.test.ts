@@ -101,6 +101,7 @@ function makeInjectedLifecycleHost(parent: TopicDto) {
     publishedMessages: [] as string[],
     dispatchedQueryId: "",
     placement: "",
+    roomStatuses: [] as Array<{ topicId: string; text: string }>,
   };
   const host: SubagentLifecycleHost<SpawnSubagentToolContext & { placement: string }> = {
     storage: {
@@ -130,6 +131,9 @@ function makeInjectedLifecycleHost(parent: TopicDto) {
         calls.publishedMessages.push(message.id);
       },
       publishCardUpdate: () => {},
+      publishRoomStatus: (topicId, text) => {
+        calls.roomStatuses.push({ topicId, text });
+      },
     },
     topic: {
       async createDerived(input) {
@@ -240,6 +244,56 @@ describe("host-injected subagent lifecycle factory", () => {
       },
     ]);
     expect(messages.get("subagent-injected-child-1")?.subagentCard?.status).toBe("completed");
+  });
+
+  test("shows a plain summary and the child's own status on the card", async () => {
+    const parent = makeTopic("user-1");
+    const { host, calls, messages } = makeInjectedLifecycleHost(parent);
+    const lifecycle = createSubagentLifecycle(host);
+    const spawn = lifecycle.createSpawnSubagentToolDefinition({
+      userId: "user-1",
+      topicId: parent.id,
+      queryId: "parent-query",
+      agent: "claude",
+      model: "sonnet",
+      placement: "worker-1",
+    });
+    await spawn.handler({
+      task: "portal=nhis workflow=notice_download year=2026 month=9",
+      name: "건강보험",
+      summary: "  9월 건강보험 고지내역서를\n받아옵니다 ",
+    });
+    expect(messages.get("subagent-injected-child-1")?.subagentCard?.summary).toBe(
+      "9월 건강보험 고지내역서를 받아옵니다",
+    );
+
+    const status = lifecycle.createSetStatusToolDefinition({ topicId: "injected-child-1" });
+    expect((await status.handler({ text: "가입자 고지내역 확인 중" })).isError).toBeUndefined();
+    expect(calls.roomStatuses).toEqual([
+      { topicId: "injected-child-1", text: "가입자 고지내역 확인 중" },
+    ]);
+    expect(messages.get("subagent-injected-child-1")?.subagentCard?.activity).toBe(
+      "가입자 고지내역 확인 중",
+    );
+
+    // A top-level room publishes its line but has no card to update.
+    await lifecycle.createSetStatusToolDefinition({ topicId: parent.id }).handler({
+      text: "3개 하위 작업 실행 중",
+    });
+    expect(calls.roomStatuses.at(-1)).toEqual({
+      topicId: parent.id,
+      text: "3개 하위 작업 실행 중",
+    });
+    expect((await status.handler({ text: "   " })).isError).toBe(true);
+
+    // Finishing the child drops its stale step line from the card.
+    const watch = lifecycle.takeSubagentWatch(calls.dispatchedQueryId);
+    expect(watch).not.toBeNull();
+    if (!watch) return;
+    await lifecycle.settleSubagentSuccess(watch, "고지내역서 1건을 저장했습니다.");
+    const settled = messages.get("subagent-injected-child-1")?.subagentCard;
+    expect(settled?.status).toBe("completed");
+    expect(settled?.activity).toBeUndefined();
   });
 
   test("captures and enforces caller-owned lifecycle limits", async () => {

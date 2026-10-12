@@ -36,6 +36,8 @@ import type { MessageDto, SubagentCardDto, SubagentReportMode, TopicDto } from "
 
 const MAX_TASK_CHARS = 8000;
 const MAX_NAME_CHARS = 80;
+/** User-facing one-liners: card summary and room status. */
+const MAX_DISPLAY_CHARS = 120;
 const MAX_LIVE_CHILDREN_PER_PARENT = 5;
 const MAX_PREPARED_CHILDREN_PER_PARENT = 10;
 export const MAX_SUBAGENT_DEPTH = 2;
@@ -110,6 +112,8 @@ export interface SubagentLifecycleHost<
       messageId: string,
       update: { subagentCard: SubagentCardDto; editedAt: string },
     ): void;
+    /** Live, user-facing "what this room is doing" line (see `set_status`). */
+    publishRoomStatus(topicId: string, text: string): void;
   };
   topic: {
     createDerived(input: {
@@ -185,6 +189,18 @@ export interface SubagentLifecycle<
     ctx: TContext,
     options?: SubagentToolDefinitionOptions,
   ): SharedMcpTool;
+  createSetStatusToolDefinition(ctx: { topicId: string }): SharedMcpTool;
+}
+
+/** A child's lifecycle card is stored in its parent room under this id. */
+function subagentCardMessageId(childTopicId: string): string {
+  return `subagent-${childTopicId}`;
+}
+
+function displayLine(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const line = value.replace(/\s+/g, " ").trim();
+  return line ? line.slice(0, MAX_DISPLAY_CHARS) : undefined;
 }
 
 function activeQueryUserId(topic: TopicDto | null | undefined): string | undefined {
@@ -456,6 +472,8 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
       patchSubagentCard(watch.parentTopicId, watch.cardMessageId, {
         status: "completed",
         resultSummary: summary || "(no text response)",
+        // The last "step in progress" line is stale once the child is done.
+        activity: undefined,
         finishedAt: host.runtime.now(),
       });
     } catch (err) {
@@ -481,6 +499,7 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
       patchSubagentCard(watch.parentTopicId, watch.cardMessageId, {
         status: "failed",
         errorMessage: reason,
+        activity: undefined,
         finishedAt: host.runtime.now(),
       });
     } catch (err) {
@@ -627,6 +646,7 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
       model?: unknown;
       report_mode?: unknown;
       memory_topic?: unknown;
+      summary?: unknown;
     },
     startImmediately: boolean,
   ) {
@@ -728,16 +748,18 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
     host.storage.upsertTopic(child);
 
     const now = host.runtime.now();
+    const summary = displayLine(input.summary);
     const card: SubagentCardDto = {
       subagentTopicId: child.id,
       name: child.title,
       task,
+      ...(summary ? { summary } : {}),
       status: "ready",
       reportMode,
       createdAt: now,
     };
     const cardMsg: MessageDto = {
-      id: `subagent-${child.id}`,
+      id: subagentCardMessageId(child.id),
       topicId: ctx.topicId,
       authorId: "ai",
       text: `🤖 Subagent "${child.title}" spawned`,
@@ -1131,6 +1153,12 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
           .string()
           .optional()
           .describe("Short name for the subagent room. Auto-generated when omitted."),
+        summary: z
+          .string()
+          .optional()
+          .describe(
+            "One short plain-language sentence, in the user's language, saying what this subagent will do. Shown on the card in place of the task brief, so no tool names, ids, parameters or technical terms.",
+          ),
         ...executionOverrideSchema,
         memory_topic: z
           .string()
@@ -1163,6 +1191,12 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
       schema: {
         task: z.string().describe("Self-contained task brief for the subagent."),
         name: z.string().optional().describe("Short room name. Auto-generated when omitted."),
+        summary: z
+          .string()
+          .optional()
+          .describe(
+            "One short plain-language sentence, in the user's language, saying what this subagent will do. Shown on the card in place of the task brief, so no tool names, ids, parameters or technical terms.",
+          ),
         ...(options.executionOverrides === false
           ? {}
           : {
@@ -1183,7 +1217,42 @@ export function createSubagentLifecycle<TContext extends SpawnSubagentToolContex
     };
   }
 
+  /**
+   * `set_status`: the room's own plain-language "what I'm doing now" line.
+   * Clients show it in the room list; a subagent's line also lands on its
+   * parent's card (`activity`), which persists it with the card.
+   */
+  function createSetStatusToolDefinition(ctx: { topicId: string }): SharedMcpTool {
+    return {
+      name: "set_status",
+      description:
+        "Tell the person watching, in one short plain-language phrase in their language, what this room is doing right now or what it just finished (e.g. a step in progress, or a done-with-result line). " +
+        "Shown in the room list and on the subagent card. Call it when the work moves to a new step; no tool names, ids, file paths or technical terms.",
+      schema: {
+        text: z.string().describe("The status phrase, under 60 characters."),
+      },
+      async handler(input) {
+        const text = displayLine(input.text);
+        if (!text) return errorResult("Error: text is required.");
+        host.storage.publishRoomStatus(ctx.topicId, text);
+        // The card lives in the direct parent under a fixed id, so this is a
+        // single lookup rather than a scan of every subagent card.
+        const topic = host.storage.getTopic(ctx.topicId);
+        const parentTopicId = topic?.isSubagent ? topic.parentTopicId : undefined;
+        if (parentTopicId) {
+          const cardMessageId = subagentCardMessageId(ctx.topicId);
+          const card = host.storage.getMessage(parentTopicId, cardMessageId)?.subagentCard;
+          if (card && card.activity !== text) {
+            patchSubagentCard(parentTopicId, cardMessageId, { activity: text });
+          }
+        }
+        return textResult("Status updated.");
+      },
+    };
+  }
+
   return {
+    createSetStatusToolDefinition,
     computeSubagentDepth,
     canSpawnSubagentsFromTopic,
     takeSubagentWatch,
@@ -1222,6 +1291,8 @@ const defaultSubagentLifecycleHost: SubagentLifecycleHost = {
     publishMessage: (topicId, message) => WsHub.get().broadcastMessage(topicId, message),
     publishCardUpdate: (topicId, messageId, update) =>
       WsHub.get().broadcastMessageUpdated(topicId, messageId, update),
+    publishRoomStatus: (topicId, text) =>
+      WsHub.get().broadcastAiStatus(topicId, { kind: "status_line", text }),
   },
   topic: {
     async createDerived(input) {
@@ -1347,3 +1418,4 @@ export const createSpawnSubagentToolDefinition =
   defaultSubagentLifecycle.createSpawnSubagentToolDefinition;
 export const createPrepareSubagentToolDefinition =
   defaultSubagentLifecycle.createPrepareSubagentToolDefinition;
+export const createSetStatusToolDefinition = defaultSubagentLifecycle.createSetStatusToolDefinition;

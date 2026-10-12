@@ -15,6 +15,7 @@ import { getRegistry, getRegistryOperations } from "#agents/registry";
 import { WsHub } from "#bus";
 import { resolveTopicWorkspaceDir } from "#platform/config";
 import { logger } from "#platform/logger";
+import { subagentInheritedMcp } from "#platform/mcp-catalog-policy";
 import { cloneProfileForChild } from "#platform/playwright/manager";
 import { isTopicRunning } from "#query/active-rooms";
 import {
@@ -494,8 +495,13 @@ async function createDerivedTopicImpl(
           // startAiTurn resolves ahead of the topic defaults; dropping the
           // inherited model when only the agent changes avoids pinning the
           // child to a model that belongs to the parent's agent.
+          // The exception is a server whose catalog policy says it follows
+          // into subagents (`followsIntoSubagents`), e.g. a tax room's agency
+          // jobs need the same tax workflows as their lead.
           const childConfig = { ...(sourceConfig ?? {}) };
+          const inheritedMcp = subagentInheritedMcp(sourceConfig?.mcp);
           delete childConfig.mcp;
+          if (inheritedMcp.length > 0) childConfig.mcp = inheritedMcp;
           if (subagent.agent) {
             delete childConfig.model;
           }

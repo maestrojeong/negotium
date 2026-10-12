@@ -279,7 +279,7 @@ server.tool(
 server.tool(
   "configure_mcp",
   `Configure MCP servers for the current topic. Changes take effect on the next user message automatically (no restart needed).\n` +
-    `- enabled: optional servers to whitelist on top of required ones (null or [] = required-only). Required servers are always active regardless: ${REQUIRED_FORUM_MCP_SERVERS.join(", ")}\n` +
+    `- enabled: optional servers to whitelist on top of required ones (null or [] = required-only). Required servers are always active regardless: ${REQUIRED_FORUM_MCP_SERVERS.join(", ")}, except that enabling a server which replaces the browser (such as tax) drops playwright and background-bash\n` +
     `- Optional servers you can toggle: ${OPTIONAL_FORUM_MCP_SERVERS.join(", ")}.`,
   {
     enabled: z
@@ -316,7 +316,7 @@ server.tool(
 
 server.tool(
   "get_mcp_config",
-  "Get the current MCP server configuration for this topic. Required servers are always active regardless of whitelist settings.",
+  "Get the current MCP server configuration for this topic. Required servers are always active regardless of whitelist settings, except that a server which replaces the browser (such as tax) drops playwright and background-bash.",
   {},
   async () => {
     if (isManagerTopic) {

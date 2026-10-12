@@ -7,7 +7,11 @@ import { getRegistryOperations } from "#agents/registry";
 import { resolveTopicWorkspaceDir } from "#platform/config";
 import { deleteTopicProfileDir, resolveTopicProfileDir } from "#platform/playwright/manager";
 import { appendApiMessage, getAllMessagesForTopic } from "#storage/api-messages";
-import { deleteApiTopicConfig, getApiTopicConfig } from "#storage/api-topic-config";
+import {
+  deleteApiTopicConfig,
+  getApiTopicConfig,
+  setApiTopicConfig,
+} from "#storage/api-topic-config";
 import {
   deleteTopic,
   getTopic,
@@ -846,6 +850,48 @@ describe("createDerivedTopic", () => {
     } finally {
       deleteTopic(sourceTopicId);
       rmSync(getConversationPath(userId, sourceTitle), { force: true });
+      rmSync(getConversationPath(userId, childTitle), { force: true });
+    }
+  });
+
+  test("subagents keep the tax server but no other optional MCP", async () => {
+    const sourceTopicId = randomUUID();
+    const sourceTitle = `tax-source-${randomUUID()}`;
+    const childTitle = `tax-child-${randomUUID()}`;
+    const userId = `tax-user-${randomUUID()}`;
+    const now = new Date().toISOString();
+    let childId: string | undefined;
+
+    upsertTopic({
+      id: sourceTopicId,
+      title: sourceTitle,
+      kind: "agent",
+      defaultModel: "deepseek-pro",
+      defaultEffort: "medium",
+      participants: [{ userId, role: "owner" }],
+      createdAt: now,
+      lastMessageAt: now,
+      aiMode: "always",
+    });
+    setApiTopicConfig(sourceTopicId, { mcp: ["tax", "cua-rs"] });
+
+    try {
+      const child = await createDerivedTopic(sourceTopicId, userId, false, {
+        name: childTitle,
+        subagent: {},
+      });
+      expect(child).not.toBeNull();
+      if (!child) return;
+      childId = child.id;
+      expect(getApiTopicConfig(child.id)?.mcp).toEqual(["tax"]);
+    } finally {
+      if (childId) {
+        deleteApiTopicConfig(childId);
+        deleteTopic(childId);
+        rmSync(resolveTopicWorkspaceDir(childId), { recursive: true, force: true });
+      }
+      deleteApiTopicConfig(sourceTopicId);
+      deleteTopic(sourceTopicId);
       rmSync(getConversationPath(userId, childTitle), { force: true });
     }
   });

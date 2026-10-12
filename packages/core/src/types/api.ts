@@ -296,6 +296,10 @@ export interface SubagentCardDto {
   name: string;
   /** The self-contained task brief the child received. */
   task: string;
+  /** Plain-language one-liner for people; clients show it instead of `task`. */
+  summary?: string;
+  /** The child's latest `set_status` line, e.g. the step it is on. */
+  activity?: string;
   /** Runtime process instance that owns completion tracking for this child. */
   runtimeOwnerId?: string;
   status: SubagentCardStatus;

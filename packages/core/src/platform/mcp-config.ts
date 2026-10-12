@@ -32,6 +32,7 @@ import { logger } from "#platform/logger";
 import {
   classifyForumMcpServers,
   commonRuntimeMcpPolicy,
+  isBrowserlessMcpSet,
   type RuntimeMcpScope,
 } from "#platform/mcp-catalog-policy";
 import { browserOwnerCapability } from "#platform/playwright/capability";
@@ -659,6 +660,19 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
       return cuaRsMcpPort ? cuaRsHttpMcp(agent, cuaRsMcpPort, cuaRsMcpToken) : null;
     },
   },
+  // tax-rs runs as its own persistent Streamable HTTP server (it owns Chrome
+  // profiles and durable jobs), so turns only receive its URL. Jobs are owned
+  // per user, which lets a lead room read the jobs its subagents ran.
+  tax: {
+    ...commonRuntimeMcpPolicy("tax"),
+    build({ agent, userId }) {
+      const url = envText("NEGOTIUM_TAX_MCP_URL") ?? "http://127.0.0.1:9410/mcp";
+      const headers = { "X-Tax-Owner": `user:${userId}` };
+      return agent === "codex"
+        ? { type: "http" as const, url, http_headers: headers }
+        : { type: "http" as const, url, headers };
+    },
+  },
 };
 
 /**
@@ -756,7 +770,8 @@ export function registerRuntimeMcpServer(name: string, entry: RuntimeMcpCatalogE
  * get_topic_mcp / configure_mcp response).
  *
  * In whitelist mode the DB stores only the user-chosen optional servers;
- * required servers are always active but never written to the whitelist.
+ * required servers are always active but never written to the whitelist (a
+ * browser-replacing server such as tax drops playwright and background-bash).
  * This helper surfaces that split so the model never confuses "not in
  * whitelist" with "not active".
  */
@@ -1072,8 +1087,10 @@ export function getForumMcpServers(opts: {
     peerBridge,
   } = opts;
 
+  const browserless = isBrowserlessMcpSet(enabled);
   const filter = (name: string) => {
     if (silent && (name === "task" || name === "decision")) return false;
+    if (browserless && (name === "playwright" || name === "background-bash")) return false;
     if (enabled === null) return true;
     return (
       enabled.includes(name) || (REQUIRED_FORUM_MCP_SERVERS as readonly string[]).includes(name)

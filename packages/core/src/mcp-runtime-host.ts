@@ -7,6 +7,7 @@ export { createSelfConfigToolDefinitions } from "#agents/mcp-tools/self-config";
 export {
   canSpawnSubagentsFromTopic,
   createPrepareSubagentToolDefinition,
+  createSetStatusToolDefinition,
   createSpawnSubagentToolDefinition,
   createSubagentManagementToolDefinitions,
 } from "#agents/mcp-tools/spawn-subagent";

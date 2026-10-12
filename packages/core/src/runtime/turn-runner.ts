@@ -22,6 +22,7 @@ import { asTurnId, asTurnSlotKey, type TurnSlotKey } from "#identifiers";
 import { ensureBgBash } from "#platform/background-bash/manager";
 import { FROM_AUTO_CONTINUE } from "#platform/constants";
 import { logger } from "#platform/logger";
+import { isBrowserlessMcpSet } from "#platform/mcp-catalog-policy";
 import { consumePlaywrightUnavailable, markPlaywrightUnavailable } from "#platform/mcp-config";
 import {
   ensurePlaywright,
@@ -146,7 +147,7 @@ const playwrightUnavailableNoticeAt = new Map<string, number>();
 
 /** Browser and background shell tools are part of every ordinary topic. */
 export function withDefaultPlaywright(configuredMcp: string[], isManager: boolean): string[] {
-  if (isManager) return configuredMcp;
+  if (isManager || isBrowserlessMcpSet(configuredMcp)) return configuredMcp;
   const enabled = new Set(configuredMcp);
   enabled.add("playwright");
   enabled.add("background-bash");

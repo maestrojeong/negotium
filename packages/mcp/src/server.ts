@@ -26,6 +26,7 @@ import {
   createPrepareSubagentToolDefinition,
   createPublishHtmlToolDefinitions,
   createSelfConfigToolDefinitions,
+  createSetStatusToolDefinition,
   createSpawnSubagentToolDefinition,
   createSubagentManagementToolDefinitions,
   dispatchPeerRuntimeAskUser,
@@ -340,6 +341,17 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
       askUserTool.description,
       askUserTool.schema as any,
       askHandler as any,
+    );
+  }
+
+  // Every local agent room can say, in plain words, what it is doing now.
+  if (!ctx.peerBridge) {
+    const statusTool = createSetStatusToolDefinition({ topicId: ctx.topicId });
+    server.tool(
+      statusTool.name,
+      statusTool.description,
+      statusTool.schema as any,
+      statusTool.handler as any,
     );
   }
 

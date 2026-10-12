@@ -49,6 +49,10 @@ describe("default topic MCPs", () => {
   test("does not add browser or background shell tools to Manager", () => {
     expect(withDefaultPlaywright([], true)).toEqual([]);
   });
+
+  test("keeps tax rooms on their workflow tools only", () => {
+    expect(withDefaultPlaywright(["tax"], false)).toEqual(["tax"]);
+  });
 });
 
 describe("superseding user turns", () => {

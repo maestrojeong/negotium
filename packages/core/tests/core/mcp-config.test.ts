@@ -1061,3 +1061,66 @@ test("a threaded turn's session-comm carries its thread on the hosted surface", 
   ) as { ctx?: { threadRootId?: string } };
   expect(payload.ctx?.threadRootId).toBe("root-abc");
 });
+
+/**
+ * tax: the separately run tax-rs server. Rooms that enable it never receive
+ * the default browser or background shell, and every job is owned per user so
+ * a lead room can read the jobs its subagents ran.
+ */
+describe("mcp-config: tax", () => {
+  test("points at tax-rs Streamable HTTP with a per-user owner header", () => {
+    const forClaude = getForumMcpServers({
+      userId: "u1",
+      session: "desktop",
+      agent: "claude",
+      enabled: ["tax"],
+    }).tax;
+    expect(forClaude).toEqual({
+      type: "http",
+      url: "http://127.0.0.1:9410/mcp",
+      headers: { "X-Tax-Owner": "user:u1" },
+    });
+
+    const forCodex = getForumMcpServers({
+      userId: "u1",
+      session: "desktop",
+      agent: "codex",
+      enabled: ["tax"],
+    }).tax;
+    expect(forCodex).toEqual({
+      type: "http",
+      url: "http://127.0.0.1:9410/mcp",
+      http_headers: { "X-Tax-Owner": "user:u1" },
+    });
+  });
+
+  test("is opt-in and replaces the default browser and background shell", () => {
+    const plain = getForumMcpServers({
+      userId: "u1",
+      session: "desktop",
+      topicId: "t1",
+      agent: "claude",
+      enabled: [],
+      playwrightPort: 9100,
+      playwrightCapability: "cap",
+      bgBashPort: 9200,
+    });
+    expect(plain.tax).toBeUndefined();
+    expect(plain.playwright).toBeDefined();
+    expect(plain["background-bash"]).toBeDefined();
+
+    const tax = getForumMcpServers({
+      userId: "u1",
+      session: "desktop",
+      topicId: "t1",
+      agent: "claude",
+      enabled: ["tax"],
+      playwrightPort: 9100,
+      playwrightCapability: "cap",
+      bgBashPort: 9200,
+    });
+    expect(tax.tax).toBeDefined();
+    expect(tax.playwright).toBeUndefined();
+    expect(tax["background-bash"]).toBeUndefined();
+  });
+});
