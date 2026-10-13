@@ -161,10 +161,12 @@ export async function wireNodeMcps(
   const failed: NodeMcpWireReport["failed"] = [];
   for (const spec of manifest.list()) {
     if (!manifest.isEnabled(spec.key)) continue;
+    const follows = spec.followsIntoSubagents ? { followsIntoSubagents: true } : {};
     try {
       if (spec.transport === "http") {
         if (spec.scope === "instance") {
           entries.push({
+            ...follows,
             key: spec.key,
             kind: "http-instance",
             async ensurePort(instanceKey) {
@@ -177,9 +179,10 @@ export async function wireNodeMcps(
         }
         const instance = await host.ensure(spec.key);
         if (!instance.port) throw new Error("no port allocated");
-        entries.push({ key: spec.key, kind: "http", port: instance.port });
+        entries.push({ ...follows, key: spec.key, kind: "http", port: instance.port });
       } else {
         entries.push({
+          ...follows,
           key: spec.key,
           kind: "stdio",
           command: spec.command,

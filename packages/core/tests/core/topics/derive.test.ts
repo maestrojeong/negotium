@@ -5,9 +5,14 @@ import { join } from "node:path";
 import { maestroSessionsDir } from "maestro-agent-sdk";
 import { getRegistryOperations } from "#agents/registry";
 import { resolveTopicWorkspaceDir } from "#platform/config";
+import { setNodeMcpServers } from "#platform/mcp-config";
 import { deleteTopicProfileDir, resolveTopicProfileDir } from "#platform/playwright/manager";
 import { appendApiMessage, getAllMessagesForTopic } from "#storage/api-messages";
-import { deleteApiTopicConfig, getApiTopicConfig } from "#storage/api-topic-config";
+import {
+  deleteApiTopicConfig,
+  getApiTopicConfig,
+  setApiTopicConfig,
+} from "#storage/api-topic-config";
 import {
   deleteTopic,
   getTopic,
@@ -846,6 +851,97 @@ describe("createDerivedTopic", () => {
     } finally {
       deleteTopic(sourceTopicId);
       rmSync(getConversationPath(userId, sourceTitle), { force: true });
+      rmSync(getConversationPath(userId, childTitle), { force: true });
+    }
+  });
+
+  test("subagents keep only node MCP servers that opt in with followsIntoSubagents", async () => {
+    const sourceTopicId = randomUUID();
+    const sourceTitle = `follow-source-${randomUUID()}`;
+    const childTitle = `follow-child-${randomUUID()}`;
+    const userId = `follow-user-${randomUUID()}`;
+    const now = new Date().toISOString();
+    let childId: string | undefined;
+
+    setNodeMcpServers([
+      { key: "follows", kind: "stdio", command: "follows-mcp", followsIntoSubagents: true },
+      { key: "stays", kind: "stdio", command: "stays-mcp" },
+    ]);
+    upsertTopic({
+      id: sourceTopicId,
+      title: sourceTitle,
+      kind: "agent",
+      defaultModel: "deepseek-pro",
+      defaultEffort: "medium",
+      participants: [{ userId, role: "owner" }],
+      createdAt: now,
+      lastMessageAt: now,
+      aiMode: "always",
+    });
+    setApiTopicConfig(sourceTopicId, { mcp: ["follows", "stays", "cua-rs"] });
+
+    try {
+      const child = await createDerivedTopic(sourceTopicId, userId, false, {
+        name: childTitle,
+        subagent: {},
+      });
+      expect(child).not.toBeNull();
+      if (!child) return;
+      childId = child.id;
+      expect(getApiTopicConfig(child.id)?.mcp).toEqual(["follows"]);
+    } finally {
+      setNodeMcpServers([]);
+      if (childId) {
+        deleteApiTopicConfig(childId);
+        deleteTopic(childId);
+        rmSync(resolveTopicWorkspaceDir(childId), { recursive: true, force: true });
+      }
+      deleteApiTopicConfig(sourceTopicId);
+      deleteTopic(sourceTopicId);
+      rmSync(getConversationPath(userId, childTitle), { force: true });
+    }
+  });
+
+  test("subagents get no optional MCP when no node server opts in", async () => {
+    const sourceTopicId = randomUUID();
+    const sourceTitle = `no-follow-source-${randomUUID()}`;
+    const childTitle = `no-follow-child-${randomUUID()}`;
+    const userId = `no-follow-user-${randomUUID()}`;
+    const now = new Date().toISOString();
+    let childId: string | undefined;
+
+    setNodeMcpServers([{ key: "stays", kind: "stdio", command: "stays-mcp" }]);
+    upsertTopic({
+      id: sourceTopicId,
+      title: sourceTitle,
+      kind: "agent",
+      defaultModel: "deepseek-pro",
+      defaultEffort: "medium",
+      participants: [{ userId, role: "owner" }],
+      createdAt: now,
+      lastMessageAt: now,
+      aiMode: "always",
+    });
+    setApiTopicConfig(sourceTopicId, { mcp: ["stays", "cua-rs"] });
+
+    try {
+      const child = await createDerivedTopic(sourceTopicId, userId, false, {
+        name: childTitle,
+        subagent: {},
+      });
+      expect(child).not.toBeNull();
+      if (!child) return;
+      childId = child.id;
+      expect(getApiTopicConfig(child.id)?.mcp).toBeUndefined();
+    } finally {
+      setNodeMcpServers([]);
+      if (childId) {
+        deleteApiTopicConfig(childId);
+        deleteTopic(childId);
+        rmSync(resolveTopicWorkspaceDir(childId), { recursive: true, force: true });
+      }
+      deleteApiTopicConfig(sourceTopicId);
+      deleteTopic(sourceTopicId);
       rmSync(getConversationPath(userId, childTitle), { force: true });
     }
   });
