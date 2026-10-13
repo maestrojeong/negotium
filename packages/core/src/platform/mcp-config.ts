@@ -690,14 +690,18 @@ export function resolveCuaRsBinary(platform: NodeJS.Platform = process.platform)
 
 // --- Derived catalog views ---
 
-export type NodeMcpEntry =
+export type NodeMcpEntry = (
   | { key: string; kind: "http"; port: number }
   | {
       key: string;
       kind: "http-instance";
       ensurePort: (instanceKey: string) => Promise<number>;
     }
-  | { key: string; kind: "stdio"; command: string; args?: string[]; env?: Record<string, string> };
+  | { key: string; kind: "stdio"; command: string; args?: string[]; env?: Record<string, string> }
+) & {
+  /** Stays enabled in subagents spawned from a room that has it (see `subagentInheritedMcp`). */
+  followsIntoSubagents?: boolean;
+};
 
 let nodeMcpEntries: NodeMcpEntry[] = [];
 const resolvedNodeMcpPorts = new WeakMap<
@@ -815,6 +819,17 @@ export function setNodeMcpServers(entries: NodeMcpEntry[]): void {
 
 export function getNodeMcpServers(): readonly NodeMcpEntry[] {
   return nodeMcpEntries;
+}
+
+/**
+ * The part of a room's MCP whitelist its subagents keep: node servers that opt
+ * in with `followsIntoSubagents`. Everything else is dropped, as before.
+ */
+export function subagentInheritedMcp(parentMcp: readonly string[] | null | undefined): string[] {
+  if (!parentMcp?.length) return [];
+  return parentMcp.filter((key) =>
+    nodeMcpEntries.some((entry) => entry.key === key && entry.followsIntoSubagents),
+  );
 }
 
 /** Prevent host grants from replacing node-owned MCP servers. */

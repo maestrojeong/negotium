@@ -15,6 +15,7 @@ import { getRegistry, getRegistryOperations } from "#agents/registry";
 import { WsHub } from "#bus";
 import { resolveTopicWorkspaceDir } from "#platform/config";
 import { logger } from "#platform/logger";
+import { subagentInheritedMcp } from "#platform/mcp-config";
 import { cloneProfileForChild } from "#platform/playwright/manager";
 import { isTopicRunning } from "#query/active-rooms";
 import {
@@ -494,8 +495,12 @@ async function createDerivedTopicImpl(
           // startAiTurn resolves ahead of the topic defaults; dropping the
           // inherited model when only the agent changes avoids pinning the
           // child to a model that belongs to the parent's agent.
+          // The exception is a node server that opts in with
+          // `followsIntoSubagents`: the lead's work for a subagent needs it.
           const childConfig = { ...(sourceConfig ?? {}) };
+          const inheritedMcp = subagentInheritedMcp(sourceConfig?.mcp);
           delete childConfig.mcp;
+          if (inheritedMcp.length > 0) childConfig.mcp = inheritedMcp;
           if (subagent.agent) {
             delete childConfig.model;
           }

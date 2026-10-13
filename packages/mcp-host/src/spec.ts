@@ -31,6 +31,12 @@ export interface McpServerSpec {
   idleEvictMs?: number;
   /** Periodic TCP probe interval; the instance is restarted on failure (http only). */
   healthIntervalMs?: number;
+  /**
+   * Subagent rooms start with no optional MCP. When true, a subagent spawned
+   * from a room that has this server enabled gets it enabled too, so a lead
+   * can hand work that needs the server to its subagents. Default false.
+   */
+  followsIntoSubagents?: boolean;
 }
 
 /** Snapshot of one live (or pseudo, for stdio) MCP instance. */
@@ -75,6 +81,7 @@ export const mcpServerSpecSchema: z.ZodType<McpServerSpec> = z
     readyTimeoutMs: z.number().int().positive().optional(),
     idleEvictMs: z.number().int().positive().optional(),
     healthIntervalMs: z.number().int().positive().optional(),
+    followsIntoSubagents: z.boolean().optional(),
   })
   .superRefine((spec, ctx) => {
     if (spec.transport === "http") {
