@@ -494,6 +494,49 @@ describe("negotium MCP endpoint", () => {
     expect(resultText(result)).toContain("already exists");
   });
 
+  /**
+   * A topic registered conversationally (via this tool) must land in the
+   * same namespace as the turn that asked for it — a Telegram forum group's
+   * General, here — or the new room is unreachable from that group: no
+   * forum thread materializes for it and `/topics` run inside the group
+   * can't find it either. Regression test for the surfaceScope that used
+   * to get silently dropped on creation.
+   */
+  test("register_topic inherits the calling topic's surfaceScope", async () => {
+    const suffix = randomUUID();
+    const groupScope = `tg:-100${suffix}`;
+    const groupGeneral = ensurePersonalGeneral(`group-owner-${suffix}`, "telegram", {
+      surfaceScope: groupScope,
+    });
+
+    const groupCtx: RuntimeMcpContext = {
+      ...ctx,
+      userId: groupGeneral.participants[0]!.userId,
+      actorUserId: groupGeneral.participants[0]!.userId,
+      topicId: groupGeneral.id,
+      topicTitle: groupGeneral.title,
+    };
+    const groupClient = new Client({ name: "negotium-telegram-group-test", version: "1.0.0" });
+    const token = issueRuntimeMcpToken(groupCtx);
+    const url = new URL(
+      `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+    );
+    try {
+      await groupClient.connect(new StreamableHTTPClientTransport(url));
+      const result = await groupClient.callTool({
+        name: "register_topic",
+        arguments: { title: `bc-${suffix}`, agent: "claude" },
+      });
+      expect(result.isError).toBeFalsy();
+      const match = resultText(result).match(/id: ([0-9a-f-]{36})/);
+      expect(match).not.toBeNull();
+      const created = getTopic(match![1]!);
+      expect(created?.surfaceScope).toBe(groupScope);
+    } finally {
+      await groupClient.close();
+    }
+  });
+
   test("list_topics lists only the calling user's topics", async () => {
     registerTopic({ title: "other-user-room", userId: "someone-else", agent: "claude" });
     const result = await client.callTool({ name: "list_topics", arguments: {} });

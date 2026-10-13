@@ -55,7 +55,13 @@ function callerSurface(ctx: RuntimeMcpContext): TopicSurface {
   return getTopic(ctx.topicId)?.surface ?? defaultTopicSurface();
 }
 
-/** The workspace instance the calling turn belongs to. Always null off `otium`. */
+/**
+ * The namespace instance the calling turn belongs to: an Otium workspace, a
+ * Telegram forum group, or null (terminal, a Telegram DM, or a non-forum
+ * chat). New topics created from this turn (e.g. `register_topic`) must
+ * inherit it, or they land outside the group/workspace the conversation is
+ * actually in.
+ */
 function callerSurfaceScope(ctx: RuntimeMcpContext): string | null {
   return getTopic(ctx.topicId)?.surfaceScope ?? null;
 }
@@ -242,6 +248,7 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
             title,
             userId: ctx.userId,
             surface: callerSurface(ctx),
+            surfaceScope: callerSurfaceScope(ctx),
             agent,
             model,
             effort: effort as EffortLevel | undefined,
