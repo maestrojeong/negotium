@@ -42,6 +42,15 @@ export type TelegramCommandRouter = (
   chatId: number,
   threadId?: number,
   telegramUserId?: number,
+  /**
+   * True for a private 1:1 chat (`msg.chat.type === "private"`). Topic
+   * lifecycle/switching lives in a connected forum group (S-7): a DM only
+   * ever has one location (the chat window itself) bound to the owner's
+   * personal General, so there is nothing to list, load, or fork there —
+   * doing so from the General manager's own conversation is what created a
+   * surfaceScope-less orphan topic (see the register_topic fix).
+   */
+  isPrivateDm?: boolean,
 ) => Promise<void>;
 
 /**
@@ -84,6 +93,7 @@ export function createTelegramCommandRouter(
     chatId: number,
     threadId?: number,
     telegramUserId?: number,
+    isPrivateDm = false,
   ): Promise<void> {
     const [rawCommand = ""] = text.split(/\s+/);
     const addressedUsername = rawCommand.match(/@(\w+)$/)?.[1];
@@ -101,6 +111,32 @@ export function createTelegramCommandRouter(
 
     const command = rawCommand.replace(/@\w+$/, "");
     const argument = extractCommandArg(text);
+
+    // Topic lifecycle/switching is a forum-group concern: a DM is one
+    // location permanently bound to the owner's personal General, so there
+    // is nothing here to list, load, switch, or delete. Routing these
+    // through anyway is exactly what let a DM conversation mint a
+    // surfaceScope-less topic that no forum group could ever see.
+    const DM_RESTRICTED_COMMANDS = new Set([
+      "/topics",
+      "/load",
+      "/unload",
+      "/agent",
+      "/fork",
+      "/spawn",
+      "/del",
+      "/del!",
+    ]);
+    if (isPrivateDm && (DM_RESTRICTED_COMMANDS.has(command) || (command === "/new" && argument))) {
+      reply(
+        chatId,
+        threadId,
+        "topic management lives in a connected forum group, not this DM — " +
+          "send /start to see how to connect one.",
+      );
+      return;
+    }
+
     switch (command) {
       case "/start":
         await context.sendOnboardingGuide(chatId, threadId);
@@ -303,9 +339,13 @@ export function createTelegramCommandRouter(
         reply(
           chatId,
           threadId,
-          "commands: /new [name], /topics, /agent <claude|codex|maestro>, " +
-            "/load <topic>, /unload, /fork [name], /spawn [name], " +
-            "/del [name], /del! [name], /abort, /vault <list|set|del>",
+          isPrivateDm
+            ? "commands: /new, /abort, /vault <list|set|del> — topic management " +
+                "(/topics, /load, /fork, /spawn, /del, /agent) lives in a connected " +
+                "forum group; send /start to connect one"
+            : "commands: /new [name], /topics, /agent <claude|codex|maestro>, " +
+                "/load <topic>, /unload, /fork [name], /spawn [name], " +
+                "/del [name], /del! [name], /abort, /vault <list|set|del>",
         );
     }
   };

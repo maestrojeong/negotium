@@ -2115,10 +2115,10 @@ export function startTelegramAdapter(opts: TelegramAdapterOptions): TelegramAdap
       // can change the chat's topic mapping.
       const command = text.split(/\s+/, 1)[0]?.replace(/@\w+$/, "");
       if (command === "/abort") {
-        void handleCommand(text, chatId, threadId, msg.from?.id);
+        void handleCommand(text, chatId, threadId, msg.from?.id, privateDm);
       } else {
         mediaIntake.enqueue(chatId, threadId, () =>
-          handleCommand(text, chatId, threadId, msg.from?.id),
+          handleCommand(text, chatId, threadId, msg.from?.id, privateDm),
         );
       }
       return;

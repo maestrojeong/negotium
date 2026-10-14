@@ -65,6 +65,53 @@ describe("Clawgram-style onboarding", () => {
     }
   });
 
+  /**
+   * A DM is one location permanently bound to the owner's personal General —
+   * there is nothing there to list, load, switch, fork, or delete. Regression
+   * test for the fix that stopped routing these through to the handlers (the
+   * same gap that let a DM conversation mint a surfaceScope-less orphan
+   * topic no forum group could ever see).
+   */
+  test("topic lifecycle commands are refused in a private DM and point at /start", async () => {
+    const fake = new FakeTelegramClient();
+    const userId = `telegram-dm-restricted-${randomUUID()}`;
+    const adapter = startTelegramAdapter({
+      client: fake,
+      userId,
+      allowedUsers: [String(OWNER)],
+      mappingDbPath: freshDb(),
+      startTurn: () => null,
+    });
+
+    try {
+      for (const text of [
+        "/topics",
+        "/load some-topic",
+        "/unload",
+        "/agent claude",
+        "/fork",
+        "/spawn",
+        "/del",
+        "/del!",
+        "/new named-topic",
+      ]) {
+        fake.calls = [];
+        fake.emit({ chat: { id: DM, type: "private" }, from: { id: OWNER }, text });
+        await waitFor(() => fake.callsFor(DM).length > 0);
+        expect(fake.callsFor(DM).at(-1)?.text).toContain("connected forum group");
+      }
+
+      // Bare /new (session reset) and /abort stay available — they act on
+      // the DM's own General, not on topic lifecycle/switching.
+      fake.calls = [];
+      fake.emit({ chat: { id: DM, type: "private" }, from: { id: OWNER }, text: "/abort" });
+      await waitFor(() => fake.callsFor(DM).length > 0);
+      expect(fake.callsFor(DM).at(-1)?.text).not.toContain("connected forum group");
+    } finally {
+      adapter.stop();
+    }
+  });
+
   test("promotion auto-connects a forum and query replies return only to their origin", async () => {
     const fake = new FakeTelegramClient();
     const userId = `telegram-routing-${randomUUID()}`;
