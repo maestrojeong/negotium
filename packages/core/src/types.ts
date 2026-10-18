@@ -150,7 +150,12 @@ export type UnifiedEvent =
       type: "error";
       content: string;
       usage?: TokenUsage;
-      code?: "budget_exceeded";
+      /**
+       * - `budget_exceeded`: the Claude spend budget (max USD) was hit.
+       * - `context_budget_exceeded`: maestro-agent-sdk refused a request that is
+       *   still over the model's context budget after trimming (SDK >= 0.5.4).
+       */
+      code?: "budget_exceeded" | "context_budget_exceeded";
     }
   | { type: "status"; content: string };
 
