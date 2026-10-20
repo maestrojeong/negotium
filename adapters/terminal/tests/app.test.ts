@@ -252,20 +252,22 @@ test("Maestro model selection opens the matching provider key form", () => {
   expect(maestroVaultKeyForModel("gpt-6-sol")).toBeNull();
 });
 
-test("bare Vault opens the manager while list, set, and del stay compact", async () => {
+test("bare Vault and Vault list both open the manager; set and del stay compact", async () => {
+  // "list" used to print a single squashed-newline footer notice through
+  // `runVaultCommand`, which was strictly worse than the scrollable manager
+  // overlay bare `/vault` already opens — it now opens that overlay too,
+  // so `runVaultCommand` (and its text output) is never reached for "list".
   const commands: string[] = [];
   const client = {
     runVaultCommand(commandLine: string) {
       commands.push(commandLine);
-      if (commandLine === "/vault list") return "Vault keys (1):\n- API_KEY: test credential";
       return commandLine.includes(" set ") ? "Stored API_KEY." : "Deleted API_KEY.";
     },
   };
 
   expect(await runTerminalVaultCommand(client, "/vault")).toEqual({ kind: "open-manager" });
   expect(await runTerminalVaultCommand(client, "/vault list")).toEqual({
-    kind: "notice",
-    notice: "Vault keys (1): - API_KEY: test credential",
+    kind: "open-manager",
   });
   expect(await runTerminalVaultCommand(client, "/vault set API_KEY top-secret")).toEqual({
     kind: "notice",
@@ -275,7 +277,7 @@ test("bare Vault opens the manager while list, set, and del stay compact", async
     kind: "notice",
     notice: "Deleted API_KEY.",
   });
-  expect(commands).toEqual(["/vault list", "/vault set API_KEY top-secret", "/vault del API_KEY"]);
+  expect(commands).toEqual(["/vault set API_KEY top-secret", "/vault del API_KEY"]);
 });
 
 test("compact Vault command failures never reflect plaintext command details", async () => {

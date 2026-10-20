@@ -2000,6 +2000,16 @@ function vaultOverlayLines(state: AppState, width: number, height: number): UiLi
 
   const entries = state.vaultEntries;
   const visibleCount = Math.max(1, height - 13);
+  const selectedIndex = Math.min(state.vaultPickerIndex, Math.max(0, entries.length - 1));
+  // Keep the selected row in view instead of always showing entries[0..cap):
+  // a long list (anything the agent-initiated request_vault_secret flow adds
+  // past the first screenful) was previously just invisible, with no scroll
+  // and no indication there was more below.
+  const start = Math.min(
+    Math.max(0, selectedIndex - visibleCount + 1),
+    Math.max(0, entries.length - visibleCount),
+  );
+  const visibleEntries = entries.slice(start, start + visibleCount);
   return [
     ...header,
     ...(entries.length === 0
@@ -2007,11 +2017,28 @@ function vaultOverlayLines(state: AppState, width: number, height: number): UiLi
           line("  No secrets stored", { bold: true }),
           line("  Add one with the command below.", { fg: theme.muted }),
         ]
-      : entries.slice(0, visibleCount).map((entry) =>
-          line(`  • ${entry.key}  ${entry.description || "No description"}`, {
-            fg: theme.muted,
+      : [
+          ...visibleEntries.map((entry, offset) => {
+            const index = start + offset;
+            const selected = index === selectedIndex;
+            return line(
+              `  ${selected ? "›" : "•"} ${entry.key}  ${entry.description || "No description"}`,
+              {
+                fg: selected ? theme.text : theme.muted,
+                bg: selected ? theme.selected : theme.surface,
+                bold: selected,
+              },
+            );
           }),
-        )),
+          ...(entries.length > visibleCount
+            ? [
+                line(
+                  `  ↑↓ scroll · showing ${start + 1}-${start + visibleEntries.length} of ${entries.length}`,
+                  { fg: theme.subtle },
+                ),
+              ]
+            : []),
+        ]),
     line(""),
     line("  Add or update", { fg: theme.cyan, bold: true }),
     line("  /vault set KEY VALUE | optional description", { fg: theme.text }),
@@ -2614,11 +2641,7 @@ function footerHintText(state: AppState): string[] {
   if (!state.overlay && activeVaultRequest(state)) {
     return state.vaultRequestMode === "confirm-decline"
       ? ["y decline · n keep typing  ", "y/n  "]
-      : [
-          "Enter save · Esc clear/decline · Ctrl-C stop turn  ",
-          "Enter save · Esc  ",
-          "Enter  ",
-        ];
+      : ["Enter save · Esc clear/decline · Ctrl-C stop turn  ", "Enter save · Esc  ", "Enter  "];
   }
   const topic = activeTopic(state);
   if (topic && state.activity[topic.id]?.running) return ["Esc/Ctrl-C stop  ", "Esc stop  "];

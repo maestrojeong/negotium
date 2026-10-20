@@ -1745,11 +1745,7 @@ export function createNodeControlHandler(
           const topic = getTopic(topicId);
           if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
           const userId = requiredText(body.userId, "userId");
-          if (
-            body.value !== undefined &&
-            body.value !== null &&
-            typeof body.value !== "string"
-          ) {
+          if (body.value !== undefined && body.value !== null && typeof body.value !== "string") {
             return jsonError(400, "value must be a string when present");
           }
           const value = typeof body.value === "string" ? body.value : null;
@@ -2399,11 +2395,7 @@ export function createNodeControlHandler(
         const body = await bodyRecord(req);
         const topicId = requiredText(body.topicId, "topicId");
         const userId = requiredText(body.userId, "userId");
-        if (
-          body.value !== undefined &&
-          body.value !== null &&
-          typeof body.value !== "string"
-        ) {
+        if (body.value !== undefined && body.value !== null && typeof body.value !== "string") {
           return jsonError(400, "value must be a string when present");
         }
         const value = typeof body.value === "string" ? body.value : null;

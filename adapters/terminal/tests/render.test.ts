@@ -154,13 +154,41 @@ describe("terminal renderer", () => {
 
     expect(output).toContain("Encrypted locally");
     expect(output).toContain("API_TOKEN  primary");
-    expect(output).toContain("• SIGNING_KEY  release");
+    // vaultPickerIndex selects SIGNING_KEY, which renders with the "›"
+    // selection glyph rather than the plain "•" bullet.
+    expect(output).toContain("› SIGNING_KEY  release");
     expect(output).toContain("/vault set KEY VALUE | optional description");
     expect(output).toContain("Example: /vault set GITHUB_TOKEN your-secret-value | GitHub access");
     expect(output).toContain("/vault del KEY");
     expect(output).toContain("Example: /vault del GITHUB_TOKEN");
     expect(output).toContain("Type /vault set … or /vault del …");
     expect(output).not.toContain("N add");
+  });
+
+  test("scrolls the Vault list to keep the selection visible instead of hard-cutting past the first screenful", () => {
+    const entries = Array.from({ length: 19 }, (_, index) => ({
+      key: `KEY_${String(index).padStart(2, "0")}`,
+      description: `secret ${index}`,
+    }));
+    const base = {
+      ...createInitialState("local"),
+      overlay: "vault" as const,
+      vaultEntries: entries,
+    };
+
+    // A short terminal with the selection still at the top: only the first
+    // screenful renders, but it says so instead of silently truncating.
+    const topView = stripAnsi(renderApp({ ...base, vaultPickerIndex: 0 }, 80, 22));
+    expect(topView).toContain("KEY_00");
+    expect(topView).not.toContain("KEY_18");
+    expect(topView).toMatch(/↑↓ scroll · showing 1-\d+ of 19/);
+
+    // Selecting the last entry must scroll it into view rather than leaving
+    // it permanently unreachable, which was the bug: entries past
+    // `height - 13` never appeared no matter how the picker moved.
+    const bottomView = stripAnsi(renderApp({ ...base, vaultPickerIndex: 18 }, 80, 22));
+    expect(bottomView).toContain("› KEY_18  secret 18");
+    expect(bottomView).toMatch(/↑↓ scroll · showing \d+-19 of 19/);
   });
 
   test("masks Vault secret input while preserving the cursor position", () => {

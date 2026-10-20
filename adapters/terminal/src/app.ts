@@ -1527,6 +1527,19 @@ export class TerminalApp {
         this.#handleVaultListInput(chunk);
         return;
       }
+      if (this.#state.vaultMode === "list" && this.#state.vaultEntries.length > 0) {
+        // The list has no cap on how many secrets it holds, but the overlay
+        // only has a few rows of room; without this the entries past the
+        // first screenful were invisible with no indication more existed.
+        if (chunk === "\u001b[A") {
+          this.#moveVaultPicker(-1);
+          return;
+        }
+        if (chunk === "\u001b[B") {
+          this.#moveVaultPicker(1);
+          return;
+        }
+      }
       if (chunk === "\u001b") {
         this.#cancelVaultForm();
         return;
@@ -2008,6 +2021,18 @@ export class TerminalApp {
 
   #moveTopicPicker(delta: number): void {
     this.#state = moveTopicPickerSelection(this.#state, delta);
+    this.#queueRender();
+  }
+
+  #moveVaultPicker(delta: number): void {
+    if (this.#state.vaultEntries.length === 0) return;
+    this.#state = {
+      ...this.#state,
+      vaultPickerIndex: Math.min(
+        this.#state.vaultEntries.length - 1,
+        Math.max(0, this.#state.vaultPickerIndex + delta),
+      ),
+    };
     this.#queueRender();
   }
 
@@ -2671,6 +2696,13 @@ export class TerminalApp {
   #scroll(delta: number): void {
     if (this.#state.overlay === "subagents" || this.#state.overlay === "decisions") {
       this.#panActiveGraph(0, -delta);
+      return;
+    }
+    if (this.#state.overlay === "vault" && this.#state.vaultMode === "list") {
+      // Same sign as the arrow keys: a wheel-up tick (positive delta, same
+      // direction as PageUp below) moves the selection toward the top of
+      // the list, not into the hidden conversation behind the overlay.
+      this.#moveVaultPicker(-delta);
       return;
     }
     if (this.#state.overlay === "background-session") {

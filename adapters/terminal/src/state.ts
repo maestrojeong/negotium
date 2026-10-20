@@ -234,8 +234,7 @@ export function activeVaultRequest(state: AppState): TerminalMessage | null {
   return (
     activeMessages(state).find(
       (message) =>
-        message.kind === "vault_secret_request" &&
-        message.vaultSecretRequest?.status === "pending",
+        message.kind === "vault_secret_request" && message.vaultSecretRequest?.status === "pending",
     ) ?? null
   );
 }

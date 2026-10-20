@@ -23,11 +23,11 @@ import {
   vaultSet,
 } from "#storage/vault";
 import {
+  type ClaimVaultRequestGateResult,
   cancelVaultRequestGate,
   claimVaultRequestGateAndAnswer,
-  type ClaimVaultRequestGateResult,
-  prepareVaultRequestGate,
   type PrepareVaultRequestGateResult,
+  prepareVaultRequestGate,
   quarantineForeignVaultRequestGates,
   quarantineVaultRequestGate,
   type VaultRequestGateCardUpdate,
@@ -462,11 +462,12 @@ export function createRequestVaultRuntime(host: RequestVaultRuntimeHost): Reques
       outcome: "fulfilled" | "declined" | "no_answer";
       userId: string;
     }) => void;
-    const promise = new Promise<{ outcome: "fulfilled" | "declined" | "no_answer"; userId: string }>(
-      (resolve) => {
-        resolveAnswer = resolve;
-      },
-    );
+    const promise = new Promise<{
+      outcome: "fulfilled" | "declined" | "no_answer";
+      userId: string;
+    }>((resolve) => {
+      resolveAnswer = resolve;
+    });
     pendingRequests.set(message.id, {
       topicId: ctx.topicId,
       queryId: ctx.queryId,

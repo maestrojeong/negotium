@@ -479,8 +479,12 @@ export async function runTerminalVaultCommand(
   const match = commandLine.trim().match(/^\/vault(?:@\w+)?(?:\s+([^\s]+))?/i);
   const subcommand = match?.[1]?.toLowerCase();
 
-  if (!subcommand) return { kind: "open-manager" };
-  if (subcommand !== "list" && subcommand !== "set" && subcommand !== "del") {
+  // "list" degrades to a single squashed-newline footer notice through
+  // `executeVaultCommand` below, which is strictly worse than the scrollable
+  // manager overlay the bare `/vault` already opens — so route it there too
+  // instead of making it a second, worse way to see the same thing.
+  if (!subcommand || subcommand === "list") return { kind: "open-manager" };
+  if (subcommand !== "set" && subcommand !== "del") {
     return { kind: "notice", notice: TERMINAL_VAULT_USAGE };
   }
   if (!client.runVaultCommand) {

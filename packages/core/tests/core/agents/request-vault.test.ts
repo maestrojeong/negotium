@@ -56,7 +56,11 @@ describe("runtime request_vault_secret", () => {
 
     const pending = tool.handler({ key, description: "A test secret" });
     const card = await waitForVaultCard(topicId);
-    expect(card.vaultSecretRequest).toEqual({ key, description: "A test secret", status: "pending" });
+    expect(card.vaultSecretRequest).toEqual({
+      key,
+      description: "A test secret",
+      status: "pending",
+    });
 
     const { answerPendingVaultSecretRequest } = await import("#agents/mcp-tools/request-vault");
     const answered = answerPendingVaultSecretRequest(topicId, card.id, USER, "super-secret-value");
