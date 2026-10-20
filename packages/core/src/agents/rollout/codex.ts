@@ -452,11 +452,39 @@ export function readLatestCodexContextUsage(threadId: string): CodexContextUsage
   }
 }
 
-export function readLatestCodexTokenTotals(threadId: string): CodexTokenTotals | undefined {
+/** `forked_from_id` from a rollout's leading session_meta line, if any. */
+export function extractCodexForkedFromId(jsonl: string): string | undefined {
+  const newline = jsonl.indexOf("\n");
+  try {
+    const entry = JSON.parse(newline < 0 ? jsonl : jsonl.slice(0, newline)) as {
+      type?: string;
+      payload?: { forked_from_id?: unknown };
+    };
+    const id = entry.type === "session_meta" ? entry.payload?.forked_from_id : undefined;
+    return typeof id === "string" && id ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function readLatestCodexTokenTotals(
+  threadId: string,
+  depth = 0,
+): CodexTokenTotals | undefined {
   const path = latestCodexRolloutPath(threadId);
   if (!path) return undefined;
   try {
-    return extractLatestCodexTokenTotals(readFileSync(path, "utf8"));
+    const jsonl = readFileSync(path, "utf8");
+    const totals = extractLatestCodexTokenTotals(jsonl);
+    if (totals || depth >= 8) return totals;
+    // A freshly created paginated fork has no token_count of its own yet, but
+    // Codex continues the parent's thread-lifetime counter on the fork's first
+    // turn.completed. Inherit the parent's totals as the baseline so the fork
+    // turn is not billed with the parent's whole history.
+    const parentId = extractCodexForkedFromId(jsonl);
+    return parentId && parentId !== threadId
+      ? readLatestCodexTokenTotals(parentId, depth + 1)
+      : undefined;
   } catch (error) {
     logger.debug({ error, threadId }, "codex token totals: rollout read failed");
     return undefined;

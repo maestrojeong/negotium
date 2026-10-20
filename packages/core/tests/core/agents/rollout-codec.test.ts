@@ -557,6 +557,27 @@ describe("writeCodexRollout", () => {
     });
   });
 
+  test("reads forked_from_id from a fork rollout's session_meta", async () => {
+    const { extractCodexForkedFromId, extractLatestCodexTokenTotals } = await import(
+      "#agents/rollout/codex"
+    );
+    const fork = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: "fork-id", forked_from_id: "parent-id", history_mode: "paginated" },
+      }),
+      JSON.stringify({ type: "event_msg", payload: { type: "thread_settings_applied" } }),
+    ].join("\n");
+    expect(extractCodexForkedFromId(fork)).toBe("parent-id");
+    // A fresh paginated fork carries no counter of its own; callers must
+    // inherit the parent's lifetime totals as the usage baseline.
+    expect(extractLatestCodexTokenTotals(fork)).toBeUndefined();
+    expect(
+      extractCodexForkedFromId(JSON.stringify({ type: "session_meta", payload: { id: "x" } })),
+    ).toBeUndefined();
+    expect(extractCodexForkedFromId("not json")).toBeUndefined();
+  });
+
   test("extracts exact native Codex patch lines and skips consumed calls", async () => {
     const { extractCodexPatchCallIds, extractLatestCodexPatchPreview } = await import(
       "#agents/rollout/codex"
