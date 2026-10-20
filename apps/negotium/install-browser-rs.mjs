@@ -5,20 +5,20 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { arch, homedir, platform } from "node:os";
 import { resolve } from "node:path";
 
-const VERSION = "v0.7.6";
+const VERSION = "v0.7.7";
 const RELEASE_BASE = `https://github.com/maestrojeong/browser-rs-mcp/releases/download/${VERSION}`;
 const TARGETS = {
   "darwin-arm64": {
     asset: "browser-rs-macos-arm64",
-    sha256: "256eae1f5c9bde0af5a5e966c575e5d13be0ca3b2749b23725e136ee7e52116e",
+    sha256: "ebeaee798010203d28a9fa447618bf62117ec87a98dcc6757b50ade1c55b5f89",
   },
   "linux-x64": {
     asset: "browser-rs-linux-x64",
-    sha256: "25c5af44b3c50e35d505447b4bc25f399fcc3f13d05e5e86d52fc8535df6b0b6",
+    sha256: "d233af0ebb74e23418de9e42028a0eb2c7ba9a62077fd1861159daccf046a545",
   },
   "win32-x64": {
     asset: "browser-rs-windows-x64.exe",
-    sha256: "3b53471f265309770236dc1d8e350bd2b063394e771f682ff4feb6ab6bac163f",
+    sha256: "bc92269d16ee7fa1e9c1149092246b2970feb77a1bac14c4b42766ee27528c43",
   },
 };
 
