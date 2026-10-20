@@ -122,6 +122,19 @@ export function normalizeAskTarget(target: unknown): "main" | "cron" | null {
   return target === "cron" ? "cron" : null;
 }
 
+/**
+ * Main-session asks run as a normal turn on the target topic's own session
+ * (tell_session-style, visible in the target) instead of on a fork. Codex
+ * scopes its prompt cache to the thread, so a fork's first request never
+ * reused the parent's cache and every ask paid full input price; running on
+ * the target session keeps the cache warm and gives every agent the same
+ * ask semantics. Cron asks keep the fork path so they never mutate the shared
+ * cron session.
+ */
+export function askRunsOnTargetSession(target: "main" | "cron"): boolean {
+  return target === "main";
+}
+
 export function resolveAskParentSessionId(
   topicId: string,
   agent: AgentKind,
@@ -1099,6 +1112,74 @@ async function handleAskEntry(
     return;
   }
 
+  const onSettled = (result: { queryId?: string; kind: string }) => {
+    if (result.queryId || result.kind !== "error") return;
+    clearPendingAskForEntry(scope, entry, topicName, "target-unavailable-before-dispatch");
+    if (remoteReply) {
+      void deliverPeerReply(
+        remoteReply,
+        targetLabel,
+        `(error: target topic became unavailable before dispatch)`,
+        "error",
+      );
+    } else {
+      void notifyAskDrop(
+        scope,
+        entry,
+        targetLabel,
+        `(error: target topic became unavailable before dispatch)`,
+      );
+    }
+  };
+  const onDispatched = (queryId: string) => {
+    registerAskCallback({
+      requestId,
+      contextId: entry.contextId,
+      callerTopicId,
+      ...(entry.fromThreadRootId ? { callerThreadRootId: entry.fromThreadRootId } : {}),
+      callerUserId: String(scope.userId),
+      targetQueryId: queryId,
+      createdAt: Date.now(),
+      ...(remoteReply
+        ? { remoteReply }
+        : {
+            pendingAsk: {
+              userId: scope.userId,
+              from: entry.from,
+              to: topicName,
+              requestId,
+            },
+          }),
+      sourceLabel: targetLabel,
+    });
+  };
+
+  if (askRunsOnTargetSession(askTarget)) {
+    triggerTopicAiTurn(topic.id, String(scope.userId), prompt, agentOverride, {
+      origin: entry.from,
+      requestId,
+      contextId: entry.contextId,
+      depth: (entry.fromDepth ?? 0) + 1,
+      from: fromLabel,
+      injectAuthorId: "system",
+      injectSourceAdapter: "session-comm",
+      injectKind: "tell",
+      injectTellCard: {
+        fromLabel,
+        fromTopicId: entry.fromTopicId,
+        label: `Ask from ${fromLabel}`,
+        message: entry.message,
+      },
+      onSettled,
+      onDispatched,
+    });
+    logger.info(
+      { topicName, from: entry.from, requestId, callerTopicId, agent: agentOverride },
+      "session-inbox: ask delivered to target session",
+    );
+    return;
+  }
+
   const forkNative = parentSessionId
     ? () =>
         forkAgentSession({
@@ -1233,47 +1314,8 @@ async function handleAskEntry(
       // for a clean retry if the provider reports an expired session.
       prepareSession: forkPlan.prepareSession,
       cwd,
-      onSettled: (result) => {
-        if (result.queryId || result.kind !== "error") return;
-        clearPendingAskForEntry(scope, entry, topicName, "target-unavailable-before-dispatch");
-        if (remoteReply) {
-          void deliverPeerReply(
-            remoteReply,
-            targetLabel,
-            `(error: target topic became unavailable before dispatch)`,
-            "error",
-          );
-        } else {
-          void notifyAskDrop(
-            scope,
-            entry,
-            targetLabel,
-            `(error: target topic became unavailable before dispatch)`,
-          );
-        }
-      },
-      onDispatched: (queryId: string) => {
-        registerAskCallback({
-          requestId,
-          contextId: entry.contextId,
-          callerTopicId,
-          ...(entry.fromThreadRootId ? { callerThreadRootId: entry.fromThreadRootId } : {}),
-          callerUserId: String(scope.userId),
-          targetQueryId: queryId,
-          createdAt: Date.now(),
-          ...(remoteReply
-            ? { remoteReply }
-            : {
-                pendingAsk: {
-                  userId: scope.userId,
-                  from: entry.from,
-                  to: topicName,
-                  requestId,
-                },
-              }),
-          sourceLabel: targetLabel,
-        });
-      },
+      onSettled,
+      onDispatched,
     },
   );
 

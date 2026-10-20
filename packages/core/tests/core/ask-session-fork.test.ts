@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { ForkHandle } from "#agents/fork";
 import { getRegisteredCronSession, registerCronSessionProvider } from "#runtime/cron-sessions";
-import { createAskForkPlan, normalizeAskTarget, resolveAskParentSessionId } from "#runtime/inbox";
+import {
+  askRunsOnTargetSession,
+  createAskForkPlan,
+  normalizeAskTarget,
+  resolveAskParentSessionId,
+} from "#runtime/inbox";
 import { prepareInjectReplayAfterUserPreemption } from "#runtime/turn-runner";
 import type { ConversationEntry } from "#storage/conversations";
 
@@ -23,6 +28,11 @@ describe("ask session fork planning", () => {
     expect(normalizeAskTarget("main")).toBe("main");
     expect(normalizeAskTarget("cron")).toBe("cron");
     expect(normalizeAskTarget("Cron")).toBeNull();
+  });
+
+  test("main asks run on the target session; cron asks stay on a fork", () => {
+    expect(askRunsOnTargetSession("main")).toBe(true);
+    expect(askRunsOnTargetSession("cron")).toBe(false);
   });
 
   test("cron-targeted asks select the registered cron session", () => {

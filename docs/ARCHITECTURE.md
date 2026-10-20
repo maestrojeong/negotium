@@ -108,8 +108,9 @@ authentication tokens.
 Cross-topic operations converge on the inbox and the same turn admission rules:
 
 - `tell_session` appends fire-and-forget work to the target topic.
-- `ask_session` forks the target session for a read-only turn and injects the answer back into the
-  caller without mutating the target session.
+- `ask_session` runs the question as a visible turn on the target topic's own session (queued like
+  `tell_session`, so the provider prompt cache stays warm) and injects the answer back into the
+  caller. `ask_cron` still forks the shared cron session so the cron history is never mutated.
 - `spawn_subagent` creates a child topic, runs it independently, and reports completion to the parent.
 
 The file-backed inbox exists because session communication tools may run in separate MCP processes.
