@@ -1725,6 +1725,46 @@ export function createNodeControlHandler(
         }
 
         /**
+         * Settle a `vault_secret_request` card the node itself is blocked on.
+         *
+         * Mirrors the `ask-answer` route above, with one difference: the
+         * secret travels in the POST body only as far as `topicService`,
+         * which writes it straight to the vault before claiming the gate.
+         * It is never echoed back in this response or in the card the hub
+         * re-renders — only `outcome` ("fulfilled"/"declined") is. `value`
+         * absent/null means the user declined.
+         */
+        const runtimeVaultAnswerMatch = runtimePath.match(
+          /^\/topics\/([^/]+)\/messages\/([^/]+)\/vault-answer$/,
+        );
+        if (runtimeVaultAnswerMatch && req.method === "POST") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const topicId = decodeURIComponent(runtimeVaultAnswerMatch[1]);
+          const messageId = decodeURIComponent(runtimeVaultAnswerMatch[2]);
+          const topic = getTopic(topicId);
+          if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
+          const userId = requiredText(body.userId, "userId");
+          if (
+            body.value !== undefined &&
+            body.value !== null &&
+            typeof body.value !== "string"
+          ) {
+            return jsonError(400, "value must be a string when present");
+          }
+          const value = typeof body.value === "string" ? body.value : null;
+          const answered = topicService.answerVaultRequest(topicId, messageId, userId, value);
+          if (!answered.ok) return jsonError(409, answered.error);
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            queryId: answered.queryId,
+            outcome: answered.outcome,
+            answerMessage: answered.answerMessage,
+          });
+        }
+
+        /**
          * Read a visual a turn rendered on this node, in a form the calling
          * host can re-insert into its own store.
          *
@@ -2346,6 +2386,28 @@ export function createNodeControlHandler(
         const userId = requiredText(body.userId, "userId");
         const label = requiredText(body.label, "label");
         const result = topicService.answerQuestion(topicId, messageId, label, userId);
+        return Response.json(result, { status: result.ok ? 200 : 409 });
+      }
+
+      // Local counterpart to the runtime `vault-answer` route above, used by
+      // the Terminal client over the loopback control socket. `value` absent
+      // means the user declined; present, it is written to the vault and
+      // never appears in this response.
+      const vaultAnswerMatch = path.match(/^\/vault-requests\/([^/]+)\/answer$/);
+      if (vaultAnswerMatch && req.method === "POST") {
+        const messageId = decodeURIComponent(vaultAnswerMatch[1]);
+        const body = await bodyRecord(req);
+        const topicId = requiredText(body.topicId, "topicId");
+        const userId = requiredText(body.userId, "userId");
+        if (
+          body.value !== undefined &&
+          body.value !== null &&
+          typeof body.value !== "string"
+        ) {
+          return jsonError(400, "value must be a string when present");
+        }
+        const value = typeof body.value === "string" ? body.value : null;
+        const result = topicService.answerVaultRequest(topicId, messageId, userId, value);
         return Response.json(result, { status: result.ok ? 200 : 409 });
       }
 

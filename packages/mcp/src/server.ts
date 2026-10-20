@@ -25,6 +25,7 @@ import {
   createAskUserToolDefinition,
   createPrepareSubagentToolDefinition,
   createPublishHtmlToolDefinitions,
+  createRequestVaultToolDefinition,
   createSelfConfigToolDefinitions,
   createSpawnSubagentToolDefinition,
   createSubagentManagementToolDefinitions,
@@ -340,6 +341,27 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
       askUserTool.description,
       askUserTool.schema as any,
       askHandler as any,
+    );
+
+    // Telegram has no native masked input: anything a person types back to
+    // the bot becomes a plaintext message that lingers in chat history and
+    // device caches. request_vault_secret refuses up front there rather
+    // than accept a value it cannot protect; Terminal and Otium render the
+    // real card and can mask the keystrokes.
+    const vaultTool = createRequestVaultToolDefinition({
+      userId: ctx.userId,
+      topicId: ctx.topicId,
+      queryId: ctx.queryId,
+      agent: ctx.agent,
+      model: ctx.model,
+      ...(ctx.threadRootId ? { threadRootId: ctx.threadRootId } : {}),
+      unsupportedSurface: topic?.surface === "telegram",
+    });
+    server.tool(
+      vaultTool.name,
+      vaultTool.description,
+      vaultTool.schema as any,
+      vaultTool.handler as any,
     );
   }
 

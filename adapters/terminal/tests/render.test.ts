@@ -181,6 +181,67 @@ describe("terminal renderer", () => {
     expect(rendered.cursor?.x).toBe(17);
   });
 
+  test("renders a pending vault_secret_request card inline and masks the typed value", () => {
+    const request: MessageDto = {
+      id: "vault-request",
+      topicId: "topic",
+      authorId: "ai",
+      kind: "vault_secret_request",
+      text: "Vault secret requested: STRIPE_API_KEY",
+      vaultSecretRequest: {
+        key: "STRIPE_API_KEY",
+        description: "Stripe live secret key",
+        status: "pending",
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const state = {
+      ...setMessages(setTopics(createInitialState("local"), [topic()]), "topic", [request]),
+      input: "sk_live_super_secret",
+      inputCursor: { row: 0, col: 21 },
+    };
+    const rendered = renderAppFrame(state, 80, 24);
+    const output = stripAnsi(rendered.frame);
+
+    expect(output).toContain("Vault request · STRIPE_API_KEY");
+    expect(output).toContain("Stripe live secret key");
+    expect(output).toContain("secret requested by");
+    expect(output).toContain("Enter save to Vault");
+    expect(output).toMatch(/\*{15,}/);
+    expect(output).not.toContain("sk_live_super_secret");
+    expect(output).toContain("Enter save · Esc clear/decline");
+  });
+
+  test("renders the decline confirmation and never shows the decision pane while a secret request is active", () => {
+    const request: MessageDto = {
+      id: "vault-request",
+      topicId: "topic",
+      authorId: "ai",
+      kind: "vault_secret_request",
+      text: "Vault secret requested: KEY",
+      vaultSecretRequest: { key: "KEY", description: "x", status: "pending" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const ask: MessageDto = {
+      id: "ask",
+      topicId: "topic",
+      authorId: "ai",
+      kind: "ask_user_question",
+      text: "question",
+      askUserQuestion: { question: "Proceed?", choices: [{ label: "Yes" }] },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const state = {
+      ...setMessages(setTopics(createInitialState("local"), [topic()]), "topic", [ask, request]),
+      vaultRequestMode: "confirm-decline" as const,
+    };
+    const output = stripAnsi(renderApp(state, 80, 24));
+
+    expect(output).toContain("Decline this request? y / n");
+    expect(output).not.toContain("decision required");
+    expect(output).toContain("y decline · n keep typing");
+  });
+
   test("keeps the always-active message composer flat and borderless", () => {
     const output = stripAnsi(renderApp(createInitialState("local"), 120, 30));
     const lines = output.split("\n");

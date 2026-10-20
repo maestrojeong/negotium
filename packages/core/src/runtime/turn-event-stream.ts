@@ -9,6 +9,7 @@ import {
   scheduleIdleCompactForTopic,
 } from "#agents/idle-compact";
 import { cancelPendingAskUserQuestions } from "#agents/mcp-tools/ask-user";
+import { cancelPendingVaultSecretRequests } from "#agents/mcp-tools/request-vault";
 import {
   settleSubagentFailure,
   settleSubagentSuccess,
@@ -935,6 +936,7 @@ export async function runTurnEventStream(
     const stillCurrent = getRoomQuery(roomId)?.queryId === queryId;
     clearRoomQuery(roomId, queryId);
     cancelPendingAskUserQuestions(topicId, queryId);
+    cancelPendingVaultSecretRequests(topicId, queryId);
     if (stillCurrent && roomId === topicId) clearQueryState(userId, topicId, topicTitle);
     // Stop typing only if this turn still owns the room. A superseded turn may
     // finish cleanup after its replacement already broadcast a fresh start.

@@ -1,4 +1,5 @@
 import { answerPendingAskUserQuestion } from "#agents/mcp-tools/ask-user";
+import { answerPendingVaultSecretRequest } from "#agents/mcp-tools/request-vault";
 import { WsHub } from "#bus";
 import { abortRoom, getRoomQuery } from "#query/active-rooms";
 import { getTopic } from "#storage/api-topics";
@@ -126,6 +127,12 @@ export const topicService = {
   answerQuestion(topicId: string, messageId: string, label: string, userId: string) {
     participantTopic(topicId, userId);
     return answerPendingAskUserQuestion(topicId, messageId, label, userId);
+  },
+
+  /** `value: null` means the user declined; the plaintext never round-trips through this call's result. */
+  answerVaultRequest(topicId: string, messageId: string, userId: string, value: string | null) {
+    participantTopic(topicId, userId);
+    return answerPendingVaultSecretRequest(topicId, messageId, userId, value);
   },
 
   abortTurn(topicId: string, userId: string): boolean {

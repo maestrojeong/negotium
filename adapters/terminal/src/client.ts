@@ -115,6 +115,12 @@ export interface NegotiumClient {
     messageId: string,
     label: string,
   ): ClientResult<{ ok: boolean; error?: string }>;
+  /** `value: null` declines. The plaintext never comes back in the result. */
+  answerVaultRequest(
+    topicId: string,
+    messageId: string,
+    value: string | null,
+  ): ClientResult<{ ok: boolean; error?: string }>;
   abort(topicId: string): ClientResult<boolean>;
   runVaultCommand?(commandLine: string): ClientResult<string | null>;
   listVaultEntries?(): ClientResult<VaultEntry[]>;
@@ -311,6 +317,15 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
     label: string,
   ): { ok: boolean; error?: string } {
     const result = topicService.answerQuestion(topicId, messageId, label, this.#userId);
+    return result.ok ? { ok: true } : { ok: false, error: result.error };
+  }
+
+  answerVaultRequest(
+    topicId: string,
+    messageId: string,
+    value: string | null,
+  ): { ok: boolean; error?: string } {
+    const result = topicService.answerVaultRequest(topicId, messageId, this.#userId, value);
     return result.ok ? { ok: true } : { ok: false, error: result.error };
   }
 
@@ -599,6 +614,25 @@ export class RemoteNegotiumClient implements NegotiumClient {
         method: "POST",
         body: JSON.stringify({ topicId, userId: this.#userId, label }),
       });
+      return result.ok ? { ok: true } : { ok: false, error: result.error };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  async answerVaultRequest(
+    topicId: string,
+    messageId: string,
+    value: string | null,
+  ): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const result = await this.#request(
+        `/vault-requests/${encodeURIComponent(messageId)}/answer`,
+        {
+          method: "POST",
+          body: JSON.stringify({ topicId, userId: this.#userId, value }),
+        },
+      );
       return result.ok ? { ok: true } : { ok: false, error: result.error };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };

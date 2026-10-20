@@ -103,6 +103,7 @@ describe("legacy compacted conversation migration", () => {
           ask_user_question: null,
           tell_card: null,
           subagent_card: null,
+          vault_secret_request: null,
           mentions: null,
           thread_root_id: null,
           ...row,

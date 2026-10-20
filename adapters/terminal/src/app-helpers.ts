@@ -4,7 +4,7 @@ import { terminalNowMs } from "@/clock";
 import type { CodeCopyTarget } from "@/render";
 import { RENDERED_TAB_WIDTH, WORKING_FRAME_INTERVAL_MS } from "@/render";
 import type { ScreenPoint } from "@/selection";
-import { type AppState, activeTopic } from "@/state";
+import { type AppState, activeTopic, composerHoldsSecret } from "@/state";
 
 const MESSAGE_MUTATING_AI_STATUS_KINDS = new Set(["tool_call", "tool_output"]);
 // Mouse coordinates are bounded so a pasted digit run can never be swallowed as
@@ -438,8 +438,8 @@ export function vaultFormBlocksOverlaySwitch(
   );
 }
 
-export function pasteCollapseDisabled(state: Pick<AppState, "creatingTopic" | "overlay">): boolean {
-  return state.creatingTopic || state.overlay === "vault";
+export function pasteCollapseDisabled(state: AppState): boolean {
+  return state.creatingTopic || state.overlay === "vault" || composerHoldsSecret(state);
 }
 
 export type TerminalDeletionShortcut = "word-left" | "line-left";

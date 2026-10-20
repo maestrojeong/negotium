@@ -91,6 +91,11 @@ function allowedRuntimePath(path: string, method: string): boolean {
     // ask card is unanswerable from the hub, which is the whole point of
     // rendering it there.
     if (/^\/topics\/[^/]+\/messages\/[^/]+\/ask-answer$/.test(path)) return true;
+    // Same shape as `ask-answer`, for `vault_secret_request` cards: the hub
+    // can deliver the value a person typed into its own masked input, but
+    // only for a card this worker already published, and the response never
+    // echoes the value back — only the fulfilled/declined outcome.
+    if (/^\/topics\/[^/]+\/messages\/[^/]+\/vault-answer$/.test(path)) return true;
     // Hub-routed remote session-comm delivered into a room on this worker
     // (a tell/ask/abort a person elsewhere addressed to it, or the answer to
     // an ask this room raised). Narrower than `/turns`: the hub has already

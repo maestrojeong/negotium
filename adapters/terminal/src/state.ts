@@ -69,6 +69,9 @@ export interface TopicActivity {
 
 export type VaultMode = "list" | "key" | "value" | "description" | "confirm-delete";
 
+/** Sub-mode while the composer is capturing a value for an agent-initiated `request_vault_secret` card. */
+export type VaultRequestMode = "value" | "confirm-decline";
+
 /** Severity of a footer notice. See `AppState.noticeLevel`. */
 export type NoticeLevel = "info" | "success" | "warn" | "error";
 
@@ -138,6 +141,12 @@ export interface AppState {
   vaultDraftDescription: string;
   vaultEditing: boolean;
   vaultNotice?: string;
+  /** Mode while answering an agent-initiated `request_vault_secret` card (not the manual `/vault` form above). */
+  vaultRequestMode: VaultRequestMode;
+  /** Blocks a double-Enter while the answer round trip to the node is in flight. */
+  vaultRequestSubmitting: boolean;
+  /** Inline error/info shown next to the capture pane, distinct from `vaultNotice` (the manual form's). */
+  vaultRequestNotice?: string;
 }
 
 export function createInitialState(userId: string): AppState {
@@ -176,6 +185,8 @@ export function createInitialState(userId: string): AppState {
     vaultMode: "list",
     vaultDraftDescription: "",
     vaultEditing: false,
+    vaultRequestMode: "value",
+    vaultRequestSubmitting: false,
   };
 }
 
@@ -211,6 +222,28 @@ export function activeQuestion(state: AppState): TerminalMessage | null {
           !message.askUserQuestion.selectedLabel,
       ) ?? null
   );
+}
+
+/**
+ * Oldest pending request first (FIFO), unlike `activeQuestion`'s newest-first:
+ * a secret request that loses a race to a newer one should not starve behind
+ * it, since answering it hands a value to the vault rather than picking
+ * between options that may go stale.
+ */
+export function activeVaultRequest(state: AppState): TerminalMessage | null {
+  return (
+    activeMessages(state).find(
+      (message) =>
+        message.kind === "vault_secret_request" &&
+        message.vaultSecretRequest?.status === "pending",
+    ) ?? null
+  );
+}
+
+/** True while the composer buffer holds a secret rather than ordinary chat text. */
+export function composerHoldsSecret(state: AppState): boolean {
+  if (state.overlay === "vault" && state.vaultMode === "value") return true;
+  return state.overlay === null && activeVaultRequest(state) !== null;
 }
 
 export function activeTaskPanel(state: AppState): TerminalMessage | null {

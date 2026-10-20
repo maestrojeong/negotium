@@ -17,6 +17,8 @@ import {
   activeQuestion,
   activeTaskPanel,
   activeTopic,
+  activeVaultRequest,
+  composerHoldsSecret,
   type NoticeLevel,
   pickedBackgroundSession,
   type TerminalMessage,
@@ -975,6 +977,51 @@ function subagentLines(message: MessageDto, width: number): UiLine[] {
   ];
 }
 
+function vaultRequestLines(message: TerminalMessage, width: number): UiLine[] {
+  const request = message.vaultSecretRequest;
+  if (!request) return [];
+  const glyph =
+    request.status === "fulfilled"
+      ? "✓"
+      : request.status === "declined"
+        ? "✗"
+        : request.status === "expired"
+          ? "·"
+          : "●";
+  const color =
+    request.status === "fulfilled"
+      ? theme.green
+      : request.status === "declined" || request.status === "expired"
+        ? theme.muted
+        : theme.accent;
+  const statusSuffix =
+    request.status === "fulfilled"
+      ? " · saved"
+      : request.status === "declined"
+        ? " · declined"
+        : request.status === "expired"
+          ? " · expired"
+          : "";
+  const lines: UiLine[] = [
+    line(`  ${glyph} Vault request · ${request.key}${statusSuffix}`, {
+      fg: color,
+      bold: true,
+    }),
+  ];
+  if (request.description) {
+    lines.push(
+      ...wrapText(request.description, Math.max(4, width - 6))
+        .slice(0, 4)
+        .map((text) => line(`    ${text}`, { fg: theme.muted })),
+    );
+  }
+  if (request.status === "pending") {
+    lines.push(line("    waiting for you below ↓", { fg: theme.accent }));
+  }
+  lines.push(line(""));
+  return lines;
+}
+
 function isVisibleSystemMessage(message: MessageDto): boolean {
   return message.sourceAdapter === "session-comm" || message.id.startsWith("tell-");
 }
@@ -1120,6 +1167,9 @@ function renderMessageLines(message: TerminalMessage, width: number, userId: str
     return [];
   }
   if (message.kind === "subagent" && message.subagentCard) return subagentLines(message, width);
+  if (message.kind === "vault_secret_request" && message.vaultSecretRequest) {
+    return vaultRequestLines(message, width);
+  }
   if (message.kind === "tool") return toolMessageLines(message, width);
   const own = message.authorId === userId;
   const ai = message.authorId === "ai";
@@ -2110,6 +2160,10 @@ function conversationViewport(
 
 function decisionPane(state: AppState, width: number): string[] {
   if (state.overlay) return [];
+  // A pending secret request takes the composer; the ask card it would
+  // otherwise race with stays visible inline (`vaultRequestLines`'s own
+  // "waiting" hint covers it) rather than fighting it for the same input.
+  if (activeVaultRequest(state)) return [];
   const ask = activeQuestion(state);
   const question = ask?.askUserQuestion;
   if (!ask || !question?.choices.length) return [];
@@ -2133,6 +2187,36 @@ function decisionPane(state: AppState, width: number): string[] {
     width,
     Math.min(8, Math.max(4, content.length + 2)),
     { active: true, accent: theme.amber },
+  );
+}
+
+function vaultRequestPane(state: AppState, width: number): string[] {
+  if (state.overlay) return [];
+  const request = activeVaultRequest(state)?.vaultSecretRequest;
+  if (!request) return [];
+  const declining = state.vaultRequestMode === "confirm-decline";
+  const content: UiLine[] = [
+    line(`  ${request.key}`, { bold: true }),
+    ...(request.description
+      ? wrapText(request.description, Math.max(4, width - 6)).map((text) =>
+          line(`  ${text}`, { fg: theme.muted }),
+        )
+      : []),
+    declining
+      ? line("  Decline this request? y / n", { fg: theme.red, bold: true })
+      : line("  Enter save to Vault · Esc clear / decline · Alt-Enter newline", {
+          fg: theme.subtle,
+        }),
+    ...(state.vaultRequestNotice
+      ? [line(`  ! ${state.vaultRequestNotice}`, { fg: theme.amber })]
+      : []),
+  ];
+  return framePane(
+    `secret requested by ${state.aiName} · never shown to the agent${state.vaultRequestSubmitting ? ` · ${workingFrame(0)} saving` : ""}`,
+    content,
+    width,
+    Math.min(8, Math.max(4, content.length + 2)),
+    { active: true, accent: theme.accent },
   );
 }
 
@@ -2215,7 +2299,8 @@ function inputVisualLines(state: AppState, width: number): InputVisual {
   const gutter = gutted === null ? 0 : COMPOSER_GUTTER;
   const leadPrefix = gutter ? "  › " : "";
   const contPrefix = " ".repeat(gutter);
-  const secretInput = state.overlay === "vault" && state.vaultMode === "value";
+  const vaultRequest = activeVaultRequest(state);
+  const secretInput = composerHoldsSecret(state);
   const displayInput = secretInput
     ? state.input
         .split("\n")
@@ -2232,9 +2317,13 @@ function inputVisualLines(state: AppState, width: number): InputVisual {
             : state.vaultMode === "value"
               ? "Type the secret value…"
               : "Optional description…"
-        : state.creatingTopic
-          ? "Type a topic name…"
-          : "Type a message or /command…";
+        : vaultRequest?.vaultSecretRequest
+          ? state.vaultRequestMode === "confirm-decline"
+            ? "Decline this request? y / n"
+            : `Type or paste the value for ${vaultRequest.vaultSecretRequest.key}…`
+          : state.creatingTopic
+            ? "Type a topic name…"
+            : "Type a message or /command…";
     return {
       lines: [
         line(`${leadPrefix}${gutter ? "  " : ""}${placeholder}`, {
@@ -2289,7 +2378,8 @@ function composerPane(state: AppState, width: number): ComposerPane {
   else if (visual.cursorLine >= inputStart + 5) inputStart = visual.cursorLine - 4;
   const inputLines = visual.lines.slice(inputStart, inputStart + 5);
   const visibleCursorLine = visual.cursorLine - inputStart;
-  const suggestionsDisabled = state.creatingTopic || state.overlay === "vault";
+  const suggestionsDisabled =
+    state.creatingTopic || state.overlay === "vault" || composerHoldsSecret(state);
   const commands = suggestionsDisabled ? [] : commandSuggestions(state.input);
   const cap = Math.max(0, 6 - inputLines.length);
   let suggestionLines: ReturnType<typeof line>[];
@@ -2521,6 +2611,15 @@ function footerHintText(state: AppState): string[] {
     if (state.vaultMode === "confirm-delete") return ["Y delete · N cancel  ", "Y/N  "];
     return ["Enter continue · Esc cancel  ", "Esc cancel  "];
   }
+  if (!state.overlay && activeVaultRequest(state)) {
+    return state.vaultRequestMode === "confirm-decline"
+      ? ["y decline · n keep typing  ", "y/n  "]
+      : [
+          "Enter save · Esc clear/decline · Ctrl-C stop turn  ",
+          "Enter save · Esc  ",
+          "Enter  ",
+        ];
+  }
   const topic = activeTopic(state);
   if (topic && state.activity[topic.id]?.running) return ["Esc/Ctrl-C stop  ", "Esc stop  "];
   return ["Ctrl-C twice to quit  ", "Ctrl-C ×2 quit  ", "Ctrl-C  "];
@@ -2604,7 +2703,7 @@ export function renderAppFrame(
   const width = Math.max(1, columns);
   const height = Math.max(14, rows);
   const footer = footerLines(state, width);
-  const decision = decisionPane(state, width);
+  const decision = [...decisionPane(state, width), ...vaultRequestPane(state, width)];
   const hideComposer =
     state.overlay === "background-session" ||
     state.overlay === "topics" ||
@@ -2692,6 +2791,7 @@ export function maxConversationScrollOffset(
     height -
       footerLines(state, width).length -
       decisionPane(state, width).length -
+      vaultRequestPane(state, width).length -
       composerPane(state, width).lines.length,
   );
   const layout = terminalBodyLayout(state, width);

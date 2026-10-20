@@ -34,6 +34,7 @@ import {
   RUN_DIR,
   reapOrphanBrowsers,
   reconcilePendingAskUserQuestionGates,
+  reconcilePendingRequestVaultGates,
   recoverRemoteSessionInbox,
   resolveCuaRsBinary,
   runNodeRequestHandlers,
@@ -50,8 +51,10 @@ import {
   startDurableTurnRequestWorker,
   startNegotiumNodeModules,
   startRemoteSessionReplyOutboxWorker,
+  startRequestVaultGateOwner,
   startSessionInboxWorker,
   stopAskUserQuestionGateOwner,
+  stopRequestVaultGateOwner,
   sweepStaleSubagentCards,
   WORKSPACE_DIR,
 } from "@negotium/core/node-host";
@@ -349,9 +352,12 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     }
     startAskUserQuestionGateOwner();
     reconcilePendingAskUserQuestionGates();
+    startRequestVaultGateOwner();
+    reconcilePendingRequestVaultGates();
   } catch (error) {
     processLease?.stop();
     stopAskUserQuestionGateOwner();
+    stopRequestVaultGateOwner();
     throw error;
   }
 
@@ -406,6 +412,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
   if (!port) {
     processLease?.stop();
     stopAskUserQuestionGateOwner();
+    stopRequestVaultGateOwner();
     throw new Error("negotium node failed to bind a port");
   }
   setRuntimeMcpPort(port);
@@ -461,6 +468,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     server.stop(true);
     processLease?.stop();
     stopAskUserQuestionGateOwner();
+    stopRequestVaultGateOwner();
     throw error;
   }
 
@@ -511,6 +519,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     server.stop(true);
     processLease?.stop();
     stopAskUserQuestionGateOwner();
+    stopRequestVaultGateOwner();
     void modules.stop();
     void mcpHost.stopAll();
     throw error;
@@ -539,6 +548,7 @@ export function startNode(opts: StartNodeOptions = {}): NodeHandle {
     await killOwnedCodexTreesForShutdown();
   });
   onShutdown("ask-user-gate-owner", 119, stopAskUserQuestionGateOwner);
+  onShutdown("request-vault-gate-owner", 118, stopRequestVaultGateOwner);
   onShutdown("node-modules", 110, () => modules.stop());
   onShutdown("node-mcp-host", 50, async () => {
     reloadMcpManifest = async () => ({ ok: false, error: "MCP runtime is shutting down" });

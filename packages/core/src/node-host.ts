@@ -5,6 +5,11 @@ export {
   startAskUserQuestionGateOwner,
   stopAskUserQuestionGateOwner,
 } from "#agents/mcp-tools/ask-user";
+export {
+  reconcilePendingRequestVaultGates,
+  startRequestVaultGateOwner,
+  stopRequestVaultGateOwner,
+} from "#agents/mcp-tools/request-vault";
 export { sweepStaleSubagentCards } from "#agents/mcp-tools/spawn-subagent";
 export {
   RuntimeGatewayIdempotencyConflictError,

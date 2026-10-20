@@ -30,6 +30,15 @@ export {
 } from "#agents/mcp-tools/ask-user";
 export type { McpToolResult, SharedMcpTool } from "#agents/mcp-tools/common";
 export { errorResult, textResult } from "#agents/mcp-tools/common";
+export type { AnswerVaultSecretRequestResult } from "#agents/mcp-tools/request-vault";
+export {
+  answerPendingVaultSecretRequest,
+  cancelPendingVaultSecretRequests,
+  createRequestVaultToolDefinition,
+  reconcilePendingRequestVaultGates,
+  startRequestVaultGateOwner,
+  stopRequestVaultGateOwner,
+} from "#agents/mcp-tools/request-vault";
 export type { SelfConfigContext } from "#agents/mcp-tools/self-config";
 export { createSelfConfigToolDefinitions } from "#agents/mcp-tools/self-config";
 export {

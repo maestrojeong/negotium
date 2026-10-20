@@ -59,6 +59,14 @@ const DELIBERATELY_LOCAL_ONLY = new Map<string, string>([
   // *read* the pending questions, so a host could never learn the message id to
   // answer. Both halves have to land together.
   ["POST /questions/:id/answer", "needs a contract read for pending questions first"],
+  // Mirrors `/questions/:id/answer` above for the same reason, one level down:
+  // this is the Terminal/Telegram-local counterpart of the contract's
+  // `POST /topics/:id/messages/:id/vault-answer`, which is the route a mapped
+  // room's hub actually answers a vault_secret_request card through.
+  [
+    "POST /vault-requests/:id/answer",
+    "local-control counterpart of the contract's vault-answer route",
+  ],
 ]);
 
 /** `^\/topics\/([^/]+)\/abort$` → `/topics/:id/abort`. */

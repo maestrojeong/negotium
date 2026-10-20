@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 import type { MessageDto, TopicDto } from "@negotium/core";
 import {
   activeQuestion,
+  activeVaultRequest,
   appendTopicFilter,
   applyRuntimeEvent,
   backspaceTopicFilter,
+  composerHoldsSecret,
   createInitialState,
   focusCreatedTopic,
   moveTopicPickerSelection,
@@ -456,6 +458,63 @@ describe("terminal adapter state", () => {
       },
     });
     expect(activeQuestion(state)).toBeNull();
+  });
+
+  test("tracks pending vault-secret requests, clears them once answered, and takes the composer", () => {
+    const request: MessageDto = {
+      id: "vault-request-1",
+      topicId: "a",
+      authorId: "ai",
+      text: "Vault secret requested: STRIPE_API_KEY",
+      kind: "vault_secret_request",
+      vaultSecretRequest: { key: "STRIPE_API_KEY", description: "Live key", status: "pending" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic("a", "A")]);
+    state = selectTopic(state, "a");
+    state = setMessages(state, "a", [request]);
+
+    expect(activeVaultRequest(state)?.id).toBe("vault-request-1");
+    expect(composerHoldsSecret(state)).toBe(true);
+
+    state = applyRuntimeEvent(state, {
+      type: "message-updated",
+      topicId: "a",
+      payload: {
+        messageId: "vault-request-1",
+        patch: {
+          vaultSecretRequest: {
+            key: "STRIPE_API_KEY",
+            description: "Live key",
+            status: "fulfilled",
+            answeredBy: "local",
+          },
+        },
+      },
+    });
+
+    expect(activeVaultRequest(state)).toBeNull();
+    expect(composerHoldsSecret(state)).toBe(false);
+  });
+
+  test("composerHoldsSecret never fires while any overlay other than the manual Vault form is open", () => {
+    const request: MessageDto = {
+      id: "vault-request-2",
+      topicId: "a",
+      authorId: "ai",
+      text: "Vault secret requested: KEY",
+      kind: "vault_secret_request",
+      vaultSecretRequest: { key: "KEY", description: "x", status: "pending" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic("a", "A")]);
+    state = selectTopic(state, "a");
+    state = setMessages(state, "a", [request]);
+
+    expect(composerHoldsSecret(state)).toBe(true);
+    expect(composerHoldsSecret({ ...state, overlay: "topics" })).toBe(false);
+    expect(composerHoldsSecret({ ...state, overlay: "vault", vaultMode: "list" })).toBe(false);
+    expect(composerHoldsSecret({ ...state, overlay: "vault", vaultMode: "value" })).toBe(true);
   });
 
   test("removes a live message after a supersede tombstone", () => {

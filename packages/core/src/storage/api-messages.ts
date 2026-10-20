@@ -80,6 +80,9 @@ function initializeApiMessagesSchema(): void {
   try {
     db.exec("ALTER TABLE api_messages ADD COLUMN subagent_card TEXT");
   } catch {}
+  try {
+    db.exec("ALTER TABLE api_messages ADD COLUMN vault_secret_request TEXT");
+  } catch {}
   // Index on topic_id; SQLite appends the implicit rowid to every index entry,
   // so `WHERE topic_id=? AND rowid>? ORDER BY rowid` stays index-driven.
   db.exec("CREATE INDEX IF NOT EXISTS idx_api_messages_topic ON api_messages(topic_id)");
@@ -111,6 +114,7 @@ export interface ApiMessageRow {
   ask_user_question: string | null;
   tell_card: string | null;
   subagent_card: string | null;
+  vault_secret_request: string | null;
   mentions: string | null;
   thread_root_id: string | null;
   created_at: string;
@@ -166,6 +170,7 @@ function rowToDto(r: ApiMessageRow): MessageDto {
     askUserQuestion: r.ask_user_question ? JSON.parse(r.ask_user_question) : undefined,
     tellCard: r.tell_card ? JSON.parse(r.tell_card) : undefined,
     subagentCard: r.subagent_card ? JSON.parse(r.subagent_card) : undefined,
+    vaultSecretRequest: r.vault_secret_request ? JSON.parse(r.vault_secret_request) : undefined,
     mentions: r.mentions ? JSON.parse(r.mentions) : undefined,
     threadRootId: r.thread_root_id ?? undefined,
     createdAt: r.created_at,
@@ -200,8 +205,8 @@ export function appendApiMessage(msg: MessageDto, options: AppendApiMessageOptio
     const result = db
       .query(
         `INSERT INTO api_messages
-         (id, topic_id, parent_id, author_id, source_adapter, source_node, source_message_id, text, query_id, agent_type, model, attachments, usage, deleted, edited_at, reactions, kind, ask_user_question, tell_card, subagent_card, mentions, thread_root_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (id, topic_id, parent_id, author_id, source_adapter, source_node, source_message_id, text, query_id, agent_type, model, attachments, usage, deleted, edited_at, reactions, kind, ask_user_question, tell_card, subagent_card, vault_secret_request, mentions, thread_root_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO NOTHING`,
       )
       .run(
@@ -225,6 +230,7 @@ export function appendApiMessage(msg: MessageDto, options: AppendApiMessageOptio
         msg.askUserQuestion ? JSON.stringify(msg.askUserQuestion) : null,
         msg.tellCard ? JSON.stringify(msg.tellCard) : null,
         msg.subagentCard ? JSON.stringify(msg.subagentCard) : null,
+        msg.vaultSecretRequest ? JSON.stringify(msg.vaultSecretRequest) : null,
         msg.mentions?.length ? JSON.stringify(msg.mentions) : null,
         msg.threadRootId ?? null,
         msg.createdAt,

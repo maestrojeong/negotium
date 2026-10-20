@@ -80,9 +80,11 @@ import {
   activeMessages,
   activeQuestion,
   activeTopic,
+  activeVaultRequest,
   appendTopicFilter,
   applyRuntimeEvent,
   backspaceTopicFilter,
+  composerHoldsSecret,
   createInitialState,
   focusCreatedTopic,
   moveTopicPickerSelection,
@@ -472,12 +474,34 @@ export class TerminalApp {
 
   #applyRuntimeEvent(event: RuntimeBusEvent): void {
     const previousState = this.#state;
+    const heldSecretBefore = composerHoldsSecret(previousState)
+      ? activeVaultRequest(previousState)?.id
+      : undefined;
     this.#state = preserveConversationScrollAnchor(
       previousState,
       applyRuntimeEvent(previousState, event),
       process.stdout.columns ?? 100,
       process.stdout.rows ?? 30,
     );
+    // The card this turn's typed value belonged to resolved, expired, or was
+    // answered from elsewhere (another window, or the turn aborting) before
+    // Enter was pressed here. Discard rather than let the next Enter send the
+    // half-typed secret as an ordinary chat message.
+    if (
+      heldSecretBefore !== undefined &&
+      activeVaultRequest(this.#state)?.id !== heldSecretBefore
+    ) {
+      this.#input.setText("");
+      this.#syncInput();
+      this.#state = {
+        ...this.#state,
+        vaultRequestMode: "value",
+        vaultRequestSubmitting: false,
+        vaultRequestNotice: undefined,
+        notice: "A vault request expired — the typed value was discarded",
+        noticeLevel: "info",
+      };
+    }
   }
 
   #handleRuntimeEvent(event: RuntimeBusEvent): void {
@@ -1096,6 +1120,7 @@ export class TerminalApp {
   #schedulePathSearch(): void {
     if (this.#pathSearchTimer) clearTimeout(this.#pathSearchTimer);
     const generation = ++this.#pathSearchGeneration;
+    if (composerHoldsSecret(this.#state)) return;
     const cursor = this.#input.cursor;
     const lineText = this.#input.text.split("\n")[cursor.row] ?? "";
     if (!isRecursivePathQuery(lineText, cursor.col)) {
@@ -1507,6 +1532,63 @@ export class TerminalApp {
         return;
       }
     }
+    // A pending `request_vault_secret` card owns the composer: no history
+    // walk, no path/command suggestions, no paste collapsing, and Esc
+    // clears the typed value before it ever offers to decline — so a
+    // reflexive Esc never throws away a secret the user was still typing.
+    if (!this.#state.overlay && activeVaultRequest(this.#state)) {
+      if (this.#state.vaultRequestMode === "confirm-decline") {
+        if (chunk === "y" || chunk === "Y") {
+          void this.#answerVaultRequest(null);
+        } else if (chunk === "n" || chunk === "N" || chunk === "\u001b") {
+          this.#state = { ...this.#state, vaultRequestMode: "value" };
+          this.#queueRender();
+        }
+        return;
+      }
+      if (chunk === "\u001b") {
+        if (this.#input.text.length > 0) {
+          this.#input.setText("");
+          this.#syncInput();
+          this.#state = { ...this.#state, vaultRequestNotice: undefined };
+        } else {
+          this.#state = { ...this.#state, vaultRequestMode: "confirm-decline" };
+        }
+        this.#queueRender();
+        return;
+      }
+      if (chunk === "\r") {
+        void this.#submit();
+        return;
+      }
+      if (terminalNewlineShortcut(chunk)) {
+        this.#input.insert("\n");
+        this.#syncInput();
+        this.#queueRender();
+        return;
+      }
+      if (chunk === "\u007f" || chunk === "\b") {
+        this.#input.backspace();
+        this.#syncInput();
+        this.#queueRender();
+        return;
+      }
+      if (chunk.startsWith("\u001b")) return;
+      const secretPrintable = [
+        ...chunk.replaceAll("\r", "").replaceAll("\n", "").replaceAll("\t", " "),
+      ]
+        .filter((character) => {
+          const code = character.charCodeAt(0);
+          return code > 0x1f && code !== 0x7f;
+        })
+        .join("");
+      if (secretPrintable) {
+        this.#input.insert(secretPrintable);
+        this.#syncInput();
+        this.#queueRender();
+      }
+      return;
+    }
     if (chunk === "\u001b[A") {
       if (activeQuestion(this.#state)) this.#moveAskChoice(-1);
       else if (this.#suggestionCount() > 0) this.#moveSuggestion(-1);
@@ -1616,6 +1698,10 @@ export class TerminalApp {
       this.#state.vaultMode !== "confirm-delete"
     ) {
       await this.#submitVaultField();
+      return;
+    }
+    if (!this.#state.overlay && activeVaultRequest(this.#state)) {
+      await this.#submitVaultRequest();
       return;
     }
     const ask = activeQuestion(this.#state);
@@ -1751,13 +1837,28 @@ export class TerminalApp {
    * conversation.
    */
   #selectTopicKeepingDrafts(topicId: string): void {
+    const heldSecret = composerHoldsSecret(this.#state);
     const previous = this.#state.activeTopicId;
     this.#state = selectTopic(this.#state, topicId);
     if (previous === this.#state.activeTopicId) return;
     if (previous) {
-      const text = this.#collapsedPastes.expand(this.#input.text);
-      if (text) this.#draftsByTopic.set(previous, { text, cursor: this.#input.cursor });
-      else this.#draftsByTopic.delete(previous);
+      // A secret typed for one topic's request must never park as a draft —
+      // it would resurface (unmasked, as ordinary text) if this topic is
+      // revisited after the request already resolved.
+      if (heldSecret) this.#draftsByTopic.delete(previous);
+      else {
+        const text = this.#collapsedPastes.expand(this.#input.text);
+        if (text) this.#draftsByTopic.set(previous, { text, cursor: this.#input.cursor });
+        else this.#draftsByTopic.delete(previous);
+      }
+    }
+    if (heldSecret) {
+      this.#state = {
+        ...this.#state,
+        vaultRequestMode: "value",
+        vaultRequestSubmitting: false,
+        vaultRequestNotice: undefined,
+      };
     }
     const draft = this.#state.activeTopicId
       ? this.#draftsByTopic.get(this.#state.activeTopicId)
@@ -2169,6 +2270,63 @@ export class TerminalApp {
       };
     } finally {
       this.#vaultDraftValue = "";
+    }
+    this.#queueRender();
+  }
+
+  async #submitVaultRequest(): Promise<void> {
+    const request = activeVaultRequest(this.#state);
+    if (!request?.vaultSecretRequest) return;
+    if (this.#state.vaultRequestSubmitting) return;
+    // A paste's trailing newline is almost never part of the secret; a secret
+    // that legitimately is a multi-line PEM keeps every other newline.
+    const raw = this.#input.text.replace(/\r?\n$/, "");
+    const valueBytes = Buffer.byteLength(raw, "utf8");
+    if (valueBytes < VAULT_VALUE_MIN_BYTES || valueBytes > VAULT_VALUE_MAX_BYTES) {
+      this.#state = {
+        ...this.#state,
+        vaultRequestNotice: raw.length
+          ? `Value must be ${VAULT_VALUE_MIN_BYTES}-${VAULT_VALUE_MAX_BYTES} bytes.`
+          : "Type the value, or press Esc to decline.",
+      };
+      this.#queueRender();
+      return;
+    }
+    await this.#answerVaultRequest(raw);
+  }
+
+  /** `value: null` declines. Shared by both the submit-with-text and y/n-decline paths. */
+  async #answerVaultRequest(value: string | null): Promise<void> {
+    const request = activeVaultRequest(this.#state);
+    if (!request) return;
+    this.#state = { ...this.#state, vaultRequestSubmitting: true };
+    this.#queueRender();
+    try {
+      const result = await this.#client.answerVaultRequest(request.topicId, request.id, value);
+      if (result.ok) {
+        // Kept on failure (e.g. a transient network error) so the user can
+        // just press Enter again instead of retyping a 40-character secret.
+        this.#input.setText("");
+        this.#syncInput();
+      }
+      this.#state = {
+        ...this.#state,
+        vaultRequestMode: "value",
+        vaultRequestSubmitting: false,
+        vaultRequestNotice: result.ok ? undefined : result.error,
+        notice: result.ok
+          ? value === null
+            ? `Declined ${request.vaultSecretRequest?.key} — the agent was told`
+            : `✓ Saved ${request.vaultSecretRequest?.key} to Vault`
+          : this.#state.notice,
+        noticeLevel: result.ok ? (value === null ? "info" : "success") : this.#state.noticeLevel,
+      };
+    } catch (error) {
+      this.#state = {
+        ...this.#state,
+        vaultRequestSubmitting: false,
+        vaultRequestNotice: error instanceof Error ? error.message : String(error),
+      };
     }
     this.#queueRender();
   }
@@ -2630,6 +2788,12 @@ export class TerminalApp {
     const topic = activeTopic(this.#state);
     if (topic && this.#state.activity[topic.id]?.running) {
       this.#lastInterruptAt = 0;
+      // Belt-and-suspenders: `#applyRuntimeEvent` also wipes once the abort's
+      // card-expired broadcast lands, but that is a network round trip away.
+      if (composerHoldsSecret(this.#state)) {
+        this.#input.setText("");
+        this.#syncInput();
+      }
       void this.#abort();
       return;
     }

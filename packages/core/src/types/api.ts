@@ -263,8 +263,16 @@ export interface MessageDto {
   threadLastReplyAt?: string;
   /** Emoji reactions, one entry per (user, emoji). */
   reactions?: ReactionDto[];
-  kind?: "message" | "system" | "tool" | "ask_user_question" | "subagent" | "tell";
+  kind?:
+    | "message"
+    | "system"
+    | "tool"
+    | "ask_user_question"
+    | "vault_secret_request"
+    | "subagent"
+    | "tell";
   askUserQuestion?: AskUserQuestionDto;
+  vaultSecretRequest?: VaultSecretRequestDto;
   subagentCard?: SubagentCardDto;
   tellCard?: TellCardDto;
   createdAt: string;
@@ -274,6 +282,19 @@ export interface AskUserQuestionDto {
   choices: { label: string; description?: string }[];
   selectedLabel?: string;
   expired?: boolean;
+}
+
+/**
+ * Blocking card for `request_vault_secret`: the agent proposes a key and
+ * description, a person types only the value on a surface that can mask
+ * input, and the plaintext never flows back through this DTO, a tool
+ * result, or chat history — only the outcome does.
+ */
+export interface VaultSecretRequestDto {
+  key: string;
+  description?: string;
+  status: "pending" | "fulfilled" | "declined" | "expired";
+  answeredBy?: string;
 }
 
 /** Structured cross-session delivery. Never inferred from system-message text. */
@@ -485,6 +506,7 @@ export type WsServerMessage =
       editedAt?: string;
       usage?: MessageTokenUsage;
       askUserQuestion?: AskUserQuestionDto;
+      vaultSecretRequest?: VaultSecretRequestDto;
       subagentCard?: SubagentCardDto;
     }
   | {
