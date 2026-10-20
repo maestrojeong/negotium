@@ -23,7 +23,7 @@ import { deliverPeerReply, type RemoteReplyRoute } from "#mcp/session-comm/peer-
 import { type CoalescingRunner, createCoalescingRunner } from "#outbox/coalescing-runner";
 import { deleteProcessingFile, drainOutboxFile, parseOutboxLine } from "#outbox/file-ops";
 import { watchDir } from "#outbox/utils";
-import { resolveTopicWorkspaceDir, SESSION_INBOX_DIR } from "#platform/config";
+import { SESSION_INBOX_DIR } from "#platform/config";
 import { FROM_AUTO_CONTINUE, FROM_SELF_SCHEDULE } from "#platform/constants";
 import { appendJsonlEntry, readJsonlLines } from "#platform/jsonl";
 import { logger } from "#platform/logger";
@@ -123,16 +123,22 @@ export function normalizeAskTarget(target: unknown): "main" | "cron" | null {
 }
 
 /**
- * Main-session asks run as a normal turn on the target topic's own session
+ * Every ask now runs as a normal turn on the target's own session
  * (tell_session-style, visible in the target) instead of on a fork. Codex
  * scopes its prompt cache to the thread, so a fork's first request never
  * reused the parent's cache and every ask paid full input price; running on
- * the target session keeps the cache warm and gives every agent the same
- * ask semantics. Cron asks keep the fork path so they never mutate the shared
- * cron session.
+ * the target session keeps the cache warm.
+ *
+ * Cron asks (2026-10-20) dropped the fork too, trading it for
+ * `turnConcurrency: "isolated"` so the ask doesn't queue behind the topic's
+ * main visible turn. This does NOT serialize against a scheduled cron run
+ * landing on the identical session at the same moment — the fork used to
+ * sidestep that by mutating a private copy instead of the shared session.
+ * Treat a corrupted/interleaved cron rollout as a known residual risk until
+ * the cron scheduler itself gets a per-session lock.
  */
-export function askRunsOnTargetSession(target: "main" | "cron"): boolean {
-  return target === "main";
+export function askRunsOnTargetSession(_target: "main" | "cron"): boolean {
+  return true;
 }
 
 export function resolveAskParentSessionId(
@@ -1070,33 +1076,16 @@ async function handleAskEntry(
   const { getTopic } = await import("#storage/api-topics");
   const fullTopic = getTopic(topic.id);
   const agentOverride = (fullTopic?.agent ?? topic.agent ?? undefined) as AgentKind | undefined;
-  const cwd = resolveTopicWorkspaceDir(topic.id);
   if (!agentOverride) {
     clearPendingAskForEntry(scope, entry, topicName, "target-agent-missing");
     await notifyAskDrop(scope, entry, topicName, "(error: target topic has no agent)");
     return;
   }
 
-  // Fork immediately — snapshot the target topic's state at the moment the
-  // inbox entry is consumed (just like clawgram). The ask session reads the
-  // history that exists right now, not after any in-flight user turn finishes.
-  const { cleanupAgentFork, forkAgentSession } = await import("#agents/fork");
-  const { getRegistry, getRegistryOperations } = await import("#agents/registry");
-  const { resolveModelForAgent } = await import("#agents/model-catalog");
-  const { getApiTopicConfig } = await import("#storage/api-topic-config");
-  const { readConversation } = await import("#storage/conversations");
-  const registry = getRegistry(agentOverride);
-  const topicConfig = getApiTopicConfig(topic.id);
-  const model = resolveModelForAgent(
-    agentOverride,
-    topicConfig?.model ?? fullTopic?.defaultModel,
-    registry,
-  );
-  const requestedEffort = topicConfig?.effort ?? fullTopic?.defaultEffort;
-  const effort =
-    requestedEffort && registry.validateEffort(requestedEffort)
-      ? requestedEffort
-      : registry.defaultEffort;
+  // Every ask runs as a normal turn on the target's own session (see
+  // askRunsOnTargetSession above), so no fork/model/effort resolution is
+  // needed here — triggerTopicAiTurn below resolves those itself, same as
+  // a regular tell_session.
   const cronSession =
     askTarget === "cron" ? getRegisteredCronSession(topic.id, agentOverride) : null;
   const parentSessionId =
@@ -1161,6 +1150,17 @@ async function handleAskEntry(
         label: `Ask from ${fromLabel}`,
         message: entry.message,
       },
+      // cron: target the cron session explicitly and run it isolated from
+      // the topic's main visible turn (no fork — see askRunsOnTargetSession's
+      // doc comment for the residual concurrency tradeoff). main: default to
+      // the topic's own session/turn slot, same as tell_session.
+      ...(askTarget === "cron"
+        ? {
+            sessionId: parentSessionId,
+            sessionScope: "isolated" as const,
+            turnConcurrency: "isolated" as const,
+          }
+        : {}),
       onSettled,
       onDispatched,
     });
@@ -1171,149 +1171,11 @@ async function handleAskEntry(
     return;
   }
 
-  const forkNative = parentSessionId
-    ? () =>
-        forkAgentSession({
-          agent: agentOverride,
-          parentSessionId,
-          cwd,
-          userId: scope.userId,
-          topicName,
-          title: `ask: ${entry.from} -> ${targetLabel}`,
-          model,
-          ...(effort ? { effort } : {}),
-        })
-    : undefined;
-
-  let forkPlan: AskForkPlan;
-  try {
-    forkPlan = await createAskForkPlan({
-      // Read once: queued/replayed asks must keep the history visible at inbox
-      // consumption time even if the target topic advances while they wait.
-      entries: askTarget === "cron" ? [] : readConversation(scope.userId, topicName),
-      ...(forkNative ? { forkNative } : {}),
-      ...(askTarget === "cron" && forkNative ? { prepareSession: forkNative } : {}),
-      synthesize: async (entries) => {
-        if (askTarget === "cron") {
-          throw new Error("cron session fork failed");
-        }
-        const rollout = getRegistryOperations(agentOverride).writeRollout({
-          cwd,
-          entries,
-          model,
-          ...(effort ? { effort } : {}),
-        });
-        return {
-          agent: agentOverride,
-          forkId: rollout.sessionId,
-          rolloutPath: rollout.rolloutPath,
-        };
-      },
-      onNativeForkError: (err) => {
-        logger.warn(
-          { err, topicName, from: entry.from, requestId, parentSessionId },
-          "session-inbox: native target fork failed",
-        );
-      },
-    });
-  } catch (err) {
-    // This entry has already been claimed. Convert preparation failure into a
-    // terminal ask result so processTopicInbox can delete its `.processing`
-    // file instead of leaving the request undiscoverable until another write.
-    logger.error(
-      { err, topicName, from: entry.from, requestId, parentSessionId },
-      "session-inbox: failed to prepare target ask session",
-    );
-    try {
-      clearPendingAskForEntry(scope, entry, topicName, "target-session-prepare-failed");
-    } catch (clearError) {
-      logger.warn(
-        { err: clearError, topicName, from: entry.from, requestId },
-        "session-inbox: failed to clear ask after session preparation failure",
-      );
-    }
-    const message = "(error: target session could not be prepared)";
-    if (remoteReply) {
-      try {
-        const delivered = await deliverPeerReply(remoteReply, targetLabel, message, "error");
-        if (!delivered) {
-          logger.warn(
-            { topicName, from: entry.from, requestId },
-            "session-inbox: failed to deliver remote ask preparation error",
-          );
-        }
-      } catch (deliveryError) {
-        logger.warn(
-          { err: deliveryError, topicName, from: entry.from, requestId },
-          "session-inbox: remote ask preparation error delivery threw",
-        );
-      }
-    } else {
-      try {
-        await notifyAskDrop(scope, entry, targetLabel, message);
-      } catch (deliveryError) {
-        logger.warn(
-          { err: deliveryError, topicName, from: entry.from, requestId },
-          "session-inbox: local ask preparation error delivery threw",
-        );
-      }
-    }
-    return;
-  }
-
-  if (askTarget === "cron") {
-    const currentCronSession = getRegisteredCronSession(topic.id, agentOverride);
-    if (
-      !cronSession ||
-      !currentCronSession ||
-      currentCronSession.sessionId !== cronSession.sessionId ||
-      currentCronSession.ownerUserId !== cronSession.ownerUserId
-    ) {
-      cleanupAgentFork(forkPlan.forkHandle);
-      clearPendingAskForEntry(scope, entry, topicName, "cron-session-changed-during-fork");
-      const message =
-        "(error: cron session changed while preparing the request; retry the request)";
-      if (remoteReply) {
-        await deliverPeerReply(remoteReply, targetLabel, message, "error");
-      } else {
-        await notifyAskDrop(scope, entry, targetLabel, message);
-      }
-      return;
-    }
-  }
-
-  // Trigger the AI turn immediately with the pre-forked session.
-  triggerTopicAiTurn(
-    topic.id,
-    String(scope.userId),
-    prompt,
-    (agentOverride ?? topic.agent ?? undefined) as Parameters<typeof triggerTopicAiTurn>[3],
-    {
-      origin: entry.from,
-      requestId,
-      contextId: entry.contextId,
-      depth: (entry.fromDepth ?? 0) + 1,
-      silent: true,
-      sessionId: forkPlan.forkHandle.forkId,
-      // The fork is read-only and session-isolated, so it does not need the
-      // target topic's visible execution slot. Answer immediately even while
-      // that topic is processing a user turn.
-      turnConcurrency: "isolated",
-      forkHandle: forkPlan.forkHandle,
-      // Keep a regeneration recipe even though the first fork is eager. The
-      // isolated room prevents user preemption; the recipe remains available
-      // for a clean retry if the provider reports an expired session.
-      prepareSession: forkPlan.prepareSession,
-      cwd,
-      onSettled,
-      onDispatched,
-    },
-  );
-
-  logger.info(
-    { topicName, from: entry.from, requestId, callerTopicId },
-    "session-inbox: ask delivered",
-  );
+  // Every ask now runs on the target's own session (see
+  // askRunsOnTargetSession above) — the fork-and-copy path this used to
+  // fall through to for ask_cron was removed 2026-10-20. createAskForkPlan
+  // itself is kept (still exported + unit-tested) in case a future caller
+  // needs a true read-only copy again.
 }
 
 // ── Bootstrap ───────────────────────────────────────────────────────

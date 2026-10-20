@@ -30,9 +30,9 @@ describe("ask session fork planning", () => {
     expect(normalizeAskTarget("Cron")).toBeNull();
   });
 
-  test("main asks run on the target session; cron asks stay on a fork", () => {
+  test("every ask target runs on its own session, not a fork (2026-10-20)", () => {
     expect(askRunsOnTargetSession("main")).toBe(true);
-    expect(askRunsOnTargetSession("cron")).toBe(false);
+    expect(askRunsOnTargetSession("cron")).toBe(true);
   });
 
   test("cron-targeted asks select the registered cron session", () => {
