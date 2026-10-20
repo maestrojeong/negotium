@@ -84,6 +84,11 @@ describe("Clawgram-style onboarding", () => {
     });
 
     try {
+      // The first DM contact also sends the onboarding guide asynchronously;
+      // settle it with /start so it cannot land after a command's reply.
+      fake.emit({ chat: { id: DM, type: "private" }, from: { id: OWNER }, text: "/start" });
+      await waitFor(() => fake.callsFor(DM).length > 0);
+
       for (const text of [
         "/topics",
         "/load some-topic",
@@ -97,8 +102,12 @@ describe("Clawgram-style onboarding", () => {
       ]) {
         fake.calls = [];
         fake.emit({ chat: { id: DM, type: "private" }, from: { id: OWNER }, text });
-        await waitFor(() => fake.callsFor(DM).length > 0);
-        expect(fake.callsFor(DM).at(-1)?.text).toContain("connected forum group");
+        await waitFor(() =>
+          fake.callsFor(DM).some((call) => call.text?.includes("connected forum group")),
+        );
+        expect(fake.callsFor(DM).some((call) => call.text?.includes("connected forum group"))).toBe(
+          true,
+        );
       }
 
       // Bare /new (session reset) and /abort stay available — they act on
