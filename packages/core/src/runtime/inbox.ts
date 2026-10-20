@@ -1112,23 +1112,14 @@ async function handleAskEntry(
     return;
   }
 
-  const onSettled = (result: { queryId?: string; kind: string }) => {
+  const onSettled = (result: { queryId?: string; kind: string; error?: string }) => {
     if (result.queryId || result.kind !== "error") return;
     clearPendingAskForEntry(scope, entry, topicName, "target-unavailable-before-dispatch");
+    const message = `(error: ${result.error ?? "target topic became unavailable before dispatch"})`;
     if (remoteReply) {
-      void deliverPeerReply(
-        remoteReply,
-        targetLabel,
-        `(error: target topic became unavailable before dispatch)`,
-        "error",
-      );
+      void deliverPeerReply(remoteReply, targetLabel, message, "error");
     } else {
-      void notifyAskDrop(
-        scope,
-        entry,
-        targetLabel,
-        `(error: target topic became unavailable before dispatch)`,
-      );
+      void notifyAskDrop(scope, entry, targetLabel, message);
     }
   };
   const onDispatched = (queryId: string) => {

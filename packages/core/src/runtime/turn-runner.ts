@@ -2074,9 +2074,10 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
             { agent: agentKind, model: resolvedModel, budgetReason: outcome.reason },
           );
           WsHub.get().broadcastTopicNotice(topicId, "warning", "예산 한도 도달");
-        } else {
-          await deliverAskError(queryId, topic.title, error);
         }
+        // Visible ask_session turns run on the target session too, so the
+        // caller must hear about the cap regardless of `silent`.
+        await deliverAskError(queryId, topic.title, error);
         await settleSubagentFailure(queryId, error);
         try {
           onSettled?.({ queryId, kind: "error", error });
@@ -2133,6 +2134,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         WsHub.get().broadcastError(topicId, queryId, error);
         WsHub.get().broadcastTopicNotice(topicId, "error", "응답 실패");
       }
+      await deliverAskError(queryId, topic.title, error);
       await settleSubagentFailure(queryId, classifyAgentError(error, agentKind));
       try {
         onSettled?.({

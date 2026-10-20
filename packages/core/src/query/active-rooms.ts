@@ -386,9 +386,29 @@ export class InterSessionQueue {
     return Array.from(this.queue.keys());
   }
 
-  /** Drop all queued injects for a topic (e.g. after room abort). */
-  drop(topicId: string): void {
+  /**
+   * Drop all queued injects for a topic (e.g. after room abort, reset, or
+   * delete). Each dropped inject is settled as an undispatched error so its
+   * owner can release state — an ask_session queued behind the target's
+   * running turn has no reply callback yet, and would otherwise leave the
+   * caller waiting until the pending-ask TTL.
+   */
+  drop(topicId: string, reason = "target session was stopped before the request ran"): number {
+    const bucket = this.queue.get(topicId);
     this.queue.delete(topicId);
+    if (!bucket) return 0;
+    const dropped = bucket.items.slice(bucket.head);
+    for (const inject of dropped) {
+      try {
+        inject.onSettled?.({ queryId: "", kind: "error", error: reason });
+      } catch (err) {
+        logger.warn(
+          { err, topicId, requestId: inject.requestId },
+          "session inject drop settlement hook failed",
+        );
+      }
+    }
+    return dropped.length;
   }
 
   /** Number of queued injects for a topic. */

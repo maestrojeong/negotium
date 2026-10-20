@@ -563,7 +563,7 @@ if (!isReplyOnly) {
   if (!currentSubagentRestricted) {
     server.tool(
       "ask_session",
-      "ASK — Delegate to another session and pull the result back INTO YOUR CONTEXT. Target forks (no history pollution), processes with full tools, and the answer is auto-injected into your conversation. Use ONLY when YOU need the output to drive your next action (code reviews whose verdict determines your next edit, fact checks you'll cite, lookups that decide your next step). If the user can just read the result in the target topic, use tell_session — ask burns your context window with content you don't actually need. Decision rule: 'Do I need this output in MY context to proceed?' Yes → ask. No (result lives in target topic, user reads it there) → tell_session.",
+      "ASK — Delegate to another session and pull the result back INTO YOUR CONTEXT. The question runs as a visible turn in the target's own session (queued behind its current turn; the exchange stays in the target's history), processes with full tools, and the answer is auto-injected into your conversation. Use ONLY when YOU need the output to drive your next action (code reviews whose verdict determines your next edit, fact checks you'll cite, lookups that decide your next step). If the user can just read the result in the target topic, use tell_session — ask burns your context window with content you don't actually need. Decision rule: 'Do I need this output in MY context to proceed?' Yes → ask. No (result lives in target topic, user reads it there) → tell_session.",
       {
         to: z.string().describe("Target session/topic name (e.g. '회의록', '신건')"),
         message: z.string().describe("Message to send to the target session"),
@@ -715,7 +715,7 @@ if (!isReplyOnly) {
             ...(fromRef.topicId ? { fromTopicId: fromRef.topicId } : {}),
             message,
             // Caller's depth — used to resume this session at the correct depth
-            // when the fork's reply is injected back.
+            // when the target's reply is injected back.
             fromDepth: currentDepth,
             timestamp: new Date().toISOString(),
           };

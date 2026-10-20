@@ -67,6 +67,17 @@ function callerSurfaceScope(ctx: RuntimeMcpContext): string | null {
 }
 
 /**
+ * The Telegram DM is bound to the owner's scope-less personal General. Topic
+ * lifecycle lives in a connected forum group, so a room created from the DM
+ * would have no group to materialize in — the same orphan the DM slash-command
+ * guard prevents, reached through the conversational tool instead.
+ */
+function isTelegramDmGeneral(ctx: RuntimeMcpContext): boolean {
+  const topic = getTopic(ctx.topicId);
+  return topic?.surface === "telegram" && topic.kind === "manager" && !(topic.surfaceScope ?? null);
+}
+
+/**
  * The rooms the calling turn is allowed to see and name.
  *
  * On `terminal` and `telegram` this node owns membership, so participation is
@@ -243,6 +254,13 @@ export function registerNodeTools(server: McpServer, ctx: RuntimeMcpContext): vo
         memory_key: z.string().optional().describe("Wiki memory persona the room continues."),
       },
       async ({ title, agent, model, effort, description, memory_key }) => {
+        if (isTelegramDmGeneral(ctx)) {
+          return errorResult(
+            "Error: topics can't be created from the Telegram DM. Topic management lives in " +
+              "a connected forum group — ask the user to send /start to connect one, then " +
+              "create the topic from that group's General.",
+          );
+        }
         try {
           const topic = registerTopic({
             title,

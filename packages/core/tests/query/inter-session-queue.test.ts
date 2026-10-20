@@ -354,3 +354,35 @@ describe("thread-bound ask replies", () => {
     expect(merged?.threadRootId).toBe("root-a");
   });
 });
+
+describe("drop", () => {
+  test("settles every dropped inject as an undispatched error", () => {
+    const settled: Array<{ requestId?: string; kind: string; queryId: string; error?: string }> =
+      [];
+    for (const requestId of ["ask-1", "ask-2"]) {
+      queue.enqueue(
+        TOPIC,
+        inject({
+          requestId,
+          onSettled: (result) => settled.push({ requestId, ...result }),
+        }),
+      );
+    }
+    queue.enqueue(TOPIC, inject({ requestId: "tell-1" }));
+
+    expect(queue.drop(TOPIC, "target topic was reset")).toBe(3);
+    expect(queue.size(TOPIC)).toBe(0);
+    expect(settled).toEqual([
+      { requestId: "ask-1", queryId: "", kind: "error", error: "target topic was reset" },
+      { requestId: "ask-2", queryId: "", kind: "error", error: "target topic was reset" },
+    ]);
+  });
+
+  test("does not settle injects that were already dequeued", () => {
+    let settledCount = 0;
+    queue.enqueue(TOPIC, inject({ requestId: "done", onSettled: () => settledCount++ }));
+    queue.dequeueNext(TOPIC);
+    expect(queue.drop(TOPIC)).toBe(0);
+    expect(settledCount).toBe(0);
+  });
+});

@@ -547,6 +547,42 @@ describe("negotium MCP endpoint", () => {
     expect(text).not.toContain("other-user-room");
   });
 
+  /**
+   * The Telegram DM is bound to the owner's scope-less personal General;
+   * a room created there has no forum group to materialize in. The DM
+   * slash-command guard blocks /new <name>; this blocks the conversational
+   * route to the same orphan.
+   */
+  test("register_topic refuses to create topics from the Telegram DM General", async () => {
+    const suffix = randomUUID();
+    const dmGeneral = ensurePersonalGeneral(`dm-owner-${suffix}`, "telegram");
+    expect(dmGeneral.surfaceScope ?? null).toBeNull();
+
+    const dmCtx: RuntimeMcpContext = {
+      ...ctx,
+      userId: dmGeneral.participants[0]!.userId,
+      actorUserId: dmGeneral.participants[0]!.userId,
+      topicId: dmGeneral.id,
+      topicTitle: dmGeneral.title,
+    };
+    const dmClient = new Client({ name: "negotium-telegram-dm-test", version: "1.0.0" });
+    const token = issueRuntimeMcpToken(dmCtx);
+    const url = new URL(
+      `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+    );
+    try {
+      await dmClient.connect(new StreamableHTTPClientTransport(url));
+      const result = await dmClient.callTool({
+        name: "register_topic",
+        arguments: { title: `dm-${suffix}`, agent: "claude" },
+      });
+      expect(result.isError).toBe(true);
+      expect(resultText(result)).toContain("forum group");
+    } finally {
+      await dmClient.close();
+    }
+  });
+
   test("abort_topic reports idle targets and queues the abort signal", async () => {
     const result = await client.callTool({
       name: "abort_topic",
