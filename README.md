@@ -1,4 +1,5 @@
 <div align="center">
+  <img src="./assets/noti/noti.png" alt="Noti, the Negotium mascot" width="140">
   <h1>Negotium</h1>
   <p><strong>One machine, one Negotium runtime — reachable from Terminal, Telegram, and multiple Otium workspaces at once.</strong></p>
   <p>Run Claude, Codex, or Maestro with local tools, memory, and schedules.</p>
@@ -14,6 +15,11 @@
 
 > *Negotium* is Latin for “work” — literally *nec otium*, the absence of
 > leisure. Your machines do the negotium so you can keep the otium.
+
+<p align="center">
+  <img src="./assets/noti/noti-states.gif" alt="Noti in its seven states: idle, wave, thinking, working, success, error, sleep" width="100%">
+  <br><sub>Meet <strong>Noti</strong>, the node that does the work. Idle · wave · thinking · working · success · error · sleep — one animated SVG, switched by <code>data-state</code>. Assets in <a href="./assets/noti/">assets/noti</a>.</sub>
+</p>
 
 ## The Negotium Node
 
