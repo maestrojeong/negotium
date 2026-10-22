@@ -73,10 +73,15 @@ const CLAUDE_DEFAULT_GIT_BRANCH = "HEAD";
  * synthetic rollouts landed at `…-user_6407801418/` while the SDK looked
  * at `…-user-6407801418/` — every `set_agent` switch surfaced as "No
  * conversation found with session ID" on the next message.
+ *
+ * Nothing is prepended: a POSIX path starts with `/`, which already becomes
+ * the leading `-`. A Windows path does not, and the SDK writes
+ * `C:\Users\x` as `C--Users-x`; forcing a `-` in front sent Windows rollouts
+ * to `-C--Users-x/`, where the SDK never looks.
  */
 export function encodeClaudeCwd(cwd: string): string {
   const realCwd = cwd.startsWith("/tmp/") ? cwd.replace(/^\/tmp\//, "/private/tmp/") : cwd;
-  return `-${realCwd.replaceAll(/[^a-zA-Z0-9]/g, "-").replace(/^-/, "")}`;
+  return realCwd.replaceAll(/[^a-zA-Z0-9]/g, "-");
 }
 
 export interface ClaudeRolloutOptions {
