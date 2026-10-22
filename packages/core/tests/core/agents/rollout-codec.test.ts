@@ -221,6 +221,17 @@ describe("writeClaudeRollout", () => {
   // with underscores landed under a different encoded directory than the Claude
   // SDK expects (it normalizes ANY non-__KEEP_MAESTRONUMERIC__ to `-`). Result was
   // "No conversation found with session ID" on every set_agent resume.
+  // The SDK's own folder names, as found on disk: a POSIX path gains its
+  // leading `-` from the `/`; a Windows path has none.
+  test("encodeClaudeCwd matches the SDK directory name on POSIX and Windows", async () => {
+    const { encodeClaudeCwd } = await import("#agents/rollout/claude");
+    expect(encodeClaudeCwd("/Users/me/user_1")).toBe("-Users-me-user-1");
+    expect(encodeClaudeCwd("/tmp/x")).toBe("-private-tmp-x");
+    expect(encodeClaudeCwd("C:\\Users\\me\\.negotium\\workspace")).toBe(
+      "C--Users-me--negotium-workspace",
+    );
+  });
+
   test("path encoding matches SDK normalization (`_` → `-`)", async () => {
     const { writeClaudeRollout } = await import("#agents/rollout/claude");
     const userDirWithUnderscore = mkdtempSync(join(WORKSPACE_DIR, "test_rollout_"));
