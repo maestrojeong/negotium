@@ -6,7 +6,11 @@ import {
 } from "#storage/api-topic-config";
 import { deleteTopic, getTopic, upsertTopic } from "#storage/api-topics";
 import { TopicValidationError } from "#topics/create";
-import { TopicUpdateConflictError, updateTopicSettings } from "#topics/update";
+import {
+  MAX_TOPIC_DESCRIPTION_CHARS,
+  TopicUpdateConflictError,
+  updateTopicSettings,
+} from "#topics/update";
 
 const USER = "update-topic-settings-test-user";
 const createdTopicIds: string[] = [];
@@ -43,6 +47,33 @@ afterEach(() => {
 });
 
 describe("updateTopicSettings", () => {
+  test("sets, keeps and clears the room's description", () => {
+    const topic = seedTopic();
+    if (!topic) throw new Error("seed failed");
+    const set = updateTopicSettings({
+      topicId: topic.id,
+      description: "  Follow the checklist.  ",
+    });
+    expect(set.description).toBe("Follow the checklist.");
+    // A rename must not wipe instructions the caller did not mention.
+    expect(updateTopicSettings({ topicId: topic.id, title: "Renamed" }).description).toBe(
+      "Follow the checklist.",
+    );
+    expect(updateTopicSettings({ topicId: topic.id, description: "" }).description).toBeUndefined();
+    expect(getTopic(topic.id)?.description).toBeUndefined();
+  });
+
+  test("rejects a description too long to ride every turn's prompt", () => {
+    const topic = seedTopic();
+    if (!topic) throw new Error("seed failed");
+    expect(() =>
+      updateTopicSettings({
+        topicId: topic.id,
+        description: "x".repeat(MAX_TOPIC_DESCRIPTION_CHARS + 1),
+      }),
+    ).toThrow(TopicValidationError);
+  });
+
   test("changes only the fields the caller sent", () => {
     const topic = seedTopic();
     if (!topic) throw new Error("seed failed");

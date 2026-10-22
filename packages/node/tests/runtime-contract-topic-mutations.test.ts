@@ -66,6 +66,7 @@ test("health advertises the delete/update/silent capabilities hosts feature-dete
   expect(body.capabilities).toContain("canonical-topic-delete");
   expect(body.capabilities).toContain("canonical-message-delete");
   expect(body.capabilities).toContain("canonical-topic-update");
+  expect(body.capabilities).toContain("canonical-topic-description");
   expect(body.capabilities).toContain("turn-submit-silent");
   expect(body.capabilities).toContain("canonical-topic-abort");
   expect(body.capabilities).toContain("canonical-session-reset");

@@ -380,6 +380,29 @@ test("runtime gateway topic create preserves channel execution config", async ()
   });
 });
 
+test("runtime gateway sets a topic's description for its turns' system prompt", async () => {
+  const owner = `runtime-description-${randomUUID()}`;
+  const topic = registerTopic({ title: `Gateway description ${randomUUID()}`, userId: owner });
+  const path = `/topics/${encodeURIComponent(topic.id)}`;
+  const patch = (description: unknown) =>
+    handler(
+      runtimeRequest(path, {
+        method: "PATCH",
+        body: JSON.stringify({ v: NODE_RUNTIME_CONTRACT_VERSION, userId: owner, description }),
+      }),
+    );
+
+  const updated = await patch("Ask the user to log in before running the site tool.");
+  expect(updated?.status).toBe(200);
+  expect(await updated?.json()).toMatchObject({
+    topic: { id: topic.id, description: "Ask the user to log in before running the site tool." },
+  });
+  expect(getTopic(topic.id)?.description).toBe(
+    "Ask the user to log in before running the site tool.",
+  );
+  expect((await patch(42))?.status).toBe(400);
+});
+
 test("runtime gateway reads and writes canonical per-topic config", async () => {
   const owner = `runtime-config-${randomUUID()}`;
   const topic = registerTopic({ title: `Gateway config ${randomUUID()}`, userId: owner });

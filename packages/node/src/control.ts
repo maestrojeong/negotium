@@ -626,6 +626,10 @@ export function createNodeControlHandler(
               "canonical-manager-topic",
               ...(process.env.NEGOTIUM_CRON === "0" ? [] : ["scheduler.cron.gateway.v1"]),
               "canonical-topic-update",
+              // `PATCH /topics/:id` also takes `description`, the room's own
+              // instructions in every turn's system prompt. An older node
+              // ignores the field and answers 200, so a host checks this first.
+              "canonical-topic-description",
               "canonical-topic-delete",
               "turn-submit-silent",
               "turn-submit-hidden",
@@ -2045,6 +2049,9 @@ export function createNodeControlHandler(
           ) {
             return jsonError(400, "Invalid aiMode");
           }
+          if (body.description !== undefined && typeof body.description !== "string") {
+            return jsonError(400, "description must be a string");
+          }
           try {
             const topic = updateTopicSettings({
               topicId,
@@ -2059,6 +2066,9 @@ export function createNodeControlHandler(
                 ? { defaultEffort: body.defaultEffort as string }
                 : {}),
               ...(body.aiMode !== undefined ? { aiMode: body.aiMode as AiMode } : {}),
+              ...(body.description !== undefined
+                ? { description: body.description as string }
+                : {}),
             });
             return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, topic });
           } catch (err) {
