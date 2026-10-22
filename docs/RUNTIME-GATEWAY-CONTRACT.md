@@ -257,12 +257,16 @@ the canonical topic.
   warning when it does. Configure the backend on every node behind a gateway that has one, or the
   same room offers different tools depending on which host ran the turn.
   `hostMcpServers` grants remote `{ type: "sse" | "http", url, headers?, timeout? }` MCP servers
-  to manager-topic turns. The field is optional and omission preserves the existing topic grant;
-  `{}` revokes it. Non-manager topics, process transports, non-HTTP(S) URLs, unknown spec keys, and
-  names owned by the node are rejected. Nodes advertise `host-mcp-turn-injection` before a host may
-  rely on the field. Credentials stay in the dedicated `api_topic_host_mcp_grants` table and are
-  resolved only into normal manager executions, never cron, forum, subagent, signed runtime context,
-  or durable turn payloads. Codex supports the `http` transport; its provider ignores SSE entries.
+  to a topic's turns. The field is optional and omission preserves the existing topic grant;
+  `{}` revokes it. Manager topics accept any name. Ordinary topics accept every name except the
+  manager administration surface (`topic-admin`), so a host can scope its own tools to one room;
+  subagent topics accept none. Process transports, non-HTTP(S) URLs, unknown spec keys, and names
+  owned by the node are rejected. Nodes advertise `host-mcp-turn-injection` before a host may rely
+  on the field, and `host-mcp-forum-turn-injection` before a host may send it for an ordinary
+  topic. Credentials stay in the dedicated `api_topic_host_mcp_grants` table and are resolved only
+  into the topic's own execution scope (manager executions for a manager topic, forum executions
+  for an ordinary one), never cron, ephemeral, subagent, signed runtime context, or durable turn
+  payloads. Codex supports the `http` transport; its provider ignores SSE entries.
   It returns `202` only after the canonical user message, durable turn request, acknowledgement event,
   and message event have been committed in one SQLite transaction. `cursor` is the exact sequence of
   that turn's `turn_accepted` event. Current nodes also include the canonical `message` in the

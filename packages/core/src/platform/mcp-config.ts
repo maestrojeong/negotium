@@ -51,6 +51,7 @@ import type {
   PeerRuntimeBridgeContext,
   RemoteSessionGrant,
 } from "#types";
+import type { TopicDto } from "#types/api";
 
 export type { RuntimeMcpScope } from "#platform/mcp-catalog-policy";
 
@@ -822,6 +823,34 @@ export function isReservedRuntimeMcpServerName(name: string): boolean {
   return Object.hasOwn(MCP_CATALOG, name) || nodeMcpEntries.some((entry) => entry.key === name);
 }
 
+/** Host MCP servers that administer the workspace; only a manager room may receive them. */
+const MANAGER_ONLY_HOST_MCP_NAMES = new Set(["topic-admin"]);
+
+/**
+ * Why `topic` may not receive host MCP servers named `names`, or null when it
+ * may. A manager room takes any of them. An ordinary room takes everything but
+ * the manager administration surface, so a host can scope its own tools to a
+ * room. A subagent room takes none.
+ */
+export function hostMcpGrantRefusal(
+  topic: Pick<TopicDto, "kind" | "isSubagent">,
+  names: readonly string[],
+): string | null {
+  if (topic.kind === "manager") return null;
+  if (topic.isSubagent) return "hostMcpServers is not allowed for subagent topics";
+  const managerOnly = names.find((name) => MANAGER_ONLY_HOST_MCP_NAMES.has(name));
+  return managerOnly ? `${managerOnly} is only allowed for manager topics` : null;
+}
+
+function withoutManagerOnlyHostMcpServers(
+  hostMcpServers: Record<string, HostMcpServerSpec> | undefined,
+): Record<string, HostMcpServerSpec> | undefined {
+  if (!hostMcpServers) return undefined;
+  return Object.fromEntries(
+    Object.entries(hostMcpServers).filter(([name]) => !MANAGER_ONLY_HOST_MCP_NAMES.has(name)),
+  );
+}
+
 function mergeHostMcpServers(
   base: Record<string, unknown>,
   hostMcpServers: Record<string, HostMcpServerSpec> | undefined,
@@ -1223,34 +1252,37 @@ export function getMcpServersForQuery(opts: AgentQueryOptions): Record<string, u
     );
   }
   return hideProviderIntrospectionForOtium(
-    getForumMcpServers({
-      userId: opts.userId || "local",
-      actorUserId: opts.actorUserId,
-      actorTopicScope: opts.actorTopicScope,
-      remoteSession: opts.remoteSession,
-      vaultUserId: opts.vaultUserId,
-      session: opts.session || "default",
-      topicId: opts.topicId,
-      subagentParentTopicId: opts.subagentParentTopicId,
-      queryId: opts.queryId,
-      wikiTopicId: opts.wikiTopicId,
-      agent: opts.agent,
-      cwd: opts.cwd,
-      model: opts.model,
-      currentUserPrompt: opts.prompt,
-      playwrightPort: opts.playwrightPort,
-      playwrightCapability: opts.playwrightCapability,
-      bgBashPort: opts.bgBashPort,
-      autoContinue: opts.autoContinue,
-      visualTools: opts.visualTools,
-      fileDeliveryTools: opts.fileDeliveryTools,
-      threadRootId: opts.threadRootId,
-      depth: opts.depth,
-      enabled: opts.mcpEnabled,
-      extra: opts.mcpExtra,
-      silent: opts.silent,
-      peerBridge: opts.peerBridge,
-    }),
+    mergeHostMcpServers(
+      getForumMcpServers({
+        userId: opts.userId || "local",
+        actorUserId: opts.actorUserId,
+        actorTopicScope: opts.actorTopicScope,
+        remoteSession: opts.remoteSession,
+        vaultUserId: opts.vaultUserId,
+        session: opts.session || "default",
+        topicId: opts.topicId,
+        subagentParentTopicId: opts.subagentParentTopicId,
+        queryId: opts.queryId,
+        wikiTopicId: opts.wikiTopicId,
+        agent: opts.agent,
+        cwd: opts.cwd,
+        model: opts.model,
+        currentUserPrompt: opts.prompt,
+        playwrightPort: opts.playwrightPort,
+        playwrightCapability: opts.playwrightCapability,
+        bgBashPort: opts.bgBashPort,
+        autoContinue: opts.autoContinue,
+        visualTools: opts.visualTools,
+        fileDeliveryTools: opts.fileDeliveryTools,
+        threadRootId: opts.threadRootId,
+        depth: opts.depth,
+        enabled: opts.mcpEnabled,
+        extra: opts.mcpExtra,
+        silent: opts.silent,
+        peerBridge: opts.peerBridge,
+      }),
+      withoutManagerOnlyHostMcpServers(opts.hostMcpServers),
+    ),
     opts.topicId,
   );
 }

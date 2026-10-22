@@ -715,6 +715,27 @@ describe("mcp-config: playwright transport selection per agent", () => {
     ).toThrow("conflicts with node catalog: runtime");
   });
 
+  test("an ordinary room merges room-scoped host MCPs but never topic-admin", () => {
+    const tax = { type: "http" as const, url: "http://127.0.0.1:4200/mcp/tax/mcp?token=room" };
+    const servers = getMcpServersForQuery({
+      agent: "codex",
+      prompt: "ordinary room",
+      systemPrompt: "",
+      cwd: "/tmp",
+      userId,
+      sessionType: "forum",
+      session: "room",
+      topicId: "forum-host-mcp",
+      hostMcpServers: {
+        tax,
+        "topic-admin": { type: "http", url: "http://127.0.0.1:4200/mcp/admin/topic-admin/mcp" },
+      },
+    });
+    expect(servers.tax).toEqual(tax);
+    expect(servers["topic-admin"]).toBeUndefined();
+    expect(servers.runtime).toBeDefined();
+  });
+
   test("runtime-managed tools stay active outside the optional whitelist", () => {
     const servers = getForumMcpServers({
       userId,

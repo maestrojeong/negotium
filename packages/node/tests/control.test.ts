@@ -120,6 +120,7 @@ test("runtime gateway health negotiates the v1 capability set", async () => {
     capabilities: expect.arrayContaining([
       "turn-submit-idempotent",
       "host-mcp-turn-injection",
+      "host-mcp-forum-turn-injection",
       "turn-events-sse-resume",
       "canonical-topic-read",
       "canonical-message-read",
@@ -1235,6 +1236,18 @@ test("runtime gateway rejects host MCP process specs and node-owned names", asyn
   });
   expect(managerOnly?.status).toBe(400);
   expect(await managerOnly?.json()).toMatchObject({ error: expect.stringContaining("manager") });
+
+  const roomScoped = await submit({
+    tax: { type: "http", url: "http://127.0.0.1:4200/mcp/tax/mcp?token=room" },
+  });
+  expect(roomScoped?.status).toBe(202);
+  expect(
+    db
+      .query<{ servers_json: string }, [string]>(
+        "SELECT servers_json FROM api_topic_host_mcp_grants WHERE topic_id = ?",
+      )
+      .get(topic.id),
+  ).toMatchObject({ servers_json: expect.stringContaining("/mcp/tax/mcp") });
 });
 
 test("runtime gateway returns a canonical thread when addressed by its root or a reply", async () => {
