@@ -101,6 +101,6 @@ body{{margin:0;background:#f8f7ff;font:14px/1.4 -apple-system,Helvetica,Arial,sa
 button{{background:#ddd3f7;color:#3d2f86;border:0;border-radius:999px;padding:8px 14px;margin:4px;cursor:pointer;font-weight:600}} button.on{{background:#6a5db8;color:#fff}} code{{background:#f1eefc;padding:2px 6px;border-radius:6px}}
 </style></head><body><h1>Noti — negotium mascot · animation set</h1><p>One SVG, state switched by <code>data-state</code>: {' · '.join(STATES)}</p>
 <div class="grid">{''.join(f'<div class="tile">{build(st)}<b>{st}</b></div>' for st in STATES)}</div>
-<div class="stage" id="stage">{build('idle')}<div>{''.join(f'<button data-s="{st}">{st}</button>' for st in STATES)}<p style="margin:10px 0 0">JS: <code>svg.dataset.state = "working"</code></p></div></div>
-<script>document.querySelectorAll('#stage button').forEach(b=>b.onclick=()=>{{document.querySelector('#stage svg').dataset.state=b.dataset.s;document.querySelectorAll('#stage button').forEach(x=>x.classList.toggle('on',x===b))}});document.querySelector('#stage button').classList.add('on')</script></body></html>"""
+<div class="stage" id="stage">{build('idle')}<div>{''.join(f'<button type="button" data-s="{st}">{st}</button>' for st in STATES)}<p style="margin:10px 0 0">JS: <code>svg.dataset.state = "working"</code></p></div></div>
+<script>document.querySelectorAll('#stage button').forEach(b=>{{b.onclick=()=>{{document.querySelector('#stage svg').dataset.state=b.dataset.s;document.querySelectorAll('#stage button').forEach(x=>{{x.classList.toggle('on',x===b)}})}}}});document.querySelector('#stage button').classList.add('on')</script></body></html>"""
 open('out/demo.html','w').write(html); print('web ok')
