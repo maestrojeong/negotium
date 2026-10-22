@@ -43,7 +43,15 @@ export interface UpdateTopicSettingsOptions {
   defaultModel?: string;
   defaultEffort?: string;
   aiMode?: AiMode;
+  /**
+   * The room's own instructions, injected into every turn's system prompt as
+   * "Topic-Specific Instructions". An empty string clears them.
+   */
+  description?: string;
 }
+
+/** Room for a full work procedure (Otium tax rooms keep one per room), still small next to a turn's prompt. */
+export const MAX_TOPIC_DESCRIPTION_CHARS = 20000;
 
 export interface UpdateManagerTopicRuntimeConfigOptions {
   topicId: string;
@@ -150,6 +158,17 @@ export function updateTopicSettings(opts: UpdateTopicSettingsOptions): TopicDto 
     }
   }
 
+  let description = current.description;
+  if (opts.description !== undefined) {
+    const trimmed = opts.description.trim();
+    if (trimmed.length > MAX_TOPIC_DESCRIPTION_CHARS) {
+      throw new TopicValidationError(
+        `description must be at most ${MAX_TOPIC_DESCRIPTION_CHARS} characters`,
+      );
+    }
+    description = trimmed || undefined;
+  }
+
   if (opts.agent !== undefined && opts.agent !== null && !isAgentKind(opts.agent)) {
     throw new TopicValidationError(`Unknown agent '${opts.agent}'`);
   }
@@ -223,6 +242,7 @@ export function updateTopicSettings(opts: UpdateTopicSettingsOptions): TopicDto 
   const next: TopicDto = {
     ...current,
     title,
+    description,
     kind,
     aiMode,
     agent,
