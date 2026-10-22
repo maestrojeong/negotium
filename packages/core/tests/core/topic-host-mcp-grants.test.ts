@@ -71,6 +71,66 @@ test("non-manager scopes and subagent rooms never receive a stored manager grant
   expect(resolveTurnHostMcpServers(subagent, "manager")).toBeUndefined();
 });
 
+test("an ordinary room's grant reaches only its own forum executions", () => {
+  const owner = `host-grant-forum-${randomUUID()}`;
+  const room = registerTopic({ title: `Host grant room ${randomUUID()}`, userId: owner });
+  topicIds.add(room.id);
+  const roomGrant = {
+    tax: { type: "http" as const, url: "http://127.0.0.1:4200/mcp/tax/mcp?token=room" },
+  };
+  submitRuntimeGatewayTurn({
+    topic: room,
+    userId: owner,
+    text: "which tools can I use",
+    clientMessageId: randomUUID(),
+    respond: false,
+    hostMcpServers: roomGrant,
+  });
+
+  const resolved = resolveTurnHostMcpServers(room);
+  expect(resolved).toEqual(roomGrant);
+  expect(resolveTurnHostMcpServers(room, "cron")).toBeUndefined();
+  expect(resolveTurnHostMcpServers(room, "ephemeral")).toBeUndefined();
+  expect(resolveTurnHostMcpServers(room, "manager")).toBeUndefined();
+  expect(
+    getMcpServersForQuery({
+      agent: "codex",
+      prompt: "which tools can I use",
+      systemPrompt: "",
+      cwd: "/tmp",
+      userId: owner,
+      sessionType: "forum",
+      session: room.title,
+      topicId: room.id,
+      hostMcpServers: resolved,
+    }).tax,
+  ).toEqual(roomGrant.tax);
+});
+
+test("ordinary and subagent rooms refuse the manager administration surface", () => {
+  const owner = `host-grant-refuse-${randomUUID()}`;
+  const manager = ensurePersonalGeneral(owner, "otium");
+  const room = registerTopic({ title: `Host grant refuse ${randomUUID()}`, userId: owner });
+  const subagent = { ...room, parentTopicId: manager.id, isSubagent: true };
+  topicIds.add(manager.id);
+  topicIds.add(room.id);
+  const submit = (topic: typeof room, hostMcpServers: Record<string, unknown>) =>
+    submitRuntimeGatewayTurn({
+      topic,
+      userId: owner,
+      text: "reject before persistence",
+      clientMessageId: randomUUID(),
+      respond: false,
+      hostMcpServers: hostMcpServers as never,
+    });
+  const tax = { type: "http", url: "http://127.0.0.1:4200/mcp/tax/mcp?token=room" };
+
+  expect(() => submit(room, { "topic-admin": grant["topic-admin"] })).toThrow(
+    "topic-admin is only allowed for manager topics",
+  );
+  expect(() => submit(subagent, { tax })).toThrow("not allowed for subagent topics");
+});
+
 test("the public submit boundary rejects unsafe and node-owned grants", () => {
   const manager = ensurePersonalGeneral(`host-grant-submit-${randomUUID()}`, "otium");
   topicIds.add(manager.id);

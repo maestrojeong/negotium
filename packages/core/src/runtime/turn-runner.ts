@@ -770,13 +770,18 @@ export function resolveTurnToolCapabilities(
   };
 }
 
-/** Require both room kind and execution scope so cron/ephemeral turns cannot inherit the grant. */
+/**
+ * A manager room's grant reaches only manager executions and an ordinary
+ * room's only forum executions, so cron/ephemeral turns cannot inherit it.
+ * Subagent rooms never take one.
+ */
 export function resolveTurnHostMcpServers(
-  topic: Pick<TopicDto, "id" | "kind">,
+  topic: Pick<TopicDto, "id" | "kind" | "isSubagent">,
   sessionType?: "dm" | "forum" | "ephemeral" | "manager" | "cron",
 ) {
-  const effectiveSessionType = sessionType ?? (topic.kind === "manager" ? "manager" : "forum");
-  if (topic.kind !== "manager" || effectiveSessionType !== "manager") return undefined;
+  if (topic.isSubagent) return undefined;
+  const ownScope = topic.kind === "manager" ? "manager" : "forum";
+  if ((sessionType ?? ownScope) !== ownScope) return undefined;
   return getTopicHostMcpGrant(topic.id) ?? undefined;
 }
 

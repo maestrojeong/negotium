@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { isReservedRuntimeMcpServerName } from "#platform/mcp-config";
+import { hostMcpGrantRefusal, isReservedRuntimeMcpServerName } from "#platform/mcp-config";
 import { stampActorTopicScope } from "#runtime/actor-topic-scope";
 import { resolveAttachmentByFileId } from "#runtime/file-hooks";
 import { describeQuotedAuthor } from "#runtime/thread-context";
@@ -224,9 +224,11 @@ export function submitRuntimeGatewayTurn(
   params: SubmitRuntimeGatewayTurnParams,
 ): SubmitRuntimeGatewayTurnResult {
   const hostMcpServers = parseHostMcpServers(params.hostMcpServers);
-  if (hostMcpServers !== undefined && params.topic.kind !== "manager") {
-    throw new TypeError("hostMcpServers is only allowed for manager topics");
-  }
+  const grantRefusal =
+    hostMcpServers === undefined
+      ? null
+      : hostMcpGrantRefusal(params.topic, Object.keys(hostMcpServers));
+  if (grantRefusal) throw new TypeError(grantRefusal);
   const conflictingHostMcpName = Object.keys(hostMcpServers ?? {}).find(
     isReservedRuntimeMcpServerName,
   );

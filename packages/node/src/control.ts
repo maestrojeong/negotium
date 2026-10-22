@@ -33,6 +33,7 @@ import {
   getTopic,
   getTopicStats,
   getVisibleTopics,
+  hostMcpGrantRefusal,
   isParticipant,
   isReservedRuntimeMcpServerName,
   latestRuntimeEventSeq,
@@ -608,6 +609,8 @@ export function createNodeControlHandler(
               "turn-submit-idempotent",
               // Hosts must detect support before relying on this optional v1 field.
               "host-mcp-turn-injection",
+              // Ordinary (non-manager) rooms accept host MCP grants too.
+              "host-mcp-forum-turn-injection",
               "turn-events-sse-resume",
               "canonical-topic-read",
               "canonical-message-read",
@@ -963,9 +966,11 @@ export function createNodeControlHandler(
           if (!topic.participants.some((participant) => participant.userId === userId)) {
             return jsonError(404, "Topic not found");
           }
-          if (hostMcpServers !== undefined && topic.kind !== "manager") {
-            return jsonError(400, "hostMcpServers is only allowed for manager topics");
-          }
+          const grantRefusal =
+            hostMcpServers === undefined
+              ? null
+              : hostMcpGrantRefusal(topic, Object.keys(hostMcpServers));
+          if (grantRefusal) return jsonError(400, grantRefusal);
           if (
             attachments.some(
               (fileId) => !nodeFileStore.allows(fileId, { topicId, ownerUserId: userId }),

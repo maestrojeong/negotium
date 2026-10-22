@@ -53,6 +53,7 @@ export { logger } from "#platform/logger";
 export type { NodeMcpEntry } from "#platform/mcp-config";
 export {
   getNodeMcpServers,
+  hostMcpGrantRefusal,
   isReservedRuntimeMcpServerName,
   resolveCuaRsBinary,
   setCuaRsMcpPort,
