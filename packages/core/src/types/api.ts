@@ -71,6 +71,12 @@ export interface TopicDto {
   title: string;
   kind?: TopicKind;
   description?: string;
+  /**
+   * CDP port of a Chrome the host already runs for this room. Its browser
+   * tools attach to that Chrome instead of a managed profile; the node never
+   * launches, kills or deletes it.
+   */
+  browserConnectPort?: number;
   /** AI agent invited to this topic. */
   agent?: AgentKind;
   /** Canonical base model alias used by newer clients. */

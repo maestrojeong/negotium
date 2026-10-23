@@ -25,6 +25,7 @@ import {
   setApiTopicAgent,
   upsertTopic,
 } from "#storage/api-topics";
+import { isBrowserConnectPort, setTopicBrowserConnectPort } from "#storage/browser-profiles";
 import { db } from "#storage/forum-db";
 import { TopicValidationError } from "#topics/create";
 import { type AgentKind, type EffortLevel, isAgentKind } from "#types";
@@ -48,6 +49,11 @@ export interface UpdateTopicSettingsOptions {
    * "Topic-Specific Instructions". An empty string clears them.
    */
   description?: string;
+  /**
+   * CDP port (1024-65535) of a Chrome the host already runs for this room;
+   * its browser tools attach there. `null` returns the room to its profile.
+   */
+  browserConnectPort?: number | null;
 }
 
 /** Room for a full work procedure (Otium tax rooms keep one per room), still small next to a turn's prompt. */
@@ -169,6 +175,14 @@ export function updateTopicSettings(opts: UpdateTopicSettingsOptions): TopicDto 
     description = trimmed || undefined;
   }
 
+  if (
+    opts.browserConnectPort !== undefined &&
+    opts.browserConnectPort !== null &&
+    !isBrowserConnectPort(opts.browserConnectPort)
+  ) {
+    throw new TopicValidationError("browserConnectPort must be an integer from 1024 to 65535");
+  }
+
   if (opts.agent !== undefined && opts.agent !== null && !isAgentKind(opts.agent)) {
     throw new TopicValidationError(`Unknown agent '${opts.agent}'`);
   }
@@ -250,6 +264,9 @@ export function updateTopicSettings(opts: UpdateTopicSettingsOptions): TopicDto 
     defaultEffort,
   };
   upsertTopic(next);
+  if (opts.browserConnectPort !== undefined) {
+    setTopicBrowserConnectPort(next.id, opts.browserConnectPort);
+  }
 
   // `resolveTopicTurnExecution` reads `config.model ?? topic.defaultModel`, so a
   // stale per-topic override (set earlier by `/model` in the terminal) would

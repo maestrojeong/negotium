@@ -403,6 +403,35 @@ test("runtime gateway sets a topic's description for its turns' system prompt", 
   expect((await patch(42))?.status).toBe(400);
 });
 
+test("runtime gateway points a topic's browser tools at a host Chrome port", async () => {
+  const owner = `runtime-browser-connect-${randomUUID()}`;
+  const topic = registerTopic({ title: `Gateway browser connect ${randomUUID()}`, userId: owner });
+  const path = `/topics/${encodeURIComponent(topic.id)}`;
+  const patch = (browserConnectPort: unknown) =>
+    handler(
+      runtimeRequest(path, {
+        method: "PATCH",
+        body: JSON.stringify({
+          v: NODE_RUNTIME_CONTRACT_VERSION,
+          userId: owner,
+          browserConnectPort,
+        }),
+      }),
+    );
+
+  const updated = await patch(9302);
+  expect(updated?.status).toBe(200);
+  expect(await updated?.json()).toMatchObject({
+    topic: { id: topic.id, browserConnectPort: 9302 },
+  });
+  expect(getTopic(topic.id)?.browserConnectPort).toBe(9302);
+  expect((await patch("9302"))?.status).toBe(400);
+  expect((await patch(70000))?.status).toBe(400);
+  expect(getTopic(topic.id)?.browserConnectPort).toBe(9302);
+  expect((await patch(null))?.status).toBe(200);
+  expect(getTopic(topic.id)?.browserConnectPort).toBeUndefined();
+});
+
 test("runtime gateway reads and writes canonical per-topic config", async () => {
   const owner = `runtime-config-${randomUUID()}`;
   const topic = registerTopic({ title: `Gateway config ${randomUUID()}`, userId: owner });

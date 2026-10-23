@@ -319,6 +319,7 @@ function initializeApiTopicsSchema(): void {
       surface_scope TEXT,
       browser_profile TEXT NOT NULL DEFAULT 'default',
       browser_profile_owner TEXT,
+      browser_connect_port INTEGER,
       session_id TEXT,
       CHECK (
         (kind = 'channel' AND response_policy = 'off' AND agent IS NULL) OR
@@ -492,6 +493,9 @@ function initializeApiTopicsSchema(): void {
   }
   if (!tableColumns("api_topics").has("browser_profile_owner")) {
     db.exec("ALTER TABLE api_topics ADD COLUMN browser_profile_owner TEXT");
+  }
+  if (!tableColumns("api_topics").has("browser_connect_port")) {
+    db.exec("ALTER TABLE api_topics ADD COLUMN browser_connect_port INTEGER");
   }
   if (!tableColumns("api_topics").has("subagent_report_mode")) {
     db.exec("ALTER TABLE api_topics ADD COLUMN subagent_report_mode TEXT NOT NULL DEFAULT 'auto'");
@@ -907,6 +911,7 @@ export interface TopicRow {
   surface: string | null;
   surface_scope: string | null;
   browser_profile_owner: string | null;
+  browser_connect_port: number | null;
   session_id: string | null;
 }
 
@@ -1007,6 +1012,7 @@ function rowToDto(
     visibility: normalizeTopicVisibility(r.visibility),
     surface: normalizeTopicSurface(r.surface),
     surfaceScope: normalizeSurfaceScope(r.surface_scope),
+    ...(r.browser_connect_port != null ? { browserConnectPort: r.browser_connect_port } : {}),
   };
 }
 

@@ -57,6 +57,24 @@ export function getTopicBrowserProfile(topicId: string): string {
   return value || DEFAULT_BROWSER_PROFILE;
 }
 
+/** Unprivileged TCP ports only: a CDP endpoint never needs a system port. */
+export function isBrowserConnectPort(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 1024 && (value as number) <= 65535;
+}
+
+export function getTopicBrowserConnectPort(topicId: string): number | undefined {
+  const value = db
+    .query<{ browser_connect_port: number | null }, string>(
+      "SELECT browser_connect_port FROM api_topics WHERE id = ?",
+    )
+    .get(topicId)?.browser_connect_port;
+  return isBrowserConnectPort(value) ? value : undefined;
+}
+
+export function setTopicBrowserConnectPort(topicId: string, port: number | null): void {
+  db.query("UPDATE api_topics SET browser_connect_port = ? WHERE id = ?").run(port, topicId);
+}
+
 export function hasBrowserProfileTopic(topicId: string): boolean {
   return Boolean(
     db.query<{ id: string }, string>("SELECT id FROM api_topics WHERE id = ?").get(topicId),

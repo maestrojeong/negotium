@@ -74,6 +74,32 @@ describe("updateTopicSettings", () => {
     ).toThrow(TopicValidationError);
   });
 
+  test("sets, keeps and clears the room's browser connect port", () => {
+    const topic = seedTopic();
+    if (!topic) throw new Error("seed failed");
+    expect(
+      updateTopicSettings({ topicId: topic.id, browserConnectPort: 9302 }).browserConnectPort,
+    ).toBe(9302);
+    expect(updateTopicSettings({ topicId: topic.id, title: "Renamed" }).browserConnectPort).toBe(
+      9302,
+    );
+    expect(
+      updateTopicSettings({ topicId: topic.id, browserConnectPort: null }).browserConnectPort,
+    ).toBeUndefined();
+    expect(getTopic(topic.id)?.browserConnectPort).toBeUndefined();
+  });
+
+  test("rejects a browser connect port that is not an unprivileged TCP port", () => {
+    const topic = seedTopic();
+    if (!topic) throw new Error("seed failed");
+    for (const browserConnectPort of [0, 70000, 1.5, "9302" as unknown as number]) {
+      expect(() => updateTopicSettings({ topicId: topic.id, browserConnectPort })).toThrow(
+        TopicValidationError,
+      );
+    }
+    expect(getTopic(topic.id)?.browserConnectPort).toBeUndefined();
+  });
+
   test("changes only the fields the caller sent", () => {
     const topic = seedTopic();
     if (!topic) throw new Error("seed failed");

@@ -630,6 +630,10 @@ export function createNodeControlHandler(
               // instructions in every turn's system prompt. An older node
               // ignores the field and answers 200, so a host checks this first.
               "canonical-topic-description",
+              // `PATCH /topics/:id` also takes `browserConnectPort`, pointing the
+              // room's browser tools at a Chrome the host runs. An older node
+              // ignores it and answers 200, leaving the room on the wrong browser.
+              "canonical-topic-browser-connect",
               "canonical-topic-delete",
               "turn-submit-silent",
               "turn-submit-hidden",
@@ -2052,6 +2056,13 @@ export function createNodeControlHandler(
           if (body.description !== undefined && typeof body.description !== "string") {
             return jsonError(400, "description must be a string");
           }
+          if (
+            body.browserConnectPort !== undefined &&
+            body.browserConnectPort !== null &&
+            typeof body.browserConnectPort !== "number"
+          ) {
+            return jsonError(400, "browserConnectPort must be a number or null");
+          }
           try {
             const topic = updateTopicSettings({
               topicId,
@@ -2068,6 +2079,9 @@ export function createNodeControlHandler(
               ...(body.aiMode !== undefined ? { aiMode: body.aiMode as AiMode } : {}),
               ...(body.description !== undefined
                 ? { description: body.description as string }
+                : {}),
+              ...(body.browserConnectPort !== undefined
+                ? { browserConnectPort: body.browserConnectPort as number | null }
                 : {}),
             });
             return Response.json({ ok: true, v: NODE_RUNTIME_CONTRACT_VERSION, topic });
