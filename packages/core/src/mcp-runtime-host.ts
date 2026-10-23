@@ -49,6 +49,7 @@ export {
   THREAD_READ_DEFAULT_LIMIT,
   THREAD_READ_MAX_LIMIT,
 } from "#runtime/thread-read";
+export { isVisualsShowImageTool, visualMediaInputError } from "#runtime/visuals";
 export { isSensitivePath } from "#security/sensitive-path";
 export {
   appendApiMessage,
