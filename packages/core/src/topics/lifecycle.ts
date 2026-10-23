@@ -21,7 +21,7 @@ import { NODE_ID, resolveTopicWorkspaceDir } from "#platform/config";
 import { GENERAL_TOPIC_ID } from "#platform/constants";
 import { delay } from "#platform/delay";
 import { logger } from "#platform/logger";
-import { closeBrowserOwnerTabs, deleteTopicProfileDir } from "#platform/playwright/manager";
+import { closeTopicBrowserTabs, deleteTopicProfileDir } from "#platform/playwright/manager";
 import { abortRoom, getRoomQuery, interSessionQueue } from "#query/active-rooms";
 import { cleanupSessionInboxFiles } from "#query/session-inbox-cleanup";
 import { clearQueryState } from "#query/state";
@@ -39,7 +39,6 @@ import {
   listTopics,
   reparentTopicChildren,
 } from "#storage/api-topics";
-import { getBrowserProfileOwner, getTopicBrowserProfile } from "#storage/browser-profiles";
 import { db } from "#storage/forum-db";
 import { getRuntimeTurnLease } from "#storage/runtime-leases";
 import {
@@ -355,10 +354,8 @@ async function deleteTopicCascadeImpl(
     // Background shells remain topic-owned. Browser profiles are shared, so
     // deletion closes this topic's tabs without deleting login state.
     killBgBash(userId, topicId);
-    const browserProfileOwner = getBrowserProfileOwner(topicId, userId);
-    const browserProfile = getTopicBrowserProfile(topicId);
     try {
-      await closeBrowserOwnerTabs(browserProfileOwner, browserProfile, `topic:${topicId}`);
+      await closeTopicBrowserTabs(userId, topicId);
     } catch (err) {
       logger.warn({ err, topicId }, "deleteTopicCascade: browser owner cleanup failed");
     }

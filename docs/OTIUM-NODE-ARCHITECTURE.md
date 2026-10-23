@@ -145,7 +145,9 @@ holding state the node contradicts. Since 0.3.7 it is: `DELETE runtime/v1/topics
 (`canonical-topic-delete`) so a deleted room is not re-mirrored on the next sync pass,
 `PATCH runtime/v1/topics/:id` (`canonical-topic-update`) so the agent/model/effort/AI-mode picker
 changes the row the turn runner actually reads (since 0.22.6 it also takes `description`, the
-room's own instructions in every turn's system prompt: `canonical-topic-description`), and `respond: false` on `POST /turns`
+room's own instructions in every turn's system prompt: `canonical-topic-description`, and
+`browserConnectPort`, the CDP port of a Chrome the host runs for that room, which its browser tools
+attach to instead of a node-managed profile: `canonical-topic-browser-connect`), and `respond: false` on `POST /turns`
 (`turn-submit-silent`) so a room with the AI off or set to mention-only still records its
 messages canonically without queueing an answer.
 

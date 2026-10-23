@@ -43,9 +43,11 @@ import { sanitizeTopicName } from "#security/sanitize";
 import {
   assignTopicBrowserProfile,
   getBrowserProfileOwner,
+  getTopicBrowserConnectPort,
   getTopicBrowserProfile,
   hasBrowserProfileTopic,
   normalizeBrowserProfileName,
+  setTopicBrowserConnectPort,
 } from "#storage/browser-profiles";
 import {
   browserCdpIsLost,
@@ -136,6 +138,8 @@ export function resolvePlaywrightTopicBinding(
 
 function defaultTopicBinding(userId: string, topic: string | undefined): PlaywrightProfileBinding {
   if (!topic) return managerHost.resolveNamedBinding(userId, "default");
+  const connectPort = getTopicBrowserConnectPort(topic);
+  if (connectPort !== undefined) return connectBinding(connectPort);
   const ownerId = getBrowserProfileOwner(topic, userId);
   const profile = getTopicBrowserProfile(topic);
   return managerHost.resolveNamedBinding(ownerId, profile);
@@ -165,6 +169,43 @@ function validateProfileBinding(binding: PlaywrightProfileBinding): PlaywrightPr
     throw new Error("invalid Playwright profile binding");
   }
   return Object.freeze({ ...binding });
+}
+
+/**
+ * Every room pointing at one host-run Chrome shares one Browser.rs attached to
+ * it, whoever owns the room: the Chrome, not a node profile, is the identity.
+ */
+function connectBinding(port: number): PlaywrightProfileBinding {
+  return { instanceKey: `connect:${port}`, ownerId: "local", profile: `connect-${port}` };
+}
+
+function parseConnectInstanceKey(instanceKey: string): number | undefined {
+  const match = /^connect:(\d+)$/.exec(instanceKey);
+  return match ? Number(match[1]) : undefined;
+}
+
+/**
+ * Browser.rs argv for one instance. A `connect:` instance attaches to the
+ * host's Chrome through `--connect`, which overrides any inherited
+ * `AB_CONNECT`; Browser.rs still requires a `--user-data-dir` it then ignores.
+ */
+export function browserRsArgs(instanceKey: string, port: number, userDataDir: string): string[] {
+  const connectPort = parseConnectInstanceKey(instanceKey);
+  return [
+    "--port",
+    String(port),
+    // Pin to IPv4 so every MCP client reaches the same address family and a
+    // future launcher default cannot resolve localhost to an IPv6-only bind.
+    "--host",
+    "127.0.0.1",
+    // Keep the browser visible. Do not rely on the launcher's implicit
+    // default: an explicit flag prevents wrapper/upstream default changes
+    // from silently switching topic browsers back to headless mode.
+    "--headed",
+    "--user-data-dir",
+    userDataDir,
+    ...(connectPort === undefined ? [] : ["--connect", String(connectPort)]),
+  ];
 }
 
 function defaultNamedBinding(_ownerId: string, rawProfile: string): PlaywrightProfileBinding {
@@ -317,6 +358,10 @@ interface InstanceKeyParts {
 }
 
 function parseInstanceKey(instanceKey: string): InstanceKeyParts {
+  const connectPort = parseConnectInstanceKey(instanceKey);
+  // The leading underscore is outside the profile-name grammar, so no named
+  // profile can share (or delete) the placeholder dir of a connect instance.
+  if (connectPort !== undefined) return { ownerId: "local", profile: `_connect-${connectPort}` };
   const shared = /^profile:(.+)$/.exec(instanceKey);
   if (shared && !shared[1]!.includes(":")) {
     return { ownerId: "local", profile: normalizeBrowserProfileName(shared[1]!) };
@@ -776,20 +821,7 @@ async function spawnPlaywright(
   const port = reservedPort ?? (await allocatePort());
   mkdirSync(userDataDir, { recursive: true });
 
-  const mcpArgs = [
-    "--port",
-    String(port),
-    // Pin to IPv4 so every MCP client reaches the same address family and a
-    // future launcher default cannot resolve localhost to an IPv6-only bind.
-    "--host",
-    "127.0.0.1",
-    // Keep the browser visible. Do not rely on the launcher's implicit
-    // default: an explicit flag prevents wrapper/upstream default changes
-    // from silently switching topic browsers back to headless mode.
-    "--headed",
-    "--user-data-dir",
-    userDataDir,
-  ];
+  const mcpArgs = browserRsArgs(instanceKey, port, userDataDir);
   // Pass the egress proxy to the child through the environment rather than
   // argv so the credentials never surface in `ps`/`/proc` command lines. The
   // Browser.rs currently rejects this configuration rather than bypassing it.
@@ -1108,7 +1140,26 @@ export async function closeBrowserOwnerTabs(
   rawProfile: string,
   owner: string,
 ): Promise<number> {
-  const binding = resolvePlaywrightProfileBinding(ownerId, rawProfile);
+  return closeBindingOwnerTabs(resolvePlaywrightProfileBinding(ownerId, rawProfile), owner);
+}
+
+/** Close a deleted topic's tabs on the browser its turns used. */
+export function closeTopicBrowserTabs(userId: string, topicId: string): Promise<number> {
+  const connectPort = getTopicBrowserConnectPort(topicId);
+  const binding =
+    connectPort === undefined
+      ? resolvePlaywrightProfileBinding(
+          getBrowserProfileOwner(topicId, userId),
+          getTopicBrowserProfile(topicId),
+        )
+      : connectBinding(connectPort);
+  return closeBindingOwnerTabs(binding, `topic:${topicId}`);
+}
+
+async function closeBindingOwnerTabs(
+  binding: PlaywrightProfileBinding,
+  owner: string,
+): Promise<number> {
   const instanceKey = binding.instanceKey;
   const inProgress = spawning.get(instanceKey);
   if (inProgress) await inProgress;
@@ -1259,6 +1310,9 @@ export async function cloneProfileForChild(opts: {
   if (srcOwner === dstOwner && hasBrowserProfileTopic(opts.dstTopic)) {
     const profile = getTopicBrowserProfile(opts.srcTopic);
     assignTopicBrowserProfile({ topicId: opts.dstTopic, actorUserId: dstOwner, profile });
+    // A child of a room on the host's Chrome keeps working in that Chrome;
+    // falling back to a managed profile would drop the login it was made for.
+    setTopicBrowserConnectPort(opts.dstTopic, getTopicBrowserConnectPort(opts.srcTopic) ?? null);
     const binding = resolvePlaywrightProfileBinding(srcOwner, profile);
     const sharedDir = resolveUserDataDir(binding.instanceKey);
     return {
@@ -1276,6 +1330,14 @@ export async function cloneProfileForChild(opts: {
 
   if (srcDir === dstDir) {
     return { copied: false, srcDir, dstDir, reason: "same-dir" };
+  }
+  // A connect instance's dir is an unused placeholder; the real profile lives
+  // in the host's Chrome, which is never copied, quiesced or overwritten.
+  if (
+    parseConnectInstanceKey(srcKey) !== undefined ||
+    parseConnectInstanceKey(dstKey) !== undefined
+  ) {
+    return { copied: false, srcDir, dstDir, reason: "connect-binding" };
   }
 
   return withPlaywrightInstanceMaintenance([srcKey, dstKey], async () => {

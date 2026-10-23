@@ -1,14 +1,18 @@
 import { describe, expect, it } from "bun:test";
 import type { ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:net";
+import { resolve } from "node:path";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
-import "#storage/api-topics";
+import { BROWSER_PROFILES_DIR } from "#platform/config";
 import { isPortInUse, reserveAvailableLoopbackPort } from "#platform/playwright/browser-processes";
 import {
   browserCdpIsLost,
   browserProcessMatchesExpectedProfile,
+  browserRsArgs,
+  cloneProfileForChild,
   configurePlaywrightManagerHost,
   drainPlaywrightManager,
   extractUserDataDirArg,
@@ -33,6 +37,8 @@ import {
   withPlaywrightProfileMaintenance,
 } from "#platform/playwright/manager";
 import { probeMcpTransport } from "#platform/playwright/transport-probe";
+import { deleteTopic, upsertTopic } from "#storage/api-topics";
+import { normalizeBrowserProfileName, setTopicBrowserConnectPort } from "#storage/browser-profiles";
 
 function stubMcpTransport(options: { tools?: string[]; listError?: boolean } = {}): Transport {
   const transport: Transport = {
@@ -194,6 +200,74 @@ describe("makeInstanceKey", () => {
 
   it("uses the shared default profile for dm", () => {
     expect(makeInstanceKey("alice", undefined)).toBe("profile:default");
+  });
+});
+
+describe("browser connect binding", () => {
+  function withTopics(
+    ports: Array<number | null>,
+    run: (ids: string[], owner: string) => void | Promise<void>,
+  ) {
+    const owner = `connect-owner-${randomUUID()}`;
+    const now = new Date().toISOString();
+    const ids = ports.map((port) => {
+      const id = randomUUID();
+      upsertTopic({
+        id,
+        title: `connect-${id}`,
+        kind: "channel",
+        defaultModel: "",
+        defaultEffort: "medium",
+        aiMode: "off",
+        participants: [{ userId: owner, role: "owner" }],
+        createdAt: now,
+        lastMessageAt: now,
+      });
+      if (port !== null) setTopicBrowserConnectPort(id, port);
+      return id;
+    });
+    return Promise.resolve(run(ids, owner)).finally(() => {
+      for (const id of ids) deleteTopic(id);
+    });
+  }
+
+  it("binds each room to the Chrome on its own port", () =>
+    withTopics([9302, 9303, null], ([a, b, plain]) => {
+      expect(makeInstanceKey("alice", a)).toBe("connect:9302");
+      expect(makeInstanceKey("alice", b)).toBe("connect:9303");
+      expect(makeInstanceKey("alice", plain)).toBe("profile:default");
+    }));
+
+  it("shares one instance across owners when rooms name the same Chrome", () =>
+    withTopics([9302, 9302], ([a, b]) => {
+      expect(makeInstanceKey("alice", a)).toBe(makeInstanceKey("bob", b));
+      expect(resolvePlaywrightTopicBinding("alice", a)).toMatchObject({
+        ownerId: "local",
+        profile: "connect-9302",
+      });
+    }));
+
+  // Crash reaping, the orphan sweep and profile removal all key on this dir, so
+  // it must never be the host Chrome's profile or a named profile's dir.
+  it("gives a connect instance a placeholder dir no named profile can share", () =>
+    withTopics([9302], ([connected]) => {
+      expect(resolveTopicProfileDir("alice", connected!)).toBe(
+        resolve(BROWSER_PROFILES_DIR, "_connect-9302"),
+      );
+      expect(() => normalizeBrowserProfileName("_connect-9302")).toThrow();
+    }));
+
+  it("keeps a same-owner child room on its parent's Chrome", () =>
+    withTopics([9302, null], async ([parent, child], owner) => {
+      await cloneProfileForChild({ userId: owner, srcTopic: parent!, dstTopic: child! });
+      expect(makeInstanceKey(owner, child)).toBe("connect:9302");
+    }));
+
+  it("passes --connect only for a connect instance", () => {
+    const connected = browserRsArgs("connect:9302", 4100, "/tmp/p");
+    expect(connected.slice(connected.indexOf("--connect"))).toEqual(["--connect", "9302"]);
+    expect(connected).toContain("--user-data-dir");
+    expect(browserRsArgs("profile:default", 4100, "/tmp/p")).not.toContain("--connect");
   });
 });
 
