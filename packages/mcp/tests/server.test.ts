@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -17,6 +17,7 @@ import {
   registerPeerRuntimeBridge,
   registerTopic,
   resolveDeliveryAck,
+  resolveTopicWorkspaceDir,
   runtimeBus,
   sessionInboxPath,
   setFileHooks,
@@ -229,6 +230,45 @@ describe("negotium MCP endpoint", () => {
       expect(resultText(listed)).not.toContain("claude");
     } finally {
       await privateClient.close();
+    }
+  });
+
+  test("show_image answers with the real outcome of displaying the file", async () => {
+    const visualClient = new Client({ name: "negotium-show-image-test", version: "1.0.0" });
+    const token = issueRuntimeMcpToken({ ...ctx, visualTools: true, fileDeliveryTools: false });
+    const url = new URL(
+      `http://127.0.0.1:${server.port}/mcp/runtime/mcp?token=${encodeURIComponent(token)}`,
+    );
+    // Where a browser screenshot lands: outside the room's workspace.
+    const outside = join(mkdtempSync(join(tmpdir(), "negotium-screenshot-")), "ab-p3.png");
+    writeFileSync(outside, "png");
+    const workspace = resolveTopicWorkspaceDir(mainTopic.id);
+    mkdirSync(workspace, { recursive: true });
+    const inside = join(workspace, `screen-${randomUUID()}.png`);
+    writeFileSync(inside, "png");
+
+    try {
+      await visualClient.connect(new StreamableHTTPClientTransport(url));
+      for (const name of ["show_image", "show_png"]) {
+        const rejected = await visualClient.callTool({ name, arguments: { file_path: outside } });
+        expect(rejected.isError).toBe(true);
+        expect(resultText(rejected)).toContain("must be inside the topic workspace");
+        expect(resultText(rejected)).toContain(workspace);
+
+        const missing = await visualClient.callTool({
+          name,
+          arguments: { file_path: join(workspace, "missing.png") },
+        });
+        expect(missing.isError).toBe(true);
+        expect(resultText(missing)).toContain("file not found");
+
+        const shown = await visualClient.callTool({ name, arguments: { file_path: inside } });
+        expect(shown.isError).toBeFalsy();
+        expect(resultText(shown)).toBe("Image displayed to the user.");
+      }
+    } finally {
+      await visualClient.close();
+      rmSync(inside, { force: true });
     }
   });
 

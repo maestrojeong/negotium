@@ -123,10 +123,19 @@ export function buildVideoHtml(mimeType: string): string {
 </html>`;
 }
 
-export function resolveVisualMediaInput(
+type VisualMediaInput = { file_path?: unknown; file_id?: unknown };
+
+/**
+ * Where a media visual's bytes come from, checked but not yet stored: an upload
+ * already in the topic, or a readable workspace file.
+ */
+function locateVisualMediaInput(
   topicId: string,
-  input: { file_path?: unknown; file_id?: unknown },
-): { fileId: string; mimeType: string; source: string } | { error: string } {
+  input: VisualMediaInput,
+):
+  | { kind: "upload"; fileId: string; mimeType: string }
+  | { kind: "file"; path: string; rawPath: string }
+  | { error: string } {
   if (typeof input.file_id === "string" && input.file_id.trim()) {
     const fileId = input.file_id.trim().toLowerCase();
     if (!isUploadFileId(fileId)) return { error: "file_id must be a full uploaded-file UUID" };
@@ -136,11 +145,7 @@ export function resolveVisualMediaInput(
     const attachment = resolveAttachmentByFileId(fileId);
     const filePath = resolveUploadedFilePathByFileId(fileId);
     if (!attachment || !filePath) return { error: `uploaded file not found: ${fileId}` };
-    return {
-      fileId: attachment.id,
-      mimeType: attachment.mimeType,
-      source: `file_id:${attachment.id}`,
-    };
+    return { kind: "upload", fileId: attachment.id, mimeType: attachment.mimeType };
   }
 
   if (typeof input.file_path !== "string" || !input.file_path.trim()) {
@@ -149,18 +154,49 @@ export function resolveVisualMediaInput(
   const rawPath = input.file_path.trim();
   const cwd = workspaceCwdFor(topicId);
   const candidate = isAbsolute(rawPath) ? rawPath : resolve(cwd, rawPath);
-  if (!isPathInside(cwd, candidate)) {
-    return { error: "file_path must be inside the topic workspace" };
-  }
+  // Existence first: the containment check resolves both ends on disk, so a
+  // missing file would otherwise be reported as being outside the workspace.
   let realCandidate: string;
   try {
     realCandidate = realpathSync(candidate);
   } catch {
     return { error: `file not found: ${rawPath}` };
   }
+  if (!isPathInside(cwd, realCandidate)) {
+    return {
+      error: `file_path must be inside the topic workspace (${cwd}); copy the file into it and pass the copy`,
+    };
+  }
   if (isSensitivePath(realCandidate)) {
     return { error: "file_path matches the sensitive-file blacklist" };
   }
+  return { kind: "file", path: realCandidate, rawPath };
+}
+
+/**
+ * Why a media visual call cannot be displayed, or null when it can. The same
+ * checks the turn runs before rendering, so the tool can answer the agent with
+ * the real outcome instead of a success it never had.
+ */
+export function visualMediaInputError(topicId: string, input: VisualMediaInput): string | null {
+  const located = locateVisualMediaInput(topicId, input);
+  return "error" in located ? located.error : null;
+}
+
+export function resolveVisualMediaInput(
+  topicId: string,
+  input: VisualMediaInput,
+): { fileId: string; mimeType: string; source: string } | { error: string } {
+  const located = locateVisualMediaInput(topicId, input);
+  if ("error" in located) return located;
+  if (located.kind === "upload") {
+    return {
+      fileId: located.fileId,
+      mimeType: located.mimeType,
+      source: `file_id:${located.fileId}`,
+    };
+  }
+  const { path: realCandidate, rawPath } = located;
   const attachment = storeLocalFileAsUpload(realCandidate, { topicId });
   if (!attachment) return { error: `failed to store media file: ${rawPath}` };
   const filePath = resolveUploadedFilePathByFileId(attachment.id);

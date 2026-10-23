@@ -42,6 +42,7 @@ import {
   isHostedMcpSurface,
   isInsideDir,
   isSensitivePath,
+  isVisualsShowImageTool,
   logger,
   type MessageDto,
   prepareDeliveryAck,
@@ -59,6 +60,7 @@ import {
   THREAD_READ_DEFAULT_LIMIT,
   THREAD_READ_MAX_LIMIT,
   textResult,
+  visualMediaInputError,
   visualToolDefinitions,
   WsHub,
 } from "@negotium/core/mcp-runtime-host";
@@ -251,7 +253,16 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
       const handler =
         ctx.peerBridge && (def.name === "show_html" || def.name === "show_mermaid")
           ? async () => textResult("Visual queued for ordered display on the canonical hub.")
-          : def.handler;
+          : isVisualsShowImageTool(def.name)
+            ? // The turn renders the image from this call's input after the tool
+              // answers; check it now so a call that cannot render is told so
+              // instead of being told the image was displayed.
+              async (input: { file_path?: unknown; file_id?: unknown }) => {
+                const problem = visualMediaInputError(ctx.topicId, input ?? {});
+                if (problem) return errorResult(`Error: ${problem}`);
+                return def.handler(input as never);
+              }
+            : def.handler;
       server.tool(def.name, def.description, def.schema as any, handler as any);
     }
     // Publishing is the same capability as show_html — render HTML for the
