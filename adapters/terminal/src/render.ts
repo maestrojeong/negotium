@@ -18,9 +18,11 @@ import {
   activeTaskPanel,
   activeTopic,
   activeVaultRequest,
+  blockedQuestionText,
   composerHoldsSecret,
   type NoticeLevel,
   pickedBackgroundSession,
+  sortedTopicEntries,
   type TerminalMessage,
   visibleBackgroundSessions,
   visibleTopicPickerIds,
@@ -113,6 +115,7 @@ interface UiLine {
   dim?: boolean;
   spans?: UiSpan[];
   codeCopy?: string;
+  pickerTarget?: { topicIndex: number } | { backgroundSessionId: string };
 }
 
 export interface CodeCopyTarget {
@@ -122,10 +125,40 @@ export interface CodeCopyTarget {
   text: string;
 }
 
+/**
+ * A clickable row in the topic picker overlay, mirroring {@link CodeCopyTarget}:
+ * computed once per frame from the same `pickerTarget` metadata the picker's
+ * own rows carry, then matched against a mouse point in `app.ts` — the picker
+ * never has to re-run its own entries/scroll-window math to know what a click
+ * landed on.
+ */
+export interface TopicPickerTarget {
+  xStart: number;
+  xEnd: number;
+  y: number;
+  topicIndex?: number;
+  backgroundSessionId?: string;
+}
+
+export interface SideColumnSectionBounds {
+  panel: "topics" | "tasks";
+  yStart: number;
+  yEnd: number;
+}
+
+export interface SideColumnBounds {
+  xStart: number;
+  xEnd: number;
+  sections: SideColumnSectionBounds[];
+}
+
 export interface RenderedTerminalApp {
   frame: string;
   cursor: { x: number; y: number } | null;
   codeCopyTargets: CodeCopyTarget[];
+  topicPickerTargets: TopicPickerTarget[];
+  sidePanelTracks: SidePanelTrack[];
+  sideColumnBounds: SideColumnBounds | null;
 }
 
 const ESC = "\u001b[";
@@ -1053,14 +1086,21 @@ function toolHeaderColor(failed: boolean): Rgb {
   return theme.tool;
 }
 
-/** Visual-line budget for a file change preview before "… +N more lines". */
-const FILE_PREVIEW_MAX_LINES = 12;
+/** Visual-line budget for a tool result preview before "… +N more lines". */
+const TOOL_PREVIEW_MAX_LINES = 12;
 
+/**
+ * Herdr's panes show whatever an agent CLI prints, scrollback and all —
+ * there is no separate "tool summary" that silently drops lines. negotium's
+ * timeline can't keep unbounded output inline, but it borrows the same
+ * principle: show every tool's result (file diff, bash output, mcp result,
+ * …) up to one shared visual budget, and say exactly how many lines were
+ * hidden instead of cutting a detail down to a single line with no notice.
+ */
 function toolMessageLines(message: TerminalMessage, width: number): UiLine[] {
   const [title = "Tool", ...details] = safeText(message.text).split("\n");
   const failed = message.toolResult === "error";
   const done = failed || Boolean(message.editedAt);
-  const fileMutation = /^(?:Edit|Write|Delete) · /.test(title);
   const wrapWidth = Math.max(4, width - 6);
   const marker = failed ? "!" : done ? "✓" : "●";
   const headerText = `  ${marker} ${title}`;
@@ -1078,22 +1118,10 @@ function toolMessageLines(message: TerminalMessage, width: number): UiLine[] {
         ]
       : [{ text: headerText, fg: headerColor }],
   });
-  if (!fileMutation) {
-    return [
-      header,
-      ...details.slice(0, 2).flatMap((detail) =>
-        wrapText(detail, wrapWidth)
-          .slice(0, 1)
-          .map((text) => line(`    ${text}`, { fg: toolDetailColor(detail), dim: !failed })),
-      ),
-    ];
-  }
-  // File change previews keep every logical line's +/- marker and truncate
-  // only on total visual height, with an explicit count of what was hidden.
   const wrapped = details.flatMap((detail) =>
     wrapText(detail, wrapWidth).map((text) => ({ detail, text })),
   );
-  const visible = wrapped.slice(0, FILE_PREVIEW_MAX_LINES);
+  const visible = wrapped.slice(0, TOOL_PREVIEW_MAX_LINES);
   const hidden = wrapped.length - visible.length;
   return [
     header,
@@ -1253,7 +1281,7 @@ function taskLines(state: AppState, width: number): UiLine[] {
   const visibleTasks = tasks.slice(0, INLINE_TASK_LIMIT);
   const hidden = tasks.length - visibleTasks.length;
   return [
-    line("  ◫ Tasks · Ctrl-T sidebar", { fg: theme.amber, bold: true }),
+    line("  ◫ Tasks · Ctrl-P sidebar", { fg: theme.amber, bold: true }),
     ...visibleTasks.flatMap((task) =>
       wrapText(task.trimStart(), Math.max(4, width - 6)).map((text) =>
         line(`    ${text}`, { fg: theme.muted }),
@@ -1264,66 +1292,471 @@ function taskLines(state: AppState, width: number): UiLine[] {
   ];
 }
 
-const TASK_SIDEBAR_MIN_WIDTH = 110;
-const TASK_SIDEBAR_WIDTH = 36;
-const TASK_SIDEBAR_GAP = 1;
+const SIDE_PANEL_MIN_WIDTH = 110;
+const SIDE_PANEL_WIDTH = 36;
+const SIDE_PANEL_GAP = 1;
+
+export interface SidePanelTarget {
+  y: number;
+  pickerTarget: NonNullable<UiLine["pickerTarget"]>;
+}
+
+/** A scrollbar track inside the side column, in panel-relative coordinates. */
+export interface SidePanelTrack {
+  panel: "topics" | "tasks";
+  /** Column offset from the side column's own left edge. */
+  x: number;
+  /** Row offset from the side column's own top edge. */
+  yStart: number;
+  viewportRows: number;
+  rowCount: number;
+}
 
 interface TerminalBodyLayout {
   conversationWidth: number;
-  taskWidth: number;
-  showTaskSidebar: boolean;
+  /** Width of the single right-hand column Topics and Tasks share. */
+  sideWidth: number;
+  showTaskPanel: boolean;
+  showTopicsPanel: boolean;
 }
 
 function terminalBodyLayout(state: AppState, width: number): TerminalBodyLayout {
-  const showTaskSidebar =
-    width >= TASK_SIDEBAR_MIN_WIDTH &&
-    state.taskSidebarEnabled &&
-    !state.overlay &&
-    !state.creatingTopic &&
-    taskItems(state).length > 0;
+  // One toggle (Ctrl-P) governs the whole side column; which sections it
+  // actually contains still depends on whether each has anything to show.
+  // Background sessions (Cron/Memory/Compact) open a read-only viewport
+  // rather than taking over the whole screen the way the Ctrl-O/subagents/
+  // decisions/vault overlays do, so the panel can stay up behind it — useful
+  // since clicking straight back to another panel row is exactly how you got
+  // there.
+  const wideEnough =
+    width >= SIDE_PANEL_MIN_WIDTH &&
+    state.topicsPanelEnabled &&
+    (!state.overlay || state.overlay === "background-session") &&
+    !state.creatingTopic;
+  const showTaskPanel = wideEnough && taskItems(state).length > 0;
+  // More than one topic, or at least one background session to jump to —
+  // a lone topic with nothing else running has nothing for the panel to add.
+  const showTopicsPanel =
+    wideEnough && (state.topics.length > 1 || visibleBackgroundSessions(state).length > 0);
+  const showSide = showTaskPanel || showTopicsPanel;
   return {
-    conversationWidth: showTaskSidebar ? width - TASK_SIDEBAR_WIDTH - TASK_SIDEBAR_GAP : width,
-    taskWidth: showTaskSidebar ? TASK_SIDEBAR_WIDTH : 0,
-    showTaskSidebar,
+    conversationWidth: showSide ? width - SIDE_PANEL_WIDTH - SIDE_PANEL_GAP : width,
+    sideWidth: showSide ? SIDE_PANEL_WIDTH : 0,
+    showTaskPanel,
+    showTopicsPanel,
   };
 }
 
 /**
- * Sidebar task list clipped to the pane height. taskItems() already orders
- * current work first (then pending and latest completed), so overflow drops the
- * oldest finished tasks and is announced with an explicit "+N more" row
- * instead of silently disappearing below the frame.
+ * Working/blocked/idle, in that priority — herdr's sidebar marks every pane
+ * one of these three so "the one that needs you" is never just another
+ * idle row. `blockedQuestionText` reaches every topic's `state.messages`,
+ * not only the active one, the same way `state.activity[topicId]?.running`
+ * already does.
  */
-function taskSidebarLines(state: AppState, width: number, height: number): UiLine[] {
+function topicStatusIndicator(
+  state: AppState,
+  topic: TopicDto,
+  animationFrame: number,
+): { icon: string; fg: Rgb; blockedText?: string } {
+  const blockedText = blockedQuestionText(state, topic.id);
+  if (blockedText !== undefined) return { icon: "?", fg: theme.amber, blockedText };
+  if (state.activity[topic.id]?.running) {
+    return { icon: workingFrame(animationFrame), fg: theme.green };
+  }
+  return { icon: "○", fg: theme.muted };
+}
+
+type TopicPanelEntry = { topic: TopicDto; topicIndex: number };
+
+/**
+ * One topic row (plus a status subline when it has one), carrying the same
+ * `pickerTarget` metadata the `Ctrl-O` overlay's rows carry so clicks and
+ * hover highlighting (`topicPickerTargetAt`) serve both places.
+ */
+function topicPanelRowLines(
+  state: AppState,
+  topic: TopicDto,
+  topicIndex: number,
+  animationFrame: number,
+): UiLine[] {
+  const selected = topic.id === state.activeTopicId;
+  const hovered = !selected && topic.id === state.sidePanelHoverTopicId;
+  const status = topicStatusIndicator(state, topic, animationFrame);
+  const childPrefix = subagentTreePrefix(topic, state.topics);
+  const bg = selected || hovered ? theme.selected : theme.canvas;
+  const header = line(` ${selected ? "›" : " "} ${childPrefix}${status.icon} ${topic.title}`, {
+    fg: selected ? theme.text : status.fg,
+    bg,
+    bold: selected,
+    pickerTarget: { topicIndex },
+  });
+  // Only the blocked question gets a subline — "Thinking"/tool detail stays
+  // where it always has: inline above the conversation, next to the actual
+  // tool call it describes, not duplicated here.
+  if (status.blockedText === undefined) return [header];
+  return [
+    header,
+    line(`   ${status.blockedText}`, {
+      fg: theme.amber,
+      bg,
+      pickerTarget: { topicIndex },
+    }),
+  ];
+}
+
+/**
+ * A labelled group of topic rows — only rendered (heading included) when
+ * non-empty. Ordering comes from `sortedTopicEntries` (`@/state`), the same
+ * function the `Ctrl-O` picker's own rendering and arrow-key navigation use,
+ * so the two views never disagree about what's where.
+ */
+function topicPanelGroupLines(
+  state: AppState,
+  label: string,
+  entries: TopicPanelEntry[],
+  animationFrame: number,
+): UiLine[] {
+  if (entries.length === 0) return [];
+  return [
+    line(` ${label}`, { fg: theme.cyan, dim: true, bold: true, bg: theme.canvas }),
+    ...sortedTopicEntries(state, entries).flatMap(({ topic, topicIndex }) =>
+      topicPanelRowLines(state, topic, topicIndex, animationFrame),
+    ),
+  ];
+}
+
+/**
+ * Manager topics, then regular topics (each family kept together), then
+ * every Cron/Memory/Compact background session — the same three-way split
+ * `Ctrl-O`'s own picker already uses, so the always-visible panel reads the
+ * same way the overlay does. Background session rows carry `pickerTarget`
+ * too (`backgroundSessionId`), opening the same read-only viewport a click
+ * in the overlay does.
+ */
+function topicsPanelRows(state: AppState, animationFrame: number): UiLine[] {
+  const indexed = state.topics.map((topic, topicIndex) => ({ topic, topicIndex }));
+  const managerEntries = indexed.filter(({ topic }) => topic.kind === "manager");
+  const regularEntries = indexed.filter(({ topic }) => topic.kind !== "manager");
+  const topicRows = [
+    ...topicPanelGroupLines(state, "manager", managerEntries, animationFrame),
+    ...topicPanelGroupLines(state, "topics", regularEntries, animationFrame),
+  ];
+  const sessionRows = (["cron", "memory", "compact"] as const).flatMap((kind) => {
+    const matching = visibleBackgroundSessions(state).filter((session) => session.kind === kind);
+    if (matching.length === 0) return [];
+    return [
+      line(` ${kind}`, { fg: theme.cyan, dim: true, bold: true, bg: theme.canvas }),
+      ...matching.map((session) => {
+        const hovered = session.id === state.sidePanelHoverBackgroundSessionId;
+        return line(` ${session.active ? workingFrame(animationFrame) : "○"} ${session.title}`, {
+          fg: hovered ? theme.text : session.active ? theme.green : theme.muted,
+          bg: hovered ? theme.selected : theme.canvas,
+          pickerTarget: { backgroundSessionId: session.id },
+        });
+      }),
+    ];
+  });
+  return [...topicRows, ...sessionRows];
+}
+
+/**
+ * Task rows, pre-wrapped to `width`. taskItems() already orders current work
+ * first, then pending, then latest completed; scrolling (not truncation)
+ * handles anything past the panel's height now.
+ */
+function taskPanelRows(state: AppState, width: number): UiLine[] {
   const items = taskItems(state);
-  const groups = items.map((task) => {
+  return items.flatMap((task) => {
     const completed = /^\s*(?:\[x\]|☒|✓|✅)/i.test(task);
-    return wrapText(task.trimStart(), Math.max(4, width - 4)).map((text) =>
+    return wrapText(task.trimStart(), Math.max(4, width - 2)).map((text) =>
       line(` ${text}`, {
         fg: completed ? theme.muted : theme.text,
         dim: completed,
+        bg: theme.canvas,
       }),
     );
   });
-  const capacity = Math.max(1, height);
-  const total = groups.reduce((sum, group) => sum + group.length, 0);
-  if (total <= capacity) return groups.flat();
-  if (capacity === 1) return groups[0]?.slice(0, 1) ?? [];
-  const rows: UiLine[] = [];
-  let shown = 0;
-  for (const group of groups) {
-    if (rows.length + group.length > capacity - 1) {
-      if (shown === 0) {
-        rows.push(...group.slice(0, capacity - 1));
-        shown = 1;
-      }
-      break;
-    }
-    rows.push(...group);
-    shown += 1;
+}
+
+/** Header rows a flat herdr-style section always reserves: a rule, then a label. */
+function panelHeaderHeight(sectionHeight: number): number {
+  return Math.min(2, sectionHeight);
+}
+
+function panelContentHeight(sectionHeight: number): number {
+  return Math.max(0, sectionHeight - panelHeaderHeight(sectionHeight));
+}
+
+export interface ScrollbarThumb {
+  top: number;
+  len: number;
+}
+
+/**
+ * Thumb length and position, following herdr's `scrollbar_thumb` math
+ * (`src/ui/scrollbar.rs`): length is the viewport's share of the total
+ * content, clamped to stay visible even for a huge list, and position is
+ * that share's offset into the track.
+ */
+export function scrollbarThumb(
+  totalRows: number,
+  viewportRows: number,
+  offset: number,
+): ScrollbarThumb {
+  if (viewportRows <= 0 || totalRows <= 0) return { top: 0, len: 0 };
+  const len = Math.max(
+    1,
+    Math.min(viewportRows, Math.round((viewportRows * viewportRows) / totalRows)),
+  );
+  const maxThumbTop = Math.max(0, viewportRows - len);
+  const maxOffset = Math.max(1, totalRows - viewportRows);
+  const top =
+    maxThumbTop === 0 ? 0 : Math.round((Math.min(offset, maxOffset) * maxThumbTop) / maxOffset);
+  return { top, len };
+}
+
+/**
+ * The inverse of {@link scrollbarThumb}: where a drag at `trackRow` (0-based,
+ * relative to the track's own top) should put the scroll offset, given the
+ * row inside the thumb that was originally grabbed — herdr's
+ * `scrollbar_offset_from_drag_row` (`src/client/shell/mouse.rs`). Grabbing
+ * anywhere on the thumb and keeping that same point under the cursor, rather
+ * than re-centering the thumb on the first drag frame, is what makes a drag
+ * feel like it is actually moving the thumb instead of fighting it.
+ */
+export function scrollOffsetFromDragRow(
+  totalRows: number,
+  viewportRows: number,
+  trackRow: number,
+  grabRowOffset: number,
+): number {
+  if (viewportRows <= 0 || totalRows <= 0) return 0;
+  const { len } = scrollbarThumb(totalRows, viewportRows, 0);
+  const maxThumbTop = Math.max(0, viewportRows - len);
+  if (maxThumbTop === 0) return 0;
+  const clampedRow = Math.max(0, Math.min(trackRow, viewportRows - 1));
+  const desiredTop = Math.min(maxThumbTop, Math.max(0, clampedRow - grabRowOffset));
+  const maxOffset = Math.max(0, totalRows - viewportRows);
+  return Math.round((desiredTop * maxOffset) / maxThumbTop);
+}
+
+function scrollbarCell(
+  totalRows: number,
+  viewportRows: number,
+  offset: number,
+  rowIndex: number,
+  accent: Rgb,
+): string {
+  const thumb = scrollbarThumb(totalRows, viewportRows, offset);
+  const isThumb = rowIndex >= thumb.top && rowIndex < thumb.top + thumb.len;
+  return paint(isThumb ? "▐" : "▕", { fg: isThumb ? accent : theme.muted, bg: theme.canvas });
+}
+
+interface PanelSectionResult {
+  lines: string[];
+  rowTargets: SidePanelTarget[];
+  track?: { x: number; viewportRows: number; rowCount: number };
+}
+
+/**
+ * Renders one herdr-style flat panel section — a thin rule and a dim label
+ * instead of a bordered box (`src/client/shell/agent_sidebar.rs`'s
+ * `render_agent_panel_header`), then content rows clipped to `scrollOffset`.
+ * A scrollbar column is drawn only when the content actually overflows the
+ * section, mirroring herdr's `should_show_scrollbar` — a short list gets no
+ * scrollbar at all, not an empty one.
+ */
+function renderPanelSection(
+  label: string,
+  rows: UiLine[],
+  width: number,
+  height: number,
+  scrollOffset: number,
+  accent: Rgb,
+): PanelSectionResult {
+  if (height <= 0 || width <= 0) return { lines: [], rowTargets: [] };
+  const headerHeight = panelHeaderHeight(height);
+  const contentHeight = panelContentHeight(height);
+  const overflow = rows.length > contentHeight;
+  const textWidth = overflow ? Math.max(1, width - 1) : width;
+  const clampedOffset = Math.max(
+    0,
+    Math.min(scrollOffset, Math.max(0, rows.length - contentHeight)),
+  );
+  const visible = rows.slice(clampedOffset, clampedOffset + contentHeight);
+
+  const lines: string[] = [];
+  if (headerHeight >= 1)
+    lines.push(paint("─".repeat(width), { fg: theme.border, bg: theme.canvas }));
+  if (headerHeight >= 2) {
+    lines.push(paint(fit(` ${label}`, width), { fg: accent, bg: theme.canvas, bold: true }));
   }
-  rows.push(line(` +${items.length - shown} more`, { fg: theme.muted, dim: true }));
-  return rows;
+
+  const rowTargets: SidePanelTarget[] = [];
+  for (let index = 0; index < contentHeight; index += 1) {
+    const item = visible[index];
+    const text = paint(fit(item?.text ?? "", textWidth), {
+      fg: item?.fg ?? theme.text,
+      bg: item?.bg ?? theme.canvas,
+      bold: item?.bold,
+      dim: item?.dim,
+    });
+    const scrollCell = overflow
+      ? scrollbarCell(rows.length, contentHeight, clampedOffset, index, accent)
+      : "";
+    lines.push(`${text}${scrollCell}`);
+    if (item?.pickerTarget)
+      rowTargets.push({ y: headerHeight + index, pickerTarget: item.pickerTarget });
+  }
+
+  return {
+    lines,
+    rowTargets,
+    track: overflow
+      ? { x: width - 1, viewportRows: contentHeight, rowCount: rows.length }
+      : undefined,
+  };
+}
+
+/** How `renderSideColumn` splits `bodyHeight` between the two sections. */
+function sidePanelSectionHeights(
+  layout: TerminalBodyLayout,
+  bodyHeight: number,
+): { topicsHeight: number; taskHeight: number } {
+  if (layout.showTopicsPanel && layout.showTaskPanel) {
+    // "Which topics are active right now" is more time-sensitive at a glance
+    // than the task list, so it gets the top half of the shared column.
+    const topicsHeight = Math.max(3, Math.floor(bodyHeight / 2));
+    return { topicsHeight, taskHeight: Math.max(0, bodyHeight - topicsHeight) };
+  }
+  if (layout.showTopicsPanel) return { topicsHeight: bodyHeight, taskHeight: 0 };
+  if (layout.showTaskPanel) return { topicsHeight: 0, taskHeight: bodyHeight };
+  return { topicsHeight: 0, taskHeight: 0 };
+}
+
+interface SideColumnResult {
+  lines: string[];
+  targets: SidePanelTarget[];
+  tracks: SidePanelTrack[];
+}
+
+/**
+ * The single right-hand column, built from whichever of the Topics and Tasks
+ * panels apply, stacked the way herdr stacks distinct sidebar sections
+ * rather than merging their content into one undifferentiated list.
+ */
+function renderSideColumn(
+  state: AppState,
+  layout: TerminalBodyLayout,
+  bodyHeight: number,
+  animationFrame: number,
+): SideColumnResult {
+  const { showTaskPanel, showTopicsPanel, sideWidth } = layout;
+  if (!showTaskPanel && !showTopicsPanel) return { lines: [], targets: [], tracks: [] };
+  const { topicsHeight, taskHeight } = sidePanelSectionHeights(layout, bodyHeight);
+
+  const sections: Array<{
+    panel: "topics" | "tasks";
+    label: string;
+    rows: UiLine[];
+    accent: Rgb;
+    height: number;
+    offset: number;
+    scrollOffset: number;
+  }> = [];
+  if (showTopicsPanel) {
+    sections.push({
+      panel: "topics",
+      // Both sort modes stay visible (Ctrl-R toggles which one is active),
+      // the active one capitalized — herdr's sidebar sort control shows
+      // both "grouped"/"priority" labels the same way.
+      label: state.topicsPanelSort === "activity" ? "ACTIVITY · name" : "activity · NAME",
+      rows: topicsPanelRows(state, animationFrame),
+      accent: theme.accent,
+      height: topicsHeight,
+      offset: 0,
+      scrollOffset: state.topicsPanelScrollOffset,
+    });
+  }
+  if (showTaskPanel) {
+    sections.push({
+      panel: "tasks",
+      label: "tasks",
+      rows: taskPanelRows(state, sideWidth),
+      accent: theme.taskBorder,
+      height: taskHeight,
+      offset: showTopicsPanel ? topicsHeight : 0,
+      scrollOffset: state.taskPanelScrollOffset,
+    });
+  }
+
+  const lines: string[] = [];
+  const targets: SidePanelTarget[] = [];
+  const tracks: SidePanelTrack[] = [];
+  for (const section of sections) {
+    const result = renderPanelSection(
+      section.label,
+      section.rows,
+      sideWidth,
+      section.height,
+      section.scrollOffset,
+      section.accent,
+    );
+    lines.push(...result.lines);
+    for (const target of result.rowTargets) {
+      targets.push({ y: section.offset + target.y, pickerTarget: target.pickerTarget });
+    }
+    if (result.track) {
+      tracks.push({
+        panel: section.panel,
+        x: result.track.x,
+        yStart: section.offset + panelHeaderHeight(section.height),
+        viewportRows: result.track.viewportRows,
+        rowCount: result.track.rowCount,
+      });
+    }
+  }
+  while (lines.length < bodyHeight) lines.push(paint(" ".repeat(sideWidth), { bg: theme.canvas }));
+  return { lines: lines.slice(0, bodyHeight), targets, tracks };
+}
+
+export function maxTopicsPanelScrollOffset(state: AppState, columns: number, rows: number): number {
+  const width = Math.max(1, columns);
+  const height = Math.max(14, rows);
+  if (state.overlay) return 0;
+  const layout = terminalBodyLayout(state, width);
+  if (!layout.showTopicsPanel) return 0;
+  const bodyHeight = Math.max(
+    3,
+    height -
+      footerLines(state, width).length -
+      decisionPane(state, width).length -
+      vaultRequestPane(state, width).length -
+      composerPane(state, layout.conversationWidth).lines.length,
+  );
+  const { topicsHeight } = sidePanelSectionHeights(layout, bodyHeight);
+  const viewport = panelContentHeight(topicsHeight);
+  return Math.max(0, topicsPanelRows(state, 0).length - viewport);
+}
+
+export function maxTaskPanelScrollOffset(state: AppState, columns: number, rows: number): number {
+  const width = Math.max(1, columns);
+  const height = Math.max(14, rows);
+  if (state.overlay) return 0;
+  const layout = terminalBodyLayout(state, width);
+  if (!layout.showTaskPanel) return 0;
+  const bodyHeight = Math.max(
+    3,
+    height -
+      footerLines(state, width).length -
+      decisionPane(state, width).length -
+      vaultRequestPane(state, width).length -
+      composerPane(state, layout.conversationWidth).lines.length,
+  );
+  const { taskHeight } = sidePanelSectionHeights(layout, bodyHeight);
+  const viewport = panelContentHeight(taskHeight);
+  return Math.max(0, taskPanelRows(state, layout.sideWidth).length - viewport);
 }
 
 function helpLines(): UiLine[] {
@@ -1336,7 +1769,9 @@ function helpLines(): UiLine[] {
     line("  ← → move · Ctrl/Alt-← → move by word · ↑ ↓ history"),
     line("  Alt-Backspace delete word · Ctrl-U clear before cursor"),
     line("  Cmd-Backspace works when forwarded · Ctrl-W/K aliases"),
-    line("  Mouse wheel / PgUp/PgDn scroll · Ctrl-E load older · Ctrl-T tasks"),
+    line("  Mouse wheel / PgUp/PgDn scroll · Ctrl-E load older"),
+    line("  Ctrl-P topics + tasks panel · click/hover a row to switch · drag scrollbar"),
+    line("  Ctrl-R sort topics panel (activity / name)"),
     line("  Ctrl-O topics · Ctrl-G subagents · Ctrl-D decisions · Ctrl-X abort"),
     line("  In topics: type to filter · Ctrl-N new · Ctrl-D delete"),
     line("  Esc/Ctrl-C stop active turn · Ctrl-C twice when idle to quit"),
@@ -1581,8 +2016,17 @@ function topicOverlayLines(
   const indexedTopics = state.topics
     .map((topic, topicIndex) => ({ topic, topicIndex }))
     .filter(({ topic }) => visibleIds.has(topic.id));
-  const managerTopics = indexedTopics.filter(({ topic }) => topic.kind === "manager");
-  const regularTopics = indexedTopics.filter(({ topic }) => topic.kind !== "manager");
+  // Same ordering the always-visible Topics panel uses (`sortedTopicEntries`
+  // in `@/state`), which also backs arrow-key navigation (`topicPickerItems`)
+  // — rendering and nav can never disagree about what's where.
+  const managerTopics = sortedTopicEntries(
+    state,
+    indexedTopics.filter(({ topic }) => topic.kind === "manager"),
+  );
+  const regularTopics = sortedTopicEntries(
+    state,
+    indexedTopics.filter(({ topic }) => topic.kind !== "manager"),
+  );
   const entries: TopicOverlayEntry[] = [];
   for (const [label, topics] of [
     ["Manager", managerTopics],
@@ -1651,36 +2095,58 @@ function topicOverlayLines(
             { fg: theme.muted },
           ),
         ]
-      : entries.slice(start, start + visibleCount).map((entry) => {
+      : entries.slice(start, start + visibleCount).flatMap((entry): UiLine[] => {
           if (entry.kind === "heading") {
-            return line(`  ${entry.label}`, { fg: theme.cyan, bold: true });
+            return [line(`  ${entry.label}`, { fg: theme.cyan, bold: true })];
           }
           if (entry.kind === "separator") {
-            return line(`  ${"─".repeat(Math.max(1, width - 4))}`, { fg: theme.border });
+            return [line(`  ${"─".repeat(Math.max(1, width - 4))}`, { fg: theme.border })];
           }
           if (entry.kind === "background") {
             const selected = entry.sessionId === state.topicPickerBackgroundId;
-            return line(
-              `  ${selected ? "›" : " "} ${entry.active ? workingFrame(animationFrame) : "○"} ${entry.label}  ·  ${entry.status}`,
-              {
-                fg: selected ? theme.text : entry.active ? theme.green : theme.muted,
-                bg: selected ? theme.selected : theme.canvas,
-                bold: selected,
-              },
-            );
+            return [
+              line(
+                `  ${selected ? "›" : " "} ${entry.active ? workingFrame(animationFrame) : "○"} ${entry.label}  ·  ${entry.status}`,
+                {
+                  fg: selected ? theme.text : entry.active ? theme.green : theme.muted,
+                  bg: selected ? theme.selected : theme.canvas,
+                  bold: selected,
+                  pickerTarget: { backgroundSessionId: entry.sessionId },
+                },
+              ),
+            ];
           }
           const { topic, topicIndex } = entry;
           const selected = topicIndex === state.topicPickerIndex;
-          const running = state.activity[topic.id]?.running;
+          const status = topicStatusIndicator(state, topic, animationFrame);
           const childPrefix = subagentTreePrefix(topic, state.topics);
-          return line(
-            `  ${selected ? "›" : " "} ${childPrefix}${running ? workingFrame(animationFrame) : "○"} ${topic.title}  ·  ${topic.agent ?? "no agent"}  ·  ${effectiveTopicModel(topic)}  ·  ${effectiveTopicEffort(topic)}`,
+          const bg = selected ? theme.selected : theme.canvas;
+          const header = line(
+            `  ${selected ? "›" : " "} ${childPrefix}${status.icon} ${topic.title}  ·  ${topic.agent ?? "no agent"}  ·  ${effectiveTopicModel(topic)}  ·  ${effectiveTopicEffort(topic)}`,
             {
-              fg: selected ? theme.text : running ? theme.green : theme.muted,
-              bg: selected ? theme.selected : theme.canvas,
+              fg: selected ? theme.text : status.fg,
+              bg,
               bold: selected,
+              pickerTarget: { topicIndex },
             },
           );
+          // What's actually running, right where every topic is listed at
+          // once — a dashboard glance at what tool/thinking each one is
+          // doing, not just that it is "working".
+          const running = state.activity[topic.id]?.running;
+          const subtitle =
+            status.blockedText ??
+            (running ? activityDetail(state.activity[topic.id]?.status) : undefined);
+          if (!subtitle) return [header];
+          return [
+            header,
+            line(`      ${subtitle}`, {
+              fg: status.blockedText !== undefined ? theme.amber : theme.muted,
+              dim: status.blockedText === undefined,
+              bg,
+              pickerTarget: { topicIndex },
+            }),
+          ];
         })),
   ];
 }
@@ -2185,6 +2651,24 @@ function conversationViewport(
   };
 }
 
+/** Narrower than the full terminal and centered, like herdr's own popups (`centered_popup_rect`) — a decision/vault-request card reads as something that needs your attention, not another status bar pinned to the bottom. */
+const POPUP_PANE_MAX_WIDTH = 72;
+
+function popupPaneWidth(width: number): number {
+  // No floor beyond what the terminal actually has: `framePane` already
+  // degrades gracefully (skips itself) below its own minimum inner width,
+  // and a floor here would make the popup wider than a narrow terminal.
+  return Math.max(0, Math.min(POPUP_PANE_MAX_WIDTH, width - 4));
+}
+
+function centerPaneRows(rows: string[], boxWidth: number, totalWidth: number): string[] {
+  const left = Math.max(0, Math.floor((totalWidth - boxWidth) / 2));
+  const right = Math.max(0, totalWidth - boxWidth - left);
+  const leftPad = left > 0 ? paint(" ".repeat(left), { bg: theme.canvas }) : "";
+  const rightPad = right > 0 ? paint(" ".repeat(right), { bg: theme.canvas }) : "";
+  return rows.map((row) => `${leftPad}${row}${rightPad}`);
+}
+
 function decisionPane(state: AppState, width: number): string[] {
   if (state.overlay) return [];
   // A pending secret request takes the composer; the ask card it would
@@ -2195,6 +2679,7 @@ function decisionPane(state: AppState, width: number): string[] {
   const question = ask?.askUserQuestion;
   if (!ask || !question?.choices.length) return [];
   const selected = Math.min(state.askChoiceIndex, question.choices.length - 1);
+  const boxWidth = popupPaneWidth(width);
   const content: UiLine[] = [
     line(`  ${question.question}`, { bold: true }),
     ...question.choices.map((choice, index) =>
@@ -2208,13 +2693,14 @@ function decisionPane(state: AppState, width: number): string[] {
       ),
     ),
   ];
-  return framePane(
+  const rows = framePane(
     "decision required · ↑↓ select · Enter confirm",
     content,
-    width,
+    boxWidth,
     Math.min(8, Math.max(4, content.length + 2)),
     { active: true, accent: theme.amber },
   );
+  return centerPaneRows(rows, boxWidth, width);
 }
 
 function vaultRequestPane(state: AppState, width: number): string[] {
@@ -2222,10 +2708,11 @@ function vaultRequestPane(state: AppState, width: number): string[] {
   const request = activeVaultRequest(state)?.vaultSecretRequest;
   if (!request) return [];
   const declining = state.vaultRequestMode === "confirm-decline";
+  const boxWidth = popupPaneWidth(width);
   const content: UiLine[] = [
     line(`  ${request.key}`, { bold: true }),
     ...(request.description
-      ? wrapText(request.description, Math.max(4, width - 6)).map((text) =>
+      ? wrapText(request.description, Math.max(4, boxWidth - 6)).map((text) =>
           line(`  ${text}`, { fg: theme.muted }),
         )
       : []),
@@ -2238,13 +2725,14 @@ function vaultRequestPane(state: AppState, width: number): string[] {
       ? [line(`  ! ${state.vaultRequestNotice}`, { fg: theme.amber })]
       : []),
   ];
-  return framePane(
+  const rows = framePane(
     `secret requested by ${state.aiName} · never shown to the agent${state.vaultRequestSubmitting ? ` · ${workingFrame(0)} saving` : ""}`,
     content,
-    width,
+    boxWidth,
     Math.min(8, Math.max(4, content.length + 2)),
     { active: true, accent: theme.accent },
   );
+  return centerPaneRows(rows, boxWidth, width);
 }
 
 interface InputVisual {
@@ -2389,6 +2877,28 @@ function inputVisualLines(state: AppState, width: number): InputVisual {
 interface ComposerPane {
   lines: string[];
   cursor: { x: number; y: number };
+}
+
+/**
+ * Pads every composer row with `marginWidth` blank, panel-coloured columns
+ * on the left and shifts the cursor to match — the composer already narrows
+ * to `layout.conversationWidth` when the side column is up; this is what
+ * actually moves it to sit under the conversation instead of starting at
+ * column 1, underneath the panel.
+ */
+/** Pads every row with `marginWidth` blank, panel-coloured columns on the left. */
+function shiftLines(lines: string[], marginWidth: number): string[] {
+  if (marginWidth <= 0) return lines;
+  const margin = paint(" ".repeat(marginWidth), { bg: theme.canvas });
+  return lines.map((row) => `${margin}${row}`);
+}
+
+function shiftComposerPane(pane: ComposerPane, marginWidth: number): ComposerPane {
+  if (marginWidth <= 0) return pane;
+  return {
+    lines: shiftLines(pane.lines, marginWidth),
+    cursor: { x: pane.cursor.x + marginWidth, y: pane.cursor.y },
+  };
 }
 
 function composerPane(state: AppState, width: number): ComposerPane {
@@ -2725,41 +3235,55 @@ export function renderAppFrame(
   // — including the hardware cursor used to anchor IME preedit.
   const width = Math.max(1, columns);
   const height = Math.max(14, rows);
-  const footer = footerLines(state, width);
-  const decision = [...decisionPane(state, width), ...vaultRequestPane(state, width)];
+  const layout = terminalBodyLayout(state, width);
+  // The side column sits to the *left* of the conversation — herdr's own
+  // agent sidebar is a left rail too — so the conversation's own targets
+  // below need to shift right by the column's width whenever it is present.
+  const conversationXStart = layout.sideWidth > 0 ? layout.sideWidth + SIDE_PANEL_GAP + 1 : 1;
+  // The footer's topic/model status moves with the conversation too, the
+  // same way the composer does — only its left-aligned text shifts; the
+  // usage/cost text stays right-aligned to the same screen edge it always was.
+  const footer = shiftLines(footerLines(state, layout.conversationWidth), conversationXStart - 1);
+  // The decision/vault-request popup centers over the conversation column,
+  // not the full terminal — with the panel up, centering across everything
+  // would straddle the panel too and read as misaligned with it.
+  const decision = shiftLines(
+    [
+      ...decisionPane(state, layout.conversationWidth),
+      ...vaultRequestPane(state, layout.conversationWidth),
+    ],
+    conversationXStart - 1,
+  );
   const hideComposer =
     state.overlay === "background-session" ||
     state.overlay === "topics" ||
     state.overlay === "subagents" ||
     state.overlay === "decisions" ||
     (state.overlay === "vault" && state.vaultMode === "confirm-delete");
-  const composer = hideComposer ? { lines: [], cursor: null } : composerPane(state, width);
+  // The composer narrows (and shifts right) to sit under the conversation
+  // the same way every other body row does, instead of spanning underneath
+  // the side column too.
+  const composer = hideComposer
+    ? { lines: [], cursor: null }
+    : shiftComposerPane(composerPane(state, layout.conversationWidth), conversationXStart - 1);
   const bodyHeight = Math.max(3, height - footer.length - decision.length - composer.lines.length);
-  const layout = terminalBodyLayout(state, width);
   const conversation = conversationLines(
     state,
     layout.conversationWidth,
     bodyHeight,
     animationFrame,
     nowMs,
-    !layout.showTaskSidebar,
+    !layout.showTaskPanel,
   );
   const conversationBody = renderBody(conversation, layout.conversationWidth, bodyHeight);
-  const body = layout.showTaskSidebar
+  const sideColumn =
+    layout.showTaskPanel || layout.showTopicsPanel
+      ? renderSideColumn(state, layout, bodyHeight, animationFrame)
+      : null;
+  const body = sideColumn?.lines.length
     ? (() => {
-        const taskPane = framePane(
-          "Tasks · Ctrl-T",
-          taskSidebarLines(state, layout.taskWidth, Math.max(0, bodyHeight - 2)),
-          layout.taskWidth,
-          bodyHeight,
-          { active: true, accent: theme.taskBorder },
-        );
-        // `framePane` skips itself below its minimum inner width; the sidebar
-        // only exists above TASK_SIDEBAR_MIN_WIDTH so that cannot happen here,
-        // but falling back keeps the row width exact if that ever changes.
-        if (taskPane.length === 0) return renderBody(conversation, width, bodyHeight);
-        const gap = paint(" ".repeat(TASK_SIDEBAR_GAP), { bg: theme.canvas });
-        return conversationBody.map((row, index) => `${row}${gap}${taskPane[index] ?? ""}`);
+        const gap = paint(" ".repeat(SIDE_PANEL_GAP), { bg: theme.canvas });
+        return sideColumn.lines.map((row, index) => `${row}${gap}${conversationBody[index] ?? ""}`);
       })()
     : conversationBody;
   const codeCopyTargets = conversation.flatMap((item, index): CodeCopyTarget[] => {
@@ -2768,10 +3292,52 @@ export function renderAppFrame(
     // just the single marker cell.
     const trimmed = item.text.trimEnd();
     const leading = trimmed.length - trimmed.trimStart().length;
-    const xStart = displayWidth(trimmed.slice(0, leading)) + 1;
-    const xEnd = Math.min(displayWidth(trimmed), layout.conversationWidth);
+    const xStart = conversationXStart + displayWidth(trimmed.slice(0, leading));
+    const xEnd = Math.min(conversationXStart - 1 + displayWidth(trimmed), width);
     return xEnd >= xStart ? [{ xStart, xEnd, y: index + 1, text: item.codeCopy }] : [];
   });
+  // Every pickable row is clickable edge to edge, not just the text it
+  // happens to carry — unlike a code-copy marker, there is no "miss" zone a
+  // click should fall through on a topic row. The same target shape serves
+  // both the `Ctrl-O` overlay's rows (from `conversation`, which only ever
+  // fills the conversation's own width since the side column never coexists
+  // with that overlay) and the always-visible side panel's rows (from
+  // `sideColumn`, shifted into its actual screen column) so one hit-test in
+  // `app.ts` covers both.
+  const overlayTargets = conversation.flatMap((item, index): TopicPickerTarget[] => {
+    if (!item.pickerTarget || index >= bodyHeight) return [];
+    return [{ xStart: 1, xEnd: layout.conversationWidth, y: index + 1, ...item.pickerTarget }];
+  });
+  const sidePanelTargets: TopicPickerTarget[] = (sideColumn?.targets ?? []).map((target) => ({
+    xStart: 1,
+    xEnd: layout.sideWidth,
+    y: target.y + 1,
+    ...target.pickerTarget,
+  }));
+  const topicPickerTargets = [...overlayTargets, ...sidePanelTargets];
+  const sidePanelTracks: SidePanelTrack[] = (sideColumn?.tracks ?? []).map((track) => ({
+    ...track,
+    x: 1 + track.x,
+    yStart: track.yStart + 1,
+  }));
+  // Full per-section bounds (not just the scrollbar column) so a mouse wheel
+  // or click anywhere over a panel — not only its scrollbar — can be routed
+  // to it instead of the main conversation.
+  const sideColumnBounds: SideColumnBounds | null = sideColumn
+    ? (() => {
+        const { topicsHeight, taskHeight } = sidePanelSectionHeights(layout, bodyHeight);
+        const sections: SideColumnSectionBounds[] = [];
+        let offset = 0;
+        if (layout.showTopicsPanel) {
+          sections.push({ panel: "topics", yStart: offset + 1, yEnd: offset + topicsHeight });
+          offset += topicsHeight;
+        }
+        if (layout.showTaskPanel) {
+          sections.push({ panel: "tasks", yStart: offset + 1, yEnd: offset + taskHeight });
+        }
+        return { xStart: 1, xEnd: layout.sideWidth, sections };
+      })()
+    : null;
   const cursorY = composer.cursor
     ? body.length + decision.length + composer.cursor.y
     : Number.POSITIVE_INFINITY;
@@ -2790,6 +3356,9 @@ export function renderAppFrame(
     ),
     cursor,
     codeCopyTargets,
+    topicPickerTargets,
+    sidePanelTracks,
+    sideColumnBounds,
   };
 }
 
@@ -2809,21 +3378,21 @@ export function maxConversationScrollOffset(
     ).maxOffset;
   }
   if (state.overlay) return 0;
+  const layout = terminalBodyLayout(state, width);
   const bodyHeight = Math.max(
     3,
     height -
       footerLines(state, width).length -
       decisionPane(state, width).length -
       vaultRequestPane(state, width).length -
-      composerPane(state, width).lines.length,
+      composerPane(state, layout.conversationWidth).lines.length,
   );
-  const layout = terminalBodyLayout(state, width);
   const lineCount = conversationContentLines(
     state,
     layout.conversationWidth,
     0,
     terminalNowMs(),
-    !layout.showTaskSidebar,
+    !layout.showTaskPanel,
   ).length;
   return conversationViewport(lineCount, bodyHeight, state.scrollOffset).maxOffset;
 }

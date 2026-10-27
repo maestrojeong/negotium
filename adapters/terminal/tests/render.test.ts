@@ -8,6 +8,8 @@ import {
   effectiveTopicModel,
   formatElapsedDuration,
   maxConversationScrollOffset,
+  maxTaskPanelScrollOffset,
+  maxTopicsPanelScrollOffset,
   preserveConversationScrollAnchor,
   renderApp,
   renderAppFrame,
@@ -19,6 +21,7 @@ import {
 } from "@/render";
 import { highlightScreenSelection } from "@/selection";
 import {
+  type AppState,
   applyRuntimeEvent,
   createInitialState,
   openTopicPicker,
@@ -574,6 +577,40 @@ describe("terminal renderer", () => {
     expect(output).toContain("Ctrl-C exit; work continues");
   });
 
+  test("exposes a clickable hit target for every topic picker row", () => {
+    const second = { ...topic(), id: "second", title: "Second" };
+    const state = {
+      ...setTopics(createInitialState("local"), [topic(), second]),
+      backgroundSessions: [
+        {
+          id: "cron-1",
+          kind: "cron" as const,
+          title: "Daily digest",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          status: "Running",
+          steps: [],
+        },
+      ],
+      overlay: "topics" as const,
+    };
+
+    const rendered = renderAppFrame(state, 120, 30);
+    const topicTargets = rendered.topicPickerTargets.filter((t) => t.topicIndex !== undefined);
+    const backgroundTargets = rendered.topicPickerTargets.filter(
+      (t) => t.backgroundSessionId !== undefined,
+    );
+    expect(topicTargets.map((t) => t.topicIndex)).toEqual([0, 1]);
+    expect(backgroundTargets.map((t) => t.backgroundSessionId)).toEqual(["cron-1"]);
+    // Every row target spans the picker's full width, edge to edge, and each
+    // one lands on a distinct screen row.
+    for (const target of rendered.topicPickerTargets) {
+      expect(target.xStart).toBe(1);
+      expect(target.xEnd).toBeGreaterThan(1);
+    }
+    const rows = rendered.topicPickerTargets.map((t) => t.y);
+    expect(new Set(rows).size).toBe(rows.length);
+  });
+
   test("groups manager rooms above the rest under one Topics heading", () => {
     const general = {
       ...topic(),
@@ -1001,7 +1038,6 @@ describe("terminal renderer", () => {
             createdAt: "2026-01-01T00:00:00.000Z",
           } as MessageDto,
         ]),
-        taskSidebarEnabled: true,
       },
       "topic picker": openTopicPicker(setTopics(createInitialState("local"), [topic()])),
       // The filter row is new geometry in the picker, so it gets the full
@@ -1069,7 +1105,6 @@ describe("terminal renderer", () => {
             createdAt: "2026-01-01T00:00:01.000Z",
           } as MessageDto,
         ]),
-        taskSidebarEnabled: true,
       },
     };
 
@@ -1149,25 +1184,19 @@ describe("terminal renderer", () => {
       }
     });
 
-    // The sidebar is a per-row string concatenation of pane + gap + sidebar, so
-    // an over-wide conversation row shifts that row's border and shreds the
-    // pane. Asserting the border column is identical on every row catches the
-    // tear directly, independent of how the row width was measured.
-    test("keeps the task sidebar border in one column on every row", () => {
+    // The side column is a per-row string concatenation of pane + gap +
+    // panel, so an over-wide conversation row shifts everything after it and
+    // shreds the panel. Asserting every row prints at exactly `cols` catches
+    // that tear directly, independent of how the row width was measured.
+    test("keeps every row exactly `cols` wide next to the side column", () => {
       const state = scenarios["tab-indented tool diff beside the task sidebar"];
-      // Below TASK_SIDEBAR_MIN_WIDTH the panel renders inline and there is no
-      // border to align, so the sidebar widths are the only interesting ones.
+      // Below TASK_SIDEBAR_MIN_WIDTH the panel renders inline, so the side
+      // column is the only width worth checking above that threshold.
       for (const cols of [110, 120, 200]) {
-        const borderColumns = new Set(
-          stripAnsi(renderAppFrame(state, cols, 24).frame)
-            .split("\n")
-            .map((row) => row.search(/[╭╰│]/))
-            .filter((column) => column >= 0),
-        );
-        expect({ cols, borderColumns: [...borderColumns] }).toEqual({
-          cols,
-          borderColumns: [cols - 36],
-        });
+        const widths = stripAnsi(renderAppFrame(state, cols, 24).frame)
+          .split("\n")
+          .map(displayWidth);
+        expect({ cols, widths }).toEqual({ cols, widths: widths.map(() => cols) });
       }
     });
 
@@ -1920,7 +1949,7 @@ describe("terminal renderer", () => {
     expect(stripAnsi(renderApp(state, 100, 30))).toContain("Legacy handoff.");
   });
 
-  test("shows compact tool status without verbose output", () => {
+  test("shows a generic tool's result instead of hiding it", () => {
     let state = setTopics(createInitialState("local"), [topic()]);
     state = applyRuntimeEvent(state, {
       type: "ai-status",
@@ -1940,7 +1969,7 @@ describe("terminal renderer", () => {
     const rendered = renderApp(state, 100, 30);
     const output = stripAnsi(rendered);
     expect(output).toContain("Bash · test");
-    expect(output).not.toContain("ok");
+    expect(output).toContain("ok");
     expect(output).toContain("Working");
     expect(rendered).toContain("\u001b[38;2;196;181;253m");
   });
@@ -2180,16 +2209,15 @@ describe("terminal renderer", () => {
 
     const rendered = renderApp(state, 120, 30);
     const output = stripAnsi(rendered);
-    const taskHeader = output.split("\n").find((row) => row.includes("Tasks"));
-    expect(taskHeader?.indexOf("Tasks")).toBeGreaterThan(80);
-    expect(taskHeader).toContain("Tasks · Ctrl-T");
+    const taskHeader = output.split("\n").find((row) => row.includes("tasks"));
+    expect(taskHeader?.indexOf("tasks")).toBeLessThan(10);
     expect(rendered).toContain("\u001b[38;2;151;118;56m");
     expect(output).toContain("[->] Implement sidebar");
     expect(output).toContain("[ ] Verify layout");
     expect(output).not.toContain("◫ Tasks");
 
-    const inline = stripAnsi(renderApp({ ...state, taskSidebarEnabled: false }, 120, 30));
-    expect(inline).toContain("◫ Tasks · Ctrl-T sidebar");
+    const inline = stripAnsi(renderApp({ ...state, topicsPanelEnabled: false }, 120, 30));
+    expect(inline).toContain("◫ Tasks · Ctrl-P sidebar");
     expect(
       inline
         .split("\n")
@@ -2198,7 +2226,401 @@ describe("terminal renderer", () => {
     ).toBeLessThan(20);
   });
 
-  test("keeps current work visible and counts overflow in the Tasks sidebar", () => {
+  test("shows a flat Topics panel listing every topic, not just the active one's children", () => {
+    const parent = { ...topic(), id: "parent", title: "Parent" };
+    const working = { ...topic(), id: "working", title: "Working topic" };
+    const idle = { ...topic(), id: "idle", title: "Idle topic" };
+    let state: AppState = {
+      ...setTopics(createInitialState("local"), [parent, working, idle]),
+      activeTopicId: parent.id,
+    };
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: working.id,
+      payload: { kind: "ai_active", queryId: "q" },
+    });
+
+    const rendered = renderApp(state, 120, 30);
+    const output = stripAnsi(rendered);
+    const panelHeader = output.split("\n").find((row) => row.includes("topics"));
+    expect(panelHeader?.indexOf("topics")).toBeLessThan(10); // lives in the left column
+    expect(output).toContain("Parent");
+    expect(output).toContain("Working topic");
+    expect(output).toContain("Idle topic");
+    expect(output).toContain("○ Idle topic");
+    expect(output).not.toContain("○ Working topic"); // the running one shows a spinner, not ○
+    expect(output).toContain("› "); // the active topic (Parent) keeps the picker's own marker
+
+    const hidden = stripAnsi(renderApp({ ...state, topicsPanelEnabled: false }, 120, 30));
+    // "Ctrl-O topics" in the footer always mentions the word, so the panel
+    // itself is gone only if every row containing "topics" is that one
+    // footer row rather than a dedicated side-column row above it.
+    const hiddenTopicsRows = hidden.split("\n").filter((row) => row.includes("topics"));
+    expect(hiddenTopicsRows.every((row) => row.includes("Ctrl-O topics"))).toBe(true);
+    expect(hiddenTopicsRows.length).toBeGreaterThan(0);
+  });
+
+  test("clicking a Topics panel row switches the active topic without touching the Ctrl-O picker state", () => {
+    const parent = { ...topic(), id: "parent", title: "Parent" };
+    const other = { ...topic(), id: "other", title: "Other" };
+    const state: AppState = {
+      ...setTopics(createInitialState("local"), [parent, other]),
+      activeTopicId: parent.id,
+    };
+
+    const rendered = renderAppFrame(state, 120, 30);
+    const target = rendered.topicPickerTargets.find((t) => t.topicIndex === 1);
+    expect(target).toBeDefined();
+    expect(target?.xStart).toBeLessThan(40); // the side panel's column, not the picker overlay
+  });
+
+  test("stacks Topics above Tasks in one shared column when both apply", () => {
+    const parent = { ...topic(), id: "parent", title: "Parent" };
+    const other = { ...topic(), id: "other", title: "Other" };
+    let state: AppState = {
+      ...setTopics(createInitialState("local"), [parent, other]),
+      activeTopicId: parent.id,
+    };
+    state = setMessages(state, parent.id, [
+      {
+        id: "tasks-both",
+        topicId: parent.id,
+        authorId: "system",
+        text: "📋 Tasks (0/1)\n[->] Do the thing",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+
+    const output = stripAnsi(renderApp(state, 120, 30));
+    expect(output).toContain("topics");
+    expect(output).toContain("tasks");
+    expect(output).toContain("Other");
+    expect(output).toContain("[->] Do the thing");
+    const rows = output.split("\n");
+    const topicsRow = rows.findIndex((row) => row.includes("topics"));
+    const taskRow = rows.findIndex((row) => row.includes("tasks"));
+    expect(topicsRow).toBeGreaterThanOrEqual(0);
+    expect(topicsRow).toBeLessThan(taskRow);
+  });
+
+  test("keeps the Working/Thinking line inline above the conversation, not duplicated in the Topics panel", () => {
+    const active = { ...topic(), id: "active", title: "Active" };
+    const other = { ...topic(), id: "other", title: "Other" };
+    let state: AppState = {
+      ...setTopics(createInitialState("local"), [active, other]),
+      activeTopicId: active.id,
+    };
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: active.id,
+      payload: { kind: "ai_active", queryId: "q" },
+    });
+
+    const wide = stripAnsi(renderApp(state, 120, 24));
+    expect(wide).toContain("Working"); // inline, next to the conversation, as always
+    // The panel's own row for Active stays a single line — no "Thinking"
+    // subline duplicating the inline indicator.
+    const rows = wide.split("\n");
+    const activeRow = rows.findIndex((row) => row.includes("Active"));
+    expect(rows[activeRow + 1]).not.toContain("Thinking");
+  });
+
+  test("centers the decision popup over the conversation instead of spanning full width", () => {
+    let state: AppState = setTopics(createInitialState("local"), [topic()]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: {
+        kind: "tool_call",
+        queryId: "q",
+        toolUseId: "ask",
+        name: "mcp__runtime__ask_user_question",
+        label: "Ask",
+      },
+    });
+    state = setMessages(state, "topic", [
+      {
+        id: "ask-1",
+        topicId: "topic",
+        authorId: "ai",
+        text: "",
+        kind: "ask_user_question",
+        askUserQuestion: {
+          question: "Deploy now?",
+          choices: [{ label: "yes" }, { label: "no" }],
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      } as MessageDto,
+    ]);
+
+    const output = stripAnsi(renderApp(state, 100, 24));
+    const boxRow = output.split("\n").find((row) => row.includes("╭"));
+    expect(boxRow).toBeDefined();
+    // Blank margin on both sides — not a full-width bar from column 1, and
+    // not stretched all the way to the terminal's right edge either.
+    expect(boxRow?.indexOf("╭")).toBeGreaterThan(5);
+    expect(boxRow?.indexOf("╮")).toBeLessThan((boxRow?.length ?? 0) - 5);
+  });
+
+  test("shows each topic's live tool/thinking detail right where Ctrl-O lists every topic", () => {
+    const running = { ...topic(), id: "running", title: "Running" };
+    const idle = { ...topic(), id: "idle", title: "Idle" };
+    let state: AppState = {
+      ...setTopics(createInitialState("local"), [running, idle]),
+      overlay: "topics" as const,
+    };
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: running.id,
+      payload: { kind: "ai_active", queryId: "q" },
+    });
+
+    const output = stripAnsi(renderApp(state, 120, 24));
+    const rows = output.split("\n");
+    const runningRow = rows.findIndex((row) => row.includes("Running"));
+    expect(rows[runningRow + 1]).toContain("Thinking");
+
+    const idleRow = rows.findIndex((row) => row.includes("Idle"));
+    expect(rows[idleRow + 1]?.trim() ?? "").toBe("");
+  });
+
+  test("marks a blocked topic distinctly from idle and shows its question", () => {
+    const parent = { ...topic(), id: "parent", title: "Parent" };
+    const blocked = { ...topic(), id: "blocked", title: "Blocked" };
+    const idle = { ...topic(), id: "idle", title: "Idle" };
+    let state: AppState = {
+      ...setTopics(createInitialState("local"), [parent, blocked, idle]),
+      activeTopicId: parent.id,
+    };
+    state = setMessages(state, blocked.id, [
+      {
+        id: "q1",
+        topicId: blocked.id,
+        authorId: "ai",
+        text: "",
+        kind: "ask_user_question",
+        askUserQuestion: { question: "Deploy now?", choices: [{ label: "yes" }, { label: "no" }] },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      } as MessageDto,
+    ]);
+
+    const output = stripAnsi(renderApp(state, 120, 30));
+    expect(output).toContain("? Blocked");
+    expect(output).toContain("Deploy now?");
+    expect(output).toContain("○ Idle");
+    expect(output).not.toContain("? Idle");
+  });
+
+  test("includes Cron/Memory/Compact background sessions in the Topics panel", () => {
+    const parent = { ...topic(), id: "parent", title: "Parent" };
+    const other = { ...topic(), id: "other", title: "Other" };
+    const state: AppState = {
+      ...setTopics(createInitialState("local"), [parent, other]),
+      activeTopicId: parent.id,
+      backgroundSessions: [
+        {
+          id: "cron-1",
+          kind: "cron" as const,
+          title: "Daily digest",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          status: "Running",
+          steps: [],
+        },
+      ],
+    };
+
+    const rendered = renderAppFrame(state, 120, 30);
+    const output = stripAnsi(rendered.frame);
+    expect(output).toContain("Daily digest");
+    const target = rendered.topicPickerTargets.find((t) => t.backgroundSessionId === "cron-1");
+    expect(target).toBeDefined();
+    expect(target?.xStart).toBeLessThan(40); // the panel's own column
+  });
+
+  test("sorts the Topics panel by activity (blocked, then running, then idle) or by name", () => {
+    const a = { ...topic(), id: "a", title: "Zeta" };
+    const b = { ...topic(), id: "b", title: "Alpha" };
+    const c = { ...topic(), id: "c", title: "Middle" };
+    let state: AppState = {
+      ...setTopics(createInitialState("local"), [a, b, c]),
+      activeTopicId: a.id,
+    };
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: c.id,
+      payload: { kind: "ai_active", queryId: "q" },
+    });
+    state = setMessages(state, b.id, [
+      {
+        id: "q1",
+        topicId: b.id,
+        authorId: "ai",
+        text: "",
+        kind: "ask_user_question",
+        askUserQuestion: { question: "Proceed?", choices: [{ label: "yes" }, { label: "no" }] },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      } as MessageDto,
+    ]);
+
+    const byActivity = stripAnsi(renderApp(state, 120, 30));
+    // Blocked (Alpha) before running (Middle) before idle (Zeta), regardless
+    // of alphabetical order.
+    expect(byActivity.indexOf("Alpha")).toBeLessThan(byActivity.indexOf("Middle"));
+    expect(byActivity.indexOf("Middle")).toBeLessThan(byActivity.indexOf("Zeta"));
+
+    const byName = stripAnsi(renderApp({ ...state, topicsPanelSort: "name" }, 120, 30));
+    expect(byName.indexOf("Alpha")).toBeLessThan(byName.indexOf("Middle"));
+    expect(byName.indexOf("Middle")).toBeLessThan(byName.indexOf("Zeta"));
+  });
+
+  test("keeps a family of subagents together under activity sort instead of scattering them", () => {
+    const root = { ...topic(), id: "root", title: "Root" };
+    const subIdle = {
+      ...topic(),
+      id: "sub-idle",
+      title: "SubIdle",
+      isSubagent: true,
+      parentTopicId: root.id,
+    };
+    const subRunning = {
+      ...topic(),
+      id: "sub-running",
+      title: "SubRunning",
+      isSubagent: true,
+      parentTopicId: root.id,
+    };
+    // Unrelated, also running — shares `subRunning`'s rank, so a flat
+    // per-topic sort would interleave it between the family's members.
+    const other = { ...topic(), id: "other", title: "Other" };
+    let state: AppState = {
+      ...setTopics(createInitialState("local"), [root, subIdle, subRunning, other]),
+      activeTopicId: root.id,
+    };
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: subRunning.id,
+      payload: { kind: "ai_active", queryId: "q1" },
+    });
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: other.id,
+      payload: { kind: "ai_active", queryId: "q2" },
+    });
+
+    const output = stripAnsi(renderApp(state, 120, 30));
+    const rows = output.split("\n");
+    const rootRow = rows.findIndex((row) => row.includes("Root"));
+    const subIdleRow = rows.findIndex((row) => row.includes("SubIdle"));
+    const subRunningRow = rows.findIndex((row) => row.includes("SubRunning"));
+    const otherRow = rows.findIndex((row) => row.includes("Other"));
+    expect(rootRow).toBeGreaterThanOrEqual(0);
+    // The whole family (Root, SubIdle, SubRunning) stays contiguous even
+    // though SubRunning outranks Root and SubIdle on its own, and the whole
+    // unit still outranks the unrelated, equally-running "Other".
+    expect([rootRow, subIdleRow, subRunningRow].sort((a, b) => a - b)).toEqual([
+      rootRow,
+      subIdleRow,
+      subRunningRow,
+    ]);
+    expect(Math.max(rootRow, subIdleRow, subRunningRow)).toBeLessThan(otherRow);
+  });
+
+  test("narrows and shifts the composer under the conversation when the side panel is up", () => {
+    const a = { ...topic(), id: "a", title: "A" };
+    const b = { ...topic(), id: "b", title: "B" };
+    const state: AppState = {
+      ...setTopics(createInitialState("local"), [a, b]),
+      activeTopicId: "a",
+    };
+
+    const rendered = renderAppFrame(state, 120, 24);
+    const composerRow = stripAnsi(rendered.frame)
+      .split("\n")
+      .find((row) => row.includes("Type a message"));
+    expect(composerRow?.indexOf("Type a message")).toBeGreaterThan(36); // past the panel's own column
+    expect(rendered.cursor?.x).toBeGreaterThan(36);
+
+    const narrow = renderAppFrame({ ...state, topicsPanelEnabled: false }, 120, 24);
+    const narrowComposerRow = stripAnsi(narrow.frame)
+      .split("\n")
+      .find((row) => row.includes("Type a message"));
+    expect(narrowComposerRow?.indexOf("Type a message")).toBeLessThan(10); // no panel, starts at column 1
+  });
+
+  test("keeps the Topics panel visible behind the background-session overlay", () => {
+    const a = { ...topic(), id: "a", title: "A" };
+    const b = { ...topic(), id: "b", title: "B" };
+    const state: AppState = {
+      ...setTopics(createInitialState("local"), [a, b]),
+      activeTopicId: a.id,
+      backgroundSessions: [
+        {
+          id: "cron-1",
+          kind: "cron" as const,
+          title: "Daily digest",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          status: "Running",
+          steps: [],
+        },
+      ],
+      overlay: "background-session" as const,
+      topicPickerBackgroundId: "cron-1",
+    };
+
+    const output = stripAnsi(renderApp(state, 120, 24));
+    expect(output).toContain("Cron · read-only"); // the overlay itself still renders
+    expect(output).toContain("Daily digest");
+    expect(output).toContain("topics"); // the panel stayed up behind it
+    expect(output).toContain(" B");
+  });
+
+  test("groups the Topics panel into manager and topics sections, like the Ctrl-O picker", () => {
+    const general = { ...topic(), id: "general", title: "General", kind: "manager" as const };
+    const work = { ...topic(), id: "work", title: "Work" };
+    const state: AppState = {
+      ...setTopics(createInitialState("local"), [work, general]),
+      activeTopicId: work.id,
+    };
+
+    const output = stripAnsi(renderApp(state, 120, 30));
+    const rows = output.split("\n");
+    const managerHeading = rows.findIndex((row) => row.startsWith(" manager"));
+    const topicsHeading = rows.findIndex((row) => row.startsWith(" topics"));
+    const generalRow = rows.findIndex((row) => row.includes("General"));
+    const workRow = rows.findIndex((row) => row.includes("Work"));
+    expect(managerHeading).toBeGreaterThanOrEqual(0);
+    expect(topicsHeading).toBeGreaterThan(managerHeading);
+    expect(generalRow).toBeGreaterThan(managerHeading);
+    expect(generalRow).toBeLessThan(topicsHeading);
+    expect(workRow).toBeGreaterThan(topicsHeading);
+  });
+
+  test("scrolls the Topics panel and shows a scrollbar only when it overflows", () => {
+    const topics = Array.from({ length: 20 }, (_, i) => ({
+      ...topic(),
+      id: `t${i}`,
+      title: `Topic ${i}`,
+    }));
+    const state: AppState = {
+      ...setTopics(createInitialState("local"), topics),
+      activeTopicId: topics[0].id,
+    };
+
+    const rendered = stripAnsi(renderApp(state, 120, 16));
+    expect(rendered).toContain("▐"); // scrollbar thumb — content overflows the panel
+    expect(rendered).toContain("Topic 0");
+    expect(rendered).not.toContain("Topic 19"); // off the bottom at scroll offset 0
+
+    const max = maxTopicsPanelScrollOffset(state, 120, 16);
+    expect(max).toBeGreaterThan(0);
+    const scrolled = stripAnsi(renderApp({ ...state, topicsPanelScrollOffset: max }, 120, 16));
+    expect(scrolled).toContain("Topic 19");
+
+    const short = stripAnsi(renderApp({ ...state, topics: topics.slice(0, 2) }, 120, 16));
+    expect(short).not.toContain("▐"); // two rows never overflow a tall panel
+  });
+
+  test("keeps current work visible and scrolls to reveal overflow in the Tasks panel", () => {
     const done = Array.from({ length: 30 }, (_, i) => `[x] Done task ${i + 1}`);
     let state = setTopics(createInitialState("local"), [topic()]);
     state = setMessages(state, "topic", [
@@ -2213,11 +2635,14 @@ describe("terminal renderer", () => {
 
     const output = stripAnsi(renderApp(state, 120, 30));
     expect(output).toContain("[->] Current work");
-    const more = output.match(/\+(\d+) more/);
-    expect(more).not.toBeNull();
-    expect(Number(more?.[1])).toBeGreaterThan(0);
-    // Oldest completed tasks are the ones that overflow.
+    expect(output).toContain("▐"); // scrollbar thumb — more rows than the panel can show at once
+    // Oldest completed task (listed last — taskItems() reverses completed order).
     expect(output).not.toContain("[x] Done task 1 ");
+
+    const max = maxTaskPanelScrollOffset(state, 120, 30);
+    expect(max).toBeGreaterThan(0);
+    const scrolled = stripAnsi(renderApp({ ...state, taskPanelScrollOffset: max }, 120, 30));
+    expect(scrolled).toContain("[x] Done task 1 ");
   });
 
   test("prioritizes active work over queued tasks in a short Tasks sidebar", () => {

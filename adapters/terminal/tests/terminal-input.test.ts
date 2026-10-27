@@ -168,6 +168,7 @@ test("bounds SGR mouse coordinates so a pasted digit run is never consumed", () 
     scrollDelta: 0,
     horizontalScrollDelta: 0,
     events: [],
+    wheelEvents: [],
   });
 });
 
@@ -185,12 +186,12 @@ test("pairs every mode the enter sequence sets with a reset in the exit sequence
   // `?<n>h` / `?<n>l` are the private modes we own. Anything switched on has to
   // be switched off again, or the parent shell inherits it.
   const enabled = [...ENTER.matchAll(/\[\?(\d+)h/g)].map((match) => match[1]);
-  expect(enabled).toEqual(["1049", "2004", "1002", "1006"]);
+  expect(enabled).toEqual(["1049", "2004", "1003", "1006"]);
   for (const mode of enabled) {
     expect(EXIT).toContain(`${ESC}[?${mode}l`);
   }
   // The alt screen is the last thing released, after the modes that live inside it.
-  for (const mode of ["1006", "1002", "2004", "25"]) {
+  for (const mode of ["1006", "1003", "2004", "25"]) {
     expect(EXIT.indexOf(`${ESC}[?${mode}`)).toBeLessThan(EXIT.indexOf(`${ESC}[?1049l`));
   }
   // The forced background colour is undone by OSC 111, the hidden cursor by `?25h`.
