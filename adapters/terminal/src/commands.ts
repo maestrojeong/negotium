@@ -42,6 +42,22 @@ export function commandSuggestions(input: string): TerminalCommand[] {
   return TERMINAL_COMMANDS.filter((command) => command.name.startsWith(normalized));
 }
 
+/**
+ * Whether `text` names an actual slash command rather than just happening to
+ * start with `/` — a pasted or typed absolute path (`/example-report.pdf`) is
+ * not a command, so routing it to the command runner only produced
+ * "Unknown command: /example-report.pdf" instead of sending it as a message.
+ * Matched case-insensitively and by exact name, the same as the command
+ * runner itself (`command-router.ts`'s `command === "…"` checks).
+ */
+export function isKnownTerminalCommand(text: string): boolean {
+  if (!text.startsWith("/")) return false;
+  const firstLine = text.split("\n", 1)[0] ?? "";
+  const [token = ""] = firstLine.slice(1).trim().split(/\s+/);
+  const normalized = token.toLowerCase();
+  return TERMINAL_COMMANDS.some((command) => command.name === normalized);
+}
+
 export function completeCommand(input: string, index: number): string | null {
   const suggestions = commandSuggestions(input);
   if (suggestions.length === 0) return null;

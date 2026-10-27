@@ -22,6 +22,8 @@ import {
   composerHoldsSecret,
   type NoticeLevel,
   pickedBackgroundSession,
+  SIDE_PANEL_WIDTH_MAX,
+  SIDE_PANEL_WIDTH_MIN,
   sortedTopicEntries,
   type TerminalMessage,
   visibleBackgroundSessions,
@@ -152,6 +154,14 @@ export interface SideColumnBounds {
   sections: SideColumnSectionBounds[];
 }
 
+/** Grab area for dragging the side column's width — spans its right border, full body height. */
+export interface SidePanelResizeHandle {
+  xStart: number;
+  xEnd: number;
+  yStart: number;
+  yEnd: number;
+}
+
 export interface RenderedTerminalApp {
   frame: string;
   cursor: { x: number; y: number } | null;
@@ -159,6 +169,7 @@ export interface RenderedTerminalApp {
   topicPickerTargets: TopicPickerTarget[];
   sidePanelTracks: SidePanelTrack[];
   sideColumnBounds: SideColumnBounds | null;
+  sidePanelResizeHandle: SidePanelResizeHandle | null;
 }
 
 const ESC = "\u001b[";
@@ -1293,8 +1304,11 @@ function taskLines(state: AppState, width: number): UiLine[] {
 }
 
 const SIDE_PANEL_MIN_WIDTH = 110;
-const SIDE_PANEL_WIDTH = 36;
 const SIDE_PANEL_GAP = 1;
+// The conversation column never shrinks past this, even while the side
+// column is being dragged wider — herdr's own sidebar drag leaves its main
+// pane a usable floor the same way.
+const CONVERSATION_MIN_WIDTH = 60;
 
 export interface SidePanelTarget {
   y: number;
@@ -1320,6 +1334,11 @@ interface TerminalBodyLayout {
   showTopicsPanel: boolean;
 }
 
+/** The widest the side column may be dragged to on a terminal `columns` wide. */
+export function maxSidePanelWidth(columns: number): number {
+  return Math.max(SIDE_PANEL_WIDTH_MIN, columns - SIDE_PANEL_GAP - CONVERSATION_MIN_WIDTH);
+}
+
 function terminalBodyLayout(state: AppState, width: number): TerminalBodyLayout {
   // One toggle (Ctrl-P) governs the whole side column; which sections it
   // actually contains still depends on whether each has anything to show.
@@ -1339,9 +1358,17 @@ function terminalBodyLayout(state: AppState, width: number): TerminalBodyLayout 
   const showTopicsPanel =
     wideEnough && (state.topics.length > 1 || visibleBackgroundSessions(state).length > 0);
   const showSide = showTaskPanel || showTopicsPanel;
+  const maxSideWidth = maxSidePanelWidth(width);
+  const sideWidth = showSide
+    ? Math.min(
+        SIDE_PANEL_WIDTH_MAX,
+        Math.max(SIDE_PANEL_WIDTH_MIN, state.sidePanelWidth),
+        maxSideWidth,
+      )
+    : 0;
   return {
-    conversationWidth: showSide ? width - SIDE_PANEL_WIDTH - SIDE_PANEL_GAP : width,
-    sideWidth: showSide ? SIDE_PANEL_WIDTH : 0,
+    conversationWidth: showSide ? width - sideWidth - SIDE_PANEL_GAP : width,
+    sideWidth,
     showTaskPanel,
     showTopicsPanel,
   };
@@ -3282,7 +3309,11 @@ export function renderAppFrame(
       : null;
   const body = sideColumn?.lines.length
     ? (() => {
-        const gap = paint(" ".repeat(SIDE_PANEL_GAP), { bg: theme.canvas });
+        // A visible divider, not just blank padding, so the drag handle for
+        // resizing the side column (same column span as `sidePanelResizeHandle`
+        // below) reads as a grabbable border instead of empty space with no
+        // clue where to click.
+        const gap = paint("│".repeat(SIDE_PANEL_GAP), { fg: theme.border, bg: theme.canvas });
         return sideColumn.lines.map((row, index) => `${row}${gap}${conversationBody[index] ?? ""}`);
       })()
     : conversationBody;
@@ -3338,6 +3369,16 @@ export function renderAppFrame(
         return { xStart: 1, xEnd: layout.sideWidth, sections };
       })()
     : null;
+  // Grabbable on the panel's own last column too, not just the one-column
+  // gap — a gap that thin is an easy miss for a real mouse.
+  const sidePanelResizeHandle: SidePanelResizeHandle | null = sideColumn
+    ? {
+        xStart: Math.max(1, layout.sideWidth),
+        xEnd: layout.sideWidth + SIDE_PANEL_GAP,
+        yStart: 1,
+        yEnd: bodyHeight,
+      }
+    : null;
   const cursorY = composer.cursor
     ? body.length + decision.length + composer.cursor.y
     : Number.POSITIVE_INFINITY;
@@ -3359,6 +3400,7 @@ export function renderAppFrame(
     topicPickerTargets,
     sidePanelTracks,
     sideColumnBounds,
+    sidePanelResizeHandle,
   };
 }
 

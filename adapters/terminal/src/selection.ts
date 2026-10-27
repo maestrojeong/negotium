@@ -10,6 +10,14 @@ export interface ScreenPoint {
 export interface ScreenSelection {
   anchor: ScreenPoint;
   focus: ScreenPoint;
+  /**
+   * Column range (one-based, inclusive) the drag is confined to — set from
+   * whichever pane (the side Topics/Tasks column vs. the conversation) the
+   * press started in. Without it, a multi-row drag's interior rows select
+   * edge-to-edge (see below) and bleed into the other pane even though the
+   * drag only ever touched one of them.
+   */
+  paneClip?: { xStart: number; xEnd: number };
 }
 
 function ordered(selection: ScreenSelection): [ScreenPoint, ScreenPoint] {
@@ -63,12 +71,16 @@ function columnSlice(value: string, from: number, to: number): string {
 /** Extract the text covered by an inclusive, screen-coordinate drag. */
 export function screenSelectionText(lines: string[], selection: ScreenSelection): string {
   const [start, end] = ordered(selection);
+  const clipFrom = selection.paneClip ? selection.paneClip.xStart - 1 : 0;
+  const clipTo = selection.paneClip ? selection.paneClip.xEnd : Number.POSITIVE_INFINITY;
   const selected: string[] = [];
   for (let row = start.y; row <= end.y; row += 1) {
     const value = lines[row - 1] ?? "";
-    const from = row === start.y ? Math.max(0, start.x - 1) : 0;
-    const to = row === end.y ? Math.max(from, end.x) : Number.POSITIVE_INFINITY;
-    selected.push(columnSlice(value, from, to).trimEnd());
+    const rowFrom = row === start.y ? Math.max(0, start.x - 1) : 0;
+    const rowTo = row === end.y ? Math.max(rowFrom, end.x) : Number.POSITIVE_INFINITY;
+    const from = Math.max(rowFrom, clipFrom);
+    const to = Math.min(rowTo, clipTo);
+    selected.push(to > from ? columnSlice(value, from, to).trimEnd() : "");
   }
   return selected.join("\n").replace(/\n+$/, "");
 }
@@ -125,14 +137,18 @@ function highlightRow(value: string, from: number, to: number): string {
 /** Add inverse-video highlighting without changing the frame's plain text. */
 export function highlightScreenSelection(frame: string, selection: ScreenSelection): string {
   const [start, end] = ordered(selection);
+  const clipFrom = selection.paneClip ? selection.paneClip.xStart - 1 : 0;
+  const clipTo = selection.paneClip ? selection.paneClip.xEnd : Number.POSITIVE_INFINITY;
   return frame
     .split("\n")
     .map((line, index) => {
       const row = index + 1;
       if (row < start.y || row > end.y) return line;
-      const from = row === start.y ? Math.max(0, start.x - 1) : 0;
-      const to = row === end.y ? Math.max(from, end.x) : Number.POSITIVE_INFINITY;
-      return highlightRow(line, from, to);
+      const rowFrom = row === start.y ? Math.max(0, start.x - 1) : 0;
+      const rowTo = row === end.y ? Math.max(rowFrom, end.x) : Number.POSITIVE_INFINITY;
+      const from = Math.max(rowFrom, clipFrom);
+      const to = Math.min(rowTo, clipTo);
+      return to > from ? highlightRow(line, from, to) : line;
     })
     .join("\n");
 }

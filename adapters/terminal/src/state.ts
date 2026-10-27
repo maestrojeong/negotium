@@ -12,6 +12,14 @@ import { terminalNowMs } from "@/clock";
 import { DEFAULT_DECISION_GRAPH_SPACING, type DecisionGraphCanvas } from "@/decision-graph";
 import { DEFAULT_SUBAGENT_GRAPH_SPACING } from "@/subagent-graph";
 
+/**
+ * Bounds for the Topics/Tasks side column's width — herdr lets the sidebar be
+ * dragged wider/narrower the same way, rather than fixing it at one size.
+ */
+export const SIDE_PANEL_WIDTH_DEFAULT = 36;
+export const SIDE_PANEL_WIDTH_MIN = 22;
+export const SIDE_PANEL_WIDTH_MAX = 64;
+
 type Overlay =
   | "help"
   | "status"
@@ -124,6 +132,8 @@ export interface AppState {
   /** One toggle (Ctrl-P) for the whole side column — Topics and Tasks are sections within it, not independently hidden. */
   topicsPanelEnabled: boolean;
   topicsPanelScrollOffset: number;
+  /** Width of the side column, dragged via its right border. Clamped to `SIDE_PANEL_WIDTH_MIN`/`MAX`. */
+  sidePanelWidth: number;
   /** Ctrl-R cycles this — herdr's sidebar has the same "grouped vs priority" sort toggle. */
   topicsPanelSort: "activity" | "name";
   /**
@@ -194,6 +204,7 @@ export function createInitialState(userId: string): AppState {
     taskPanelScrollOffset: 0,
     topicsPanelEnabled: true,
     topicsPanelScrollOffset: 0,
+    sidePanelWidth: SIDE_PANEL_WIDTH_DEFAULT,
     topicsPanelSort: "activity",
     overlay: null,
     topicPickerRoot: false,
@@ -213,6 +224,15 @@ export function toggleTopicsPanel(state: AppState): AppState {
 
 export function cycleTopicsPanelSort(state: AppState): AppState {
   return { ...state, topicsPanelSort: state.topicsPanelSort === "activity" ? "name" : "activity" };
+}
+
+/** Clamps against both the panel's own min/max and whatever room `maxWidth` leaves for the conversation. */
+export function setSidePanelWidth(state: AppState, width: number, maxWidth: number): AppState {
+  const next = Math.min(
+    SIDE_PANEL_WIDTH_MAX,
+    Math.max(SIDE_PANEL_WIDTH_MIN, Math.min(Math.round(width), maxWidth)),
+  );
+  return next === state.sidePanelWidth ? state : { ...state, sidePanelWidth: next };
 }
 
 /** Clamps against `maxOffset`, computed by the renderer from current content. */

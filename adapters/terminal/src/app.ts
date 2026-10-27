@@ -44,7 +44,7 @@ import { copyToClipboard } from "@/clipboard";
 import { CollapsedPasteStore, cursorForTextOffset, textOffsetForCursor } from "@/collapsed-pastes";
 import { type ColorDepth, detectColorDepth, rgbToAnsi16, rgbToAnsi256 } from "@/color-depth";
 import { runTerminalCommand } from "@/command-router";
-import { commandSuggestions, completeCommand } from "@/commands";
+import { commandSuggestions, completeCommand, isKnownTerminalCommand } from "@/commands";
 import {
   adjustDecisionGraphSpacing,
   buildDecisionGraph,
@@ -61,11 +61,13 @@ import {
 import {
   type CodeCopyTarget,
   maxConversationScrollOffset,
+  maxSidePanelWidth,
   maxTaskPanelScrollOffset,
   maxTopicsPanelScrollOffset,
   preserveConversationScrollAnchor,
   renderAppFrame,
   type SideColumnBounds,
+  type SidePanelResizeHandle,
   type SidePanelTrack,
   scrollbarThumb,
   scrollOffsetFromDragRow,
@@ -108,6 +110,7 @@ import {
   setBackgroundSessions,
   setMessageHistoryStatus,
   setMessages,
+  setSidePanelWidth,
   setTaskPanelScrollOffset,
   setTopicFilter,
   setTopics,
@@ -353,18 +356,23 @@ export class TerminalApp {
   >();
   readonly #queuedRuntimeEvents = new Map<string, RuntimeBusEvent[]>();
   #selection: ScreenSelection | null = null;
+  /** True between a selection's press and its release — the drag is live. */
+  #selectionDragging = false;
   #subagentGraphDragPoint: ScreenPoint | null = null;
   #plainFrameLines: string[] = [];
   #codeCopyTargets: CodeCopyTarget[] = [];
   #topicPickerTargets: TopicPickerTarget[] = [];
   #sidePanelTracks: SidePanelTrack[] = [];
   #sideColumnBounds: SideColumnBounds | null = null;
+  #sidePanelResizeHandle: SidePanelResizeHandle | null = null;
   /** Which side-panel scrollbar thumb, if any, a press/drag is currently dragging. */
   #sidePanelDrag: {
     panel: "topics" | "tasks";
     track: SidePanelTrack;
     grabRowOffset: number;
   } | null = null;
+  /** Set while the side column's right border is being dragged to resize it. */
+  #sidePanelResizeDrag: { startX: number; startWidth: number } | null = null;
   #lastInterruptAt = 0;
   #subagentGraphGeneration = 0;
   #subagentGraphAbortController: AbortController | null = null;
@@ -540,7 +548,14 @@ export class TerminalApp {
     // Background topics can emit progress events every few seconds. They do
     // not change the active conversation, so they must not interrupt a drag
     // selection on this screen.
-    if (runtimeEventInvalidatesSelection(this.#state, event)) this.#selection = null;
+    //
+    // An in-progress drag is never dropped, even for the active topic: while
+    // a reply streams in, events land many times a second, and clearing here
+    // left every later drag frame ignored (`#handleMouseSelection` bails on a
+    // null selection), so a multi-line drag only ever kept its first row.
+    if (!this.#selectionDragging && runtimeEventInvalidatesSelection(this.#state, event)) {
+      this.#selection = null;
+    }
     // Only message-order-sensitive events wait for the in-flight history load to
     // finish; ai-status (running/done) is safe to apply immediately so the
     // "is it running" indicator never lags behind a topic switch's network round-trip.
@@ -844,6 +859,7 @@ export class TerminalApp {
     this.#topicPickerTargets = rendered.topicPickerTargets;
     this.#sidePanelTracks = rendered.sidePanelTracks;
     this.#sideColumnBounds = rendered.sideColumnBounds;
+    this.#sidePanelResizeHandle = rendered.sidePanelResizeHandle;
     const baseFrame = rendered.frame;
     this.#plainFrameLines = stripAnsi(baseFrame).split("\n");
     const frame = this.#selection
@@ -1333,6 +1349,7 @@ export class TerminalApp {
         this.#handleGraphMouse(event);
         continue;
       }
+      if (this.#handleSidePanelResizeDrag(event)) continue;
       if (this.#handleSidePanelScrollbarDrag(event)) continue;
       if (this.#handlePickableRowMouse(event)) continue;
       this.#handleMouseSelection(event);
@@ -1823,7 +1840,11 @@ export class TerminalApp {
       notice: undefined,
       noticeLevel: undefined,
     };
-    if (text.startsWith("/")) {
+    // Only an actual command name after the `/` goes to the command runner —
+    // text that merely starts with `/` (an absolute path pasted or typed in,
+    // e.g. `/example-report.pdf`) is sent as an ordinary message instead of
+    // erroring as an unknown command.
+    if (isKnownTerminalCommand(text)) {
       await this.#runCommand(text);
       return;
     }
@@ -2667,6 +2688,47 @@ export class TerminalApp {
   }
 
   /**
+   * Press-and-drag on the side column's right border to resize it, herdr's
+   * own draggable sidebar. Checked ahead of the scrollbar/pickable-row
+   * handlers since the border sits right against the panel's own last
+   * column, and ahead of plain text selection so a border grab never starts
+   * one instead.
+   */
+  #handleSidePanelResizeDrag(event: TerminalMouseEvent): boolean {
+    if (event.kind === "press" && (event.button & 3) === 0) {
+      const handle = this.#sidePanelResizeHandle;
+      if (
+        !handle ||
+        event.x < handle.xStart ||
+        event.x > handle.xEnd ||
+        event.y < handle.yStart ||
+        event.y > handle.yEnd
+      ) {
+        // A fresh press starts a new gesture regardless of where it lands —
+        // clearing any drag left over from a release this tracker never saw
+        // (a mouse protocol can drop one) keeps it from hijacking this and
+        // every later gesture as a resize, which read as a multi-line text
+        // selection getting "stuck" extending only the panel border.
+        this.#sidePanelResizeDrag = null;
+        return false;
+      }
+      this.#sidePanelResizeDrag = { startX: event.x, startWidth: this.#state.sidePanelWidth };
+      return true;
+    }
+    const drag = this.#sidePanelResizeDrag;
+    if (!drag) return false;
+    if (event.kind === "release") {
+      this.#sidePanelResizeDrag = null;
+      return true;
+    }
+    const columns = process.stdout.columns ?? 100;
+    const nextWidth = drag.startWidth + (event.x - drag.startX);
+    this.#state = setSidePanelWidth(this.#state, nextWidth, maxSidePanelWidth(columns));
+    this.#queueRender();
+    return true;
+  }
+
+  /**
    * Press-and-drag on a panel's scrollbar thumb, following herdr's own
    * scrollbar interaction (`scrollbar_offset_from_drag_row` in
    * `src/client/shell/mouse.rs`): grabbing anywhere on the thumb remembers
@@ -2678,7 +2740,12 @@ export class TerminalApp {
       const track = this.#sidePanelTracks.find(
         (t) => event.x === t.x && event.y >= t.yStart && event.y < t.yStart + t.viewportRows,
       );
-      if (!track) return false;
+      if (!track) {
+        // Same reasoning as `#handleSidePanelResizeDrag`: never let a stale
+        // drag outlive the gesture that started it.
+        this.#sidePanelDrag = null;
+        return false;
+      }
       const current =
         track.panel === "topics"
           ? this.#state.topicsPanelScrollOffset
@@ -2827,20 +2894,41 @@ export class TerminalApp {
 
   #handleMouseSelection(event: TerminalMouseEvent): void {
     if ((event.button & 3) !== 0 && event.kind !== "release") return;
-    const point: ScreenPoint = { x: event.x, y: event.y };
     if (event.kind === "press") {
+      const point: ScreenPoint = { x: event.x, y: event.y };
       const codeTarget = codeCopyTargetAt(this.#codeCopyTargets, point);
       if (codeTarget) {
         this.#selection = null;
         void this.#copyCodeBlock(codeTarget.text);
         return;
       }
-      this.#selection = { anchor: point, focus: point };
+      // Confine the whole drag to whichever pane it started in — the side
+      // Topics/Tasks column, or the conversation — so a drag that only ever
+      // touched one of them never pulls text out of the other.
+      const bounds = this.#sideColumnBounds;
+      const columns = process.stdout.columns ?? 100;
+      const paneClip =
+        bounds && point.x >= bounds.xStart && point.x <= bounds.xEnd
+          ? { xStart: bounds.xStart, xEnd: bounds.xEnd }
+          : bounds
+            ? // Past the divider column too, not just the panel itself.
+              { xStart: (this.#sidePanelResizeHandle?.xEnd ?? bounds.xEnd) + 1, xEnd: columns }
+            : undefined;
+      this.#selection = { anchor: point, focus: point, paneClip };
+      this.#selectionDragging = true;
       this.#queueRender();
       return;
     }
+    if (event.kind === "release") this.#selectionDragging = false;
     if (!this.#selection) return;
-    this.#selection = { ...this.#selection, focus: point };
+    // The real mouse position is tracked as-is — clamping it to the clip
+    // range used to make the drag feel stuck right at the pane border,
+    // since the recorded focus point (and therefore which rows count as
+    // "in range") could no longer move past it. `screenSelectionText`/
+    // `highlightScreenSelection` already clip each row to `paneClip`, which
+    // is enough on its own to keep the pane the drag didn't start in out of
+    // both the highlight and the copied text.
+    this.#selection = { ...this.#selection, focus: { x: event.x, y: event.y } };
     if (event.kind === "drag") {
       this.#queueRender();
       return;
