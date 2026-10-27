@@ -13,6 +13,7 @@ import {
   terminalDeletionShortcut,
   terminalNeedsAnimation,
   topicFilterInsertion,
+  topicPickerTargetAt,
   vaultFormBlocksOverlaySwitch,
 } from "@/app";
 import {
@@ -53,6 +54,11 @@ test("translates SGR mouse wheel events into conversation scrolling", () => {
     scrollDelta: 3,
     horizontalScrollDelta: 0,
     events: [],
+    wheelEvents: [
+      { x: 10, y: 5, delta: 3, horizontal: false },
+      { x: 10, y: 5, delta: 3, horizontal: false },
+      { x: 10, y: 5, delta: -3, horizontal: false },
+    ],
   });
 });
 
@@ -64,6 +70,12 @@ test("preserves horizontal and Shift-wheel mouse movement", () => {
     scrollDelta: 0,
     horizontalScrollDelta: 6,
     events: [],
+    wheelEvents: [
+      { x: 10, y: 5, delta: 3, horizontal: true },
+      { x: 10, y: 5, delta: -3, horizontal: true },
+      { x: 10, y: 5, delta: 3, horizontal: true },
+      { x: 10, y: 5, delta: 3, horizontal: true },
+    ],
   });
 });
 
@@ -143,6 +155,7 @@ test("parses left-button drag selection events", () => {
       { button: 32, x: 8, y: 4, kind: "drag" },
       { button: 0, x: 8, y: 4, kind: "release" },
     ],
+    wheelEvents: [],
   });
 });
 
@@ -152,6 +165,17 @@ test("hits the visible code copy header bounds", () => {
   expect(codeCopyTargetAt([target], { x: 25, y: 7 })?.text).toBe("echo copied");
   expect(codeCopyTargetAt([target], { x: 19, y: 7 })).toBeUndefined();
   expect(codeCopyTargetAt([target], { x: 20, y: 8 })).toBeUndefined();
+});
+
+test("hits anywhere along a topic picker row, not just its text", () => {
+  const topicRow = { xStart: 1, xEnd: 80, y: 5, topicIndex: 2 };
+  const backgroundRow = { xStart: 1, xEnd: 80, y: 6, backgroundSessionId: "cron-1" };
+  expect(topicPickerTargetAt([topicRow, backgroundRow], { x: 1, y: 5 })?.topicIndex).toBe(2);
+  expect(topicPickerTargetAt([topicRow, backgroundRow], { x: 80, y: 5 })?.topicIndex).toBe(2);
+  expect(topicPickerTargetAt([topicRow, backgroundRow], { x: 40, y: 6 })?.backgroundSessionId).toBe(
+    "cron-1",
+  );
+  expect(topicPickerTargetAt([topicRow, backgroundRow], { x: 1, y: 7 })).toBeUndefined();
 });
 
 test("extracts and highlights screen-column selections with wide glyphs", () => {
@@ -494,6 +518,262 @@ test("a paste made while the topic picker is open lands in the filter, not the h
     app.stop();
     await finished;
     (process.stdout as unknown as { write: typeof realWrite }).write = realWrite;
+    if (!hadRawMode) delete stdin.setRawMode;
+    restoreStdin();
+    restoreStdout();
+  }
+});
+
+test("hovering highlights a topic picker row and clicking it opens that topic", async () => {
+  const SECOND = { ...TOPIC, id: "second", title: "Second" };
+  const client: NegotiumClient = {
+    async start() {},
+    async stop() {},
+    listTopics: () => [TOPIC, SECOND],
+    listMessages: () => [],
+    createTopic() {
+      throw new Error("not reached");
+    },
+    async deriveTopic() {
+      throw new Error("not reached");
+    },
+    async resetTopic() {
+      throw new Error("not reached");
+    },
+    async compactTopic() {
+      throw new Error("not reached");
+    },
+    setModel() {
+      throw new Error("not reached");
+    },
+    setEffort() {
+      throw new Error("not reached");
+    },
+    async deleteTopic() {
+      throw new Error("not reached");
+    },
+    sendMessage() {
+      throw new Error("not reached");
+    },
+    answerQuestion: () => ({ ok: false }),
+    abort: () => false,
+    runVaultCommand: () => null,
+  };
+  const restoreStdin = setTty(process.stdin, true);
+  const restoreStdout = setTty(process.stdout, true);
+  const stdin = process.stdin as unknown as Record<string, unknown>;
+  const hadRawMode = typeof stdin.setRawMode === "function";
+  if (!hadRawMode) stdin.setRawMode = () => process.stdin;
+  const realWrite = process.stdout.write.bind(process.stdout);
+  const frames: string[] = [];
+  (process.stdout as unknown as { write: (chunk: string) => boolean }).write = (chunk: string) => {
+    frames.push(String(chunk));
+    return true;
+  };
+  const app = new TerminalApp(client, { userId: "local", preferredTopic: TOPIC.title });
+  const finished = app.run();
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
+  const feed = (data: string) => process.stdin.emit("data", data);
+  const screen = () => stripAnsi(frames.join(""));
+
+  try {
+    await settle();
+    expect(screen()).toContain("Terminal"); // started on the preferred topic
+    feed(CTRL_O);
+    await settle();
+    expect(screen()).toContain("Second");
+
+    // "Topics" (title) / hints / blank-or-filter / "Topics" (heading) /
+    // Terminal (topicIndex 0) / Second (topicIndex 1). A plain motion report
+    // (button 35 = any-event tracking's "no button held" code) over Second's
+    // row only moves the highlight — the picker stays open and nothing is
+    // opened yet, same as pressing the down arrow without Enter.
+    frames.length = 0;
+    feed("\u001b[<35;5;6M");
+    await settle();
+    // Line-diff rendering only repaints the two rows that actually changed,
+    // so unrelated header text from the first frame will not reappear here —
+    // the highlight moving onto Second's row is the picker-stayed-open proof.
+    expect(screen()).toContain("› ○ Second");
+
+    // A left-button SGR press anywhere on Second's row, not just on its
+    // text, opens it directly without a separate highlight step.
+    frames.length = 0;
+    feed("\u001b[<0;5;6M");
+    await settle();
+    const afterClick = screen();
+    expect(afterClick).not.toContain("  Topics"); // picker closed
+    expect(afterClick).toContain("Second · codex · gpt · medium"); // footer now shows Second
+  } finally {
+    app.stop();
+    await finished;
+    (process.stdout as unknown as { write: typeof realWrite }).write = realWrite;
+    if (!hadRawMode) delete stdin.setRawMode;
+    restoreStdin();
+    restoreStdout();
+  }
+});
+
+test("clicking the always-visible Topics panel switches topics without opening Ctrl-O", async () => {
+  const SECOND = { ...TOPIC, id: "second", title: "Second" };
+  const client: NegotiumClient = {
+    async start() {},
+    async stop() {},
+    listTopics: () => [TOPIC, SECOND],
+    listMessages: () => [],
+    createTopic() {
+      throw new Error("not reached");
+    },
+    async deriveTopic() {
+      throw new Error("not reached");
+    },
+    async resetTopic() {
+      throw new Error("not reached");
+    },
+    async compactTopic() {
+      throw new Error("not reached");
+    },
+    setModel() {
+      throw new Error("not reached");
+    },
+    setEffort() {
+      throw new Error("not reached");
+    },
+    async deleteTopic() {
+      throw new Error("not reached");
+    },
+    sendMessage() {
+      throw new Error("not reached");
+    },
+    answerQuestion: () => ({ ok: false }),
+    abort: () => false,
+    runVaultCommand: () => null,
+  };
+  const restoreStdin = setTty(process.stdin, true);
+  const restoreStdout = setTty(process.stdout, true);
+  const stdin = process.stdin as unknown as Record<string, unknown>;
+  const hadRawMode = typeof stdin.setRawMode === "function";
+  if (!hadRawMode) stdin.setRawMode = () => process.stdin;
+  // The side panel only renders above SIDE_PANEL_MIN_WIDTH (110 columns), so
+  // the default 100-column test fallback never shows it.
+  const stdout = process.stdout as unknown as { columns?: number; rows?: number };
+  const previousColumns = stdout.columns;
+  const previousRows = stdout.rows;
+  stdout.columns = 120;
+  stdout.rows = 20;
+  const realWrite = process.stdout.write.bind(process.stdout);
+  const frames: string[] = [];
+  (process.stdout as unknown as { write: (chunk: string) => boolean }).write = (chunk: string) => {
+    frames.push(String(chunk));
+    return true;
+  };
+  const app = new TerminalApp(client, { userId: "local", preferredTopic: TOPIC.title });
+  const finished = app.run();
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
+  const feed = (data: string) => process.stdin.emit("data", data);
+  const screen = () => stripAnsi(frames.join(""));
+
+  try {
+    await settle();
+    expect(screen()).toContain("topics");
+    expect(screen()).toContain("Second");
+
+    // Header rule / sort label / "topics" group heading / Terminal
+    // (topicIndex 0, selected) / Second (topicIndex 1) — Second's row lands
+    // at y=5 in the side column, which sits to the *left* of the
+    // conversation (columns 1-36).
+    frames.length = 0;
+    feed("\u001b[<0;5;5M");
+    await settle();
+    const afterClick = screen();
+    expect(afterClick).not.toContain("  Topics"); // Ctrl-O never opened
+    expect(afterClick).toContain("Second · codex · gpt · medium"); // footer now shows Second
+  } finally {
+    app.stop();
+    await finished;
+    (process.stdout as unknown as { write: typeof realWrite }).write = realWrite;
+    stdout.columns = previousColumns;
+    stdout.rows = previousRows;
+    if (!hadRawMode) delete stdin.setRawMode;
+    restoreStdin();
+    restoreStdout();
+  }
+});
+
+test("Ctrl-R cycles the Topics panel sort between activity and name", async () => {
+  const SECOND = { ...TOPIC, id: "second", title: "Second" };
+  const client: NegotiumClient = {
+    async start() {},
+    async stop() {},
+    listTopics: () => [TOPIC, SECOND],
+    listMessages: () => [],
+    createTopic() {
+      throw new Error("not reached");
+    },
+    async deriveTopic() {
+      throw new Error("not reached");
+    },
+    async resetTopic() {
+      throw new Error("not reached");
+    },
+    async compactTopic() {
+      throw new Error("not reached");
+    },
+    setModel() {
+      throw new Error("not reached");
+    },
+    setEffort() {
+      throw new Error("not reached");
+    },
+    async deleteTopic() {
+      throw new Error("not reached");
+    },
+    sendMessage() {
+      throw new Error("not reached");
+    },
+    answerQuestion: () => ({ ok: false }),
+    abort: () => false,
+    runVaultCommand: () => null,
+  };
+  const restoreStdin = setTty(process.stdin, true);
+  const restoreStdout = setTty(process.stdout, true);
+  const stdin = process.stdin as unknown as Record<string, unknown>;
+  const hadRawMode = typeof stdin.setRawMode === "function";
+  if (!hadRawMode) stdin.setRawMode = () => process.stdin;
+  const stdout = process.stdout as unknown as { columns?: number; rows?: number };
+  const previousColumns = stdout.columns;
+  const previousRows = stdout.rows;
+  stdout.columns = 120;
+  stdout.rows = 20;
+  const realWrite = process.stdout.write.bind(process.stdout);
+  const frames: string[] = [];
+  (process.stdout as unknown as { write: (chunk: string) => boolean }).write = (chunk: string) => {
+    frames.push(String(chunk));
+    return true;
+  };
+  const app = new TerminalApp(client, { userId: "local", preferredTopic: TOPIC.title });
+  const finished = app.run();
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
+  const feed = (data: string) => process.stdin.emit("data", data);
+  const screen = () => stripAnsi(frames.join(""));
+
+  try {
+    await settle();
+    expect(screen()).toContain("ACTIVITY · name");
+    frames.length = 0;
+    feed("\u0012"); // Ctrl-R
+    await settle();
+    expect(screen()).toContain("activity · NAME");
+    frames.length = 0;
+    feed("\u0012");
+    await settle();
+    expect(screen()).toContain("ACTIVITY · name");
+  } finally {
+    app.stop();
+    await finished;
+    (process.stdout as unknown as { write: typeof realWrite }).write = realWrite;
+    stdout.columns = previousColumns;
+    stdout.rows = previousRows;
     if (!hadRawMode) delete stdin.setRawMode;
     restoreStdin();
     restoreStdout();

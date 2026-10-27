@@ -1,7 +1,7 @@
 import { EFFORT_VALUES, getRegistry, type RuntimeBusEvent, type TopicDto } from "@negotium/core";
 import type { NegotiumClient } from "@/client";
 import { terminalNowMs } from "@/clock";
-import type { CodeCopyTarget } from "@/render";
+import type { CodeCopyTarget, TopicPickerTarget } from "@/render";
 import { RENDERED_TAB_WIDTH, WORKING_FRAME_INTERVAL_MS } from "@/render";
 import type { ScreenPoint } from "@/selection";
 import { type AppState, activeTopic, composerHoldsSecret } from "@/state";
@@ -525,15 +525,26 @@ export function animationFrameAt(nowMs = terminalNowMs()): number {
   return Math.floor(nowMs / WORKING_FRAME_INTERVAL_MS);
 }
 
+/** A single wheel tick, kept with its screen position so a caller can tell
+ * whether it landed over a side panel instead of the main conversation. */
+export interface WheelEvent {
+  x: number;
+  y: number;
+  delta: number;
+  horizontal: boolean;
+}
+
 export function consumeMouseInput(raw: string): {
   input: string;
   scrollDelta: number;
   horizontalScrollDelta: number;
   events: TerminalMouseEvent[];
+  wheelEvents: WheelEvent[];
 } {
   let scrollDelta = 0;
   let horizontalScrollDelta = 0;
   const events: TerminalMouseEvent[] = [];
+  const wheelEvents: WheelEvent[] = [];
   const input = raw.replace(
     SGR_MOUSE_PATTERN,
     (_sequence, rawButton: string, rawX: string, rawY: string, suffix: string) => {
@@ -543,6 +554,9 @@ export function consumeMouseInput(raw: string): {
         const horizontal = (button & 2) !== 0 || (button & 4) !== 0;
         if (horizontal) horizontalScrollDelta += delta;
         else scrollDelta += delta;
+        const x = Number.parseInt(rawX, 10);
+        const y = Number.parseInt(rawY, 10);
+        if (Number.isFinite(x) && Number.isFinite(y)) wheelEvents.push({ x, y, delta, horizontal });
       } else {
         const x = Number.parseInt(rawX, 10);
         const y = Number.parseInt(rawY, 10);
@@ -558,13 +572,22 @@ export function consumeMouseInput(raw: string): {
       return "";
     },
   );
-  return { input, scrollDelta, horizontalScrollDelta, events };
+  return { input, scrollDelta, horizontalScrollDelta, events, wheelEvents };
 }
 
 export function codeCopyTargetAt(
   targets: CodeCopyTarget[],
   point: ScreenPoint,
 ): CodeCopyTarget | undefined {
+  return targets.find(
+    (target) => target.y === point.y && point.x >= target.xStart && point.x <= target.xEnd,
+  );
+}
+
+export function topicPickerTargetAt(
+  targets: TopicPickerTarget[],
+  point: ScreenPoint,
+): TopicPickerTarget | undefined {
   return targets.find(
     (target) => target.y === point.y && point.x >= target.xStart && point.x <= target.xEnd,
   );

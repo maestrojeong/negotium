@@ -30,7 +30,9 @@ import {
   terminalNewlineShortcut,
   topicFilterInsertion,
   topicFilterPasteText,
+  topicPickerTargetAt,
   vaultFormBlocksOverlaySwitch,
+  type WheelEvent,
 } from "@/app-helpers";
 import {
   INITIAL_MESSAGE_HISTORY_LIMIT,
@@ -59,9 +61,16 @@ import {
 import {
   type CodeCopyTarget,
   maxConversationScrollOffset,
+  maxTaskPanelScrollOffset,
+  maxTopicsPanelScrollOffset,
   preserveConversationScrollAnchor,
   renderAppFrame,
+  type SideColumnBounds,
+  type SidePanelTrack,
+  scrollbarThumb,
+  scrollOffsetFromDragRow,
   stripAnsi,
+  type TopicPickerTarget,
   WORKING_FRAME_INTERVAL_MS,
 } from "@/render";
 import {
@@ -86,21 +95,26 @@ import {
   backspaceTopicFilter,
   composerHoldsSecret,
   createInitialState,
+  cycleTopicsPanelSort,
   focusCreatedTopic,
   moveTopicPickerSelection,
   openTopicPicker,
   pickedBackgroundSession,
   pickedTopic,
   type SubagentGraphCanvas,
+  scrollTaskPanel,
+  scrollTopicsPanel,
   selectTopic,
   setBackgroundSessions,
   setMessageHistoryStatus,
   setMessages,
+  setTaskPanelScrollOffset,
   setTopicFilter,
   setTopics,
+  setTopicsPanelScrollOffset,
   setTopicUsage,
   startTopicCreation,
-  toggleTaskSidebar,
+  toggleTopicsPanel,
   upsertMessage,
 } from "@/state";
 import {
@@ -198,10 +212,18 @@ export function altScreenSequences(
   // Private-mode resets only. Every one of these is a no-op on a terminal where
   // the mode was never set, which is what makes them safe to emit at a point
   // where we may not have changed anything yet.
+  // Mode 1003 ("any-event" tracking) is a superset of 1002 ("button-event"
+  // tracking): it adds plain motion reports with no button held, which is
+  // what lets the topic picker highlight a row on hover instead of only on
+  // click. Every existing consumer of a mouse event already ignores motion
+  // it doesn't care about (`(event.button & 3) !== 0 && kind !== "release"`
+  // guards in `#handleMouseSelection` / `#handleGraphMouse`), so the extra
+  // reports this enables are a cheap early-return outside the picker, not a
+  // new cost paid everywhere.
   const modeResets =
-    "\u001b[0m\u001b[?7h\u001b[?1l\u001b[?1006l\u001b[?1002l\u001b[?2004l\u001b[?25h\u001b[?1049l";
+    "\u001b[0m\u001b[?7h\u001b[?1l\u001b[?1006l\u001b[?1003l\u001b[?2004l\u001b[?25h\u001b[?1049l";
   return {
-    enter: `${setBackground}\u001b[?1049h${fillCanvas}\u001b[2J\u001b[H\u001b[?25l\u001b[?2004h\u001b[?1002h\u001b[?1006h\u001b[?1l${push}`,
+    enter: `${setBackground}\u001b[?1049h${fillCanvas}\u001b[2J\u001b[H\u001b[?25l\u001b[?2004h\u001b[?1003h\u001b[?1006h\u001b[?1l${push}`,
     // `END_SYNCHRONIZED_UPDATE` leads: every render patch opens with
     // `CSI ?2026h`, so a process that dies mid-patch leaves the terminal
     // holding its output back. Ending the update is idempotent — a terminal
@@ -278,6 +300,7 @@ export {
   terminalNewlineShortcut,
   topicFilterInsertion,
   topicFilterPasteText,
+  topicPickerTargetAt,
   vaultFormBlocksOverlaySwitch,
 } from "@/app-helpers";
 
@@ -333,6 +356,15 @@ export class TerminalApp {
   #subagentGraphDragPoint: ScreenPoint | null = null;
   #plainFrameLines: string[] = [];
   #codeCopyTargets: CodeCopyTarget[] = [];
+  #topicPickerTargets: TopicPickerTarget[] = [];
+  #sidePanelTracks: SidePanelTrack[] = [];
+  #sideColumnBounds: SideColumnBounds | null = null;
+  /** Which side-panel scrollbar thumb, if any, a press/drag is currently dragging. */
+  #sidePanelDrag: {
+    panel: "topics" | "tasks";
+    track: SidePanelTrack;
+    grabRowOffset: number;
+  } | null = null;
   #lastInterruptAt = 0;
   #subagentGraphGeneration = 0;
   #subagentGraphAbortController: AbortController | null = null;
@@ -809,6 +841,9 @@ export class TerminalApp {
     const rows = process.stdout.rows ?? 30;
     const rendered = renderAppFrame(this.#state, columns, rows, this.#animationFrame);
     this.#codeCopyTargets = rendered.codeCopyTargets;
+    this.#topicPickerTargets = rendered.topicPickerTargets;
+    this.#sidePanelTracks = rendered.sidePanelTracks;
+    this.#sideColumnBounds = rendered.sideColumnBounds;
     const baseFrame = rendered.frame;
     this.#plainFrameLines = stripAnsi(baseFrame).split("\n");
     const frame = this.#selection
@@ -1281,21 +1316,26 @@ export class TerminalApp {
 
   #handleKeySegment(segment: string): void {
     const mouse = consumeMouseInput(segment);
+    const { scrollDelta, horizontalScrollDelta } = this.#routeWheelEvents(mouse.wheelEvents);
     if (
-      mouse.horizontalScrollDelta !== 0 &&
+      horizontalScrollDelta !== 0 &&
       (this.#state.overlay === "subagents" || this.#state.overlay === "decisions")
     ) {
       this.#selection = null;
-      this.#panActiveGraph(-mouse.horizontalScrollDelta, 0);
+      this.#panActiveGraph(-horizontalScrollDelta, 0);
     }
-    if (mouse.scrollDelta !== 0) {
+    if (scrollDelta !== 0) {
       this.#selection = null;
-      this.#scroll(mouse.scrollDelta);
+      this.#scroll(scrollDelta);
     }
     for (const event of mouse.events) {
       if (this.#state.overlay === "subagents" || this.#state.overlay === "decisions") {
         this.#handleGraphMouse(event);
-      } else this.#handleMouseSelection(event);
+        continue;
+      }
+      if (this.#handleSidePanelScrollbarDrag(event)) continue;
+      if (this.#handlePickableRowMouse(event)) continue;
+      this.#handleMouseSelection(event);
     }
     const chunk = normalizeKeySequences(mouse.input);
     if (!chunk) return;
@@ -1332,9 +1372,15 @@ export class TerminalApp {
       void this.#toggleDecisionGraph(); // Ctrl-D
       return;
     }
-    if (chunk === "\u0014") {
+    if (chunk === "\u0010") {
       if (editingVaultSecret) return;
-      this.#state = toggleTaskSidebar(this.#state);
+      this.#state = toggleTopicsPanel(this.#state); // Ctrl-P: topics + tasks side panel
+      this.#queueRender();
+      return;
+    }
+    if (chunk === "\u0012") {
+      if (editingVaultSecret) return;
+      this.#state = cycleTopicsPanelSort(this.#state); // Ctrl-R
       this.#queueRender();
       return;
     }
@@ -2572,6 +2618,211 @@ export class TerminalApp {
       };
     }
     this.#queueRender();
+  }
+
+  /**
+   * Routes each wheel tick by screen position: one landing on the Topics or
+   * Tasks panel scrolls that panel; everything else is handed back for the
+   * caller to apply exactly as before (main conversation scroll / graph
+   * pan). The side panel has no "fallback" path through `#scroll` — it is
+   * client-only presentation state, so it is scrolled directly here.
+   */
+  #routeWheelEvents(events: WheelEvent[]): { scrollDelta: number; horizontalScrollDelta: number } {
+    let scrollDelta = 0;
+    let horizontalScrollDelta = 0;
+    if (events.length === 0) return { scrollDelta, horizontalScrollDelta };
+    const bounds = this.#sideColumnBounds;
+    let touchedPanel = false;
+    for (const event of events) {
+      const section =
+        bounds && event.x >= bounds.xStart && event.x <= bounds.xEnd
+          ? bounds.sections.find((s) => event.y >= s.yStart && event.y <= s.yEnd)
+          : undefined;
+      if (!section) {
+        if (event.horizontal) horizontalScrollDelta += event.delta;
+        else scrollDelta += event.delta;
+        continue;
+      }
+      touchedPanel = true;
+      const columns = process.stdout.columns ?? 100;
+      const rows = process.stdout.rows ?? 30;
+      // Same sign flip as `#scroll`'s overlay cases: a wheel-up tick (positive
+      // `delta`) moves the panel's own view toward its top, i.e. a smaller
+      // offset, the opposite of how the conversation's offset grows upward.
+      this.#state =
+        section.panel === "topics"
+          ? scrollTopicsPanel(
+              this.#state,
+              -event.delta,
+              maxTopicsPanelScrollOffset(this.#state, columns, rows),
+            )
+          : scrollTaskPanel(
+              this.#state,
+              -event.delta,
+              maxTaskPanelScrollOffset(this.#state, columns, rows),
+            );
+    }
+    if (touchedPanel) this.#queueRender();
+    return { scrollDelta, horizontalScrollDelta };
+  }
+
+  /**
+   * Press-and-drag on a panel's scrollbar thumb, following herdr's own
+   * scrollbar interaction (`scrollbar_offset_from_drag_row` in
+   * `src/client/shell/mouse.rs`): grabbing anywhere on the thumb remembers
+   * the offset within it, so the thumb does not jump to re-center under the
+   * cursor on the first drag frame. Returns whether the event was consumed.
+   */
+  #handleSidePanelScrollbarDrag(event: TerminalMouseEvent): boolean {
+    if (event.kind === "press" && (event.button & 3) === 0) {
+      const track = this.#sidePanelTracks.find(
+        (t) => event.x === t.x && event.y >= t.yStart && event.y < t.yStart + t.viewportRows,
+      );
+      if (!track) return false;
+      const current =
+        track.panel === "topics"
+          ? this.#state.topicsPanelScrollOffset
+          : this.#state.taskPanelScrollOffset;
+      const thumb = scrollbarThumb(track.rowCount, track.viewportRows, current);
+      this.#sidePanelDrag = {
+        panel: track.panel,
+        track,
+        grabRowOffset: event.y - (track.yStart + thumb.top),
+      };
+      return true;
+    }
+    const drag = this.#sidePanelDrag;
+    if (!drag) return false;
+    if (event.kind === "release") {
+      this.#sidePanelDrag = null;
+      return true;
+    }
+    const { track, grabRowOffset, panel } = drag;
+    const offset = scrollOffsetFromDragRow(
+      track.rowCount,
+      track.viewportRows,
+      event.y - track.yStart,
+      grabRowOffset,
+    );
+    const columns = process.stdout.columns ?? 100;
+    const rows = process.stdout.rows ?? 30;
+    this.#state =
+      panel === "topics"
+        ? setTopicsPanelScrollOffset(
+            this.#state,
+            offset,
+            maxTopicsPanelScrollOffset(this.#state, columns, rows),
+          )
+        : setTaskPanelScrollOffset(
+            this.#state,
+            offset,
+            maxTaskPanelScrollOffset(this.#state, columns, rows),
+          );
+    this.#queueRender();
+    return true;
+  }
+
+  /**
+   * Handles a mouse event against either the `Ctrl-O` overlay's rows or the
+   * always-visible Topics panel's rows — both populate the same
+   * `topicPickerTargets` array (see render.ts's `pickerTarget` metadata),
+   * but they drive different state: the overlay moves its own
+   * keyboard-cursor fields (`topicPickerIndex` / `topicPickerBackgroundId`)
+   * and opens on click or Enter, while the panel has only one topic active
+   * at a time, so it switches straight to the clicked topic and tracks
+   * hover in `sidePanelHoverTopicId` — separate from the overlay's cursor —
+   * so moving the mouse over the panel while chatting never disturbs where
+   * `Ctrl-O` will reopen.
+   *
+   * Returns whether the event was consumed; `false` lets the caller fall
+   * through to normal text selection when the point is not on a pickable row.
+   */
+  #handlePickableRowMouse(event: TerminalMouseEvent): boolean {
+    const inOverlay = this.#state.overlay === "topics";
+    const hovering = event.kind === "drag" && (event.button & 3) === 3;
+    const isClick = event.kind === "press" && (event.button & 3) === 0;
+    if (!inOverlay && !hovering && !isClick) return false;
+    const target = topicPickerTargetAt(this.#topicPickerTargets, { x: event.x, y: event.y });
+    if (inOverlay) {
+      if (!target) return true; // nothing under the cursor inside the overlay, still consumed
+      const highlighted = this.#highlightPickedTarget(target);
+      if (!hovering && highlighted) this.#selectPickedTopic();
+      return true;
+    }
+    // The panel's background-session rows open the same read-only viewport a
+    // click in the overlay does, but there is no overlay-cursor highlight
+    // step to go through first — the click already names the session.
+    if (target?.backgroundSessionId !== undefined) {
+      const sessionId = target.backgroundSessionId;
+      if (hovering) {
+        this.#setSidePanelHover(undefined, sessionId);
+        return true;
+      }
+      this.#setSidePanelHover(undefined, undefined);
+      this.#state = {
+        ...this.#state,
+        overlay: "background-session",
+        topicPickerBackgroundId: sessionId,
+        backgroundScrollOffset: 0,
+        notice: undefined,
+        noticeLevel: undefined,
+      };
+      this.#queueRender();
+      return true;
+    }
+    if (target?.topicIndex === undefined) {
+      this.#setSidePanelHover(undefined, undefined);
+      return false;
+    }
+    const topic = this.#state.topics[target.topicIndex];
+    if (!topic) return false;
+    if (hovering) {
+      this.#setSidePanelHover(topic.id, undefined);
+      return true;
+    }
+    this.#setSidePanelHover(undefined, undefined);
+    if (topic.id !== this.#state.activeTopicId) void this.#activateTopic(topic.id);
+    return true;
+  }
+
+  /** Updates the panel's hover highlight, re-rendering only when it actually changes. */
+  #setSidePanelHover(topicId: string | undefined, backgroundSessionId: string | undefined): void {
+    if (
+      this.#state.sidePanelHoverTopicId === topicId &&
+      this.#state.sidePanelHoverBackgroundSessionId === backgroundSessionId
+    ) {
+      return;
+    }
+    this.#state = {
+      ...this.#state,
+      sidePanelHoverTopicId: topicId,
+      sidePanelHoverBackgroundSessionId: backgroundSessionId,
+    };
+    this.#queueRender();
+  }
+
+  /** Moves the Ctrl-O overlay's own highlight to `target`; returns whether it moved. */
+  #highlightPickedTarget(target: TopicPickerTarget): boolean {
+    if (target.backgroundSessionId !== undefined) {
+      if (this.#state.topicPickerBackgroundId === target.backgroundSessionId) return true;
+      this.#state = { ...this.#state, topicPickerBackgroundId: target.backgroundSessionId };
+    } else if (target.topicIndex !== undefined) {
+      if (
+        !this.#state.topicPickerBackgroundId &&
+        this.#state.topicPickerIndex === target.topicIndex
+      ) {
+        return true;
+      }
+      this.#state = {
+        ...this.#state,
+        topicPickerIndex: target.topicIndex,
+        topicPickerBackgroundId: undefined,
+      };
+    } else {
+      return false;
+    }
+    this.#queueRender();
+    return true;
   }
 
   #handleMouseSelection(event: TerminalMouseEvent): void {

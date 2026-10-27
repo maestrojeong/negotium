@@ -6,8 +6,10 @@ import {
   appendTopicFilter,
   applyRuntimeEvent,
   backspaceTopicFilter,
+  blockedQuestionText,
   composerHoldsSecret,
   createInitialState,
+  cycleTopicsPanelSort,
   focusCreatedTopic,
   moveTopicPickerSelection,
   openTopicPicker,
@@ -19,7 +21,7 @@ import {
   setTopicFilter,
   setTopics,
   startTopicCreation,
-  toggleTaskSidebar,
+  toggleTopicsPanel,
   topicPickerQueryMatches,
   visibleBackgroundSessions,
   visibleTopicPickerIds,
@@ -40,12 +42,55 @@ function topic(id: string, title: string): TopicDto {
 }
 
 describe("terminal adapter state", () => {
-  test("toggles the Tasks sidebar without hiding inline tasks", () => {
+  test("toggles the whole side panel (Topics and Tasks sections together)", () => {
     const visible = createInitialState("local");
-    const inline = toggleTaskSidebar(visible);
-    expect(visible.taskSidebarEnabled).toBe(true);
-    expect(inline.taskSidebarEnabled).toBe(false);
-    expect(toggleTaskSidebar(inline).taskSidebarEnabled).toBe(true);
+    const hidden = toggleTopicsPanel(visible);
+    expect(visible.topicsPanelEnabled).toBe(true);
+    expect(hidden.topicsPanelEnabled).toBe(false);
+    expect(toggleTopicsPanel(hidden).topicsPanelEnabled).toBe(true);
+  });
+
+  test("cycles the Topics panel sort between activity and name", () => {
+    const state = createInitialState("local");
+    expect(state.topicsPanelSort).toBe("activity");
+    const byName = cycleTopicsPanelSort(state);
+    expect(byName.topicsPanelSort).toBe("name");
+    expect(cycleTopicsPanelSort(byName).topicsPanelSort).toBe("activity");
+  });
+
+  test("finds any topic's unanswered question, not just the active one's", () => {
+    let state = setTopics(createInitialState("local"), [topic("a", "A"), topic("b", "B")]);
+    state = setMessages(state, "b", [
+      {
+        id: "q1",
+        topicId: "b",
+        authorId: "ai",
+        text: "",
+        kind: "ask_user_question",
+        askUserQuestion: { question: "Deploy now?", choices: [{ label: "yes" }, { label: "no" }] },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      } as MessageDto,
+    ]);
+
+    expect(blockedQuestionText(state, "a")).toBeUndefined();
+    expect(blockedQuestionText(state, "b")).toBe("Deploy now?");
+
+    const answered = setMessages(state, "b", [
+      {
+        id: "q1",
+        topicId: "b",
+        authorId: "ai",
+        text: "",
+        kind: "ask_user_question",
+        askUserQuestion: {
+          question: "Deploy now?",
+          choices: [{ label: "yes" }, { label: "no" }],
+          selectedLabel: "yes",
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      } as MessageDto,
+    ]);
+    expect(blockedQuestionText(answered, "b")).toBeUndefined();
   });
 
   test("keeps a selected topic while refreshing the topic list", () => {
@@ -567,9 +612,24 @@ describe("terminal adapter state", () => {
     });
     expect(state.messages.a?.[0]).toMatchObject({
       kind: "tool",
-      text: "Bash · test",
+      text: "Bash · test\nok",
     });
     expect(state.messages.a?.[0]?.editedAt).toBeDefined();
+  });
+
+  test("keeps a generic tool's text unchanged when its output is empty", () => {
+    let state = setTopics(createInitialState("local"), [topic("a", "A")]);
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      payload: { kind: "tool_call", queryId: "q", toolUseId: "t", label: "Bash(test)" },
+    });
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "a",
+      payload: { kind: "tool_output", queryId: "q", toolUseId: "t", content: "" },
+    });
+    expect(state.messages.a?.[0]).toMatchObject({ text: "Bash · test" });
   });
 
   test("shows session communication target and transferred message", () => {

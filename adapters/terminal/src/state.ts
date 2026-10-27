@@ -120,7 +120,21 @@ export interface AppState {
   decisionGraphOffset: { x: number; y: number };
   decisionGraphSpacing: number;
   askChoiceIndex: number;
-  taskSidebarEnabled: boolean;
+  taskPanelScrollOffset: number;
+  /** One toggle (Ctrl-P) for the whole side column — Topics and Tasks are sections within it, not independently hidden. */
+  topicsPanelEnabled: boolean;
+  topicsPanelScrollOffset: number;
+  /** Ctrl-R cycles this — herdr's sidebar has the same "grouped vs priority" sort toggle. */
+  topicsPanelSort: "activity" | "name";
+  /**
+   * Hover highlight for the always-visible Topics panel — separate from
+   * `topicPickerIndex`/`topicPickerBackgroundId`, which belong only to the
+   * `Ctrl-O` overlay's own keyboard cursor. Moving the mouse over the panel
+   * while chatting must never disturb where the overlay will reopen.
+   */
+  sidePanelHoverTopicId?: string;
+  /** Same as {@link sidePanelHoverTopicId}, for the panel's background-session rows. */
+  sidePanelHoverBackgroundSessionId?: string;
   overlay: Overlay;
   topicPickerRoot: boolean;
   notice?: string;
@@ -177,7 +191,10 @@ export function createInitialState(userId: string): AppState {
     decisionGraphOffset: { x: 0, y: 0 },
     decisionGraphSpacing: DEFAULT_DECISION_GRAPH_SPACING,
     askChoiceIndex: 0,
-    taskSidebarEnabled: true,
+    taskPanelScrollOffset: 0,
+    topicsPanelEnabled: true,
+    topicsPanelScrollOffset: 0,
+    topicsPanelSort: "activity",
     overlay: null,
     topicPickerRoot: false,
     vaultEntries: [],
@@ -190,8 +207,45 @@ export function createInitialState(userId: string): AppState {
   };
 }
 
-export function toggleTaskSidebar(state: AppState): AppState {
-  return { ...state, taskSidebarEnabled: !state.taskSidebarEnabled };
+export function toggleTopicsPanel(state: AppState): AppState {
+  return { ...state, topicsPanelEnabled: !state.topicsPanelEnabled };
+}
+
+export function cycleTopicsPanelSort(state: AppState): AppState {
+  return { ...state, topicsPanelSort: state.topicsPanelSort === "activity" ? "name" : "activity" };
+}
+
+/** Clamps against `maxOffset`, computed by the renderer from current content. */
+export function scrollTopicsPanel(state: AppState, delta: number, maxOffset: number): AppState {
+  const next = Math.min(maxOffset, Math.max(0, state.topicsPanelScrollOffset + delta));
+  return next === state.topicsPanelScrollOffset
+    ? state
+    : { ...state, topicsPanelScrollOffset: next };
+}
+
+export function scrollTaskPanel(state: AppState, delta: number, maxOffset: number): AppState {
+  const next = Math.min(maxOffset, Math.max(0, state.taskPanelScrollOffset + delta));
+  return next === state.taskPanelScrollOffset ? state : { ...state, taskPanelScrollOffset: next };
+}
+
+export function setTopicsPanelScrollOffset(
+  state: AppState,
+  offset: number,
+  maxOffset: number,
+): AppState {
+  const next = Math.min(maxOffset, Math.max(0, offset));
+  return next === state.topicsPanelScrollOffset
+    ? state
+    : { ...state, topicsPanelScrollOffset: next };
+}
+
+export function setTaskPanelScrollOffset(
+  state: AppState,
+  offset: number,
+  maxOffset: number,
+): AppState {
+  const next = Math.min(maxOffset, Math.max(0, offset));
+  return next === state.taskPanelScrollOffset ? state : { ...state, taskPanelScrollOffset: next };
 }
 
 export function activeTopic(state: AppState): TopicDto | null {
@@ -222,6 +276,36 @@ export function activeQuestion(state: AppState): TerminalMessage | null {
           !message.askUserQuestion.selectedLabel,
       ) ?? null
   );
+}
+
+/**
+ * The question text if `topicId` is blocked on an unanswered
+ * `ask_user_question`, for any topic — not just the active one, unlike
+ * {@link activeQuestion}. This is what lets the Topics panel mark a topic as
+ * "waiting on you" instead of just idle, herdr's "never hunt for the stuck
+ * one" (`ai_active`/`ai_idle` already reach every topic's `activity` the same
+ * way; this reads the matching unanswered question out of `state.messages`).
+ *
+ * A topic visited once and then switched away from can lag behind a new
+ * question until it is reopened — its runtime events queue behind the
+ * in-flight history load the same way any other message-ordering-sensitive
+ * event does — but a topic never opened at all, or the currently active one,
+ * always reflects the question the moment it arrives.
+ */
+export function blockedQuestionText(state: AppState, topicId: string): string | undefined {
+  const messages = state.messages[topicId] ?? [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (
+      message.kind === "ask_user_question" &&
+      message.askUserQuestion &&
+      !message.askUserQuestion.expired &&
+      !message.askUserQuestion.selectedLabel
+    ) {
+      return message.askUserQuestion.question;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -398,19 +482,77 @@ interface TopicPickerItem {
   index?: number;
 }
 
+/** Blocked, then running, then idle — lower sorts first under "activity". */
+export function topicRank(state: AppState, topic: TopicDto): number {
+  if (blockedQuestionText(state, topic.id) !== undefined) return 0;
+  if (state.activity[topic.id]?.running) return 1;
+  return 2;
+}
+
+/**
+ * Splits entries — already in `state.topics`' parent-before-every-descendant
+ * order (`orderTopicsByParent`, applied in `setTopics`) — into contiguous
+ * root+subagent units. A unit is one non-subagent root followed by every
+ * subagent that already sits right after it. Sorting whole units, rather
+ * than individual topics, means a family with several subagents never gets
+ * scattered across the list, and the tree's connector lines never get
+ * scrambled by moving one member without the others.
+ */
+export function groupTopicsIntoUnits<T extends { topic: TopicDto }>(entries: T[]): T[][] {
+  const units: T[][] = [];
+  for (const entry of entries) {
+    const last = units.at(-1);
+    if (entry.topic.isSubagent && last) last.push(entry);
+    else units.push([entry]);
+  }
+  return units;
+}
+
+/**
+ * The one ordering both the always-visible Topics panel and the `Ctrl-O`
+ * picker's rendering and arrow-key navigation (`topicPickerItems` below)
+ * read from, so they can never disagree about what's where. `state.
+ * topicsPanelSort` ("activity" / "name", `Ctrl-R`) decides whole-unit order;
+ * a unit's own internal (parent-then-children) order never changes.
+ */
+export function sortedTopicEntries<T extends { topic: TopicDto }>(
+  state: AppState,
+  entries: T[],
+): T[] {
+  const units = groupTopicsIntoUnits(entries);
+  if (state.topicsPanelSort === "name") {
+    return units
+      .slice()
+      .sort((a, b) => (a[0]?.topic.title ?? "").localeCompare(b[0]?.topic.title ?? ""))
+      .flat();
+  }
+  return units
+    .map((unit, order) => ({
+      unit,
+      order,
+      rank: Math.min(...unit.map(({ topic }) => topicRank(state, topic))),
+    }))
+    .sort((a, b) => a.rank - b.rank || a.order - b.order)
+    .flatMap(({ unit }) => unit);
+}
+
 /** Selectable rows in picker order — the single source shared by nav and render. */
 function topicPickerItems(state: AppState): TopicPickerItem[] {
   const visible = visibleTopicPickerIds(state);
   const indexedTopics = state.topics
     .map((topic, index) => ({ topic, index }))
     .filter(({ topic }) => visible.has(topic.id));
+  const managerEntries = sortedTopicEntries(
+    state,
+    indexedTopics.filter(({ topic }) => topic.kind === "manager"),
+  );
+  const regularEntries = sortedTopicEntries(
+    state,
+    indexedTopics.filter(({ topic }) => topic.kind !== "manager"),
+  );
   return [
-    ...indexedTopics
-      .filter(({ topic }) => topic.kind === "manager")
-      .map(({ topic, index }) => ({ kind: "topic" as const, id: topic.id, index })),
-    ...indexedTopics
-      .filter(({ topic }) => topic.kind !== "manager")
-      .map(({ topic, index }) => ({ kind: "topic" as const, id: topic.id, index })),
+    ...managerEntries.map(({ topic, index }) => ({ kind: "topic" as const, id: topic.id, index })),
+    ...regularEntries.map(({ topic, index }) => ({ kind: "topic" as const, id: topic.id, index })),
     ...visibleBackgroundSessions(state).map((session) => ({
       kind: "background" as const,
       id: session.id,
@@ -808,6 +950,37 @@ function failedToolText(text: string): string {
   return [title, ...mapped].join("\n");
 }
 
+/**
+ * Titles that already carry their own content (a diff preview or a
+ * transferred message) built by {@link toolTimelineText}. Appending raw
+ * `tool_output` content under one of these would duplicate or clash with
+ * that existing detail, so those tool kinds keep their current text as-is.
+ */
+const TOOL_OUTPUT_EXCLUDED_PREFIXES = [
+  "Edit · ",
+  "Write · ",
+  "Delete · ",
+  "Ask session · ",
+  "Tell session · ",
+];
+
+/**
+ * Generic tools (bash, grep, read, mcp calls, …) fall through to a one-line
+ * label in {@link toolTimelineText} — the actual result only arrives later
+ * as a separate `tool_output` event. Herdr's terminals show agent output
+ * verbatim instead of hiding it; this attaches that output to the tool's
+ * timeline message the same way a diff preview is attached, so the Terminal
+ * client can render it instead of discarding it.
+ */
+function appendToolOutput(text: string, content: string): string {
+  if (!content.trim()) return text;
+  const [title = "Tool"] = text.split("\n");
+  if (TOOL_OUTPUT_EXCLUDED_PREFIXES.some((prefix) => title.startsWith(prefix))) return text;
+  if (text.includes("\n")) return text; // output already attached once
+  const lines = content.replace(/\r\n?/g, "\n").replace(/\n+$/, "").split("\n");
+  return [title, ...lines].join("\n");
+}
+
 function toolMessageId(status: Record<string, unknown>, toolUseId: string): string {
   return `terminal-tool:${String(status.queryId ?? "query")}:${toolUseId}`;
 }
@@ -927,20 +1100,24 @@ function applyAiStatus(
     if (isStaleTerminalStatus(current, status)) return state;
     const id = String(status.toolUseId ?? "");
     const failed = status.isError === true;
+    const content = String(status.content ?? "");
     const tools = current.tools.map((tool) =>
-      tool.id === id
-        ? { ...tool, output: String(status.content ?? ""), status: failed ? "error" : "done" }
-        : tool,
+      tool.id === id ? { ...tool, output: content, status: failed ? "error" : "done" } : tool,
     );
     const withActivity = setActivity(state, topicId, { ...liveCurrent, tools });
     const messageId = toolMessageId(status, id);
     const existing = (withActivity.messages[topicId] ?? []).find(
       (message) => message.id === messageId,
     );
+    const withOutput = existing ? appendToolOutput(existing.text, content) : undefined;
+    const nextText =
+      failed && (!existing || withOutput === existing.text)
+        ? failedToolText(existing?.text ?? "")
+        : withOutput;
     return patchMessage(withActivity, topicId, messageId, {
       editedAt: createdAt ?? new Date().toISOString(),
       toolResult: failed ? "error" : "ok",
-      ...(failed && existing ? { text: failedToolText(existing.text) } : {}),
+      ...(nextText !== undefined ? { text: nextText } : {}),
     });
   }
   if (kind === "tool_status") {
