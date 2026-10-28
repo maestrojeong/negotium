@@ -14,10 +14,16 @@ describe("explicit agent switch derivation", () => {
     expect(explicitAgentSwitchTargets(prompt)).toEqual(["codex"]);
     expect(explicitAgentSwitchTargets("switch to gpt-6.1-terra")).toEqual(["codex"]);
     expect(explicitAgentSwitchTargets("switch to gpt-5.6-terra")).toEqual(["codex"]);
+    for (const tier of ["astra", "sol", "luna", "terra"]) {
+      expect(explicitAgentSwitchTargets(`switch to ${tier}`)).toEqual(["codex"]);
+    }
     expect(explicitAgentSwitchTargets("switch to claude and then use maestro")).toEqual([
       "maestro",
       "claude",
     ]);
+    expect(explicitAgentSwitchTargets("switch to console")).toEqual([]);
+    expect(explicitAgentSwitchTargets("set model to solar")).toEqual([]);
+    expect(explicitAgentSwitchTargets("terra로 전환해줘")).toEqual(["codex"]);
     expect(explicitAgentSwitchTargets("claude 모델 설정 코드를 설명해줘")).toEqual([]);
     expect(explicitAgentSwitchTargets(undefined)).toEqual([]);
     expect(explicitAgentSwitchTargets("   ")).toEqual([]);

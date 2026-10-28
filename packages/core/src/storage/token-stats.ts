@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  CODEX_TIER_FALLBACKS,
+  type CodexTier,
+  resolveCodexTierModel,
+} from "#agents/codex-tier-resolver";
 import { appendJsonlEntry, readJsonlLines } from "#platform/jsonl";
 import { logger } from "#platform/logger";
 import { getTopicSessionId } from "#storage/api-topics";
@@ -158,7 +163,11 @@ function estimateUsageCost(
     "inputTokens" | "outputTokens" | "cacheCreationInputTokens" | "cacheReadInputTokens"
   >,
 ): number {
-  const prices = TOKEN_PRICES[`${agent}:${model}`];
+  const pricedModel =
+    agent === "codex" && Object.hasOwn(CODEX_TIER_FALLBACKS, model)
+      ? resolveCodexTierModel(model as CodexTier)
+      : model;
+  const prices = TOKEN_PRICES[`${agent}:${pricedModel}`];
   if (!prices) return 0;
   return (
     (usage.inputTokens * prices.input +

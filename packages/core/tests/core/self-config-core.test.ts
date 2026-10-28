@@ -84,10 +84,8 @@ describe("self-config core", () => {
     unsubscribe();
 
     expect(result.isError).toBeUndefined();
-    expect(getApiTopicConfig(topicId)?.model).toBe("gpt-6-sol");
-    expect(getVisibleTopics().find((topic) => topic.id === topicId)?.effectiveModel).toBe(
-      "gpt-6-sol",
-    );
+    expect(getApiTopicConfig(topicId)?.model).toBe("sol");
+    expect(getVisibleTopics().find((topic) => topic.id === topicId)?.effectiveModel).toBe("sol");
     expect(getTopicSessionId(topicId)).toBe("existing-codex-thread");
     expect(events).toContain("topic-updated");
   });
@@ -99,7 +97,7 @@ describe("self-config core", () => {
     const result = getSelfConfigModel({ topicId, userId: USER });
 
     expect(result.isError).toBeUndefined();
-    expect(result.text).toContain("Model (agent=codex): default (gpt-6-luna)");
+    expect(result.text).toContain("Model (agent=codex): default (luna)");
   });
 
   test("set_model rejects a model owned by another agent even when Codex accepts open IDs", () => {

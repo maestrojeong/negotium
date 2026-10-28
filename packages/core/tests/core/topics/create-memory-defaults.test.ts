@@ -41,7 +41,7 @@ test("explicit execution fields remain independent of memoryKey", () => {
   });
 
   expect(topic.agent).toBe("codex");
-  expect(topic.defaultModel).toBe("gpt-6-luna");
+  expect(topic.defaultModel).toBe("luna");
   expect(topic.defaultEffort).toBe("high");
 });
 

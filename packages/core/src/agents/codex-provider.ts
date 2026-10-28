@@ -15,6 +15,11 @@ import {
   writeCodexCatalogWithNativeMultiAgentDisabled,
 } from "#agents/codex-native-multi-agent";
 import {
+  CODEX_TIER_FALLBACKS,
+  type CodexTier,
+  resolveCodexTierModel,
+} from "#agents/codex-tier-resolver";
+import {
   acquireCodexSpawnLock,
   findNewCodexChildren,
   killCodexTrees,
@@ -775,7 +780,13 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
           webSearchEnabled: false,
         }
       : {}),
-    ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.model
+      ? {
+          model: Object.hasOwn(CODEX_TIER_FALLBACKS, opts.model)
+            ? resolveCodexTierModel(opts.model as CodexTier)
+            : opts.model,
+        }
+      : {}),
     ...(opts.effort ? { modelReasoningEffort: mapEffort(opts.effort) } : {}),
   };
 

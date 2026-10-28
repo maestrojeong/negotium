@@ -187,6 +187,28 @@ describe.skipIf(process.platform === "win32")("codexProvider stale rollout recov
     restoreExecutionHost = undefined;
   });
 
+  test("resolves tier names only when starting the SDK thread", async () => {
+    for (const [tier, resolved] of [
+      ["astra", "gpt-6-astra"],
+      ["sol", "gpt-6-sol"],
+      ["luna", "gpt-6-luna"],
+      ["terra", "gpt-6.1-terra"],
+    ] as const) {
+      startThread.mockClear();
+      for await (const _event of codexProvider(opts({ sessionId: null, model: tier }))) {
+        // Consume the provider stream.
+      }
+      expect(startThread).toHaveBeenCalledWith(expect.objectContaining({ model: resolved }));
+    }
+  });
+
+  test("passes a persisted concrete model id through to the SDK", async () => {
+    for await (const _event of codexProvider(opts({ sessionId: null, model: "gpt-5.6-sol" }))) {
+      // Consume the provider stream.
+    }
+    expect(startThread).toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-5.6-sol" }));
+  });
+
   test("does not discard topic context when resume cannot find a rollout", async () => {
     const events = [];
     for await (const event of codexProvider(opts())) events.push(event);

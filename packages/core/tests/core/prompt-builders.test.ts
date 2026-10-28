@@ -67,12 +67,12 @@ describe("session system prompt builders", () => {
     expect(prompt).toContain("`ask_session`");
     expect(prompt).toContain("mcp__runtime__set_model");
     expect(prompt).toContain("agent=`claude`, model=`opus`, effort=`high`");
-    expect(prompt).toContain("codex / `gpt-6-astra` [Fable-level]");
-    expect(prompt).toContain("codex / `gpt-6-sol` [Opus-level]");
+    expect(prompt).toContain("codex / `astra` [Fable-level]");
+    expect(prompt).toContain("codex / `sol` [Opus-level]");
     // GPT-5.6 Sol/Luna are retired aliases: the catalog lists only the GPT-6 tiers (Terra stays).
     expect(prompt).not.toContain("`gpt-5.6-sol`");
     expect(prompt).not.toContain("`gpt-5.6-luna`");
-    expect(prompt).toContain("codex / `gpt-6.1-terra` [Opus-level]");
+    expect(prompt).toContain("codex / `terra` [Opus-level]");
     expect(prompt).toContain("maestro / `deepseek-pro` [Sonnet-level]");
     expect(prompt).toContain("maestro / `deepseek-flash` [Sonnet-level]");
     expect(prompt).toContain("maestro / `kimi-k3` [Fable-level]");

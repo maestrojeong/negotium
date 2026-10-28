@@ -10,16 +10,15 @@ const VALID_EFFORTS = new Set<EffortLevel>(CODEX_EFFORT_VALUES);
 
 // Codex CLI's own bundled default became gpt-6-astra as of v0.153.4
 // (2026-09-05); before that it was gpt-5.6-sol (`codex exec` 2026-07-10 →
-// "model: gpt-5.6-sol"). We deliberately default to gpt-6-luna — the
+// "model: gpt-5.6-sol"). We deliberately default to the luna tier — the
 // cheapest/fastest GPT-6 tier — for a general always-on assistant where most
 // queries are light. Heavier work escalates to terra/sol/astra via set_model. The
 // GPT-5.6 Sol/Luna/Terra ids are retired aliases of their GPT-6 successors (see
-// canonicalModelId), so a stored gpt-5.6-luna still runs as gpt-6-luna. This
-// value is passed explicitly to the SDK (see event-processor resolveDefaultModel),
-// so the footer and the actual model stay in sync.
+// canonicalModelId), so a stored gpt-5.6-luna normalizes to luna. The provider
+// resolves the tier immediately before passing it to the SDK.
 export const codexRegistry: AgentRegistry = {
   kind: "codex",
-  defaultModel: "gpt-6-luna",
+  defaultModel: "luna",
   // defaultEffort intentionally omitted — Codex SDK treats absence as
   // "reasoning off". Setting "high"/etc. would silently flip on reasoning.
 

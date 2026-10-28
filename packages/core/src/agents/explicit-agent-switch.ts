@@ -21,6 +21,10 @@ function agentAliases(agent: AgentKind): string[] {
       return [
         "codex",
         "코덱스",
+        "astra",
+        "sol",
+        "luna",
+        "terra",
         "gpt-6-luna",
         "gpt-6-sol",
         "gpt-5.6-luna",
@@ -56,7 +60,7 @@ export function hasExplicitAgentSwitchRequest(
 ): boolean {
   if (!prompt?.trim()) return false;
   const text = prompt.toLowerCase().replace(/\s+/g, " ").trim();
-  const target = `(?:${agentAliases(agent).map(escapeRegExp).join("|")})`;
+  const target = `(?<![A-Za-z0-9_-])(?:${agentAliases(agent).map(escapeRegExp).join("|")})(?![A-Za-z0-9_-])`;
   const switchVerb =
     "(?:바꿔|바꿔줘|변경|변경해|전환|전환해|설정|설정해|써줘|사용|가|switch|change|set|use)";
   const switchSubject = "(?:agent|runtime|model|에이전트|런타임|모델)";

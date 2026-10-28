@@ -154,6 +154,18 @@ describe("storage host", () => {
     }
   });
 
+  test("prices a Codex tier using its resolved SDK model", () => {
+    const root = tempRoot();
+    disposers.push(configureStorageHost({ logDir: join(root, "logs") }));
+    recordUsage(
+      "tier-pricing-user",
+      "Tier pricing",
+      { inputTokens: 1_000_000, outputTokens: 0 },
+      { topicId: "tier-pricing", agent: "codex", model: "luna" },
+    );
+    expect(getStats("tier-pricing-user").total.estimatedCostUsd).toBe(0.1);
+  });
+
   test("routes file-backed stores through the configured host", () => {
     const root = tempRoot();
     const dataDir = join(root, "data");
