@@ -5,7 +5,7 @@
   <p>Run Claude, Codex, or Maestro with local tools, memory, and schedules.</p>
   <p>
     <a href="./LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-4c1.svg"></a>
-    <img alt="Bun 1.2.15+" src="https://img.shields.io/badge/runtime-Bun_1.2.15%2B-000000?logo=bun&logoColor=white">
+    <img alt="Bun 1.3.5+" src="https://img.shields.io/badge/runtime-Bun_1.3.5%2B-000000?logo=bun&logoColor=white">
     <img alt="TypeScript" src="https://img.shields.io/badge/language-TypeScript-3178c6?logo=typescript&logoColor=white">
     <img alt="Status: early stage" src="https://img.shields.io/badge/status-early_stage-f59e0b">
   </p>
@@ -110,7 +110,7 @@ Four pieces ship with Negotium rather than being bolted on:
 
 Requirements:
 
-- [Bun](https://bun.sh/) 1.2.15 or newer
+- [Bun](https://bun.sh/) 1.3.5 or newer
 - macOS, Linux, or Windows
 - Node.js 20+ when using Codex's stdio MCP tools
 - Credentials for at least one supported agent

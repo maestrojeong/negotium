@@ -25,4 +25,4 @@ await host.stopAll();
 ```
 
 Most applications should install `@negotium/node`, which wires this package to the runtime.
-Requires Bun 1.2.15 or newer.
+Requires Bun 1.3.5 or newer.

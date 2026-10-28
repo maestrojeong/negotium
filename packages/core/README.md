@@ -27,7 +27,7 @@ startAiTurn({
 The package intentionally ships its Bun-executed TypeScript and runtime resources together so
 that stdio MCP servers, prompts, browser launcher, and provider fixtures remain addressable at
 runtime. It does not ship a fixed skill catalog: agents and users accumulate skills in the shared
-wiki through `skill_save` and the wiki archiver. Requires Bun 1.2.15 or newer.
+wiki through `skill_save` and the wiki archiver. Requires Bun 1.3.5 or newer.
 
 ## Embedding the provider layer
 

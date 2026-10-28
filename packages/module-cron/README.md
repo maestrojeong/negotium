@@ -15,7 +15,7 @@ const module = createCronModule();
 ```
 
 `@negotium/node` enables this module in its reference host. Custom hosts can omit it completely.
-Requires Bun 1.2.15 or newer.
+Requires Bun 1.3.5 or newer.
 
 Jobs support create, edit, pause/resume, immediate run, cancellation, deletion, durable run history,
 exit codes, and topic-shared provider sessions. Editing a job's source, topic, agent, model, or effort

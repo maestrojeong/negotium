@@ -24,7 +24,7 @@ export const exampleAdapter = defineNegotiumAdapter({
 });
 ```
 
-Requires Bun 1.2.15 or newer.
+Requires Bun 1.3.5 or newer.
 
 Durable delivery helpers are exported from `@negotium/adapter-sdk/outbox`. Runner-neutral adapter
 contract assertions are exported from `@negotium/adapter-sdk/testkit`.

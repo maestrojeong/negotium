@@ -23,4 +23,4 @@ console.log(`MCP server listening on 127.0.0.1:${server.port}`);
 ```
 
 Most applications should install `@negotium/node`, which starts this server with the correct
-runtime lifecycle. Requires Bun 1.2.15 or newer.
+runtime lifecycle. Requires Bun 1.3.5 or newer.

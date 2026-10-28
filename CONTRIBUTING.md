@@ -7,7 +7,7 @@ runtime host-agnostic and preserve the package boundaries described in the archi
 
 Requirements:
 
-- Bun 1.2.15 or newer
+- Bun 1.3.5 or newer
 - Node.js 20 or newer when testing Codex stdio MCP tools
 - macOS, Linux, or Windows
 
