@@ -194,9 +194,9 @@ test("pairs every mode the enter sequence sets with a reset in the exit sequence
   for (const mode of ["1006", "1003", "2004", "25"]) {
     expect(EXIT.indexOf(`${ESC}[?${mode}`)).toBeLessThan(EXIT.indexOf(`${ESC}[?1049l`));
   }
-  // The forced background colour is undone by OSC 111, the hidden cursor by `?25h`.
-  expect(ENTER).toContain(`${ESC}]11;`);
-  expect(EXIT).toContain(`${ESC}]111`);
+  // The terminal's own background is never touched; the hidden cursor is undone by `?25h`.
+  expect(ENTER).not.toContain(`${ESC}]11;`);
+  expect(EXIT).not.toContain(`${ESC}]111`);
   expect(ENTER).toContain(`${ESC}[?25l`);
   expect(EXIT).toContain(`${ESC}[?25h`);
 });

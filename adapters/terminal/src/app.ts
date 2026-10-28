@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import {
   type AgentKind,
   isVaultCommandLine,
@@ -60,9 +61,11 @@ import {
 } from "@/path-suggest";
 import {
   type CodeCopyTarget,
+  type ConversationBounds,
   maxConversationScrollOffset,
   maxSidePanelWidth,
   maxTaskPanelScrollOffset,
+  maxTerminalPaneWidth,
   maxTopicsPanelScrollOffset,
   preserveConversationScrollAnchor,
   renderAppFrame,
@@ -72,6 +75,7 @@ import {
   scrollbarThumb,
   scrollOffsetFromDragRow,
   stripAnsi,
+  type TerminalPaneBounds,
   type TopicPickerTarget,
   WORKING_FRAME_INTERVAL_MS,
 } from "@/render";
@@ -86,6 +90,7 @@ import {
   type ScreenSelection,
   screenSelectionText,
 } from "@/selection";
+import { ptySupport, ShellPane } from "@/shell-pane";
 import {
   type AppState,
   activeMessages,
@@ -95,11 +100,14 @@ import {
   appendTopicFilter,
   applyRuntimeEvent,
   backspaceTopicFilter,
+  closeTerminalPane,
   composerHoldsSecret,
   createInitialState,
   cycleTopicsPanelSort,
   focusCreatedTopic,
+  focusTerminalPane,
   moveTopicPickerSelection,
+  openTerminalPane,
   openTopicPicker,
   pickedBackgroundSession,
   pickedTopic,
@@ -112,6 +120,7 @@ import {
   setMessages,
   setSidePanelWidth,
   setTaskPanelScrollOffset,
+  setTerminalPaneWidth,
   setTopicFilter,
   setTopics,
   setTopicsPanelScrollOffset,
@@ -186,6 +195,22 @@ function canvasFill(depth: ColorDepth): string {
   }
 }
 
+/**
+ * OSC 7 ("current working directory") for `cwd`.
+ *
+ * Terminal.app (and iTerm2, Ghostty, WezTerm) open a new tab or window "in the
+ * same directory" from the last OSC 7 its tab saw. The shell only reports it at
+ * a prompt, so re-announcing it around the TUI keeps a tab opened alongside the
+ * TUI starting where the user launched it rather than in the home directory.
+ */
+export function workingDirectoryReport(cwd: string, host: string = hostname()): string {
+  const path = cwd
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return `\u001b]7;file://${host}${path}\u0007`;
+}
+
 export function altScreenSequences(
   env: NodeJS.ProcessEnv = process.env,
   // Test seam mirroring `ColorDepthProbe.savedDepth`: leave undefined to read
@@ -193,6 +218,7 @@ export function altScreenSequences(
   // `null` to test env-only detection without a machine's persisted setting
   // leaking in.
   savedDepth?: string | null,
+  cwd: string = process.cwd(),
 ): {
   enter: string;
   exit: string;
@@ -203,15 +229,17 @@ export function altScreenSequences(
   // These bytes only ever reach a real terminal, so the TTY test in
   // `detectColorDepth` is short-circuited here; what matters is whether the
   // user asked for no colour (`NO_COLOR`, `TERM=dumb`, `NEGOTIUM_TUI_COLOR`).
-  // Under `none` neither the OSC 11 background repaint nor the truecolour
-  // canvas fill is emitted, so the terminal keeps its own theme — and the
-  // matching OSC 111 restore is dropped too, since restoring a colour we never
-  // set would clobber a background the user configured themselves.
+  // Under `none` the truecolour canvas fill is skipped, so the terminal keeps
+  // its own theme.
+  //
+  // The canvas is painted with SGR background on every cell rather than by
+  // repainting the terminal's own default background (OSC 11 / OSC 111):
+  // macOS Terminal.app copies a tab's *current* colours into any tab or window
+  // opened from it, so while the TUI was up every new tab came up with the
+  // TUI's near-black canvas instead of the user's profile background.
   const depth = detectColorDepth({ env, isTty: true, savedDepth });
-  const colored = depth !== "none";
-  const setBackground = colored ? "\u001b]11;#0a0b0f\u0007" : "";
   const fillCanvas = canvasFill(depth);
-  const resetBackground = colored ? "\u001b]111\u0007" : "";
+  const reportCwd = workingDirectoryReport(cwd);
   // Private-mode resets only. Every one of these is a no-op on a terminal where
   // the mode was never set, which is what makes them safe to emit at a point
   // where we may not have changed anything yet.
@@ -226,20 +254,17 @@ export function altScreenSequences(
   const modeResets =
     "\u001b[0m\u001b[?7h\u001b[?1l\u001b[?1006l\u001b[?1003l\u001b[?2004l\u001b[?25h\u001b[?1049l";
   return {
-    enter: `${setBackground}\u001b[?1049h${fillCanvas}\u001b[2J\u001b[H\u001b[?25l\u001b[?2004h\u001b[?1003h\u001b[?1006h\u001b[?1l${push}`,
+    enter: `${reportCwd}\u001b[?1049h${fillCanvas}\u001b[2J\u001b[H\u001b[?25l\u001b[?2004h\u001b[?1003h\u001b[?1006h\u001b[?1l${push}`,
     // `END_SYNCHRONIZED_UPDATE` leads: every render patch opens with
     // `CSI ?2026h`, so a process that dies mid-patch leaves the terminal
     // holding its output back. Ending the update is idempotent — a terminal
     // that never saw a begin, or does not implement DECSET 2026 at all, ignores
     // it — so two bytes buy an unconditional way out of a frozen screen.
-    exit: `${END_SYNCHRONIZED_UPDATE}${pop}${modeResets}${resetBackground}`,
+    exit: `${END_SYNCHRONIZED_UPDATE}${pop}${modeResets}${reportCwd}`,
     // What to emit if the process dies *between* claiming the terminal and
     // finishing the `enter` write. Two pieces of `exit` are deliberately absent
-    // because neither is idempotent:
+    // because it is not idempotent:
     //
-    //  - OSC 111 resets the background to the terminal default. Sending it
-    //    without having sent OSC 11 first would discard a background the user
-    //    configured themselves.
     //  - The kitty pop removes one entry from the keyboard stack. Popping
     //    without having pushed takes an entry that belongs to an outer app.
     //
@@ -272,6 +297,7 @@ export const ABORT_ENTER_ALT_SCREEN = altScreenSequences().abortEnter;
  */
 const NEW_TOPIC_KEY = "\u000e"; // Ctrl-N
 const DELETE_TOPIC_KEY = "\u0004"; // Ctrl-D
+const TERMINAL_PANE_KEY = "\u0014"; // Ctrl-T
 /** Backspace, in both the DEL and BS encodings terminals send. */
 const FILTER_BACKSPACE_KEYS = new Set(["\u007f", "\b"]);
 const CONFIRM_KEYS = new Set(["y", "ㅛ"]);
@@ -371,8 +397,16 @@ export class TerminalApp {
     track: SidePanelTrack;
     grabRowOffset: number;
   } | null = null;
-  /** Set while the side column's right border is being dragged to resize it. */
-  #sidePanelResizeDrag: { startX: number; startWidth: number } | null = null;
+  /** Set while a `│` divider is being dragged to resize the column beside it. */
+  #sidePanelResizeDrag: {
+    target: "side" | "terminal";
+    startX: number;
+    startWidth: number;
+  } | null = null;
+  /** The live shell behind the right-hand pane; kept running while the pane is hidden. */
+  #shell: ShellPane | null = null;
+  #terminalPane: TerminalPaneBounds | null = null;
+  #conversationBounds: ConversationBounds | null = null;
   #lastInterruptAt = 0;
   #subagentGraphGeneration = 0;
   #subagentGraphAbortController: AbortController | null = null;
@@ -854,12 +888,21 @@ export class TerminalApp {
   #render(): void {
     const columns = process.stdout.columns ?? 100;
     const rows = process.stdout.rows ?? 30;
-    const rendered = renderAppFrame(this.#state, columns, rows, this.#animationFrame);
+    const rendered = renderAppFrame(this.#state, columns, rows, this.#animationFrame, undefined, {
+      shell: this.#shell?.snapshot() ?? null,
+    });
     this.#codeCopyTargets = rendered.codeCopyTargets;
     this.#topicPickerTargets = rendered.topicPickerTargets;
     this.#sidePanelTracks = rendered.sidePanelTracks;
     this.#sideColumnBounds = rendered.sideColumnBounds;
     this.#sidePanelResizeHandle = rendered.sidePanelResizeHandle;
+    this.#terminalPane = rendered.terminalPane;
+    this.#conversationBounds = rendered.conversationBounds;
+    // The PTY follows whatever size the pane was just drawn at; the shell
+    // repaints itself for the new size, which queues the next frame.
+    if (this.#shell && rendered.terminalPane) {
+      this.#shell.resize(rendered.terminalPane.cols, rendered.terminalPane.rows);
+    }
     const baseFrame = rendered.frame;
     this.#plainFrameLines = stripAnsi(baseFrame).split("\n");
     const frame = this.#selection
@@ -1303,6 +1346,10 @@ export class TerminalApp {
    */
   #commitPaste(payload: string): void {
     this.#selection = null;
+    if (this.#state.terminalPaneFocused && this.#shell) {
+      this.#shell.paste(payload);
+      return;
+    }
     if (this.#state.overlay === "topics") {
       const filterText = topicFilterPasteText(payload);
       if (filterText) {
@@ -1350,6 +1397,7 @@ export class TerminalApp {
         continue;
       }
       if (this.#handleSidePanelResizeDrag(event)) continue;
+      this.#focusPaneUnderPress(event);
       if (this.#handleSidePanelScrollbarDrag(event)) continue;
       if (this.#handlePickableRowMouse(event)) continue;
       this.#handleMouseSelection(event);
@@ -1357,6 +1405,16 @@ export class TerminalApp {
     const chunk = normalizeKeySequences(mouse.input);
     if (!chunk) return;
     this.#selection = null;
+    if (chunk === TERMINAL_PANE_KEY) {
+      this.#toggleTerminalPane();
+      return;
+    }
+    // Everything else typed while the shell pane has focus belongs to the
+    // shell — Ctrl-C included — exactly as in a plain terminal.
+    if (this.#state.terminalPaneFocused && this.#shell) {
+      this.#shell.write(chunk);
+      return;
+    }
     if (chunk === "\u0003") {
       this.#handleInterrupt(); // Ctrl-C
       return;
@@ -2653,8 +2711,20 @@ export class TerminalApp {
     let horizontalScrollDelta = 0;
     if (events.length === 0) return { scrollDelta, horizontalScrollDelta };
     const bounds = this.#sideColumnBounds;
+    const pane = this.#terminalPane;
     let touchedPanel = false;
     for (const event of events) {
+      if (
+        pane &&
+        this.#shell &&
+        event.x >= pane.xStart &&
+        event.x <= pane.xEnd &&
+        !event.horizontal
+      ) {
+        this.#shell.scroll(event.delta);
+        touchedPanel = true;
+        continue;
+      }
       const section =
         bounds && event.x >= bounds.xStart && event.x <= bounds.xEnd
           ? bounds.sections.find((s) => event.y >= s.yStart && event.y <= s.yEnd)
@@ -2688,6 +2758,83 @@ export class TerminalApp {
   }
 
   /**
+   * Ctrl-T: open the shell pane with a fresh shell, or close it. Closing ends
+   * the shell too (same as typing `exit`) — nothing keeps running unseen.
+   */
+  #toggleTerminalPane(): void {
+    if (this.#state.terminalPaneOpen) {
+      const shell = this.#shell;
+      this.#shell = null;
+      shell?.dispose();
+      this.#state = closeTerminalPane(this.#state);
+      this.#queueRender();
+      return;
+    }
+    if (!this.#shell) {
+      if (!ptySupport()) {
+        this.#state = {
+          ...this.#state,
+          notice: "Shell pane needs Bun >= 1.3.5 (bun upgrade)",
+          noticeLevel: "warn",
+        };
+        this.#queueRender();
+        return;
+      }
+      try {
+        const columns = process.stdout.columns ?? 100;
+        const rows = process.stdout.rows ?? 30;
+        const shell: ShellPane = new ShellPane({
+          cols: Math.max(30, Math.floor(columns * 0.3)),
+          rows: Math.max(1, rows),
+          cwd: process.cwd(),
+          onChange: () => this.#queueRender(),
+          onExit: () => {
+            if (this.#shell !== shell) return;
+            this.#shell = null;
+            this.#state = {
+              ...closeTerminalPane(this.#state),
+              notice: "Shell exited",
+              noticeLevel: "info",
+            };
+            this.#queueRender();
+          },
+        });
+        this.#shell = shell;
+      } catch (error) {
+        this.#state = {
+          ...this.#state,
+          notice: `Shell pane failed: ${error instanceof Error ? error.message : String(error)}`,
+          noticeLevel: "error",
+        };
+        this.#queueRender();
+        return;
+      }
+    }
+    this.#state = openTerminalPane(this.#state);
+    const columns = process.stdout.columns ?? 100;
+    if (maxTerminalPaneWidth(this.#state, columns) < 30 || columns < 92) {
+      this.#state = {
+        ...this.#state,
+        notice: "Window too narrow for the shell pane — widen it to see the pane",
+        noticeLevel: "warn",
+      };
+    }
+    this.#queueRender();
+  }
+
+  /** A press inside the shell pane gives it the keyboard; a press anywhere else takes it back. */
+  #focusPaneUnderPress(event: TerminalMouseEvent): void {
+    if (event.kind !== "press" || (event.button & 3) !== 0) return;
+    const pane = this.#terminalPane;
+    const inside = !!pane && event.x >= pane.xStart && event.x <= pane.xEnd;
+    const next = focusTerminalPane(this.#state, inside && !!this.#shell);
+    if (next !== this.#state) {
+      this.#state = next;
+      this.#queueRender();
+    }
+  }
+
+  /**
    * Press-and-drag on the side column's right border to resize it, herdr's
    * own draggable sidebar. Checked ahead of the scrollbar/pickable-row
    * handlers since the border sits right against the panel's own last
@@ -2696,6 +2843,11 @@ export class TerminalApp {
    */
   #handleSidePanelResizeDrag(event: TerminalMouseEvent): boolean {
     if (event.kind === "press" && (event.button & 3) === 0) {
+      const pane = this.#terminalPane;
+      if (pane && event.x === pane.dividerX && event.y >= pane.yStart && event.y <= pane.yEnd) {
+        this.#sidePanelResizeDrag = { target: "terminal", startX: event.x, startWidth: pane.cols };
+        return true;
+      }
       const handle = this.#sidePanelResizeHandle;
       if (
         !handle ||
@@ -2712,7 +2864,11 @@ export class TerminalApp {
         this.#sidePanelResizeDrag = null;
         return false;
       }
-      this.#sidePanelResizeDrag = { startX: event.x, startWidth: this.#state.sidePanelWidth };
+      this.#sidePanelResizeDrag = {
+        target: "side",
+        startX: event.x,
+        startWidth: this.#state.sidePanelWidth,
+      };
       return true;
     }
     const drag = this.#sidePanelResizeDrag;
@@ -2722,6 +2878,17 @@ export class TerminalApp {
       return true;
     }
     const columns = process.stdout.columns ?? 100;
+    if (drag.target === "terminal") {
+      // The shell pane's divider is on its *left*, so dragging left widens it.
+      const nextWidth = drag.startWidth - (event.x - drag.startX);
+      this.#state = setTerminalPaneWidth(
+        this.#state,
+        nextWidth,
+        maxTerminalPaneWidth(this.#state, columns),
+      );
+      this.#queueRender();
+      return true;
+    }
     const nextWidth = drag.startWidth + (event.x - drag.startX);
     this.#state = setSidePanelWidth(this.#state, nextWidth, maxSidePanelWidth(columns));
     this.#queueRender();
@@ -2906,14 +3073,16 @@ export class TerminalApp {
       // Topics/Tasks column, or the conversation — so a drag that only ever
       // touched one of them never pulls text out of the other.
       const bounds = this.#sideColumnBounds;
-      const columns = process.stdout.columns ?? 100;
+      const pane = this.#terminalPane;
+      const conversation = this.#conversationBounds;
       const paneClip =
         bounds && point.x >= bounds.xStart && point.x <= bounds.xEnd
           ? { xStart: bounds.xStart, xEnd: bounds.xEnd }
-          : bounds
-            ? // Past the divider column too, not just the panel itself.
-              { xStart: (this.#sidePanelResizeHandle?.xEnd ?? bounds.xEnd) + 1, xEnd: columns }
-            : undefined;
+          : pane && point.x >= pane.xStart && point.x <= pane.xEnd
+            ? { xStart: pane.xStart, xEnd: pane.xEnd }
+            : (bounds || pane) && conversation
+              ? { xStart: conversation.xStart, xEnd: conversation.xEnd }
+              : undefined;
       this.#selection = { anchor: point, focus: point, paneClip };
       this.#selectionDragging = true;
       this.#queueRender();
@@ -3208,6 +3377,8 @@ export class TerminalApp {
   }
 
   async #cleanup(clientStartAttempted: boolean, uiActive: boolean): Promise<void> {
+    this.#shell?.dispose();
+    this.#shell = null;
     this.#subagentGraphGeneration += 1;
     this.#subagentGraphAbortController?.abort();
     this.#subagentGraphAbortController = null;

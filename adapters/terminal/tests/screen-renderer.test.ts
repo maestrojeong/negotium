@@ -16,7 +16,7 @@ const { enter: ENTER, exit: EXIT } = altScreenSequences({
 });
 
 test("fills the alternate screen with the terminal canvas color on entry", () => {
-  expect(ENTER).toStartWith("\u001b]11;#0a0b0f\u0007");
+  expect(ENTER).not.toContain("\u001b]11;");
   expect(ENTER).toContain("\u001b[48;2;10;11;15m\u001b[2J\u001b[H");
 });
 

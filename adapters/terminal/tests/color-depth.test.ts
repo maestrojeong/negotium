@@ -250,11 +250,19 @@ describe("alt-screen sequences", () => {
   // seam `detectColorDepth` exposes as `ColorDepthProbe.savedDepth` — without
   // it, these tests read whatever `<state dir>/tui-color` happens to hold on
   // the machine running them (e.g. a developer who opted into `truecolor`).
-  test("repaints the terminal background only when colour is enabled", () => {
+  test("paints the canvas per cell and never repaints the terminal's own background", () => {
     const colored = altScreenSequences({ COLORTERM: "truecolor" }, null);
-    expect(colored.enter).toContain(`${ESC}]11;#0a0b0f`);
+    // OSC 11 would leak into tabs Terminal.app opens from this one.
+    expect(colored.enter).not.toContain(`${ESC}]11;`);
     expect(colored.enter).toContain(`${ESC}[48;2;10;11;15m`);
-    expect(colored.exit).toContain(`${ESC}]111`);
+    expect(colored.exit).not.toContain(`${ESC}]111`);
+  });
+
+  test("re-announces the working directory so new tabs open in the same place", () => {
+    const sequences = altScreenSequences({ COLORTERM: "truecolor" }, null, "/Users/me/my project");
+    expect(sequences.enter).toContain(`${ESC}]7;file://`);
+    expect(sequences.enter).toContain("/Users/me/my%20project\u0007");
+    expect(sequences.exit).toContain("/Users/me/my%20project\u0007");
   });
 
   test("downshifts the canvas fill to the detected depth", () => {

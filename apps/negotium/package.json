@@ -149,6 +149,7 @@
     "@anthropic-ai/sdk": "^0.124.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@openai/codex-sdk": "^0.156.1",
+    "@xterm/headless": "6.0.0",
     "diff": "^9.0.0",
     "maestro-agent-sdk": "0.5.4",
     "node-telegram-bot-api": "^1.1.2",

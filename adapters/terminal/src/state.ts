@@ -19,6 +19,8 @@ import { DEFAULT_SUBAGENT_GRAPH_SPACING } from "@/subagent-graph";
 export const SIDE_PANEL_WIDTH_DEFAULT = 36;
 export const SIDE_PANEL_WIDTH_MIN = 22;
 export const SIDE_PANEL_WIDTH_MAX = 64;
+/** Narrowest the right-hand shell pane may be dragged to. */
+export const TERMINAL_PANE_WIDTH_MIN = 30;
 
 type Overlay =
   | "help"
@@ -134,6 +136,12 @@ export interface AppState {
   topicsPanelScrollOffset: number;
   /** Width of the side column, dragged via its right border. Clamped to `SIDE_PANEL_WIDTH_MIN`/`MAX`. */
   sidePanelWidth: number;
+  /** Whether the right-hand shell pane (Ctrl-T) is shown. */
+  terminalPaneOpen: boolean;
+  /** Whether keystrokes go to that shell instead of the composer. */
+  terminalPaneFocused: boolean;
+  /** Width dragged via the pane's left border; null sizes it from the terminal width. */
+  terminalPaneWidth: number | null;
   /** Ctrl-R cycles this — herdr's sidebar has the same "grouped vs priority" sort toggle. */
   topicsPanelSort: "activity" | "name";
   /**
@@ -205,6 +213,9 @@ export function createInitialState(userId: string): AppState {
     topicsPanelEnabled: true,
     topicsPanelScrollOffset: 0,
     sidePanelWidth: SIDE_PANEL_WIDTH_DEFAULT,
+    terminalPaneOpen: false,
+    terminalPaneFocused: false,
+    terminalPaneWidth: null,
     topicsPanelSort: "activity",
     overlay: null,
     topicPickerRoot: false,
@@ -224,6 +235,25 @@ export function toggleTopicsPanel(state: AppState): AppState {
 
 export function cycleTopicsPanelSort(state: AppState): AppState {
   return { ...state, topicsPanelSort: state.topicsPanelSort === "activity" ? "name" : "activity" };
+}
+
+export function openTerminalPane(state: AppState): AppState {
+  return { ...state, terminalPaneOpen: true, terminalPaneFocused: true };
+}
+
+export function closeTerminalPane(state: AppState): AppState {
+  return { ...state, terminalPaneOpen: false, terminalPaneFocused: false };
+}
+
+export function focusTerminalPane(state: AppState, focused: boolean): AppState {
+  const next = focused && state.terminalPaneOpen;
+  return next === state.terminalPaneFocused ? state : { ...state, terminalPaneFocused: next };
+}
+
+/** Clamps against the pane's own minimum and whatever room `maxWidth` leaves the conversation. */
+export function setTerminalPaneWidth(state: AppState, width: number, maxWidth: number): AppState {
+  const next = Math.max(TERMINAL_PANE_WIDTH_MIN, Math.min(Math.round(width), maxWidth));
+  return next === state.terminalPaneWidth ? state : { ...state, terminalPaneWidth: next };
 }
 
 /** Clamps against both the panel's own min/max and whatever room `maxWidth` leaves for the conversation. */

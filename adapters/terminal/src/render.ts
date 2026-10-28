@@ -11,6 +11,7 @@ import { type ColorDepth, detectColorDepth, rgbToAnsi16, rgbToAnsi256 } from "@/
 import { commandSuggestions } from "@/commands";
 import { activeContextBreakdown } from "@/context-usage";
 import { pathSuggestions } from "@/path-suggest";
+import type { ShellColor, ShellRun, ShellSnapshot } from "@/shell-pane";
 import {
   type AppState,
   activeMessages,
@@ -25,6 +26,7 @@ import {
   SIDE_PANEL_WIDTH_MAX,
   SIDE_PANEL_WIDTH_MIN,
   sortedTopicEntries,
+  TERMINAL_PANE_WIDTH_MIN,
   type TerminalMessage,
   visibleBackgroundSessions,
   visibleTopicPickerIds,
@@ -162,6 +164,25 @@ export interface SidePanelResizeHandle {
   yEnd: number;
 }
 
+/** Screen placement of the right-hand shell pane (one-based, inclusive). */
+export interface TerminalPaneBounds {
+  xStart: number;
+  xEnd: number;
+  yStart: number;
+  yEnd: number;
+  /** The drawn divider column just left of the pane — its resize handle. */
+  dividerX: number;
+  /** PTY size the pane is currently drawn at. */
+  cols: number;
+  rows: number;
+}
+
+/** Column range the conversation occupies (one-based, inclusive). */
+export interface ConversationBounds {
+  xStart: number;
+  xEnd: number;
+}
+
 export interface RenderedTerminalApp {
   frame: string;
   cursor: { x: number; y: number } | null;
@@ -170,6 +191,13 @@ export interface RenderedTerminalApp {
   sidePanelTracks: SidePanelTrack[];
   sideColumnBounds: SideColumnBounds | null;
   sidePanelResizeHandle: SidePanelResizeHandle | null;
+  conversationBounds: ConversationBounds;
+  terminalPane: TerminalPaneBounds | null;
+}
+
+export interface RenderAppFrameExtras {
+  /** Live screen of the shell pane, when one is running. */
+  shell?: ShellSnapshot | null;
 }
 
 const ESC = "\u001b[";
@@ -1328,11 +1356,18 @@ export interface SidePanelTrack {
 
 interface TerminalBodyLayout {
   conversationWidth: number;
-  /** Width of the single right-hand column Topics and Tasks share. */
+  /** Width of the single left-hand column Topics and Tasks share. */
   sideWidth: number;
   showTaskPanel: boolean;
   showTopicsPanel: boolean;
+  /** Width of the right-hand shell pane (Ctrl-T), 0 when hidden or out of room. */
+  terminalWidth: number;
+  /** Widest the shell pane could be dragged to at this terminal width. */
+  maxTerminalWidth: number;
 }
+
+/** Gap (a drawn divider) between the conversation and the shell pane. */
+const TERMINAL_PANE_GAP = 1;
 
 /** The widest the side column may be dragged to on a terminal `columns` wide. */
 export function maxSidePanelWidth(columns: number): number {
@@ -1347,8 +1382,11 @@ function terminalBodyLayout(state: AppState, width: number): TerminalBodyLayout 
   // decisions/vault overlays do, so the panel can stay up behind it — useful
   // since clicking straight back to another panel row is exactly how you got
   // there.
+  // An open shell pane needs at least its minimum width beside the
+  // conversation, and gets it before the side column is allowed to appear.
+  const terminalReserve = state.terminalPaneOpen ? TERMINAL_PANE_WIDTH_MIN + TERMINAL_PANE_GAP : 0;
   const wideEnough =
-    width >= SIDE_PANEL_MIN_WIDTH &&
+    width - terminalReserve >= SIDE_PANEL_MIN_WIDTH &&
     state.topicsPanelEnabled &&
     (!state.overlay || state.overlay === "background-session") &&
     !state.creatingTopic;
@@ -1358,7 +1396,7 @@ function terminalBodyLayout(state: AppState, width: number): TerminalBodyLayout 
   const showTopicsPanel =
     wideEnough && (state.topics.length > 1 || visibleBackgroundSessions(state).length > 0);
   const showSide = showTaskPanel || showTopicsPanel;
-  const maxSideWidth = maxSidePanelWidth(width);
+  const maxSideWidth = maxSidePanelWidth(width) - terminalReserve;
   const sideWidth = showSide
     ? Math.min(
         SIDE_PANEL_WIDTH_MAX,
@@ -1366,12 +1404,32 @@ function terminalBodyLayout(state: AppState, width: number): TerminalBodyLayout 
         maxSideWidth,
       )
     : 0;
+  const afterSide = showSide ? width - sideWidth - SIDE_PANEL_GAP : width;
+  const maxTerminalWidth = afterSide - TERMINAL_PANE_GAP - CONVERSATION_MIN_WIDTH;
+  const terminalWidth =
+    state.terminalPaneOpen && maxTerminalWidth >= TERMINAL_PANE_WIDTH_MIN
+      ? Math.min(
+          maxTerminalWidth,
+          Math.max(
+            TERMINAL_PANE_WIDTH_MIN,
+            state.terminalPaneWidth ?? Math.floor(afterSide * 0.32),
+          ),
+        )
+      : 0;
   return {
-    conversationWidth: showSide ? width - sideWidth - SIDE_PANEL_GAP : width,
+    conversationWidth:
+      terminalWidth > 0 ? afterSide - terminalWidth - TERMINAL_PANE_GAP : afterSide,
     sideWidth,
     showTaskPanel,
     showTopicsPanel,
+    terminalWidth,
+    maxTerminalWidth: Math.max(TERMINAL_PANE_WIDTH_MIN, maxTerminalWidth),
   };
+}
+
+/** Widest the shell pane may be dragged to for the current state and width. */
+export function maxTerminalPaneWidth(state: AppState, columns: number): number {
+  return terminalBodyLayout(state, Math.max(1, columns)).maxTerminalWidth;
 }
 
 /**
@@ -1798,7 +1856,8 @@ function helpLines(): UiLine[] {
     line("  Cmd-Backspace works when forwarded · Ctrl-W/K aliases"),
     line("  Mouse wheel / PgUp/PgDn scroll · Ctrl-E load older"),
     line("  Ctrl-P topics + tasks panel · click/hover a row to switch · drag scrollbar"),
-    line("  Ctrl-R sort topics panel (activity / name)"),
+    line("  Ctrl-R sort topics panel (activity / name) · drag a │ divider to resize"),
+    line("  Ctrl-T open/close a shell on the right (closing ends it) · click it to type"),
     line("  Ctrl-O topics · Ctrl-G subagents · Ctrl-D decisions · Ctrl-X abort"),
     line("  In topics: type to filter · Ctrl-N new · Ctrl-D delete"),
     line("  Esc/Ctrl-C stop active turn · Ctrl-C twice when idle to quit"),
@@ -2928,6 +2987,19 @@ function shiftComposerPane(pane: ComposerPane, marginWidth: number): ComposerPan
   };
 }
 
+// Most-used first: topics, the side panel and the shell pane before the
+// subagent/decision graphs. Shorter spellings keep every key visible on a
+// narrow conversation column instead of truncating the tail off.
+const SHORTCUT_HINTS = [
+  "Ctrl-O topics · Ctrl-P panel · Ctrl-T terminal · Ctrl-G subagents · Ctrl-D decisions",
+  "Ctrl-O topics · Ctrl-P panel · Ctrl-T term · Ctrl-G agents · Ctrl-D decisions",
+  "^O topics · ^P panel · ^T term · ^G agents · ^D decisions",
+] as const;
+
+function shortcutHint(width: number): string {
+  return SHORTCUT_HINTS.find((hint) => displayWidth(hint) + 2 <= width) ?? SHORTCUT_HINTS[2];
+}
+
 function composerPane(state: AppState, width: number): ComposerPane {
   const title = state.creatingTopic
     ? "new topic · type a name · Enter create"
@@ -2935,7 +3007,7 @@ function composerPane(state: AppState, width: number): ComposerPane {
       ? state.vaultMode === "list"
         ? "Vault command · Enter run · Esc close"
         : `${state.vaultMode === "key" ? "key" : state.vaultMode === "value" ? "secret value" : "description"} · Enter continue · Esc cancel`
-      : "Ctrl-O topics · Ctrl-G subagents · Ctrl-D decisions";
+      : shortcutHint(width);
   const visual = inputVisualLines(state, width);
   let inputStart = Math.max(0, visual.lines.length - 5);
   if (visual.cursorLine < inputStart) inputStart = visual.cursorLine;
@@ -3255,6 +3327,7 @@ export function renderAppFrame(
   rows: number,
   animationFrame = 0,
   nowMs = terminalNowMs(),
+  extras: RenderAppFrameExtras = {},
 ): RenderedTerminalApp {
   // Never emit a line wider than the terminal actually reported. The line-diff
   // renderer addresses physical rows directly (`CSI <row>;1H`), so a single
@@ -3385,23 +3458,128 @@ export function renderAppFrame(
   // The topic filter is the one input that lives in the body rather than in the
   // composer, so its caret is measured against the body rows directly.
   const overlayCursor = topicOverlayCursor(state, layout.conversationWidth, body.length);
+  const leftRows = [...body, ...decision, ...composer.lines, ...footer].slice(0, height);
+  // The shell pane runs the full height on the right, beside every row —
+  // body, popups, composer and footer alike — the way a split terminal would.
+  let terminalPane: TerminalPaneBounds | null = null;
+  let frameRows = leftRows;
+  if (layout.terminalWidth > 0) {
+    const leftWidth = width - layout.terminalWidth - TERMINAL_PANE_GAP;
+    const shellRows = shellPaneRows(extras.shell ?? null, layout.terminalWidth, leftRows.length);
+    const divider = paint("│".repeat(TERMINAL_PANE_GAP), {
+      fg: state.terminalPaneFocused ? theme.borderActive : theme.border,
+      bg: theme.canvas,
+    });
+    frameRows = leftRows.map(
+      (row, index) => `${padToWidth(row, leftWidth)}${divider}${shellRows[index] ?? ""}`,
+    );
+    terminalPane = {
+      xStart: leftWidth + TERMINAL_PANE_GAP + 1,
+      xEnd: width,
+      yStart: 1,
+      yEnd: leftRows.length,
+      dividerX: leftWidth + 1,
+      cols: layout.terminalWidth,
+      rows: leftRows.length,
+    };
+  }
+  const shellCursor =
+    terminalPane && state.terminalPaneFocused && extras.shell?.cursor
+      ? {
+          x: terminalPane.xStart + extras.shell.cursor.x,
+          y: terminalPane.yStart + extras.shell.cursor.y,
+        }
+      : null;
   const cursor =
-    composer.cursor && cursorY <= height
-      ? { x: Math.min(composer.cursor.x, width), y: cursorY }
-      : overlayCursor && overlayCursor.y <= height
-        ? overlayCursor
-        : null;
+    state.terminalPaneFocused && terminalPane
+      ? shellCursor
+      : composer.cursor && cursorY <= height
+        ? { x: Math.min(composer.cursor.x, width), y: cursorY }
+        : overlayCursor && overlayCursor.y <= height
+          ? overlayCursor
+          : null;
   return {
-    frame: linkifyUrls(
-      [...body, ...decision, ...composer.lines, ...footer].slice(0, height).join("\n"),
-    ),
+    frame: linkifyUrls(frameRows.join("\n")),
     cursor,
     codeCopyTargets,
     topicPickerTargets,
     sidePanelTracks,
     sideColumnBounds,
     sidePanelResizeHandle,
+    conversationBounds: {
+      xStart: conversationXStart,
+      xEnd: conversationXStart + layout.conversationWidth - 1,
+    },
+    terminalPane,
   };
+}
+
+/** Pads an already-painted row with canvas so the next column starts on time. */
+function padToWidth(row: string, width: number): string {
+  const visible = displayWidth(stripAnsi(row));
+  return visible >= width
+    ? row
+    : `${row}${paint(" ".repeat(width - visible), { bg: theme.canvas })}`;
+}
+
+function shellColorCode(color: ShellColor, background: boolean, fallback: Rgb): string {
+  if (color.kind === "rgb") return background ? bg(color.rgb) : fg(color.rgb);
+  if (color.kind === "palette") {
+    const index = color.index;
+    if (index < 8) return `${ESC}${(background ? 40 : 30) + index}m`;
+    if (index < 16) return `${ESC}${(background ? 100 : 90) + index - 8}m`;
+    return `${ESC}${background ? 48 : 38};5;${index}m`;
+  }
+  return background ? bg(fallback) : fg(fallback);
+}
+
+function paintShellRun(run: ShellRun): string {
+  if (colorDepth === "none") return run.text;
+  // Inverse is resolved here rather than via SGR 7 so the swapped "default"
+  // colours are the TUI's own text/canvas, not the host terminal's.
+  const fgColor = run.inverse ? run.bg : run.fg;
+  const bgColor = run.inverse ? run.fg : run.bg;
+  const fgFallback = run.inverse ? theme.canvas : theme.text;
+  const bgFallback = run.inverse ? theme.text : theme.canvas;
+  return `${shellColorCode(fgColor, false, fgFallback)}${shellColorCode(bgColor, true, bgFallback)}${run.bold ? `${ESC}1m` : ""}${run.dim ? `${ESC}2m` : ""}${run.italic ? `${ESC}3m` : ""}${run.underline ? `${ESC}4m` : ""}${run.text}${RESET}`;
+}
+
+/** The shell pane's visible screen as `height` painted rows exactly `width` wide. */
+export function shellPaneRows(
+  snapshot: ShellSnapshot | null,
+  width: number,
+  height: number,
+): string[] {
+  const rows: string[] = [];
+  for (let index = 0; index < height; index += 1) {
+    const runs = snapshot?.lines[index];
+    if (!runs) {
+      const text = !snapshot && index === 0 ? fit(" starting shell…", width) : " ".repeat(width);
+      rows.push(paint(text, { fg: theme.muted, bg: theme.canvas }));
+      continue;
+    }
+    // A snapshot taken before the latest resize can be wider or narrower than
+    // the column; never let it push the row past the terminal's edge.
+    let used = 0;
+    let row = "";
+    for (const run of runs) {
+      if (used >= width) break;
+      if (used + run.width > width) {
+        row += paintShellRun({
+          ...run,
+          text: sliceWidth(run.text, width - used),
+          width: width - used,
+        });
+        used = width;
+        break;
+      }
+      row += paintShellRun(run);
+      used += run.width;
+    }
+    if (used < width) row += paint(" ".repeat(width - used), { bg: theme.canvas });
+    rows.push(row);
+  }
+  return rows;
 }
 
 export function maxConversationScrollOffset(
