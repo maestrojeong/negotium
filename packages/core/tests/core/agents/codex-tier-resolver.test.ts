@@ -62,7 +62,7 @@ test("uses a single listed entry for its tier", () => {
   expect(resolveCodexTierModel("terra", cachePath)).toBe("gpt-7-terra");
 });
 
-test("catalog entries and worker default pick up a refreshed cache", () => {
+test("catalog entries and worker default stay stable across cache refreshes", () => {
   process.env.NEGOTIUM_CODEX_MODELS_CACHE_FILE = cachePath;
   writeModels([
     { slug: "gpt-7-astra", visibility: "list", priority: 2 },
@@ -71,16 +71,16 @@ test("catalog entries and worker default pick up a refreshed cache", () => {
     { slug: "gpt-7-terra", visibility: "list", priority: 5 },
   ]);
   expect(SELECTABLE_MODELS.slice(0, 4).map(({ model }) => model)).toEqual([
-    "gpt-7-astra",
-    "gpt-7-sol",
-    "gpt-7-luna",
-    "gpt-7-terra",
+    "astra",
+    "sol",
+    "luna",
+    "terra",
   ]);
-  expect(resolveWorkerDefaultModel("codex", { defaultModel: "gpt-7-luna" })).toBe("gpt-7-terra");
+  expect(resolveWorkerDefaultModel("codex", { defaultModel: "gpt-7-luna" })).toBe("terra");
 
   writeModels([{ slug: "gpt-8-terra", visibility: "list", priority: 1 }]);
-  expect(SELECTABLE_MODELS[3]?.model).toBe("gpt-8-terra");
-  expect(resolveWorkerDefaultModel("codex", { defaultModel: "gpt-7-luna" })).toBe("gpt-8-terra");
+  expect(SELECTABLE_MODELS[3]?.model).toBe("terra");
+  expect(resolveWorkerDefaultModel("codex", { defaultModel: "gpt-7-luna" })).toBe("terra");
   expect(resolveWorkerDefaultModel("claude", { defaultModel: "sonnet" })).toBe("sonnet");
 });
 
@@ -88,11 +88,9 @@ test("catalog falls back when cache content is invalid", () => {
   process.env.NEGOTIUM_CODEX_MODELS_CACHE_FILE = cachePath;
   writeFileSync(cachePath, "{");
   expect(SELECTABLE_MODELS.slice(0, 4).map(({ model }) => model)).toEqual(
-    Object.values(CODEX_TIER_FALLBACKS),
+    Object.keys(CODEX_TIER_FALLBACKS),
   );
-  expect(resolveWorkerDefaultModel("codex", { defaultModel: "gpt-6-luna" })).toBe(
-    CODEX_TIER_FALLBACKS.terra,
-  );
+  expect(resolveWorkerDefaultModel("codex", { defaultModel: "gpt-6-luna" })).toBe("terra");
 });
 
 afterAll(() => rmSync(tempDir, { recursive: true, force: true }));

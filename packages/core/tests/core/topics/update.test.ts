@@ -107,7 +107,7 @@ describe("updateTopicSettings", () => {
     expect(updated.title).toBe("Renamed Room");
     // An absent agent/model/effort must not be read as "reset to defaults".
     expect(updated.agent).toBe("codex");
-    expect(updated.defaultModel).toBe("gpt-6-luna");
+    expect(updated.defaultModel).toBe("luna");
     expect(updated.defaultEffort).toBe("medium");
     expect(getTopic(topic.id)?.title).toBe("Renamed Room");
   });
@@ -117,7 +117,7 @@ describe("updateTopicSettings", () => {
     if (!topic) throw new Error("seed failed");
     const updated = updateTopicSettings({ topicId: topic.id, agent: "claude" });
     expect(updated.agent).toBe("claude");
-    // `gpt-6-luna` is not selectable on claude, so carrying it over would
+    // `luna` is not selectable on claude, so carrying it over would
     // persist a token the registry rejects on the very next turn.
     expect(updated.defaultModel).not.toBe("gpt-6-luna");
   });
@@ -130,7 +130,7 @@ describe("updateTopicSettings", () => {
       defaultModel: "gpt-5.6-terra",
       defaultEffort: "high",
     });
-    expect(updated.defaultModel).toBe("gpt-6.1-terra");
+    expect(updated.defaultModel).toBe("terra");
     expect(updated.defaultEffort).toBe("high");
   });
 

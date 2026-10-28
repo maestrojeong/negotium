@@ -1807,10 +1807,10 @@ test("POST model applies a picker selection without a public agent argument", as
   const body = (await response?.json()) as { model?: string; result?: string };
 
   expect(response?.status).toBe(200);
-  expect(body.model).toBe("gpt-6-sol");
+  expect(body.model).toBe("sol");
   expect(body.result).not.toContain("codex");
   expect(getApiTopicConfig(topic.id)).toMatchObject({
-    model: "gpt-6-sol",
+    model: "sol",
     agentLocked: true,
     modelLocked: true,
   });

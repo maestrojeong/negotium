@@ -46,10 +46,10 @@ afterEach(() => {
 describe("topic model picker", () => {
   test("publishes the supported model choices and descriptions", () => {
     expect(SELECTABLE_MODELS.map(({ model }) => model)).toEqual([
-      "gpt-6-astra",
-      "gpt-6-sol",
-      "gpt-6-luna",
-      "gpt-6.1-terra",
+      "astra",
+      "sol",
+      "luna",
+      "terra",
       "fable",
       "opus",
       "sonnet",
@@ -60,15 +60,15 @@ describe("topic model picker", () => {
       "deepseek-pro",
       "deepseek-flash",
     ]);
-    // GPT-5.6 Sol/Luna are retired: they resolve to the GPT-6 route, never to a duplicate entry.
-    expect(selectableModel("GPT-5.6-SOL")?.model).toBe("gpt-6-sol");
-    expect(selectableModel("gpt-5.6-sol")?.model).toBe("gpt-6-sol");
-    expect(selectableModel("gpt-5.6-luna")?.model).toBe("gpt-6-luna");
+    // Concrete Codex ids normalize to stable tier names without duplicate choices.
+    expect(selectableModel("GPT-5.6-SOL")?.model).toBe("sol");
+    expect(selectableModel("gpt-5.6-sol")?.model).toBe("sol");
+    expect(selectableModel("gpt-5.6-luna")?.model).toBe("luna");
     expect(SELECTABLE_MODELS.some(({ model }) => model === "gpt-5.6-sol")).toBe(false);
     expect(SELECTABLE_MODELS.some(({ model }) => model === "gpt-5.6-luna")).toBe(false);
     expect(selectableModel("gpt-6-astra")?.intelligenceTier).toBe("fable");
     expect(selectableModel("gpt-6-sol")?.intelligenceTier).toBe("opus");
-    expect(selectableModel("gpt-5.6-terra")?.model).toBe("gpt-6.1-terra");
+    expect(selectableModel("gpt-5.6-terra")?.model).toBe("terra");
     expect(selectableModel("gpt-6.1-terra")?.intelligenceTier).toBe("opus");
     expect(SELECTABLE_MODELS.some(({ model }) => model === "gpt-5.6-terra")).toBe(false);
     expect(selectableModel("sonnet")?.intelligenceTier).toBe("sonnet");
@@ -102,22 +102,26 @@ describe("topic model picker", () => {
 
     expect(result).toEqual({
       ok: true,
-      model: "gpt-6-sol",
-      text: "Model set to 'gpt-6-sol'. Applies from the next turn.",
+      model: "sol",
+      text: "Model set to 'sol'. Applies from the next turn.",
     });
     expect(getApiTopicConfig(topicId)).toMatchObject({
-      model: "gpt-6-sol",
+      model: "sol",
       agentLocked: true,
       modelLocked: true,
     });
     expect(getTopicSessionId(topicId)).toBe("old-codex-session");
   });
 
-  test("a retired GPT-5.6 id is stored as its GPT-6 route, not as a duplicate", () => {
+  test("a concrete Codex id is stored as its tier, not as a duplicate", () => {
     for (const [asked, stored] of [
-      ["gpt-5.6-sol", "gpt-6-sol"],
-      ["GPT-5.6-Luna", "gpt-6-luna"],
-      ["gpt-5.6-terra", "gpt-6.1-terra"],
+      ["gpt-5.6-sol", "sol"],
+      ["GPT-5.6-Luna", "luna"],
+      ["gpt-5.6-terra", "terra"],
+      ["gpt-6-astra", "astra"],
+      ["gpt-6-sol", "sol"],
+      ["gpt-6-luna", "luna"],
+      ["gpt-6.1-terra", "terra"],
     ] as const) {
       const topicId = seedTopic();
       const result = switchTopicModel({ topicId, userId: USER, model: asked });

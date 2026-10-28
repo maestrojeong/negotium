@@ -1,4 +1,3 @@
-import { resolveCodexTierModel } from "#agents/codex-tier-resolver";
 import { FALLBACK_AGENT, FALLBACK_MODEL } from "#platform/config";
 import type { AgentKind, EffortLevel } from "#types";
 
@@ -22,6 +21,10 @@ export const MODEL_OWNER: Record<string, AgentKind> = {
   opus: "claude",
   haiku: "claude",
   fable: "claude",
+  astra: "codex",
+  sol: "codex",
+  luna: "codex",
+  terra: "codex",
   "gpt-6-astra": "codex",
   "gpt-6-sol": "codex",
   "gpt-6-luna": "codex",
@@ -102,9 +105,7 @@ const CLAUDE_COMMUNITY_SESSION =
  */
 export const SELECTABLE_MODELS: readonly SelectableModel[] = [
   {
-    get model() {
-      return resolveCodexTierModel("astra");
-    },
+    model: "astra",
     agent: "codex",
     description: "Newest OpenAI flagship; Codex's highest-capability route.",
     intelligenceTier: "fable",
@@ -115,9 +116,7 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
     estimatedUsage: `Released 2026-09-03; became Codex CLI's bundled default in v0.153.4 (2026-09-05). Local message-count/quota-weight ranges not yet published as of the last catalog check — expect a quota weight above gpt-6-sol given the higher per-token cost. ${CODEX_COMMUNITY_WEEKLY}`,
   },
   {
-    get model() {
-      return resolveCodexTierModel("sol");
-    },
+    model: "sol",
     agent: "codex",
     description: "GPT-6 generation Sol route (2026-09-22) for demanding coding and agentic work.",
     intelligenceTier: "opus",
@@ -128,9 +127,7 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
     estimatedUsage: `Released 2026-09-22; local message-count/quota-weight ranges not yet published. ${CODEX_COMMUNITY_WEEKLY}`,
   },
   {
-    get model() {
-      return resolveCodexTierModel("luna");
-    },
+    model: "luna",
     agent: "codex",
     description: "Default Codex route (GPT-6 Luna, 2026-09-22): fast, high-volume, lowest cost.",
     intelligenceTier: "sonnet",
@@ -141,9 +138,7 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
     estimatedUsage: `Released 2026-09-22; local message-count/quota-weight ranges not yet published. ${CODEX_COMMUNITY_WEEKLY}`,
   },
   {
-    get model() {
-      return resolveCodexTierModel("terra");
-    },
+    model: "terra",
     agent: "codex",
     description:
       "GPT-6.1 Terra route (2026-10-26) for complex coding, visual reasoning, and computer use.",
@@ -261,11 +256,14 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
 ];
 
 const SELECTABLE_MODEL_ALIASES: Readonly<Record<string, string>> = {
-  // Retired GPT-5.6 Sol/Luna/Terra ids resolve to their GPT-6 successors, so stored
-  // topic configs, cron rows, and explicit requests keep working without duplicate choices.
-  "gpt-5.6-sol": "gpt-6-sol",
-  "gpt-5.6-luna": "gpt-6-luna",
-  "gpt-5.6-terra": "gpt-6.1-terra",
+  // Known concrete IDs normalize to stable tier names before persistence.
+  "gpt-6-astra": "astra",
+  "gpt-5.6-sol": "sol",
+  "gpt-6-sol": "sol",
+  "gpt-5.6-luna": "luna",
+  "gpt-6-luna": "luna",
+  "gpt-5.6-terra": "terra",
+  "gpt-6.1-terra": "terra",
   kimi: "kimi-k3",
   "kimi-pro": "kimi-k3",
   "kimi-code": "kimi-k2.7-code",
@@ -357,8 +355,8 @@ export function resolveModelForAgent(
 /**
  * Default model for unattended background workers (compaction, memory
  * archiving, and similar fixed-purpose programmatic turns) — Codex prefers
- * the stronger `gpt-6.1-terra` here over its cheap interactive default
- * (`gpt-6-luna`), since nothing is waiting on the response in real time.
+ * the stronger `terra` tier here over its cheap interactive default
+ * (`luna`), since nothing is waiting on the response in real time.
  * Claude and Maestro keep their normal registry defaults (`sonnet` /
  * `deepseek-pro`).
  */
@@ -366,7 +364,7 @@ export function resolveWorkerDefaultModel(
   agent: AgentKind,
   registry: { defaultModel: string },
 ): string {
-  return agent === "codex" ? resolveCodexTierModel("terra") : registry.defaultModel;
+  return agent === "codex" ? "terra" : registry.defaultModel;
 }
 
 /**
@@ -422,14 +420,14 @@ export function resolveCompactionExecution(
 export const FALLBACK_ORDER: Record<AgentKind, { agent: AgentKind; model: string }[]> = {
   claude: [
     { agent: "maestro", model: "deepseek-pro" },
-    { agent: "codex", model: "gpt-6-luna" },
+    { agent: "codex", model: "luna" },
   ],
   codex: [
     { agent: "maestro", model: "deepseek-pro" },
     { agent: "claude", model: "sonnet" },
   ],
   maestro: [
-    { agent: "codex", model: "gpt-6-luna" },
+    { agent: "codex", model: "luna" },
     { agent: "claude", model: "sonnet" },
   ],
 };
