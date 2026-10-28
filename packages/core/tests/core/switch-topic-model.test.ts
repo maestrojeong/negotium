@@ -49,7 +49,7 @@ describe("topic model picker", () => {
       "gpt-6-astra",
       "gpt-6-sol",
       "gpt-6-luna",
-      "gpt-5.6-terra",
+      "gpt-6.1-terra",
       "fable",
       "opus",
       "sonnet",
@@ -68,9 +68,9 @@ describe("topic model picker", () => {
     expect(SELECTABLE_MODELS.some(({ model }) => model === "gpt-5.6-luna")).toBe(false);
     expect(selectableModel("gpt-6-astra")?.intelligenceTier).toBe("fable");
     expect(selectableModel("gpt-6-sol")?.intelligenceTier).toBe("opus");
-    // Terra has no GPT-6 successor, so it stays selectable.
-    expect(selectableModel("gpt-5.6-terra")?.model).toBe("gpt-5.6-terra");
-    expect(selectableModel("gpt-5.6-terra")?.intelligenceTier).toBe("opus");
+    expect(selectableModel("gpt-5.6-terra")?.model).toBe("gpt-6.1-terra");
+    expect(selectableModel("gpt-6.1-terra")?.intelligenceTier).toBe("opus");
+    expect(SELECTABLE_MODELS.some(({ model }) => model === "gpt-5.6-terra")).toBe(false);
     expect(selectableModel("sonnet")?.intelligenceTier).toBe("sonnet");
     expect(selectableModel("gpt-6-luna")?.accessCost).toContain("$200/month");
     expect(selectableModel("gpt-6-luna")?.marginalTokenCost).toContain("$0.10/M");
@@ -113,10 +113,11 @@ describe("topic model picker", () => {
     expect(getTopicSessionId(topicId)).toBe("old-codex-session");
   });
 
-  test("a retired GPT-5.6 Sol/Luna id is stored as its GPT-6 route, not as a duplicate", () => {
+  test("a retired GPT-5.6 id is stored as its GPT-6 route, not as a duplicate", () => {
     for (const [asked, stored] of [
       ["gpt-5.6-sol", "gpt-6-sol"],
       ["GPT-5.6-Luna", "gpt-6-luna"],
+      ["gpt-5.6-terra", "gpt-6.1-terra"],
     ] as const) {
       const topicId = seedTopic();
       const result = switchTopicModel({ topicId, userId: USER, model: asked });

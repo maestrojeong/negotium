@@ -1809,7 +1809,10 @@ function renderSideColumn(
 export function maxTopicsPanelScrollOffset(state: AppState, columns: number, rows: number): number {
   const width = Math.max(1, columns);
   const height = Math.max(14, rows);
-  if (state.overlay) return 0;
+  // Matches `terminalBodyLayout`'s own "is the side panel actually up" check:
+  // a background-session viewport keeps the panel on screen behind it, so
+  // scrolling it must not be clamped to 0 just because *some* overlay is open.
+  if (state.overlay && state.overlay !== "background-session") return 0;
   const layout = terminalBodyLayout(state, width);
   if (!layout.showTopicsPanel) return 0;
   const bodyHeight = Math.max(
@@ -1828,7 +1831,8 @@ export function maxTopicsPanelScrollOffset(state: AppState, columns: number, row
 export function maxTaskPanelScrollOffset(state: AppState, columns: number, rows: number): number {
   const width = Math.max(1, columns);
   const height = Math.max(14, rows);
-  if (state.overlay) return 0;
+  // See `maxTopicsPanelScrollOffset`: keep this in sync with `terminalBodyLayout`.
+  if (state.overlay && state.overlay !== "background-session") return 0;
   const layout = terminalBodyLayout(state, width);
   if (!layout.showTaskPanel) return 0;
   const bodyHeight = Math.max(

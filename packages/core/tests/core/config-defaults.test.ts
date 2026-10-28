@@ -84,21 +84,22 @@ function resolveWorkerModelWithEnv(
   return new TextDecoder().decode(child.stdout);
 }
 
-describe("retired GPT-5.6 Sol/Luna ids", () => {
+describe("retired GPT-5.6 Sol/Luna/Terra ids", () => {
   test("resolve to their GPT-6 routes so the same tier is never selectable twice", () => {
     expect(canonicalModelId("gpt-5.6-sol")).toBe("gpt-6-sol");
     expect(canonicalModelId("GPT-5.6-Luna")).toBe("gpt-6-luna");
-    // Terra has no GPT-6 successor: it must stay itself.
-    expect(canonicalModelId("gpt-5.6-terra")).toBe("gpt-5.6-terra");
+    expect(canonicalModelId("gpt-5.6-terra")).toBe("gpt-6.1-terra");
     // Already-canonical ids are untouched.
     expect(canonicalModelId("gpt-6-sol")).toBe("gpt-6-sol");
     expect(canonicalModelId("gpt-6-luna")).toBe("gpt-6-luna");
+    expect(canonicalModelId("gpt-6.1-terra")).toBe("gpt-6.1-terra");
   });
 
   test("a stored old id (topic config, cron row, fallback env) runs as the GPT-6 route", () => {
     expect(resolveModelForAgent("codex", "gpt-5.6-sol", codexRegistry)).toBe("gpt-6-sol");
     expect(resolveModelForAgent("codex", "gpt-5.6-luna", codexRegistry)).toBe("gpt-6-luna");
     expect(resolveWorkerModel("codex", "gpt-5.6-luna", codexRegistry)).toBe("gpt-6-luna");
+    expect(resolveModelForAgent("codex", "gpt-5.6-terra", codexRegistry)).toBe("gpt-6.1-terra");
     // still owned by codex, so a stale claude topic drops it as before
     expect(resolveModelForAgent("claude", "gpt-5.6-luna", claudeRegistry)).toBe("sonnet");
   });
@@ -121,7 +122,7 @@ describe("role default models", () => {
       effort: "medium",
     });
     expect(resolveCompactionExecution("codex", codexRegistry)).toEqual({
-      model: "gpt-5.6-terra",
+      model: "gpt-6.1-terra",
       effort: "medium",
     });
     expect(resolveCompactionExecution("maestro", maestroRegistry)).toEqual({
@@ -136,7 +137,7 @@ describe("role default models", () => {
     // a claude/codex node's provider verbatim (was displaying "claude ·
     // deepseek-pro" and silently landing on the SDK's own default).
     expect(resolveWorkerModel("claude", "deepseek-pro", claudeRegistry)).toBe("sonnet");
-    expect(resolveWorkerModel("codex", "deepseek-pro", codexRegistry)).toBe("gpt-5.6-terra");
+    expect(resolveWorkerModel("codex", "deepseek-pro", codexRegistry)).toBe("gpt-6.1-terra");
     expect(resolveWorkerModel("maestro", "deepseek-pro", maestroRegistry)).toBe("deepseek-pro");
     // An unrecognized model string for the resolved agent falls back the
     // same way as a cross-agent one.
@@ -163,7 +164,7 @@ describe("role default models", () => {
         FALLBACK_AGENT: "codex",
         FALLBACK_MODEL: "gpt-6-luna",
       }),
-    ).toBe("gpt-5.6-terra");
+    ).toBe("gpt-6.1-terra");
   });
 
   test("model ownership checks are case-insensitive, so a differently-cased foreign model can't slip past Codex's permissive validateModel", () => {
@@ -183,7 +184,7 @@ describe("role default models", () => {
     );
     expect(resolveModelForAgent("codex", "SONNET", codexRegistry)).toBe(codexRegistry.defaultModel);
     expect(resolveWorkerModelWithEnv("codex", "DeepSeek-Pro", { FALLBACK_AGENT: "codex" })).toBe(
-      "gpt-5.6-terra",
+      "gpt-6.1-terra",
     );
   });
 
