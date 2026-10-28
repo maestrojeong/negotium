@@ -72,7 +72,7 @@ describe("session system prompt builders", () => {
     // GPT-5.6 Sol/Luna are retired aliases: the catalog lists only the GPT-6 tiers (Terra stays).
     expect(prompt).not.toContain("`gpt-5.6-sol`");
     expect(prompt).not.toContain("`gpt-5.6-luna`");
-    expect(prompt).toContain("codex / `gpt-5.6-terra` [Opus-level]");
+    expect(prompt).toContain("codex / `gpt-6.1-terra` [Opus-level]");
     expect(prompt).toContain("maestro / `deepseek-pro` [Sonnet-level]");
     expect(prompt).toContain("maestro / `deepseek-flash` [Sonnet-level]");
     expect(prompt).toContain("maestro / `kimi-k3` [Fable-level]");

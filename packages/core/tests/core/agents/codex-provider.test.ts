@@ -217,6 +217,7 @@ describe.skipIf(process.platform === "win32")("codexProvider stale rollout recov
       codexPathOverride: expect.stringContaining("negotium-codex-vault-"),
       config: {
         agents: { enabled: false },
+        tools: { update_plan: { enabled: false } },
         features: {
           hooks: true,
           goals: false,
@@ -304,6 +305,7 @@ describe.skipIf(process.platform === "win32")("codexProvider stale rollout recov
       codexPathOverride: expect.stringContaining("negotium-codex-vault-"),
       config: {
         agents: { enabled: false },
+        tools: { update_plan: { enabled: false } },
         features: {
           hooks: true,
           goals: false,
@@ -350,6 +352,7 @@ describe.skipIf(process.platform === "win32")("codexProvider stale rollout recov
       codexPathOverride: expect.stringContaining("negotium-codex-vault-"),
       config: {
         agents: { enabled: false },
+        tools: { update_plan: { enabled: false } },
         features: {
           hooks: true,
           goals: false,

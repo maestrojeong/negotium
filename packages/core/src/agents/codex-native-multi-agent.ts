@@ -11,9 +11,9 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { NEGOTIUM_VERSION } from "#version";
 
 type CodexModel = Record<string, unknown>;
@@ -22,10 +22,32 @@ type CodexModelCache = {
   models?: unknown;
 };
 
-const moduleRequire = createRequire(import.meta.url);
-const codexSdkPackagePath = moduleRequire.resolve("@openai/codex-sdk/package.json");
-const codexSdkRequire = createRequire(codexSdkPackagePath);
-const bundledCodexPackagePath = codexSdkRequire.resolve("@openai/codex/package.json");
+// Resolving these as *modules* (`require.resolve`/`import.meta.resolve`) broke
+// under a plain Node process (which is how Codex itself spawns this server —
+// Bun's resolver is lax enough that it didn't notice) once `@openai/codex-sdk`
+// 0.165.0 dropped CommonJS support (no `"require"` condition in its `exports`
+// map), and `@openai/codex` was never importable to begin with — it ships only
+// a CLI `bin`, no `main`/`exports` at all. Neither package needs to be
+// imported here, only located, so this reimplements Node's own node_modules
+// directory-walk (the same algorithm `require`/`import` use internally) over
+// plain filesystem checks instead, which doesn't care what either package's
+// module shape is.
+function findPackageJson(specifier: string, searchFromDir: string): string {
+  let dir = searchFromDir;
+  for (;;) {
+    const candidate = join(dir, "node_modules", specifier, "package.json");
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) {
+      throw new Error(`Could not locate node_modules/${specifier} starting from ${searchFromDir}`);
+    }
+    dir = parent;
+  }
+}
+
+const thisModuleDir = dirname(fileURLToPath(import.meta.url));
+const codexSdkPackagePath = findPackageJson("@openai/codex-sdk", thisModuleDir);
+const bundledCodexPackagePath = findPackageJson("@openai/codex", dirname(codexSdkPackagePath));
 
 function readPackageVersion(packageJsonPath: string): string {
   const parsed = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { version?: unknown };
@@ -65,7 +87,7 @@ function readCodexModelCache(cachePath: string): {
   return { contents, parsed: parseCodexModelCache(contents, cachePath) };
 }
 
-function readCompatibleCodexModelCache(cachePath: string): {
+export function readCompatibleCodexModelCache(cachePath: string): {
   contents: string;
   parsed: CodexModelCache;
 } {

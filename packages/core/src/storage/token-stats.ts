@@ -124,7 +124,8 @@ const TOKEN_PRICES: Record<string, TokenPrices> = {
   "codex:gpt-6-astra": { input: 10, cacheWrite: 12.5, cacheRead: 1, output: 50 },
   "codex:gpt-6-sol": { input: 2, cacheRead: 0.2, output: 10 },
   "codex:gpt-6-luna": { input: 0.1, cacheRead: 0.01, output: 0.5 },
-  // GPT-5.6 Sol/Luna are retired aliases of gpt-6-sol/gpt-6-luna, but historical usage rows still
+  "codex:gpt-6.1-terra": { input: 1, cacheRead: 0.05, output: 5 },
+  // GPT-5.6 Sol/Luna/Terra are retired aliases, but historical usage rows still
   // carry the old ids, so their prices stay for cost accounting.
   "codex:gpt-5.6-sol": { input: 5, cacheRead: 0.5, output: 30 },
   "codex:gpt-5.6-terra": { input: 2.5, cacheRead: 0.25, output: 15 },

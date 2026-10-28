@@ -2620,6 +2620,29 @@ describe("terminal renderer", () => {
     expect(short).not.toContain("▐"); // two rows never overflow a tall panel
   });
 
+  test("the Topics panel stays scrollable behind a background-session viewport", () => {
+    // `terminalBodyLayout` deliberately keeps the side panel up behind a
+    // background-session viewport (unlike the Ctrl-O/subagents/decisions/vault
+    // overlays, which hide it) — the scroll-limit functions must agree, or the
+    // panel silently snaps back to the top on every scroll attempt.
+    const topics = Array.from({ length: 20 }, (_, i) => ({
+      ...topic(),
+      id: `t${i}`,
+      title: `Topic ${i}`,
+    }));
+    const state: AppState = {
+      ...setTopics(createInitialState("local"), topics),
+      activeTopicId: topics[0].id,
+    };
+    expect(maxTopicsPanelScrollOffset(state, 120, 16)).toBeGreaterThan(0);
+    expect(
+      maxTopicsPanelScrollOffset({ ...state, overlay: "background-session" }, 120, 16),
+    ).toBeGreaterThan(0);
+    // A real overlay (not background-session) still hides the panel, so it
+    // must still clamp to 0.
+    expect(maxTopicsPanelScrollOffset({ ...state, overlay: "vault" }, 120, 16)).toBe(0);
+  });
+
   test("keeps current work visible and scrolls to reveal overflow in the Tasks panel", () => {
     const done = Array.from({ length: 30 }, (_, i) => `[x] Done task ${i + 1}`);
     let state = setTopics(createInitialState("local"), [topic()]);

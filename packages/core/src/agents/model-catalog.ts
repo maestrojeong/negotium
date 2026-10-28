@@ -1,3 +1,4 @@
+import { resolveCodexTierModel } from "#agents/codex-tier-resolver";
 import { FALLBACK_AGENT, FALLBACK_MODEL } from "#platform/config";
 import type { AgentKind, EffortLevel } from "#types";
 
@@ -24,6 +25,7 @@ export const MODEL_OWNER: Record<string, AgentKind> = {
   "gpt-6-astra": "codex",
   "gpt-6-sol": "codex",
   "gpt-6-luna": "codex",
+  "gpt-6.1-terra": "codex",
   "gpt-5.6-luna": "codex",
   "gpt-5.6-terra": "codex",
   "gpt-5.6-sol": "codex",
@@ -100,7 +102,9 @@ const CLAUDE_COMMUNITY_SESSION =
  */
 export const SELECTABLE_MODELS: readonly SelectableModel[] = [
   {
-    model: "gpt-6-astra",
+    get model() {
+      return resolveCodexTierModel("astra");
+    },
     agent: "codex",
     description: "Newest OpenAI flagship; Codex's highest-capability route.",
     intelligenceTier: "fable",
@@ -111,7 +115,9 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
     estimatedUsage: `Released 2026-09-03; became Codex CLI's bundled default in v0.153.4 (2026-09-05). Local message-count/quota-weight ranges not yet published as of the last catalog check — expect a quota weight above gpt-6-sol given the higher per-token cost. ${CODEX_COMMUNITY_WEEKLY}`,
   },
   {
-    model: "gpt-6-sol",
+    get model() {
+      return resolveCodexTierModel("sol");
+    },
     agent: "codex",
     description: "GPT-6 generation Sol route (2026-09-22) for demanding coding and agentic work.",
     intelligenceTier: "opus",
@@ -122,7 +128,9 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
     estimatedUsage: `Released 2026-09-22; local message-count/quota-weight ranges not yet published. ${CODEX_COMMUNITY_WEEKLY}`,
   },
   {
-    model: "gpt-6-luna",
+    get model() {
+      return resolveCodexTierModel("luna");
+    },
     agent: "codex",
     description: "Default Codex route (GPT-6 Luna, 2026-09-22): fast, high-volume, lowest cost.",
     intelligenceTier: "sonnet",
@@ -133,14 +141,18 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
     estimatedUsage: `Released 2026-09-22; local message-count/quota-weight ranges not yet published. ${CODEX_COMMUNITY_WEEKLY}`,
   },
   {
-    model: "gpt-5.6-terra",
+    get model() {
+      return resolveCodexTierModel("terra");
+    },
     agent: "codex",
-    description: "High-capability Codex route for complex coding and reasoning.",
+    description:
+      "GPT-6.1 Terra route (2026-10-26) for complex coding, visual reasoning, and computer use.",
     intelligenceTier: "opus",
-    routingSummary: "complex coding and reasoning; 2.5x Codex quota cost",
+    routingSummary: "capable coding and computer use at a lower cost than GPT-5.6 Terra",
     accessCost: CODEX_PRO_20X_COST,
-    marginalTokenCost: "Codex credits: $2.50/M uncached input, $0.25/M cached input, $15/M output",
-    estimatedUsage: `Official Pro 20x range: 400–2,200 local messages per 5 hours; quota weight 2.5x the retired GPT-5.6 Luna. ${CODEX_COMMUNITY_WEEKLY}`,
+    marginalTokenCost:
+      "Codex credits (OpenAI API rate): $1/M uncached input, $0.05/M cached input, $5/M output",
+    estimatedUsage: `Released 2026-10-26; local message-count/quota-weight ranges not yet published. ${CODEX_COMMUNITY_WEEKLY}`,
   },
   {
     model: "fable",
@@ -249,12 +261,11 @@ export const SELECTABLE_MODELS: readonly SelectableModel[] = [
 ];
 
 const SELECTABLE_MODEL_ALIASES: Readonly<Record<string, string>> = {
-  // GPT-6 Sol/Luna (2026-09-22) replace the GPT-5.6 tiers of the same name at half the price.
-  // Only the GPT-6 route is selectable; the retired ids resolve to it, so stored topic configs,
-  // cron rows and explicit requests keep working without a second, duplicate Sol/Luna. Terra has
-  // no GPT-6 successor and stays as `gpt-5.6-terra`.
+  // Retired GPT-5.6 Sol/Luna/Terra ids resolve to their GPT-6 successors, so stored
+  // topic configs, cron rows, and explicit requests keep working without duplicate choices.
   "gpt-5.6-sol": "gpt-6-sol",
   "gpt-5.6-luna": "gpt-6-luna",
+  "gpt-5.6-terra": "gpt-6.1-terra",
   kimi: "kimi-k3",
   "kimi-pro": "kimi-k3",
   "kimi-code": "kimi-k2.7-code",
@@ -272,15 +283,17 @@ const SELECTABLE_MODEL_ALIASES: Readonly<Record<string, string>> = {
 // ownership check and, for Codex specifically (whose `validateModel` accepts
 // any non-empty string), reaches the provider unrejected despite belonging
 // to a different agent.
-const CANONICAL_MODEL_CASING: Readonly<Record<string, string>> = Object.fromEntries(
-  SELECTABLE_MODELS.map((candidate) => [candidate.model.toLowerCase(), candidate.model]),
-);
+function canonicalModelCasing(): Readonly<Record<string, string>> {
+  return Object.fromEntries(
+    SELECTABLE_MODELS.map((candidate) => [candidate.model.toLowerCase(), candidate.model]),
+  );
+}
 
 /** Normalize supported user-facing aliases before validation or persistence. */
 export function canonicalModelId(value: string): string {
   const trimmed = value.trim();
   const lower = trimmed.toLowerCase();
-  return SELECTABLE_MODEL_ALIASES[lower] ?? CANONICAL_MODEL_CASING[lower] ?? trimmed;
+  return SELECTABLE_MODEL_ALIASES[lower] ?? canonicalModelCasing()[lower] ?? trimmed;
 }
 
 export function formatSelectableModel(candidate: SelectableModel): string {
@@ -344,7 +357,7 @@ export function resolveModelForAgent(
 /**
  * Default model for unattended background workers (compaction, memory
  * archiving, and similar fixed-purpose programmatic turns) — Codex prefers
- * the stronger `gpt-5.6-terra` here over its cheap interactive default
+ * the stronger `gpt-6.1-terra` here over its cheap interactive default
  * (`gpt-6-luna`), since nothing is waiting on the response in real time.
  * Claude and Maestro keep their normal registry defaults (`sonnet` /
  * `deepseek-pro`).
@@ -353,7 +366,7 @@ export function resolveWorkerDefaultModel(
   agent: AgentKind,
   registry: { defaultModel: string },
 ): string {
-  return agent === "codex" ? "gpt-5.6-terra" : registry.defaultModel;
+  return agent === "codex" ? resolveCodexTierModel("terra") : registry.defaultModel;
 }
 
 /**

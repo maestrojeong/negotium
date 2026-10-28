@@ -1396,9 +1396,13 @@ export class TerminalApp {
         this.#handleGraphMouse(event);
         continue;
       }
-      if (this.#handleSidePanelResizeDrag(event)) continue;
-      this.#focusPaneUnderPress(event);
+      // The scrollbar thumb's column and the resize handle's hit region
+      // overlap by design (the handle is grabbable on the panel's own last
+      // column, not just the one-column gap past it) — check the scrollbar
+      // first so a press on the thumb scrolls instead of always resizing.
       if (this.#handleSidePanelScrollbarDrag(event)) continue;
+      this.#focusPaneUnderPress(event);
+      if (this.#handleSidePanelResizeDrag(event)) continue;
       if (this.#handlePickableRowMouse(event)) continue;
       this.#handleMouseSelection(event);
     }
@@ -1410,8 +1414,13 @@ export class TerminalApp {
       return;
     }
     // Everything else typed while the shell pane has focus belongs to the
-    // shell — Ctrl-C included — exactly as in a plain terminal.
-    if (this.#state.terminalPaneFocused && this.#shell) {
+    // shell — Ctrl-C included — exactly as in a plain terminal. `terminalPaneFocused`
+    // is a preference bit and stays true even when the window is too narrow
+    // for the layout to actually draw the pane (`this.#terminalPane` goes
+    // null then); route to the shell only while it is really on screen, or
+    // every keystroke — including the one meant to interrupt — vanishes into
+    // an invisible shell.
+    if (this.#state.terminalPaneFocused && this.#shell && this.#terminalPane) {
       this.#shell.write(chunk);
       return;
     }
@@ -1445,6 +1454,30 @@ export class TerminalApp {
     if (chunk === "\u0004" && this.#state.overlay !== "topics") {
       if (editingVaultSecret) return;
       void this.#toggleDecisionGraph(); // Ctrl-D
+      return;
+    }
+    if (chunk === NEW_TOPIC_KEY && this.#sideColumnBounds !== null && !this.#state.creatingTopic) {
+      // Ctrl-N: with the side column actually on screen (not just the user's
+      // Ctrl-P preference — a narrow terminal or the Ctrl-O/subagents/
+      // decisions/vault overlays hide it even when enabled), starting a new
+      // topic from the session view mirrors the topic picker's own Ctrl-N.
+      if (editingVaultSecret) return;
+      // The composer may be holding a masked vault-secret value or an
+      // in-progress answer to the agent's own question; typing a topic name
+      // there would feed it into the wrong place instead of creating a topic.
+      if (composerHoldsSecret(this.#state) || activeQuestion(this.#state)) return;
+      // Don't clobber a half-written draft message; let the user send or
+      // clear it first.
+      if (this.#input.text) {
+        this.#state = {
+          ...this.#state,
+          notice: "Clear the message box first, then Ctrl-N to start a new topic",
+          noticeLevel: "warn",
+        };
+        this.#queueRender();
+        return;
+      }
+      this.#openNewTopicComposer();
       return;
     }
     if (chunk === "\u0010") {
@@ -1901,8 +1934,12 @@ export class TerminalApp {
     // Only an actual command name after the `/` goes to the command runner —
     // text that merely starts with `/` (an absolute path pasted or typed in,
     // e.g. `/example-report.pdf`) is sent as an ordinary message instead of
-    // erroring as an unknown command.
-    if (isKnownTerminalCommand(text)) {
+    // erroring as an unknown command. `isKnownTerminalCommand` matches the
+    // bare command name only, so `/vault@bot set KEY value` (a bot-mention
+    // form `isVaultCommandLine` already accepts) would otherwise miss here
+    // and fall through to being sent as a plain chat message — with the
+    // plaintext secret going straight to the model and the transcript.
+    if (isKnownTerminalCommand(text) || isVaultCommandLine(text)) {
       await this.#runCommand(text);
       return;
     }

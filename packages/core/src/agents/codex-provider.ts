@@ -741,6 +741,8 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
       // all feature switches off as a second layer and use the documented
       // agents.enabled setting as a third, version-independent layer.
       agents: { enabled: false },
+      // Native plans are invisible in Negotium transcripts; use the shared mcp__task store.
+      tools: { update_plan: { enabled: false } },
       // Persisted goals own their own task state and automatic continuation,
       // which conflicts with Negotium's shared task store and turn scheduler.
       features: {

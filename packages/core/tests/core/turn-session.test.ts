@@ -244,7 +244,7 @@ describe("turn session resolution", () => {
 
     expect(resolveTopicTurnExecution(topic)).toEqual({
       agent: "codex",
-      model: "gpt-5.6-terra",
+      model: "gpt-6.1-terra",
       effort: "high",
     });
     expect(resolveTopicTurnExecution(topic, { agentOverride: "maestro" })).toEqual({
@@ -312,7 +312,7 @@ describe("turn session resolution", () => {
     expect(getAllMessagesForTopic(topicId).at(-1)).toMatchObject({
       text: "queued user turn",
       agent_type: "codex",
-      model: "gpt-5.6-terra",
+      model: "gpt-6.1-terra",
     });
     expect(getRuntimeUserTurnRequest(topicId)).toMatchObject({
       requestId: queryId,

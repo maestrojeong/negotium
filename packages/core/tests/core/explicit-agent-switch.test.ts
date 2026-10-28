@@ -12,6 +12,8 @@ describe("explicit agent switch derivation", () => {
     expect(Buffer.byteLength(prompt, "utf-8")).toBeGreaterThan(1024);
     expect(hasExplicitAgentSwitchRequest(prompt, "codex")).toBe(true);
     expect(explicitAgentSwitchTargets(prompt)).toEqual(["codex"]);
+    expect(explicitAgentSwitchTargets("switch to gpt-6.1-terra")).toEqual(["codex"]);
+    expect(explicitAgentSwitchTargets("switch to gpt-5.6-terra")).toEqual(["codex"]);
     expect(explicitAgentSwitchTargets("switch to claude and then use maestro")).toEqual([
       "maestro",
       "claude",

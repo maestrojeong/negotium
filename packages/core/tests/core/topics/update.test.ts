@@ -130,7 +130,7 @@ describe("updateTopicSettings", () => {
       defaultModel: "gpt-5.6-terra",
       defaultEffort: "high",
     });
-    expect(updated.defaultModel).toBe("gpt-5.6-terra");
+    expect(updated.defaultModel).toBe("gpt-6.1-terra");
     expect(updated.defaultEffort).toBe("high");
   });
 

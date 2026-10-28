@@ -780,6 +780,321 @@ test("Ctrl-R cycles the Topics panel sort between activity and name", async () =
   }
 });
 
+test("Ctrl-N starts a new topic from the session view while the side panel is visible", async () => {
+  const SECOND = { ...TOPIC, id: "second", title: "Second" };
+  const client: NegotiumClient = {
+    async start() {},
+    async stop() {},
+    listTopics: () => [TOPIC, SECOND],
+    listMessages: () => [],
+    createTopic() {
+      throw new Error("not reached");
+    },
+    async deriveTopic() {
+      throw new Error("not reached");
+    },
+    async resetTopic() {
+      throw new Error("not reached");
+    },
+    async compactTopic() {
+      throw new Error("not reached");
+    },
+    setModel() {
+      throw new Error("not reached");
+    },
+    setEffort() {
+      throw new Error("not reached");
+    },
+    async deleteTopic() {
+      throw new Error("not reached");
+    },
+    sendMessage() {
+      throw new Error("not reached");
+    },
+    answerQuestion: () => ({ ok: false }),
+    abort: () => false,
+    runVaultCommand: () => null,
+  };
+  const restoreStdin = setTty(process.stdin, true);
+  const restoreStdout = setTty(process.stdout, true);
+  const stdin = process.stdin as unknown as Record<string, unknown>;
+  const hadRawMode = typeof stdin.setRawMode === "function";
+  if (!hadRawMode) stdin.setRawMode = () => process.stdin;
+  // The side panel only renders above SIDE_PANEL_MIN_WIDTH (110 columns), so
+  // the default 100-column test fallback never shows it.
+  const stdout = process.stdout as unknown as { columns?: number; rows?: number };
+  const previousColumns = stdout.columns;
+  const previousRows = stdout.rows;
+  stdout.columns = 120;
+  stdout.rows = 20;
+  const realWrite = process.stdout.write.bind(process.stdout);
+  const frames: string[] = [];
+  (process.stdout as unknown as { write: (chunk: string) => boolean }).write = (chunk: string) => {
+    frames.push(String(chunk));
+    return true;
+  };
+  const app = new TerminalApp(client, { userId: "local", preferredTopic: TOPIC.title });
+  const finished = app.run();
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
+  const feed = (data: string) => process.stdin.emit("data", data);
+  const screen = () => stripAnsi(frames.join(""));
+
+  try {
+    await settle();
+    expect(screen()).toContain("Second"); // side panel is up, not the Ctrl-O overlay
+    frames.length = 0;
+    feed("\u000e"); // Ctrl-N
+    await settle();
+    expect(screen()).toContain("Type a topic name");
+  } finally {
+    app.stop();
+    await finished;
+    (process.stdout as unknown as { write: typeof realWrite }).write = realWrite;
+    stdout.columns = previousColumns;
+    stdout.rows = previousRows;
+    if (!hadRawMode) delete stdin.setRawMode;
+    restoreStdin();
+    restoreStdout();
+  }
+});
+
+test("Ctrl-N does nothing in the session view when the side panel isn't actually on screen", async () => {
+  const client: NegotiumClient = {
+    async start() {},
+    async stop() {},
+    listTopics: () => [TOPIC], // a single topic gives the panel nothing to show
+    listMessages: () => [],
+    createTopic() {
+      throw new Error("not reached");
+    },
+    async deriveTopic() {
+      throw new Error("not reached");
+    },
+    async resetTopic() {
+      throw new Error("not reached");
+    },
+    async compactTopic() {
+      throw new Error("not reached");
+    },
+    setModel() {
+      throw new Error("not reached");
+    },
+    setEffort() {
+      throw new Error("not reached");
+    },
+    async deleteTopic() {
+      throw new Error("not reached");
+    },
+    sendMessage() {
+      throw new Error("not reached");
+    },
+    answerQuestion: () => ({ ok: false }),
+    abort: () => false,
+    runVaultCommand: () => null,
+  };
+  const restoreStdin = setTty(process.stdin, true);
+  const restoreStdout = setTty(process.stdout, true);
+  const stdin = process.stdin as unknown as Record<string, unknown>;
+  const hadRawMode = typeof stdin.setRawMode === "function";
+  if (!hadRawMode) stdin.setRawMode = () => process.stdin;
+  const stdout = process.stdout as unknown as { columns?: number; rows?: number };
+  const previousColumns = stdout.columns;
+  const previousRows = stdout.rows;
+  stdout.columns = 120;
+  stdout.rows = 20;
+  const realWrite = process.stdout.write.bind(process.stdout);
+  const frames: string[] = [];
+  (process.stdout as unknown as { write: (chunk: string) => boolean }).write = (chunk: string) => {
+    frames.push(String(chunk));
+    return true;
+  };
+  const app = new TerminalApp(client, { userId: "local", preferredTopic: TOPIC.title });
+  const finished = app.run();
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
+  const feed = (data: string) => process.stdin.emit("data", data);
+  const screen = () => stripAnsi(frames.join(""));
+
+  try {
+    await settle();
+    expect(screen()).not.toContain("Second");
+    frames.length = 0;
+    feed("\u000e"); // Ctrl-N
+    await settle();
+    expect(screen()).not.toContain("Type a topic name");
+  } finally {
+    app.stop();
+    await finished;
+    (process.stdout as unknown as { write: typeof realWrite }).write = realWrite;
+    stdout.columns = previousColumns;
+    stdout.rows = previousRows;
+    if (!hadRawMode) delete stdin.setRawMode;
+    restoreStdin();
+    restoreStdout();
+  }
+});
+
+test("Ctrl-N in the session view leaves a half-written draft alone instead of clearing it", async () => {
+  const SECOND = { ...TOPIC, id: "second", title: "Second" };
+  const client: NegotiumClient = {
+    async start() {},
+    async stop() {},
+    listTopics: () => [TOPIC, SECOND],
+    listMessages: () => [],
+    createTopic() {
+      throw new Error("not reached");
+    },
+    async deriveTopic() {
+      throw new Error("not reached");
+    },
+    async resetTopic() {
+      throw new Error("not reached");
+    },
+    async compactTopic() {
+      throw new Error("not reached");
+    },
+    setModel() {
+      throw new Error("not reached");
+    },
+    setEffort() {
+      throw new Error("not reached");
+    },
+    async deleteTopic() {
+      throw new Error("not reached");
+    },
+    sendMessage() {
+      throw new Error("not reached");
+    },
+    answerQuestion: () => ({ ok: false }),
+    abort: () => false,
+    runVaultCommand: () => null,
+  };
+  const restoreStdin = setTty(process.stdin, true);
+  const restoreStdout = setTty(process.stdout, true);
+  const stdin = process.stdin as unknown as Record<string, unknown>;
+  const hadRawMode = typeof stdin.setRawMode === "function";
+  if (!hadRawMode) stdin.setRawMode = () => process.stdin;
+  const stdout = process.stdout as unknown as { columns?: number; rows?: number };
+  const previousColumns = stdout.columns;
+  const previousRows = stdout.rows;
+  stdout.columns = 120;
+  stdout.rows = 20;
+  const realWrite = process.stdout.write.bind(process.stdout);
+  const frames: string[] = [];
+  (process.stdout as unknown as { write: (chunk: string) => boolean }).write = (chunk: string) => {
+    frames.push(String(chunk));
+    return true;
+  };
+  const app = new TerminalApp(client, { userId: "local", preferredTopic: TOPIC.title });
+  const finished = app.run();
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
+  const feed = (data: string) => process.stdin.emit("data", data);
+  const screen = () => stripAnsi(frames.join(""));
+
+  try {
+    await settle();
+    feed("hello draft");
+    await settle();
+    frames.length = 0;
+    feed("\u000e"); // Ctrl-N
+    await settle();
+    const afterCtrlN = screen();
+    expect(afterCtrlN).not.toContain("Type a topic name");
+    expect(afterCtrlN).toContain("Clear the message box first");
+
+    // If the draft had been wiped (what #openNewTopicComposer's #replaceInput("")
+    // does), typing "!" next would leave just "!" in the composer instead of
+    // appending to "hello draft".
+    frames.length = 0;
+    feed("!");
+    await settle();
+    expect(screen()).toContain("hello draft!");
+  } finally {
+    app.stop();
+    await finished;
+    (process.stdout as unknown as { write: typeof realWrite }).write = realWrite;
+    stdout.columns = previousColumns;
+    stdout.rows = previousRows;
+    if (!hadRawMode) delete stdin.setRawMode;
+    restoreStdin();
+    restoreStdout();
+  }
+});
+
+test("a bot-mention vault command (/vault@bot ...) is routed to the vault, not sent as chat", async () => {
+  // `isVaultCommandLine` accepts the `/vault@bot` bot-mention form, but the
+  // submit path used to gate the command runner on `isKnownTerminalCommand`
+  // alone, which only matches the bare "vault" word — so this line fell
+  // through to `sendMessage` with its plaintext secret instead of reaching
+  // the vault command runner.
+  const client: NegotiumClient = {
+    async start() {},
+    async stop() {},
+    listTopics: () => [TOPIC],
+    listMessages: () => [],
+    createTopic() {
+      throw new Error("not reached");
+    },
+    async deriveTopic() {
+      throw new Error("not reached");
+    },
+    async resetTopic() {
+      throw new Error("not reached");
+    },
+    async compactTopic() {
+      throw new Error("not reached");
+    },
+    setModel() {
+      throw new Error("not reached");
+    },
+    setEffort() {
+      throw new Error("not reached");
+    },
+    async deleteTopic() {
+      throw new Error("not reached");
+    },
+    sendMessage() {
+      // If the routing regresses, the secret-bearing command line lands here
+      // instead of the vault command runner.
+      throw new Error("leaked to chat instead of the vault command runner");
+    },
+    answerQuestion: () => ({ ok: false }),
+    abort: () => false,
+    runVaultCommand: () => null,
+  };
+  const restoreStdin = setTty(process.stdin, true);
+  const restoreStdout = setTty(process.stdout, true);
+  const stdin = process.stdin as unknown as Record<string, unknown>;
+  const hadRawMode = typeof stdin.setRawMode === "function";
+  if (!hadRawMode) stdin.setRawMode = () => process.stdin;
+  const realWrite = process.stdout.write.bind(process.stdout);
+  const frames: string[] = [];
+  (process.stdout as unknown as { write: (chunk: string) => boolean }).write = (chunk: string) => {
+    frames.push(String(chunk));
+    return true;
+  };
+  const app = new TerminalApp(client, { userId: "local", preferredTopic: TOPIC.title });
+  const finished = app.run();
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
+  const feed = (data: string) => process.stdin.emit("data", data);
+  const screen = () => stripAnsi(frames.join(""));
+
+  try {
+    await settle();
+    feed("/vault@bot set API_KEY topsecret");
+    feed("\r");
+    await settle();
+    expect(screen()).not.toContain("leaked to chat");
+    expect(screen()).toContain("Vault command completed.");
+  } finally {
+    app.stop();
+    await finished;
+    (process.stdout as unknown as { write: typeof realWrite }).write = realWrite;
+    if (!hadRawMode) delete stdin.setRawMode;
+    restoreStdin();
+    restoreStdout();
+  }
+});
+
 test("rejects a second terminal adapter without disturbing the running one", async () => {
   const client: NegotiumClient = {
     async start() {},
