@@ -342,21 +342,21 @@ describe("terminal renderer", () => {
 
   test("does not display a stale Maestro model after switching the topic to Codex", () => {
     const stale = { ...topic(), defaultModel: "deepseek-pro" };
-    expect(effectiveTopicModel(stale)).toBe("gpt-6-luna");
+    expect(effectiveTopicModel(stale)).toBe("luna");
 
     const state = setTopics(createInitialState("local"), [stale]);
     const output = stripAnsi(renderApp(state, 120, 30));
-    expect(output).toContain("codex · gpt-6-luna · medium");
+    expect(output).toContain("codex · luna · medium");
     expect(output).not.toContain("codex · deepseek-pro");
   });
 
   test("shows the persisted per-topic model override in the footer", () => {
-    const configured = { ...topic(), effectiveModel: "gpt-6-sol" };
-    expect(effectiveTopicModel(configured)).toBe("gpt-6-sol");
+    const configured = { ...topic(), effectiveModel: "sol" };
+    expect(effectiveTopicModel(configured)).toBe("sol");
 
     const state = setTopics(createInitialState("local"), [configured]);
     const output = stripAnsi(renderApp(state, 120, 30));
-    expect(output).toContain("codex · gpt-6-sol · medium");
+    expect(output).toContain("codex · sol · medium");
   });
 
   test("shows the active topic title in the footer", () => {
@@ -860,14 +860,11 @@ describe("terminal renderer", () => {
 
     const output = stripAnsi(renderApp(state, 120, 30));
     expect(output).toContain("Models");
-    expect(output).toContain("gpt-6-luna (current)");
+    expect(output).toContain("luna (current)");
     const selected = output
       .split("\n")
-      .find(
-        (line) =>
-          line.trimStart().startsWith("gpt-6-sol") || line.trimStart().startsWith("› gpt-6-sol"),
-      );
-    expect(selected).toContain("› gpt-6-sol");
+      .find((line) => line.trimStart().startsWith("sol") || line.trimStart().startsWith("› sol"));
+    expect(selected).toContain("› sol");
     expect(selected).toContain(
       "GPT-6 generation Sol route (2026-09-22) for demanding coding and agentic work.",
     );

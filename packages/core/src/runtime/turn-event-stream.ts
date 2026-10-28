@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import {
+  CODEX_TIER_FALLBACKS,
+  type CodexTier,
+  resolveCodexTierModel,
+} from "#agents/codex-tier-resolver";
 import { estimateTextTokens } from "#agents/compaction-support";
 import { cleanupAgentFork } from "#agents/fork";
 import { scheduleIdleArchiveForTopic } from "#agents/idle-archiver";
@@ -180,12 +185,19 @@ export async function runTurnEventStream(
   const toolSummaryOptions = {
     cwd: control.injectParams?.cwd ?? workspaceCwdFor(topicId),
   };
+  // Usage is billed against the real model Codex actually ran (resolved from
+  // a bare tier name like "terra" the same way codexProvider resolves it for
+  // the API call itself), not the tier name stored on the topic/turn.
+  const pricedModel =
+    agentType === "codex" && Object.hasOwn(CODEX_TIER_FALLBACKS, model)
+      ? resolveCodexTierModel(model as CodexTier)
+      : model;
   const recordEventUsage = (usage: TokenUsage): void => {
     recordUsage(userId, topicTitle, usage, {
       topicId,
       ...(control.sessionId ? { providerSessionId: control.sessionId } : {}),
       agent: agentType,
-      model,
+      model: pricedModel,
     });
   };
   const broadcastContextProgress = (force = false): void => {
