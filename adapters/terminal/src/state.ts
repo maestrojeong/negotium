@@ -100,6 +100,12 @@ export interface AppState {
   topicUsage: Record<string, TopicUsageSummary>;
   messageHistory: Record<string, MessageHistoryStatus>;
   activity: Record<string, TopicActivity>;
+  /**
+   * Topics whose agent finished a reply (or errored) while another topic was
+   * on screen. Client-local only: never persisted and never sent to the node.
+   * Cleared as soon as the topic becomes the active one.
+   */
+  unread: Record<string, true>;
   input: string;
   inputCursor: { row: number; col: number };
   suggestionIndex: number;
@@ -192,6 +198,7 @@ export function createInitialState(userId: string): AppState {
     topicUsage: {},
     messageHistory: {},
     activity: {},
+    unread: {},
     input: "",
     inputCursor: { row: 0, col: 0 },
     suggestionIndex: 0,
@@ -727,6 +734,7 @@ export function setTopics(state: AppState, topics: TopicDto[], preferredTitle?: 
     ...state,
     topics: orderedTopics,
     activity,
+    unread: pruneUnread(withoutUnread(state.unread, nextActive), orderedTopics),
     activeTopicId: nextActive,
     scrollOffset: nextActive === state.activeTopicId ? state.scrollOffset : 0,
     askChoiceIndex: nextActive === state.activeTopicId ? state.askChoiceIndex : 0,
@@ -746,10 +754,60 @@ export function setTopics(state: AppState, topics: TopicDto[], preferredTitle?: 
   });
 }
 
+/** Drops `topicId` from an unread map, returning the same object when absent. */
+function withoutUnread(unread: AppState["unread"], topicId: string | null): AppState["unread"] {
+  if (topicId === null || !unread[topicId]) return unread;
+  const next = { ...unread };
+  delete next[topicId];
+  return next;
+}
+
+/** Forgets unread flags for topics that no longer exist on the node. */
+function pruneUnread(unread: AppState["unread"], topics: TopicDto[]): AppState["unread"] {
+  const ids = Object.keys(unread);
+  if (ids.length === 0) return unread;
+  const known = new Set(topics.map((topic) => topic.id));
+  if (ids.every((id) => known.has(id))) return unread;
+  return Object.fromEntries(ids.filter((id) => known.has(id)).map((id) => [id, true as const]));
+}
+
+/**
+ * Topic ids in the exact order the Topics panel and the `Ctrl-O` picker list
+ * them (managers first, then the sorted regular units), so "next"/"previous"
+ * topic moves one visible row at a time. Background sessions are not topics
+ * and are skipped.
+ */
+export function topicNavigationOrder(state: AppState): string[] {
+  const indexed = state.topics.map((topic, index) => ({ topic, index }));
+  return [
+    ...sortedTopicEntries(
+      state,
+      indexed.filter(({ topic }) => topic.kind === "manager"),
+    ),
+    ...sortedTopicEntries(
+      state,
+      indexed.filter(({ topic }) => topic.kind !== "manager"),
+    ),
+  ].map(({ topic }) => topic.id);
+}
+
+/**
+ * The topic `delta` rows away from the active one in panel order, wrapping at
+ * either end. Returns null when there is nowhere to go (fewer than two topics).
+ */
+export function adjacentTopicId(state: AppState, delta: -1 | 1): string | null {
+  const order = topicNavigationOrder(state);
+  if (order.length < 2) return null;
+  const current = state.activeTopicId === null ? -1 : order.indexOf(state.activeTopicId);
+  if (current < 0) return delta > 0 ? (order[0] ?? null) : (order.at(-1) ?? null);
+  return order[(current + delta + order.length) % order.length] ?? null;
+}
+
 export function selectTopic(state: AppState, topicId: string): AppState {
   if (!state.topics.some((topic) => topic.id === topicId)) return state;
   return {
     ...state,
+    unread: withoutUnread(state.unread, topicId),
     activeTopicId: topicId,
     scrollOffset: 0,
     askChoiceIndex: 0,
@@ -1180,6 +1238,28 @@ function applyAiStatus(
   return state;
 }
 
+/**
+ * Flags a topic unread when its run just finished (`ai_done`) or failed
+ * (`ai_error`) while it was not the topic on screen. Keyed on a real
+ * running → stopped transition, so a stale terminal event for a superseded
+ * query (which `applyAiStatus` ignores) never raises a false indicator, and
+ * aborted runs — the user's own doing — never count as a reply.
+ */
+function markUnreadOnReply(
+  before: AppState,
+  after: AppState,
+  topicId: string,
+  raw: unknown,
+): AppState {
+  if (topicId === before.activeTopicId || before.unread[topicId]) return after;
+  const kind = String(((raw ?? {}) as Record<string, unknown>).kind ?? "");
+  if (kind !== "ai_done" && kind !== "ai_error") return after;
+  const wasRunning = before.activity[topicId]?.running === true;
+  const stillRunning = after.activity[topicId]?.running === true;
+  if (!wasRunning || stillRunning) return after;
+  return { ...after, unread: { ...after.unread, [topicId]: true } };
+}
+
 export function applyRuntimeEvent(state: AppState, event: RuntimeBusEvent): AppState {
   if (event.type === "message") {
     return upsertMessage(state, event.payload as MessageDto);
@@ -1194,10 +1274,13 @@ export function applyRuntimeEvent(state: AppState, event: RuntimeBusEvent): AppS
     return patchMessage(state, event.topicId, payload.messageId, payload.patch);
   }
   if (event.type === "ai-status") {
-    return applyAiStatus(state, event.topicId, event.payload, event.createdAt);
+    const next = applyAiStatus(state, event.topicId, event.payload, event.createdAt);
+    return markUnreadOnReply(state, next, event.topicId, event.payload);
   }
-  if (event.type === "topic-deleted" && state.activeTopicId === event.topicId) {
-    return { ...state, activeTopicId: null };
+  if (event.type === "topic-deleted") {
+    const unread = withoutUnread(state.unread, event.topicId);
+    if (state.activeTopicId === event.topicId) return { ...state, unread, activeTopicId: null };
+    return unread === state.unread ? state : { ...state, unread };
   }
   return state;
 }

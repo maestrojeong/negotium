@@ -32,6 +32,7 @@ import {
   topicFilterInsertion,
   topicFilterPasteText,
   topicPickerTargetAt,
+  topicStepDirection,
   vaultFormBlocksOverlaySwitch,
   type WheelEvent,
 } from "@/app-helpers";
@@ -97,6 +98,7 @@ import {
   activeQuestion,
   activeTopic,
   activeVaultRequest,
+  adjacentTopicId,
   appendTopicFilter,
   applyRuntimeEvent,
   backspaceTopicFilter,
@@ -1480,6 +1482,15 @@ export class TerminalApp {
       this.#openNewTopicComposer();
       return;
     }
+    const stepDirection = topicStepDirection(chunk);
+    if (stepDirection !== null && this.#state.overlay === null) {
+      // Ctrl/Alt-↑ ↓: previous/next topic in panel order without opening the
+      // Ctrl-O picker. Never while a masked vault secret or a half-answered
+      // agent question owns the composer — switching away would strand it.
+      if (editingVaultSecret || composerHoldsSecret(this.#state)) return;
+      this.#stepTopic(stepDirection);
+      return;
+    }
     if (chunk === "\u0010") {
       if (editingVaultSecret) return;
       this.#state = toggleTopicsPanel(this.#state); // Ctrl-P: topics + tasks side panel
@@ -2058,6 +2069,13 @@ export class TerminalApp {
       };
     }
     this.#queueRender();
+  }
+
+  /** Moves to the previous (-1) or next (1) topic in panel order, wrapping. */
+  #stepTopic(delta: -1 | 1): void {
+    const topicId = adjacentTopicId(this.#state, delta);
+    if (topicId === null) return;
+    void this.#activateTopic(topicId);
   }
 
   #toggleTopics(forceOpen = false): void {

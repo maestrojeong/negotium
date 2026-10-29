@@ -7,6 +7,7 @@ import {
   sanitizePastedText,
   splitBracketedPaste,
   terminalNewlineShortcut,
+  topicStepDirection,
 } from "@/app-helpers";
 
 const ESC = "\u001b";
@@ -464,4 +465,23 @@ test("passes through bytes that only looked like the start of a sequence", () =>
   const runaway = `${ESC}[${"9".repeat(64)}`;
   expect(splitBracketedPaste(runaway, false).carry).toBe("");
   expect(splitBracketedPaste(runaway, false).segments).toEqual([{ kind: "keys", text: runaway }]);
+});
+
+test("topic step keys: Ctrl/Alt arrows, Caps Lock variants and Terminal.app's doubled-escape Option arrows", () => {
+  // Ctrl-↑/↓ and Alt-↑/↓ in the standard xterm form.
+  expect(topicStepDirection("\u001b[1;5A")).toBe(-1);
+  expect(topicStepDirection("\u001b[1;5B")).toBe(1);
+  expect(topicStepDirection("\u001b[1;3A")).toBe(-1);
+  expect(topicStepDirection("\u001b[1;3B")).toBe(1);
+  // Caps Lock inflates the modifier field; normalization folds it back.
+  expect(topicStepDirection(normalizeKeySequences("\u001b[1;69A"))).toBe(-1);
+  expect(topicStepDirection(normalizeKeySequences("\u001b[1;69B"))).toBe(1);
+  // macOS Terminal.app, "Use Option as Meta key": Option-↑/↓ is ESC ESC [ A/B.
+  expect(topicStepDirection(normalizeKeySequences("\u001b\u001b[A"))).toBe(-1);
+  expect(topicStepDirection(normalizeKeySequences("\u001b\u001b[B"))).toBe(1);
+  // Plain arrows (history) and word movement must stay untouched.
+  expect(topicStepDirection("\u001b[A")).toBeNull();
+  expect(topicStepDirection("\u001b[B")).toBeNull();
+  expect(topicStepDirection("\u001b[1;3D")).toBeNull();
+  expect(topicStepDirection("\u001bb")).toBeNull();
 });

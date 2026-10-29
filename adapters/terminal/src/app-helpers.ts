@@ -351,6 +351,30 @@ const CSI_LETTER_PATTERN = new RegExp(`${ESC}\\[1;(\\d+)(?::\\d+)*([A-Z])`, "g")
 const CSI_TILDE_PATTERN = new RegExp(`${ESC}\\[(\\d+);(\\d+)(?::\\d+)*~`, "g");
 
 /**
+ * Previous (-1) / next (1) topic for the key chords that step through the
+ * Topics panel without opening the `Ctrl-O` picker, or null for any other key.
+ *
+ * Ctrl-↑/↓ and Alt-↑/↓ arrive as `CSI 1;5 A/B` and `CSI 1;3 A/B` once
+ * {@link normalizeKeySequences} has run. macOS Terminal.app with "Use Option
+ * as Meta key" sends Option-↑/↓ as a doubled escape instead (`ESC ESC [ A/B`),
+ * so that form is accepted too.
+ */
+export function topicStepDirection(chunk: string): -1 | 1 | null {
+  switch (chunk) {
+    case "\u001b[1;5A":
+    case "\u001b[1;3A":
+    case "\u001b\u001b[A":
+      return -1;
+    case "\u001b[1;5B":
+    case "\u001b[1;3B":
+    case "\u001b\u001b[B":
+      return 1;
+    default:
+      return null;
+  }
+}
+
+/**
  * Rewrites keyboard-protocol variants into the single form the dispatch table
  * matches. Runs exactly once, immediately before dispatch, so every downstream
  * comparison keeps working against plain legacy bytes.

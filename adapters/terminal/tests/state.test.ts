@@ -3,6 +3,7 @@ import type { MessageDto, TopicDto } from "@negotium/core";
 import {
   activeQuestion,
   activeVaultRequest,
+  adjacentTopicId,
   appendTopicFilter,
   applyRuntimeEvent,
   backspaceTopicFilter,
@@ -1056,5 +1057,90 @@ describe("topic picker filter", () => {
     expect(openTopicPicker(state).topicFilter).toBe("");
     state = selectTopic(state, "a");
     expect(state.topicFilter).toBe("");
+  });
+});
+
+describe("unread reply indicator", () => {
+  const two = [topic("a", "A"), topic("b", "B")];
+  const status = (topicId: string, payload: Record<string, unknown>) =>
+    ({ type: "ai-status", topicId, payload }) as const;
+
+  function backgroundRun(kind: string, queryId = "q1") {
+    // "a" is on screen; "b" starts and then ends a run in the background.
+    let state = selectTopic(setTopics(createInitialState("local"), two), "a");
+    state = applyRuntimeEvent(state, status("b", { kind: "ai_active", queryId }));
+    return applyRuntimeEvent(state, status("b", { kind, queryId }));
+  }
+
+  test("flags a background topic when its run finishes or errors", () => {
+    expect(backgroundRun("ai_done").unread).toEqual({ b: true });
+    expect(backgroundRun("ai_error").unread).toEqual({ b: true });
+  });
+
+  test("never flags aborts, the topic on screen, or a run that never started", () => {
+    expect(backgroundRun("ai_aborted").unread).toEqual({});
+
+    let onScreen = selectTopic(setTopics(createInitialState("local"), two), "a");
+    onScreen = applyRuntimeEvent(onScreen, status("a", { kind: "ai_active", queryId: "q" }));
+    onScreen = applyRuntimeEvent(onScreen, status("a", { kind: "ai_done", queryId: "q" }));
+    expect(onScreen.unread).toEqual({});
+
+    const idle = selectTopic(setTopics(createInitialState("local"), two), "a");
+    expect(applyRuntimeEvent(idle, status("b", { kind: "ai_done", queryId: "q" })).unread).toEqual(
+      {},
+    );
+  });
+
+  test("a stale terminal event from a superseded query does not flag", () => {
+    let state = selectTopic(setTopics(createInitialState("local"), two), "a");
+    state = applyRuntimeEvent(state, status("b", { kind: "ai_active", queryId: "old" }));
+    state = applyRuntimeEvent(state, status("b", { kind: "ai_active", queryId: "new" }));
+    state = applyRuntimeEvent(state, status("b", { kind: "ai_done", queryId: "old" }));
+    expect(state.unread).toEqual({});
+  });
+
+  test("opening the topic clears the flag", () => {
+    expect(selectTopic(backgroundRun("ai_done"), "b").unread).toEqual({});
+  });
+
+  test("forgets flags of topics deleted on the node", () => {
+    const flagged = backgroundRun("ai_done");
+    const afterDelete = applyRuntimeEvent(flagged, {
+      type: "topic-deleted",
+      topicId: "b",
+      payload: {},
+    } as never);
+    expect(afterDelete.unread).toEqual({});
+    expect(setTopics(flagged, [topic("a", "A")]).unread).toEqual({});
+  });
+});
+
+describe("adjacent topic navigation", () => {
+  const three = [topic("a", "Alpha"), topic("b", "Beta"), topic("c", "Gamma")];
+
+  test("steps through the panel order and wraps at both ends", () => {
+    let state = selectTopic(setTopics(createInitialState("local"), three), "a");
+    // "activity" sort with everything idle keeps list order.
+    expect(adjacentTopicId(state, 1)).toBe("b");
+    expect(adjacentTopicId(state, -1)).toBe("c");
+    state = selectTopic(state, "c");
+    expect(adjacentTopicId(state, 1)).toBe("a");
+  });
+
+  test("follows the name sort when the panel is sorted by name", () => {
+    let state = setTopics(createInitialState("local"), [
+      topic("z", "Zulu"),
+      topic("m", "Mike"),
+      topic("a", "Alpha"),
+    ]);
+    state = selectTopic(cycleTopicsPanelSort(state), "a");
+    expect(adjacentTopicId(state, 1)).toBe("m");
+    expect(adjacentTopicId(state, -1)).toBe("z");
+  });
+
+  test("goes nowhere with fewer than two topics", () => {
+    const solo = selectTopic(setTopics(createInitialState("local"), [topic("a", "A")]), "a");
+    expect(adjacentTopicId(solo, 1)).toBeNull();
+    expect(adjacentTopicId(createInitialState("local"), 1)).toBeNull();
   });
 });
