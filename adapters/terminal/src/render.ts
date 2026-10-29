@@ -53,6 +53,7 @@ const theme = {
   cyan: [87, 205, 220] as Rgb,
   tool: [196, 181, 253] as Rgb,
   green: [94, 211, 142] as Rgb,
+  blue: [96, 165, 250] as Rgb,
   diffAddBg: [18, 43, 32] as Rgb,
   amber: [241, 190, 91] as Rgb,
   red: [245, 116, 128] as Rgb,
@@ -1433,8 +1434,8 @@ export function maxTerminalPaneWidth(state: AppState, columns: number): number {
 }
 
 /**
- * Working/blocked/idle, in that priority — herdr's sidebar marks every pane
- * one of these three so "the one that needs you" is never just another
+ * Blocked, working, unread, idle, in that priority — herdr's sidebar marks every
+ * pane one of these so "the one that needs you" is never just another
  * idle row. `blockedQuestionText` reaches every topic's `state.messages`,
  * not only the active one, the same way `state.activity[topicId]?.running`
  * already does.
@@ -1449,6 +1450,9 @@ function topicStatusIndicator(
   if (state.activity[topic.id]?.running) {
     return { icon: workingFrame(animationFrame), fg: theme.green };
   }
+  // A reply landed while another topic was on screen and has not been opened
+  // since — client-local, cleared by `selectTopic`.
+  if (state.unread[topic.id]) return { icon: "●", fg: theme.blue };
   return { icon: "○", fg: theme.muted };
 }
 
@@ -1863,6 +1867,7 @@ function helpLines(): UiLine[] {
     line("  Ctrl-R sort topics panel (activity / name) · drag a │ divider to resize"),
     line("  Ctrl-T open/close a shell on the right (closing ends it) · click it to type"),
     line("  Ctrl-O topics · Ctrl-G subagents · Ctrl-D decisions · Ctrl-X abort"),
+    line("  Ctrl/Alt-↑ ↓ step through topics · a blue ● marks an unread reply"),
     line("  In topics: type to filter · Ctrl-N new · Ctrl-D delete"),
     line("  Esc/Ctrl-C stop active turn · Ctrl-C twice when idle to quit"),
     line(""),

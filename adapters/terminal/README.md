@@ -89,6 +89,7 @@ indicator. Topics and transcript use temporary overlays.
 | `Ctrl-E` | load one older 50-message page |
 | Mouse drag | select screen text and copy it on release |
 | `Ctrl-O` | toggle topic overlay; `Ctrl-C` there exits the TUI while work continues |
+| `Ctrl-↑` / `Ctrl-↓` | switch to the previous / next topic in Topics-panel order, wrapping at the ends (also `Alt-↑` / `Alt-↓`; on macOS Terminal.app with "Use Option as Meta key", `Option-↑` / `Option-↓`) |
 | `Ctrl-G` | toggle the subagent graph overlay |
 | `Ctrl-D` | toggle the current topic's decision graph (`Ctrl-D` deletes only inside Topics) |
 | `Ctrl-T` | toggle the Tasks sidebar |
@@ -97,6 +98,10 @@ indicator. Topics and transcript use temporary overlays.
 | `Ctrl-L` | redraw |
 | `Esc` | abort the active turn; otherwise close overlay or clear composer |
 | `Ctrl-C` | abort in a conversation; exit without aborting from Topics; press twice on an idle screen to quit |
+
+A topic whose run finished (or failed) while another topic was on screen shows a blue `●` in the
+Topics panel and the `Ctrl-O` list until you open it. The marker is client-local state: it is not
+sent to the node and does not survive restarting the Terminal.
 
 In the topic overlay:
 
