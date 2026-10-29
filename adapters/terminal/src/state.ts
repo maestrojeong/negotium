@@ -100,6 +100,12 @@ export interface AppState {
   topicUsage: Record<string, TopicUsageSummary>;
   messageHistory: Record<string, MessageHistoryStatus>;
   activity: Record<string, TopicActivity>;
+  /**
+   * Topics whose agent finished a reply (or errored) while another topic was
+   * on screen. Client-local only: never persisted and never sent to the node.
+   * Cleared as soon as the topic becomes the active one.
+   */
+  unread: Record<string, true>;
   input: string;
   inputCursor: { row: number; col: number };
   suggestionIndex: number;
@@ -192,6 +198,7 @@ export function createInitialState(userId: string): AppState {
     topicUsage: {},
     messageHistory: {},
     activity: {},
+    unread: {},
     input: "",
     inputCursor: { row: 0, col: 0 },
     suggestionIndex: 0,
@@ -592,17 +599,12 @@ function topicPickerItems(state: AppState): TopicPickerItem[] {
   const indexedTopics = state.topics
     .map((topic, index) => ({ topic, index }))
     .filter(({ topic }) => visible.has(topic.id));
-  const managerEntries = sortedTopicEntries(
-    state,
-    indexedTopics.filter(({ topic }) => topic.kind === "manager"),
-  );
-  const regularEntries = sortedTopicEntries(
-    state,
-    indexedTopics.filter(({ topic }) => topic.kind !== "manager"),
-  );
   return [
-    ...managerEntries.map(({ topic, index }) => ({ kind: "topic" as const, id: topic.id, index })),
-    ...regularEntries.map(({ topic, index }) => ({ kind: "topic" as const, id: topic.id, index })),
+    ...managerFirstTopicEntries(state, indexedTopics).map(({ topic, index }) => ({
+      kind: "topic" as const,
+      id: topic.id,
+      index,
+    })),
     ...visibleBackgroundSessions(state).map((session) => ({
       kind: "background" as const,
       id: session.id,
@@ -727,6 +729,7 @@ export function setTopics(state: AppState, topics: TopicDto[], preferredTitle?: 
     ...state,
     topics: orderedTopics,
     activity,
+    unread: withoutUnread(state.unread, nextActive),
     activeTopicId: nextActive,
     scrollOffset: nextActive === state.activeTopicId ? state.scrollOffset : 0,
     askChoiceIndex: nextActive === state.activeTopicId ? state.askChoiceIndex : 0,
@@ -746,10 +749,51 @@ export function setTopics(state: AppState, topics: TopicDto[], preferredTitle?: 
   });
 }
 
+/** Drops `topicId` from an unread map, returning the same object when absent. */
+function withoutUnread(unread: AppState["unread"], topicId: string | null): AppState["unread"] {
+  if (topicId === null || !unread[topicId]) return unread;
+  const next = { ...unread };
+  delete next[topicId];
+  return next;
+}
+
+/**
+ * Managers first, then the regular topics, each group in `sortedTopicEntries`
+ * order — the one ordering the Topics panel, the `Ctrl-O` picker and topic
+ * stepping all share.
+ */
+function managerFirstTopicEntries<T extends { topic: TopicDto }>(
+  state: AppState,
+  entries: T[],
+): T[] {
+  return [
+    ...sortedTopicEntries(
+      state,
+      entries.filter(({ topic }) => topic.kind === "manager"),
+    ),
+    ...sortedTopicEntries(
+      state,
+      entries.filter(({ topic }) => topic.kind !== "manager"),
+    ),
+  ];
+}
+
+/** The topic `delta` rows from the active one in panel order, wrapping at either end. */
+export function adjacentTopicId(state: AppState, delta: -1 | 1): string | null {
+  const order = managerFirstTopicEntries(
+    state,
+    state.topics.map((topic) => ({ topic })),
+  ).map(({ topic }) => topic.id);
+  const current = order.indexOf(state.activeTopicId ?? "");
+  if (current < 0 || order.length < 2) return null;
+  return order[(current + delta + order.length) % order.length] ?? null;
+}
+
 export function selectTopic(state: AppState, topicId: string): AppState {
   if (!state.topics.some((topic) => topic.id === topicId)) return state;
   return {
     ...state,
+    unread: withoutUnread(state.unread, topicId),
     activeTopicId: topicId,
     scrollOffset: 0,
     askChoiceIndex: 0,
@@ -863,6 +907,16 @@ function removeMessage(state: AppState, topicId: string, messageId: string): App
   const next = current.filter((message) => message.id !== messageId);
   if (next.length === current.length) return state;
   return { ...state, messages: { ...state.messages, [topicId]: next } };
+}
+
+/**
+ * Marks `topicId` unread when its run just ended while another topic is on
+ * screen. `wasRunning` keeps replayed or late terminal events for a run this
+ * client never saw start from raising a false indicator.
+ */
+function flagUnreadReply(state: AppState, topicId: string, wasRunning: boolean): AppState {
+  if (!wasRunning || topicId === state.activeTopicId) return state;
+  return { ...state, unread: { ...state.unread, [topicId]: true } };
 }
 
 function activityFor(state: AppState, topicId: string): TopicActivity {
@@ -1076,11 +1130,15 @@ function applyAiStatus(
     // already broadcast ai_active. Its late terminal event must not stop the
     // replacement's spinner or overwrite its status.
     if (isStaleTerminalStatus(current, status)) return state;
-    return setActivity(state, topicId, {
-      ...liveCurrent,
-      running: false,
-      status: "Done",
-    });
+    return flagUnreadReply(
+      setActivity(state, topicId, {
+        ...liveCurrent,
+        running: false,
+        status: "Done",
+      }),
+      topicId,
+      current.running,
+    );
   }
   if (kind === "ai_aborted") {
     if (isStaleTerminalStatus(current, status)) return state;
@@ -1092,12 +1150,16 @@ function applyAiStatus(
   }
   if (kind === "ai_error") {
     if (isStaleTerminalStatus(current, status)) return state;
-    return setActivity(state, topicId, {
-      ...liveCurrent,
-      running: false,
-      status: "Error",
-      error: String(status.error ?? "Unknown error"),
-    });
+    return flagUnreadReply(
+      setActivity(state, topicId, {
+        ...liveCurrent,
+        running: false,
+        status: "Error",
+        error: String(status.error ?? "Unknown error"),
+      }),
+      topicId,
+      current.running,
+    );
   }
   if (kind === "tool_call") {
     if (isStaleTerminalStatus(current, status)) return state;

@@ -3,6 +3,7 @@ import type { MessageDto, TopicDto } from "@negotium/core";
 import {
   activeQuestion,
   activeVaultRequest,
+  adjacentTopicId,
   appendTopicFilter,
   applyRuntimeEvent,
   backspaceTopicFilter,
@@ -1057,4 +1058,23 @@ describe("topic picker filter", () => {
     state = selectTopic(state, "a");
     expect(state.topicFilter).toBe("");
   });
+});
+
+test("flags a background topic when its run finishes; opening it clears the flag", () => {
+  const ai = (topicId: string, kind: string) =>
+    ({ type: "ai-status", topicId, payload: { kind, queryId: "q" } }) as const;
+  let state = selectTopic(
+    setTopics(createInitialState("local"), [topic("a", "A"), topic("b", "B")]),
+    "a",
+  );
+  state = applyRuntimeEvent(applyRuntimeEvent(state, ai("b", "ai_active")), ai("b", "ai_done"));
+  expect(state.unread).toEqual({ b: true });
+  expect(selectTopic(state, "b").unread).toEqual({});
+});
+
+test("adjacentTopicId steps through the panel order and wraps", () => {
+  const topics = [topic("a", "A"), topic("b", "B"), topic("c", "C")];
+  const state = selectTopic(setTopics(createInitialState("local"), topics), "a");
+  expect(adjacentTopicId(state, 1)).toBe("b");
+  expect(adjacentTopicId(state, -1)).toBe("c");
 });

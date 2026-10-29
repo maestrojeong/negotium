@@ -97,6 +97,7 @@ import {
   activeQuestion,
   activeTopic,
   activeVaultRequest,
+  adjacentTopicId,
   appendTopicFilter,
   applyRuntimeEvent,
   backspaceTopicFilter,
@@ -298,6 +299,9 @@ export const ABORT_ENTER_ALT_SCREEN = altScreenSequences().abortEnter;
 const NEW_TOPIC_KEY = "\u000e"; // Ctrl-N
 const DELETE_TOPIC_KEY = "\u0004"; // Ctrl-D
 const TERMINAL_PANE_KEY = "\u0014"; // Ctrl-T
+// Ctrl/Alt-↑ ↓, plus the `ESC ESC [ A/B` macOS Terminal.app sends for Option-↑ ↓.
+const PREVIOUS_TOPIC_KEYS = new Set(["\u001b[1;5A", "\u001b[1;3A", "\u001b\u001b[A"]);
+const NEXT_TOPIC_KEYS = new Set(["\u001b[1;5B", "\u001b[1;3B", "\u001b\u001b[B"]);
 /** Backspace, in both the DEL and BS encodings terminals send. */
 const FILTER_BACKSPACE_KEYS = new Set(["\u007f", "\b"]);
 const CONFIRM_KEYS = new Set(["y", "ㅛ"]);
@@ -1478,6 +1482,14 @@ export class TerminalApp {
         return;
       }
       this.#openNewTopicComposer();
+      return;
+    }
+    if (
+      this.#state.overlay === null &&
+      (PREVIOUS_TOPIC_KEYS.has(chunk) || NEXT_TOPIC_KEYS.has(chunk))
+    ) {
+      const topicId = adjacentTopicId(this.#state, PREVIOUS_TOPIC_KEYS.has(chunk) ? -1 : 1);
+      if (topicId !== null) void this.#activateTopic(topicId);
       return;
     }
     if (chunk === "\u0010") {
