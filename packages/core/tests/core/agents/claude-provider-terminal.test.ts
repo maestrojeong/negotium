@@ -61,6 +61,47 @@ describe("claudeProvider terminal handling", () => {
     });
   });
 
+  test("surfaces non-fatal notices as status without failing the turn", async () => {
+    mock.module("@anthropic-ai/claude-agent-sdk", () => ({
+      query: async function* () {
+        yield { type: "system", subtype: "init", session_id: "sess-notices" };
+        yield {
+          type: "system",
+          subtype: "api_retry",
+          attempt: 1,
+          max_retries: 10,
+          retry_delay_ms: 1_000,
+          error_status: 529,
+          error: "overloaded",
+        };
+        yield { type: "system", subtype: "brand_new_subtype" };
+        yield { type: "brand_new_type", payload: {} };
+        yield { type: "rate_limit_event", rate_limit_info: { status: "allowed" } };
+        yield { type: "result", subtype: "success", result: "done", stop_reason: "end_turn" };
+      },
+    }));
+
+    const { claudeProvider } = await import("#agents/claude-provider");
+    const events = [];
+    for await (const event of claudeProvider({
+      agent: "claude",
+      prompt: "do work",
+      session: "dev",
+      sessionType: "forum",
+      systemPrompt: "system",
+      cwd: "/tmp",
+      userId: "test-user",
+    })) {
+      events.push(event);
+    }
+
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events.filter((event) => event.type === "status")).toEqual([
+      { type: "status", content: "Claude is overloaded · retrying in 1s (1/10)" },
+    ]);
+    expect(events).toContainEqual(expect.objectContaining({ type: "result", content: "done" }));
+  });
+
   test("emits completed assistant blocks in canonical text/tool order", async () => {
     mock.module("@anthropic-ai/claude-agent-sdk", () => ({
       query: async function* () {
