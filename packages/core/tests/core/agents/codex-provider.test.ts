@@ -313,7 +313,9 @@ describe.skipIf(process.platform === "win32")("codexProvider stale rollout recov
 
     expect(events.some((event) => event.type === "error")).toBe(false);
     expect(events).toContainEqual({ type: "status", content: "stream disconnected, retrying" });
-    expect(events).toContainEqual(expect.objectContaining({ type: "result", content: "recovered" }));
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "result", content: "recovered" }),
+    );
 
     streamedEvents = async function* failedAfterStreamError() {
       yield { type: "thread.started", thread_id: "019dee65-ffff-7aaa-8aaa-ffffffffffff" };
