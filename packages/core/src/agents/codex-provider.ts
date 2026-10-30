@@ -64,6 +64,18 @@ type CodexEventUsage = {
 const CODEX_HOOK_TRUST_BYPASS_NOTICE =
   "`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.";
 
+/**
+ * One short status line from a free-form Codex notice. Codex sends prose with
+ * no stable code, so only the shape is used: its first sentence, labeled as
+ * Codex's. The full text stays in the log.
+ */
+export function codexNoticeStatus(message: string): string {
+  const firstLine = message.trim().split("\n")[0]?.trim() ?? "";
+  const sentence = /^.*?[.!?](?=\s|$)/.exec(firstLine)?.[0] ?? firstLine;
+  if (!sentence) return "Codex notice";
+  return /^codex\b/i.test(sentence) ? sentence : `Codex: ${sentence}`;
+}
+
 function sameCodexUsage(usage: CodexEventUsage, total: CodexTokenTotals): boolean {
   return (
     usage.input_tokens === total.inputTokens &&
@@ -760,7 +772,6 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
       hooks: vaultHook.hooks,
       model_catalog_json: codexModelCatalogPath,
       mcp_servers: codexMcpServers,
-      ...(opts.toolPolicy ? { sandbox_permissions: [] } : {}),
     },
   });
 
@@ -844,6 +855,9 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
       trackedPids.pids = [];
       let heartbeatTriggered = false;
       let attemptCompleted = false;
+      let turnFailed = false;
+      // Last top-level `error` event; fatal only if the turn never completes.
+      let streamError: string | undefined;
       let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
 
       const scheduleHeartbeat = () => {
@@ -927,6 +941,7 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
               cache_write_input_tokens?: number;
             };
             error?: { message?: string };
+            message?: string;
           };
 
           switch (event.type) {
@@ -1035,9 +1050,14 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
                   yield fileEvent;
                 }
               } else if (item.type === "error") {
+                // The SDK types error items as non-fatal: the turn keeps running
+                // and real failures arrive as `turn.failed` or a top-level
+                // `error`. Yielding an error here would end the turn (and fail
+                // compaction) over a notice such as an ignored config key.
                 const message = String(item.message ?? "");
                 if (message !== CODEX_HOOK_TRUST_BYPASS_NOTICE) {
-                  yield { type: "error", content: message };
+                  logger.warn({ message }, "codexProvider: codex non-fatal error item");
+                  yield { type: "status", content: codexNoticeStatus(message) };
                 }
               }
               break;
@@ -1071,7 +1091,19 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
               break;
             }
 
+            case "error": {
+              // `codex exec` keeps running after a top-level error (e.g. a stream
+              // error it retries); only `turn.failed` or a turn that never
+              // completes is fatal. Keep the message to explain the latter.
+              const message = event.message || "Codex stream error";
+              logger.warn({ message }, "codexProvider: codex stream error event");
+              streamError = message;
+              yield { type: "status", content: codexNoticeStatus(message) };
+              break;
+            }
+
             case "turn.failed": {
+              turnFailed = true;
               stopReason = "error";
               yield {
                 type: "error",
@@ -1083,6 +1115,11 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
             default:
               break;
           }
+        }
+
+        if (!attemptCompleted && !turnFailed && streamError) {
+          stopReason = "error";
+          yield { type: "error", content: streamError };
         }
       } catch (err) {
         if (abortSignal?.aborted) return;
