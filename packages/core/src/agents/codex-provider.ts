@@ -64,6 +64,18 @@ type CodexEventUsage = {
 const CODEX_HOOK_TRUST_BYPASS_NOTICE =
   "`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.";
 
+/**
+ * One short status line from a free-form Codex notice. Codex sends prose with
+ * no stable code, so only the shape is used: its first sentence, labeled as
+ * Codex's. The full text stays in the log.
+ */
+export function codexNoticeStatus(message: string): string {
+  const firstLine = message.trim().split("\n")[0]?.trim() ?? "";
+  const sentence = /^.*?[.!?](?=\s|$)/.exec(firstLine)?.[0] ?? firstLine;
+  if (!sentence) return "Codex notice";
+  return /^codex\b/i.test(sentence) ? sentence : `Codex: ${sentence}`;
+}
+
 function sameCodexUsage(usage: CodexEventUsage, total: CodexTokenTotals): boolean {
   return (
     usage.input_tokens === total.inputTokens &&
@@ -1045,7 +1057,7 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
                 const message = String(item.message ?? "");
                 if (message !== CODEX_HOOK_TRUST_BYPASS_NOTICE) {
                   logger.warn({ message }, "codexProvider: codex non-fatal error item");
-                  yield { type: "status", content: message };
+                  yield { type: "status", content: codexNoticeStatus(message) };
                 }
               }
               break;
@@ -1086,7 +1098,7 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
               const message = event.message || "Codex stream error";
               logger.warn({ message }, "codexProvider: codex stream error event");
               streamError = message;
-              yield { type: "status", content: message };
+              yield { type: "status", content: codexNoticeStatus(message) };
               break;
             }
 

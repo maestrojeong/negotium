@@ -94,11 +94,27 @@ mock.module("#platform/mcp-config", () => ({
   getMcpServersForQuery: () => ({}),
 }));
 
-const { codexProvider, normalizeCodexTurnUsage, toCodexMcpServers } = await import(
-  "#agents/codex-provider"
-);
+const { codexNoticeStatus, codexProvider, normalizeCodexTurnUsage, toCodexMcpServers } =
+  await import("#agents/codex-provider");
 const { configureAgentExecutionHost } = await import("#agents/execution-host");
 let restoreExecutionHost: (() => void) | undefined;
+
+describe("codexNoticeStatus", () => {
+  test("keeps the first sentence and labels it as Codex's", () => {
+    expect(
+      codexNoticeStatus(
+        "Codex is ignoring 1 unrecognized configuration setting. Check for typos.\n  session-flags: x",
+      ),
+    ).toBe("Codex is ignoring 1 unrecognized configuration setting.");
+    expect(codexNoticeStatus("Model rerouted to gpt-6.1-terra for this turn. Details")).toBe(
+      "Codex: Model rerouted to gpt-6.1-terra for this turn.",
+    );
+    expect(codexNoticeStatus("stream disconnected, retrying")).toBe(
+      "Codex: stream disconnected, retrying",
+    );
+    expect(codexNoticeStatus("  ")).toBe("Codex notice");
+  });
+});
 
 describe("Codex usage normalization", () => {
   const baseline = {
@@ -293,7 +309,10 @@ describe.skipIf(process.platform === "win32")("codexProvider stale rollout recov
     for await (const event of codexProvider(opts({ sessionId: null }))) events.push(event);
 
     expect(events.some((event) => event.type === "error")).toBe(false);
-    expect(events).toContainEqual({ type: "status", content: configNotice });
+    expect(events).toContainEqual({
+      type: "status",
+      content: "Codex is ignoring 1 unrecognized configuration setting.",
+    });
     expect(events.filter((event) => event.type === "status")).toHaveLength(1);
     expect(events).toContainEqual(
       expect.objectContaining({ type: "result", content: "completed despite notice" }),
@@ -312,7 +331,10 @@ describe.skipIf(process.platform === "win32")("codexProvider stale rollout recov
     for await (const event of codexProvider(opts({ sessionId: null }))) events.push(event);
 
     expect(events.some((event) => event.type === "error")).toBe(false);
-    expect(events).toContainEqual({ type: "status", content: "stream disconnected, retrying" });
+    expect(events).toContainEqual({
+      type: "status",
+      content: "Codex: stream disconnected, retrying",
+    });
     expect(events).toContainEqual(
       expect.objectContaining({ type: "result", content: "recovered" }),
     );
