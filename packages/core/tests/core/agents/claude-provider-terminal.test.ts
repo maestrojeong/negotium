@@ -97,7 +97,7 @@ describe("claudeProvider terminal handling", () => {
 
     expect(events.some((event) => event.type === "error")).toBe(false);
     expect(events.filter((event) => event.type === "status")).toEqual([
-      { type: "status", content: "Retrying API request (overloaded, attempt 1/10, in 1s)" },
+      { type: "status", content: "Claude is overloaded · retrying in 1s (1/10)" },
     ]);
     expect(events).toContainEqual(expect.objectContaining({ type: "result", content: "done" }));
   });

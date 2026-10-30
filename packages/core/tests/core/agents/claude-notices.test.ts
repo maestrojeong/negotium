@@ -18,7 +18,34 @@ describe("claudeNoticeStatus", () => {
         error_status: 529,
         error: "overloaded",
       }),
-    ).toBe("Retrying API request (overloaded, attempt 2/10, in 4s)");
+    ).toBe("Claude is overloaded · retrying in 4s (2/10)");
+  });
+
+  test("explains dropped connections and retries without a delay", () => {
+    expect(
+      notice({
+        type: "system",
+        subtype: "api_retry",
+        attempt: 1,
+        max_retries: 10,
+        retry_delay_ms: 0,
+        error_status: null,
+        error: "unknown",
+      }),
+    ).toBe("Lost connection to Claude · retrying now (1/10)");
+  });
+
+  test("names the blocked tool and why", () => {
+    expect(
+      notice({
+        type: "system",
+        subtype: "permission_denied",
+        tool_name: "mcp__browser__navigate",
+        tool_use_id: "t2",
+        decision_reason_type: "rule",
+        message: "denied",
+      }),
+    ).toBe("navigate was blocked by a permission rule");
   });
 
   test("describes model refusals", () => {
@@ -31,7 +58,7 @@ describe("claudeNoticeStatus", () => {
         fallback_model: "claude-sonnet-5-5",
         content: "",
       }),
-    ).toBe("claude-opus-5-5 declined; retrying with claude-sonnet-5-5");
+    ).toBe("Opus 5.5 declined · Sonnet 5.5 is answering instead");
     expect(
       notice({
         type: "system",
@@ -39,7 +66,7 @@ describe("claudeNoticeStatus", () => {
         original_model: "claude-opus-5-5",
         content: "The model declined this request.",
       }),
-    ).toBe("The model declined this request.");
+    ).toBe("Opus 5.5 declined this request");
   });
 
   test("describes auto-denied tool calls", () => {
@@ -52,7 +79,7 @@ describe("claudeNoticeStatus", () => {
         decision_reason: "blocked by rule",
         message: "denied",
       }),
-    ).toBe("Denied Bash: blocked by rule");
+    ).toBe("Bash was blocked: blocked by rule");
   });
 
   test("shows only prominent informational messages", () => {
@@ -77,8 +104,8 @@ describe("claudeNoticeStatus", () => {
         rate_limit_info: { status, rateLimitType: "five_hour" },
       });
     expect(rateLimit("allowed")).toBeUndefined();
-    expect(rateLimit("allowed_warning")).toBe("Approaching the Claude usage limit (five_hour)");
-    expect(rateLimit("rejected")).toBe("Claude usage limit reached (five_hour)");
+    expect(rateLimit("allowed_warning")).toBe("Nearing your 5-hour Claude usage limit");
+    expect(rateLimit("rejected")).toBe("Reached your 5-hour Claude usage limit");
   });
 
   test("ignores unknown and malformed messages instead of failing", () => {
