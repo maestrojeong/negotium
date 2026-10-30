@@ -305,6 +305,26 @@ describe.skipIf(process.platform === "win32")("codexProvider stale rollout recov
     );
   });
 
+  test("ignores the unrecognized config notice so the turn still completes", async () => {
+    const notice =
+      "Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  session-flags: `sandbox_permissions` is ignored.";
+    streamedEvents = async function* configNotice() {
+      yield { type: "thread.started", thread_id: "019dee65-ffff-7aaa-8aaa-dddddddddddd" };
+      yield { type: "item.completed", item: { type: "error", message: notice } };
+      yield {
+        type: "item.completed",
+        item: { type: "agent_message", text: "summary" },
+      };
+      yield { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } };
+    };
+
+    const events = [];
+    for await (const event of codexProvider(opts({ sessionId: null }))) events.push(event);
+
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({ type: "result", content: "summary" }));
+  });
+
   test("isolates no-tool auxiliary calls from MCP, network, and writable sandbox access", async () => {
     const configPath = join(codexAuthDir, "config.toml");
     writeFileSync(
@@ -344,7 +364,6 @@ describe.skipIf(process.platform === "win32")("codexProvider stale rollout recov
           "cua-rs": expect.objectContaining({ enabled: false }),
           global_filesystem: expect.objectContaining({ enabled: false }),
         },
-        sandbox_permissions: [],
       },
     });
     expect(startThread).toHaveBeenCalledWith(
@@ -390,7 +409,6 @@ describe.skipIf(process.platform === "win32")("codexProvider stale rollout recov
           patchright: expect.objectContaining({ enabled: false }),
           "cua-rs": expect.objectContaining({ enabled: false }),
         },
-        sandbox_permissions: [],
       },
     });
     expect(startThread).toHaveBeenCalledWith(

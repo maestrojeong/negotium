@@ -63,6 +63,7 @@ type CodexEventUsage = {
 
 const CODEX_HOOK_TRUST_BYPASS_NOTICE =
   "`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.";
+const CODEX_UNRECOGNIZED_CONFIG_NOTICE_PREFIX = "Codex is ignoring ";
 
 function sameCodexUsage(usage: CodexEventUsage, total: CodexTokenTotals): boolean {
   return (
@@ -760,7 +761,6 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
       hooks: vaultHook.hooks,
       model_catalog_json: codexModelCatalogPath,
       mcp_servers: codexMcpServers,
-      ...(opts.toolPolicy ? { sandbox_permissions: [] } : {}),
     },
   });
 
@@ -1036,7 +1036,11 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
                 }
               } else if (item.type === "error") {
                 const message = String(item.message ?? "");
-                if (message !== CODEX_HOOK_TRUST_BYPASS_NOTICE) {
+                if (message.startsWith(CODEX_UNRECOGNIZED_CONFIG_NOTICE_PREFIX)) {
+                  // Codex reports ignored config keys as an error item but keeps
+                  // running the turn; failing on it aborts compaction and turns.
+                  logger.warn({ message }, "codexProvider: codex ignored config settings");
+                } else if (message !== CODEX_HOOK_TRUST_BYPASS_NOTICE) {
                   yield { type: "error", content: message };
                 }
               }
