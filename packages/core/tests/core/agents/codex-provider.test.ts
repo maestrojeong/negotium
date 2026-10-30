@@ -268,8 +268,10 @@ describe.skipIf(process.platform === "win32")("codexProvider stale rollout recov
     expect(events).toContainEqual({ type: "text", content: "fresh answer" });
   });
 
-  test("ignores the hook bypass notice without hiding other Codex errors", async () => {
-    streamedEvents = async function* hookNoticeAndError() {
+  test("surfaces non-fatal error items as status so the turn still completes", async () => {
+    const configNotice =
+      "Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  session-flags: `sandbox_permissions` is ignored.";
+    streamedEvents = async function* nonFatalNotices() {
       yield { type: "thread.started", thread_id: "019dee65-ffff-7aaa-8aaa-cccccccccccc" };
       yield {
         type: "item.completed",
@@ -279,10 +281,7 @@ describe.skipIf(process.platform === "win32")("codexProvider stale rollout recov
             "`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.",
         },
       };
-      yield {
-        type: "item.completed",
-        item: { type: "error", message: "real Codex error" },
-      };
+      yield { type: "item.completed", item: { type: "error", message: configNotice } };
       yield {
         type: "item.completed",
         item: { type: "agent_message", text: "completed despite notice" },
@@ -293,36 +292,29 @@ describe.skipIf(process.platform === "win32")("codexProvider stale rollout recov
     const events = [];
     for await (const event of codexProvider(opts({ sessionId: null }))) events.push(event);
 
-    expect(events).not.toContainEqual({
-      type: "error",
-      content:
-        "`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.",
-    });
-    expect(events).toContainEqual({ type: "error", content: "real Codex error" });
-    expect(events).toContainEqual({ type: "text", content: "completed despite notice" });
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events).toContainEqual({ type: "status", content: configNotice });
+    expect(events.filter((event) => event.type === "status")).toHaveLength(1);
     expect(events).toContainEqual(
       expect.objectContaining({ type: "result", content: "completed despite notice" }),
     );
   });
 
-  test("ignores the unrecognized config notice so the turn still completes", async () => {
-    const notice =
-      "Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  session-flags: `sandbox_permissions` is ignored.";
-    streamedEvents = async function* configNotice() {
-      yield { type: "thread.started", thread_id: "019dee65-ffff-7aaa-8aaa-dddddddddddd" };
-      yield { type: "item.completed", item: { type: "error", message: notice } };
-      yield {
-        type: "item.completed",
-        item: { type: "agent_message", text: "summary" },
+  test("reports turn.failed and top-level stream errors as errors", async () => {
+    for (const [failure, content] of [
+      [{ type: "turn.failed", error: { message: "turn blew up" } }, "turn blew up"],
+      [{ type: "error", message: "stream blew up" }, "stream blew up"],
+    ] as const) {
+      streamedEvents = async function* fatal() {
+        yield { type: "thread.started", thread_id: "019dee65-ffff-7aaa-8aaa-dddddddddddd" };
+        yield failure;
       };
-      yield { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } };
-    };
 
-    const events = [];
-    for await (const event of codexProvider(opts({ sessionId: null }))) events.push(event);
+      const events = [];
+      for await (const event of codexProvider(opts({ sessionId: null }))) events.push(event);
 
-    expect(events.some((event) => event.type === "error")).toBe(false);
-    expect(events).toContainEqual(expect.objectContaining({ type: "result", content: "summary" }));
+      expect(events).toContainEqual({ type: "error", content });
+    }
   });
 
   test("isolates no-tool auxiliary calls from MCP, network, and writable sandbox access", async () => {

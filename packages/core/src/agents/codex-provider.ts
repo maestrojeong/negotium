@@ -63,7 +63,6 @@ type CodexEventUsage = {
 
 const CODEX_HOOK_TRUST_BYPASS_NOTICE =
   "`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.";
-const CODEX_UNRECOGNIZED_CONFIG_NOTICE_PREFIX = "Codex is ignoring ";
 
 function sameCodexUsage(usage: CodexEventUsage, total: CodexTokenTotals): boolean {
   return (
@@ -927,6 +926,7 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
               cache_write_input_tokens?: number;
             };
             error?: { message?: string };
+            message?: string;
           };
 
           switch (event.type) {
@@ -1035,13 +1035,14 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
                   yield fileEvent;
                 }
               } else if (item.type === "error") {
+                // The SDK types error items as non-fatal: the turn keeps running
+                // and real failures arrive as `turn.failed` or a top-level
+                // `error`. Yielding an error here would end the turn (and fail
+                // compaction) over a notice such as an ignored config key.
                 const message = String(item.message ?? "");
-                if (message.startsWith(CODEX_UNRECOGNIZED_CONFIG_NOTICE_PREFIX)) {
-                  // Codex reports ignored config keys as an error item but keeps
-                  // running the turn; failing on it aborts compaction and turns.
-                  logger.warn({ message }, "codexProvider: codex ignored config settings");
-                } else if (message !== CODEX_HOOK_TRUST_BYPASS_NOTICE) {
-                  yield { type: "error", content: message };
+                if (message !== CODEX_HOOK_TRUST_BYPASS_NOTICE) {
+                  logger.warn({ message }, "codexProvider: codex non-fatal error item");
+                  yield { type: "status", content: message };
                 }
               }
               break;
@@ -1072,6 +1073,12 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
                 },
               };
               if (finalText) yield* extractFileEvents(finalText, "result");
+              break;
+            }
+
+            case "error": {
+              stopReason = "error";
+              yield { type: "error", content: event.message || "Codex stream error" };
               break;
             }
 
