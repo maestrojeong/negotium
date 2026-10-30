@@ -37,6 +37,7 @@ import {
 } from "#agents/execution-host";
 import {
   type CodexTokenTotals,
+  codexThreadHasSystemPrompt,
   migrateCodexRolloutNativeMultiAgentMetadata,
   readCodexPatchCallIds,
   readLatestCodexContextUsage,
@@ -804,13 +805,20 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
   let currentSessionId = opts.sessionId;
   let usageBaseline = currentSessionId ? readLatestCodexTokenTotals(currentSessionId) : undefined;
 
-  // Codex SDK has no systemPrompt option. A resumed thread may have been
-  // synthesized from a captured shell, so always refresh the current runtime
-  // instructions instead of trusting historical developer/environment data.
+  // Codex SDK has no systemPrompt option, so the instructions ride in the user
+  // prompt and stay in thread history from then on. Re-sending them every turn
+  // piles a full copy into history per message. Send them on a new thread, or
+  // when the resumed history lacks the current text (synthesized from a
+  // captured shell, or the instructions changed since they were last sent).
   let thread = currentSessionId
     ? codex.resumeThread(currentSessionId, threadOptions)
     : codex.startThread(threadOptions);
-  let prompt = promptForThread(opts, true);
+  let prompt = promptForThread(
+    opts,
+    !currentSessionId ||
+      !opts.systemPrompt ||
+      !codexThreadHasSystemPrompt(currentSessionId, opts.systemPrompt),
+  );
 
   let agentTextSoFar = "";
   let currentAgentMessageId: string | undefined;

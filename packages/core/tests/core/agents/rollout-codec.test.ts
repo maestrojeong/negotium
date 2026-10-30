@@ -589,6 +589,33 @@ describe("writeCodexRollout", () => {
     expect(extractCodexForkedFromId("not json")).toBeUndefined();
   });
 
+  test("finds the latest user turn carrying system instructions", async () => {
+    const { extractLatestCodexSystemInstructionsTurn } = await import("#agents/rollout/codex");
+    const userTurn = (text: string) =>
+      JSON.stringify({
+        type: "response_item",
+        payload: { type: "message", role: "user", content: [{ type: "input_text", text }] },
+      });
+    const jsonl = [
+      userTurn("[System Instructions]\nold\n\nfirst"),
+      userTurn("[System Instructions]\nnew\n\nsecond"),
+      userTurn("plain follow-up"),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "[System Instructions]\nquoted" }],
+        },
+      }),
+      '{"type":"response_item","payload":{"text":"[System Instructions]',
+    ].join("\n");
+    expect(extractLatestCodexSystemInstructionsTurn(jsonl)).toBe(
+      "[System Instructions]\nnew\n\nsecond",
+    );
+    expect(extractLatestCodexSystemInstructionsTurn(userTurn("hello"))).toBeUndefined();
+  });
+
   test("extracts exact native Codex patch lines and skips consumed calls", async () => {
     const { extractCodexPatchCallIds, extractLatestCodexPatchPreview } = await import(
       "#agents/rollout/codex"
