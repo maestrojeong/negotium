@@ -1301,3 +1301,77 @@ test("a spoofed paste-end cannot turn the rest of the burst into actions", async
     restoreStdout();
   }
 });
+
+test("Enter runs the highlighted slash command instead of sending the typed prefix", async () => {
+  const sent: string[] = [];
+  const compacted: string[] = [];
+  const client: NegotiumClient = {
+    async start() {},
+    async stop() {},
+    listTopics: () => [TOPIC],
+    listMessages: () => [],
+    createTopic() {
+      throw new Error("not reached");
+    },
+    async deriveTopic() {
+      throw new Error("not reached");
+    },
+    async resetTopic() {
+      throw new Error("not reached");
+    },
+    async compactTopic(topic) {
+      compacted.push(topic.id);
+      return "Compacted";
+    },
+    setModel() {
+      throw new Error("not reached");
+    },
+    setEffort() {
+      throw new Error("not reached");
+    },
+    async deleteTopic() {
+      throw new Error("not reached");
+    },
+    sendMessage(_topic, text) {
+      sent.push(text);
+      throw new Error("not reached");
+    },
+    answerQuestion: () => ({ ok: false }),
+    abort: () => false,
+    runVaultCommand: () => null,
+  };
+  const restoreStdin = setTty(process.stdin, true);
+  const restoreStdout = setTty(process.stdout, true);
+  const stdin = process.stdin as unknown as Record<string, unknown>;
+  const hadRawMode = typeof stdin.setRawMode === "function";
+  if (!hadRawMode) stdin.setRawMode = () => process.stdin;
+  const realWrite = process.stdout.write.bind(process.stdout);
+  (process.stdout as unknown as { write: (chunk: string) => boolean }).write = () => true;
+  const app = new TerminalApp(client, { userId: "local", preferredTopic: TOPIC.title });
+  const finished = app.run();
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
+  const feed = (data: string) => process.stdin.emit("data", data);
+
+  try {
+    await settle();
+    // `/co` lists /compact and /copy; Down moves to /copy, Up back to /compact.
+    feed("/");
+    feed("c");
+    feed("o");
+    await settle();
+    feed("\u001b[B");
+    feed("\u001b[A");
+    await settle();
+    feed("\r");
+    await settle();
+    expect(sent).toEqual([]);
+    expect(compacted).toEqual([TOPIC.id]);
+  } finally {
+    app.stop();
+    await finished;
+    (process.stdout as unknown as { write: typeof realWrite }).write = realWrite;
+    if (!hadRawMode) delete stdin.setRawMode;
+    restoreStdin();
+    restoreStdout();
+  }
+});

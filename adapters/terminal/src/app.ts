@@ -45,7 +45,12 @@ import { copyToClipboard } from "@/clipboard";
 import { CollapsedPasteStore, cursorForTextOffset, textOffsetForCursor } from "@/collapsed-pastes";
 import { type ColorDepth, detectColorDepth, rgbToAnsi16, rgbToAnsi256 } from "@/color-depth";
 import { runTerminalCommand } from "@/command-router";
-import { commandSuggestions, completeCommand, isKnownTerminalCommand } from "@/commands";
+import {
+  commandSuggestions,
+  completeCommand,
+  isKnownTerminalCommand,
+  type TerminalCommand,
+} from "@/commands";
 import {
   adjustDecisionGraphSpacing,
   buildDecisionGraph,
@@ -1812,6 +1817,20 @@ export class TerminalApp {
       return;
     }
     if (chunk === "\r") {
+      // Enter runs the highlighted slash command, as in Claude Code and Codex,
+      // instead of sending the typed prefix (`/m`) as a message. A command with
+      // a required argument is completed and waits for it.
+      const commands = this.#shownCommands();
+      if (commands.length > 0) {
+        const selected = commands[Math.min(this.#state.suggestionIndex, commands.length - 1)];
+        if (selected) {
+          if (selected.usage.includes("<")) {
+            this.#replaceInput(`/${selected.name} `);
+            return;
+          }
+          this.#replaceInput(`/${selected.name}`);
+        }
+      }
       // Enter completes the highlighted path (keeping the `@` trigger live so
       // the user can keep drilling or return to re-search). When completion is
       // a no-op — the token already equals a fully resolved path — fall through
@@ -2622,6 +2641,14 @@ export class TerminalApp {
     const cursor = this.#input.cursor;
     const lineText = this.#input.text.split("\n")[cursor.row] ?? "";
     return pathSuggestions(lineText, cursor.col)?.items ?? [];
+  }
+
+  /** Slash commands the composer menu is showing; mirrors render.ts. */
+  #shownCommands(): TerminalCommand[] {
+    const state = this.#state;
+    if (state.creatingTopic || state.overlay === "vault" || composerHoldsSecret(state)) return [];
+    if (activeQuestion(state)) return [];
+    return commandSuggestions(this.#input.text);
   }
 
   /** Active suggestion count: slash commands take precedence over `@` paths. */
