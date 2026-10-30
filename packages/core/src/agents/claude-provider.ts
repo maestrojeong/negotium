@@ -19,6 +19,7 @@ import type {
   ContentBlockParam,
   ImageBlockParam,
 } from "@anthropic-ai/sdk/resources/messages/messages.mjs";
+import { claudeNoticeStatus } from "#agents/claude-notices";
 import { claudeRegistry } from "#agents/claude-registry";
 import { deepMapStrings } from "#agents/deep-map";
 import {
@@ -703,18 +704,15 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
         continue;
       }
 
-      // --- System init ---
-      if (message.type === "system") {
-        const m = message as SDKSystemMessage;
-        if (m.subtype === "init") {
-          yield { type: "session", sessionId: m.session_id };
+      // --- System init + non-fatal notices ---
+      // Retries, refusals, auto-denials and usage warnings become status lines;
+      // only the terminal `result` (or a CLI exit) can fail the turn.
+      if (message.type === "system" || message.type === "rate_limit_event") {
+        if (message.type === "system" && message.subtype === "init") {
+          yield { type: "session", sessionId: (message as SDKSystemMessage).session_id };
         } else {
-          // Log all other system messages (task_updated, task_progress,
-          // task_notification, etc.) so we can observe lifecycle events.
-          logger.debug(
-            { subtype: m.subtype, msg: m },
-            "claudeProvider: system message (unhandled subtype)",
-          );
+          const status = claudeNoticeStatus(message);
+          if (status) yield { type: "status", content: status };
         }
         continue;
       }
