@@ -467,6 +467,64 @@ export function extractCodexForkedFromId(jsonl: string): string | undefined {
   }
 }
 
+/**
+ * Text of the latest user turn that carried negotium's `[System Instructions]`
+ * preamble. Codex has no system-prompt option, so the provider inlines it into
+ * the user prompt; this reports what the resumed thread already holds.
+ */
+export function extractLatestCodexSystemInstructionsTurn(jsonl: string): string | undefined {
+  const lines = jsonl.trimEnd().split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index] ?? "";
+    if (!line.includes("[System Instructions]")) continue;
+    try {
+      const entry = JSON.parse(line) as {
+        type?: string;
+        payload?: { type?: string; role?: string; content?: Array<{ text?: unknown }> };
+      };
+      if (entry.type !== "response_item") continue;
+      if (entry.payload?.type !== "message" || entry.payload.role !== "user") continue;
+      const text = (entry.payload.content ?? [])
+        .map((part) => (typeof part.text === "string" ? part.text : ""))
+        .join("");
+      if (text.startsWith("[System Instructions]\n")) return text;
+    } catch {
+      // A concurrently appended final line may be incomplete; keep scanning.
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Whether the thread's history already ends its instruction trail with exactly
+ * `systemPrompt`. Synthesized rollouts (agent switch, fork fallback) carry no
+ * instructions, and a changed prompt must be re-sent, so both report false.
+ */
+export function codexThreadHasSystemPrompt(
+  threadId: string,
+  systemPrompt: string,
+  depth = 0,
+): boolean {
+  const path = latestCodexRolloutPath(threadId);
+  if (!path) return false;
+  try {
+    const jsonl = readFileSync(path, "utf8");
+    const latest = extractLatestCodexSystemInstructionsTurn(jsonl);
+    if (latest !== undefined) {
+      return latest.startsWith(`[System Instructions]\n${systemPrompt}\n\n`);
+    }
+    if (depth >= 8) return false;
+    // A paginated fork may not copy the parent's items into its own rollout.
+    const parentId = extractCodexForkedFromId(jsonl);
+    return parentId && parentId !== threadId
+      ? codexThreadHasSystemPrompt(parentId, systemPrompt, depth + 1)
+      : false;
+  } catch (error) {
+    logger.debug({ error, threadId }, "codex system prompt: rollout read failed");
+    return false;
+  }
+}
+
 export function readLatestCodexTokenTotals(
   threadId: string,
   depth = 0,

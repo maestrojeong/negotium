@@ -51,9 +51,14 @@ const codexModelCatalogPath = join(
   `negotium-model-catalog-${BUNDLED_CODEX_VERSION}.json`,
 );
 
-const resumeRunStreamed = mock(async (_prompt: string, _opts?: Record<string, unknown>) => {
-  throw new Error("thread/resume failed: no rollout found");
-});
+const resumeRunStreamed = mock(
+  async (
+    _prompt: string,
+    _opts?: Record<string, unknown>,
+  ): Promise<{ events: AsyncGenerator<Record<string, unknown>> }> => {
+    throw new Error("thread/resume failed: no rollout found");
+  },
+);
 
 async function* fallbackEvents() {
   yield { type: "thread.started", thread_id: "019dee65-ffff-7aaa-8aaa-aaaaaaaaaaaa" };
@@ -266,6 +271,44 @@ describe.skipIf(process.platform === "win32")("codexProvider stale rollout recov
       sessionId: "019dee65-ffff-7aaa-8aaa-aaaaaaaaaaaa",
     });
     expect(events).toContainEqual({ type: "text", content: "fresh answer" });
+  });
+
+  test("sends system instructions only when the resumed thread lacks them", async () => {
+    const threadId = "3f471a7f-2995-40d7-9aaa-bbbbbbbbbbbb";
+    const dir = join(codexAuthDir, "sessions", "2026", "10", "30");
+    mkdirSync(dir, { recursive: true });
+    const rollout = join(dir, `rollout-2026-10-30T10-00-00-${threadId}.jsonl`);
+    const writeInstructions = (systemPrompt: string) =>
+      writeFileSync(
+        rollout,
+        `${JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: `[System Instructions]\n${systemPrompt}\n\nhi` }],
+          },
+        })}\n`,
+      );
+    resumeRunStreamed.mockImplementation(async () => ({ events: streamedEvents() }));
+    try {
+      writeInstructions("system");
+      for await (const _event of codexProvider(opts({ sessionId: threadId }))) {
+        // Consume the provider stream.
+      }
+      expect(resumeRunStreamed.mock.calls[0]?.[0]).toBe("hello");
+
+      writeInstructions("older system");
+      for await (const _event of codexProvider(opts({ sessionId: threadId }))) {
+        // Consume the provider stream.
+      }
+      expect(resumeRunStreamed.mock.calls[1]?.[0]).toBe("[System Instructions]\nsystem\n\nhello");
+    } finally {
+      resumeRunStreamed.mockImplementation(async () => {
+        throw new Error("thread/resume failed: no rollout found");
+      });
+      rmSync(rollout, { force: true });
+    }
   });
 
   test("ignores the hook bypass notice without hiding other Codex errors", async () => {
