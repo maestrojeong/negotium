@@ -300,7 +300,36 @@ describe.skipIf(process.platform === "win32")("codexProvider stale rollout recov
     );
   });
 
-  test("reports turn.failed and top-level stream errors as errors", async () => {
+  test("treats a top-level error as fatal only when the turn never completes", async () => {
+    streamedEvents = async function* recovered() {
+      yield { type: "thread.started", thread_id: "019dee65-ffff-7aaa-8aaa-eeeeeeeeeeee" };
+      yield { type: "error", message: "stream disconnected, retrying" };
+      yield { type: "item.completed", item: { type: "agent_message", text: "recovered" } };
+      yield { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } };
+    };
+
+    const events = [];
+    for await (const event of codexProvider(opts({ sessionId: null }))) events.push(event);
+
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events).toContainEqual({ type: "status", content: "stream disconnected, retrying" });
+    expect(events).toContainEqual(expect.objectContaining({ type: "result", content: "recovered" }));
+
+    streamedEvents = async function* failedAfterStreamError() {
+      yield { type: "thread.started", thread_id: "019dee65-ffff-7aaa-8aaa-ffffffffffff" };
+      yield { type: "error", message: "stream disconnected, retrying" };
+      yield { type: "turn.failed", error: { message: "turn blew up" } };
+    };
+
+    const failed = [];
+    for await (const event of codexProvider(opts({ sessionId: null }))) failed.push(event);
+
+    expect(failed.filter((event) => event.type === "error")).toEqual([
+      { type: "error", content: "turn blew up" },
+    ]);
+  });
+
+  test("reports turn.failed and an uncompleted turn's stream error as errors", async () => {
     for (const [failure, content] of [
       [{ type: "turn.failed", error: { message: "turn blew up" } }, "turn blew up"],
       [{ type: "error", message: "stream blew up" }, "stream blew up"],

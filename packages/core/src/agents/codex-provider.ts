@@ -843,6 +843,9 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
       trackedPids.pids = [];
       let heartbeatTriggered = false;
       let attemptCompleted = false;
+      let turnFailed = false;
+      // Last top-level `error` event; fatal only if the turn never completes.
+      let streamError: string | undefined;
       let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
 
       const scheduleHeartbeat = () => {
@@ -1077,12 +1080,18 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
             }
 
             case "error": {
-              stopReason = "error";
-              yield { type: "error", content: event.message || "Codex stream error" };
+              // `codex exec` keeps running after a top-level error (e.g. a stream
+              // error it retries); only `turn.failed` or a turn that never
+              // completes is fatal. Keep the message to explain the latter.
+              const message = event.message || "Codex stream error";
+              logger.warn({ message }, "codexProvider: codex stream error event");
+              streamError = message;
+              yield { type: "status", content: message };
               break;
             }
 
             case "turn.failed": {
+              turnFailed = true;
               stopReason = "error";
               yield {
                 type: "error",
@@ -1094,6 +1103,11 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
             default:
               break;
           }
+        }
+
+        if (!attemptCompleted && !turnFailed && streamError) {
+          stopReason = "error";
+          yield { type: "error", content: streamError };
         }
       } catch (err) {
         if (abortSignal?.aborted) return;
