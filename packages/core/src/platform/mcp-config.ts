@@ -507,7 +507,25 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
   "session-history": {
     ...commonRuntimeMcpPolicy("session-history"),
     build(ctx) {
-      const { userId, session, topicId, agent } = ctx;
+      const { userId, session, topicId, queryId, agent, peerBridge } = ctx;
+      if (peerBridge) {
+        if (!topicId || !queryId) return null;
+        const env = canonicalMcpBridgeEnv({
+          surface: "session-history",
+          userId,
+          topicId,
+          queryId,
+          peerBridge,
+        });
+        return env
+          ? buildStdioMcpServer(
+              agent,
+              CANONICAL_MCP_PROXY_SERVER,
+              ["--surface=session-history"],
+              env,
+            )
+          : null;
+      }
       const args = [`--user-id=${userId}`, `--topic=${session}`];
       if (topicId) args.push(`--topic-id=${topicId}`);
       return buildBuiltinMcpServer("session-history", ctx, () =>

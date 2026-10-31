@@ -226,6 +226,42 @@ const wikiTools: Tool[] = [
   },
 ];
 
+const sessionHistoryTools: Tool[] = [
+  {
+    name: "list_session_boundaries",
+    description:
+      "List every provider session this topic has had, from the append-only raw conversation manifest.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "read_session_history",
+    description:
+      "Read the full-fidelity raw conversation manifest in bounded chunks, including content a /compact summarized away.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        offset: { type: "number" },
+        limit: { type: "number" },
+        sessionId: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "search_session_history",
+    description:
+      "Keyword-search the full raw conversation manifest, including content a /compact summarized away.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        sessionId: { type: "string" },
+        limit: { type: "number" },
+      },
+      required: ["query"],
+    },
+  },
+];
+
 const tools =
   surface === "task"
     ? taskTools
@@ -233,7 +269,9 @@ const tools =
       ? decisionTools
       : surface === "wiki"
         ? wikiTools
-        : [];
+        : surface === "session-history"
+          ? sessionHistoryTools
+          : [];
 const allowed = new Set(tools.map((tool) => tool.name));
 
 function error(text: string): CallToolResult {
