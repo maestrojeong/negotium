@@ -48,6 +48,10 @@ function fitUtf8(text: string, maxBytes: number): string {
   return `${head}${marker}${tail}`;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** One rendered line: `[<entry#>] <ts> <speaker>: <text>`. Entry numbers are 1-based positions in the raw manifest, not byte-file line numbers (malformed lines are skipped on read). */
 function renderEntry(entry: ConversationEntry, index: number): string {
   const speaker = eventSpeaker(entry.event, entry.agent);
@@ -73,6 +77,14 @@ type SessionBoundary = {
  * DIFFERENT agent. The raw manifest carries no explicit "compacted here"
  * marker of its own — that marker only lives in the replaceable active
  * projection, which compaction overwrites.
+ *
+ * Providers also re-announce the SAME sessionId at the start of every turn
+ * of a resumed session (Claude's system init, Codex's `thread.started`), and
+ * every streamed event — including that re-announcement — gets recorded
+ * into the raw manifest. Without deduping those repeats, a long-lived
+ * session would mint a spurious "compacted" boundary on every single turn.
+ * Only an actual sessionId change is a real boundary; a repeat of the
+ * current sessionId is a no-op re-announcement.
  */
 function deriveBoundaries(entries: ConversationEntry[]): SessionBoundary[] {
   const boundaries: SessionBoundary[] = [];
@@ -80,6 +92,7 @@ function deriveBoundaries(entries: ConversationEntry[]): SessionBoundary[] {
     if (entry.event.type !== "session") return;
     const index = i + 1;
     const previous = boundaries.at(-1);
+    if (previous && previous.sessionId === entry.event.sessionId) return;
     if (previous) {
       previous.endedAt = entry.ts;
       previous.endedBy = previous.agent === entry.agent ? "compacted" : "agent-switch";
@@ -302,7 +315,12 @@ export function createSessionHistoryMcpServer(context: SessionHistoryMcpContext)
           upper = next ? next.entryIndex - 1 : entries.length;
         }
         const limit = Math.min(positiveInt(rawLimit, DEFAULT_SEARCH_LIMIT), MAX_SEARCH_LIMIT);
-        const needle = query.toLowerCase();
+        // A case-insensitive RegExp matched against the ORIGINAL text, rather than
+        // `text.toLowerCase().indexOf(needle)`, because lowercasing can change a
+        // string's length for some Unicode code points (e.g. "İ" -> "i̇", 1 -> 2
+        // UTF-16 units) — that would desync the match index from `text` and the
+        // snippet could drift away from the actual match.
+        const needleRegex = new RegExp(escapeRegExp(query), "i");
         const matches: {
           entry: number;
           sessionId: string | undefined;
@@ -312,28 +330,35 @@ export function createSessionHistoryMcpServer(context: SessionHistoryMcpContext)
         }[] = [];
         const boundaries = sessionId ? undefined : deriveBoundaries(entries);
         let returnedBytes = 0;
+        let budgetStopped = false;
         const callBudget = Math.min(maxChunkBytes, Math.max(1, maxTotalBytes - totalBytes));
         for (let i = lower; i < upper && matches.length < limit; i++) {
           const entry = entries[i];
           const text = eventText(entry.event);
-          const at = text.toLowerCase().indexOf(needle);
-          if (at === -1) continue;
+          const found = needleRegex.exec(text);
+          if (!found) continue;
+          const at = found.index;
           const start = Math.max(0, at - SEARCH_SNIPPET_RADIUS);
-          const end = Math.min(text.length, at + needle.length + SEARCH_SNIPPET_RADIUS);
+          const end = Math.min(text.length, at + found[0].length + SEARCH_SNIPPET_RADIUS);
           const snippet = `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
           const matchedSessionId =
             sessionId ?? boundaries?.findLast((b) => b.entryIndex <= i + 1)?.sessionId;
-          const line = JSON.stringify({ entry: i + 1, snippet });
-          const lineBytes = Buffer.byteLength(line, "utf8");
-          if (returnedBytes + lineBytes > callBudget) break;
-          returnedBytes += lineBytes;
-          matches.push({
+          const candidate = {
             entry: i + 1,
             sessionId: matchedSessionId,
             agent: entry.agent,
             ts: entry.ts,
             snippet,
-          });
+          };
+          // Count the bytes of the exact object pushed below (not a partial
+          // {entry, snippet} stand-in) so totalBytes isn't undercounted.
+          const lineBytes = Buffer.byteLength(JSON.stringify(candidate), "utf8");
+          if (returnedBytes + lineBytes > callBudget) {
+            budgetStopped = true;
+            break;
+          }
+          returnedBytes += lineBytes;
+          matches.push(candidate);
         }
         totalBytes += returnedBytes;
 
@@ -346,7 +371,11 @@ export function createSessionHistoryMcpServer(context: SessionHistoryMcpContext)
             calls,
             ...(matches.length >= limit
               ? { note: "Hit the match limit; narrow the query or pass sessionId for more." }
-              : {}),
+              : budgetStopped
+                ? {
+                    note: "Read budget ran out before the scan finished; this result is incomplete, not necessarily 'no matches'.",
+                  }
+                : {}),
           }),
         );
       } catch (error) {

@@ -63,6 +63,47 @@ describe("createSessionHistoryMcpServer", () => {
     ]);
   });
 
+  test("list_session_boundaries does not treat a per-turn re-announcement of the same sessionId as a new boundary", async () => {
+    // Providers re-emit a `session` event with the SAME sessionId at the
+    // start of every turn of a resumed session (Claude's system init,
+    // Codex's thread.started), and every streamed event gets recorded into
+    // the raw manifest. A long-lived two-turn session must still collapse
+    // to one boundary, not mint a spurious "compacted" boundary per turn.
+    const topic = "reannounce-topic";
+    seedRawManifest("u1", topic, [
+      { ts: "t0", agent: "claude", event: { type: "session", sessionId: "s1" } },
+      { ts: "t1", agent: "claude", event: { type: "user_message", content: "turn one" } },
+      // Same session resumed for a second turn: the provider re-announces s1.
+      { ts: "t2", agent: "claude", event: { type: "session", sessionId: "s1" } },
+      { ts: "t3", agent: "claude", event: { type: "user_message", content: "turn two" } },
+      // A real compaction: same agent, genuinely new sessionId.
+      { ts: "t4", agent: "claude", event: { type: "session", sessionId: "s2" } },
+      { ts: "t5", agent: "claude", event: { type: "user_message", content: "turn three" } },
+    ]);
+    const client = await connect(createSessionHistoryMcpServer({ userId: "u1", topic }));
+
+    const result = payload(
+      await client.callTool({ name: "list_session_boundaries", arguments: {} }),
+    );
+    expect(result.sessions).toMatchObject([
+      { sessionId: "s1", agent: "claude", endedBy: "compacted" },
+      { sessionId: "s2", agent: "claude", endedBy: "active" },
+    ]);
+
+    // Scoping read_session_history to s1 must cover BOTH turns (entries 1-4),
+    // not stop at the re-announcement (the bug returned only entries 1-2).
+    const scoped = payload(
+      await client.callTool({
+        name: "read_session_history",
+        arguments: { sessionId: "s1" },
+      }),
+    );
+    expect(scoped.returned_entries).toBe(4);
+    expect(scoped.content).toContain("turn one");
+    expect(scoped.content).toContain("turn two");
+    expect(scoped.content).not.toContain("turn three");
+  });
+
   test("read_session_history paginates and can scope to one sessionId", async () => {
     const topic = "read-topic";
     seedRawManifest("u1", topic, [
@@ -122,6 +163,61 @@ describe("createSessionHistoryMcpServer", () => {
     expect(matches[0]?.entry).toBe(2);
     expect(matches[0]?.sessionId).toBe("s1");
     expect(matches[0]?.snippet).toContain("rollback");
+  });
+
+  test("search_session_history matches are not desynced by a case fold that changes string length", async () => {
+    // "İ" (U+0130) lowercases to two code units ("i̇"); a naive
+    // `text.toLowerCase().indexOf(needle)` desyncs the match offset from the
+    // original string once ~160 such characters precede the match, drifting
+    // the snippet away from the actual hit. A regex matched directly against
+    // the original text does not have this problem, even with just one.
+    const topic = "unicode-search-topic";
+    seedRawManifest("u1", topic, [
+      { ts: "t0", agent: "claude", event: { type: "session", sessionId: "s1" } },
+      {
+        ts: "t1",
+        agent: "claude",
+        event: { type: "user_message", content: "İstanbul rollback notes" },
+      },
+    ]);
+    const client = await connect(createSessionHistoryMcpServer({ userId: "u1", topic }));
+
+    const result = payload(
+      await client.callTool({
+        name: "search_session_history",
+        arguments: { query: "rollback" },
+      }),
+    );
+    expect(result.match_count).toBe(1);
+    const matches = result.matches as Array<{ snippet: string }>;
+    expect(matches[0]?.snippet).toContain("rollback");
+  });
+
+  test("search_session_history reports a budget-exhausted note instead of a silent zero", async () => {
+    const topic = "search-budget-topic";
+    seedRawManifest("u1", topic, [
+      { ts: "t0", agent: "claude", event: { type: "session", sessionId: "s1" } },
+      {
+        ts: "t1",
+        agent: "claude",
+        event: { type: "user_message", content: "needle in a haystack" },
+      },
+    ]);
+    // A budget too small to fit even one match object forces the scan to
+    // stop before finding anything, which must be distinguishable from a
+    // genuine "no matches" result.
+    const client = await connect(
+      createSessionHistoryMcpServer({ userId: "u1", topic, maxTotalBytes: 10, maxChunkBytes: 10 }),
+    );
+
+    const result = payload(
+      await client.callTool({
+        name: "search_session_history",
+        arguments: { query: "needle" },
+      }),
+    );
+    expect(result.match_count).toBe(0);
+    expect(result.note).toContain("budget ran out");
   });
 
   test("enforces the per-process call budget across all three tools", async () => {
