@@ -31,6 +31,16 @@ const TOOL_ALLOWLIST: Record<CanonicalMcpSurface, ReadonlySet<string>> = {
     "wiki_write",
     "index_upsert",
   ]),
+  // The hub-side executor for this surface does not exist yet (tracked
+  // separately) — forwarding a request here will fail at
+  // forwardCanonicalTool's hub call, not silently read the wrong node's
+  // local manifest. Wiring the allowlist now keeps this file's Record type
+  // exhaustive over CanonicalMcpSurface and ready for the hub-side change.
+  "session-history": new Set([
+    "list_session_boundaries",
+    "read_session_history",
+    "search_session_history",
+  ]),
 };
 
 type Capability = {

@@ -35,6 +35,7 @@ export const HOSTED_MCP_SURFACES = [
   "skills",
   "session-comm",
   "agent-health",
+  "session-history",
 ] as const;
 export type HostedMcpSurface = (typeof HOSTED_MCP_SURFACES)[number];
 const TOKEN_TTL_MS = 4 * 60 * 60 * 1000;

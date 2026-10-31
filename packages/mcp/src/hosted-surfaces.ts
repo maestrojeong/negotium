@@ -17,6 +17,7 @@ export const ACTIVE_HOSTED_MCP_SURFACES = [
   "skills",
   "agent-health",
   "session-comm",
+  "session-history",
 ] as const satisfies readonly HostedMcpSurface[];
 
 export type ActiveHostedMcpSurface = (typeof ACTIVE_HOSTED_MCP_SURFACES)[number];
@@ -97,6 +98,16 @@ export async function buildHostedSurfaceServer(
           optionalMcpServers: core.OPTIONAL_FORUM_MCP_SERVERS,
         },
       );
+    }
+    case "session-history": {
+      const { createSessionHistoryMcpServer } = await import(
+        "@negotium/core/mcp-factories/session-history"
+      );
+      return createSessionHistoryMcpServer({
+        userId: context.userId,
+        topic: context.topicTitle,
+        topicId: context.topicId,
+      });
     }
     case "vault": {
       const [{ createVaultMcpServer }, vault] = await Promise.all([

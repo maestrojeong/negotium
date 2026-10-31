@@ -806,6 +806,41 @@ describe("mcp-config: playwright transport selection per agent", () => {
     }
   });
 
+  test("placed turns proxy session-history (opt-in) the same way as the always-on canonical surfaces", () => {
+    const unregister = registerCanonicalMcpBridgeEnvProvider((scope) => ({
+      env: {
+        NEGOTIUM_CANONICAL_MCP_BRIDGE_URL: `http://127.0.0.1/${scope.surface}`,
+        NEGOTIUM_CANONICAL_MCP_BRIDGE_TOKEN: `token-${scope.surface}`,
+      },
+      revoke: () => undefined,
+    }));
+    try {
+      const servers = getForumMcpServers({
+        userId: "placed-user",
+        session: "worker-mirror",
+        topicId: "local-mirror-topic",
+        queryId: "local-query",
+        agent: "claude",
+        // session-history is opt-in (not forumRequired); it only appears when whitelisted.
+        enabled: ["session-history"],
+        peerBridge: {
+          hubCellId: "hub-cell",
+          hostTopicId: "hub-topic",
+          hostQueryId: "hub-query",
+          canSpawnSubagents: false,
+        },
+      });
+      const sessionHistory = servers["session-history"] as {
+        args: string[];
+        env: Record<string, string>;
+      };
+      expect(sessionHistory.args).toContain("--surface=session-history");
+      expect(sessionHistory.env.NEGOTIUM_CANONICAL_MCP_BRIDGE_TOKEN).toBe("token-session-history");
+    } finally {
+      unregister();
+    }
+  });
+
   test("wiki receives the memory-origin topic id when one is provided", () => {
     const servers = getForumMcpServers({
       userId,

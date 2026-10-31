@@ -20,6 +20,7 @@ import {
   FALLBACK_AGENT,
   resolveTopicWorkspaceDir,
   SESSION_COMM_SERVER,
+  SESSION_HISTORY_SERVER,
   SYSTEM_HEALTH_SERVER,
   TASK_SERVER,
   TOKEN_STATS_SERVER,
@@ -500,6 +501,35 @@ const MCP_CATALOG: Record<string, RuntimeMcpCatalogEntry> = {
       if (model) args.push(`--model=${model}`);
       return buildBuiltinMcpServer("decision", ctx, () =>
         buildStdioMcpServer(agent, DECISION_SERVER, args),
+      );
+    },
+  },
+  "session-history": {
+    ...commonRuntimeMcpPolicy("session-history"),
+    build(ctx) {
+      const { userId, session, topicId, queryId, agent, peerBridge } = ctx;
+      if (peerBridge) {
+        if (!topicId || !queryId) return null;
+        const env = canonicalMcpBridgeEnv({
+          surface: "session-history",
+          userId,
+          topicId,
+          queryId,
+          peerBridge,
+        });
+        return env
+          ? buildStdioMcpServer(
+              agent,
+              CANONICAL_MCP_PROXY_SERVER,
+              ["--surface=session-history"],
+              env,
+            )
+          : null;
+      }
+      const args = [`--user-id=${userId}`, `--topic=${session}`];
+      if (topicId) args.push(`--topic-id=${topicId}`);
+      return buildBuiltinMcpServer("session-history", ctx, () =>
+        buildStdioMcpServer(agent, SESSION_HISTORY_SERVER, args),
       );
     },
   },

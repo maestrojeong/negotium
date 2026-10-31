@@ -88,7 +88,8 @@ export function archiveTopicMessages(
   return { path, messageCount: rows.length, exchangeCount, lastRowid };
 }
 
-function eventText(event: UnifiedEvent): string {
+/** Render one UnifiedEvent's primary text. Shared with session-history's read/search tools. */
+export function eventText(event: UnifiedEvent): string {
   if ("content" in event && typeof event.content === "string") return event.content;
   if (event.type === "session") return `sessionId: ${event.sessionId}`;
   if (event.type === "tool_use") {
@@ -100,7 +101,8 @@ function eventText(event: UnifiedEvent): string {
   return JSON.stringify(event);
 }
 
-function eventSpeaker(event: UnifiedEvent, agent: string): string {
+/** Render one UnifiedEvent's speaker label. Shared with session-history's read/search tools. */
+export function eventSpeaker(event: UnifiedEvent, agent: string): string {
   if (event.type === "user_message") return "user";
   if (event.type === "tool_use" || event.type === "tool_result") return `tool:${agent}`;
   if (event.type === "reasoning") return `reasoning:${agent}`;

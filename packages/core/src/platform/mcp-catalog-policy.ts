@@ -24,6 +24,11 @@ export const COMMON_RUNTIME_MCP_POLICY = {
   // tool budget, and most topics never touch a native app. Opt in per topic
   // through the enabled whitelist.
   "cua-rs": { scopes: ["dm", "forum", "fork"], forumRequired: false },
+  // Reads the append-only raw conversation manifest (survives /compact and
+  // agent switches). Deliberately NOT forumRequired: most turns never need
+  // to look past the active context, and it is a 3-tool surface most topics
+  // will not touch. Opt in per topic through the enabled whitelist.
+  "session-history": { scopes: ["dm", "forum", "manager"], forumRequired: false },
 } as const satisfies Record<string, RuntimeMcpPolicyEntry>;
 
 export type CommonRuntimeMcpName = keyof typeof COMMON_RUNTIME_MCP_POLICY;

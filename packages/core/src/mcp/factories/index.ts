@@ -40,6 +40,10 @@ export {
   type SessionCommMcpResult,
 } from "./session-comm";
 export {
+  createSessionHistoryMcpServer,
+  type SessionHistoryMcpContext,
+} from "./session-history";
+export {
   type McpStdioProtectionTarget,
   protectMcpStdio,
 } from "./stdio-protection";
