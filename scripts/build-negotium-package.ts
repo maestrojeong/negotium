@@ -38,6 +38,10 @@ const packageEntrypoints = new Map<string, string>([
   ["@negotium/core/mcp-factories/vault", "packages/core/src/mcp/factories/vault.ts"],
   ["@negotium/core/mcp-factories/wiki", "packages/core/src/mcp/wiki-server.ts"],
   ["@negotium/core/mcp-factories/session-comm", "packages/core/src/mcp/factories/session-comm.ts"],
+  [
+    "@negotium/core/mcp-factories/session-history",
+    "packages/core/src/mcp/factories/session-history.ts",
+  ],
   ["@negotium/core/session-comm-host", "packages/core/src/mcp/session-comm/default-host.ts"],
   ["@negotium/core/agent-helpers", "packages/core/src/agents/public-helpers.ts"],
   ["@negotium/core/mcp-catalog", "packages/core/src/platform/mcp-catalog-policy.ts"],
