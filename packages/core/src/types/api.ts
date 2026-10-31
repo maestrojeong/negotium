@@ -17,8 +17,13 @@ export type TopicKind = "channel" | "agent" | "manager";
  * The one product surface a topic lives on. A topic belongs to exactly one
  * surface for its whole life; names are unique per surface, not per node.
  */
-export type TopicSurface = "terminal" | "telegram" | "otium";
-export const TOPIC_SURFACES: readonly TopicSurface[] = ["terminal", "telegram", "otium"];
+export type TopicSurface = "terminal" | "telegram" | "otium" | "kakaotalk";
+export const TOPIC_SURFACES: readonly TopicSurface[] = [
+  "terminal",
+  "telegram",
+  "otium",
+  "kakaotalk",
+];
 /** Whether adapters may expose a topic in user-facing discovery surfaces. */
 export type TopicVisibility = "visible" | "hidden";
 export type ResponsePolicy = "off" | "mention" | "always";

@@ -21,6 +21,7 @@ const SURFACE_PROFILE_FILES: Record<TopicSurface, string> = {
   terminal: "surfaces/terminal.md",
   telegram: "surfaces/telegram.md",
   otium: "surfaces/otium.md",
+  kakaotalk: "surfaces/kakaotalk.md",
 };
 
 function loadPrompt(filename: string, dir = SESSIONS_DIR): string {

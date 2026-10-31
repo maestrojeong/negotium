@@ -38,6 +38,7 @@
     "prepack": "bun run build"
   },
   "dependencies": {
+    "@negotium/adapter-kakaotalk": "workspace:*",
     "@negotium/core": "workspace:*",
     "@negotium/mcp": "workspace:*",
     "@negotium/mcp-host": "workspace:*",

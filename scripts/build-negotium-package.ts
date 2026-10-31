@@ -73,6 +73,7 @@ const packageEntrypoints = new Map<string, string>([
   ["@negotium/adapter-otium/join-status", "adapters/otium/src/join-status.ts"],
   ["@negotium/adapter-otium/relay", "adapters/otium/src/relay.ts"],
   ["@negotium/adapter-otium/sidecar", "adapters/otium/src/sidecar.ts"],
+  ["@negotium/adapter-kakaotalk", "adapters/kakaotalk/src/index.ts"],
   ["@negotium/cli", "apps/cli/src/main.ts"],
 ]);
 
@@ -81,6 +82,7 @@ const localSourceRoots = [
   resolve(root, "adapters/terminal/src"),
   resolve(root, "adapters/telegram/src"),
   resolve(root, "adapters/otium/src"),
+  resolve(root, "adapters/kakaotalk/src"),
 ];
 
 const packageImportRoots = [

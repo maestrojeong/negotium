@@ -609,6 +609,49 @@ export async function startDefaultNode(
     const trustedLocal = process.env.NEGOTIUM_CRON_TRUSTED_LOCAL === "1";
     modules.push(createCronModule(trustedLocal ? { host: { authorize: () => true } } : {}));
   }
+  if (process.env.NEGOTIUM_KAKAOTALK === "1") {
+    // Opt-in (unlike cron's opt-out default): this mounts a public webhook
+    // route and only does anything once the operator has finished the Kakao
+    // i Open Builder console setup documented in adapters/kakaotalk/README.md.
+    const {
+      allowedUsersForKakaoTalkAdapter,
+      createKakaoTalkModule,
+      parseKakaoTalkAuthEnv,
+      parseKakaoTalkLocoAuthEnv,
+    } = await import("@negotium/adapter-kakaotalk");
+    // Fail closed, same posture as the telegram CLI's env-auth gate: the
+    // kakaotalk channel is public, so this throws (refusing to start the
+    // node) rather than silently defaulting to "anyone who finds the
+    // channel can trigger a turn" when the operator forgot to set either
+    // NEGOTIUM_KAKAOTALK_ALLOWED_USER_IDS or the explicit opt-out.
+    const authConfig = parseKakaoTalkAuthEnv(process.env);
+    const triggerWord = process.env.NEGOTIUM_KAKAOTALK_TRIGGER_WORD?.trim();
+
+    // LOCO's account password is a real personal KakaoTalk credential, not a
+    // trigger word or a channel secret — prefer the vault over plaintext env
+    // when both exist, falling back to env only when the operator hasn't
+    // stored it (so NEGOTIUM_KAKAOTALK_LOCO_PASSWORD stays usable for local
+    // testing without requiring a vault entry).
+    let locoPasswordFromVault: string | undefined;
+    if (process.env.NEGOTIUM_KAKAOTALK_LOCO_EMAIL?.trim()) {
+      const { vaultListWithValues } = await import("@negotium/core");
+      locoPasswordFromVault = vaultListWithValues("local").find(
+        (entry) => entry.key === "KAKAOTALK_PWD",
+      )?.value;
+    }
+    const locoConfig = parseKakaoTalkLocoAuthEnv({
+      ...process.env,
+      ...(locoPasswordFromVault ? { NEGOTIUM_KAKAOTALK_LOCO_PASSWORD: locoPasswordFromVault } : {}),
+    });
+
+    modules.push(
+      createKakaoTalkModule({
+        ...(triggerWord ? { triggerWord } : {}),
+        allowedUsers: allowedUsersForKakaoTalkAdapter(authConfig),
+        loco: locoConfig,
+      }),
+    );
+  }
   const port =
     opts.port === 0 ? (readFixedNodePort() ?? (await availableLoopbackPort())) : opts.port;
   return startNode({ ...opts, port, modules });

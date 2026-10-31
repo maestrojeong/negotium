@@ -2118,10 +2118,18 @@ function topicOverlayLines(
     .filter(({ topic }) => visibleIds.has(topic.id));
   // Same ordering the always-visible Topics panel uses (`sortedTopicEntries`
   // in `@/state`), which also backs arrow-key navigation (`topicPickerItems`)
-  // — rendering and nav can never disagree about what's where.
+  // — rendering and nav can never disagree about what's where. KakaoTalk's
+  // single node-wide manager topic gets its own heading (mirroring cron's
+  // dedicated one below) instead of blending into the generic "Manager"
+  // bucket with every per-user General room — mirrors `managerFirstTopicEntries`
+  // in `@/state`.
+  const kakaotalkTopics = sortedTopicEntries(
+    state,
+    indexedTopics.filter(({ topic }) => topic.kind === "manager" && topic.surface === "kakaotalk"),
+  );
   const managerTopics = sortedTopicEntries(
     state,
-    indexedTopics.filter(({ topic }) => topic.kind === "manager"),
+    indexedTopics.filter(({ topic }) => topic.kind === "manager" && topic.surface !== "kakaotalk"),
   );
   const regularTopics = sortedTopicEntries(
     state,
@@ -2129,6 +2137,7 @@ function topicOverlayLines(
   );
   const entries: TopicOverlayEntry[] = [];
   for (const [label, topics] of [
+    ["KakaoTalk", kakaotalkTopics],
     ["Manager", managerTopics],
     ["Topics", regularTopics],
   ] as const) {

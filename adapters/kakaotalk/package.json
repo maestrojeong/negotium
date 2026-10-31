@@ -1,0 +1,51 @@
+{
+  "name": "@negotium/adapter-kakaotalk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "KakaoTalk channel adapter for Negotium: one persistent manager topic per node, backed by the official Kakao i Open Builder channel-bot API",
+  "license": "Apache-2.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "bun": ">=1.2.15"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maestrojeong/negotium.git",
+    "directory": "adapters/kakaotalk"
+  },
+  "homepage": "https://github.com/maestrojeong/negotium#readme",
+  "bugs": {
+    "url": "https://github.com/maestrojeong/negotium/issues"
+  },
+  "scripts": {
+    "build": "bun ../../scripts/build-package.ts src/index.ts src/mcp-server.ts",
+    "check": "bunx tsc --noEmit",
+    "lint": "biome check",
+    "test": "bun test",
+    "prepack": "bun run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@negotium/adapter-sdk": "workspace:*",
+    "@negotium/core": "workspace:*",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "bun-types": "^1.4.2",
+    "typescript": "^5"
+  }
+}

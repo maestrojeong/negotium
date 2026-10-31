@@ -788,9 +788,12 @@ function withoutUnread(unread: AppState["unread"], topicId: string | null): AppS
 }
 
 /**
- * Managers first, then the regular topics, each group in `sortedTopicEntries`
- * order — the one ordering the Topics panel, the `Ctrl-O` picker and topic
- * stepping all share.
+ * KakaoTalk's single node-wide manager topic first, then the other managers,
+ * then the regular topics, each group in `sortedTopicEntries` order — the
+ * one ordering the Topics panel, the `Ctrl-O` picker and topic stepping all
+ * share. KakaoTalk gets its own group (mirroring cron's dedicated picker
+ * heading, see render.ts's `topicOverlayLines`) rather than blending into
+ * the generic "Manager" bucket with every per-user General room.
  */
 function managerFirstTopicEntries<T extends { topic: TopicDto }>(
   state: AppState,
@@ -799,7 +802,11 @@ function managerFirstTopicEntries<T extends { topic: TopicDto }>(
   return [
     ...sortedTopicEntries(
       state,
-      entries.filter(({ topic }) => topic.kind === "manager"),
+      entries.filter(({ topic }) => topic.kind === "manager" && topic.surface === "kakaotalk"),
+    ),
+    ...sortedTopicEntries(
+      state,
+      entries.filter(({ topic }) => topic.kind === "manager" && topic.surface !== "kakaotalk"),
     ),
     ...sortedTopicEntries(
       state,

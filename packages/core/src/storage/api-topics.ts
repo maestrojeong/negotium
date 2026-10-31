@@ -34,7 +34,9 @@ export function defaultTopicSurface(): TopicSurface {
 }
 
 export function normalizeTopicSurface(value: unknown): TopicSurface {
-  return value === "telegram" || value === "otium" || value === "terminal" ? value : "terminal";
+  return value === "telegram" || value === "otium" || value === "terminal" || value === "kakaotalk"
+    ? value
+    : "terminal";
 }
 
 /**
@@ -315,7 +317,7 @@ function initializeApiTopicsSchema(): void {
       is_fork INTEGER NOT NULL DEFAULT 0 CHECK (is_fork IN (0,1)),
       is_subagent INTEGER NOT NULL DEFAULT 0 CHECK (is_subagent IN (0,1)),
       visibility TEXT NOT NULL DEFAULT 'visible' CHECK (visibility IN ('visible','hidden')),
-      surface TEXT NOT NULL DEFAULT 'terminal' CHECK (surface IN ('terminal','telegram','otium')),
+      surface TEXT NOT NULL DEFAULT 'terminal' CHECK (surface IN ('terminal','telegram','otium','kakaotalk')),
       surface_scope TEXT,
       browser_profile TEXT NOT NULL DEFAULT 'default',
       browser_profile_owner TEXT,
