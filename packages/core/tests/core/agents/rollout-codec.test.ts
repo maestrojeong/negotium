@@ -718,6 +718,22 @@ describe("writeCodexRollout", () => {
     );
   });
 
+  // Codex (observed on 0.155.1 / 0.159.2 / 0.166.0) rejects resume if any
+  // rollout line lacks a sequential ordinal. Guards against a regression
+  // where the ordinal-stamping pass is dropped or only applied to part of
+  // the line list.
+  test("stamps a gapless 0..N-1 ordinal across every line, prelude included", async () => {
+    const { writeCodexRollout } = await import("#agents/rollout/codex");
+    const result = writeCodexRollout({
+      cwd: TMP_CWD,
+      pairs: [{ userText: "ping", assistantText: "pong" }],
+    });
+    writtenPaths.push(result.rolloutPath);
+    const lines = readFileSync(result.rolloutPath, "utf8").trim().split("\n");
+    const ordinals = lines.map((l) => JSON.parse(l).ordinal);
+    expect(ordinals).toEqual(Array.from({ length: lines.length }, (_, i) => i));
+  });
+
   test("stamps the selected model and effort into synthetic turn context", async () => {
     const { writeCodexRollout } = await import("#agents/rollout/codex");
     const result = writeCodexRollout({
