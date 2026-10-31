@@ -751,6 +751,12 @@ export function writeCodexRollout(opts: CodexRolloutOptions): CodexRolloutResult
     sweepPriorRolloutsForThread(opts.threadId);
   }
 
+  // Codex rejects resume if any line lacks a sequential `ordinal`; stamp
+  // 0..N-1 on every line (the fixture prelude carries none).
+  lines.forEach((line, i) => {
+    (line as Record<string, unknown>).ordinal = i;
+  });
+
   writeJsonlFile(path, lines);
   logger.info(
     { threadId, path, pairs: pairs.length },
