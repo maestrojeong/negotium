@@ -31,6 +31,7 @@
     "./mcp-factories/vault": "./src/mcp/factories/vault.ts",
     "./mcp-factories/wiki": "./src/mcp/wiki-server.ts",
     "./mcp-factories/session-comm": "./src/mcp/factories/session-comm.ts",
+    "./mcp-factories/session-history": "./src/mcp/factories/session-history.ts",
     "./session-comm-host": "./src/mcp/session-comm/default-host.ts",
     "./agent-helpers": "./src/agents/public-helpers.ts",
     "./mcp-catalog": "./src/platform/mcp-catalog-policy.ts",

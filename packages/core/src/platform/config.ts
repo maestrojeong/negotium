@@ -346,6 +346,8 @@ export const TOKEN_STATS_SERVER = resolve(PROJECT_ROOT, "src/mcp/token-stats-ser
 
 export const COMPACTION_LOG_SERVER = resolve(PROJECT_ROOT, "src/mcp/compaction-log-server.ts");
 
+export const SESSION_HISTORY_SERVER = resolve(PROJECT_ROOT, "src/mcp/session-history-server.ts");
+
 export const SYSTEM_HEALTH_SERVER = resolve(PROJECT_ROOT, "src/mcp/system-health-server.ts");
 
 export const AGENT_HEALTH_SERVER = resolve(PROJECT_ROOT, "src/mcp/agent-health-server.ts");
