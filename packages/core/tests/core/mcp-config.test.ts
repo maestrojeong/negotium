@@ -806,7 +806,7 @@ describe("mcp-config: playwright transport selection per agent", () => {
     }
   });
 
-  test("placed turns proxy session-history (opt-in) the same way as the always-on canonical surfaces", () => {
+  test("placed turns proxy session-history the same way as the other always-on canonical surfaces", () => {
     const unregister = registerCanonicalMcpBridgeEnvProvider((scope) => ({
       env: {
         NEGOTIUM_CANONICAL_MCP_BRIDGE_URL: `http://127.0.0.1/${scope.surface}`,
@@ -821,8 +821,8 @@ describe("mcp-config: playwright transport selection per agent", () => {
         topicId: "local-mirror-topic",
         queryId: "local-query",
         agent: "claude",
-        // session-history is opt-in (not forumRequired); it only appears when whitelisted.
-        enabled: ["session-history"],
+        // forumRequired, like task/wiki: present with an empty whitelist, no opt-in needed.
+        enabled: [],
         peerBridge: {
           hubCellId: "hub-cell",
           hostTopicId: "hub-topic",

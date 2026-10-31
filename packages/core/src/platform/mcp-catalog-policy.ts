@@ -25,10 +25,11 @@ export const COMMON_RUNTIME_MCP_POLICY = {
   // through the enabled whitelist.
   "cua-rs": { scopes: ["dm", "forum", "fork"], forumRequired: false },
   // Reads the append-only raw conversation manifest (survives /compact and
-  // agent switches). Deliberately NOT forumRequired: most turns never need
-  // to look past the active context, and it is a 3-tool surface most topics
-  // will not touch. Opt in per topic through the enabled whitelist.
-  "session-history": { scopes: ["dm", "forum", "manager"], forumRequired: false },
+  // agent switches). forumRequired like task/decision/wiki: looking past a
+  // compaction boundary is core, always-available behavior, not a per-topic
+  // opt-in -- only cron is excluded, since a scheduled job replaying history
+  // has little use for it.
+  "session-history": { scopes: ["dm", "forum", "manager"], forumRequired: true },
 } as const satisfies Record<string, RuntimeMcpPolicyEntry>;
 
 export type CommonRuntimeMcpName = keyof typeof COMMON_RUNTIME_MCP_POLICY;

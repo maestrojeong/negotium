@@ -6,7 +6,8 @@ describe("runtime MCP catalog policy", () => {
     const classification = classifyForumMcpServers(COMMON_RUNTIME_MCP_POLICY);
     expect(classification.required).toContain("playwright");
     expect(classification.required).toContain("background-bash");
-    expect(classification.optional).toEqual(["cua-rs", "session-history"]);
+    expect(classification.required).toContain("session-history");
+    expect(classification.optional).toEqual(["cua-rs"]);
   });
 
   test("classifies host extensions without mutating common policy", () => {
@@ -15,7 +16,7 @@ describe("runtime MCP catalog policy", () => {
       "host-ocr": { scopes: ["forum"] },
       "host-required": { scopes: ["forum"], forumRequired: true },
     });
-    expect(classification.optional).toEqual(["cua-rs", "session-history", "host-ocr"]);
+    expect(classification.optional).toEqual(["cua-rs", "host-ocr"]);
     expect(classification.required).toContain("host-required");
     expect(Object.hasOwn(COMMON_RUNTIME_MCP_POLICY, "host-ocr")).toBe(false);
   });
