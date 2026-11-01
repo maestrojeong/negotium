@@ -1375,3 +1375,99 @@ test("Enter runs the highlighted slash command instead of sending the typed pref
     restoreStdout();
   }
 });
+
+test("a decision card accepts a typed answer or a skip as well as its choices", async () => {
+  const answers: Array<{ label: string; kind?: string }> = [];
+  const card = {
+    id: "q1",
+    topicId: "topic",
+    authorId: "ai",
+    text: "",
+    kind: "ask_user_question" as const,
+    askUserQuestion: { question: "Deploy now?", choices: [{ label: "yes" }, { label: "no" }] },
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  const client: NegotiumClient = {
+    async start() {},
+    async stop() {},
+    listTopics: () => [TOPIC],
+    listMessages: () => [card],
+    createTopic() {
+      throw new Error("not reached");
+    },
+    async deriveTopic() {
+      throw new Error("not reached");
+    },
+    async resetTopic() {
+      throw new Error("not reached");
+    },
+    async compactTopic() {
+      throw new Error("not reached");
+    },
+    setModel() {
+      throw new Error("not reached");
+    },
+    setEffort() {
+      throw new Error("not reached");
+    },
+    async deleteTopic() {
+      throw new Error("not reached");
+    },
+    sendMessage() {
+      throw new Error("not reached");
+    },
+    answerQuestion(_topicId, _messageId, label, options) {
+      answers.push({ label, kind: options?.kind });
+      return { ok: true };
+    },
+    abort: () => false,
+    runVaultCommand: () => null,
+  };
+  const restoreStdin = setTty(process.stdin, true);
+  const restoreStdout = setTty(process.stdout, true);
+  const stdin = process.stdin as unknown as Record<string, unknown>;
+  const hadRawMode = typeof stdin.setRawMode === "function";
+  if (!hadRawMode) stdin.setRawMode = () => process.stdin;
+  const realWrite = process.stdout.write.bind(process.stdout);
+  (process.stdout as unknown as { write: (chunk: string) => boolean }).write = () => true;
+  const app = new TerminalApp(client, { userId: "local", preferredTopic: TOPIC.title });
+  const finished = app.run();
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
+  const feed = (data: string) => process.stdin.emit("data", data);
+
+  try {
+    await settle();
+    // Typed text wins over the highlighted row and is sent as the user's own words.
+    feed("both, staged");
+    await settle();
+    feed("\r");
+    await settle();
+    expect(answers).toEqual([{ label: "both, staged", kind: "custom" }]);
+    // Empty composer: ↓↓ lands on "type your own" (a hint only, nothing is sent).
+    feed("\u001b[B");
+    feed("\u001b[B");
+    await settle();
+    feed("\r");
+    await settle();
+    expect(answers).toHaveLength(1);
+    // One more ↓ lands on skip.
+    feed("\u001b[B");
+    await settle();
+    feed("\r");
+    await settle();
+    expect(answers.at(-1)).toEqual({ label: "", kind: "skip" });
+    // A plain choice is still sent as a choice.
+    feed("\u001b[B");
+    await settle();
+    feed("\r");
+    await settle();
+    expect(answers.at(-1)).toEqual({ label: "no", kind: undefined });
+  } finally {
+    app.stop();
+    await finished;
+    (process.stdout as unknown as { write: typeof realWrite }).write = realWrite;
+    if (!hadRawMode) delete stdin.setRawMode;
+    restoreStdin();
+    restoreStdout();
+  }
+});

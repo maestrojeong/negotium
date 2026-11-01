@@ -320,6 +320,14 @@ export function setTopicUsage(state: AppState, usage: TopicUsageSummary): AppSta
   };
 }
 
+/**
+ * Rows on a decision card: the AI's choices, then "type your own answer" and
+ * "skip". The two extra rows are the Terminal's, not the AI's.
+ */
+export function askRowCount(choiceCount: number): number {
+  return choiceCount + 2;
+}
+
 export function activeQuestion(state: AppState): TerminalMessage | null {
   return (
     activeMessages(state)

@@ -267,6 +267,8 @@ export function claimAskUserGateAndSelect(args: {
   topicId: string;
   messageId: string;
   label: string;
+  /** Accept a label that is not one of the card's choices (free-text answer or skip). */
+  allowAnyLabel?: boolean;
   userId: string;
   ownerId: string;
   source: string;
@@ -295,7 +297,7 @@ export function claimAskUserGateAndSelect(args: {
       if (
         ask.expired ||
         ask.selectedLabel ||
-        !ask.choices.some((choice) => choice.label === args.label)
+        (!args.allowAnyLabel && !ask.choices.some((choice) => choice.label === args.label))
       ) {
         return { outcome: "unavailable" } as const;
       }

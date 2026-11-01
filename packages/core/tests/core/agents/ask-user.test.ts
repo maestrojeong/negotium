@@ -375,6 +375,90 @@ describe("runtime ask_user_question", () => {
     }
   });
 
+  describe("answers that are not a listed choice", () => {
+    async function ask(
+      topicId: string,
+      input: Record<string, unknown> = {},
+    ): Promise<{ pending: Promise<{ content: { text?: string }[] }>; messageId: string }> {
+      let messageId: string | undefined;
+      const unsubscribe = runtimeBus().subscribe((event) => {
+        if (event.type !== "message" || event.topicId !== topicId) return;
+        const message = event.payload as MessageDto;
+        if (message.kind === "ask_user_question") messageId = message.id;
+      });
+      const tool = createAskUserToolDefinition({
+        userId: USER,
+        topicId,
+        queryId: `query-${Math.random()}`,
+        agent: "maestro",
+      });
+      const pending = tool.handler({
+        question: "Which path?",
+        choices: [{ label: "Safe" }, { label: "Native" }],
+        ...input,
+      }) as Promise<{ content: { text?: string }[] }>;
+      await Bun.sleep(0);
+      unsubscribe();
+      if (!messageId) throw new Error("ask card was not published");
+      return { pending, messageId };
+    }
+
+    test("a typed answer resumes the call with the user's own words", async () => {
+      const topicId = seedTopic();
+      const { pending, messageId } = await ask(topicId);
+      // Without the custom kind a label outside the choices is still rejected.
+      expect(answerPendingAskUserQuestion(topicId, messageId, "Something else", USER).ok).toBe(
+        false,
+      );
+      const answered = answerPendingAskUserQuestion(topicId, messageId, "  do both  ", USER, {
+        kind: "custom",
+      });
+      expect(answered.ok).toBe(true);
+      expect((await pending).content[0]?.text).toContain("in their own words: do both");
+      expect(getApiMessage(topicId, messageId)?.askUserQuestion?.selectedLabel).toBe("do both");
+    });
+
+    test("an empty typed answer is refused and leaves the card pending", async () => {
+      const topicId = seedTopic();
+      const { pending, messageId } = await ask(topicId);
+      expect(
+        answerPendingAskUserQuestion(topicId, messageId, "   ", USER, { kind: "custom" }).ok,
+      ).toBe(false);
+      expect(answerPendingAskUserQuestion(topicId, messageId, "Safe", USER).ok).toBe(true);
+      expect((await pending).content[0]?.text).toContain("User selected: Safe");
+    });
+
+    test("a skip resumes the call and tells the model to use its own judgment", async () => {
+      const topicId = seedTopic();
+      const { pending, messageId } = await ask(topicId);
+      expect(answerPendingAskUserQuestion(topicId, messageId, "", USER, { kind: "skip" }).ok).toBe(
+        true,
+      );
+      expect((await pending).content[0]?.text).toContain("skipped this question");
+      expect(getApiMessage(topicId, messageId)?.askUserQuestion?.selectedLabel).toBe("Skipped");
+    });
+
+    test("a retried call replays a typed answer instead of reporting a broken replay", async () => {
+      const topicId = seedTopic();
+      const input = { idempotency_key: "retry-custom" };
+      const first = await ask(topicId, input);
+      answerPendingAskUserQuestion(topicId, first.messageId, "do both", USER, { kind: "custom" });
+      await first.pending;
+      const tool = createAskUserToolDefinition({
+        userId: USER,
+        topicId,
+        queryId: "query-replay",
+        agent: "maestro",
+      });
+      const result = (await tool.handler({
+        question: "Which path?",
+        choices: [{ label: "Safe" }, { label: "Native" }],
+        ...input,
+      })) as { content: { text?: string }[] };
+      expect(result.content[0]?.text).toContain("in their own words: do both");
+    });
+  });
+
   test("same idempotency key and body shares one pending gate and replays its answer", async () => {
     const topicId = seedTopic();
     const messages: MessageDto[] = [];
