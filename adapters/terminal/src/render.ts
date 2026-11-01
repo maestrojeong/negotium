@@ -19,6 +19,7 @@ import {
   activeTaskPanel,
   activeTopic,
   activeVaultRequest,
+  askRowCount,
   blockedQuestionText,
   composerHoldsSecret,
   type NoticeLevel,
@@ -859,11 +860,7 @@ function renderTable(rows: string[][], width: number): UiLine[] {
     const height = Math.max(1, ...cells.map((cell) => cell.length));
     return Array.from({ length: height }, (_, lineIndex) =>
       line(
-        joinRow(
-          cells.map(
-            (cell, index) => cell[lineIndex] ?? " ".repeat(colWidths[index] ?? 0),
-          ),
-        ),
+        joinRow(cells.map((cell, index) => cell[lineIndex] ?? " ".repeat(colWidths[index] ?? 0))),
         options,
       ),
     );
@@ -2777,26 +2774,30 @@ function decisionPane(state: AppState, width: number): string[] {
   const ask = activeQuestion(state);
   const question = ask?.askUserQuestion;
   if (!ask || !question?.choices.length) return [];
-  const selected = Math.min(state.askChoiceIndex, question.choices.length - 1);
+  const selected = Math.min(state.askChoiceIndex, askRowCount(question.choices.length) - 1);
   const boxWidth = popupPaneWidth(width);
+  const rowTexts = [
+    ...question.choices.map(
+      (choice) => `${choice.label}${choice.description ? ` — ${choice.description}` : ""}`,
+    ),
+    "✎ Type your own answer below",
+    "⤼ Skip",
+  ];
   const content: UiLine[] = [
     line(`  ${question.question}`, { bold: true }),
-    ...question.choices.map((choice, index) =>
-      line(
-        `  ${index === selected ? "●" : "○"} ${choice.label}${choice.description ? ` — ${choice.description}` : ""}`,
-        {
-          fg: index === selected ? theme.text : theme.muted,
-          bg: index === selected ? theme.selected : theme.surface,
-          bold: index === selected,
-        },
-      ),
+    ...rowTexts.map((text, index) =>
+      line(`  ${index === selected ? "●" : "○"} ${text}`, {
+        fg: index === selected ? theme.text : theme.muted,
+        bg: index === selected ? theme.selected : theme.surface,
+        bold: index === selected,
+      }),
     ),
   ];
   const rows = framePane(
-    "decision required · ↑↓ select · Enter confirm",
+    "decision required · ↑↓ select · Enter confirm · or type an answer",
     content,
     boxWidth,
-    Math.min(8, Math.max(4, content.length + 2)),
+    Math.min(12, Math.max(4, content.length + 2)),
     { active: true, accent: theme.amber },
   );
   return centerPaneRows(rows, boxWidth, width);
@@ -2937,7 +2938,9 @@ function inputVisualLines(state: AppState, width: number): InputVisual {
             : `Type or paste the value for ${vaultRequest.vaultSecretRequest.key}…`
           : state.creatingTopic
             ? "Type a topic name…"
-            : "Type a message or /command…";
+            : activeQuestion(state)?.askUserQuestion
+              ? "Type your own answer, or pick one above…"
+              : "Type a message or /command…";
     return {
       lines: [
         line(`${leadPrefix}${gutter ? "  " : ""}${placeholder}`, {

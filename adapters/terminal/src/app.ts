@@ -105,6 +105,7 @@ import {
   adjacentTopicId,
   appendTopicFilter,
   applyRuntimeEvent,
+  askRowCount,
   backspaceTopicFilter,
   closeTerminalPane,
   composerHoldsSecret,
@@ -132,6 +133,7 @@ import {
   setTopicsPanelScrollOffset,
   setTopicUsage,
   startTopicCreation,
+  type TerminalMessage,
   toggleTopicsPanel,
   upsertMessage,
 } from "@/state";
@@ -1904,16 +1906,7 @@ export class TerminalApp {
     }
     const ask = activeQuestion(this.#state);
     if (ask?.askUserQuestion?.choices.length) {
-      const index = Math.min(this.#state.askChoiceIndex, ask.askUserQuestion.choices.length - 1);
-      const choice = ask.askUserQuestion.choices[index];
-      const result = await this.#client.answerQuestion(ask.topicId, ask.id, choice.label);
-      this.#state = {
-        ...this.#state,
-        askChoiceIndex: 0,
-        notice: result.ok ? undefined : result.error,
-        noticeLevel: result.ok ? undefined : "error",
-      };
-      this.#queueRender();
+      await this.#answerAsk(ask);
       return;
     }
 
@@ -3249,10 +3242,50 @@ export class TerminalApp {
     this.#queueRender();
   }
 
+  /**
+   * Enter on a decision card. Typed text is the user's own answer; with an empty
+   * composer Enter takes the highlighted row: a listed choice, the "type your
+   * own" hint, or skip.
+   */
+  async #answerAsk(ask: TerminalMessage): Promise<void> {
+    const choices = ask.askUserQuestion?.choices ?? [];
+    const typed = this.#collapsedPastes.expand(this.#input.text.trim()).trim();
+    const index = Math.min(this.#state.askChoiceIndex, askRowCount(choices.length) - 1);
+    let result: { ok: boolean; error?: string };
+    if (typed) {
+      result = await this.#client.answerQuestion(ask.topicId, ask.id, typed, { kind: "custom" });
+      if (result.ok) {
+        this.#input.setText("");
+        this.#collapsedPastes.clear();
+        this.#syncInput();
+      }
+    } else if (index < choices.length) {
+      result = await this.#client.answerQuestion(ask.topicId, ask.id, choices[index].label);
+    } else if (index === choices.length) {
+      this.#state = {
+        ...this.#state,
+        notice: "Type your answer below, then press Enter.",
+        noticeLevel: "info",
+      };
+      this.#queueRender();
+      return;
+    } else {
+      result = await this.#client.answerQuestion(ask.topicId, ask.id, "", { kind: "skip" });
+    }
+    this.#state = {
+      ...this.#state,
+      askChoiceIndex: 0,
+      notice: result.ok ? undefined : result.error,
+      noticeLevel: result.ok ? undefined : "error",
+    };
+    this.#queueRender();
+  }
+
   #moveAskChoice(delta: number): void {
     const choices = activeQuestion(this.#state)?.askUserQuestion?.choices;
     if (!choices?.length) return;
-    const next = (this.#state.askChoiceIndex + delta + choices.length) % choices.length;
+    const rows = askRowCount(choices.length);
+    const next = (this.#state.askChoiceIndex + delta + rows) % rows;
     this.#state = { ...this.#state, askChoiceIndex: next };
     this.#queueRender();
   }

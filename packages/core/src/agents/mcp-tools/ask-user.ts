@@ -36,6 +36,16 @@ const ASK_GATE_LEASE_ROLE_PREFIX = "ask-user-gate:";
 
 export type AskUserChoice = { label: string; description?: string };
 
+/** The label recorded on a card the user skipped instead of answering. */
+export const SKIP_ANSWER_LABEL = "Skipped";
+const MAX_CUSTOM_ANSWER_CHARS = 2000;
+
+/** How the user answered: a listed choice (default), their own words, or a skip. */
+export type AskUserAnswerKind = "custom" | "skip";
+export interface AnswerAskUserQuestionOptions {
+  kind?: AskUserAnswerKind;
+}
+
 export interface AskUserToolContext {
   userId: string;
   topicId: string;
@@ -88,6 +98,7 @@ export interface AskUserRuntimeHost {
         topicId: string;
         messageId: string;
         label: string;
+        allowAnyLabel?: boolean;
         userId: string;
         ownerId: string;
         source: string;
@@ -126,6 +137,7 @@ export interface AskUserRuntime {
     messageId: string,
     label: string,
     userId: string,
+    options?: AnswerAskUserQuestionOptions,
   ): AnswerAskUserQuestionResult;
   cancelPendingQuestions(topicId: string, queryId: string): void;
   createToolDefinition(ctx: AskUserToolContext): SharedMcpTool;
@@ -137,8 +149,8 @@ type PendingAsk = {
   messageId: string;
   question: string;
   choices: AskUserChoice[];
-  promise: Promise<AskUserChoice & { userId: string }>;
-  resolve: (answer: AskUserChoice & { userId: string }) => void;
+  promise: Promise<AskUserAnswer>;
+  resolve: (answer: AskUserAnswer) => void;
 };
 
 function normalizeAskText(value: unknown, maxChars: number): string | undefined {
@@ -183,8 +195,20 @@ function askBodyHash(question: string, choices: AskUserChoice[]): string {
   return createHash("sha256").update(JSON.stringify({ question, choices })).digest("hex");
 }
 
-function answerToolResult(answer: AskUserChoice & { userId: string }) {
+type AskUserAnswer = AskUserChoice & { userId: string; kind?: AskUserAnswerKind };
+
+function answerToolResult(answer: AskUserAnswer) {
   if (!answer.userId) return errorResult("The AI turn ended before the user answered.");
+  if (answer.kind === "skip") {
+    return textResult(
+      "The user skipped this question. Continue using your best judgment and finish the current turn.",
+    );
+  }
+  if (answer.kind === "custom") {
+    return textResult(
+      `User answered in their own words: ${answer.label}\nContinue from this answer and finish the current turn.`,
+    );
+  }
   const description = answer.description ? `\nDescription: ${answer.description}` : "";
   return textResult(
     `User selected: ${answer.label}${description}\nContinue from this selection and finish the current turn.`,
@@ -244,9 +268,18 @@ export function createAskUserRuntime(host: AskUserRuntimeHost): AskUserRuntime {
   function answerPendingQuestion(
     topicId: string,
     messageId: string,
-    label: string,
+    rawLabel: string,
     userId: string,
+    options: AnswerAskUserQuestionOptions = {},
   ): AnswerAskUserQuestionResult {
+    const kind = options.kind;
+    const label =
+      kind === "skip"
+        ? SKIP_ANSWER_LABEL
+        : kind === "custom"
+          ? rawLabel.trim().slice(0, MAX_CUSTOM_ANSWER_CHARS)
+          : rawLabel;
+    if (kind === "custom" && !label) return { ok: false, error: "Answer is empty." };
     reconcilePendingGates();
     const topic = host.topics.getTopic(topicId);
     if (!topic?.participants.some((participant) => participant.userId === userId)) {
@@ -260,7 +293,7 @@ export function createAskUserRuntime(host: AskUserRuntimeHost): AskUserRuntime {
     if (ask.expired || ask.selectedLabel) {
       return { ok: false, error: "This question is no longer awaiting an answer." };
     }
-    if (!ask.choices.some((choice) => choice.label === label)) {
+    if (!kind && !ask.choices.some((choice) => choice.label === label)) {
       return { ok: false, error: "Invalid choice." };
     }
 
@@ -268,7 +301,7 @@ export function createAskUserRuntime(host: AskUserRuntimeHost): AskUserRuntime {
     if (!pending || pending.topicId !== topicId) {
       return { ok: false, error: "This question is no longer awaiting an answer." };
     }
-    const choice = pending.choices.find((item) => item.label === label);
+    const choice = kind ? { label } : pending.choices.find((item) => item.label === label);
     if (!choice) return { ok: false, error: "Invalid choice." };
 
     let claim: ClaimAskUserGateResult;
@@ -277,6 +310,7 @@ export function createAskUserRuntime(host: AskUserRuntimeHost): AskUserRuntime {
         topicId,
         messageId,
         label,
+        ...(kind ? { allowAnyLabel: true } : {}),
         userId,
         ownerId,
         source: "host-control",
@@ -314,7 +348,7 @@ export function createAskUserRuntime(host: AskUserRuntimeHost): AskUserRuntime {
       // The durable selection is authoritative. Publication and the
       // convenience child message are best-effort after the atomic answer.
     }
-    pending.resolve({ ...choice, userId });
+    pending.resolve({ ...choice, userId, ...(kind ? { kind } : {}) });
     return { ok: true, queryId: pending.queryId, answerMessage };
   }
 
@@ -408,11 +442,20 @@ export function createAskUserRuntime(host: AskUserRuntimeHost): AskUserRuntime {
       );
     }
     if (prepared.outcome === "replay") {
-      const choice = choices.find((candidate) => candidate.label === prepared.gate.selectedLabel);
-      if (!choice || !prepared.gate.answeredBy) {
+      const selectedLabel = prepared.gate.selectedLabel;
+      if (!selectedLabel || !prepared.gate.answeredBy) {
         return errorResult("Error: the stored ask_user_question replay is incomplete.");
       }
-      return answerToolResult({ ...choice, userId: prepared.gate.answeredBy });
+      const choice = choices.find((candidate) => candidate.label === selectedLabel);
+      // Not a listed choice: the user skipped or typed their own answer.
+      const answer: AskUserAnswer = choice
+        ? { ...choice, userId: prepared.gate.answeredBy }
+        : {
+            label: selectedLabel,
+            userId: prepared.gate.answeredBy,
+            kind: selectedLabel === SKIP_ANSWER_LABEL ? "skip" : "custom",
+          };
+      return answerToolResult(answer);
     }
     if (prepared.outcome === "pending") {
       if (prepared.gate.ownerId !== ownerId) {
@@ -443,7 +486,7 @@ export function createAskUserRuntime(host: AskUserRuntimeHost): AskUserRuntime {
       );
     }
     let resolveAnswer!: (answer: AskUserChoice & { userId: string }) => void;
-    const promise = new Promise<AskUserChoice & { userId: string }>((resolve) => {
+    const promise = new Promise<AskUserAnswer>((resolve) => {
       resolveAnswer = resolve;
     });
     pendingAsks.set(message.id, {
@@ -596,8 +639,9 @@ export function answerPendingAskUserQuestion(
   messageId: string,
   label: string,
   userId: string,
+  options?: AnswerAskUserQuestionOptions,
 ): AnswerAskUserQuestionResult {
-  return defaultAskUserRuntime.answerPendingQuestion(topicId, messageId, label, userId);
+  return defaultAskUserRuntime.answerPendingQuestion(topicId, messageId, label, userId, options);
 }
 
 export function cancelPendingAskUserQuestions(topicId: string, queryId: string): void {
