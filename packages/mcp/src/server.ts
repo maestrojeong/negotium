@@ -23,6 +23,7 @@ import {
   appendJsonlEntry,
   canSpawnSubagentsFromTopic,
   createAskUserToolDefinition,
+  createDeleteVaultToolDefinition,
   createPrepareSubagentToolDefinition,
   createPublishHtmlToolDefinitions,
   createRequestVaultToolDefinition,
@@ -373,6 +374,24 @@ export function buildNegotiumMcpServer(ctx: RuntimeMcpContext): McpServer {
       vaultTool.description,
       vaultTool.schema as any,
       vaultTool.handler as any,
+    );
+
+    // Deleting a key never exposes its value, so unlike request_vault_secret
+    // it doesn't need a maskable-input surface and is available everywhere,
+    // including Telegram.
+    const deleteVaultTool = createDeleteVaultToolDefinition({
+      userId: ctx.userId,
+      topicId: ctx.topicId,
+      queryId: ctx.queryId,
+      agent: ctx.agent,
+      model: ctx.model,
+      ...(ctx.threadRootId ? { threadRootId: ctx.threadRootId } : {}),
+    });
+    server.tool(
+      deleteVaultTool.name,
+      deleteVaultTool.description,
+      deleteVaultTool.schema as any,
+      deleteVaultTool.handler as any,
     );
   }
 

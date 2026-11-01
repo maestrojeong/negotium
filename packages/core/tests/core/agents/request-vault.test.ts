@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { createRequestVaultToolDefinition } from "#agents/mcp-tools/request-vault";
+import {
+  createDeleteVaultToolDefinition,
+  createRequestVaultToolDefinition,
+} from "#agents/mcp-tools/request-vault";
 import { getApiMessage, listApiMessages } from "#storage/api-messages";
 import { deleteTopic, upsertTopic } from "#storage/api-topics";
 import { vaultDel, vaultGetValue, vaultSet } from "#storage/vault";
@@ -125,6 +128,29 @@ describe("runtime request_vault_secret", () => {
     ).toBe(false);
   });
 
+  test("overwrite: true replaces the value of a key that already exists", async () => {
+    const topicId = seedTopic();
+    const key = `TEST_OVERWRITE_${randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+    createdVaultKeys.push(key);
+    vaultSet(USER, key, "old-value", "pre-existing");
+
+    const tool = createRequestVaultToolDefinition({
+      userId: USER,
+      topicId,
+      queryId: "query-overwrite",
+      agent: "maestro",
+    });
+    const pending = tool.handler({ key, description: "Replace it", overwrite: true });
+    const card = await waitForVaultCard(topicId);
+
+    const { answerPendingVaultSecretRequest } = await import("#agents/mcp-tools/request-vault");
+    expect(answerPendingVaultSecretRequest(topicId, card.id, USER, "new-value").ok).toBe(true);
+
+    const result = await pending;
+    expect(result.isError).not.toBe(true);
+    expect(vaultGetValue(USER, key)).toBe("new-value");
+  });
+
   test("rejects a malformed key before any card is created", async () => {
     const topicId = seedTopic();
     const tool = createRequestVaultToolDefinition({
@@ -200,5 +226,73 @@ describe("runtime request_vault_secret", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toContain("turn ended before the user answered");
     expect(vaultGetValue(USER, key)).toBeUndefined();
+  });
+});
+
+describe("runtime delete_vault_secret", () => {
+  test("deletes an existing key", async () => {
+    const topicId = seedTopic();
+    const key = `TEST_DELETE_${randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+    vaultSet(USER, key, "to-be-deleted", "pre-existing");
+
+    const tool = createDeleteVaultToolDefinition({
+      userId: USER,
+      topicId,
+      queryId: "query-delete",
+      agent: "maestro",
+    });
+    const result = await tool.handler({ key });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.content[0]?.text).toContain(`Deleted vault key ${key}`);
+    expect(vaultGetValue(USER, key)).toBeUndefined();
+  });
+
+  test("errors when the key does not exist", async () => {
+    const topicId = seedTopic();
+    const key = `TEST_DELETE_MISSING_${randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+
+    const tool = createDeleteVaultToolDefinition({
+      userId: USER,
+      topicId,
+      queryId: "query-delete-missing",
+      agent: "maestro",
+    });
+    const result = await tool.handler({ key });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain("does not exist");
+  });
+
+  test("rejects a malformed key", async () => {
+    const topicId = seedTopic();
+    const tool = createDeleteVaultToolDefinition({
+      userId: USER,
+      topicId,
+      queryId: "query-delete-bad-key",
+      agent: "maestro",
+    });
+    const result = await tool.handler({ key: "not valid!" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain("key must start with a letter");
+  });
+
+  test("refuses when the user is not a topic participant", async () => {
+    const topicId = seedTopic();
+    const key = `TEST_DELETE_AUTH_${randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+    createdVaultKeys.push(key);
+    vaultSet(USER, key, "value", "pre-existing");
+
+    const tool = createDeleteVaultToolDefinition({
+      userId: "someone-else",
+      topicId,
+      queryId: "query-delete-auth",
+      agent: "maestro",
+    });
+    const result = await tool.handler({ key });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain("not a member of this topic");
+    expect(vaultGetValue(USER, key)).toBe("value");
   });
 });

@@ -34,6 +34,7 @@ export type { AnswerVaultSecretRequestResult } from "#agents/mcp-tools/request-v
 export {
   answerPendingVaultSecretRequest,
   cancelPendingVaultSecretRequests,
+  createDeleteVaultToolDefinition,
   createRequestVaultToolDefinition,
   reconcilePendingRequestVaultGates,
   startRequestVaultGateOwner,

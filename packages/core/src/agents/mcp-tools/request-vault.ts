@@ -19,6 +19,7 @@ import {
   VAULT_KEY_PATTERN,
   VAULT_VALUE_MAX_BYTES,
   VAULT_VALUE_MIN_BYTES,
+  vaultDel,
   vaultHasKey,
   vaultSet,
 } from "#storage/vault";
@@ -81,6 +82,8 @@ export interface RequestVaultRuntimeHost {
     /** Writes the secret. Called before the gate is claimed, so a storage
      * failure never leaves a card marked "fulfilled" without a stored value. */
     set(userId: string, key: string, value: string, description: string): void;
+    /** Removes a key outright. Returns false when there was nothing to delete. */
+    del(userId: string, key: string): boolean;
   };
   durability: {
     gates: {
@@ -141,6 +144,7 @@ export interface RequestVaultRuntime {
   ): AnswerVaultSecretRequestResult;
   cancelPendingRequests(topicId: string, queryId: string): void;
   createToolDefinition(ctx: RequestVaultToolContext): SharedMcpTool;
+  createDeleteToolDefinition(ctx: RequestVaultToolContext): SharedMcpTool;
 }
 
 type PendingVaultRequest = {
@@ -352,7 +356,12 @@ export function createRequestVaultRuntime(host: RequestVaultRuntimeHost): Reques
 
   async function requestVaultSecret(
     ctx: RequestVaultToolContext,
-    input: { key?: unknown; description?: unknown; idempotency_key?: unknown },
+    input: {
+      key?: unknown;
+      description?: unknown;
+      idempotency_key?: unknown;
+      overwrite?: unknown;
+    },
   ) {
     if (ctx.unsupportedSurface) {
       return errorResult(
@@ -392,6 +401,10 @@ export function createRequestVaultRuntime(host: RequestVaultRuntimeHost): Reques
         `Error: idempotency_key must be at most ${MAX_IDEMPOTENCY_KEY_CHARS} characters.`,
       );
     }
+    if (input.overwrite !== undefined && typeof input.overwrite !== "boolean") {
+      return errorResult("Error: overwrite must be a boolean.");
+    }
+    const overwrite = input.overwrite === true;
 
     const bodyHash = requestBodyHash(key, description);
     const createGate = () => {
@@ -442,10 +455,10 @@ export function createRequestVaultRuntime(host: RequestVaultRuntimeHost): Reques
     // Checked here, not up front: an idempotent retry of an already-fulfilled
     // request must still replay above, even though the key now exists
     // precisely because that earlier call succeeded.
-    if (host.vault.hasKey(ctx.userId, key)) {
+    if (host.vault.hasKey(ctx.userId, key) && !overwrite) {
       host.durability.gates.quarantine(prepared.gate.gateId, ownerId, now());
       return errorResult(
-        `Error: vault key '${key}' already exists. Pick a different key, or ask the user to update it from their Vault manager.`,
+        `Error: vault key '${key}' already exists. Call again with overwrite: true to replace its value, or pick a different key.`,
       );
     }
 
@@ -497,17 +510,23 @@ export function createRequestVaultRuntime(host: RequestVaultRuntimeHost): Reques
     return {
       name: "request_vault_secret",
       description:
-        "Ask the user to store a brand-new secret value in their Vault. You choose the key name and a short description of what to paste; the user types only the value on a surface that can mask it, and you never see the raw value. Use this instead of asking the user to paste a secret directly into chat. After it succeeds, reference the value as {{KEY}} in supported transient tool inputs.",
+        "Ask the user to store a secret value in their Vault. You choose the key name and a short description of what to paste; the user types only the value on a surface that can mask it, and you never see the raw value. Use this instead of asking the user to paste a secret directly into chat. After it succeeds, reference the value as {{KEY}} in supported transient tool inputs. Fails if the key already exists unless you pass overwrite: true.",
       schema: {
         key: z
           .string()
           .describe(
-            "New Vault key name, e.g. STRIPE_API_KEY. Letters/digits/underscores, must start with a letter.",
+            "Vault key name, e.g. STRIPE_API_KEY. Letters/digits/underscores, must start with a letter.",
           ),
         description: z
           .string()
           .max(MAX_DESCRIPTION_CHARS)
           .describe("One sentence telling the user what value to paste and where it's from."),
+        overwrite: z
+          .boolean()
+          .optional()
+          .describe(
+            "Set true to replace the value of a key that already exists. Defaults to false, which fails instead of silently clobbering an existing secret.",
+          ),
         idempotency_key: z
           .string()
           .max(MAX_IDEMPOTENCY_KEY_CHARS)
@@ -522,6 +541,49 @@ export function createRequestVaultRuntime(host: RequestVaultRuntimeHost): Reques
     };
   }
 
+  async function deleteVaultSecret(ctx: RequestVaultToolContext, input: { key?: unknown }) {
+    const topic = host.topics.getTopic(ctx.topicId);
+    if (!topic) return errorResult(`Error: topic '${ctx.topicId}' not found.`);
+    if (!topic.participants.some((participant) => participant.userId === ctx.userId)) {
+      return errorResult("Error: user is not a member of this topic.");
+    }
+    if (typeof input.key !== "string" || !input.key.trim()) {
+      return errorResult("Error: key is required.");
+    }
+    const key = normalizeVaultKey(input.key);
+    if (!VAULT_KEY_PATTERN.test(key)) {
+      return errorResult(
+        "Error: key must start with a letter and contain only uppercase letters, digits, and underscores (max 128 chars).",
+      );
+    }
+    let deleted: boolean;
+    try {
+      deleted = host.vault.del(ctx.userId, key);
+    } catch (error) {
+      return errorResult(
+        `Error: failed to delete vault key '${key}': ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (!deleted) {
+      return errorResult(`Error: vault key '${key}' does not exist.`);
+    }
+    return textResult(`Deleted vault key ${key}.`);
+  }
+
+  function createDeleteToolDefinition(ctx: RequestVaultToolContext): SharedMcpTool {
+    return {
+      name: "delete_vault_secret",
+      description:
+        "Permanently delete a key from the user's Vault. This removes the stored value outright — there is no confirmation step and no undo. Use request_vault_secret with overwrite: true instead if the goal is just to replace a value.",
+      schema: {
+        key: z.string().describe("Vault key name to delete, e.g. STRIPE_API_KEY."),
+      },
+      async handler(input) {
+        return deleteVaultSecret(ctx, input);
+      },
+    };
+  }
+
   return {
     startGateOwner,
     stopGateOwner,
@@ -529,6 +591,7 @@ export function createRequestVaultRuntime(host: RequestVaultRuntimeHost): Reques
     answerPendingRequest,
     cancelPendingRequests,
     createToolDefinition,
+    createDeleteToolDefinition,
   };
 }
 
@@ -570,6 +633,7 @@ const defaultRequestVaultRuntime = createRequestVaultRuntime({
   vault: {
     hasKey: vaultHasKey,
     set: vaultSet,
+    del: vaultDel,
   },
   durability: defaultRequestVaultDurabilityHost,
   runtime: {
@@ -613,4 +677,8 @@ export function cancelPendingVaultSecretRequests(topicId: string, queryId: strin
 
 export function createRequestVaultToolDefinition(ctx: RequestVaultToolContext): SharedMcpTool {
   return defaultRequestVaultRuntime.createToolDefinition(ctx);
+}
+
+export function createDeleteVaultToolDefinition(ctx: RequestVaultToolContext): SharedMcpTool {
+  return defaultRequestVaultRuntime.createDeleteToolDefinition(ctx);
 }

@@ -2,7 +2,10 @@
 export { createAskUserToolDefinition } from "#agents/mcp-tools/ask-user";
 export { errorResult, textResult } from "#agents/mcp-tools/common";
 export { createPublishHtmlToolDefinitions } from "#agents/mcp-tools/publish-html";
-export { createRequestVaultToolDefinition } from "#agents/mcp-tools/request-vault";
+export {
+  createDeleteVaultToolDefinition,
+  createRequestVaultToolDefinition,
+} from "#agents/mcp-tools/request-vault";
 export type { SelfConfigContext } from "#agents/mcp-tools/self-config";
 export { createSelfConfigToolDefinitions } from "#agents/mcp-tools/self-config";
 export {
