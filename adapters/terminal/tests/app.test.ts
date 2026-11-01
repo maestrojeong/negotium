@@ -1378,6 +1378,7 @@ test("Enter runs the highlighted slash command instead of sending the typed pref
 
 test("Enter queues and Alt-Enter steers while a turn is running", async () => {
   const sent: Array<{ text: string; steer: boolean | undefined }> = [];
+  const steeredQueues: string[] = [];
   const client: NegotiumClient = {
     async start() {},
     async stop() {},
@@ -1416,6 +1417,10 @@ test("Enter queues and Alt-Enter steers while a turn is running", async () => {
     },
     answerQuestion: () => ({ ok: false }),
     abort: () => false,
+    steerQueued(topicId) {
+      steeredQueues.push(topicId);
+      return true;
+    },
     runVaultCommand: () => null,
   };
   const restoreStdin = setTty(process.stdin, true);
@@ -1459,6 +1464,15 @@ test("Enter queues and Alt-Enter steers while a turn is running", async () => {
       ["third", true],
     ]);
     expect(screen()).toContain("Steering");
+
+    // Empty composer: Alt-Enter and a bare /steer both run what is queued.
+    feed("\u001b\r");
+    await settle();
+    feed("/steer");
+    await settle();
+    feed("\r");
+    await settle();
+    expect(steeredQueues).toEqual(["topic", "topic"]);
   } finally {
     app.stop();
     await finished;

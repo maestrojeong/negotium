@@ -1858,10 +1858,10 @@ function helpLines(): UiLine[] {
     line("  Keyboard", { fg: theme.accent, bold: true }),
     line(""),
     // Shift/Ctrl-Enter only reach us on terminals that honour the kitty
-    // keyboard protocol we push; Alt-Enter is the universal fallback.
+    // keyboard protocol we push; Ctrl-J works everywhere.
     line("  Shift-Enter / Ctrl-Enter / Ctrl-J newline · Alt-Enter steer (interrupt running turn)"),
     line(
-      "  Enter while a turn runs queues the message · /steer <message> does the same as Alt-Enter",
+      "  Enter while a turn runs queues the message · /steer [message] does the same as Alt-Enter",
     ),
     line("  ← → move · Ctrl/Alt-← → move by word · ↑ ↓ history"),
     line("  Alt-Backspace delete word · Ctrl-U clear before cursor"),

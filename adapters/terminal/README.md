@@ -122,10 +122,10 @@ Topic actions moved onto control chords when type-to-filter was introduced: bare
 Commands: `/compact` (summarize and shrink provider context), `/status` (separate latest context
 occupancy from aggregate turn usage), `/model` (open the model picker), `/new` (reset the current
 context), `/topics` (open the topic picker), `/del` (delete the current topic),
-`/copy [all]`, `/abort`, `/steer <message>`, `/help`, `/quit`.
+`/copy [all]`, `/abort`, `/steer [message]`, `/help`, `/quit`.
 
 While a turn is running, Enter queues your message behind it; queued messages are listed above the
-composer until their turn starts. `Alt-Enter` (or `/steer <message>`) aborts the running turn and
+composer until their turn starts. `Alt-Enter` (or `/steer [message]`) aborts the running turn and
 resumes with your message folded in. `Alt-Enter` on an empty composer does the same for the
 messages already queued: they are folded into the running turn and run now.
 

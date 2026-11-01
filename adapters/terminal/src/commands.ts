@@ -32,8 +32,9 @@ const TERMINAL_COMMANDS: readonly TerminalCommand[] = [
   { name: "abort", usage: "/abort", description: "stop the active turn" },
   {
     name: "steer",
-    usage: "/steer <message>",
-    description: "interrupt the running turn and continue with this message",
+    usage: "/steer [message]",
+    description:
+      "interrupt the running turn: with a message, fold it in; alone, run the queued ones",
   },
   { name: "help", usage: "/help", description: "show keyboard help" },
   { name: "quit", usage: "/quit", description: "exit Terminal" },
