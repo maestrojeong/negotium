@@ -25,6 +25,7 @@ import {
   applyRuntimeEvent,
   createInitialState,
   openTopicPicker,
+  queueMessage,
   setMessages,
   setTopicFilter,
   setTopics,
@@ -3053,5 +3054,33 @@ describe("topic picker filter rendering", () => {
         widths: rows.map(() => cols),
       });
     }
+  });
+});
+
+describe("queued messages", () => {
+  test("show above the composer, not in the transcript, until the next turn starts", () => {
+    const sent: MessageDto = {
+      id: "queued-1",
+      topicId: "topic",
+      authorId: "user",
+      text: "do this after",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [sent]);
+    state = queueMessage(state, "topic", { id: "queued-1", text: "do this after" });
+    const queuedOutput = stripAnsi(renderApp(state, 100, 30));
+    expect(queuedOutput).toContain("queued");
+    expect(queuedOutput.match(/do this after/g)).toHaveLength(1);
+
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: { kind: "ai_active", queryId: "next-turn" },
+    });
+    expect(state.queued.topic).toEqual([]);
+    const startedOutput = stripAnsi(renderApp(state, 100, 30));
+    expect(startedOutput).not.toContain("runs after this turn");
+    expect(startedOutput).toContain("do this after");
   });
 });

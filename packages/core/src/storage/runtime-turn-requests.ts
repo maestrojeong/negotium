@@ -357,6 +357,12 @@ export function mergeRuntimeUserTurnRequest(input: {
   alreadyIncludedRequestIds?: string[];
   /** Requests already committed to the provider's native session; keep their lineage, not prompts. */
   omitRequestIds?: string[];
+  /**
+   * Requests that must stay standing and never be folded into this one, even
+   * for the same actor and thread. Used to queue a message behind the turn a
+   * worker is running instead of steering (aborting and replacing) it.
+   */
+  keepRequestIds?: string[];
 }): { requestId: string; supersededRequestIds: string[] } {
   const now = Date.now();
   return db
@@ -373,9 +379,12 @@ export function mergeRuntimeUserTurnRequest(input: {
       // and a pending request from another thread is left standing to run on
       // its own (S-13).
       const thread = input.execution.threadRootId;
+      const kept = new Set(input.keepRequestIds ?? []);
       const sameThread = rows
         .map(rowToRequest)
-        .filter((request) => request.execution?.threadRootId === thread);
+        .filter(
+          (request) => request.execution?.threadRootId === thread && !kept.has(request.requestId),
+        );
       // Nor is a different person the same conversation for this purpose. A
       // merged batch runs with one actor's identity and one room assertion,
       // so folding B's follow-up onto A's pending question would run A's
@@ -752,6 +761,38 @@ export function getActiveRuntimeUserTurnRequest(topicId: string): RuntimeUserTur
     )
     .get(topicId, Date.now() - REQUEST_CLAIM_STALE_MS);
   return row ? rowToRequest(row) : null;
+}
+
+/**
+ * Fold the messages queued behind a running turn into it, so a steer can run
+ * them now. Same replacement `mergeRuntimeUserTurnRequest` makes for a steering
+ * message, but with no new message: the running request and the queued tail it
+ * shares an actor and thread with become one pending batch. Returns the
+ * absorbed running request's id, or null when there is nothing to fold (no
+ * running turn, nothing queued, or the queue belongs to someone else).
+ */
+export function foldQueuedIntoActiveRuntimeUserTurnRequest(
+  topicId: string,
+  newRequestId: string,
+): string | null {
+  const active = getActiveRuntimeUserTurnRequest(topicId);
+  const latest = getRuntimeUserTurnRequest(topicId);
+  if (!active || !latest || latest.requestId === active.requestId || !latest.execution) {
+    return null;
+  }
+  if (requestActor(latest.execution.actorUserId) !== requestActor(active.execution?.actorUserId)) {
+    return null;
+  }
+  const merged = mergeRuntimeUserTurnRequest({
+    topicId,
+    userId: latest.userId,
+    userMessages: [],
+    allowAutoContinue: latest.allowAutoContinue,
+    requestId: newRequestId,
+    execution: latest.execution,
+    topicEpoch: latest.topicEpoch,
+  });
+  return merged.supersededRequestIds.includes(active.requestId) ? active.requestId : null;
 }
 
 export function getRuntimeUserTurnRequest(topicId: string): RuntimeUserTurnRequest | null {

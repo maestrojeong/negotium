@@ -55,6 +55,12 @@ export interface SubmitRuntimeGatewayTurnParams {
    * it exactly as usual, and only declines to queue the turn.
    */
   respond?: boolean;
+  /**
+   * What a new message does while a turn from the same person is running.
+   * `true` (default): abort it and resume with the merged batch (steer).
+   * `false`: leave the running turn alone and queue this message behind it.
+   */
+  steer?: boolean;
   /** Hide both the injected prompt and provider output from the visible topic. */
   silent?: boolean;
   /** Answer inside this thread instead of the room's main flow (S-13). */
@@ -334,6 +340,7 @@ export function submitRuntimeGatewayTurn(
             },
           ],
           allowAutoContinue: params.allowAutoContinue ?? true,
+          ...(params.steer === false && active ? { keepRequestIds: [active.requestId] } : {}),
           requestId,
           topicEpoch: getRuntimeTopicEpoch(params.topic.id),
           execution: {

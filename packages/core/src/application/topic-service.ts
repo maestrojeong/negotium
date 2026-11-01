@@ -1,11 +1,15 @@
+import { randomUUID } from "node:crypto";
 import { answerPendingAskUserQuestion } from "#agents/mcp-tools/ask-user";
 import { answerPendingVaultSecretRequest } from "#agents/mcp-tools/request-vault";
 import { WsHub } from "#bus";
 import { abortRoom, getRoomQuery } from "#query/active-rooms";
 import { getTopic } from "#storage/api-topics";
-import { getRuntimeTurnLease } from "#storage/runtime-leases";
+import { getRuntimeTurnLease, requestRuntimeTurnAbort } from "#storage/runtime-leases";
 import { beginRuntimeTopicMaintenance } from "#storage/runtime-topic-state";
-import { cancelRuntimeUserTurnRequestsBeforeEpoch } from "#storage/runtime-turn-requests";
+import {
+  cancelRuntimeUserTurnRequestsBeforeEpoch,
+  foldQueuedIntoActiveRuntimeUserTurnRequest,
+} from "#storage/runtime-turn-requests";
 import { type RegisterTopicOptions, registerTopic } from "#topics/create";
 import { createDerivedTopic } from "#topics/derive";
 import { type DeleteTopicCascadeOptions, deleteTopicCascade } from "#topics/lifecycle";
@@ -133,6 +137,19 @@ export const topicService = {
   answerVaultRequest(topicId: string, messageId: string, userId: string, value: string | null) {
     participantTopic(topicId, userId);
     return answerPendingVaultSecretRequest(topicId, messageId, userId, value);
+  },
+
+  /**
+   * Run the messages queued behind the running turn now: fold them into it and
+   * abort so the worker resumes with the merged batch (the same thing a steering
+   * message does). False when there was nothing queued to fold.
+   */
+  steerQueuedTurn(topicId: string, userId: string): boolean {
+    participantTopic(topicId, userId);
+    const folded = foldQueuedIntoActiveRuntimeUserTurnRequest(topicId, randomUUID());
+    if (!folded) return false;
+    requestRuntimeTurnAbort(topicId, "internal");
+    return true;
   },
 
   abortTurn(topicId: string, userId: string): boolean {

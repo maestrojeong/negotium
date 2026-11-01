@@ -1028,6 +1028,7 @@ export function createNodeControlHandler(
             // deserves an answer; omitting the flag keeps the old behaviour.
             respond: body.respond !== false,
             silent: body.silent === true,
+            steer: body.steer !== false,
             // Default-deny, unlike `allowAutoContinue`/`respond` above: a host
             // that renders no visual panel and has no chat file surface must
             // not be handed tools whose output it would silently drop.
@@ -2346,6 +2347,14 @@ export function createNodeControlHandler(
         const body = await bodyRecord(req);
         const userId = requiredText(body.userId, "userId");
         return Response.json({ ok: true, aborted: topicService.abortTurn(topicId, userId) });
+      }
+
+      const steerQueuedMatch = path.match(/^\/topics\/([^/]+)\/steer-queued$/);
+      if (steerQueuedMatch && req.method === "POST") {
+        const topicId = decodeURIComponent(steerQueuedMatch[1]);
+        const body = await bodyRecord(req);
+        const userId = requiredText(body.userId, "userId");
+        return Response.json({ ok: true, steered: topicService.steerQueuedTurn(topicId, userId) });
       }
 
       const resetMatch = path.match(/^\/topics\/([^/]+)\/session\/reset$/);
