@@ -2349,6 +2349,14 @@ export function createNodeControlHandler(
         return Response.json({ ok: true, aborted: topicService.abortTurn(topicId, userId) });
       }
 
+      const steerQueuedMatch = path.match(/^\/topics\/([^/]+)\/steer-queued$/);
+      if (steerQueuedMatch && req.method === "POST") {
+        const topicId = decodeURIComponent(steerQueuedMatch[1]);
+        const body = await bodyRecord(req);
+        const userId = requiredText(body.userId, "userId");
+        return Response.json({ ok: true, steered: topicService.steerQueuedTurn(topicId, userId) });
+      }
+
       const resetMatch = path.match(/^\/topics\/([^/]+)\/session\/reset$/);
       if (resetMatch && req.method === "POST") {
         const topicId = decodeURIComponent(resetMatch[1]);

@@ -763,6 +763,38 @@ export function getActiveRuntimeUserTurnRequest(topicId: string): RuntimeUserTur
   return row ? rowToRequest(row) : null;
 }
 
+/**
+ * Fold the messages queued behind a running turn into it, so a steer can run
+ * them now. Same replacement `mergeRuntimeUserTurnRequest` makes for a steering
+ * message, but with no new message: the running request and the queued tail it
+ * shares an actor and thread with become one pending batch. Returns the
+ * absorbed running request's id, or null when there is nothing to fold (no
+ * running turn, nothing queued, or the queue belongs to someone else).
+ */
+export function foldQueuedIntoActiveRuntimeUserTurnRequest(
+  topicId: string,
+  newRequestId: string,
+): string | null {
+  const active = getActiveRuntimeUserTurnRequest(topicId);
+  const latest = getRuntimeUserTurnRequest(topicId);
+  if (!active || !latest || latest.requestId === active.requestId || !latest.execution) {
+    return null;
+  }
+  if (requestActor(latest.execution.actorUserId) !== requestActor(active.execution?.actorUserId)) {
+    return null;
+  }
+  const merged = mergeRuntimeUserTurnRequest({
+    topicId,
+    userId: latest.userId,
+    userMessages: [],
+    allowAutoContinue: latest.allowAutoContinue,
+    requestId: newRequestId,
+    execution: latest.execution,
+    topicEpoch: latest.topicEpoch,
+  });
+  return merged.supersededRequestIds.includes(active.requestId) ? active.requestId : null;
+}
+
 export function getRuntimeUserTurnRequest(topicId: string): RuntimeUserTurnRequest | null {
   const row = db
     .query<RuntimeUserTurnRequestRow, [string]>(

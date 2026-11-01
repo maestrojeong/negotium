@@ -130,6 +130,8 @@ export interface NegotiumClient {
     value: string | null,
   ): ClientResult<{ ok: boolean; error?: string }>;
   abort(topicId: string): ClientResult<boolean>;
+  /** Run the messages queued behind the running turn now (fold them in and abort). */
+  steerQueued?(topicId: string): ClientResult<boolean>;
   runVaultCommand?(commandLine: string): ClientResult<string | null>;
   listVaultEntries?(): ClientResult<VaultEntry[]>;
   saveVaultEntry?(
@@ -340,6 +342,10 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
 
   abort(topicId: string): boolean {
     return topicService.abortTurn(topicId, this.#userId);
+  }
+
+  steerQueued(topicId: string): boolean {
+    return topicService.steerQueuedTurn(topicId, this.#userId);
   }
 
   runVaultCommand(commandLine: string): string | null {
@@ -659,6 +665,14 @@ export class RemoteNegotiumClient implements NegotiumClient {
       body: JSON.stringify({ userId: this.#userId }),
     });
     return result.aborted === true;
+  }
+
+  async steerQueued(topicId: string): Promise<boolean> {
+    const result = await this.#request(`/topics/${encodeURIComponent(topicId)}/steer-queued`, {
+      method: "POST",
+      body: JSON.stringify({ userId: this.#userId }),
+    });
+    return result.steered === true;
   }
 
   async runVaultCommand(commandLine: string): Promise<string | null> {

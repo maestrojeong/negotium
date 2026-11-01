@@ -985,6 +985,57 @@ test("runtime gateway queues the same person's follow-up behind a running turn w
   }
 });
 
+test("steerQueuedTurn folds the queued messages into the running turn and aborts it", () => {
+  resetRuntimeTurnQueue();
+  const userId = `gateway-steer-queued-${randomUUID()}`;
+  const worker = `worker-${randomUUID()}`;
+  const topic = topicService.create({
+    title: `Gateway steer queued ${randomUUID()}`,
+    userId,
+    agent: "codex",
+  });
+  let queryId: string | undefined;
+  try {
+    const freshTopic = getTopic(topic.id);
+    if (!freshTopic) throw new Error("topic was not created");
+    // Nothing running and nothing queued: nothing to steer.
+    expect(topicService.steerQueuedTurn(topic.id, userId)).toBe(false);
+    const first = submitRuntimeGatewayTurn({
+      topic: freshTopic,
+      userId,
+      actorUserId: "alice",
+      text: "first thought",
+      clientMessageId: randomUUID(),
+    });
+    queryId = startRunningTurn(topic.id, first.requestId, worker);
+    // Running but nothing queued behind it: still nothing to steer.
+    expect(topicService.steerQueuedTurn(topic.id, userId)).toBe(false);
+    const queued = submitRuntimeGatewayTurn({
+      topic: freshTopic,
+      userId,
+      actorUserId: "alice",
+      text: "queued thought",
+      clientMessageId: randomUUID(),
+      steer: false,
+    });
+    expect(getRuntimeTurnLease(topic.id)?.abortRequested).toBe(false);
+    expect(topicService.steerQueuedTurn(topic.id, userId)).toBe(true);
+    expect(getRuntimeTurnLease(topic.id)?.abortRequested).toBe(true);
+    expect(queueRows(topic.id)).toHaveLength(1);
+    expect(getRuntimeUserTurnRequest(topic.id)).toMatchObject({
+      userMessages: [{ prompt: "first thought" }, { prompt: "queued thought" }],
+      execution: {
+        actorUserId: "alice",
+        supersededRequestIds: [first.requestId, queued.requestId],
+      },
+    });
+  } finally {
+    if (queryId) releaseRuntimeTurnLease(topic.id, queryId, worker);
+    cancelRuntimeUserTurnRequests(topic.id);
+    deleteTopic(topic.id);
+  }
+});
+
 test("runtime gateway never aborts a running turn whose actor is unknown", () => {
   resetRuntimeTurnQueue();
   const userId = `gateway-steer-unknown-${randomUUID()}`;

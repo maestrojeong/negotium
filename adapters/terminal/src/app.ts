@@ -1949,7 +1949,12 @@ export class TerminalApp {
 
     const displayText = this.#input.text.trim();
     let text = this.#collapsedPastes.expand(displayText).trim();
-    if (!text) return;
+    if (!text) {
+      // Alt-Enter on an empty composer steers what is already queued: fold it
+      // into the running turn and run it now.
+      if (forceSteer) await this.#steerQueued();
+      return;
+    }
     const inVaultCommandScreen =
       this.#state.overlay === "vault" && this.#state.vaultMode === "list";
     if (inVaultCommandScreen && !isVaultCommandLine(text)) {
@@ -2066,6 +2071,34 @@ export class TerminalApp {
           },
         });
       }
+      this.#state = {
+        ...this.#state,
+        notice: error instanceof Error ? error.message : String(error),
+        noticeLevel: "error",
+      };
+    }
+    this.#queueRender();
+  }
+
+  async #steerQueued(): Promise<void> {
+    const topic = activeTopic(this.#state);
+    if (!topic || (this.#state.queued[topic.id] ?? []).length === 0) return;
+    this.#state = {
+      ...this.#state,
+      notice: "Steering: running the queued messages now…",
+      noticeLevel: "info",
+    };
+    this.#queueRender();
+    try {
+      const steered = await this.#client.steerQueued?.(topic.id);
+      if (steered === false) {
+        this.#state = {
+          ...this.#state,
+          notice: "Nothing to steer: the queued messages already started.",
+          noticeLevel: "info",
+        };
+      }
+    } catch (error) {
       this.#state = {
         ...this.#state,
         notice: error instanceof Error ? error.message : String(error),

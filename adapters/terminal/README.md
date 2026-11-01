@@ -82,7 +82,7 @@ indicator. Topics and transcript use temporary overlays.
 | Key | Action |
 | --- | --- |
 | `Enter` | send text, or accept the selected ask choice |
-| `Alt-Enter` | send and interrupt the running turn (steer) |
+| `Alt-Enter` | send and interrupt the running turn (steer); with an empty composer, run the queued messages now |
 | `Shift-Enter` / `Ctrl-Enter` / `Ctrl-J` | insert a newline |
 | `Up` / `Down` | edit multiline input, history, suggestions, or ask choices |
 | `PageUp` / `PageDown` | scroll conversation |
@@ -126,7 +126,8 @@ context), `/topics` (open the topic picker), `/del` (delete the current topic),
 
 While a turn is running, Enter queues your message behind it; queued messages are listed above the
 composer until their turn starts. `Alt-Enter` (or `/steer <message>`) aborts the running turn and
-resumes with your message folded in.
+resumes with your message folded in. `Alt-Enter` on an empty composer does the same for the
+messages already queued: they are folded into the running turn and run now.
 
 A reset keeps the visible transcript, cancels active and queued work accepted before the reset,
 and lets later requests start with a fresh provider context. This includes the private `General`
