@@ -1028,6 +1028,7 @@ export function createNodeControlHandler(
             // deserves an answer; omitting the flag keeps the old behaviour.
             respond: body.respond !== false,
             silent: body.silent === true,
+            steer: body.steer !== false,
             // Default-deny, unlike `allowAutoContinue`/`respond` above: a host
             // that renders no visual panel and has no chat file surface must
             // not be handed tools whose output it would silently drop.

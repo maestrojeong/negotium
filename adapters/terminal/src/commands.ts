@@ -30,6 +30,11 @@ const TERMINAL_COMMANDS: readonly TerminalCommand[] = [
     description: "open the Vault editor or run a compact Vault command",
   },
   { name: "abort", usage: "/abort", description: "stop the active turn" },
+  {
+    name: "steer",
+    usage: "/steer <message>",
+    description: "interrupt the running turn and continue with this message",
+  },
   { name: "help", usage: "/help", description: "show keyboard help" },
   { name: "quit", usage: "/quit", description: "exit Terminal" },
 ];

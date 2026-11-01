@@ -21,6 +21,7 @@ import {
   activeVaultRequest,
   blockedQuestionText,
   composerHoldsSecret,
+  isQueuedMessage,
   type NoticeLevel,
   pickedBackgroundSession,
   SIDE_PANEL_WIDTH_MAX,
@@ -859,11 +860,7 @@ function renderTable(rows: string[][], width: number): UiLine[] {
     const height = Math.max(1, ...cells.map((cell) => cell.length));
     return Array.from({ length: height }, (_, lineIndex) =>
       line(
-        joinRow(
-          cells.map(
-            (cell, index) => cell[lineIndex] ?? " ".repeat(colWidths[index] ?? 0),
-          ),
-        ),
+        joinRow(cells.map((cell, index) => cell[lineIndex] ?? " ".repeat(colWidths[index] ?? 0))),
         options,
       ),
     );
@@ -1862,7 +1859,10 @@ function helpLines(): UiLine[] {
     line(""),
     // Shift/Ctrl-Enter only reach us on terminals that honour the kitty
     // keyboard protocol we push; Alt-Enter is the universal fallback.
-    line("  Shift-Enter / Ctrl-Enter newline · Alt-Enter always works"),
+    line("  Shift-Enter / Ctrl-Enter / Ctrl-J newline · Alt-Enter steer (interrupt running turn)"),
+    line(
+      "  Enter while a turn runs queues the message · /steer <message> does the same as Alt-Enter",
+    ),
     line("  ← → move · Ctrl/Alt-← → move by word · ↑ ↓ history"),
     line("  Alt-Backspace delete word · Ctrl-U clear before cursor"),
     line("  Cmd-Backspace works when forwarded · Ctrl-W/K aliases"),
@@ -1878,7 +1878,7 @@ function helpLines(): UiLine[] {
     line("  Commands", { fg: theme.cyan, bold: true }),
     line("  /new  /model  /effort  /status  /context"),
     line("  /topics  /fork  /spawn"),
-    line("  /del  /copy  /abort  /help  /quit", { fg: theme.muted }),
+    line("  /del  /copy  /abort  /steer  /help  /quit", { fg: theme.muted }),
   ];
 }
 
@@ -2648,6 +2648,7 @@ function conversationContentLines(
   const all: UiLine[] = [];
   for (const message of activeMessages(state).filter(
     (item) =>
+      !isQueuedMessage(state, item.topicId, item.id) &&
       !item.id.startsWith("tasks-") &&
       item.kind !== "system" &&
       (item.authorId !== "system" || isVisibleSystemMessage(item)),
@@ -2797,6 +2798,31 @@ function decisionPane(state: AppState, width: number): string[] {
     content,
     boxWidth,
     Math.min(8, Math.max(4, content.length + 2)),
+    { active: true, accent: theme.amber },
+  );
+  return centerPaneRows(rows, boxWidth, width);
+}
+
+/** Messages waiting behind the running turn, shown just above the composer. */
+function queuedPane(state: AppState, width: number): string[] {
+  if (state.overlay || !state.activeTopicId) return [];
+  const queued = state.queued[state.activeTopicId] ?? [];
+  if (queued.length === 0) return [];
+  const boxWidth = popupPaneWidth(width);
+  const shown = queued.slice(-3);
+  const hidden = queued.length - shown.length;
+  const textWidth = Math.max(4, boxWidth - 8);
+  const content: UiLine[] = [
+    ...(hidden > 0 ? [line(`  … ${hidden} earlier queued`, { fg: theme.muted })] : []),
+    ...shown.map((item) =>
+      line(`  › ${sliceWidth(item.text.replace(/\s+/g, " "), textWidth)}`, { fg: theme.muted }),
+    ),
+  ];
+  const rows = framePane(
+    "queued · runs after this turn · Alt-Enter steers",
+    content,
+    boxWidth,
+    content.length + 2,
     { active: true, accent: theme.amber },
   );
   return centerPaneRows(rows, boxWidth, width);
@@ -3364,6 +3390,7 @@ export function renderAppFrame(
     [
       ...decisionPane(state, layout.conversationWidth),
       ...vaultRequestPane(state, layout.conversationWidth),
+      ...queuedPane(state, layout.conversationWidth),
     ],
     conversationXStart - 1,
   );

@@ -109,7 +109,15 @@ export interface NegotiumClient {
   setModel(topic: TopicDto, model: string): ClientResult<string>;
   setEffort(topic: TopicDto, effort: EffortLevel): ClientResult<string>;
   deleteTopic(topic: TopicDto): Promise<void>;
-  sendMessage(topic: TopicDto, text: string): ClientResult<MessageDto>;
+  /**
+   * `steer: true` aborts the running turn and resumes with this message folded
+   * in; the default queues the message behind the running turn.
+   */
+  sendMessage(
+    topic: TopicDto,
+    text: string,
+    options?: { steer?: boolean },
+  ): ClientResult<MessageDto>;
   answerQuestion(
     topicId: string,
     messageId: string,
@@ -297,7 +305,7 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
     await topicService.delete({ topicId: topic.id, userId: this.#userId });
   }
 
-  sendMessage(topic: TopicDto, text: string): MessageDto {
+  sendMessage(topic: TopicDto, text: string, options?: { steer?: boolean }): MessageDto {
     const clientMessageId = terminalClientMessageId();
     return submitRuntimeGatewayTurn({
       topic,
@@ -306,6 +314,7 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
       sourceAdapter: "terminal",
       clientMessageId,
       requestId: clientMessageId,
+      steer: options?.steer === true,
       visualTools: false,
       fileDeliveryTools: false,
     }).message;
@@ -579,7 +588,11 @@ export class RemoteNegotiumClient implements NegotiumClient {
     );
   }
 
-  async sendMessage(topic: TopicDto, text: string): Promise<MessageDto> {
+  async sendMessage(
+    topic: TopicDto,
+    text: string,
+    options?: { steer?: boolean },
+  ): Promise<MessageDto> {
     const clientMessageId = terminalClientMessageId();
     const acknowledgement = await submitTerminalGatewayTurn(this.#gateway, {
       topicId: topic.id,
@@ -588,6 +601,7 @@ export class RemoteNegotiumClient implements NegotiumClient {
       text,
       clientMessageId,
       requestId: clientMessageId,
+      steer: options?.steer === true,
       visualTools: false,
       fileDeliveryTools: false,
     });

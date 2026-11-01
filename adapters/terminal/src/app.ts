@@ -29,6 +29,7 @@ import {
   type TerminalMouseEvent,
   terminalDeletionShortcut,
   terminalNewlineShortcut,
+  terminalSteerShortcut,
   topicFilterInsertion,
   topicFilterPasteText,
   topicPickerTargetAt,
@@ -117,6 +118,7 @@ import {
   openTopicPicker,
   pickedBackgroundSession,
   pickedTopic,
+  queueMessage,
   type SubagentGraphCanvas,
   scrollTaskPanel,
   scrollTopicsPanel,
@@ -336,6 +338,7 @@ export {
   splitBracketedPaste,
   terminalDeletionShortcut,
   terminalNewlineShortcut,
+  terminalSteerShortcut,
   topicFilterInsertion,
   topicFilterPasteText,
   topicPickerTargetAt,
@@ -1847,6 +1850,16 @@ export class TerminalApp {
       void this.#submit();
       return;
     }
+    if (
+      terminalSteerShortcut(chunk) &&
+      !this.#state.overlay &&
+      !this.#state.creatingTopic &&
+      !activeQuestion(this.#state) &&
+      !activeVaultRequest(this.#state)
+    ) {
+      void this.#submit(true);
+      return;
+    }
     if (terminalNewlineShortcut(chunk)) {
       this.#input.insert("\n");
       this.#syncInput();
@@ -1889,7 +1902,7 @@ export class TerminalApp {
     }
   }
 
-  async #submit(): Promise<void> {
+  async #submit(forceSteer = false): Promise<void> {
     if (
       this.#state.overlay === "vault" &&
       this.#state.vaultMode !== "list" &&
@@ -1918,7 +1931,7 @@ export class TerminalApp {
     }
 
     const displayText = this.#input.text.trim();
-    const text = this.#collapsedPastes.expand(displayText).trim();
+    let text = this.#collapsedPastes.expand(displayText).trim();
     if (!text) return;
     const inVaultCommandScreen =
       this.#state.overlay === "vault" && this.#state.vaultMode === "list";
@@ -1962,6 +1975,11 @@ export class TerminalApp {
       notice: undefined,
       noticeLevel: undefined,
     };
+    // `/steer <message>` is a message, not a command: it interrupts the running
+    // turn and resumes with the message folded in. Plain Enter queues instead.
+    const steerMatch = /^\/steer\s+([\s\S]+)$/.exec(text);
+    if (steerMatch) text = steerMatch[1]!.trim();
+    const steer = forceSteer || steerMatch !== null;
     // Only an actual command name after the `/` goes to the command runner —
     // text that merely starts with `/` (an absolute path pasted or typed in,
     // e.g. `/example-report.pdf`) is sent as an ordinary message instead of
@@ -1970,7 +1988,7 @@ export class TerminalApp {
     // form `isVaultCommandLine` already accepts) would otherwise miss here
     // and fall through to being sent as a plain chat message — with the
     // plaintext secret going straight to the model and the transcript.
-    if (isKnownTerminalCommand(text) || isVaultCommandLine(text)) {
+    if (!steer && (isKnownTerminalCommand(text) || isVaultCommandLine(text))) {
       await this.#runCommand(text);
       return;
     }
@@ -1980,19 +1998,38 @@ export class TerminalApp {
       this.#queueRender();
       return;
     }
+    const runningQueryId = this.#state.activity[topic.id]?.running
+      ? this.#state.activity[topic.id]?.queryId
+      : undefined;
+    const wasRunning = runningQueryId !== undefined;
     const optimisticQueryId = `terminal-pending-${Date.now()}`;
-    this.#state = applyRuntimeEvent(
-      { ...this.#state, scrollOffset: 0 },
-      {
-        type: "ai-status",
-        topicId: topic.id,
-        payload: { kind: "ai_active", queryId: optimisticQueryId },
-      },
-    );
+    // A message queued behind a running turn must not replace that turn's real
+    // activity marker, or the turn's own ai_done would look stale.
+    const queuing = wasRunning && !steer;
+    this.#state = queuing
+      ? { ...this.#state, scrollOffset: 0 }
+      : applyRuntimeEvent(
+          { ...this.#state, scrollOffset: 0 },
+          {
+            type: "ai-status",
+            topicId: topic.id,
+            payload: { kind: "ai_active", queryId: optimisticQueryId },
+          },
+        );
     this.#queueRender();
     try {
-      const message = await this.#client.sendMessage(topic, stripResolvedPathTriggers(text));
+      const message = await this.#client.sendMessage(topic, stripResolvedPathTriggers(text), {
+        steer,
+      });
       this.#state = upsertMessage(this.#state, message);
+      // Only still waiting if the turn it queued behind is the one running now;
+      // if that turn already ended, this message started its own and is not queued.
+      const stillBehind =
+        this.#state.activity[topic.id]?.running === true &&
+        this.#state.activity[topic.id]?.queryId === runningQueryId;
+      if (queuing && stillBehind) {
+        this.#state = queueMessage(this.#state, topic.id, { id: message.id, text: displayText });
+      }
     } catch (error) {
       if (this.#state.activity[topic.id]?.queryId === optimisticQueryId) {
         this.#state = applyRuntimeEvent(this.#state, {

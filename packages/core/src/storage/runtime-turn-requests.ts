@@ -357,6 +357,12 @@ export function mergeRuntimeUserTurnRequest(input: {
   alreadyIncludedRequestIds?: string[];
   /** Requests already committed to the provider's native session; keep their lineage, not prompts. */
   omitRequestIds?: string[];
+  /**
+   * Requests that must stay standing and never be folded into this one, even
+   * for the same actor and thread. Used to queue a message behind the turn a
+   * worker is running instead of steering (aborting and replacing) it.
+   */
+  keepRequestIds?: string[];
 }): { requestId: string; supersededRequestIds: string[] } {
   const now = Date.now();
   return db
@@ -373,9 +379,12 @@ export function mergeRuntimeUserTurnRequest(input: {
       // and a pending request from another thread is left standing to run on
       // its own (S-13).
       const thread = input.execution.threadRootId;
+      const kept = new Set(input.keepRequestIds ?? []);
       const sameThread = rows
         .map(rowToRequest)
-        .filter((request) => request.execution?.threadRootId === thread);
+        .filter(
+          (request) => request.execution?.threadRootId === thread && !kept.has(request.requestId),
+        );
       // Nor is a different person the same conversation for this purpose. A
       // merged batch runs with one actor's identity and one room assertion,
       // so folding B's follow-up onto A's pending question would run A's

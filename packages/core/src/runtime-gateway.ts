@@ -146,6 +146,11 @@ export interface RuntimeGatewayTurnInput {
   /** Inline quote-reply target. Mutually exclusive with `threadRootId`. */
   parentId?: string;
   respond?: boolean;
+  /**
+   * While a turn from the same person runs: `true` (default) aborts it and
+   * resumes with the merged batch; `false` queues this message behind it.
+   */
+  steer?: boolean;
   /** Run without adding the injected prompt or output to the visible transcript. */
   silent?: boolean;
   attachments?: string[];

@@ -106,6 +106,11 @@ export interface AppState {
    * Cleared as soon as the topic becomes the active one.
    */
   unread: Record<string, true>;
+  /**
+   * Messages sent while a turn was running. They wait behind that turn, so the
+   * composer shows them instead of the transcript until their turn starts.
+   */
+  queued: Record<string, QueuedMessage[]>;
   input: string;
   inputCursor: { row: number; col: number };
   suggestionIndex: number;
@@ -187,6 +192,22 @@ export interface AppState {
   vaultRequestNotice?: string;
 }
 
+export interface QueuedMessage {
+  id: string;
+  text: string;
+}
+
+/** Marks a sent message as waiting behind the running turn. */
+export function queueMessage(state: AppState, topicId: string, message: QueuedMessage): AppState {
+  const current = state.queued[topicId] ?? [];
+  if (current.some((item) => item.id === message.id)) return state;
+  return { ...state, queued: { ...state.queued, [topicId]: [...current, message] } };
+}
+
+export function isQueuedMessage(state: AppState, topicId: string, messageId: string): boolean {
+  return (state.queued[topicId] ?? []).some((item) => item.id === messageId);
+}
+
 export function createInitialState(userId: string): AppState {
   return {
     userId,
@@ -199,6 +220,7 @@ export function createInitialState(userId: string): AppState {
     messageHistory: {},
     activity: {},
     unread: {},
+    queued: {},
     input: "",
     inputCursor: { row: 0, col: 0 },
     suggestionIndex: 0,
@@ -1102,7 +1124,16 @@ function applyAiStatus(
   delete liveCurrent.snapshot;
   if (kind === "ai_active") {
     const queryId = String(status.queryId ?? "");
-    return setActivity(state, topicId, {
+    // A new real turn started, so everything that was waiting behind the old
+    // one has been picked up by it. The client's own optimistic marker is not
+    // a turn start.
+    const drained =
+      state.queued[topicId]?.length &&
+      !queryId.startsWith("terminal-pending-") &&
+      queryId !== current.queryId
+        ? { ...state, queued: { ...state.queued, [topicId]: [] } }
+        : state;
+    return setActivity(drained, topicId, {
       running: true,
       queryId,
       startedAtMs:

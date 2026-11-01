@@ -82,7 +82,8 @@ indicator. Topics and transcript use temporary overlays.
 | Key | Action |
 | --- | --- |
 | `Enter` | send text, or accept the selected ask choice |
-| `Alt-Enter` | insert a newline |
+| `Alt-Enter` | send and interrupt the running turn (steer) |
+| `Shift-Enter` / `Ctrl-Enter` / `Ctrl-J` | insert a newline |
 | `Up` / `Down` | edit multiline input, history, suggestions, or ask choices |
 | `PageUp` / `PageDown` | scroll conversation |
 | Mouse wheel / trackpad | scroll conversation history |
@@ -121,7 +122,11 @@ Topic actions moved onto control chords when type-to-filter was introduced: bare
 Commands: `/compact` (summarize and shrink provider context), `/status` (separate latest context
 occupancy from aggregate turn usage), `/model` (open the model picker), `/new` (reset the current
 context), `/topics` (open the topic picker), `/del` (delete the current topic),
-`/copy [all]`, `/abort`, `/help`, `/quit`.
+`/copy [all]`, `/abort`, `/steer <message>`, `/help`, `/quit`.
+
+While a turn is running, Enter queues your message behind it; queued messages are listed above the
+composer until their turn starts. `Alt-Enter` (or `/steer <message>`) aborts the running turn and
+resumes with your message folded in.
 
 A reset keeps the visible transcript, cancels active and queued work accepted before the reset,
 and lets later requests start with a fresh provider context. This includes the private `General`
