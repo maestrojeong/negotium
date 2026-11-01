@@ -1375,3 +1375,96 @@ test("Enter runs the highlighted slash command instead of sending the typed pref
     restoreStdout();
   }
 });
+
+test("Enter queues and Alt-Enter steers while a turn is running", async () => {
+  const sent: Array<{ text: string; steer: boolean | undefined }> = [];
+  const client: NegotiumClient = {
+    async start() {},
+    async stop() {},
+    listTopics: () => [TOPIC],
+    listMessages: () => [],
+    createTopic() {
+      throw new Error("not reached");
+    },
+    async deriveTopic() {
+      throw new Error("not reached");
+    },
+    async resetTopic() {
+      throw new Error("not reached");
+    },
+    async compactTopic() {
+      throw new Error("not reached");
+    },
+    setModel() {
+      throw new Error("not reached");
+    },
+    setEffort() {
+      throw new Error("not reached");
+    },
+    async deleteTopic() {
+      throw new Error("not reached");
+    },
+    sendMessage(topic, text, options) {
+      sent.push({ text, steer: options?.steer });
+      return {
+        id: `m${sent.length}`,
+        topicId: topic.id,
+        authorId: "local",
+        text,
+        createdAt: new Date().toISOString(),
+      };
+    },
+    answerQuestion: () => ({ ok: false }),
+    abort: () => false,
+    runVaultCommand: () => null,
+  };
+  const restoreStdin = setTty(process.stdin, true);
+  const restoreStdout = setTty(process.stdout, true);
+  const stdin = process.stdin as unknown as Record<string, unknown>;
+  const hadRawMode = typeof stdin.setRawMode === "function";
+  if (!hadRawMode) stdin.setRawMode = () => process.stdin;
+  const realWrite = process.stdout.write.bind(process.stdout);
+  const frames: string[] = [];
+  (process.stdout as unknown as { write: (chunk: string) => boolean }).write = (chunk: string) => {
+    frames.push(String(chunk));
+    return true;
+  };
+  const app = new TerminalApp(client, { userId: "local", preferredTopic: TOPIC.title });
+  const finished = app.run();
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
+  const feed = (data: string) => process.stdin.emit("data", data);
+  const screen = () => stripAnsi(frames.join(""));
+
+  try {
+    await settle();
+    feed("first");
+    await settle();
+    feed("\r"); // idle: plain send
+    await settle();
+    expect(sent.map((item) => item.steer)).toEqual([false]);
+    expect(sent[0]?.text).toBe("first");
+
+    // The first send leaves the topic running, so these two are mid-turn sends.
+    feed("second");
+    await settle();
+    feed("\r"); // Enter: queue behind the running turn
+    await settle();
+    feed("third");
+    await settle();
+    feed("\u001b\r"); // Alt-Enter: steer
+    await settle();
+    expect(sent.map((item) => [item.text, item.steer])).toEqual([
+      ["first", false],
+      ["second", false],
+      ["third", true],
+    ]);
+    expect(screen()).toContain("Steering");
+  } finally {
+    app.stop();
+    await finished;
+    (process.stdout as unknown as { write: typeof realWrite }).write = realWrite;
+    if (!hadRawMode) delete stdin.setRawMode;
+    restoreStdin();
+    restoreStdout();
+  }
+});

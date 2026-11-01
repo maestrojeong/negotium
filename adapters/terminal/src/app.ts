@@ -1874,12 +1874,6 @@ export class TerminalApp {
       !activeQuestion(this.#state) &&
       !activeVaultRequest(this.#state)
     ) {
-      this.#state = {
-        ...this.#state,
-        notice: "Steering: interrupting the current turn…",
-        noticeLevel: "info",
-      };
-      this.#queueRender();
       void this.#submit(true);
       return;
     }
@@ -2029,6 +2023,13 @@ export class TerminalApp {
     // A message queued behind a running turn must not replace that turn's real
     // activity marker, or the turn's own ai_done would look stale.
     const queuing = wasRunning && !steer;
+    if (steer && wasRunning) {
+      this.#state = {
+        ...this.#state,
+        notice: "Steering: interrupting the current turn…",
+        noticeLevel: "info",
+      };
+    }
     this.#state = queuing
       ? { ...this.#state, scrollOffset: 0 }
       : applyRuntimeEvent(
