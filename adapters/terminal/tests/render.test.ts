@@ -1898,6 +1898,25 @@ describe("terminal renderer", () => {
     expect(tableLines.at(-1)).toContain("┘");
   });
 
+  test("wraps long table cell text onto extra lines instead of truncating it", () => {
+    const message: MessageDto = {
+      id: "wrap-table-message",
+      topicId: "topic",
+      authorId: "ai",
+      agentType: "codex",
+      text: ["| Name | Note |", "| --- | --- |", "| a | hello wonderful world today |"].join("\n"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [message]);
+    const output = stripAnsi(renderApp(state, 30, 30));
+    const tableLines = output.split("\n").filter((l) => /[┌├└│]/.test(l));
+    expect(tableLines.every((l) => displayWidth(l.trimEnd()) <= 30)).toBe(true);
+    const joined = tableLines.join(" ");
+    for (const word of ["hello", "wonderful", "world", "today"]) expect(joined).toContain(word);
+    expect(joined).not.toContain("…");
+  });
+
   test("hides system messages from the Terminal conversation", () => {
     const systemMessage: MessageDto = {
       id: "system-message",

@@ -833,18 +833,40 @@ function renderTable(rows: string[][], width: number): UiLine[] {
     alignmentFromSeparator(separators?.[index] ?? ""),
   );
 
-  function alignCell(text: string, colWidth: number, align?: string): string {
-    const cleaned = cleanInlineMarkdown(text);
+  function alignLine(cleaned: string, colWidth: number, align?: string): string {
     const visual = displayWidth(cleaned);
-    if (visual <= colWidth) {
-      if (align === "right") return `${" ".repeat(colWidth - visual)}${cleaned}`;
-      if (align === "center") {
-        const left = Math.floor((colWidth - visual) / 2);
-        return `${" ".repeat(left)}${cleaned}${" ".repeat(colWidth - visual - left)}`;
-      }
-      return fit(cleaned, colWidth); // left
+    if (visual > colWidth) return sliceWidth(cleaned, colWidth);
+    if (align === "right") return `${" ".repeat(colWidth - visual)}${cleaned}`;
+    if (align === "center") {
+      const left = Math.floor((colWidth - visual) / 2);
+      return `${" ".repeat(left)}${cleaned}${" ".repeat(colWidth - visual - left)}`;
     }
-    return `${sliceWidth(cleaned, colWidth - 1)}…`;
+    return fit(cleaned, colWidth); // left
+  }
+
+  /** Wrap a cell into as many physical lines as its column width requires. */
+  function cellLines(text: string, colWidth: number, align?: string): string[] {
+    const cleaned = cleanInlineMarkdown(text);
+    const wrapped = displayWidth(cleaned) <= colWidth ? [cleaned] : wrapText(cleaned, colWidth);
+    return wrapped.map((part) => alignLine(part, colWidth, align));
+  }
+
+  /** Render one logical row as one or more physical lines (multi-line cells). */
+  function rowLines(row: string[], options: Omit<UiLine, "text">): UiLine[] {
+    const cells = Array.from({ length: colCount }, (_, index) =>
+      cellLines(row[index] ?? "", colWidths[index] ?? 0, alignments[index]),
+    );
+    const height = Math.max(1, ...cells.map((cell) => cell.length));
+    return Array.from({ length: height }, (_, lineIndex) =>
+      line(
+        joinRow(
+          cells.map(
+            (cell, index) => cell[lineIndex] ?? " ".repeat(colWidths[index] ?? 0),
+          ),
+        ),
+        options,
+      ),
+    );
   }
 
   const borderColor = theme.border;
@@ -857,30 +879,12 @@ function renderTable(rows: string[][], width: number): UiLine[] {
   result.push(line(border("┌", "┬", "┐"), { fg: borderColor }));
 
   if (visibleHeader) {
-    result.push(
-      line(
-        joinRow(
-          Array.from({ length: colCount }, (_, index) =>
-            alignCell(visibleHeader[index] ?? "", colWidths[index] ?? 0, alignments[index]),
-          ),
-        ),
-        { fg: theme.accent, bold: true },
-      ),
-    );
+    result.push(...rowLines(visibleHeader, { fg: theme.accent, bold: true }));
     result.push(line(border("├", "┼", "┤"), { fg: borderColor }));
   }
 
   for (const row of visibleBodyRows) {
-    result.push(
-      line(
-        joinRow(
-          Array.from({ length: colCount }, (_, index) =>
-            alignCell(row[index] ?? "", colWidths[index] ?? 0, alignments[index]),
-          ),
-        ),
-        { fg: theme.text },
-      ),
-    );
+    result.push(...rowLines(row, { fg: theme.text }));
   }
 
   result.push(line(border("└", "┴", "┘"), { fg: borderColor }));
