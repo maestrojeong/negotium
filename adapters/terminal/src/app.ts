@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import { hostname } from "node:os";
 import {
   type AgentKind,
@@ -359,6 +360,21 @@ export interface TerminalAppOptions {
   userId: string;
   preferredTopic?: string;
   defaultAgent?: AgentKind;
+}
+
+/**
+ * Debug aid: `NEGOTIUM_TUI_KEYLOG=/path/file` appends one JSON line per key
+ * chunk (raw and normalized) so a terminal that sends an unexpected sequence
+ * for a shortcut can be diagnosed. Off unless the variable is set.
+ */
+const KEYLOG_PATH = process.env.NEGOTIUM_TUI_KEYLOG?.trim() || undefined;
+
+function logKey(path: string, raw: string, normalized: string): void {
+  try {
+    appendFileSync(path, `${JSON.stringify({ at: new Date().toISOString(), raw, normalized })}\n`);
+  } catch {
+    // Diagnostics must never break input handling.
+  }
 }
 
 export class TerminalApp {
@@ -1420,6 +1436,7 @@ export class TerminalApp {
     }
     const chunk = normalizeKeySequences(mouse.input);
     if (!chunk) return;
+    if (KEYLOG_PATH) logKey(KEYLOG_PATH, mouse.input, chunk);
     this.#selection = null;
     if (chunk === TERMINAL_PANE_KEY) {
       this.#toggleTerminalPane();
@@ -1857,6 +1874,12 @@ export class TerminalApp {
       !activeQuestion(this.#state) &&
       !activeVaultRequest(this.#state)
     ) {
+      this.#state = {
+        ...this.#state,
+        notice: "Steering: interrupting the current turn…",
+        noticeLevel: "info",
+      };
+      this.#queueRender();
       void this.#submit(true);
       return;
     }
