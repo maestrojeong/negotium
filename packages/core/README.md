@@ -24,6 +24,12 @@ startAiTurn({
 // unsubscribe() only when the embedding host shuts down.
 ```
 
+The bus emits optional `ai-status.kind=message_stream` cumulative text previews
+every 50 ms while text is arriving. Replace previews by `messageId`; the existing
+canonical `message` event finalizes the same ID. Do not save previews as transcript
+messages. See the [streaming contract](../../docs/RUNTIME-GATEWAY-CONTRACT.md#assistant-text-previews)
+for replay, failure and silent-turn handling.
+
 The package intentionally ships its Bun-executed TypeScript and runtime resources together so
 that stdio MCP servers, prompts, browser launcher, and provider fixtures remain addressable at
 runtime. It does not ship a fixed skill catalog: agents and users accumulate skills in the shared

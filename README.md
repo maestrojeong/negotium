@@ -51,6 +51,8 @@ the runtime itself. Negotium stays useful with Terminal or Telegram alone, with
 no Otium workspace at all — and just as useful joined to several at once.
 
 For the full runtime model and invariants, see [Architecture](./docs/ARCHITECTURE.md).
+Hosts can render coalesced assistant text previews before canonical messages arrive;
+see the [streaming contract](./docs/RUNTIME-GATEWAY-CONTRACT.md#assistant-text-previews).
 
 The project is early-stage. Public APIs may change during the `0.x` series.
 
