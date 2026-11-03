@@ -412,6 +412,17 @@ const NEWLINE_KEY_CHUNKS = new Set<string>(["\u001b\r", "\u001b\n", "\n"]);
 // hand-map the key (iTerm2 "Send Text", Ghostty/WezTerm keybinds).
 const MODIFIED_ENTER_PATTERN = new RegExp(`^(?:${ESC}\\[13;[2-9]u|${ESC}\\[27;[2-9];13~)$`);
 
+// Alt-Enter in the main composer sends the message as a steer: it interrupts the
+// running turn and resumes with the message folded in. `ESC CR` is the
+// metaSendsEscape form; the CSI-u / modifyOtherKeys forms carry modifier 3
+// (1 + alt). Alt+Shift and other combinations stay newline keys.
+const STEER_KEY_PATTERN = new RegExp(`^(?:${ESC}\r|${ESC}\\[13;3u|${ESC}\\[27;3;13~)$`);
+
+/** True when the chunk is Alt-Enter: "send and interrupt the running turn". */
+export function terminalSteerShortcut(chunk: string): boolean {
+  return STEER_KEY_PATTERN.test(chunk);
+}
+
 /** True when the chunk is an "insert a newline instead of submitting" key. */
 export function terminalNewlineShortcut(chunk: string): boolean {
   return NEWLINE_KEY_CHUNKS.has(chunk) || MODIFIED_ENTER_PATTERN.test(chunk);

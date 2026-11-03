@@ -7,6 +7,7 @@ import {
   sanitizePastedText,
   splitBracketedPaste,
   terminalNewlineShortcut,
+  terminalSteerShortcut,
 } from "@/app-helpers";
 
 const ESC = "\u001b";
@@ -464,4 +465,13 @@ test("passes through bytes that only looked like the start of a sequence", () =>
   const runaway = `${ESC}[${"9".repeat(64)}`;
   expect(splitBracketedPaste(runaway, false).carry).toBe("");
   expect(splitBracketedPaste(runaway, false).segments).toEqual([{ kind: "keys", text: runaway }]);
+});
+
+test("Alt-Enter is a steer shortcut, not a newline", () => {
+  for (const chunk of [`${ESC}\r`, `${ESC}[13;3u`, `${ESC}[27;3;13~`]) {
+    expect(terminalSteerShortcut(chunk)).toBe(true);
+  }
+  for (const chunk of ["\r", "\n", `${ESC}[13;2u`, `${ESC}[13;4u`, `${ESC}\n`]) {
+    expect(terminalSteerShortcut(chunk)).toBe(false);
+  }
 });

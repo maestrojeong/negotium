@@ -109,7 +109,15 @@ export interface NegotiumClient {
   setModel(topic: TopicDto, model: string): ClientResult<string>;
   setEffort(topic: TopicDto, effort: EffortLevel): ClientResult<string>;
   deleteTopic(topic: TopicDto): Promise<void>;
-  sendMessage(topic: TopicDto, text: string): ClientResult<MessageDto>;
+  /**
+   * `steer: true` aborts the running turn and resumes with this message folded
+   * in; the default queues the message behind the running turn.
+   */
+  sendMessage(
+    topic: TopicDto,
+    text: string,
+    options?: { steer?: boolean },
+  ): ClientResult<MessageDto>;
   /**
    * `kind: "custom"` answers in the user's own words (`label` is their text);
    * `kind: "skip"` declines the question. Default: pick a listed choice.
@@ -127,6 +135,8 @@ export interface NegotiumClient {
     value: string | null,
   ): ClientResult<{ ok: boolean; error?: string }>;
   abort(topicId: string): ClientResult<boolean>;
+  /** Run the messages queued behind the running turn now (fold them in and abort). */
+  steerQueued?(topicId: string): ClientResult<boolean>;
   runVaultCommand?(commandLine: string): ClientResult<string | null>;
   listVaultEntries?(): ClientResult<VaultEntry[]>;
   saveVaultEntry?(
@@ -302,7 +312,7 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
     await topicService.delete({ topicId: topic.id, userId: this.#userId });
   }
 
-  sendMessage(topic: TopicDto, text: string): MessageDto {
+  sendMessage(topic: TopicDto, text: string, options?: { steer?: boolean }): MessageDto {
     const clientMessageId = terminalClientMessageId();
     return submitRuntimeGatewayTurn({
       topic,
@@ -311,6 +321,7 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
       sourceAdapter: "terminal",
       clientMessageId,
       requestId: clientMessageId,
+      steer: options?.steer === true,
       visualTools: false,
       fileDeliveryTools: false,
     }).message;
@@ -337,6 +348,10 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
 
   abort(topicId: string): boolean {
     return topicService.abortTurn(topicId, this.#userId);
+  }
+
+  steerQueued(topicId: string): boolean {
+    return topicService.steerQueuedTurn(topicId, this.#userId);
   }
 
   runVaultCommand(commandLine: string): string | null {
@@ -585,7 +600,11 @@ export class RemoteNegotiumClient implements NegotiumClient {
     );
   }
 
-  async sendMessage(topic: TopicDto, text: string): Promise<MessageDto> {
+  async sendMessage(
+    topic: TopicDto,
+    text: string,
+    options?: { steer?: boolean },
+  ): Promise<MessageDto> {
     const clientMessageId = terminalClientMessageId();
     const acknowledgement = await submitTerminalGatewayTurn(this.#gateway, {
       topicId: topic.id,
@@ -594,6 +613,7 @@ export class RemoteNegotiumClient implements NegotiumClient {
       text,
       clientMessageId,
       requestId: clientMessageId,
+      steer: options?.steer === true,
       visualTools: false,
       fileDeliveryTools: false,
     });
@@ -652,6 +672,14 @@ export class RemoteNegotiumClient implements NegotiumClient {
       body: JSON.stringify({ userId: this.#userId }),
     });
     return result.aborted === true;
+  }
+
+  async steerQueued(topicId: string): Promise<boolean> {
+    const result = await this.#request(`/topics/${encodeURIComponent(topicId)}/steer-queued`, {
+      method: "POST",
+      body: JSON.stringify({ userId: this.#userId }),
+    });
+    return result.steered === true;
   }
 
   async runVaultCommand(commandLine: string): Promise<string | null> {
