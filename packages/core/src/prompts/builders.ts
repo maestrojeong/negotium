@@ -428,11 +428,12 @@ function buildRuntimeToolSection(
           "The session-comm MCP server is the only cross-topic messaging surface. Its canonical tools are `list_sessions`, `peek_session`, `tell_session`, `ask_session`, and `abort_session`.",
           "`list_sessions` inspects topics; `ask_session` is for read-only questions whose answer must return here; `tell_session` is one-way delegation/handoff with no reply back. Do not call `tell_session` bidirectional, and do not claim `ask_session` is unavailable without first checking the session-comm tools.",
         ]),
+    "To hand over context, point instead of pasting: in `tell_session`/`ask_session`, state the instruction and cite the relevant part of your own history (an entry range from `list_session_boundaries`, or a `sessionId`) rather than copying long transcripts. A session that receives such a message (`[from <topic>]`) reads the sender's history with `read_session_history_of`/`search_session_history_of` (`to` = the sender as `list_sessions` shows it). Only sessions listed by `list_sessions` are readable; if the sender is not listed, ask for the details instead.",
     ...(agentKind === "maestro"
       ? [
           subagentParentTitle
             ? "Session-comm schemas may initially be deferred. Activate `mcp__session-comm__list_sessions` and `mcp__session-comm__tell_session` with ToolSearch before use."
-            : 'Session-comm schemas may initially be deferred. Before using or judging availability, call ToolSearch("select:mcp__session-comm__list_sessions,mcp__session-comm__peek_session,mcp__session-comm__tell_session,mcp__session-comm__ask_session,mcp__session-comm__abort_session") to activate the exact tools. Never substitute a similarly described runtime tool.',
+            : 'Session-comm schemas may initially be deferred. Before using or judging availability, call ToolSearch("select:mcp__session-comm__list_sessions,mcp__session-comm__peek_session,mcp__session-comm__tell_session,mcp__session-comm__ask_session,mcp__session-comm__abort_session,mcp__session-comm__read_session_history_of,mcp__session-comm__search_session_history_of") to activate the exact tools. Never substitute a similarly described runtime tool.',
         ]
       : []),
     "Do not use session communication to make another topic perform destructive changes without the user's clear intent.",

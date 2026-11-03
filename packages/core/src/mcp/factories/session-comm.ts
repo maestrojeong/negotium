@@ -3,6 +3,10 @@ import { z } from "zod";
 import type { McpErrorResponse, McpResponse } from "#mcp/mcp-helpers";
 import type { SessionCommContext } from "#mcp/session-comm/context";
 import {
+  registerSessionHistoryOfTools,
+  type SessionHistoryOfReader,
+} from "#mcp/session-comm/history-tools";
+import {
   canSubagentTellTargetByName,
   resolveSubagentTellIdentity,
 } from "#mcp/session-comm/tell-permissions";
@@ -41,6 +45,11 @@ export interface SessionCommMcpHost {
     context: SessionCommContext,
     input: { to: string; message: string },
   ): MaybePromise<SessionCommMcpResult>;
+  /**
+   * Reader behind the cross-topic `*_session_history_of` tools, created once
+   * per server so its read budget spans the turn. Omit to hide the tools.
+   */
+  sessionHistoryOf?(context: SessionCommContext): SessionHistoryOfReader;
 }
 
 export interface SessionCommMcpOptions {
@@ -115,12 +124,17 @@ export function createSessionCommMcpServer(
     { description: z.string() },
     async ({ description }) => host.setDescription(context, description),
   );
+  // Read-only, so available to reply-only turns too; the reader enforces the
+  // session-comm addressing scope (and the subagent tell rule) per call.
+  if (host.sessionHistoryOf) {
+    registerSessionHistoryOfTools(server, host.sessionHistoryOf(context));
+  }
 
   if (!context.replyOnly) {
     if (!subagentIdentity.restricted) {
       server.tool(
         "ask_session",
-        "Ask another local or remote session a question and wait for its answer.",
+        "Ask another local or remote session a question and wait for its answer. To hand over long context, cite an entry range or sessionId of your own history (list_session_boundaries) instead of pasting it — the target can read it with read_session_history_of.",
         { to: z.string(), message: z.string() },
         async (input) => host.askSession(context, input),
       );
@@ -141,7 +155,7 @@ export function createSessionCommMcpServer(
     }
     server.tool(
       "tell_session",
-      "Send a one-way message to another local or remote session.",
+      "Send a one-way message to another local or remote session. To hand over long context, cite an entry range or sessionId of your own history (list_session_boundaries) instead of pasting it — the target can read it with read_session_history_of.",
       { to: z.string(), message: z.string() },
       async (input) => {
         // Same invariant as the standalone session-comm server: subagents may

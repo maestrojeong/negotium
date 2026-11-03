@@ -42,6 +42,8 @@ import {
   remoteSessionRoute,
   roomStatusPrincipal,
 } from "./actor-policy";
+import { createSessionHistoryOfReader } from "./history-target";
+import { registerSessionHistoryOfTools } from "./history-tools";
 import {
   hubRemoteAbort,
   hubRemoteAsk,
@@ -555,6 +557,18 @@ server.tool(
   },
 );
 
+// --- cross-topic session history (read-only, so reply-only forks keep it) ---
+// Scope = this server's session-comm catalog (validateTarget) plus the
+// subagent tell rule; see history-target.ts. Same tools as the hosted host.
+registerSessionHistoryOfTools(
+  server,
+  createSessionHistoryOfReader({
+    callerUserId: userId,
+    validateTarget,
+    subagentIdentity: currentSubagentIdentity,
+  }),
+);
+
 // --- outbound session-to-session tools ---
 // Suppressed when running as a silent fork that exists only to generate an
 // ask_session reply — such a fork has no reason to initiate further calls.
@@ -563,7 +577,7 @@ if (!isReplyOnly) {
   if (!currentSubagentRestricted) {
     server.tool(
       "ask_session",
-      "ASK — Delegate to another session and pull the result back INTO YOUR CONTEXT. The question runs as a visible turn in the target's own session (queued behind its current turn; the exchange stays in the target's history), processes with full tools, and the answer is auto-injected into your conversation. Use ONLY when YOU need the output to drive your next action (code reviews whose verdict determines your next edit, fact checks you'll cite, lookups that decide your next step). If the user can just read the result in the target topic, use tell_session — ask burns your context window with content you don't actually need. Decision rule: 'Do I need this output in MY context to proceed?' Yes → ask. No (result lives in target topic, user reads it there) → tell_session.",
+      "ASK — Delegate to another session and pull the result back INTO YOUR CONTEXT. The question runs as a visible turn in the target's own session (queued behind its current turn; the exchange stays in the target's history), processes with full tools, and the answer is auto-injected into your conversation. Use ONLY when YOU need the output to drive your next action (code reviews whose verdict determines your next edit, fact checks you'll cite, lookups that decide your next step). If the user can just read the result in the target topic, use tell_session — ask burns your context window with content you don't actually need. Decision rule: 'Do I need this output in MY context to proceed?' Yes → ask. No (result lives in target topic, user reads it there) → tell_session. To hand over long context, cite an entry range or sessionId of your own history (list_session_boundaries) instead of pasting it — the target can read it with read_session_history_of.",
       {
         to: z.string().describe("Target session/topic name (e.g. '회의록', '신건')"),
         message: z.string().describe("Message to send to the target session"),
@@ -886,7 +900,7 @@ if (!isReplyOnly) {
 
   server.tool(
     "tell_session",
-    "TELL — Delegate work or push context TO another session (one-way, nothing returns to your context). Message joins target's history; target processes async with full tools and the result lives in the target topic. Use for: delegating long-running or self-contained work (experiments, benchmarks, monitoring runs, file generation), status updates, persistent context injection — anything whose output the user can simply read in the target topic without you needing it. Prefer tell over ask_session whenever YOUR context doesn't need the result, since ask injects the full reply back and burns context. Decision rule: 'Do I need this output in MY context to proceed?' No → tell. Yes → ask_session.",
+    "TELL — Delegate work or push context TO another session (one-way, nothing returns to your context). Message joins target's history; target processes async with full tools and the result lives in the target topic. Use for: delegating long-running or self-contained work (experiments, benchmarks, monitoring runs, file generation), status updates, persistent context injection — anything whose output the user can simply read in the target topic without you needing it. Prefer tell over ask_session whenever YOUR context doesn't need the result, since ask injects the full reply back and burns context. Decision rule: 'Do I need this output in MY context to proceed?' No → tell. Yes → ask_session. To hand over long context, cite an entry range or sessionId of your own history (list_session_boundaries) instead of pasting it — the target can read it with read_session_history_of.",
     {
       to: z.string().describe("Target session/topic name (e.g. '회의록', '신건')"),
       message: z.string().describe("Message to send to the target session"),
