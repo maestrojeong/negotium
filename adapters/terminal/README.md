@@ -81,10 +81,10 @@ indicator. Topics and transcript use temporary overlays.
 
 | Key | Action |
 | --- | --- |
-| `Enter` | send text, or accept the selected ask choice |
+| `Enter` | send text (queues behind a running turn), or accept the selected ask choice; typed text on an ask card is sent as your own answer |
 | `Alt-Enter` | send and interrupt the running turn (steer); with an empty composer, run the queued messages now |
 | `Shift-Enter` / `Ctrl-Enter` / `Ctrl-J` | insert a newline |
-| `Up` / `Down` | edit multiline input, history, suggestions, or ask choices |
+| `Up` / `Down` | edit multiline input, history, suggestions, or ask choices (the last two rows are "type your own answer" and "skip") |
 | `PageUp` / `PageDown` | scroll conversation |
 | Mouse wheel / trackpad | scroll conversation history |
 | `Ctrl-E` | load one older 50-message page |
