@@ -10,6 +10,7 @@ import {
   rosterBoundsSessionTargets,
 } from "#mcp/session-comm/actor-policy";
 import type { SessionCommContext } from "#mcp/session-comm/context";
+import { createSessionHistoryOfReader } from "#mcp/session-comm/history-target";
 import {
   hubRemoteAbort,
   hubRemoteAsk,
@@ -704,6 +705,19 @@ export function createDefaultSessionCommMcpHost(): SessionCommMcpHost {
         },
       });
       return ok(`Message sent to "${to}". request_id: ${requestId}`);
+    },
+
+    sessionHistoryOf(context) {
+      return createSessionHistoryOfReader({
+        callerUserId: context.userId,
+        // A fresh catalog per lookup: the hub reach assertion is checked for
+        // freshness on every resolution, like every other session-comm tool.
+        validateTarget: (to) => targetCatalog(context).validateTarget(to),
+        subagentIdentity: resolveSubagentTellIdentity(
+          context.currentTopicId,
+          context.subagentParentTopicId,
+        ),
+      });
     },
   };
 }
