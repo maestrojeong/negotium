@@ -306,6 +306,31 @@ the canonical topic.
   `truncated`; a client receiving `truncated: true` must reconcile canonical topic/message state.
 - `GET /topics/:topicId` and `GET /topics/:topicId/messages?cursor=&limit=` reconcile canonical state.
 
+### Assistant text previews
+
+`ai-status.kind=message_stream` carries `{ queryId, messageId, text, createdAt,
+threadRootId? }`. Provider text is coalesced over 50 ms; `text` is the cumulative
+text of the current assistant segment, not a delta to append. Replace the preview
+by `messageId`, ignore repeated/shorter previews and never overwrite a canonical
+message with a preview. Full snapshots let the next event repair text missed by
+a downstream live connection without a second transcript store.
+
+Previews use the existing durable event log and topic scope. They do not create
+transcript messages, unread counts or notifications. Silent turns emit none.
+At a tool boundary, result or user stop, the existing canonical `message` event
+uses the preview's ID and timestamp and replaces it. Tools retain their original
+ordering. On failure/retry, `message-updated` with `deleted: true` retracts the
+preview just as it retracts incomplete persisted segments. Terminal events clear
+any remaining previews; timers are cancelled on every exit.
+
+On reconnect, reconcile saved history and retain only previews belonging to a
+still-running turn. The next snapshot restores an in-progress segment; its final
+canonical message restores the complete text even if no further preview arrives.
+Previews are optional: older consumers ignore the new status kind, and older nodes
+continue to supply only canonical messages. No schema migration or new endpoint
+is required. This adds up to 20 cumulative snapshot events per second per active
+text segment; the existing event-log retention policy still applies.
+
 `turn_accepted` confirms durable acceptance, not worker placement or successful agent execution.
 Existing worker placement, turn leases, RuntimeBus event persistence, and Terminal projections remain
 unchanged. Otium-specific JWTs, tenancy, hosted handoff, attachments/media, and UI metadata stay on

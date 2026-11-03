@@ -60,6 +60,16 @@ export interface RuntimeBusEvent {
 
 export type RuntimeBusListener = (event: RuntimeBusEvent) => void;
 
+/** Cumulative preview, not a persisted transcript message. */
+export type MessageStreamStatus = {
+  kind: "message_stream";
+  queryId: string;
+  messageId: string;
+  text: string;
+  createdAt: string;
+  threadRootId?: string;
+};
+
 export interface RuntimeBus {
   broadcastMessage(topicId: string, message: MessageDto): void;
   broadcastMessageUpdated(

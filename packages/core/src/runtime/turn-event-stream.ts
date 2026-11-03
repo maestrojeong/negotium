@@ -23,7 +23,7 @@ import {
 import { resolveModelForAgent } from "#agents/model-catalog";
 import { getRegistry } from "#agents/registry";
 import { formatToolUse, summarizeToolInput } from "#agents/tool-format";
-import { WsHub } from "#bus";
+import { type MessageStreamStatus, WsHub } from "#bus";
 import {
   dispatchPeerRuntimeFile,
   dispatchPeerRuntimeVisual,
@@ -172,6 +172,35 @@ export async function runTurnEventStream(
   let pendingSawDelta = false;
   let accumulatedText = "";
   let pendingText = "";
+  let pendingMessage: { id: string; createdAt: string } | null = null;
+  let previewTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearPreviewTimer = (): void => {
+    if (previewTimer) clearTimeout(previewTimer);
+    previewTimer = null;
+  };
+  const scheduleTextPreview = (): void => {
+    if (silent || previewTimer || !pendingText.trim()) return;
+    pendingMessage ??= { id: randomUUID(), createdAt: new Date().toISOString() };
+    previewTimer = setTimeout(() => {
+      previewTimer = null;
+      if (!pendingMessage || abortController.signal.aborted) return;
+      try {
+        hub.broadcastAiStatus(topicId, {
+          kind: "message_stream",
+          queryId,
+          messageId: pendingMessage.id,
+          text: pendingText,
+          createdAt: pendingMessage.createdAt,
+          ...(execution?.threadRootId ? { threadRootId: execution.threadRootId } : {}),
+        } satisfies MessageStreamStatus);
+      } catch (error) {
+        control.abortReason = AbortReason.Infrastructure;
+        control.abortError = stringifyError(error);
+        abortController.abort();
+      }
+    }, 50);
+    previewTimer.unref?.();
+  };
   let assistantContextTokens = 0;
   let toolContextTokens = 0;
   let lastContextProgressAt = 0;
@@ -249,11 +278,14 @@ export async function runTurnEventStream(
     return providerId ? handledVisualToolResultIds.has(providerId) : false;
   };
   const emitPendingAssistantMessage = (usage?: MessageDto["usage"]): MessageDto | null => {
+    clearPreviewTimer();
+    const identity = pendingMessage;
+    pendingMessage = null;
     const text = pendingText.trimEnd();
     pendingText = "";
     if (silent || !text.trim()) return null;
     const message: MessageDto = {
-      id: randomUUID(),
+      id: identity?.id ?? randomUUID(),
       topicId,
       authorId: "ai",
       text,
@@ -263,7 +295,7 @@ export async function runTurnEventStream(
       sourceNode: execution?.sourceNode,
       ...(execution?.threadRootId ? { threadRootId: execution.threadRootId } : {}),
       usage,
-      createdAt: new Date().toISOString(),
+      createdAt: identity?.createdAt ?? new Date().toISOString(),
     };
     // A threaded turn answers in its thread and leaves the room's ordering and
     // unread state alone, exactly like a human thread reply.
@@ -370,6 +402,7 @@ export async function runTurnEventStream(
           const incoming = event.content;
           accumulatedText += incoming;
           pendingText += incoming;
+          scheduleTextPreview();
           assistantContextTokens = estimateTextTokens(accumulatedText);
           broadcastContextProgress();
           break;
@@ -386,6 +419,7 @@ export async function runTurnEventStream(
             const incoming = event.content;
             accumulatedText += incoming;
             pendingText += incoming;
+            scheduleTextPreview();
             assistantContextTokens = estimateTextTokens(accumulatedText);
             broadcastContextProgress();
           }
@@ -918,6 +952,11 @@ export async function runTurnEventStream(
       if (silent) deliverAskError(queryId, topicTitle, msg);
     }
   } finally {
+    clearPreviewTimer();
+    if (pendingMessage) {
+      hub.broadcastMessageUpdated(topicId, pendingMessage.id, { deleted: true, text: "" });
+      pendingMessage = null;
+    }
     if (!terminalEmitted && !abortController.signal.aborted) {
       const error = "Provider stream ended without a terminal event";
       outcome = { kind: "provider-error", error };
