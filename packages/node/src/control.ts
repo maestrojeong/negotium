@@ -1537,6 +1537,33 @@ export function createNodeControlHandler(
         }
 
         /**
+         * Fold this room's queued-behind-a-turn messages into the active
+         * request and abort the running turn so it resumes with the merged
+         * batch — the no-new-text counterpart of a steered `POST /turns`.
+         *
+         * A host that can queue a message behind a turn (by sending one with
+         * `steer: false`) must also be able to stop waiting and have the
+         * queue folded in now, or that control only exists on the node's own
+         * machine (D-1). `POST /turns` cannot express this itself: it requires
+         * non-empty text or an attachment, and this call has neither — it is
+         * only ever "run what's already queued, right now".
+         */
+        const runtimeSteerQueuedMatch = runtimePath.match(/^\/topics\/([^/]+)\/steer-queued$/);
+        if (runtimeSteerQueuedMatch && req.method === "POST") {
+          const body = await bodyRecord(req);
+          if (body.v !== NODE_RUNTIME_CONTRACT_VERSION) return jsonError(400, "Unsupported v");
+          const topicId = decodeURIComponent(runtimeSteerQueuedMatch[1]);
+          const topic = getTopic(topicId);
+          if (!topic || !topicInRequestScope(req, topic)) return jsonError(404, "Topic not found");
+          const userId = requiredText(body.userId, "userId");
+          return Response.json({
+            ok: true,
+            v: NODE_RUNTIME_CONTRACT_VERSION,
+            steered: topicService.steerQueuedTurn(topicId, userId),
+          });
+        }
+
+        /**
          * Hub-routed remote session-comm delivered into one of this node's
          * rooms: a `tell`/`ask`/`abort` a person on another node addressed to
          * it through the hub, or the `ask-reply` answering an ask this room
