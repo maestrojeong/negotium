@@ -859,11 +859,7 @@ function renderTable(rows: string[][], width: number): UiLine[] {
     const height = Math.max(1, ...cells.map((cell) => cell.length));
     return Array.from({ length: height }, (_, lineIndex) =>
       line(
-        joinRow(
-          cells.map(
-            (cell, index) => cell[lineIndex] ?? " ".repeat(colWidths[index] ?? 0),
-          ),
-        ),
+        joinRow(cells.map((cell, index) => cell[lineIndex] ?? " ".repeat(colWidths[index] ?? 0))),
         options,
       ),
     );
