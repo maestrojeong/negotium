@@ -1,4 +1,7 @@
-import { answerPendingAskUserQuestion } from "#agents/mcp-tools/ask-user";
+import {
+  type AnswerAskUserQuestionOptions,
+  answerPendingAskUserQuestion,
+} from "#agents/mcp-tools/ask-user";
 import { answerPendingVaultSecretRequest } from "#agents/mcp-tools/request-vault";
 import { WsHub } from "#bus";
 import { abortRoom, getRoomQuery } from "#query/active-rooms";
@@ -124,9 +127,15 @@ export const topicService = {
     );
   },
 
-  answerQuestion(topicId: string, messageId: string, label: string, userId: string) {
+  answerQuestion(
+    topicId: string,
+    messageId: string,
+    label: string,
+    userId: string,
+    options?: AnswerAskUserQuestionOptions,
+  ) {
     participantTopic(topicId, userId);
-    return answerPendingAskUserQuestion(topicId, messageId, label, userId);
+    return answerPendingAskUserQuestion(topicId, messageId, label, userId, options);
   },
 
   /** `value: null` means the user declined; the plaintext never round-trips through this call's result. */

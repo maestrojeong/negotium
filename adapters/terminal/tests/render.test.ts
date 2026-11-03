@@ -3055,3 +3055,29 @@ describe("topic picker filter rendering", () => {
     }
   });
 });
+
+describe("decision card", () => {
+  test("offers typing your own answer and skipping after the AI's choices", () => {
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [
+      {
+        id: "q1",
+        topicId: "topic",
+        authorId: "ai",
+        text: "",
+        kind: "ask_user_question",
+        askUserQuestion: { question: "Deploy now?", choices: [{ label: "yes" }, { label: "no" }] },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      } as MessageDto,
+    ]);
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("yes");
+    expect(output).toContain("Type your own answer");
+    expect(output).toContain("Skip");
+    // Skip is the last row, so ↓ from "no" passes through "type your own" first.
+    const lines = output.split("\n");
+    const rowOf = (needle: string) => lines.findIndex((line) => line.includes(needle));
+    expect(rowOf("no")).toBeLessThan(rowOf("Type your own answer"));
+    expect(rowOf("Type your own answer")).toBeLessThan(rowOf("Skip"));
+  });
+});

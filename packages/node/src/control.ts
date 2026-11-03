@@ -2409,8 +2409,10 @@ export function createNodeControlHandler(
         const body = await bodyRecord(req);
         const topicId = requiredText(body.topicId, "topicId");
         const userId = requiredText(body.userId, "userId");
-        const label = requiredText(body.label, "label");
-        const result = topicService.answerQuestion(topicId, messageId, label, userId);
+        const kind = body.kind === "custom" || body.kind === "skip" ? body.kind : undefined;
+        // A skip carries no text; everything else must say what was chosen or typed.
+        const label = kind === "skip" ? "" : requiredText(body.label, "label");
+        const result = topicService.answerQuestion(topicId, messageId, label, userId, { kind });
         return Response.json(result, { status: result.ok ? 200 : 409 });
       }
 

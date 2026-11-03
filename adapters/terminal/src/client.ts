@@ -110,10 +110,15 @@ export interface NegotiumClient {
   setEffort(topic: TopicDto, effort: EffortLevel): ClientResult<string>;
   deleteTopic(topic: TopicDto): Promise<void>;
   sendMessage(topic: TopicDto, text: string): ClientResult<MessageDto>;
+  /**
+   * `kind: "custom"` answers in the user's own words (`label` is their text);
+   * `kind: "skip"` declines the question. Default: pick a listed choice.
+   */
   answerQuestion(
     topicId: string,
     messageId: string,
     label: string,
+    options?: { kind?: "custom" | "skip" },
   ): ClientResult<{ ok: boolean; error?: string }>;
   /** `value: null` declines. The plaintext never comes back in the result. */
   answerVaultRequest(
@@ -315,8 +320,9 @@ export class EmbeddedNegotiumClient implements NegotiumClient {
     topicId: string,
     messageId: string,
     label: string,
+    options?: { kind?: "custom" | "skip" },
   ): { ok: boolean; error?: string } {
-    const result = topicService.answerQuestion(topicId, messageId, label, this.#userId);
+    const result = topicService.answerQuestion(topicId, messageId, label, this.#userId, options);
     return result.ok ? { ok: true } : { ok: false, error: result.error };
   }
 
@@ -608,11 +614,12 @@ export class RemoteNegotiumClient implements NegotiumClient {
     topicId: string,
     messageId: string,
     label: string,
+    options?: { kind?: "custom" | "skip" },
   ): Promise<{ ok: boolean; error?: string }> {
     try {
       const result = await this.#request(`/questions/${encodeURIComponent(messageId)}/answer`, {
         method: "POST",
-        body: JSON.stringify({ topicId, userId: this.#userId, label }),
+        body: JSON.stringify({ topicId, userId: this.#userId, label, kind: options?.kind }),
       });
       return result.ok ? { ok: true } : { ok: false, error: result.error };
     } catch (error) {
