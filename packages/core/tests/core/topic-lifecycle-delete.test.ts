@@ -149,6 +149,7 @@ describe("deleteTopicCascade archive policy", () => {
         userId: "owner-user",
         sourceTopicId: topic.id,
         topicTitle: topic.title,
+        memoryKeyFixed: false,
         archivePath: `/tmp/${topic.id}.jsonl`,
         messageCount: 6,
       },
@@ -180,6 +181,7 @@ describe("deleteTopicCascade archive policy", () => {
         userId: "owner-user",
         sourceTopicId: topic.id,
         topicTitle: topic.title,
+        memoryKeyFixed: false,
         archivePath: `/tmp/${topic.id}.jsonl`,
         rawArchivePaths: [rawArchivePath],
         messageCount: 6,
@@ -192,6 +194,7 @@ describe("deleteTopicCascade archive policy", () => {
       participants: [{ userId: "local", role: "owner" }],
       surface: "otium",
       surfaceScope: "workspace-1",
+      memoryKey: "tax-agent:withholding-tax:otium-hosted-user",
     });
 
     await deleteTopicCascade(topic, "local", { memoryUserId: "otium-hosted-user" });
@@ -200,6 +203,8 @@ describe("deleteTopicCascade archive policy", () => {
       expect.objectContaining({
         userId: "otium-hosted-user",
         sourceTopicId: topic.id,
+        topicTitle: "tax-agent:withholding-tax:otium-hosted-user",
+        memoryKeyFixed: true,
       }),
     ]);
   });
@@ -359,6 +364,7 @@ describe("deleteTopicCascade archive policy", () => {
         sourceTopicId: child.id,
         topicId: "root-topic",
         topicTitle: "Root Topic",
+        memoryKeyFixed: false,
         archivePath: "/tmp/child-topic.jsonl",
         messageCount: 6,
       },
@@ -383,6 +389,7 @@ describe("deleteTopicCascade archive policy", () => {
         userId: "owner-user",
         sourceTopicId: root.id,
         topicTitle: root.title,
+        memoryKeyFixed: false,
         archivePath: `/tmp/${root.id}.jsonl`,
         messageCount: 6,
       },
@@ -390,6 +397,7 @@ describe("deleteTopicCascade archive policy", () => {
         userId: "owner-user",
         sourceTopicId: child.id,
         topicTitle: root.title,
+        memoryKeyFixed: false,
         archivePath: `/tmp/${child.id}.jsonl`,
         messageCount: 6,
       },

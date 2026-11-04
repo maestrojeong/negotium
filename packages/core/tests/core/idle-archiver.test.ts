@@ -201,6 +201,8 @@ describe("idle archiver defaults", () => {
     expect(launches[0]).toMatchObject({
       userId: "otium-hosted-user",
       sourceTopicId: topic.id,
+      topicTitle: topic.title,
+      memoryKeyFixed: false,
     });
   });
 
@@ -287,6 +289,7 @@ describe("idle archiver defaults", () => {
     expect(launches[0]).toMatchObject({
       topicId: topic.id,
       topicTitle: "canonical-persona",
+      memoryKeyFixed: true,
     });
   });
 
