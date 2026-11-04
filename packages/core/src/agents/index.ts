@@ -216,7 +216,8 @@ export async function* runAgent(opts: AgentQueryOptions): AsyncGenerator<Unified
     // content and is fully reconstructable from the agent's task store, so we
     // render it (yield) but never persist it. Logging it would bloat the
     // rollout and feed a non-message event into cross-agent bridge replay.
-    if (recording && event.type !== "tasks") {
+    // `text_preview` is display-only too; the completed `text` is recorded.
+    if (recording && event.type !== "tasks" && event.type !== "text_preview") {
       appendConversationEvent(opts.userId, opts.session, opts.agent, event);
     }
     yield event;
