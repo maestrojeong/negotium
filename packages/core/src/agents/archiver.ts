@@ -78,6 +78,8 @@ export interface RunArchiverTurnParams {
   topicId?: string;
   /** Human-readable topic title — becomes the wiki `topic` name. */
   topicTitle: string;
+  /** `topicTitle` is the room's memory key: write under it and pick no other persona. */
+  memoryKeyFixed?: boolean;
   /** Absolute path to the JSONL archive produced by `archiveTopicMessages`. */
   archivePath: string;
   /** Full provider-neutral event streams preserved before topic deletion. */
@@ -217,6 +219,7 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
       rawArchivePaths = [],
       messageCount,
       mode = "deleted-topic",
+      memoryKeyFixed = false,
     } = params;
 
     // Resolve while the source row still exists. Deleted-topic archivers settle
@@ -248,12 +251,14 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
     const generalReplyInstruction =
       `Reply with a short completion message in ${outputLanguage} for display in #General. ` +
       "Do not include tool-call logs or raw transcripts — just briefly name the summary / brief / articles you saved.";
+    const memoryKeyLines = memoryKeyFixed ? [`fixed_memory_key: ${topicTitle}`] : [];
     const prompt =
       mode === "active-topic"
         ? [
             `Recent idle conversation snapshot of session "${topicTitle}". Extract durable memory from the archive below and save it into this topic's wiki.`,
             `archive_path: ${archivePath}`,
             ...rawArchivePaths.map((path) => `raw_archive_path: ${path}`),
+            ...memoryKeyLines,
             `wiki_dir: ${wikiDir}`,
             `output_language: ${outputLanguage}`,
             "",
@@ -263,6 +268,7 @@ export function createArchiverRuntime(host: ArchiverHost): ArchiverRuntime {
             `Session "${topicTitle}" was deleted. Extract durable memory from the archive below and save it into the wiki.`,
             `archive_path: ${archivePath}`,
             ...rawArchivePaths.map((path) => `raw_archive_path: ${path}`),
+            ...memoryKeyLines,
             `wiki_dir: ${wikiDir}`,
             `output_language: ${outputLanguage}`,
             "",

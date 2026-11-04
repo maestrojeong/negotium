@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -13,7 +14,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createWikiMcpServer, resolveAccessibleWikiTopicBrief } from "#mcp/wiki-server";
+import {
+  createWikiMcpServer,
+  loadTopicMemoryHost,
+  resolveAccessibleWikiTopicBrief,
+} from "#mcp/wiki-server";
+import { deleteTopicBrief, getTopicBrief } from "#storage/api-topic-brief";
+import { deleteTopic, getTopic, upsertTopic } from "#storage/api-topics";
+import { wikiSummarySlug } from "#storage/wiki-summary-names";
+import type { TopicDto } from "#types/api";
 
 const roots: string[] = [];
 
@@ -1138,5 +1147,191 @@ describe("createWikiMcpServer", () => {
         resolveBrief,
       )?.briefMd,
     ).toBe("canonical:topic-id:Negotium");
+  });
+
+  test("finds a room by its memory key and reads the brief stored under that key", () => {
+    const keyed = {
+      id: "tax-room",
+      title: "원천세 신고 · employee",
+      memoryKey: "tax-agent:withholding-tax:employee",
+      visibility: "private",
+      participants: [{ userId: "local" }],
+    };
+    const resolveBrief = (topicId: string, memoryName: string) => ({
+      brief: { briefMd: `${topicId}:${memoryName}`, updatedAt: "2026-11-04T00:00:00Z" },
+    });
+    const expected = "tax-room:tax-agent:withholding-tax:employee";
+
+    for (const selection of [
+      "tax-agent:withholding-tax:employee",
+      "topic/tax-agent-withholding-tax-employee.md",
+      "원천세 신고 · employee",
+      "tax-room",
+    ]) {
+      expect(
+        resolveAccessibleWikiTopicBrief(selection, "local", [keyed], resolveBrief)?.briefMd,
+      ).toBe(expected);
+      // A caller who is not a participant reads the room only from inside it.
+      expect(
+        resolveAccessibleWikiTopicBrief(selection, "employee", [keyed], resolveBrief, "tax-room")
+          ?.briefMd,
+      ).toBe(expected);
+      expect(
+        resolveAccessibleWikiTopicBrief(selection, "employee", [keyed], resolveBrief),
+      ).toBeNull();
+    }
+  });
+});
+
+describe("room memory on node storage", () => {
+  const topicIds: string[] = [];
+  const briefKeys: string[] = [];
+  // One shared wiki per test, as on a node.
+  let wikiRoot: string | undefined;
+
+  afterEach(() => {
+    for (const id of topicIds.splice(0)) deleteTopic(id);
+    for (const key of briefKeys.splice(0)) deleteTopicBrief(key);
+    wikiRoot = undefined;
+  });
+
+  function room(overrides: Partial<TopicDto> & Pick<TopicDto, "title">): TopicDto {
+    const now = new Date().toISOString();
+    const topic: TopicDto = {
+      id: `wiki-room-${randomUUID()}`,
+      kind: "agent",
+      agent: "claude",
+      defaultModel: "sonnet",
+      defaultEffort: "medium",
+      aiMention: false,
+      participants: [{ userId: "local", role: "owner" }],
+      createdAt: now,
+      lastMessageAt: now,
+      ...overrides,
+    };
+    upsertTopic(topic);
+    topicIds.push(topic.id);
+    briefKeys.push(wikiSummarySlug(topic.memoryKey?.trim() || topic.title));
+    return topic;
+  }
+
+  async function roomWiki(topic: TopicDto, userId: string): Promise<Client> {
+    if (!wikiRoot) {
+      wikiRoot = mkdtempSync(join(tmpdir(), "wiki-room-memory-"));
+      roots.push(wikiRoot);
+    }
+    return connect(
+      createWikiMcpServer(
+        { userId, currentTopicId: topic.id, topicId: topic.id, surface: "wiki" },
+        { wikiRoot, ...(await loadTopicMemoryHost()) },
+      ),
+    );
+  }
+
+  function writeBrief(client: Client, topic: string, content: string) {
+    return client.callTool({
+      name: "wiki_write",
+      arguments: { kind: "topic", topic, content, description: "Room memory" },
+    });
+  }
+
+  function readBrief(client: Client, key: string, adopt = false) {
+    return client.callTool({
+      name: "wiki_read",
+      arguments: { kind: "topic", key, ...(adopt ? { adopt } : {}) },
+    });
+  }
+
+  test("a room reads back the brief it just wrote under its memory key", async () => {
+    const employee = `otium-user-${randomUUID()}`;
+    const memoryKey = `tax-agent:withholding-tax:${employee}`;
+    const topic = room({ title: `원천세 신고 · ${employee}`, memoryKey });
+    // The archiver runs as the employee, who is not a participant of the
+    // node room (its owner is the node principal).
+    const wiki = await roomWiki(topic, employee);
+
+    const saved = text(await writeBrief(wiki, memoryKey, "Withholding brief."));
+    expect(saved).toContain(`topic/${wikiSummarySlug(memoryKey)}.md (created)`);
+    expect(saved).toContain("SQLite brief also updated.");
+    expect(getTopicBrief(wikiSummarySlug(memoryKey))?.briefMd).toBe("Withholding brief.");
+
+    for (const key of [memoryKey, topic.title, wikiSummarySlug(memoryKey)]) {
+      expect(text(await readBrief(wiki, key))).toContain("Withholding brief.");
+    }
+    await wiki.close();
+  });
+
+  test("a room with a memory key takes no other memory name", async () => {
+    const memoryKey = `tax-agent:withholding-tax:${randomUUID()}`;
+    const topic = room({ title: `원천세 신고 · ${randomUUID()}`, memoryKey });
+    const other = room({ title: `원천세 신고 ${randomUUID()}` });
+    const wiki = await roomWiki(topic, "local");
+
+    for (const kind of ["summary", "topic"]) {
+      const refused = await wiki.callTool({
+        name: "wiki_write",
+        arguments: { kind, topic: "원천세 신고", content: "Wrong name.", description: "Memory" },
+      });
+      expect(refused.isError).toBe(true);
+      expect(text(refused)).toContain(`topic: "${memoryKey}"`);
+    }
+    expect(text(await writeBrief(wiki, other.title, "Wrong room."))).toContain(memoryKey);
+    expect(getTopicBrief(wikiSummarySlug(other.title))).toBeNull();
+
+    const otherWiki = await roomWiki(other, "local");
+    await writeBrief(otherWiki, other.title, "Other room brief.");
+    const adopted = text(await readBrief(wiki, other.title, true));
+    expect(adopted).toContain("Other room brief.");
+    expect(adopted).toContain("could not be adopted");
+    expect(getTopic(topic.id)?.memoryKey).toBe(memoryKey);
+    await Promise.all([wiki.close(), otherWiki.close()]);
+  });
+
+  test("a room whose memory key is its title keeps title memory", async () => {
+    const title = `Roadmap ${randomUUID()}`;
+    const topic = room({
+      title,
+      memoryKey: title,
+      participants: [{ userId: "user", role: "owner" }],
+    });
+    const wiki = await roomWiki(topic, "user");
+
+    expect(text(await writeBrief(wiki, title, "Roadmap brief."))).toContain("(created)");
+    expect(text(await readBrief(wiki, title))).toContain("Roadmap brief.");
+    await wiki.close();
+  });
+
+  test("a room without a memory key adopts another room's memory, then keeps it", async () => {
+    const owner = [{ userId: "user", role: "owner" as const }];
+    const persona = room({ title: `Persona ${randomUUID()}`, participants: owner });
+    const topic = room({ title: `Persona follow-up ${randomUUID()}`, participants: owner });
+    const stranger = room({
+      title: `Stranger ${randomUUID()}`,
+      participants: [{ userId: "other", role: "owner" }],
+    });
+    const personaWiki = await roomWiki(persona, "user");
+    await writeBrief(personaWiki, persona.title, "Persona brief.");
+    const strangerWiki = await roomWiki(stranger, "other");
+    await writeBrief(strangerWiki, stranger.title, "Stranger brief.");
+    const wiki = await roomWiki(topic, "user");
+
+    const found = text(
+      await wiki.callTool({
+        name: "wiki_query",
+        arguments: { question: "Room memory", kind: "topic", limit: 10 },
+      }),
+    );
+    expect(found).toContain(`key: ${wikiSummarySlug(persona.title)}`);
+    expect(found).not.toContain(wikiSummarySlug(stranger.title));
+    expect(text(await readBrief(wiki, stranger.title))).toContain("No brief found");
+    const adopted = text(await readBrief(wiki, persona.title, true));
+    expect(adopted).toContain("Persona brief.");
+    expect(adopted).toContain(`Adopted topic memory: ${wikiSummarySlug(persona.title)}`);
+    expect(getTopic(topic.id)?.memoryKey).toBe(wikiSummarySlug(persona.title));
+
+    expect((await writeBrief(wiki, topic.title, "Own title.")).isError).toBe(true);
+    expect(text(await writeBrief(wiki, persona.title, "Persona, updated."))).toContain("(updated)");
+    expect(text(await readBrief(wiki, topic.title))).toContain("Persona, updated.");
+    await Promise.all([wiki.close(), personaWiki.close(), strangerWiki.close()]);
   });
 });

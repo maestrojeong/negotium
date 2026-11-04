@@ -1,10 +1,17 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { type HostedMcpContext, type HostedMcpSurface, issueHostedMcpToken } from "@negotium/core";
+import {
+  type HostedMcpContext,
+  type HostedMcpSurface,
+  issueHostedMcpToken,
+  type TopicDto,
+} from "@negotium/core";
+import { deleteTopic, deleteTopicBrief, upsertTopic } from "@negotium/core/storage";
 import { closeNegotiumMcpSessions, handleNegotiumMcpRequest } from "../src/index";
 
 let server: ReturnType<typeof Bun.serve>;
@@ -120,5 +127,74 @@ describe("hosted built-in MCP surfaces", () => {
     expect(tools).not.toContain("ask_session");
     expect(tools).not.toContain("tell_session");
     expect(tools).not.toContain("abort_session");
+  });
+
+  test("lets a room's actor read back the memory it wrote under the room's memory key", async () => {
+    // An Otium tax room: the node principal owns it, an employee drives it,
+    // and its memory key is not its title.
+    const employee = `otium-user-${randomUUID()}`;
+    const memoryKey = `tax-agent:withholding-tax:${employee}`;
+    const now = new Date().toISOString();
+    const room: TopicDto = {
+      id: `hosted-wiki-${randomUUID()}`,
+      title: `원천세 신고 · ${employee}`,
+      kind: "agent",
+      agent: "claude",
+      defaultModel: "sonnet",
+      defaultEffort: "medium",
+      aiMention: false,
+      participants: [{ userId: "local", role: "owner" }],
+      createdAt: now,
+      lastMessageAt: now,
+      memoryKey,
+    };
+    upsertTopic(room);
+    const token = issueHostedMcpToken("wiki", {
+      ...baseContext,
+      userId: employee,
+      topicId: room.id,
+      topicTitle: room.title,
+    });
+    const client = new Client({ name: "hosted-wiki-memory-test", version: "1.0.0" });
+    const text = (result: Awaited<ReturnType<Client["callTool"]>>) =>
+      (result.content as Array<{ text?: string }>).map((entry) => entry.text ?? "").join("\n");
+    try {
+      await client.connect(
+        new StreamableHTTPClientTransport(
+          new URL(
+            `http://127.0.0.1:${server.port}/mcp/runtime/wiki/mcp?token=${encodeURIComponent(token)}`,
+          ),
+        ),
+      );
+      const saved = await client.callTool({
+        name: "wiki_write",
+        arguments: {
+          kind: "topic",
+          topic: memoryKey,
+          content: "Files on the 10th.",
+          description: "Due date",
+        },
+      });
+      expect(text(saved)).toContain("SQLite brief also updated.");
+      const read = await client.callTool({
+        name: "wiki_read",
+        arguments: { kind: "topic", key: memoryKey },
+      });
+      expect(text(read)).toContain("Files on the 10th.");
+      const renamed = await client.callTool({
+        name: "wiki_write",
+        arguments: {
+          kind: "topic",
+          topic: "원천세 신고",
+          content: "Elsewhere.",
+          description: "Due date",
+        },
+      });
+      expect(renamed.isError).toBe(true);
+    } finally {
+      await client.close();
+      deleteTopic(room.id);
+      deleteTopicBrief(memoryKey.replaceAll(":", "-"));
+    }
   });
 });

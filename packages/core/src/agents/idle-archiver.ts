@@ -184,6 +184,7 @@ export function archiveActiveTopicForMemory(
     sourceTopicId: topic.id,
     topicId: memoryTopic.id,
     topicTitle: memoryTitle,
+    memoryKeyFixed: Boolean(memoryTopic.memoryKey?.trim()),
     archivePath: job.archivePath,
     ...(options.rawArchivePaths ? { rawArchivePaths: options.rawArchivePaths } : {}),
     messageCount: job.messageCount,

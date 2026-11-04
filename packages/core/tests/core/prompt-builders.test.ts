@@ -14,6 +14,8 @@ describe("loadAgentPrompt", () => {
     expect(prompt.name).toBe("wiki-archiver");
     expect(prompt.prompt).toContain('wiki_query(question=topic, kind="topic", limit=5)');
     expect(prompt.prompt).toContain("canonical_topic");
+    // archiver.ts writes this line for a room whose memory key is fixed.
+    expect(prompt.prompt).toContain("If the prompt gives `fixed_memory_key`, that key is");
     expect(prompt.prompt).toContain("logical long-lived work context");
     expect(prompt.prompt).toContain("exactly one routing decision");
     expect(prompt.prompt).toContain("never update more than one persona brief");

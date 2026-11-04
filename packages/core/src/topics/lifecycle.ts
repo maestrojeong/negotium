@@ -308,6 +308,7 @@ async function deleteTopicCascadeImpl(
             ? { topicId: memoryTopic.id }
             : {}),
           topicTitle: memoryTitle,
+          memoryKeyFixed: Boolean(memoryTopic.memoryKey?.trim()),
           archivePath: archived.path,
           ...(rawArchives.length > 0 ? { rawArchivePaths: rawArchives } : {}),
           messageCount: archived.messageCount,

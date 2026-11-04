@@ -49,6 +49,9 @@ records shaped `{ line, role, speaker, text, event }`.
 
 ### 2. Choose an existing or new persona
 
+If the prompt gives `fixed_memory_key`, that key is `canonical_topic`. Skip the rest of this step: do not
+query or adopt another persona. The wiki refuses summaries and briefs written under any other name.
+
 - `topic` is the session name supplied in the prompt.
 - A persona is a **logical long-lived work context**, not a room title.
 - Before writing, call `mcp__wiki__wiki_query(question=topic, kind="topic", limit=5)`.

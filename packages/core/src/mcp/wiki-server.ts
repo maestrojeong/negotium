@@ -53,9 +53,15 @@ export interface WikiTopicBrief {
 
 export interface WikiMcpHost {
   wikiRoot: string;
-  canReadTopicMemory?(selection: string, userId: string): boolean;
+  /** Filters `wiki_query` topic results to the memories `resolveTopicBrief` would return. */
+  canReadTopicMemory?(selection: string, userId: string, boundTopicId?: string): boolean;
   getTopicBrief?(topicId: string): WikiTopicBrief | null;
-  resolveTopicBrief?(selection: string, userId: string): WikiTopicBrief | null;
+  /** `boundTopicId` is the room this server runs for; its own memory is always readable. */
+  resolveTopicBrief?(
+    selection: string,
+    userId: string,
+    boundTopicId?: string,
+  ): WikiTopicBrief | null;
   setTopicBrief?(
     topicId: string,
     fields: {
@@ -64,6 +70,8 @@ export interface WikiMcpHost {
       summaryDate?: string;
     },
   ): void;
+  /** The memory key a room was given; its summaries and brief may be written under no other name. */
+  fixedMemoryKey?(topicId: string): string | undefined;
   adoptTopicMemory?(topicId: string, userId: string, memoryKey: string): boolean;
 }
 
@@ -78,28 +86,60 @@ export interface WikiMcpContext {
 interface WikiMemoryTopic {
   id: string;
   title: string;
+  memoryKey?: string;
   visibility?: string;
   participants: Array<{ userId: string }>;
 }
 
+/** The name a room's memory is stored under: its memory key, else its title. */
+function topicMemoryName(topic: WikiMemoryTopic): string {
+  return topic.memoryKey?.trim() || topic.title;
+}
+
+/**
+ * Find a room whose memory the caller may read. A room is found by id, title,
+ * memory name, or the slug `wiki_write` stored that name under. The room the
+ * server runs for is always readable, even when the caller is not one of its
+ * participants (an archiver acting for a person in a room another principal
+ * owns).
+ */
+function findAccessibleMemoryTopic(
+  selection: string,
+  userId: string,
+  topics: WikiMemoryTopic[],
+  boundTopicId?: string,
+): WikiMemoryTopic | undefined {
+  const normalize = (value: string) => value.trim().toLowerCase();
+  const wanted = normalize(selection.replace(/^topic\//, "").replace(/\.md$/i, ""));
+  const accessible = topics.filter(
+    (topic) =>
+      topic.id === boundTopicId ||
+      (topic.visibility !== "hidden" &&
+        topic.participants.some((participant) => participant.userId === userId)),
+  );
+  const named = (topic: WikiMemoryTopic) => {
+    const memoryName = topicMemoryName(topic);
+    return [topic.title, memoryName, wikiSummarySlug(memoryName)].some(
+      (name) => normalize(name) === wanted,
+    );
+  };
+  return (
+    accessible.find((candidate) => candidate.id === selection) ??
+    accessible.find((candidate) => candidate.id === boundTopicId && named(candidate)) ??
+    accessible.find(named)
+  );
+}
+
+/** Read the brief stored under the memory name of the room `selection` finds. */
 export function resolveAccessibleWikiTopicBrief(
   selection: string,
   userId: string,
   topics: WikiMemoryTopic[],
-  resolveBrief: (topicId: string, legacyTitle: string) => { brief: WikiTopicBrief } | null,
+  resolveBrief: (topicId: string, memoryName: string) => { brief: WikiTopicBrief } | null,
+  boundTopicId?: string,
 ): WikiTopicBrief | null {
-  const normalized = selection.trim().toLowerCase();
-  const accessible = topics.filter(
-    (topic) =>
-      topic.visibility !== "hidden" &&
-      topic.participants.some((participant) => participant.userId === userId),
-  );
-  const idMatch = accessible.find((topic) => topic.id === selection);
-  if (idMatch) return resolveBrief(idMatch.id, idMatch.title)?.brief ?? null;
-  const matches = accessible.filter((topic) => topic.title.trim().toLowerCase() === normalized);
-  if (matches.length === 0) return null;
-  const topic = matches[0]!;
-  return resolveBrief(topic.id, topic.title)?.brief ?? null;
+  const topic = findAccessibleMemoryTopic(selection, userId, topics, boundTopicId);
+  return topic ? (resolveBrief(topic.id, topicMemoryName(topic))?.brief ?? null) : null;
 }
 
 interface WikiRuntime extends Required<Pick<WikiMcpContext, "userId" | "surface">> {
@@ -744,7 +784,7 @@ function wikiQuery(args: Record<string, unknown>): CallToolResult {
       (candidate) =>
         candidate.kind !== "topic" ||
         !canReadTopicMemory ||
-        canReadTopicMemory(candidate.key, runtime().userId),
+        canReadTopicMemory(candidate.key, runtime().userId, runtime().topicId),
     );
   const hasStaleExactIndexMatch = visibleIndexCandidates.some(
     (candidate) =>
@@ -1175,7 +1215,7 @@ function wikiTopicBrief(args: Record<string, unknown>): CallToolResult {
   if (hasAuthorizedBridge) {
     try {
       const brief = resolveTopicBrief
-        ? resolveTopicBrief(rawTopic, runtime().userId)
+        ? resolveTopicBrief(rawTopic, runtime().userId, runtime().topicId)
         : getTopicBrief!(rawTopic);
       if (brief) {
         const lines = [
@@ -1673,6 +1713,19 @@ function wikiWrite(args: Record<string, unknown>): CallToolResult {
   if (!topic) {
     return { content: [{ type: "text", text: "Missing topic." }], isError: true };
   }
+  const boundTopicId = runtime().topicId;
+  const fixedKey = boundTopicId ? runtime().host.fixedMemoryKey?.(boundTopicId) : undefined;
+  if (fixedKey && wikiSummarySlug(topic) !== wikiSummarySlug(fixedKey)) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `This topic's memory key is fixed. Write its ${rawKind} with topic: "${fixedKey}".`,
+        },
+      ],
+      isError: true,
+    };
+  }
 
   if (rawKind === "summary") {
     const dateStr = rawDate ?? today;
@@ -2046,7 +2099,8 @@ const WIKI_TOOLS: Tool[] = [
         key: { type: "string", description: "Canonical key returned by wiki_query" },
         adopt: {
           type: "boolean",
-          description: "For kind=topic, persist this canonical memory key for the current room",
+          description:
+            "For kind=topic, persist this canonical memory key for the current room. A room that already has a memory key keeps it.",
         },
       },
       required: ["kind", "key"],
@@ -2105,7 +2159,8 @@ const WIKI_TOOLS: Tool[] = [
         },
         topic: {
           type: "string",
-          description: "Topic name; required for kind=summary and kind=topic",
+          description:
+            "Topic name; required for kind=summary and kind=topic. A room with a memory key accepts only that key.",
         },
         slug: {
           type: "string",
@@ -2265,57 +2320,53 @@ export function createWikiMcpServer(context: WikiMcpContext, host: WikiMcpHost):
 
 // --- Entrypoint ------------------------------------------------------------
 
+/**
+ * The room-memory half of a wiki host, backed by node storage. Both the stdio
+ * entrypoint and the hosted wiki surface use it, so a room reads, writes, and
+ * adopts memory the same way whichever transport serves it.
+ */
+export async function loadTopicMemoryHost(): Promise<Omit<WikiMcpHost, "wikiRoot">> {
+  const [briefs, topics, topicLifecycle] = await Promise.all([
+    import("#storage/api-topic-brief"),
+    import("#storage/api-topics"),
+    import("#topics/derive"),
+  ]);
+  return {
+    canReadTopicMemory: (selection, userId, boundTopicId) =>
+      findAccessibleMemoryTopic(selection, userId, topics.listTopics(), boundTopicId) !== undefined,
+    getTopicBrief: briefs.getTopicBrief,
+    resolveTopicBrief: (selection, userId, boundTopicId) =>
+      resolveAccessibleWikiTopicBrief(
+        selection,
+        userId,
+        topics.listTopics(),
+        briefs.resolveTopicBrief,
+        boundTopicId,
+      ),
+    setTopicBrief: briefs.setTopicBrief,
+    fixedMemoryKey: (topicId) => topics.getTopic(topicId)?.memoryKey?.trim() || undefined,
+    adoptTopicMemory: (topicId, userId, memoryKey) => {
+      const topic = topics.getTopic(topicId);
+      if (
+        !topic?.participants.some(
+          (participant) => participant.userId === userId && participant.role === "owner",
+        )
+      ) {
+        return false;
+      }
+      const current = topic.memoryKey?.trim();
+      if (current) return wikiSummarySlug(current) === memoryKey;
+      return topicLifecycle.updateTopic(topicId, { memoryKey });
+    },
+  };
+}
+
 async function main() {
   const context = parseArgv();
   let bridge: Partial<WikiMcpHost> = {};
   if (context.topicId) {
     try {
-      const [briefs, topics, topicLifecycle] = await Promise.all([
-        import("#storage/api-topic-brief"),
-        import("#storage/api-topics"),
-        import("#topics/derive"),
-      ]);
-      bridge = {
-        ...bridge,
-        getTopicBrief: briefs.getTopicBrief,
-        canReadTopicMemory: (selection, userId) => {
-          const normalized = selection
-            .trim()
-            .toLowerCase()
-            .replace(/^topic\//, "")
-            .replace(/\.md$/i, "");
-          return topics.listTopics().some((topic) => {
-            if (topic.visibility === "hidden") return false;
-            if (!topic.participants.some((participant) => participant.userId === userId))
-              return false;
-            return (
-              topic.id === selection ||
-              topic.title.trim().toLowerCase() === normalized ||
-              wikiSummarySlug(topic.title).toLowerCase() === normalized ||
-              topic.memoryKey?.toLowerCase() === normalized
-            );
-          });
-        },
-        resolveTopicBrief: (selection, userId) =>
-          resolveAccessibleWikiTopicBrief(
-            selection,
-            userId,
-            topics.listTopics(),
-            briefs.resolveTopicBrief,
-          ),
-        setTopicBrief: briefs.setTopicBrief,
-        adoptTopicMemory: (topicId, userId, memoryKey) => {
-          const topic = topics.getTopic(topicId);
-          if (
-            !topic?.participants.some(
-              (participant) => participant.userId === userId && participant.role === "owner",
-            )
-          ) {
-            return false;
-          }
-          return topicLifecycle.updateTopic(topicId, { memoryKey });
-        },
-      };
+      bridge = await loadTopicMemoryHost();
     } catch {
       // DB not available — degrade gracefully (file-only).
     }

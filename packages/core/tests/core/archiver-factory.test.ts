@@ -290,6 +290,32 @@ describe("archiver runtime factory", () => {
       { topicId: "general:owner", message: fixture.messages[0]! },
     ]);
     expect(fixture.agentOptions[0]?.prompt).toContain("raw_archive_path: /archive/events.jsonl");
+    expect(fixture.agentOptions[0]?.prompt).not.toContain("fixed_memory_key");
     expect(fixture.generalResolutions).toEqual([{ userId: "owner", sourceTopicId: "topic-id" }]);
+  });
+
+  test("tells the archiver a room's fixed memory key", async () => {
+    const fixture = createHost(async function* () {
+      yield { type: "result", content: "Saved.", stopReason: "end_turn" };
+    });
+    const runtime = createArchiverRuntime(fixture.host);
+
+    expect(
+      await runAndSettle(runtime, {
+        userId: "otium-user-1",
+        sourceTopicId: "tax-room",
+        topicId: "tax-room",
+        topicTitle: "tax-agent:withholding-tax:otium-user-1",
+        memoryKeyFixed: true,
+        archivePath: "/archive/messages.jsonl",
+        messageCount: 9,
+        mode: "active-topic",
+      }),
+    ).toBe(true);
+
+    expect(fixture.agentOptions[0]?.prompt).toContain(
+      "fixed_memory_key: tax-agent:withholding-tax:otium-user-1",
+    );
+    expect(fixture.agentOptions[0]?.topicId).toBe("tax-room");
   });
 });

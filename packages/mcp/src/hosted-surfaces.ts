@@ -118,38 +118,21 @@ export async function buildHostedSurfaceServer(
     }
     case "wiki":
     case "skills": {
-      const [{ createWikiMcpServer }, storage, { WORKSPACE_DIR }] = await Promise.all([
+      const [{ createWikiMcpServer, loadTopicMemoryHost }, { WORKSPACE_DIR }] = await Promise.all([
         import("@negotium/core/mcp-factories/wiki"),
-        import("@negotium/core/storage"),
         import("@negotium/core/mcp-runtime-host"),
       ]);
       const topicId = context.wikiTopicId ?? context.topicId;
-      const accessibleTopicBrief = (selection: string) => {
-        const normalized = selection.trim().toLowerCase();
-        const topics = storage
-          .listTopics()
-          .filter(
-            (topic) =>
-              topic.visibility !== "hidden" &&
-              topic.participants.some((participant) => participant.userId === context.userId),
-          );
-        const topic =
-          topics.find((candidate) => candidate.id === selection) ??
-          topics.find((candidate) => candidate.title.trim().toLowerCase() === normalized);
-        if (!topic) return null;
-        return storage.resolveTopicBrief(topic.id, topic.title)?.brief ?? null;
-      };
       return createWikiMcpServer(
         {
           userId: context.userId,
+          ...(context.topicId ? { currentTopicId: context.topicId } : {}),
           ...(topicId ? { topicId } : {}),
           surface,
         },
         {
           wikiRoot: resolve(WORKSPACE_DIR, "wiki"),
-          getTopicBrief: storage.getTopicBrief,
-          resolveTopicBrief: accessibleTopicBrief,
-          setTopicBrief: storage.setTopicBrief,
+          ...(await loadTopicMemoryHost()),
         },
       );
     }
