@@ -172,6 +172,9 @@ export async function runTurnEventStream(
   let pendingSawDelta = false;
   let accumulatedText = "";
   let pendingText = "";
+  // Display-only text from `text_preview`, shown after pendingText until the
+  // provider's completed `text` for that block arrives.
+  let previewText = "";
   let pendingMessage: { id: string; createdAt: string } | null = null;
   let previewTimer: ReturnType<typeof setTimeout> | null = null;
   const clearPreviewTimer = (): void => {
@@ -179,7 +182,7 @@ export async function runTurnEventStream(
     previewTimer = null;
   };
   const scheduleTextPreview = (): void => {
-    if (silent || previewTimer || !pendingText.trim()) return;
+    if (silent || previewTimer || !(pendingText + previewText).trim()) return;
     pendingMessage ??= { id: randomUUID(), createdAt: new Date().toISOString() };
     previewTimer = setTimeout(() => {
       previewTimer = null;
@@ -189,7 +192,7 @@ export async function runTurnEventStream(
           kind: "message_stream",
           queryId,
           messageId: pendingMessage.id,
-          text: pendingText,
+          text: pendingText + previewText,
           createdAt: pendingMessage.createdAt,
           ...(execution?.threadRootId ? { threadRootId: execution.threadRootId } : {}),
         } satisfies MessageStreamStatus);
@@ -283,7 +286,15 @@ export async function runTurnEventStream(
     pendingMessage = null;
     const text = pendingText.trimEnd();
     pendingText = "";
-    if (silent || !text.trim()) return null;
+    previewText = "";
+    if (silent || !text.trim()) {
+      // A `text_preview` that never got a completed `text` may already be on
+      // screen; take it back like a discarded turn's preview.
+      if (identity && !silent) {
+        hub.broadcastMessageUpdated(topicId, identity.id, { deleted: true, text: "" });
+      }
+      return null;
+    }
     const message: MessageDto = {
       id: identity?.id ?? randomUUID(),
       topicId,
@@ -407,7 +418,13 @@ export async function runTurnEventStream(
           broadcastContextProgress();
           break;
         }
+        case "text_preview":
+          previewText += event.content;
+          scheduleTextPreview();
+          break;
         case "text":
+          // The completed block replaces whatever preview was shown for it.
+          previewText = "";
           if (pendingSawDelta) {
             // Some providers emit tool_use before the completed copy of the
             // streamed text block. A tool flush must not make that copy look

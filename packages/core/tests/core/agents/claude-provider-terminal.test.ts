@@ -149,6 +149,7 @@ describe("claudeProvider terminal handling", () => {
 
     expect(events).toEqual([
       { type: "session", sessionId: "sess-order" },
+      { type: "text_preview", content: "prefetched text" },
       { type: "tool_use", name: "Bash", input: { command: "pwd" }, toolUseId: "tool-1" },
       { type: "text", content: "between tools" },
       { type: "tool_use", name: "Bash", input: { command: "ls" }, toolUseId: "tool-2" },

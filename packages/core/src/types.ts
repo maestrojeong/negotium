@@ -143,6 +143,14 @@ export type UnifiedEvent =
       };
     }
   | { type: "text_delta"; content: string }
+  /**
+   * Live display text for the assistant block being written. Only room
+   * previews (`message_stream`) use it; it is never saved, archived or
+   * replayed. The provider still emits the completed block as `text`, which
+   * replaces this preview. For providers whose completed message is the only
+   * source of block order (Claude).
+   */
+  | { type: "text_preview"; content: string }
   | { type: "text"; content: string }
   | { type: "result"; content: string; stopReason: string; usage?: TokenUsage }
   | { type: "file"; path: string; source: string; origin: "tag" | "extension" }
