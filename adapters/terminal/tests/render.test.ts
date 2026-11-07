@@ -24,6 +24,7 @@ import {
   type AppState,
   applyRuntimeEvent,
   createInitialState,
+  drainQueuedMessages,
   openTopicPicker,
   queueMessage,
   setMessages,
@@ -3082,6 +3083,70 @@ describe("queued messages", () => {
     const startedOutput = stripAnsi(renderApp(state, 100, 30));
     expect(startedOutput).not.toContain("runs after this turn");
     expect(startedOutput).toContain("do this after");
+  });
+
+  test("show at once when a steer is accepted, not when the next turn starts", () => {
+    const at = (iso: string) => `2026-01-01T00:00:${iso}.000Z`;
+    const msg = (id: string, authorId: string, text: string, createdAt: string): MessageDto => ({
+      id,
+      topicId: "topic",
+      authorId,
+      text,
+      createdAt,
+    });
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [
+      msg("first", "user", "first", at("00")),
+      msg("queued-a", "user", "queued a", at("01")),
+      msg("queued-b", "user", "queued b", at("02")),
+      msg("reply", "ai", "partial reply", at("03")),
+    ]);
+    state = queueMessage(state, "topic", { id: "queued-a", text: "queued a" });
+    state = queueMessage(state, "topic", { id: "queued-b", text: "queued b" });
+    // A display time older than the partial reply must still land after it.
+    state = drainQueuedMessages(state, "topic", at("02"));
+    expect(state.queued.topic).toEqual([]);
+    expect(state.messages.topic?.map((message) => message.id)).toEqual([
+      "first",
+      "reply",
+      "queued-a",
+      "queued-b",
+    ]);
+    const output = stripAnsi(renderApp(state, 100, 30));
+    expect(output).toContain("queued a");
+    expect(output).not.toContain("runs after this turn");
+  });
+
+  test("land after the reply they waited behind once drained", () => {
+    const at = (iso: string) => `2026-01-01T00:00:${iso}.000Z`;
+    const msg = (id: string, authorId: string, text: string, createdAt: string): MessageDto => ({
+      id,
+      topicId: "topic",
+      authorId,
+      text,
+      createdAt,
+    });
+    let state = setTopics(createInitialState("local"), [topic()]);
+    state = setMessages(state, "topic", [
+      msg("first", "user", "first", at("00")),
+      msg("queued-a", "user", "queued a", at("01")),
+      msg("queued-b", "user", "queued b", at("02")),
+      msg("reply", "ai", "partial reply", at("03")),
+    ]);
+    state = queueMessage(state, "topic", { id: "queued-a", text: "queued a" });
+    state = queueMessage(state, "topic", { id: "queued-b", text: "queued b" });
+    state = applyRuntimeEvent(state, {
+      type: "ai-status",
+      topicId: "topic",
+      payload: { kind: "ai_active", queryId: "next-turn" },
+      createdAt: at("04"),
+    });
+    expect(state.messages.topic?.map((message) => message.id)).toEqual([
+      "first",
+      "reply",
+      "queued-a",
+      "queued-b",
+    ]);
   });
 });
 

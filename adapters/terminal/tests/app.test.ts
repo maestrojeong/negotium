@@ -1464,13 +1464,28 @@ test("Enter queues and Alt-Enter steers while a turn is running", async () => {
       ["third", true],
     ]);
     expect(screen()).toContain("Steering");
+    // The typed steer folded "second" into its batch, so nothing is left queued.
+    expect(steeredQueues).toEqual([]);
 
     // Empty composer: Alt-Enter and a bare /steer both run what is queued.
+    feed("fourth");
+    await settle();
+    feed("\r"); // Enter: queue behind the running turn
+    await settle();
     feed("\u001b\r");
+    await settle();
+    expect(steeredQueues).toEqual(["topic"]);
+    feed("fifth");
+    await settle();
+    feed("\r");
     await settle();
     feed("/steer");
     await settle();
     feed("\r");
+    await settle();
+    expect(steeredQueues).toEqual(["topic", "topic"]);
+    // Nothing queued: an empty-composer steer has nothing to run.
+    feed("\u001b\r");
     await settle();
     expect(steeredQueues).toEqual(["topic", "topic"]);
   } finally {
