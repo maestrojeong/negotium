@@ -196,7 +196,7 @@ function notifyPlaywrightUnavailable(topicId: string) {
     topicId,
     "Playwright browser tools are unavailable this turn. Browser automation was removed from the tool catalog; retry shortly if browser interaction is required.",
   );
-  WsHub.get().broadcastTopicNotice(topicId, "info", "Playwright 사용 불가");
+  WsHub.get().broadcastTopicNotice(topicId, "info", "Playwright unavailable");
 }
 
 function appendAskReplyMessage(
@@ -1673,7 +1673,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
 
   if (params.from === FROM_AUTO_CONTINUE) {
     turnReminders.push(
-      "<system-reminder>이 턴은 설정 자동 조정(effort/model/agent) 후 자동 재개된 턴이다. effort/model/agent 난이도 재평가 및 설정 변경 없이 즉시 작업을 시작할 것.</system-reminder>",
+      "<system-reminder>This turn was auto-resumed after an automatic settings adjustment (effort/model/agent). Start the work immediately, without re-evaluating difficulty or changing effort/model/agent settings.</system-reminder>",
     );
   }
 
@@ -2061,7 +2061,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
         if (!silent) {
           appendSystemMessage(
             topicId,
-            "여기까지 완료했어요. 비용 예산 한도에 도달해 작업을 멈췄습니다.",
+            "Completed up to this point. Work stopped because it reached the cost budget limit.",
             threadRootId,
           );
           WsHub.get().broadcastDone(
@@ -2078,7 +2078,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
               : undefined,
             { agent: agentKind, model: resolvedModel, budgetReason: outcome.reason },
           );
-          WsHub.get().broadcastTopicNotice(topicId, "warning", "예산 한도 도달");
+          WsHub.get().broadcastTopicNotice(topicId, "warning", "Budget limit reached");
         }
         // Visible ask_session turns run on the target session too, so the
         // caller must hear about the cap regardless of `silent`.
@@ -2099,11 +2099,11 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
           // providers and explicitly change this topic with /model.
           appendSystemMessage(
             topicId,
-            `${classifyAgentError(outcome.error, agentKind)}\n\n다른 등록된 모델을 쓰려면 /model <model>로 바꾼 뒤 다시 보내세요.`,
+            `${classifyAgentError(outcome.error, agentKind)}\n\nTo use another registered model, switch with /model <model> and send again.`,
             threadRootId,
           );
           WsHub.get().broadcastError(topicId, queryId, outcome.error);
-          WsHub.get().broadcastTopicNotice(topicId, "error", "응답 실패");
+          WsHub.get().broadcastTopicNotice(topicId, "error", "Response failed");
         }
         await deliverAskError(queryId, topic.title, outcome.error);
         await settleSubagentFailure(queryId, classifyAgentError(outcome.error, agentKind));
@@ -2137,7 +2137,7 @@ export function startAiTurn(params: StartAiTurnParams): string | null {
       );
       if (!silent) {
         WsHub.get().broadcastError(topicId, queryId, error);
-        WsHub.get().broadcastTopicNotice(topicId, "error", "응답 실패");
+        WsHub.get().broadcastTopicNotice(topicId, "error", "Response failed");
       }
       await deliverAskError(queryId, topic.title, error);
       await settleSubagentFailure(queryId, classifyAgentError(error, agentKind));
