@@ -918,6 +918,76 @@ export function upsertMessage(state: AppState, message: MessageDto): AppState {
   };
 }
 
+/**
+ * A message queued behind a running turn is hidden from the transcript
+ * (`isQueuedMessage`) while it waits, then steering drains it into the turn
+ * that is about to answer it. It must reappear positioned after that turn's
+ * own prior exchange, not back at the real clock time it was sent — sorting
+ * by the original `createdAt` would tuck it above a reply that actually
+ * finished later. Bump the drained messages' *display* timestamp to the
+ * moment they were folded in; the server's own record of when the user
+ * actually sent them is untouched, this only reorders this client's local copy.
+ */
+/**
+ * Show the messages queued behind the running turn in the transcript now,
+ * instead of when the turn that answers them broadcasts `ai_active`. A steer
+ * is accepted the moment the node folds the queue, but the replacement turn
+ * only starts once the interrupted provider has fully unwound (seconds, for a
+ * CLI that has to be killed). A typed steer already appears at once; this
+ * gives a queue-only steer the same feedback. The drained messages are placed
+ * at `displayCreatedAt`, and always after the newest message already on screen.
+ */
+export function drainQueuedMessages(
+  state: AppState,
+  topicId: string,
+  displayCreatedAt: string,
+): AppState {
+  const queued = state.queued[topicId] ?? [];
+  if (queued.length === 0) return state;
+  const current = state.messages[topicId] ?? [];
+  const drainedIds = new Set(queued.map((item) => item.id));
+  const newestShown = current
+    .filter((message) => !drainedIds.has(message.id))
+    .reduce((latest, message) => {
+      const time = Date.parse(message.createdAt);
+      return Number.isFinite(time) && time > latest ? time : latest;
+    }, Number.NEGATIVE_INFINITY);
+  // Strictly after the newest message on screen: an equal timestamp would let
+  // the stable sort keep the queued messages above it.
+  const requested = Date.parse(displayCreatedAt);
+  const at =
+    Number.isFinite(newestShown) && (!Number.isFinite(requested) || newestShown >= requested)
+      ? new Date(newestShown + 1).toISOString()
+      : displayCreatedAt;
+  return bumpDrainedMessageOrder(
+    { ...state, queued: { ...state.queued, [topicId]: [] } },
+    topicId,
+    drainedIds,
+    at,
+  );
+}
+
+function bumpDrainedMessageOrder(
+  state: AppState,
+  topicId: string,
+  drainedIds: Set<string>,
+  displayCreatedAt: string,
+): AppState {
+  const current = state.messages[topicId] ?? [];
+  if (!current.some((message) => drainedIds.has(message.id))) return state;
+  const next = current
+    .map((message) =>
+      drainedIds.has(message.id) ? { ...message, createdAt: displayCreatedAt } : message,
+    )
+    .sort((left, right) => {
+      const leftTime = Date.parse(left.createdAt);
+      const rightTime = Date.parse(right.createdAt);
+      if (!Number.isFinite(leftTime) || !Number.isFinite(rightTime)) return 0;
+      return leftTime - rightTime;
+    });
+  return { ...state, messages: { ...state.messages, [topicId]: next } };
+}
+
 function patchMessage(
   state: AppState,
   topicId: string,
@@ -1135,12 +1205,17 @@ function applyAiStatus(
     // A new real turn started, so everything that was waiting behind the old
     // one has been picked up by it. The client's own optimistic marker is not
     // a turn start.
-    const drained =
-      state.queued[topicId]?.length &&
-      !queryId.startsWith("terminal-pending-") &&
-      queryId !== current.queryId
-        ? { ...state, queued: { ...state.queued, [topicId]: [] } }
-        : state;
+    const queuedIds = state.queued[topicId];
+    const draining =
+      queuedIds?.length && !queryId.startsWith("terminal-pending-") && queryId !== current.queryId;
+    const drained = draining
+      ? bumpDrainedMessageOrder(
+          { ...state, queued: { ...state.queued, [topicId]: [] } },
+          topicId,
+          new Set(queuedIds.map((item) => item.id)),
+          createdAt ?? new Date().toISOString(),
+        )
+      : state;
     return setActivity(drained, topicId, {
       running: true,
       queryId,

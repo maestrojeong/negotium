@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { hostMcpGrantRefusal, isReservedRuntimeMcpServerName } from "#platform/mcp-config";
+import { abortRoom } from "#query/active-rooms";
+import { AbortReason } from "#query/types";
 import { stampActorTopicScope } from "#runtime/actor-topic-scope";
 import { resolveAttachmentByFileId } from "#runtime/file-hooks";
 import { describeQuotedAuthor } from "#runtime/thread-context";
@@ -15,7 +17,6 @@ import {
   type RuntimeGatewaySubmission,
   recordRuntimeGatewaySubmission,
 } from "#storage/runtime-gateway-submissions";
-import { requestRuntimeTurnAbort } from "#storage/runtime-leases";
 import { getRuntimeTopicEpoch } from "#storage/runtime-topic-state";
 import {
   getActiveRuntimeUserTurnRequest,
@@ -404,9 +405,10 @@ export function submitRuntimeGatewayTurn(
   }
 
   // A new message from the *same* person steers the active topic turn. The
-  // durable replacement is committed first; the provider observes this abort
-  // on its next lease heartbeat and the worker resumes the merged batch after
-  // unwind.
+  // durable replacement is committed first; `abortRoom` stops the provider at
+  // once when this process holds the turn (and still flags the lease so an
+  // owner in another process sees it on its next heartbeat), and the worker
+  // resumes the merged batch after unwind.
   //
   // That resume is the whole reason the abort is safe, so it is conditional on
   // the merge having absorbed the active turn: with `respond: false` there is
@@ -414,7 +416,7 @@ export function submitRuntimeGatewayTurn(
   // unknown) is being answered, that answer is left to finish — the new
   // request waits its turn in the queue and runs with its own actor and
   // assertion.
-  if (steersActiveTurn) requestRuntimeTurnAbort(params.topic.id, "internal");
+  if (steersActiveTurn) abortRoom(params.topic.id, AbortReason.Internal);
 
   return { ...submission, message, deduplicated: false };
 }

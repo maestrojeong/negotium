@@ -112,6 +112,7 @@ import {
   composerHoldsSecret,
   createInitialState,
   cycleTopicsPanelSort,
+  drainQueuedMessages,
   focusCreatedTopic,
   focusTerminalPane,
   moveTopicPickerSelection,
@@ -2038,6 +2039,11 @@ export class TerminalApp {
         this.#state.activity[topic.id]?.queryId === runningQueryId;
       if (queuing && stillBehind) {
         this.#state = queueMessage(this.#state, topic.id, { id: message.id, text: displayText });
+      } else if (steer && wasRunning) {
+        // A steer folds the messages already queued behind the turn into the
+        // same batch as this one. Show them now, just above this message,
+        // rather than when the replacement turn starts.
+        this.#state = drainQueuedMessages(this.#state, topic.id, message.createdAt);
       }
     } catch (error) {
       if (this.#state.activity[topic.id]?.queryId === optimisticQueryId) {
@@ -2063,6 +2069,21 @@ export class TerminalApp {
   async #steerQueued(): Promise<void> {
     const topic = activeTopic(this.#state);
     if (!topic || (this.#state.queued[topic.id] ?? []).length === 0) return;
+    const optimisticQueryId = `terminal-pending-${Date.now()}`;
+    // Mirror `#submit`'s steer-with-text path: bump the activity indicator to
+    // "running" before the round trip to steerQueued() resolves, not after.
+    // Without this, this path's screen sits static (only the notice text
+    // changes) until the server round trip completes, which makes it look
+    // stalled next to Alt-Enter-with-text even though the backend timing is
+    // the same.
+    this.#state = applyRuntimeEvent(
+      { ...this.#state, scrollOffset: 0 },
+      {
+        type: "ai-status",
+        topicId: topic.id,
+        payload: { kind: "ai_active", queryId: optimisticQueryId },
+      },
+    );
     this.#state = {
       ...this.#state,
       notice: "Steering: running the queued messages now…",
@@ -2071,7 +2092,20 @@ export class TerminalApp {
     this.#queueRender();
     try {
       const steered = await this.#client.steerQueued?.(topic.id);
+      if (steered === true) {
+        // The node folded the queue into the turn it is restarting. Show the
+        // messages now; the replacement turn's ai_active can take seconds while
+        // the interrupted provider unwinds.
+        this.#state = drainQueuedMessages(this.#state, topic.id, new Date().toISOString());
+      }
       if (steered === false) {
+        if (this.#state.activity[topic.id]?.queryId === optimisticQueryId) {
+          this.#state = applyRuntimeEvent(this.#state, {
+            type: "ai-status",
+            topicId: topic.id,
+            payload: { kind: "ai_aborted", queryId: optimisticQueryId },
+          });
+        }
         this.#state = {
           ...this.#state,
           notice: "Nothing to steer: the queued messages already started.",
@@ -2079,6 +2113,17 @@ export class TerminalApp {
         };
       }
     } catch (error) {
+      if (this.#state.activity[topic.id]?.queryId === optimisticQueryId) {
+        this.#state = applyRuntimeEvent(this.#state, {
+          type: "ai-status",
+          topicId: topic.id,
+          payload: {
+            kind: "ai_error",
+            queryId: optimisticQueryId,
+            error: "Steer failed",
+          },
+        });
+      }
       this.#state = {
         ...this.#state,
         notice: error instanceof Error ? error.message : String(error),

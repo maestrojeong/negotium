@@ -6,8 +6,9 @@ import {
 import { answerPendingVaultSecretRequest } from "#agents/mcp-tools/request-vault";
 import { WsHub } from "#bus";
 import { abortRoom, getRoomQuery } from "#query/active-rooms";
+import { AbortReason } from "#query/types";
 import { getTopic } from "#storage/api-topics";
-import { getRuntimeTurnLease, requestRuntimeTurnAbort } from "#storage/runtime-leases";
+import { getRuntimeTurnLease } from "#storage/runtime-leases";
 import { beginRuntimeTopicMaintenance } from "#storage/runtime-topic-state";
 import {
   cancelRuntimeUserTurnRequestsBeforeEpoch,
@@ -157,7 +158,10 @@ export const topicService = {
     participantTopic(topicId, userId);
     const folded = foldQueuedIntoActiveRuntimeUserTurnRequest(topicId, randomUUID());
     if (!folded) return false;
-    requestRuntimeTurnAbort(topicId, "internal");
+    // Abort in-process immediately when this runtime process holds the turn
+    // (the common single-process case); `requestRuntimeTurnAbort` alone would
+    // only mark the lease and wait for the next ~1s heartbeat poll to notice.
+    abortRoom(topicId, AbortReason.Internal);
     return true;
   },
 

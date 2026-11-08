@@ -611,7 +611,7 @@ describe("turn session resolution", () => {
     expect(listRecentRuntimeEventsForTopic(topicId).map((event) => event.payload)).toContainEqual({
       kind: "topic_notice",
       severity: "error",
-      label: "응답 실패",
+      label: "Response failed",
       ts: expect.any(String),
     });
   });
